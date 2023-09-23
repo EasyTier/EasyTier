@@ -1,0 +1,116 @@
+syntax = "proto3";
+package cli;
+
+message Status {
+    int32 code = 1;
+    string message = 2;
+}
+
+message PeerConnStats {
+    uint64 rx_bytes = 1;
+    uint64 tx_bytes = 2;
+
+    uint64 rx_packets = 3;
+    uint64 tx_packets = 4;
+
+    uint64 latency_us = 5;
+}
+
+message TunnelInfo {
+    string tunnel_type = 1;
+    string local_addr = 2;
+    string remote_addr = 3;
+}
+
+message PeerConnInfo {
+    string conn_id = 1;
+    string my_node_id = 2;
+    string peer_id = 3;
+    repeated string features = 4;
+    TunnelInfo tunnel = 5;
+    PeerConnStats stats = 6;
+}
+
+message PeerInfo {
+    string peer_id = 1;
+    repeated PeerConnInfo conns = 2;
+}
+
+message ListPeerRequest {}
+
+message ListPeerResponse {
+    repeated PeerInfo peer_infos = 1;
+}
+
+enum NatType {
+    // has NAT; but own a single public IP, port is not changed
+    Unknown = 0;
+    OpenInternet = 1;
+    NoPAT = 2;
+    FullCone = 3;
+    Restricted = 4;
+    PortRestricted = 5;
+    Symmetric = 6;
+    SymUdpFirewall = 7;
+}
+
+message StunInfo {
+    NatType udp_nat_type = 1;
+    NatType tcp_nat_type = 2;
+    int64 last_update_time = 3;
+}
+
+message Route {
+    string peer_id = 1;
+    string ipv4_addr = 2;
+    string next_hop_peer_id = 3;
+    int32 cost = 4;
+    repeated string proxy_cidrs = 5;
+    string hostname = 6;
+    StunInfo stun_info = 7;
+}
+
+message ListRouteRequest {}
+
+message ListRouteResponse {
+    repeated Route routes = 1;
+}
+
+service PeerManageRpc {
+   rpc ListPeer (ListPeerRequest) returns (ListPeerResponse);
+   rpc ListRoute (ListRouteRequest) returns (ListRouteResponse);
+}
+
+enum ConnectorStatus {
+    CONNECTED = 0;
+    DISCONNECTED = 1;
+    CONNECTING = 2;
+}
+
+message Connector {
+    string url = 1;
+    ConnectorStatus status = 2;
+}
+
+message ListConnectorRequest {}
+
+message ListConnectorResponse {
+    repeated Connector connectors = 1;
+}
+
+enum ConnectorManageAction {
+    ADD = 0;
+    REMOVE = 1;
+}
+
+message ManageConnectorRequest {
+    ConnectorManageAction action = 1;
+    string url = 2;
+}
+
+message ManageConnectorResponse { }
+
+service ConnectorManageRpc {
+    rpc ListConnector (ListConnectorRequest) returns (ListConnectorResponse);
+    rpc ManageConnector (ManageConnectorRequest) returns (ManageConnectorResponse);
+}

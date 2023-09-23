@@ -1,0 +1,105 @@
+[package]
+name = "easytier-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["easytier"]
+rust-version = "1.75"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "easytier_rpc"
+path = "src/rpc/lib.rs"
+
+[dependencies]
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2.3"
+log = "0.4"
+thiserror = "1.0"
+auto_impl = "1.1.0"
+crossbeam = "0.8.4"
+
+gethostname = "0.4.3"
+
+futures = "0.3"
+
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7.9", features = ["codec", "net"] }
+
+async-stream = "0.3.5"
+async-trait = "0.1.74"
+
+dashmap = "5.5.3"
+timedmap = "1.0.1"
+
+# for tap device
+tun = { version = "0.6.1", features = ["async"] }
+# for net ns
+nix = { version = "0.27", features = ["sched", "socket", "ioctl"] }
+
+uuid = { version = "1.5.0", features = [
+    "v4",
+    "fast-rng",
+    "macro-diagnostics",
+    "serde",
+] }
+
+# for ring tunnel
+crossbeam-queue = "0.3"
+once_cell = "1.18.0"
+
+# for packet
+rkyv = { "version" = "0.7.42", features = ["validation", "archive_le"] }
+
+# for rpc
+tonic = "0.10"
+prost = "0.12"
+anyhow = "1.0"
+tarpc = { version = "0.32", features = ["tokio1", "serde1"] }
+bincode = "1.3"
+
+url = "2.5.0"
+
+# for tun packet
+byteorder = "1.5.0"
+
+# for proxy
+cidr = "0.2.2"
+socket2 = "0.5.5"
+
+# for hole punching
+stun-format = { git = "https://github.com/KKRainbow/stun-format.git", features = [
+    "fmt",
+    "rfc3489",
+    "iana",
+] }
+rand = "0.8.5"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.pnet]
+version = "0.34.0"
+features = ["serde"]
+
+[dependencies.clap]
+version = "4.4"
+features = ["derive"]
+
+[dependencies.public-ip]
+version = "0.2"
+features = ["default"]
+
+[build-dependencies]
+tonic-build = "0.10"
+
+[target.'cfg(windows)'.build-dependencies]
+reqwest = { version = "0.11", features = ["blocking"] }
+zip = "*"
+
+
+[dev-dependencies]
+serial_test = "*"
