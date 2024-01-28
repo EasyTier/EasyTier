@@ -465,7 +465,6 @@ mod tests {
                 wait_route_appear_with_cost,
             },
         },
-        tests::enable_log,
     };
 
     struct MockStunInfoCollector {

@@ -162,10 +162,7 @@ impl VirtualNic {
 }
 #[cfg(test)]
 mod tests {
-    use crate::{
-        common::{error::Error, global_ctx::tests::get_mock_global_ctx},
-        tests::enable_log,
-    };
+    use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
     use super::VirtualNic;
 
