@@ -1,0 +1,33 @@
+name: Rust
+
+on:
+  push:
+    branches: [ "develop", "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Setup protoc
+      uses: arduino/setup-protoc@v2
+      with:
+         # GitHub repo token to use to avoid rate limiter
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Build
+      run: sudo -E env "PATH=$PATH" cargo build --verbose
+    - name: Setup tools for test
+      run: sudo apt install bridge-utils
+    - name: Setup system for test
+      run: |
+        sudo sysctl net.bridge.bridge-nf-call-iptables=0
+        sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
+    - name: Run tests
+      run: sudo -E env "PATH=$PATH" cargo test --verbose

@@ -162,10 +162,7 @@ impl VirtualNic {
 }
 #[cfg(test)]
 mod tests {
-    use crate::{
-        common::{error::Error, global_ctx::tests::get_mock_global_ctx},
-        tests::enable_log,
-    };
+    use crate::common::{error::Error, global_ctx::tests::get_mock_global_ctx};
 
     use super::VirtualNic;
 
@@ -184,7 +181,6 @@ mod tests {
 
     #[tokio::test]
     async fn tun_test() {
-        enable_log();
         let _dev = run_test_helper().await.unwrap();
 
         // let mut stream = nic.pin_recv_stream();

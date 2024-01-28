@@ -465,7 +465,6 @@ mod tests {
                 wait_route_appear_with_cost,
             },
         },
-        tests::enable_log,
     };
 
     struct MockStunInfoCollector {
@@ -496,7 +495,6 @@ mod tests {
 
     #[tokio::test]
     async fn hole_punching() {
-        enable_log();
         let p_a = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
         let p_b = create_mock_peer_manager_with_mock_stun(NatType::Symmetric).await;
         let p_c = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
