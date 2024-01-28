@@ -22,6 +22,6 @@ jobs:
          # GitHub repo token to use to avoid rate limiter
         repo-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Build
-      run: cargo build --verbose
+      run: sudo -E env "PATH=$PATH" cargo build --verbose
     - name: Run tests
-      run: sudo -E cargo test --verbose
+      run: sudo -E env "PATH=$PATH" cargo test --verbose
