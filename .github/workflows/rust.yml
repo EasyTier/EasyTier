@@ -17,11 +17,13 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Setup protoc
-      uses: arduino/setup-protoc@v2.1.0
+      uses: arduino/setup-protoc@v2
       with:
          # GitHub repo token to use to avoid rate limiter
         repo-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Build
       run: sudo -E env "PATH=$PATH" cargo build --verbose
+    - name: Setup tools for test
+      run: sudo apt install bridge-utils
     - name: Run tests
       run: sudo -E env "PATH=$PATH" cargo test --verbose
