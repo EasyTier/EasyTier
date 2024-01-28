@@ -184,7 +184,6 @@ mod tests {
 
     #[tokio::test]
     async fn tun_test() {
-        enable_log();
         let _dev = run_test_helper().await.unwrap();
 
         // let mut stream = nic.pin_recv_stream();
