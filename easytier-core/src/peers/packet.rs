@@ -71,8 +71,8 @@ pub struct RoutePacket {
 pub enum CtrlPacketBody {
     HandShake(HandShake),
     RoutePacket(RoutePacket),
-    Ping,
-    Pong,
+    Ping(u32),
+    Pong(u32),
     TaRpc(u32, bool, Vec<u8>), // u32: service_id, bool: is_req, Vec<u8>: rpc body
 }
 
@@ -155,19 +155,19 @@ impl Packet {
         }
     }
 
-    pub fn new_ping_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid) -> Self {
+    pub fn new_ping_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid, seq: u32) -> Self {
         Packet {
             from_peer: from_peer.into(),
             to_peer: Some(to_peer.into()),
-            body: PacketBody::Ctrl(CtrlPacketBody::Ping),
+            body: PacketBody::Ctrl(CtrlPacketBody::Ping(seq)),
         }
     }
 
-    pub fn new_pong_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid) -> Self {
+    pub fn new_pong_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid, seq: u32) -> Self {
         Packet {
             from_peer: from_peer.into(),
             to_peer: Some(to_peer.into()),
-            body: PacketBody::Ctrl(CtrlPacketBody::Pong),
+            body: PacketBody::Ctrl(CtrlPacketBody::Pong(seq)),
         }
     }
 

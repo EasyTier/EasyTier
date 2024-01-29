@@ -12,8 +12,15 @@ use super::*;
 use crate::tunnels::{DatagramSink, DatagramStream, SinkError, SinkItem, StreamItem, Tunnel};
 
 pub trait TunnelFilter {
-    fn before_send(&self, data: SinkItem) -> Result<SinkItem, SinkError>;
-    fn after_received(&self, data: StreamItem) -> Result<BytesMut, TunnelError>;
+    fn before_send(&self, data: SinkItem) -> Option<Result<SinkItem, SinkError>> {
+        Some(Ok(data))
+    }
+    fn after_received(&self, data: StreamItem) -> Option<Result<BytesMut, TunnelError>> {
+        match data {
+            Ok(v) => Some(Ok(v)),
+            Err(e) => Some(Err(e)),
+        }
+    }
 }
 
 pub struct TunnelWithFilter<T, F> {
@@ -45,8 +52,10 @@ where
             }
 
             fn start_send(self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
-                let item = self.filter.before_send(item)?;
-                self.get_mut().sink.start_send_unpin(item)
+                let Some(item) = self.filter.before_send(item) else {
+                    return Ok(());
+                };
+                self.get_mut().sink.start_send_unpin(item?)
             }
 
             fn poll_flush(
@@ -83,12 +92,21 @@ where
 
             fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
                 let self_mut = self.get_mut();
-                match self_mut.stream.poll_next_unpin(cx) {
-                    Poll::Ready(Some(ret)) => {
-                        Poll::Ready(Some(self_mut.filter.after_received(ret)))
+                loop {
+                    match self_mut.stream.poll_next_unpin(cx) {
+                        Poll::Ready(Some(ret)) => {
+                            let Some(ret) = self_mut.filter.after_received(ret) else {
+                                continue;
+                            };
+                            return Poll::Ready(Some(ret));
+                        }
+                        Poll::Ready(None) => {
+                            return Poll::Ready(None);
+                        }
+                        Poll::Pending => {
+                            return Poll::Pending;
+                        }
                     }
-                    Poll::Ready(None) => Poll::Ready(None),
-                    Poll::Pending => Poll::Pending,
                 }
             }
         }
@@ -120,18 +138,18 @@ pub struct PacketRecorderTunnelFilter {
 }
 
 impl TunnelFilter for PacketRecorderTunnelFilter {
-    fn before_send(&self, data: SinkItem) -> Result<SinkItem, SinkError> {
+    fn before_send(&self, data: SinkItem) -> Option<Result<SinkItem, SinkError>> {
         self.received.lock().unwrap().push(data.clone());
-        Ok(data)
+        Some(Ok(data))
     }
 
-    fn after_received(&self, data: StreamItem) -> Result<BytesMut, TunnelError> {
+    fn after_received(&self, data: StreamItem) -> Option<Result<BytesMut, TunnelError>> {
         match data {
             Ok(v) => {
                 self.sent.lock().unwrap().push(v.clone().into());
-                Ok(v)
+                Some(Ok(v))
             }
-            Err(e) => Err(e),
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -150,18 +168,18 @@ pub struct StatsRecorderTunnelFilter {
 }
 
 impl TunnelFilter for StatsRecorderTunnelFilter {
-    fn before_send(&self, data: SinkItem) -> Result<SinkItem, SinkError> {
+    fn before_send(&self, data: SinkItem) -> Option<Result<SinkItem, SinkError>> {
         self.throughput.record_tx_bytes(data.len() as u64);
-        Ok(data)
+        Some(Ok(data))
     }
 
-    fn after_received(&self, data: StreamItem) -> Result<BytesMut, TunnelError> {
+    fn after_received(&self, data: StreamItem) -> Option<Result<BytesMut, TunnelError>> {
         match data {
             Ok(v) => {
                 self.throughput.record_rx_bytes(v.len() as u64);
-                Ok(v)
+                Some(Ok(v))
             }
-            Err(e) => Err(e),
+            Err(e) => Some(Err(e)),
         }
     }
 }
@@ -203,9 +221,42 @@ macro_rules! define_tunnel_filter_chain {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
     use crate::tunnels::ring_tunnel::RingTunnel;
+
+    pub struct DropSendTunnelFilter {
+        start: AtomicU32,
+        end: AtomicU32,
+        cur: AtomicU32,
+    }
+
+    impl TunnelFilter for DropSendTunnelFilter {
+        fn before_send(&self, data: SinkItem) -> Option<Result<SinkItem, SinkError>> {
+            self.cur.fetch_add(1, Ordering::SeqCst);
+            if self.cur.load(Ordering::SeqCst) >= self.start.load(Ordering::SeqCst)
+                && self.cur.load(std::sync::atomic::Ordering::SeqCst)
+                    < self.end.load(Ordering::SeqCst)
+            {
+                tracing::trace!("drop packet: {:?}", data);
+                return None;
+            }
+            Some(Ok(data))
+        }
+    }
+
+    impl DropSendTunnelFilter {
+        pub fn new(start: u32, end: u32) -> Self {
+            Self {
+                start: AtomicU32::new(start),
+                end: AtomicU32::new(end),
+                cur: AtomicU32::new(0),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_nested_filter() {
         define_tunnel_filter_chain!(

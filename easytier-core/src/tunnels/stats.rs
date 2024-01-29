@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64};
 
 pub struct WindowLatency {
-    latency_us_window: Vec<AtomicU64>,
+    latency_us_window: Vec<AtomicU32>,
     latency_us_window_index: AtomicU32,
     latency_us_window_size: AtomicU32,
 }
@@ -9,13 +9,13 @@ pub struct WindowLatency {
 impl WindowLatency {
     pub fn new(window_size: u32) -> Self {
         Self {
-            latency_us_window: (0..window_size).map(|_| AtomicU64::new(0)).collect(),
+            latency_us_window: (0..window_size).map(|_| AtomicU32::new(0)).collect(),
             latency_us_window_index: AtomicU32::new(0),
             latency_us_window_size: AtomicU32::new(window_size),
         }
     }
 
-    pub fn record_latency(&self, latency_us: u64) {
+    pub fn record_latency(&self, latency_us: u32) {
         let index = self
             .latency_us_window_index
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -27,25 +27,27 @@ impl WindowLatency {
             .store(latency_us, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn get_latency_us(&self) -> u64 {
+    pub fn get_latency_us<T: From<u32> + std::ops::Div<Output = T>>(&self) -> T {
         let window_size = self
             .latency_us_window_size
             .load(std::sync::atomic::Ordering::Relaxed);
         let mut sum = 0;
         let mut count = 0;
         for i in 0..window_size {
-            let latency_us =
-                self.latency_us_window[i as usize].load(std::sync::atomic::Ordering::Relaxed);
-            if latency_us > 0 {
-                sum += latency_us;
-                count += 1;
+            if i >= self
+                .latency_us_window_index
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                break;
             }
+            sum += self.latency_us_window[i as usize].load(std::sync::atomic::Ordering::Relaxed);
+            count += 1;
         }
 
         if count == 0 {
-            0
+            0.into()
         } else {
-            sum / count
+            (T::from(sum)) / T::from(count)
         }
     }
 }
