@@ -29,6 +29,7 @@ message PeerConnInfo {
     repeated string features = 4;
     TunnelInfo tunnel = 5;
     PeerConnStats stats = 6;
+    float loss_rate = 7;
 }
 
 message PeerInfo {
