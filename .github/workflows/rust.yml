@@ -50,11 +50,14 @@ jobs:
       run: |
         rustup install 1.75
         rustup default 1.75
-        if [[ $OS =~ ^windows.*$ ]]; then
-            rustup target add $env:TARGET
-        else
-            rustup target add $TARGET
-        fi
+    - name: Install rustc for windows
+      if: startsWith(matrix.os, 'windows')
+      run: |
+        rustup target add $env:TARGET
+    - name: Install rustc for other platform
+      if: ! startsWith(matrix.os, 'windows')
+      run: |
+        rustup target add $TARGET
     - name: Run build
       run: cargo build --release --verbose --target $TARGET
     - name: Compress
