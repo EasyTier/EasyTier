@@ -211,15 +211,22 @@ impl PeerConnPinger {
 
         let (ping_res_sender, mut ping_res_receiver) = tokio::sync::mpsc::channel(100);
 
+        let stopped = Arc::new(AtomicU32::new(0));
+
         // generate a pingpong task every 200ms
         let mut pingpong_tasks = JoinSet::new();
         let ctrl_resp_sender = self.ctrl_sender.clone();
+        let stopped_clone = stopped.clone();
         self.tasks.spawn(async move {
             let mut req_seq = 0;
             loop {
                 let receiver = ctrl_resp_sender.subscribe();
                 let ping_res_sender = ping_res_sender.clone();
                 let sink = sink.clone();
+
+                if stopped_clone.load(Ordering::Relaxed) != 0 {
+                    return Ok(());
+                }
 
                 while pingpong_tasks.len() > 5 {
                     pingpong_tasks.join_next().await;
@@ -236,7 +243,9 @@ impl PeerConnPinger {
                     )
                     .await;
 
-                    let _ = ping_res_sender.send(pingpong_once_ret).await;
+                    if let Err(e) = ping_res_sender.send(pingpong_once_ret).await {
+                        tracing::info!(?e, "pingpong task send result error, exit..");
+                    };
                 });
 
                 req_seq += 1;
@@ -289,6 +298,8 @@ impl PeerConnPinger {
             self.loss_rate_stats
                 .store((loss_rate_20 * 100.0) as u32, Ordering::Relaxed);
         }
+
+        stopped.store(1, Ordering::Relaxed);
     }
 }
 

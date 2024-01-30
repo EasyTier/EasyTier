@@ -50,6 +50,7 @@ fn init_logger() {
     file_layer.set_ansi(false);
     let file_layer = file_layer
         .with_writer(file_appender)
+        .with_timer(tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339().unwrap())
         .with_filter(file_filter);
 
     // logger to console
@@ -59,6 +60,7 @@ fn init_logger() {
         .unwrap();
     let console_layer = tracing_subscriber::fmt::layer()
         .pretty()
+        .with_timer(tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339().unwrap())
         .with_writer(std::io::stderr)
         .with_filter(console_filter);
 

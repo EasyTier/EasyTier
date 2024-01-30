@@ -13,7 +13,7 @@ path = "src/rpc/lib.rs"
 
 [dependencies]
 tracing = { version = "0.1", features = ["log"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time", "time"] }
 tracing-appender = "0.2.3"
 log = "0.4"
 thiserror = "1.0"
