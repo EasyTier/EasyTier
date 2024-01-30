@@ -211,15 +211,22 @@ impl PeerConnPinger {
 
         let (ping_res_sender, mut ping_res_receiver) = tokio::sync::mpsc::channel(100);
 
+        let stopped = Arc::new(AtomicU32::new(0));
+
         // generate a pingpong task every 200ms
         let mut pingpong_tasks = JoinSet::new();
         let ctrl_resp_sender = self.ctrl_sender.clone();
+        let stopped_clone = stopped.clone();
         self.tasks.spawn(async move {
             let mut req_seq = 0;
             loop {
                 let receiver = ctrl_resp_sender.subscribe();
                 let ping_res_sender = ping_res_sender.clone();
                 let sink = sink.clone();
+
+                if stopped_clone.load(Ordering::Relaxed) != 0 {
+                    return Ok(());
+                }
 
                 while pingpong_tasks.len() > 5 {
                     pingpong_tasks.join_next().await;
@@ -236,7 +243,9 @@ impl PeerConnPinger {
                     )
                     .await;
 
-                    let _ = ping_res_sender.send(pingpong_once_ret).await;
+                    if let Err(e) = ping_res_sender.send(pingpong_once_ret).await {
+                        tracing::info!(?e, "pingpong task send result error, exit..");
+                    };
                 });
 
                 req_seq += 1;
@@ -267,7 +276,7 @@ impl PeerConnPinger {
             let loss_rate_20: f64 = loss_rate_stats_20.get_latency_us();
             let loss_rate_1: f64 = loss_rate_stats_1.get_latency_us();
 
-            tracing::warn!(
+            tracing::trace!(
                 ?ret,
                 ?self,
                 ?loss_rate_1,
@@ -276,19 +285,22 @@ impl PeerConnPinger {
             );
 
             if (counter > 5 && loss_rate_20 > 0.74) || (counter > 150 && loss_rate_1 > 0.20) {
-                log::warn!(
-                        "pingpong loss rate too high, my_node_id: {}, peer_id: {}, loss_rate_20: {}, loss_rate_1: {}",
-                        my_node_id,
-                        peer_id,
-                        loss_rate_20,
-                        loss_rate_1,
-                    );
+                tracing::warn!(
+                    ?ret,
+                    ?self,
+                    ?loss_rate_1,
+                    ?loss_rate_20,
+                    "pingpong loss rate too high, closing"
+                );
                 break;
             }
 
             self.loss_rate_stats
                 .store((loss_rate_20 * 100.0) as u32, Ordering::Relaxed);
         }
+
+        stopped.store(1, Ordering::Relaxed);
+        ping_res_receiver.close();
     }
 }
 
@@ -430,7 +442,7 @@ impl PeerConn {
         }
     }
 
-    fn start_pingpong(&mut self) {
+    pub fn start_pingpong(&mut self) {
         let mut pingpong = PeerConnPinger::new(
             self.my_node_id,
             self.get_peer_id(),
