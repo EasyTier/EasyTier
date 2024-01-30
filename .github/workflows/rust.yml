@@ -9,6 +9,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+defaults:
+  run:
+    # necessary for windows
+    shell: bash
+
 jobs:
   build:
     strategy:
@@ -50,13 +55,6 @@ jobs:
       run: |
         rustup install 1.75
         rustup default 1.75
-    - name: Install rustc for windows
-      if: startsWith(matrix.os, 'windows')
-      run: |
-        rustup target add $env:TARGET
-    - name: Install rustc for other platform
-      if: ${{ ! startsWith(matrix.os, 'windows') }}
-      run: |
         rustup target add $TARGET
     - name: Run build
       run: cargo build --release --verbose --target $TARGET
