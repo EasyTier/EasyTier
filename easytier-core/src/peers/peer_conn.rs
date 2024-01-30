@@ -300,6 +300,7 @@ impl PeerConnPinger {
         }
 
         stopped.store(1, Ordering::Relaxed);
+        ping_res_receiver.close();
     }
 }
 
@@ -514,6 +515,8 @@ impl PeerConn {
                 tracing::info_span!("peer conn recv loop", conn_info = ?conn_info_for_instrument),
             ),
         );
+
+        self.start_pingpong();
     }
 
     pub async fn send_msg(&mut self, msg: Bytes) -> Result<(), TunnelError> {
