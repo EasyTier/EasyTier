@@ -11,9 +11,21 @@ env:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        # a list of all the targets
+        # 选择使用openssl或者ring，并不是所有平台都支持
+        include:
+          - TARGET: i686-unknown-linux-musl # test in an alpine container on a mac
+            OS: ubuntu-latest
+          - TARGET: x86_64-unknown-linux-musl # test in an alpine container on a mac
+            OS: ubuntu-latest
+    runs-on: ${{ matrix.OS }}
+    env:
+      NAME: easytier # change with the name of your project
+      TARGET: ${{ matrix.TARGET }}
+      OS: ${{ matrix.OS }}
     steps:
     - uses: actions/checkout@v3
     - name: Setup protoc
@@ -21,13 +33,59 @@ jobs:
       with:
          # GitHub repo token to use to avoid rate limiter
         repo-token: ${{ secrets.GITHUB_TOKEN }}
-    - name: Build
-      run: sudo -E env "PATH=$PATH" cargo build --verbose
+    - name: Cargo cache
+      uses: actions/cache@v4.0.0
+      with:
+        path: |
+          ~/.cargo/registry
+          ./target
+        key: build-cargo-registry-${{matrix.TARGET}}
+    - name: Install rust target
+      run: rustup target add $TARGET
+    - name: Run build
+      run: cargo build --release --verbose --target $TARGET
+    - name: Compress
+      run: |
+        mkdir -p ./artifacts
+        # windows is the only OS using a different convention for executable file name
+        if [[ $OS =~ ^windows.*$ ]]; then
+            SUFFIX=.exe
+        fi
+        if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
+          TAG=$GITHUB_REF_NAME
+        else
+          TAG=$GITHUB_SHA
+        fi
+        mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/
+        mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/
+        tar -czf ./artifacts/$NAME-$TARGET-$TAG.tar.gz -C ./artifacts easytier-core"$SUFFIX" easytier-cli"$SUFFIX"
+    - name: Archive artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: easytier
+        path: |
+          ./artifacts
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Setup protoc
+      uses: arduino/setup-protoc@v2
+      with:
+         # GitHub repo token to use to avoid rate limiter
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
     - name: Setup tools for test
       run: sudo apt install bridge-utils
     - name: Setup system for test
       run: |
         sudo sysctl net.bridge.bridge-nf-call-iptables=0
         sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
+    - name: Cargo cache
+      uses: actions/cache@v4.0.0
+      with:
+        path: |
+          ~/.cargo/registry
+          ./target
+        key: build-cargo-registry-test
     - name: Run tests
       run: sudo -E env "PATH=$PATH" cargo test --verbose
