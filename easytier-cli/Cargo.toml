@@ -13,3 +13,5 @@ easytier-core = { path = "../easytier-core" }
 clap = { version = "4.4.8", features = ["unicode", "derive", "wrap_help"] }
 tonic = "0.10"
 thiserror = "1.0"
+tabled = "0.15.*"
+humansize = "2.1.3"
