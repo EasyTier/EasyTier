@@ -47,7 +47,10 @@ jobs:
           ./target
         key: build-cargo-registry-${{matrix.TARGET}}
     - name: Install rust target
-      run: rustup target add $TARGET
+      run: |
+        rustup install 1.75
+        rustup default 1.75
+        rustup target add $TARGET
     - name: Run build
       run: cargo build --release --verbose --target $TARGET
     - name: Compress
@@ -64,13 +67,13 @@ jobs:
         fi
         mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/
         mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/
-        tar -czf ./artifacts/$NAME-$TARGET-$TAG.tar.gz -C ./artifacts easytier-core"$SUFFIX" easytier-cli"$SUFFIX"
+        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts easytier-core"$SUFFIX" easytier-cli"$SUFFIX"
     - name: Archive artifact
       uses: actions/upload-artifact@v4
       with:
-        name: easytier
+        name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
         path: |
-          ./artifacts
+          ./artifacts/$NAME-$TARGET-$TAG.tar
   test:
     runs-on: ubuntu-latest
     steps:
