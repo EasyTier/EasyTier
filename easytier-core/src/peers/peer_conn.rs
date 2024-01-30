@@ -442,7 +442,7 @@ impl PeerConn {
         }
     }
 
-    fn start_pingpong(&mut self) {
+    pub fn start_pingpong(&mut self) {
         let mut pingpong = PeerConnPinger::new(
             self.my_node_id,
             self.get_peer_id(),
@@ -515,8 +515,6 @@ impl PeerConn {
                 tracing::info_span!("peer conn recv loop", conn_info = ?conn_info_for_instrument),
             ),
         );
-
-        self.start_pingpong();
     }
 
     pub async fn send_msg(&mut self, msg: Bytes) -> Result<(), TunnelError> {

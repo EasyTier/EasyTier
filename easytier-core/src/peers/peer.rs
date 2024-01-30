@@ -100,6 +100,7 @@ impl Peer {
     pub async fn add_peer_conn(&self, mut conn: PeerConn) {
         conn.set_close_event_sender(self.close_event_sender.clone());
         conn.start_recv_loop(self.packet_recv_chan.clone());
+        conn.start_pingpong();
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerConnAdded(conn.get_conn_info()));
         self.conns
