@@ -55,7 +55,7 @@ jobs:
       run: |
         rustup target add $env:TARGET
     - name: Install rustc for other platform
-      if: ! startsWith(matrix.os, 'windows')
+      if: ${{ ! startsWith(matrix.os, 'windows') }}
       run: |
         rustup target add $TARGET
     - name: Run build
