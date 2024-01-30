@@ -296,7 +296,7 @@ impl PeerConnPinger {
             }
 
             self.loss_rate_stats
-                .store((loss_rate_20 * 100.0) as u32, Ordering::Relaxed);
+                .store((loss_rate_1 * 100.0) as u32, Ordering::Relaxed);
         }
 
         stopped.store(1, Ordering::Relaxed);
