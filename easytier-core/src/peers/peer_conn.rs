@@ -276,7 +276,7 @@ impl PeerConnPinger {
             let loss_rate_20: f64 = loss_rate_stats_20.get_latency_us();
             let loss_rate_1: f64 = loss_rate_stats_1.get_latency_us();
 
-            tracing::warn!(
+            tracing::trace!(
                 ?ret,
                 ?self,
                 ?loss_rate_1,
@@ -285,13 +285,13 @@ impl PeerConnPinger {
             );
 
             if (counter > 5 && loss_rate_20 > 0.74) || (counter > 150 && loss_rate_1 > 0.20) {
-                log::warn!(
-                        "pingpong loss rate too high, my_node_id: {}, peer_id: {}, loss_rate_20: {}, loss_rate_1: {}",
-                        my_node_id,
-                        peer_id,
-                        loss_rate_20,
-                        loss_rate_1,
-                    );
+                tracing::warn!(
+                    ?ret,
+                    ?self,
+                    ?loss_rate_1,
+                    ?loss_rate_20,
+                    "pingpong loss rate too high, closing"
+                );
                 break;
             }
 
