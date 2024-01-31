@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, num::NonZeroU32};
 
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, StreamExt};
@@ -112,32 +112,45 @@ impl TcpTunnelConnector {
         return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
     }
 
-    async fn connect_with_custom_bind(
-        &mut self,
-        is_ipv4: bool,
-    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn connect_with_custom_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let mut futures = FuturesUnordered::new();
         let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
 
         for bind_addr in self.bind_addrs.iter() {
-            let socket = if is_ipv4 {
-                TcpSocket::new_v4()?
-            } else {
-                TcpSocket::new_v6()?
-            };
-            socket.set_reuseaddr(true)?;
+            tracing::info!(bind_addr = ?bind_addr, ?dst_addr, "bind addr");
 
+            let socket2_socket = socket2::Socket::new(
+                socket2::Domain::for_address(dst_addr),
+                socket2::Type::STREAM,
+                Some(socket2::Protocol::TCP),
+            )?;
+            socket2_socket.set_nonblocking(true)?;
+            socket2_socket.set_reuse_address(true)?;
             #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-            socket.set_reuseport(true)?;
+            socket2_socket.set_reuse_port(true)?;
 
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
+            if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
+                // use IP_BOUND_IF to bind device
+                unsafe {
+                    let dev_idx =
+                        nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
+                    tracing::warn!(?dev_idx, ?dev_name, "bind device");
+                    socket2_socket.bind_device_by_index_v4(NonZeroU32::new(dev_idx))?;
+                    tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
+                }
+            }
+
+            let socket = TcpSocket::from_std_stream(socket2_socket.into());
             socket.bind(*bind_addr)?;
-            // linux does not use interface of bind_addr to send packet, so we need to bind device
-            // mac can handle this with bind correctly
+            // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
+            // win can handle this with bind correctly
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
                 tracing::trace!(dev_name = ?dev_name, "bind device");
                 socket.bind_device(Some(dev_name.as_bytes()))?;
             }
+
             futures.push(socket.connect(dst_addr.clone()));
         }
 
@@ -156,10 +169,8 @@ impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         if self.bind_addrs.is_empty() {
             self.connect_with_default_bind().await
-        } else if self.bind_addrs[0].is_ipv4() {
-            self.connect_with_custom_bind(true).await
         } else {
-            self.connect_with_custom_bind(false).await
+            self.connect_with_custom_bind().await
         }
     }
 
