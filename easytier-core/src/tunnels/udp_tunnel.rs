@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     codec::BytesCodec,
-    common::{FramedTunnel, TunnelWithCustomInfo},
+    common::{setup_sokcet2, FramedTunnel, TunnelWithCustomInfo},
     ring_tunnel::create_ring_tunnel_pair,
     DatagramSink, DatagramStream, Tunnel, TunnelListener,
 };
@@ -269,7 +269,14 @@ impl UdpTunnelListener {
 impl TunnelListener for UdpTunnelListener {
     async fn listen(&mut self) -> Result<(), super::TunnelError> {
         let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "udp")?;
-        self.socket = Some(Arc::new(UdpSocket::bind(addr).await?));
+
+        let socket2_socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        setup_sokcet2(&socket2_socket, &addr)?;
+        self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
 
         let socket = self.socket.as_ref().unwrap().clone();
         let forward_tasks = self.forward_tasks.clone();
