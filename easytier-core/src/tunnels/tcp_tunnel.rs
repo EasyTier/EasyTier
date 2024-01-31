@@ -1,9 +1,11 @@
-use std::{net::SocketAddr, num::NonZeroU32};
+use std::net::SocketAddr;
 
 use async_trait::async_trait;
 use futures::{stream::FuturesUnordered, StreamExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
+
+use crate::tunnels::common::setup_sokcet2;
 
 use super::{
     check_scheme_and_get_socket_addr, common::FramedTunnel, Tunnel, TunnelInfo, TunnelListener,
@@ -124,33 +126,9 @@ impl TcpTunnelConnector {
                 socket2::Type::STREAM,
                 Some(socket2::Protocol::TCP),
             )?;
-            socket2_socket.set_nonblocking(true)?;
-            socket2_socket.set_reuse_address(true)?;
-            #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-            socket2_socket.set_reuse_port(true)?;
-
-            #[cfg(any(target_os = "ios", target_os = "macos"))]
-            if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
-                // use IP_BOUND_IF to bind device
-                unsafe {
-                    let dev_idx =
-                        nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
-                    tracing::warn!(?dev_idx, ?dev_name, "bind device");
-                    socket2_socket.bind_device_by_index_v4(NonZeroU32::new(dev_idx))?;
-                    tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
-                }
-            }
+            setup_sokcet2(&socket2_socket, bind_addr)?;
 
             let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            socket.bind(*bind_addr)?;
-            // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
-            // win can handle this with bind correctly
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
-                tracing::trace!(dev_name = ?dev_name, "bind device");
-                socket.bind_device(Some(dev_name.as_bytes()))?;
-            }
-
             futures.push(socket.connect(dst_addr.clone()));
         }
 
