@@ -60,21 +60,22 @@ jobs:
       run: cargo build --release --verbose --target $TARGET
     - name: Compress
       run: |
-        mkdir -p ./artifacts
+        mkdir -p ./artifacts/objects/
         # windows is the only OS using a different convention for executable file name
         if [[ $OS =~ ^windows.*$ ]]; then
             SUFFIX=.exe
-            cp third_party/Packet.dll ./artifacts/
-            cp third_party/wintun.dll ./artifacts/
+            cp third_party/Packet.dll ./artifacts/objects/
+            cp third_party/wintun.dll ./artifacts/objects/
         fi
         if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
           TAG=$GITHUB_REF_NAME
         else
           TAG=$GITHUB_SHA
         fi
-        mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/
-        mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/
-        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar ./artifacts/*
+        mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
+        mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
+        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar ./artifacts/objects/*
+        rm -rf ./artifacts/objects/
     - name: Archive artifact
       uses: actions/upload-artifact@v4
       with:
