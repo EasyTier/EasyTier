@@ -83,7 +83,7 @@ jobs:
         path: |
           ./artifacts/*
     - name: Upload OSS
-      uses: tvrcgo/upload-to-oss@v0.3.0
+      uses: tvrcgo/upload-to-oss@master
       with:
         key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
         key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
