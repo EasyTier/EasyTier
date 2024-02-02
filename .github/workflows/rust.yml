@@ -91,6 +91,9 @@ jobs:
         bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
         local-path: ./artifacts/
         remote-path: /easytier-releases/${{ github.sha }}/
+        no-delete-remote-files: true
+        retry: 5
+        increment: true
   test:
     runs-on: ubuntu-latest
     steps:
