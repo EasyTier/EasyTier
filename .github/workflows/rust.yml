@@ -85,7 +85,7 @@ jobs:
     - name: Upload OSS
       uses: Menci/upload-to-oss@main
       with:
-        access-key-id:: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
+        access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
         access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
         endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
         bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
