@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "develop", "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "develop", "main" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -48,7 +48,7 @@ jobs:
       uses: actions/cache@v4.0.0
       with:
         path: |
-          ~/.cargo/registry
+          ~/.cargo
           ./target
         key: build-cargo-registry-${{matrix.TARGET}}
     - name: Install rust target
@@ -74,7 +74,7 @@ jobs:
         fi
         mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
         mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
-        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar ./artifacts/objects/*
+        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
         rm -rf ./artifacts/objects/
     - name: Archive artifact
       uses: actions/upload-artifact@v4
@@ -82,6 +82,18 @@ jobs:
         name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
         path: |
           ./artifacts/*
+    - name: Upload OSS
+      uses: Menci/upload-to-oss@main
+      with:
+        access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
+        access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
+        endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+        bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
+        local-path: ./artifacts/
+        remote-path: /easytier-releases/${{ github.sha }}/
+        no-delete-remote-files: true
+        retry: 5
+        increment: true
   test:
     runs-on: ubuntu-latest
     steps:
@@ -101,7 +113,7 @@ jobs:
       uses: actions/cache@v4.0.0
       with:
         path: |
-          ~/.cargo/registry
+          ~/.cargo
           ./target
         key: build-cargo-registry-test
     - name: Run tests
