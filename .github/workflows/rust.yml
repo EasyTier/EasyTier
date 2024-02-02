@@ -48,7 +48,7 @@ jobs:
       uses: actions/cache@v4.0.0
       with:
         path: |
-          ~/.cargo/registry
+          ~/.cargo
           ./target
         key: build-cargo-registry-${{matrix.TARGET}}
     - name: Install rust target
@@ -83,14 +83,14 @@ jobs:
         path: |
           ./artifacts/*
     - name: Upload OSS
-      uses: tvrcgo/upload-to-oss@v0.1.1
+      uses: tvrcgo/upload-to-oss@v0.3.0
       with:
         key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
         key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
         endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
         bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
-        asset-path: ./artifacts/$NAME-$TARGET-$TAG.tar
-        target-path: easytier-releases/${GITHUB_SHA}/$NAME-$TARGET-$TAG.tar
+        assets: |
+          ./artifacts/$NAME-$TARGET-$TAG.tar:/easytier-releases/${GITHUB_SHA}/$NAME-$TARGET-$TAG.tar
   test:
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +110,7 @@ jobs:
       uses: actions/cache@v4.0.0
       with:
         path: |
-          ~/.cargo/registry
+          ~/.cargo
           ./target
         key: build-cargo-registry-test
     - name: Run tests
