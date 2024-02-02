@@ -83,14 +83,14 @@ jobs:
         path: |
           ./artifacts/*
     - name: Upload OSS
-      uses: tvrcgo/upload-to-oss@master
+      uses: Menci/upload-to-oss@master
       with:
-        key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
-        key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
+        access-key-id:: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
+        access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
         endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
         bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
-        assets: |
-          ./artifacts/$NAME-$TARGET-$TAG.tar:/easytier-releases/${GITHUB_SHA}/$NAME-$TARGET-$TAG.tar
+        local-path: ./artifacts/
+        remote-path: /easytier-releases/${{ github.sha }}/
   test:
     runs-on: ubuntu-latest
     steps:
