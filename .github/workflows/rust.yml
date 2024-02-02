@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "develop", "main" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "develop", "main" ]
 
 env:
   CARGO_TERM_COLOR: always
@@ -74,7 +74,7 @@ jobs:
         fi
         mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
         mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
-        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar ./artifacts/objects/*
+        tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
         rm -rf ./artifacts/objects/
     - name: Archive artifact
       uses: actions/upload-artifact@v4
@@ -82,6 +82,15 @@ jobs:
         name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
         path: |
           ./artifacts/*
+    - name: Upload OSS
+      uses: vesoft-inc/upload-oss@v1.0.0
+      with:
+        key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
+        key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
+        endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+        bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
+        asset-path: ./artifacts/$NAME-$TARGET-$TAG.tar
+        target-path: easytier-releases/${GITHUB_SHA}/$NAME-$TARGET-$TAG.tar
   test:
     runs-on: ubuntu-latest
     steps:
