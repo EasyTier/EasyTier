@@ -83,7 +83,7 @@ jobs:
         path: |
           ./artifacts/*
     - name: Upload OSS
-      uses: Menci/upload-to-oss@master
+      uses: Menci/upload-to-oss@main
       with:
         access-key-id:: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
         access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
