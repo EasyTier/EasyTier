@@ -90,6 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     WindowsBuild::check_for_win();
 
-    tonic_build::compile_protos("proto/cli.proto")?;
+    tonic_build::configure()
+        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .compile(&["proto/cli.proto"], &["proto/"])
+        .unwrap();
+    // tonic_build::compile_protos("proto/cli.proto")?;
     Ok(())
 }

@@ -23,7 +23,7 @@ impl WindowLatency {
 
     pub fn record_latency(&self, latency_us: u32) {
         let index = self.latency_us_window_index.fetch_add(1, Relaxed);
-        if index < self.latency_us_window_size {
+        if self.count.load(Relaxed) < self.latency_us_window_size {
             self.count.fetch_add(1, Relaxed);
         }
 
