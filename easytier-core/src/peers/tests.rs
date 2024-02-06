@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use crate::{
     common::{error::Error, global_ctx::tests::get_mock_global_ctx},
-    peers::rip_route::BasicRoute,
     tunnels::ring_tunnel::create_ring_tunnel_pair,
 };
 
@@ -11,12 +10,6 @@ use super::peer_manager::PeerManager;
 pub async fn create_mock_peer_manager() -> Arc<PeerManager> {
     let (s, _r) = tokio::sync::mpsc::channel(1000);
     let peer_mgr = Arc::new(PeerManager::new(get_mock_global_ctx(), s));
-    peer_mgr
-        .set_route(BasicRoute::new(
-            peer_mgr.my_node_id(),
-            peer_mgr.get_global_ctx(),
-        ))
-        .await;
     peer_mgr.run().await.unwrap();
     peer_mgr
 }

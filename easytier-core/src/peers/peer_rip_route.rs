@@ -13,7 +13,7 @@ use crate::{
     common::{
         error::Error,
         global_ctx::ArcGlobalCtx,
-        rkyv_util::{decode_from_bytes, encode_to_bytes},
+        rkyv_util::{decode_from_bytes, encode_to_bytes, extract_bytes_from_archived_vec},
         stun::StunInfoCollectorTrait,
     },
     peers::{
@@ -22,6 +22,8 @@ use crate::{
         PeerId,
     },
 };
+
+use super::{packet::ArchivedPacketBody, peer_manager::PeerPacketFilter};
 
 #[derive(Archive, Deserialize, Serialize, Clone, Debug)]
 #[archive(compare(PartialEq), check_bytes)]
@@ -373,18 +375,6 @@ impl BasicRoute {
         }
         None
     }
-}
-
-#[async_trait]
-impl Route for BasicRoute {
-    async fn open(&self, interface: RouteInterfaceBox) -> Result<u8, ()> {
-        *self.interface.lock().await = Some(interface);
-        self.sync_peer_periodically().await;
-        self.check_expired_sync_peer_from_remote().await;
-        Ok(1)
-    }
-
-    async fn close(&self) {}
 
     #[tracing::instrument(skip(self, packet), fields(my_id = ?self.my_peer_id, ctx = ?self.global_ctx))]
     async fn handle_route_packet(&self, src_peer_id: uuid::Uuid, packet: Bytes) {
@@ -416,19 +406,18 @@ impl Route for BasicRoute {
             self.need_sync_notifier.notify_one();
         }
     }
+}
 
-    async fn get_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
-        if let Some(peer_id) = self.route_table.ipv4_peer_id_map.get(ipv4_addr) {
-            return Some(*peer_id);
-        }
-
-        if let Some(peer_id) = self.get_peer_id_for_proxy(ipv4_addr) {
-            return Some(peer_id);
-        }
-
-        log::info!("no peer id for ipv4: {}", ipv4_addr);
-        return None;
+#[async_trait]
+impl Route for BasicRoute {
+    async fn open(&self, interface: RouteInterfaceBox) -> Result<u8, ()> {
+        *self.interface.lock().await = Some(interface);
+        self.sync_peer_periodically().await;
+        self.check_expired_sync_peer_from_remote().await;
+        Ok(1)
     }
+
+    async fn close(&self) {}
 
     async fn get_next_hop(&self, dst_peer_id: &PeerId) -> Option<PeerId> {
         match self.route_table.route_info.get(dst_peer_id) {
@@ -476,5 +465,40 @@ impl Route for BasicRoute {
         });
 
         routes
+    }
+
+    async fn get_peer_id_by_ipv4(&self, ipv4_addr: &Ipv4Addr) -> Option<PeerId> {
+        if let Some(peer_id) = self.route_table.ipv4_peer_id_map.get(ipv4_addr) {
+            return Some(*peer_id);
+        }
+
+        if let Some(peer_id) = self.get_peer_id_for_proxy(ipv4_addr) {
+            return Some(peer_id);
+        }
+
+        log::info!("no peer id for ipv4: {}", ipv4_addr);
+        return None;
+    }
+}
+
+#[async_trait::async_trait]
+impl PeerPacketFilter for BasicRoute {
+    async fn try_process_packet_from_peer(
+        &self,
+        packet: &packet::ArchivedPacket,
+        data: &Bytes,
+    ) -> Option<()> {
+        if let ArchivedPacketBody::Ctrl(packet::ArchivedCtrlPacketBody::RoutePacket(route_packet)) =
+            &packet.body
+        {
+            self.handle_route_packet(
+                packet.from_peer.to_uuid(),
+                extract_bytes_from_archived_vec(&data, &route_packet.body),
+            )
+            .await;
+            Some(())
+        } else {
+            None
+        }
     }
 }
