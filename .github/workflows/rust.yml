@@ -19,22 +19,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # a list of all the targets
-        # 选择使用openssl或者ring，并不是所有平台都支持
         include:
-          - TARGET: i686-unknown-linux-musl # test in an alpine container on a mac
+          - TARGET: aarch64-unknown-linux-musl
             OS: ubuntu-latest
-          - TARGET: x86_64-unknown-linux-musl # test in an alpine container on a mac
+          - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
-          - TARGET: x86_64-apple-darwin # tested on a mac, is not properly signed so there are security warnings
+          - TARGET: x86_64-apple-darwin
             OS: macos-latest
-          - TARGET: aarch64-apple-darwin # tested on a mac, is not properly signed so there are security warnings
+          - TARGET: aarch64-apple-darwin
             OS: macos-latest
-          - TARGET: x86_64-pc-windows-msvc # tested on a windows machine
+          - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
     runs-on: ${{ matrix.OS }}
     env:
-      NAME: easytier # change with the name of your project
+      NAME: easytier
       TARGET: ${{ matrix.TARGET }}
       OS: ${{ matrix.OS }}
     steps:
@@ -53,6 +51,37 @@ jobs:
         key: build-cargo-registry-${{matrix.TARGET}}
     - name: Install rust target
       run: |
+        # dependencies are only needed on ubuntu as that's the only place where
+        # we make cross-compilation
+        if [[ $OS =~ ^ubuntu.*$ ]]; then
+          sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
+          #  curl -s musl.cc | grep mipsel
+          case $TARGET in 
+            mipsel-unknown-linux-musl)
+              MUSL_URI=mipsel-linux-musl-cross
+              ;;
+            aarch64-unknown-linux-musl)
+              MUSL_URI=aarch64-linux-musl-cross
+              ;;
+            armv7-unknown-linux-musleabihf)
+              MUSL_URI=armv7l-linux-musleabihf-cross
+              ;;   
+            arm-unknown-linux-musleabihf)
+              MUSL_URI=arm-linux-musleabihf-cross
+              ;;        
+            mips-unknown-linux-musl)
+              MUSL_URI=mips-linux-musl-cross
+              ;;
+          esac
+        
+          if [  -n "$MUSL_URI" ]; then
+            mkdir -p ./musl_gcc 
+            wget -c https://musl.cc/$MUSL_URI.tgz -P ./musl_gcc/
+            tar zxf ./musl_gcc/$MUSL_URI.tgz -C ./musl_gcc/
+            sudo ln -s $(pwd)/musl_gcc/$MUSL_URI/bin/*gcc /usr/bin/
+          fi
+        fi
+        
         rustup install 1.75
         rustup default 1.75
         rustup target add $TARGET
