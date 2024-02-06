@@ -51,6 +51,37 @@ jobs:
         key: build-cargo-registry-${{matrix.TARGET}}
     - name: Install rust target
       run: |
+        # dependencies are only needed on ubuntu as that's the only place where
+        # we make cross-compilation
+        if [[ $OS =~ ^ubuntu.*$ ]]; then
+          sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
+          #  curl -s musl.cc | grep mipsel
+          case $TARGET in 
+            mipsel-unknown-linux-musl)
+              MUSL_URI=mipsel-linux-musl-cross
+              ;;
+            aarch64-unknown-linux-musl)
+              MUSL_URI=aarch64-linux-musl-cross
+              ;;
+            armv7-unknown-linux-musleabihf)
+              MUSL_URI=armv7l-linux-musleabihf-cross
+              ;;   
+            arm-unknown-linux-musleabihf)
+              MUSL_URI=arm-linux-musleabihf-cross
+              ;;        
+            mips-unknown-linux-musl)
+              MUSL_URI=mips-linux-musl-cross
+              ;;
+          esac
+        
+          if [  -n "$MUSL_URI" ]; then
+            mkdir -p ./musl_gcc 
+            wget -c https://musl.cc/$MUSL_URI.tgz -P ./musl_gcc/
+            tar zxf ./musl_gcc/$MUSL_URI.tgz -C ./musl_gcc/
+            sudo ln -s $(pwd)/musl_gcc/$MUSL_URI/bin/*gcc /usr/bin/
+          fi
+        fi
+        
         rustup install 1.75
         rustup default 1.75
         rustup target add $TARGET
