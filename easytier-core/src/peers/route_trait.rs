@@ -21,16 +21,17 @@ pub trait RouteInterface {
 pub type RouteInterfaceBox = Box<dyn RouteInterface + Send + Sync>;
 
 #[async_trait]
+#[auto_impl::auto_impl(Box, Arc)]
 pub trait Route {
     async fn open(&self, interface: RouteInterfaceBox) -> Result<u8, ()>;
     async fn close(&self);
 
-    async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId>;
     async fn get_next_hop(&self, peer_id: &PeerId) -> Option<PeerId>;
-
-    async fn handle_route_packet(&self, src_peer_id: PeerId, packet: Bytes);
-
     async fn list_routes(&self) -> Vec<easytier_rpc::Route>;
+
+    async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
+        None
+    }
 }
 
 pub type ArcRoute = Arc<Box<dyn Route + Send + Sync>>;

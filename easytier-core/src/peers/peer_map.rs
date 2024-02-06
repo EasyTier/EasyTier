@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::Context;
 use dashmap::DashMap;
 use easytier_rpc::PeerConnInfo;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, RwLock};
 use tokio_util::bytes::Bytes;
 
 use crate::{
@@ -17,6 +17,7 @@ pub struct PeerMap {
     global_ctx: ArcGlobalCtx,
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: mpsc::Sender<Bytes>,
+    routes: RwLock<Vec<ArcRoute>>,
 }
 
 impl PeerMap {
@@ -25,6 +26,7 @@ impl PeerMap {
             global_ctx,
             peer_map: DashMap::new(),
             packet_send,
+            routes: RwLock::new(Vec::new()),
         }
     }
 
@@ -75,12 +77,7 @@ impl PeerMap {
         Ok(())
     }
 
-    pub async fn send_msg(
-        &self,
-        msg: Bytes,
-        dst_peer_id: &uuid::Uuid,
-        route: ArcRoute,
-    ) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
         if *dst_peer_id == self.global_ctx.get_id() {
             return Ok(self
                 .packet_send
@@ -90,17 +87,34 @@ impl PeerMap {
         }
 
         // get route info
-        let gateway_peer_id = route.get_next_hop(dst_peer_id).await;
-
-        if gateway_peer_id.is_none() {
-            log::error!("no gateway for dst_peer_id: {}", dst_peer_id);
-            return Ok(());
+        let mut gateway_peer_id = None;
+        for route in self.routes.read().await.iter() {
+            gateway_peer_id = route.get_next_hop(dst_peer_id).await;
+            if gateway_peer_id.is_none() {
+                continue;
+            } else {
+                break;
+            }
         }
 
-        let gateway_peer_id = gateway_peer_id.unwrap();
-        self.send_msg_directly(msg, &gateway_peer_id).await?;
+        let Some(gateway_peer_id) = gateway_peer_id else {
+            log::error!("no gateway for dst_peer_id: {}", dst_peer_id);
+            return Ok(());
+        };
 
-        Ok(())
+        self.send_msg_directly(msg.clone(), &gateway_peer_id)
+            .await?;
+        return Ok(());
+    }
+
+    pub async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
+        for route in self.routes.read().await.iter() {
+            let peer_id = route.get_peer_id_by_ipv4(ipv4).await;
+            if peer_id.is_some() {
+                return peer_id;
+            }
+        }
+        None
     }
 
     pub async fn list_peers(&self) -> Vec<PeerId> {
@@ -155,5 +169,10 @@ impl PeerMap {
             "peer is closed"
         );
         Ok(())
+    }
+
+    pub async fn add_route(&self, route: ArcRoute) {
+        let mut routes = self.routes.write().await;
+        routes.insert(0, route);
     }
 }

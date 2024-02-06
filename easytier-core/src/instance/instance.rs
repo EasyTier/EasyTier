@@ -21,7 +21,6 @@ use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::tcp_proxy::TcpProxy;
 use crate::peers::peer_manager::PeerManager;
-use crate::peers::rip_route::BasicRoute;
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::tunnels::SinkItem;
 
@@ -273,9 +272,6 @@ impl Instance {
             .await?;
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
-
-        let route = BasicRoute::new(self.id(), self.global_ctx.clone());
-        self.peer_manager.set_route(route).await;
 
         self.run_rpc_server().unwrap();
 
