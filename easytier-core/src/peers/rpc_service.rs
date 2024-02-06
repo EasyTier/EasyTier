@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use easytier_rpc::cli::PeerInfo;
 use easytier_rpc::peer_manage_rpc_server::PeerManageRpc;
 use easytier_rpc::{ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse};
 use tonic::{Request, Response, Status};
@@ -14,17 +15,10 @@ impl PeerManagerRpcService {
     pub fn new(peer_manager: Arc<PeerManager>) -> Self {
         PeerManagerRpcService { peer_manager }
     }
-}
 
-#[tonic::async_trait]
-impl PeerManageRpc for PeerManagerRpcService {
-    async fn list_peer(
-        &self,
-        _request: Request<ListPeerRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<ListPeerResponse>, Status> {
-        let mut reply = ListPeerResponse::default();
-
+    pub async fn list_peers(&self) -> Vec<PeerInfo> {
         let peers = self.peer_manager.get_peer_map().list_peers().await;
+        let mut peer_infos = Vec::new();
         for peer in peers {
             let mut peer_info = easytier_rpc::PeerInfo::default();
             peer_info.peer_id = peer.to_string();
@@ -38,7 +32,24 @@ impl PeerManageRpc for PeerManagerRpcService {
                 peer_info.conns = conns;
             }
 
-            reply.peer_infos.push(peer_info);
+            peer_infos.push(peer_info);
+        }
+
+        peer_infos
+    }
+}
+
+#[tonic::async_trait]
+impl PeerManageRpc for PeerManagerRpcService {
+    async fn list_peer(
+        &self,
+        _request: Request<ListPeerRequest>, // Accept request of type HelloRequest
+    ) -> Result<Response<ListPeerResponse>, Status> {
+        let mut reply = ListPeerResponse::default();
+
+        let peers = self.list_peers().await;
+        for peer in peers {
+            reply.peer_infos.push(peer);
         }
 
         Ok(Response::new(reply))

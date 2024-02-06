@@ -13,7 +13,11 @@ path = "src/rpc/lib.rs"
 
 [dependencies]
 tracing = { version = "0.1", features = ["log"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "local-time", "time"] }
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "local-time",
+    "time",
+] }
 tracing-appender = "0.2.3"
 log = "0.4"
 thiserror = "1.0"
@@ -77,21 +81,11 @@ stun-format = { git = "https://github.com/KKRainbow/stun-format.git", features =
 ] }
 rand = "0.8.5"
 
-[dependencies.serde]
-version = "1.0"
-features = ["derive"]
+serde = { version = "1.0", features = ["derive"] }
+pnet = { version = "0.34.0", features = ["serde"] }
+public-ip = { version = "0.2", features = ["default"] }
 
-[dependencies.pnet]
-version = "0.34.0"
-features = ["serde"]
-
-[dependencies.clap]
-version = "4.4"
-features = ["derive"]
-
-[dependencies.public-ip]
-version = "0.2"
-features = ["default"]
+clap = { version = "4.4", features = ["derive"] }
 
 [build-dependencies]
 tonic-build = "0.10"

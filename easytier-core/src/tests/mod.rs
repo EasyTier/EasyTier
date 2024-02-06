@@ -116,7 +116,8 @@ pub fn enable_log() {
     let filter = tracing_subscriber::EnvFilter::builder()
         .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
         .from_env()
-        .unwrap();
+        .unwrap()
+        .add_directive("tarpc=error".parse().unwrap());
     tracing_subscriber::fmt::fmt()
         .pretty()
         .with_env_filter(filter)

@@ -9,6 +9,7 @@ mod common;
 mod connector;
 mod gateway;
 mod instance;
+mod peer_center;
 mod peers;
 mod tunnels;
 

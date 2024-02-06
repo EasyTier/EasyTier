@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use dashmap::DashMap;
 use easytier_rpc::PeerConnInfo;
 use tokio::sync::mpsc;
@@ -13,13 +14,15 @@ use crate::{
 use super::{peer::Peer, peer_conn::PeerConn, route_trait::ArcRoute, PeerId};
 
 pub struct PeerMap {
+    global_ctx: ArcGlobalCtx,
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: mpsc::Sender<Bytes>,
 }
 
 impl PeerMap {
-    pub fn new(packet_send: mpsc::Sender<Bytes>) -> Self {
+    pub fn new(packet_send: mpsc::Sender<Bytes>, global_ctx: ArcGlobalCtx) -> Self {
         PeerMap {
+            global_ctx,
             peer_map: DashMap::new(),
             packet_send,
         }
@@ -29,11 +32,11 @@ impl PeerMap {
         self.peer_map.insert(peer.peer_node_id, Arc::new(peer));
     }
 
-    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn, global_ctx: ArcGlobalCtx) {
+    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
         let peer_id = peer_conn.get_peer_id();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
-            let new_peer = Peer::new(peer_id, self.packet_send.clone(), global_ctx);
+            let new_peer = Peer::new(peer_id, self.packet_send.clone(), self.global_ctx.clone());
             new_peer.add_peer_conn(peer_conn).await;
             self.add_new_peer(new_peer).await;
         } else {
@@ -51,6 +54,14 @@ impl PeerMap {
         msg: Bytes,
         dst_peer_id: &uuid::Uuid,
     ) -> Result<(), Error> {
+        if *dst_peer_id == self.global_ctx.get_id() {
+            return Ok(self
+                .packet_send
+                .send(msg)
+                .await
+                .with_context(|| "send msg to self failed")?);
+        }
+
         match self.get_peer_by_id(dst_peer_id) {
             Some(peer) => {
                 peer.send_msg(msg).await?;
@@ -70,6 +81,14 @@ impl PeerMap {
         dst_peer_id: &uuid::Uuid,
         route: ArcRoute,
     ) -> Result<(), Error> {
+        if *dst_peer_id == self.global_ctx.get_id() {
+            return Ok(self
+                .packet_send
+                .send(msg)
+                .await
+                .with_context(|| "send msg to self failed")?);
+        }
+
         // get route info
         let gateway_peer_id = route.get_next_hop(dst_peer_id).await;
 

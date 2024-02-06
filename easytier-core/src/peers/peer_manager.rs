@@ -128,7 +128,7 @@ impl Debug for PeerManager {
 impl PeerManager {
     pub fn new(global_ctx: ArcGlobalCtx, nic_channel: mpsc::Sender<SinkItem>) -> Self {
         let (packet_send, packet_recv) = mpsc::channel(100);
-        let peers = Arc::new(PeerMap::new(packet_send.clone()));
+        let peers = Arc::new(PeerMap::new(packet_send.clone(), global_ctx.clone()));
 
         // TODO: remove these because we have impl pipeline processor.
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
@@ -166,9 +166,7 @@ impl PeerManager {
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
-        self.peers
-            .add_new_peer_conn(peer, self.global_ctx.clone())
-            .await;
+        self.peers.add_new_peer_conn(peer).await;
         Ok((peer_id, conn_id))
     }
 
@@ -189,9 +187,7 @@ impl PeerManager {
         tracing::info!("add tunnel as server start");
         let mut peer = PeerConn::new(self.my_node_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_server().await?;
-        self.peers
-            .add_new_peer_conn(peer, self.global_ctx.clone())
-            .await;
+        self.peers.add_new_peer_conn(peer).await;
         tracing::info!("add tunnel as server done");
         Ok(())
     }
