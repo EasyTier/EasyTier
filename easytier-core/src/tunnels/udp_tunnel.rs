@@ -14,6 +14,7 @@ use tokio_util::{
 use tracing::Instrument;
 
 use crate::{
+    arch::windows::disable_connection_reset,
     common::rkyv_util::{self, encode_to_bytes},
     tunnels::{build_url_from_socket_addr, close_tunnel, TunnelConnCounter, TunnelConnector},
 };
@@ -468,6 +469,8 @@ impl UdpTunnelConnector {
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "udp")?;
         log::warn!("udp connect: {:?}", self.addr);
+
+        disable_connection_reset(&socket)?;
 
         // send syn
         let conn_id = rand::random();

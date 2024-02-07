@@ -3,6 +3,8 @@ use std::net::Ipv4Addr;
 use async_trait::async_trait;
 use tokio::process::Command;
 
+use crate::arch::windows::find_interface_index_cached;
+
 use super::error::Error;
 
 #[async_trait]
@@ -200,13 +202,7 @@ pub struct WindowsIfConfiger {}
 
 impl WindowsIfConfiger {
     pub fn get_interface_index(name: &str) -> Option<u32> {
-        let ifaces = pnet::datalink::interfaces();
-        for iface in ifaces {
-            if iface.name == name {
-                return Some(iface.index);
-            }
-        }
-        return None;
+        find_interface_index_cached(name).ok()
     }
 }
 
