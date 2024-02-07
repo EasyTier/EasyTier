@@ -14,7 +14,6 @@ use tokio_util::{
 use tracing::Instrument;
 
 use crate::{
-    arch::windows::disable_connection_reset,
     common::rkyv_util::{self, encode_to_bytes},
     tunnels::{build_url_from_socket_addr, close_tunnel, TunnelConnCounter, TunnelConnector},
 };
@@ -309,7 +308,7 @@ impl TunnelListener for UdpTunnelListener {
                     };
 
                     if matches!(udp_packet.payload, ArchivedUdpPacketPayload::Syn) {
-                        let conn = Self::handle_connect(
+                        let Ok(conn) = Self::handle_connect(
                             socket.clone(),
                             addr,
                             forward_tasks.clone(),
@@ -318,7 +317,10 @@ impl TunnelListener for UdpTunnelListener {
                             udp_packet.conn_id.into(),
                         )
                         .await
-                        .unwrap();
+                        else {
+                            tracing::error!(?addr, "udp handle connect error");
+                            continue;
+                        };
                         if let Err(e) = conn_send.send(conn).await {
                             tracing::warn!(?e, "udp send conn to accept channel error");
                         }
@@ -470,7 +472,8 @@ impl UdpTunnelConnector {
         let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "udp")?;
         log::warn!("udp connect: {:?}", self.addr);
 
-        disable_connection_reset(&socket)?;
+        #[cfg(target_os = "windows")]
+        crate::arch::windows::disable_connection_reset(&socket)?;
 
         // send syn
         let conn_id = rand::random();

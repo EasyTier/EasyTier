@@ -14,6 +14,7 @@ use crate::{
     },
     peers::{peer_manager::PeerManager, PeerId},
     tunnels::{
+        common::setup_sokcet2,
         udp_tunnel::{UdpPacket, UdpTunnelConnector, UdpTunnelListener},
         Tunnel, TunnelConnCounter, TunnelListener,
     },
@@ -387,9 +388,14 @@ impl UdpHolePunchConnector {
             .unwrap(),
         );
 
-        let socket = UdpSocket::bind(local_socket_addr)
-            .await
-            .with_context(|| "")?;
+        let socket2_socket = socket2::Socket::new(
+            socket2::Domain::for_address(local_socket_addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        setup_sokcet2(&socket2_socket, &local_socket_addr)?;
+        let socket = UdpSocket::from_std(socket2_socket.into())?;
+
         Ok(connector
             .try_connect_with_socket(socket)
             .await

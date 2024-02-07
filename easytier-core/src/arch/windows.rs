@@ -18,6 +18,8 @@ use windows_sys::{
     },
 };
 
+use crate::tunnels::common::get_interface_name_by_ip;
+
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     let handle = socket.as_raw_socket() as SOCKET;
 
@@ -118,6 +120,22 @@ pub fn set_ip_unicast_if<S: AsRawSocket>(
             );
             return Err(err);
         }
+    }
+
+    Ok(())
+}
+
+pub fn setup_socket_for_win<S: AsRawSocket>(
+    socket: &S,
+    bind_addr: &SocketAddr,
+    is_udp: bool,
+) -> io::Result<()> {
+    if is_udp {
+        disable_connection_reset(socket)?;
+    }
+
+    if let Some(iface) = get_interface_name_by_ip(&bind_addr.ip()) {
+        set_ip_unicast_if(socket, bind_addr, iface.as_str())?;
     }
 
     Ok(())

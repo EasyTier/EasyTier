@@ -11,10 +11,7 @@ use tokio::{sync::Mutex, time::error::Elapsed};
 
 use std::pin::Pin;
 
-use crate::{
-    arch::windows::disable_connection_reset,
-    tunnels::{SinkError, TunnelError},
-};
+use crate::tunnels::{SinkError, TunnelError};
 
 use super::{DatagramSink, DatagramStream, SinkItem, StreamT, Tunnel, TunnelInfo};
 
@@ -278,13 +275,8 @@ pub(crate) fn setup_sokcet2(
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
-        if matches!(socket2_socket.r#type()?, socket2::Type::DGRAM) {
-            disable_connection_reset(socket2_socket)?;
-        }
-
-        if let Some(iface) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
-            crate::arch::windows::set_ip_unicast_if(socket2_socket, bind_addr, iface.as_str())?;
-        }
+        let is_udp = matches!(socket2_socket.r#type()?, socket2::Type::DGRAM);
+        crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, is_udp)?;
     }
 
     socket2_socket.set_nonblocking(true)?;

@@ -3,8 +3,6 @@ use std::net::Ipv4Addr;
 use async_trait::async_trait;
 use tokio::process::Command;
 
-use crate::arch::windows::find_interface_index_cached;
-
 use super::error::Error;
 
 #[async_trait]
@@ -198,14 +196,17 @@ impl IfConfiguerTrait for LinuxIfConfiger {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub struct WindowsIfConfiger {}
 
+#[cfg(target_os = "windows")]
 impl WindowsIfConfiger {
     pub fn get_interface_index(name: &str) -> Option<u32> {
-        find_interface_index_cached(name).ok()
+        crate::arch::windows::find_interface_index_cached(name).ok()
     }
 }
 
+#[cfg(target_os = "windows")]
 #[async_trait]
 impl IfConfiguerTrait for WindowsIfConfiger {
     async fn add_ipv4_route(
