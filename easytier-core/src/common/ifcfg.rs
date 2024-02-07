@@ -206,12 +206,13 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
+        let idx = unsafe { libc::if_nametoindex(name.as_ptr() as *const i8) };
         run_shell_cmd(
             format!(
-                "route add {} mask {} {}",
+                "route ADD {} MASK {} 10.1.1.1 IF {} METRIC 255",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
-                name
+                idx
             )
             .as_str(),
         )
@@ -224,12 +225,13 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
+        let idx = unsafe { libc::if_nametoindex(name.as_ptr() as *const i8) };
         run_shell_cmd(
             format!(
-                "route delete {} mask {} {}",
+                "route DELETE {} MASK {} IF {}",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
-                name
+                idx
             )
             .as_str(),
         )
