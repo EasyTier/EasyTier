@@ -198,6 +198,18 @@ impl IfConfiguerTrait for LinuxIfConfiger {
 
 pub struct WindowsIfConfiger {}
 
+impl WindowsIfConfiger {
+    pub fn get_interface_index(name: &str) -> Option<u32> {
+        let ifaces = pnet::datalink::interfaces();
+        for iface in ifaces {
+            if iface.name == name {
+                return Some(iface.index);
+            }
+        }
+        return None;
+    }
+}
+
 #[async_trait]
 impl IfConfiguerTrait for WindowsIfConfiger {
     async fn add_ipv4_route(
@@ -206,7 +218,9 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let idx = unsafe { libc::if_nametoindex(name.as_ptr() as *const i8) };
+        let Some(idx) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
         run_shell_cmd(
             format!(
                 "route ADD {} MASK {} 10.1.1.1 IF {} METRIC 255",
@@ -225,7 +239,9 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let idx = unsafe { libc::if_nametoindex(name.as_ptr() as *const i8) };
+        let Some(idx) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
         run_shell_cmd(
             format!(
                 "route DELETE {} MASK {} IF {}",
