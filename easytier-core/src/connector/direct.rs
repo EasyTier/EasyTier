@@ -12,7 +12,7 @@ use crate::{
     peers::{peer_manager::PeerManager, peer_rpc::PeerRpcManager, PeerId},
 };
 
-use easytier_rpc::{peer::GetIpListResponse, PeerConnInfo};
+use crate::rpc::{peer::GetIpListResponse, PeerConnInfo};
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
 

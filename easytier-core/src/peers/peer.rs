@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use easytier_rpc::PeerConnInfo;
 
 use tokio::{
     select,
@@ -12,12 +11,12 @@ use tokio_util::bytes::Bytes;
 use tracing::Instrument;
 use uuid::Uuid;
 
+use super::peer_conn::PeerConn;
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
 };
-
-use super::peer_conn::PeerConn;
+use crate::rpc::PeerConnInfo;
 
 type ArcPeerConn = Arc<Mutex<PeerConn>>;
 type ConnMap = Arc<DashMap<Uuid, ArcPeerConn>>;

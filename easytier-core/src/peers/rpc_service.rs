@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
-use easytier_rpc::cli::PeerInfo;
-use easytier_rpc::peer_manage_rpc_server::PeerManageRpc;
-use easytier_rpc::{ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse};
+use crate::rpc::{
+    cli::PeerInfo,
+    peer_manage_rpc_server::PeerManageRpc,
+    {ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse},
+};
 use tonic::{Request, Response, Status};
 
 use super::peer_manager::PeerManager;
@@ -20,7 +22,7 @@ impl PeerManagerRpcService {
         let peers = self.peer_manager.get_peer_map().list_peers().await;
         let mut peer_infos = Vec::new();
         for peer in peers {
-            let mut peer_info = easytier_rpc::PeerInfo::default();
+            let mut peer_info = PeerInfo::default();
             peer_info.peer_id = peer.to_string();
 
             if let Some(conns) = self

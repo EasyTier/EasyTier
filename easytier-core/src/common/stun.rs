@@ -2,8 +2,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::rpc::{NatType, StunInfo};
 use crossbeam::atomic::AtomicCell;
-use easytier_rpc::{NatType, StunInfo};
 use stun_format::Attr;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::RwLock;

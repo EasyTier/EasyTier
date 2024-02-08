@@ -1,15 +1,13 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use dashmap::{DashMap, DashSet};
-use easytier_rpc::{
-    connector_manage_rpc_server::ConnectorManageRpc, Connector, ConnectorStatus,
-    ListConnectorRequest, ManageConnectorRequest,
-};
 use tokio::{
     sync::{broadcast::Receiver, mpsc, Mutex},
     task::JoinSet,
     time::timeout,
 };
+
+use crate::rpc as easytier_rpc;
 
 use crate::{
     common::{
@@ -19,6 +17,10 @@ use crate::{
     },
     connector::set_bind_addr_for_peer_connector,
     peers::peer_manager::PeerManager,
+    rpc::{
+        connector_manage_rpc_server::ConnectorManageRpc, Connector, ConnectorStatus,
+        ListConnectorRequest, ManageConnectorRequest,
+    },
     tunnels::{Tunnel, TunnelConnector},
     use_global_var,
 };

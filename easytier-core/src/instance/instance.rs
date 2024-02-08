@@ -318,12 +318,12 @@ impl Instance {
             log::info!("[INIT RPC] start rpc server. addr: {}", addr);
             Server::builder()
                 .add_service(
-                    easytier_rpc::peer_manage_rpc_server::PeerManageRpcServer::new(
+                    crate::rpc::peer_manage_rpc_server::PeerManageRpcServer::new(
                         PeerManagerRpcService::new(peer_mgr),
                     ),
                 )
                 .add_service(
-                    easytier_rpc::connector_manage_rpc_server::ConnectorManageRpcServer::new(
+                    crate::rpc::connector_manage_rpc_server::ConnectorManageRpcServer::new(
                         ConnectorManagerRpcService(conn_manager.clone()),
                     ),
                 )

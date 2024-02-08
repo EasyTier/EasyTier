@@ -27,7 +27,7 @@ pub trait Route {
     async fn close(&self);
 
     async fn get_next_hop(&self, peer_id: &PeerId) -> Option<PeerId>;
-    async fn list_routes(&self) -> Vec<easytier_rpc::Route>;
+    async fn list_routes(&self) -> Vec<crate::rpc::Route>;
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None

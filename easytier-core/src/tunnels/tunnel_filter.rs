@@ -3,7 +3,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use easytier_rpc::TunnelInfo;
+use crate::rpc::TunnelInfo;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 
 use self::stats::Throughput;

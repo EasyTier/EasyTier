@@ -2,12 +2,12 @@ use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::Context;
 use dashmap::DashMap;
-use easytier_rpc::PeerConnInfo;
 use tokio::sync::{mpsc, RwLock};
 use tokio_util::bytes::Bytes;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
+    rpc::PeerConnInfo,
     tunnels::TunnelError,
 };
 

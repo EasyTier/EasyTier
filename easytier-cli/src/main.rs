@@ -1,7 +1,7 @@
 use std::vec;
 
 use clap::{command, Args, Parser, Subcommand};
-use easytier_rpc::{
+use easytier_core::rpc::{
     connector_manage_rpc_client::ConnectorManageRpcClient,
     peer_manage_rpc_client::PeerManageRpcClient, *,
 };

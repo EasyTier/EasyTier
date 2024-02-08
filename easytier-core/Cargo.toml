@@ -8,8 +8,7 @@ rust-version = "1.75"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "easytier_rpc"
-path = "src/rpc/lib.rs"
+name = "easytier_core"
 
 [dependencies]
 tracing = { version = "0.1", features = ["log"] }

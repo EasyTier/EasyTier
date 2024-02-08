@@ -1,7 +1,7 @@
 use std::{io::Write, sync::Arc};
 
+use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
-use easytier_rpc::PeerConnInfo;
 
 use super::{
     config_fs::ConfigFs,

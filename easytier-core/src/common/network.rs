@@ -1,6 +1,6 @@
 use std::{ops::Deref, sync::Arc};
 
-use easytier_rpc::peer::GetIpListResponse;
+use crate::rpc::peer::GetIpListResponse;
 use pnet::datalink::NetworkInterface;
 use tokio::{
     sync::{Mutex, RwLock},
@@ -156,7 +156,7 @@ impl IPCollector {
 
     #[tracing::instrument(skip(net_ns))]
     async fn do_collect_ip_addrs(with_public: bool, net_ns: NetNS) -> GetIpListResponse {
-        let mut ret = easytier_rpc::peer::GetIpListResponse {
+        let mut ret = crate::rpc::peer::GetIpListResponse {
             public_ipv4: "".to_string(),
             interface_ipv4s: vec![],
             public_ipv6: "".to_string(),
