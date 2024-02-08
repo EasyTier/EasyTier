@@ -12,6 +12,7 @@ mod gateway;
 mod instance;
 mod peer_center;
 mod peers;
+mod rpc;
 mod tunnels;
 
 use instance::instance::{Instance, InstanceConfigWriter};

@@ -2,7 +2,6 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use crossbeam::atomic::AtomicCell;
-use easytier_rpc::NatType;
 use rand::{seq::SliceRandom, Rng, SeedableRng};
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use tracing::Instrument;
@@ -13,6 +12,7 @@ use crate::{
         stun::StunInfoCollectorTrait,
     },
     peers::{peer_manager::PeerManager, PeerId},
+    rpc::NatType,
     tunnels::{
         common::setup_sokcet2,
         udp_tunnel::{UdpPacket, UdpTunnelConnector, UdpTunnelListener},
@@ -459,7 +459,7 @@ impl UdpHolePunchConnector {
 mod tests {
     use std::sync::Arc;
 
-    use easytier_rpc::{NatType, StunInfo};
+    use crate::rpc::{NatType, StunInfo};
 
     use crate::{
         common::{error::Error, stun::StunInfoCollectorTrait},

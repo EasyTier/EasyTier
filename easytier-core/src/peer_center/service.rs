@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::peers::PeerId;
 
 use super::{Digest, Error};
-use easytier_rpc::PeerInfo;
+use crate::rpc::PeerInfo;
 
 #[derive(Debug, Clone, Hash, serde::Deserialize, serde::Serialize)]
 pub enum LatencyLevel {

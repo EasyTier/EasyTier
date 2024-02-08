@@ -2,7 +2,6 @@ use std::{net::Ipv4Addr, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use easytier_rpc::{NatType, StunInfo};
 use rkyv::{Archive, Deserialize, Serialize};
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::bytes::Bytes;
@@ -21,6 +20,7 @@ use crate::{
         route_trait::{Route, RouteInterfaceBox},
         PeerId,
     },
+    rpc::{NatType, StunInfo},
 };
 
 use super::{packet::ArchivedPacketBody, peer_manager::PeerPacketFilter};
@@ -431,11 +431,11 @@ impl Route for BasicRoute {
         }
     }
 
-    async fn list_routes(&self) -> Vec<easytier_rpc::Route> {
+    async fn list_routes(&self) -> Vec<crate::rpc::Route> {
         let mut routes = Vec::new();
 
         let parse_route_info = |real_peer_id: &Uuid, route_info: &SyncPeerInfo| {
-            let mut route = easytier_rpc::Route::default();
+            let mut route = crate::rpc::Route::default();
             route.ipv4_addr = if let Some(ipv4_addr) = route_info.ipv4_addr {
                 ipv4_addr.to_string()
             } else {

@@ -353,7 +353,7 @@ impl PeerManager {
         self.peers.add_route(arc_route).await;
     }
 
-    pub async fn list_routes(&self) -> Vec<easytier_rpc::Route> {
+    pub async fn list_routes(&self) -> Vec<crate::rpc::Route> {
         self.basic_route.list_routes().await
     }
 

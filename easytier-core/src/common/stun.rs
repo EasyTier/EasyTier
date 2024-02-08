@@ -2,19 +2,50 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::rpc::{NatType, StunInfo};
 use crossbeam::atomic::AtomicCell;
-use easytier_rpc::{NatType, StunInfo};
 use stun_format::Attr;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
+use tracing::Level;
 
 use crate::common::error::Error;
 
-struct Stun {
-    stun_server: String,
-    req_repeat: u8,
-    resp_timeout: Duration,
+struct HostResolverIter {
+    hostnames: Vec<String>,
+    ips: Vec<SocketAddr>,
+}
+
+impl HostResolverIter {
+    fn new(hostnames: Vec<String>) -> Self {
+        Self {
+            hostnames,
+            ips: vec![],
+        }
+    }
+
+    #[async_recursion::async_recursion]
+    async fn next(&mut self) -> Option<SocketAddr> {
+        if self.ips.is_empty() {
+            if self.hostnames.is_empty() {
+                return None;
+            }
+
+            let host = self.hostnames.remove(0);
+            match lookup_host(&host).await {
+                Ok(ips) => {
+                    self.ips = ips.collect();
+                }
+                Err(e) => {
+                    tracing::warn!(?host, ?e, "lookup host for stun failed");
+                    return self.next().await;
+                }
+            };
+        }
+
+        Some(self.ips.remove(0))
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -36,8 +67,15 @@ impl BindRequestResponse {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Stun {
+    stun_server: SocketAddr,
+    req_repeat: u8,
+    resp_timeout: Duration,
+}
+
 impl Stun {
-    pub fn new(stun_server: String) -> Self {
+    pub fn new(stun_server: SocketAddr) -> Self {
         Self {
             stun_server,
             req_repeat: 3,
@@ -73,7 +111,7 @@ impl Stun {
             unsafe { std::ptr::copy(udp_buf.as_ptr(), buf.as_ptr() as *mut u8, len) };
 
             let msg = stun_format::Msg::<'a>::from(&buf[..]);
-            tracing::trace!(b = ?&udp_buf[..len], ?msg, ?tids, ?remote_addr, "recv stun response");
+            tracing::info!(b = ?&udp_buf[..len], ?msg, ?tids, ?remote_addr, ?stun_host, "recv stun response");
 
             if msg.typ().is_none() || msg.tid().is_none() {
                 continue;
@@ -151,16 +189,14 @@ impl Stun {
         changed_addr
     }
 
+    #[tracing::instrument(ret, err, level = Level::INFO)]
     pub async fn bind_request(
         &self,
         source_port: u16,
         change_ip: bool,
         change_port: bool,
     ) -> Result<BindRequestResponse, Error> {
-        let stun_host = lookup_host(&self.stun_server)
-            .await?
-            .next()
-            .ok_or(Error::NotFound)?;
+        let stun_host = self.stun_server;
         let udp = UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?;
 
         // repeat req in case of packet loss
@@ -218,7 +254,7 @@ impl Stun {
     }
 }
 
-struct UdpNatTypeDetector {
+pub struct UdpNatTypeDetector {
     stun_servers: Vec<String>,
 }
 
@@ -227,7 +263,7 @@ impl UdpNatTypeDetector {
         Self { stun_servers }
     }
 
-    async fn get_udp_nat_type(&self, mut source_port: u16) -> NatType {
+    pub async fn get_udp_nat_type(&self, mut source_port: u16) -> NatType {
         // Like classic STUN (rfc3489). Detect NAT behavior for UDP.
         // Modified from rfc3489. Requires at least two STUN servers.
         let mut ret_test1_1 = None;
@@ -241,7 +277,8 @@ impl UdpNatTypeDetector {
         }
 
         let mut succ = false;
-        for server_ip in &self.stun_servers {
+        let mut ips = HostResolverIter::new(self.stun_servers.clone());
+        while let Some(server_ip) = ips.next().await {
             let stun = Stun::new(server_ip.clone());
             let ret = stun.bind_request(source_port, false, false).await;
             if ret.is_err() {
@@ -255,13 +292,19 @@ impl UdpNatTypeDetector {
             ret_test1_2 = ret.ok();
             let ret = stun.bind_request(source_port, true, true).await;
             if let Ok(resp) = ret {
-                if !resp.ip_changed || !resp.port_changed {
+                if !resp.real_ip_changed || !resp.real_port_changed {
+                    tracing::info!(
+                        ?server_ip,
+                        ?ret,
+                        "stun bind request return with unchanged ip and port"
+                    );
                     // Try another STUN server
                     continue;
                 }
             }
             ret_test2 = ret.ok();
             ret_test3 = stun.bind_request(source_port, false, true).await.ok();
+            tracing::info!(?ret_test3, "stun bind request with changed port");
             succ = true;
             break;
         }
@@ -340,7 +383,8 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 
     async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
         let stun_servers = self.stun_servers.read().await.clone();
-        for server in stun_servers.iter() {
+        let mut ips = HostResolverIter::new(stun_servers.clone());
+        while let Some(server) = ips.next().await {
             let stun = Stun::new(server.clone());
             let Ok(ret) = stun.bind_request(local_port, false, false).await else {
                 tracing::warn!(?server, "stun bind request failed");
@@ -369,6 +413,33 @@ impl StunInfoCollector {
         ret.start_stun_routine();
 
         ret
+    }
+
+    pub fn new_with_default_servers() -> Self {
+        Self::new(Self::get_default_servers())
+    }
+
+    pub fn get_default_servers() -> Vec<String> {
+        // NOTICE: we may need to choose stun stun server based on geo location
+        // stun server cross nation may return a external ip address with high latency and loss rate
+        vec![
+            "stun.miwifi.com:3478".to_string(),
+            "stun.qq.com:3478".to_string(),
+            // "stun.chat.bilibili.com:3478".to_string(), // bilibili's stun server doesn't repond to change_ip and change_port
+            "fwa.lifesizecloud.com:3478".to_string(),
+            "stun.isp.net.au:3478".to_string(),
+            "stun.nextcloud.com:3478".to_string(),
+            "stun.freeswitch.org:3478".to_string(),
+            "stun.voip.blackberry.com:3478".to_string(),
+            "stunserver.stunprotocol.org:3478".to_string(),
+            "stun.sipnet.com:3478".to_string(),
+            "stun.radiojar.com:3478".to_string(),
+            "stun.sonetel.com:3478".to_string(),
+            "stun.voipgate.com:3478".to_string(),
+            "stun.counterpath.com:3478".to_string(),
+            "180.235.108.91:3478".to_string(),
+            "193.22.2.248:3478".to_string(),
+        ]
     }
 
     fn start_stun_routine(&mut self) {
@@ -412,7 +483,8 @@ mod tests {
     #[tokio::test]
     async fn test_stun_bind_request() {
         // miwifi / qq seems not correctly responde to change_ip and change_port, they always try to change the src ip and port.
-        let stun = Stun::new("stun1.l.google.com:19302".to_string());
+        let mut ips = HostResolverIter::new(vec!["stun1.l.google.com:19302".to_string()]);
+        let stun = Stun::new(ips.next().await.unwrap());
         // let stun = Stun::new("180.235.108.91:3478".to_string());
         // let stun = Stun::new("193.22.2.248:3478".to_string());
         // let stun = Stun::new("stun.chat.bilibili.com:3478".to_string());

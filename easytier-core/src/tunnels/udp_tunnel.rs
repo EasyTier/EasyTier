@@ -2,7 +2,6 @@ use std::{fmt::Debug, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use easytier_rpc::TunnelInfo;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -15,6 +14,7 @@ use tracing::Instrument;
 
 use crate::{
     common::rkyv_util::{self, encode_to_bytes},
+    rpc::TunnelInfo,
     tunnels::{build_url_from_socket_addr, close_tunnel, TunnelConnCounter, TunnelConnector},
 };
 

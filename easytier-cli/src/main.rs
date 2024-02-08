@@ -1,12 +1,17 @@
 use std::vec;
 
 use clap::{command, Args, Parser, Subcommand};
-use easytier_rpc::{
-    connector_manage_rpc_client::ConnectorManageRpcClient,
-    peer_manage_rpc_client::PeerManageRpcClient, *,
+use easytier_core::{
+    common::stun::{StunInfoCollector, UdpNatTypeDetector},
+    rpc::{
+        connector_manage_rpc_client::ConnectorManageRpcClient,
+        peer_manage_rpc_client::PeerManageRpcClient, *,
+    },
 };
 use humansize::format_size;
 use tabled::settings::Style;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -16,13 +21,14 @@ struct Cli {
     instance_name: String,
 
     #[command(subcommand)]
-    sub_command: Option<SubCommand>,
+    sub_command: SubCommand,
 }
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
     Peer(PeerArgs),
     Connector(ConnectorArgs),
+    Stun,
     Route,
 }
 
@@ -344,15 +350,41 @@ impl CommandHandler {
     }
 }
 
+fn init_logger() {
+    // logger to rolling file
+    let file_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env()
+        .unwrap();
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .max_log_files(1)
+        .filename_prefix("cli.log")
+        .build("/tmp")
+        .expect("failed to initialize rolling file appender");
+    let mut file_layer = tracing_subscriber::fmt::layer();
+    file_layer.set_ansi(false);
+    let file_layer = file_layer
+        .with_writer(file_appender)
+        .with_filter(file_filter);
+
+    tracing_subscriber::Registry::default()
+        .with(file_layer)
+        .init();
+}
+
 #[tokio::main]
+#[tracing::instrument]
 async fn main() -> Result<(), Error> {
+    init_logger();
+
     let cli = Cli::parse();
     let handler = CommandHandler {
         addr: "http://127.0.0.1:15888".to_string(),
     };
 
     match cli.sub_command {
-        Some(SubCommand::Peer(peer_args)) => match &peer_args.sub_command {
+        SubCommand::Peer(peer_args) => match &peer_args.sub_command {
             Some(PeerSubCommand::Add) => {
                 println!("add peer");
             }
@@ -370,7 +402,7 @@ async fn main() -> Result<(), Error> {
                 handler.handle_peer_list(&peer_args).await?;
             }
         },
-        Some(SubCommand::Connector(conn_args)) => match conn_args.sub_command {
+        SubCommand::Connector(conn_args) => match conn_args.sub_command {
             Some(ConnectorSubCommand::Add) => {
                 println!("add connector");
             }
@@ -384,11 +416,12 @@ async fn main() -> Result<(), Error> {
                 handler.handle_connector_list().await?;
             }
         },
-        Some(SubCommand::Route) => {
+        SubCommand::Route => {
             handler.handle_route_list().await?;
         }
-        None => {
-            println!("list peer");
+        SubCommand::Stun => {
+            let stun = UdpNatTypeDetector::new(StunInfoCollector::get_default_servers());
+            println!("udp type: {:?}", stun.get_udp_nat_type(0).await);
         }
     }
 

@@ -8,8 +8,8 @@ pub mod udp_tunnel;
 
 use std::{fmt::Debug, net::SocketAddr, pin::Pin, sync::Arc};
 
+use crate::rpc::TunnelInfo;
 use async_trait::async_trait;
-use easytier_rpc::TunnelInfo;
 use futures::{Sink, SinkExt, Stream};
 
 use thiserror::Error;

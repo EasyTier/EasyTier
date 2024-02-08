@@ -7,7 +7,6 @@ use std::{
     },
 };
 
-use easytier_rpc::{PeerConnInfo, PeerConnStats};
 use futures::{SinkExt, StreamExt};
 use pnet::datalink::NetworkInterface;
 
@@ -26,6 +25,7 @@ use tracing::Instrument;
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     define_tunnel_filter_chain,
+    rpc::{PeerConnInfo, PeerConnStats},
     tunnels::{
         stats::{Throughput, WindowLatency},
         tunnel_filter::StatsRecorderTunnelFilter,
