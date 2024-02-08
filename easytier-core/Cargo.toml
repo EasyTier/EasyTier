@@ -87,6 +87,9 @@ public-ip = { version = "0.2", features = ["default"] }
 
 clap = { version = "4.4", features = ["derive"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Networking_WinSock", "Win32_NetworkManagement_IpHelper", "Win32_Foundation", "Win32_System_IO"] }
+
 [build-dependencies]
 tonic-build = "0.10"
 

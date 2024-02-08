@@ -273,6 +273,12 @@ pub(crate) fn setup_sokcet2(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
 ) -> Result<(), TunnelError> {
+    #[cfg(target_os = "windows")]
+    {
+        let is_udp = matches!(socket2_socket.r#type()?, socket2::Type::DGRAM);
+        crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, is_udp)?;
+    }
+
     socket2_socket.set_nonblocking(true)?;
     socket2_socket.set_reuse_address(true)?;
     socket2_socket.bind(&socket2::SockAddr::from(*bind_addr))?;

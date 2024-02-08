@@ -5,6 +5,7 @@ mod tests;
 
 use clap::Parser;
 
+mod arch;
 mod common;
 mod connector;
 mod gateway;

@@ -196,8 +196,17 @@ impl IfConfiguerTrait for LinuxIfConfiger {
     }
 }
 
+#[cfg(target_os = "windows")]
 pub struct WindowsIfConfiger {}
 
+#[cfg(target_os = "windows")]
+impl WindowsIfConfiger {
+    pub fn get_interface_index(name: &str) -> Option<u32> {
+        crate::arch::windows::find_interface_index_cached(name).ok()
+    }
+}
+
+#[cfg(target_os = "windows")]
 #[async_trait]
 impl IfConfiguerTrait for WindowsIfConfiger {
     async fn add_ipv4_route(
@@ -206,12 +215,15 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
+        let Some(idx) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
         run_shell_cmd(
             format!(
-                "route add {} mask {} {}",
+                "route ADD {} MASK {} 10.1.1.1 IF {} METRIC 255",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
-                name
+                idx
             )
             .as_str(),
         )
@@ -224,12 +236,15 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
+        let Some(idx) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
         run_shell_cmd(
             format!(
-                "route delete {} mask {} {}",
+                "route DELETE {} MASK {} IF {}",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
-                name
+                idx
             )
             .as_str(),
         )

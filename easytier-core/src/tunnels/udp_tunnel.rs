@@ -121,7 +121,11 @@ fn get_tunnel_from_socket(
         }
 
         let (buf, addr) = v.unwrap();
-        assert_eq!(addr, recv_addr.clone());
+        if recv_addr != addr {
+            tracing::warn!(?addr, ?recv_addr, "udp recv addr not match");
+            return None;
+        }
+
         Some(Ok(try_get_data_payload(buf, conn_id.clone())?))
     });
     let stream = Box::pin(stream);
@@ -304,7 +308,7 @@ impl TunnelListener for UdpTunnelListener {
                     };
 
                     if matches!(udp_packet.payload, ArchivedUdpPacketPayload::Syn) {
-                        let conn = Self::handle_connect(
+                        let Ok(conn) = Self::handle_connect(
                             socket.clone(),
                             addr,
                             forward_tasks.clone(),
@@ -313,7 +317,10 @@ impl TunnelListener for UdpTunnelListener {
                             udp_packet.conn_id.into(),
                         )
                         .await
-                        .unwrap();
+                        else {
+                            tracing::error!(?addr, "udp handle connect error");
+                            continue;
+                        };
                         if let Err(e) = conn_send.send(conn).await {
                             tracing::warn!(?e, "udp send conn to accept channel error");
                         }
@@ -465,6 +472,9 @@ impl UdpTunnelConnector {
         let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "udp")?;
         log::warn!("udp connect: {:?}", self.addr);
 
+        #[cfg(target_os = "windows")]
+        crate::arch::windows::disable_connection_reset(&socket)?;
+
         // send syn
         let conn_id = rand::random();
         let udp_packet = UdpPacket::new_syn_packet(conn_id);
@@ -544,7 +554,12 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnels::common::tests::{_tunnel_bench, _tunnel_pingpong};
+    use std::time::Duration;
+
+    use rand::Rng;
+    use tokio::time::timeout;
+
+    use crate::tunnels::common::tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong};
 
     use super::*;
 
@@ -577,5 +592,89 @@ mod tests {
         let mut connector = UdpTunnelConnector::new("udp://127.0.0.1:5553".parse().unwrap());
         connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
+    }
+
+    async fn send_random_data_to_socket(remote_url: url::Url) {
+        let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        socket
+            .connect(format!(
+                "{}:{}",
+                remote_url.host().unwrap(),
+                remote_url.port().unwrap()
+            ))
+            .await
+            .unwrap();
+
+        // get a random 100-len buf
+        loop {
+            let mut buf = vec![0u8; 100];
+            rand::thread_rng().fill(&mut buf[..]);
+            socket.send(&buf).await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_multiple_conns() {
+        let mut listener = UdpTunnelListener::new("udp://0.0.0.0:5556".parse().unwrap());
+        listener.listen().await.unwrap();
+
+        let _lis = tokio::spawn(async move {
+            loop {
+                let ret = listener.accept().await.unwrap();
+                assert_eq!(
+                    ret.info().unwrap().local_addr,
+                    listener.local_url().to_string()
+                );
+                tokio::spawn(async move { _tunnel_echo_server(ret, false).await });
+            }
+        });
+
+        let mut connector1 = UdpTunnelConnector::new("udp://127.0.0.1:5556".parse().unwrap());
+        let mut connector2 = UdpTunnelConnector::new("udp://127.0.0.1:5556".parse().unwrap());
+
+        let t1 = connector1.connect().await.unwrap();
+        let t2 = connector2.connect().await.unwrap();
+
+        tokio::spawn(timeout(
+            Duration::from_secs(2),
+            send_random_data_to_socket(t1.info().unwrap().local_addr.parse().unwrap()),
+        ));
+        tokio::spawn(timeout(
+            Duration::from_secs(2),
+            send_random_data_to_socket(t1.info().unwrap().remote_addr.parse().unwrap()),
+        ));
+        tokio::spawn(timeout(
+            Duration::from_secs(2),
+            send_random_data_to_socket(t2.info().unwrap().remote_addr.parse().unwrap()),
+        ));
+
+        let sender1 = tokio::spawn(async move {
+            let mut sink = t1.pin_sink();
+            let mut stream = t1.pin_stream();
+
+            for i in 0..10 {
+                sink.send(Bytes::from("hello1")).await.unwrap();
+                let recv = stream.next().await.unwrap().unwrap();
+                println!("t1 recv: {:?}, {:?}", recv, i);
+                assert_eq!(recv, Bytes::from("hello1"));
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        let sender2 = tokio::spawn(async move {
+            let mut sink = t2.pin_sink();
+            let mut stream = t2.pin_stream();
+
+            for i in 0..10 {
+                sink.send(Bytes::from("hello2")).await.unwrap();
+                let recv = stream.next().await.unwrap().unwrap();
+                println!("t2 recv: {:?}, {:?}", recv, i);
+                assert_eq!(recv, Bytes::from("hello2"));
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        let _ = tokio::join!(sender1, sender2);
     }
 }
