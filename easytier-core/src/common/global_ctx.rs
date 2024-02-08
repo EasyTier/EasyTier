@@ -62,27 +62,6 @@ impl GlobalCtx {
 
         let (event_bus, _) = tokio::sync::broadcast::channel(100);
 
-        // NOTICE: we may need to choose stun stun server based on geo location
-        // stun server cross nation may return a external ip address with high latency and loss rate
-        let default_stun_servers = vec![
-            "stun.miwifi.com:3478".to_string(),
-            "stun.qq.com:3478".to_string(),
-            "stun.chat.bilibili.com:3478".to_string(),
-            "fwa.lifesizecloud.com:3478".to_string(),
-            "stun.isp.net.au:3478".to_string(),
-            "stun.nextcloud.com:3478".to_string(),
-            "stun.freeswitch.org:3478".to_string(),
-            "stun.voip.blackberry.com:3478".to_string(),
-            "stunserver.stunprotocol.org:3478".to_string(),
-            "stun.sipnet.com:3478".to_string(),
-            "stun.radiojar.com:3478".to_string(),
-            "stun.sonetel.com:3478".to_string(),
-            "stun.voipgate.com:3478".to_string(),
-            "stun.counterpath.com:3478".to_string(),
-            "180.235.108.91:3478".to_string(),
-            "193.22.2.248:3478".to_string(),
-        ];
-
         GlobalCtx {
             inst_name: inst_name.to_string(),
             id,
@@ -96,7 +75,7 @@ impl GlobalCtx {
 
             hotname: AtomicCell::new(None),
 
-            stun_info_collection: Box::new(StunInfoCollector::new(default_stun_servers)),
+            stun_info_collection: Box::new(StunInfoCollector::new_with_default_servers()),
         }
     }
 
@@ -206,6 +185,7 @@ impl GlobalCtx {
         let ptr = ptr as *mut Box<dyn StunInfoCollectorTrait>;
         unsafe {
             std::ptr::drop_in_place(ptr);
+            #[allow(invalid_reference_casting)]
             std::ptr::write(ptr, collector);
         }
     }

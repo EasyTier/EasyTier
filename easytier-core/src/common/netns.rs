@@ -1,6 +1,4 @@
 use futures::Future;
-use once_cell::sync::Lazy;
-use tokio::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use nix::sched::{setns, CloneFlags};
@@ -12,8 +10,6 @@ pub struct NetNSGuard {
     old_ns: Option<std::fs::File>,
 }
 
-type NetNSLock = Mutex<()>;
-static LOCK: Lazy<NetNSLock> = Lazy::new(|| Mutex::new(()));
 pub static ROOT_NETNS_NAME: &str = "_root_ns";
 
 #[cfg(target_os = "linux")]
