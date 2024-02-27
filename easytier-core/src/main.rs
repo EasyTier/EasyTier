@@ -15,6 +15,7 @@ mod peers;
 mod rpc;
 mod tunnels;
 
+use common::get_logger_timer_rfc3339;
 use instance::instance::{Instance, InstanceConfigWriter};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -53,7 +54,7 @@ fn init_logger() {
     file_layer.set_ansi(false);
     let file_layer = file_layer
         .with_writer(file_appender)
-        .with_timer(tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339().unwrap())
+        .with_timer(get_logger_timer_rfc3339())
         .with_filter(file_filter);
 
     // logger to console
@@ -63,7 +64,7 @@ fn init_logger() {
         .unwrap();
     let console_layer = tracing_subscriber::fmt::layer()
         .pretty()
-        .with_timer(tracing_subscriber::fmt::time::OffsetTime::local_rfc_3339().unwrap())
+        .with_timer(get_logger_timer_rfc3339())
         .with_writer(std::io::stderr)
         .with_filter(console_filter);
 

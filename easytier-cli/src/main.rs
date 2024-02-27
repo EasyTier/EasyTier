@@ -366,6 +366,7 @@ fn init_logger() {
     file_layer.set_ansi(false);
     let file_layer = file_layer
         .with_writer(file_appender)
+        .with_timer(easytier_core::common::get_logger_timer_rfc3339())
         .with_filter(file_filter);
 
     tracing_subscriber::Registry::default()

@@ -23,6 +23,7 @@ log = "0.4"
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"
+time = "0.3"
 
 gethostname = "0.4.3"
 
