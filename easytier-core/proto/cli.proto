@@ -115,3 +115,34 @@ service ConnectorManageRpc {
     rpc ListConnector (ListConnectorRequest) returns (ListConnectorResponse);
     rpc ManageConnector (ManageConnectorRequest) returns (ManageConnectorResponse);
 }
+
+enum LatencyLevel {
+    VeryLow = 0;
+    Low = 1;
+    Normal = 2;
+    High = 3;
+    VeryHigh = 4;
+}
+
+message PeerConnInfoForGlobalMap {
+    bytes to_peer_id = 1;
+    LatencyLevel latency_level = 2;
+}
+
+message PeerConnInfosForGlobalMap {
+    repeated PeerConnInfoForGlobalMap conns = 1;
+}
+
+message PeerInfoForGlobalMap {
+    map<string, PeerConnInfosForGlobalMap> direct_peers = 1;
+}
+
+message GetGlobalPeerMapRequest {}
+
+message GetGlobalPeerMapResponse {
+    map<string, PeerInfoForGlobalMap> global_peer_map = 1;
+}
+
+service PeerCenterRpc {
+    rpc GetGlobalPeerMap (GetGlobalPeerMapRequest) returns (GetGlobalPeerMapResponse);
+}

@@ -20,6 +20,7 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::tcp_proxy::TcpProxy;
+use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::tunnels::SinkItem;
@@ -85,6 +86,8 @@ pub struct Instance {
     tcp_proxy: Arc<TcpProxy>,
     icmp_proxy: Arc<IcmpProxy>,
 
+    peer_center: Arc<PeerCenterInstance>,
+
     global_ctx: ArcGlobalCtx,
 }
 
@@ -141,6 +144,8 @@ impl Instance {
         let arc_tcp_proxy = TcpProxy::new(global_ctx.clone(), peer_manager.clone());
         let arc_icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone()).unwrap();
 
+        let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
+
         Instance {
             inst_name: inst_name.to_string(),
             id,
@@ -157,6 +162,8 @@ impl Instance {
 
             tcp_proxy: arc_tcp_proxy,
             icmp_proxy: arc_icmp_proxy,
+
+            peer_center,
 
             global_ctx,
         }
@@ -281,6 +288,8 @@ impl Instance {
 
         self.udp_hole_puncher.lock().await.run().await?;
 
+        self.peer_center.init().await;
+
         Ok(())
     }
 
@@ -312,6 +321,7 @@ impl Instance {
         let peer_mgr = self.peer_manager.clone();
         let conn_manager = self.conn_manager.clone();
         let net_ns = self.global_ctx.net_ns.clone();
+        let peer_center = self.peer_center.clone();
 
         self.tasks.spawn(async move {
             let _g = net_ns.guard();
@@ -325,6 +335,11 @@ impl Instance {
                 .add_service(
                     crate::rpc::connector_manage_rpc_server::ConnectorManageRpcServer::new(
                         ConnectorManagerRpcService(conn_manager.clone()),
+                    ),
+                )
+                .add_service(
+                    crate::rpc::peer_center_rpc_server::PeerCenterRpcServer::new(
+                        peer_center.get_rpc_service(),
                     ),
                 )
                 .serve(addr)

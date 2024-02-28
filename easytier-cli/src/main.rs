@@ -5,7 +5,8 @@ use easytier_core::{
     common::stun::{StunInfoCollector, UdpNatTypeDetector},
     rpc::{
         connector_manage_rpc_client::ConnectorManageRpcClient,
-        peer_manage_rpc_client::PeerManageRpcClient, *,
+        peer_center_rpc_client::PeerCenterRpcClient, peer_manage_rpc_client::PeerManageRpcClient,
+        *,
     },
 };
 use humansize::format_size;
@@ -30,6 +31,7 @@ enum SubCommand {
     Connector(ConnectorArgs),
     Stun,
     Route,
+    PeerCenter,
 }
 
 #[derive(Args, Debug)]
@@ -200,6 +202,12 @@ impl CommandHandler {
         &self,
     ) -> Result<ConnectorManageRpcClient<tonic::transport::Channel>, Error> {
         Ok(ConnectorManageRpcClient::connect(self.addr.clone()).await?)
+    }
+
+    async fn get_peer_center_client(
+        &self,
+    ) -> Result<PeerCenterRpcClient<tonic::transport::Channel>, Error> {
+        Ok(PeerCenterRpcClient::connect(self.addr.clone()).await?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -423,6 +431,14 @@ async fn main() -> Result<(), Error> {
         SubCommand::Stun => {
             let stun = UdpNatTypeDetector::new(StunInfoCollector::get_default_servers());
             println!("udp type: {:?}", stun.get_udp_nat_type(0).await);
+        }
+        SubCommand::PeerCenter => {
+            let mut peer_center_client = handler.get_peer_center_client().await?;
+            let v = peer_center_client
+                .get_global_peer_map(GetGlobalPeerMapRequest::default())
+                .await?
+                .into_inner();
+            println!("{:#?}", v)
         }
     }
 
