@@ -92,6 +92,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tonic_build::configure()
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("cli.DirectConnectedPeerInfo", "#[derive(Hash)]")
+        .type_attribute("cli.PeerInfoForGlobalMap", "#[derive(Hash)]")
+        .btree_map(&["."])
         .compile(&["proto/cli.proto"], &["proto/"])
         .unwrap();
     // tonic_build::compile_protos("proto/cli.proto")?;

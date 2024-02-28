@@ -1,18 +1,11 @@
 use std::collections::BTreeMap;
 
-use crate::peers::PeerId;
+use crate::{peers::PeerId, rpc::DirectConnectedPeerInfo};
 
 use super::{Digest, Error};
 use crate::rpc::PeerInfo;
 
-#[derive(Debug, Clone, Hash, serde::Deserialize, serde::Serialize)]
-pub enum LatencyLevel {
-    VeryLow,
-    Low,
-    Normal,
-    High,
-    VeryHigh,
-}
+pub type LatencyLevel = crate::rpc::cli::LatencyLevel;
 
 impl LatencyLevel {
     pub const fn from_latency_ms(lat_ms: u32) -> Self {
@@ -30,33 +23,25 @@ impl LatencyLevel {
     }
 }
 
-#[derive(Debug, Clone, Hash, serde::Deserialize, serde::Serialize)]
-pub struct PeerConnInfoForGlobalMap {
-    to_peer_id: PeerId,
-    latency_level: LatencyLevel,
-}
-
-#[derive(Debug, Clone, Hash, serde::Deserialize, serde::Serialize)]
-pub struct PeerInfoForGlobalMap {
-    pub direct_peers: BTreeMap<PeerId, Vec<PeerConnInfoForGlobalMap>>,
-}
+pub type PeerInfoForGlobalMap = crate::rpc::cli::PeerInfoForGlobalMap;
 
 impl From<Vec<PeerInfo>> for PeerInfoForGlobalMap {
     fn from(peers: Vec<PeerInfo>) -> Self {
         let mut peer_map = BTreeMap::new();
         for peer in peers {
-            let mut conn_info = Vec::new();
-            for conn in peer.conns {
-                conn_info.push(PeerConnInfoForGlobalMap {
-                    to_peer_id: conn.peer_id.parse().unwrap(),
-                    latency_level: LatencyLevel::from_latency_ms(
-                        conn.stats.unwrap().latency_us as u32 / 1000,
-                    ),
-                });
-            }
+            let min_lat = peer
+                .conns
+                .iter()
+                .map(|conn| conn.stats.as_ref().unwrap().latency_us)
+                .min()
+                .unwrap_or(0);
+
+            let dp_info = DirectConnectedPeerInfo {
+                latency_level: LatencyLevel::from_latency_ms(min_lat as u32 / 1000) as i32,
+            };
+
             // sort conn info so hash result is stable
-            conn_info.sort_by(|a, b| a.to_peer_id.cmp(&b.to_peer_id));
-            peer_map.insert(peer.peer_id.parse().unwrap(), conn_info);
+            peer_map.insert(peer.peer_id, dp_info);
         }
         PeerInfoForGlobalMap {
             direct_peers: peer_map,
@@ -78,6 +63,12 @@ impl GlobalPeerMap {
     }
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct GetGlobalPeerMapResponse {
+    pub global_peer_map: GlobalPeerMap,
+    pub digest: Digest,
+}
+
 #[tarpc::service]
 pub trait PeerCenterService {
     // report center server which peer is directly connected to me
@@ -88,5 +79,6 @@ pub trait PeerCenterService {
         digest: Digest,
     ) -> Result<(), Error>;
 
-    async fn get_global_peer_map(digest: Digest) -> Result<Option<GlobalPeerMap>, Error>;
+    async fn get_global_peer_map(digest: Digest)
+        -> Result<Option<GetGlobalPeerMapResponse>, Error>;
 }

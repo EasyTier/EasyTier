@@ -5,7 +5,7 @@
 // peer center is not guaranteed to be stable and can be changed when peer enter or leave.
 // it's used to reduce the cost to exchange infos between peers.
 
-mod instance;
+pub mod instance;
 mod server;
 mod service;
 
