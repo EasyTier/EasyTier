@@ -124,17 +124,12 @@ enum LatencyLevel {
     VeryHigh = 4;
 }
 
-message PeerConnInfoForGlobalMap {
-    bytes to_peer_id = 1;
+message DirectConnectedPeerInfo {
     LatencyLevel latency_level = 2;
 }
 
-message PeerConnInfosForGlobalMap {
-    repeated PeerConnInfoForGlobalMap conns = 1;
-}
-
 message PeerInfoForGlobalMap {
-    map<string, PeerConnInfosForGlobalMap> direct_peers = 1;
+    map<string, DirectConnectedPeerInfo> direct_peers = 1;
 }
 
 message GetGlobalPeerMapRequest {}

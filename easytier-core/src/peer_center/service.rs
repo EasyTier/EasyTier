@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::peers::PeerId;
+use crate::{peers::PeerId, rpc::DirectConnectedPeerInfo};
 
 use super::{Digest, Error};
 use crate::rpc::PeerInfo;
@@ -23,26 +23,25 @@ impl LatencyLevel {
     }
 }
 
-pub type PeerConnInfoForGlobalMap = crate::rpc::cli::PeerConnInfoForGlobalMap;
-pub type PeerConnInfosForGlobalMap = crate::rpc::cli::PeerConnInfosForGlobalMap;
 pub type PeerInfoForGlobalMap = crate::rpc::cli::PeerInfoForGlobalMap;
 
 impl From<Vec<PeerInfo>> for PeerInfoForGlobalMap {
     fn from(peers: Vec<PeerInfo>) -> Self {
         let mut peer_map = BTreeMap::new();
         for peer in peers {
-            let mut conn_info = Vec::new();
-            for conn in peer.conns {
-                conn_info.push(PeerConnInfoForGlobalMap {
-                    to_peer_id: conn.peer_id.as_bytes().to_vec(),
-                    latency_level: LatencyLevel::from_latency_ms(
-                        conn.stats.unwrap().latency_us as u32 / 1000,
-                    ) as i32,
-                });
-            }
+            let min_lat = peer
+                .conns
+                .iter()
+                .map(|conn| conn.stats.as_ref().unwrap().latency_us)
+                .min()
+                .unwrap_or(0);
+
+            let dp_info = DirectConnectedPeerInfo {
+                latency_level: LatencyLevel::from_latency_ms(min_lat as u32 / 1000) as i32,
+            };
+
             // sort conn info so hash result is stable
-            conn_info.sort_by(|a, b| a.to_peer_id.cmp(&b.to_peer_id));
-            peer_map.insert(peer.peer_id, PeerConnInfosForGlobalMap { conns: conn_info });
+            peer_map.insert(peer.peer_id, dp_info);
         }
         PeerInfoForGlobalMap {
             direct_peers: peer_map,

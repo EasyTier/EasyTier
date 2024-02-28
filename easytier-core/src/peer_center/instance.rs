@@ -206,9 +206,10 @@ impl PeerCenterInstance {
                     return Ok(1000);
                 };
 
-                tracing::warn!(
-                    "get global info from center server: {:?}",
-                    resp.global_peer_map
+                tracing::info!(
+                    "get global info from center server: {:?}, digest: {:?}",
+                    resp.global_peer_map,
+                    resp.digest
                 );
 
                 *ctx.job_ctx.global_peer_map.write().await = resp.global_peer_map;

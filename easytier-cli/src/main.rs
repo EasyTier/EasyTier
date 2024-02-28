@@ -438,7 +438,7 @@ async fn main() -> Result<(), Error> {
                 .get_global_peer_map(GetGlobalPeerMapRequest::default())
                 .await?
                 .into_inner();
-            println!("{:#?}", v)
+            println!("{:?}", v)
         }
     }
 
