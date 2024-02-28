@@ -434,11 +434,43 @@ async fn main() -> Result<(), Error> {
         }
         SubCommand::PeerCenter => {
             let mut peer_center_client = handler.get_peer_center_client().await?;
-            let v = peer_center_client
+            let resp = peer_center_client
                 .get_global_peer_map(GetGlobalPeerMapRequest::default())
                 .await?
                 .into_inner();
-            println!("{:?}", v)
+
+            #[derive(tabled::Tabled)]
+            struct PeerCenterTableItem {
+                node_id: String,
+                direct_peers: String,
+            }
+
+            let mut table_rows = vec![];
+            for (k, v) in resp.global_peer_map.iter() {
+                let node_id = k;
+                let direct_peers = v
+                    .direct_peers
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "{}:{:?}",
+                            k,
+                            LatencyLevel::try_from(v.latency_level).unwrap()
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                table_rows.push(PeerCenterTableItem {
+                    node_id: node_id.clone(),
+                    direct_peers: direct_peers.join("\n"),
+                });
+            }
+
+            println!(
+                "{}",
+                tabled::Table::new(table_rows)
+                    .with(Style::modern())
+                    .to_string()
+            );
         }
     }
 

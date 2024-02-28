@@ -81,14 +81,13 @@ impl PeerCenterBase {
                     peer_mgr: peer_mgr.clone(),
                     job_ctx,
                 });
-                tracing::warn!(?my_node_id, "before periodic job loop");
                 loop {
                     let Some(center_peer) = Self::select_center_peer(&peer_mgr).await else {
                         tracing::warn!("no center peer found, sleep 1 second");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     };
-                    tracing::warn!(?center_peer, "run periodic job");
+                    tracing::info!(?center_peer, "run periodic job");
                     let rpc_mgr = peer_mgr.get_peer_rpc_mgr();
                     let _g = lock.lock().await;
                     let ret = rpc_mgr
