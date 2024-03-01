@@ -286,6 +286,10 @@ pub(crate) fn setup_sokcet2(
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     socket2_socket.set_reuse_port(true)?;
 
+    if bind_addr.ip().is_unspecified() {
+        return Ok(());
+    }
+
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
     #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -380,7 +384,7 @@ pub mod tests {
 
         let mut send = tunnel.pin_sink();
         let mut recv = tunnel.pin_stream();
-        let send_data = Bytes::from("abc");
+        let send_data = Bytes::from("12345678abcdefg");
         send.send(send_data).await.unwrap();
         let ret = tokio::time::timeout(tokio::time::Duration::from_secs(1), recv.next())
             .await
@@ -388,7 +392,7 @@ pub mod tests {
             .unwrap()
             .unwrap();
         println!("echo back: {:?}", ret);
-        assert_eq!(ret, Bytes::from("abc"));
+        assert_eq!(ret, Bytes::from("12345678abcdefg"));
 
         close_tunnel(&tunnel).await.unwrap();
 

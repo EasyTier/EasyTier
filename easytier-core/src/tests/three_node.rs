@@ -7,7 +7,7 @@ use crate::{
         common::tests::_tunnel_pingpong_netns,
         ring_tunnel::RingTunnelConnector,
         tcp_tunnel::{TcpTunnelConnector, TcpTunnelListener},
-        udp_tunnel::UdpTunnelConnector,
+        udp_tunnel::{UdpTunnelConnector, UdpTunnelListener},
     },
 };
 
@@ -224,4 +224,38 @@ pub async fn proxy_three_node_disconnect_test() {
 
     // TODO: add some traffic here, also should check route & peer list
     tokio::time::sleep(tokio::time::Duration::from_secs(35)).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn udp_proxy_three_node_test() {
+    let insts = init_three_node("tcp").await;
+
+    insts[2]
+        .get_global_ctx()
+        .add_proxy_cidr("10.1.2.0/24".parse().unwrap())
+        .unwrap();
+    assert_eq!(insts[2].get_global_ctx().get_proxy_cidrs().len(), 1);
+
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3",
+        insts[2].id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    // wait updater
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+    let tcp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
+    let tcp_connector = UdpTunnelConnector::new("udp://10.1.2.4:22233".parse().unwrap());
+
+    _tunnel_pingpong_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_d".into())),
+        NetNS::new(Some("net_a".into())),
+    )
+    .await;
 }
