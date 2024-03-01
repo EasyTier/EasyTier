@@ -20,6 +20,7 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::tcp_proxy::TcpProxy;
+use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::rpc_service::PeerManagerRpcService;
@@ -85,6 +86,7 @@ pub struct Instance {
 
     tcp_proxy: Arc<TcpProxy>,
     icmp_proxy: Arc<IcmpProxy>,
+    udp_proxy: Arc<UdpProxy>,
 
     peer_center: Arc<PeerCenterInstance>,
 
@@ -143,6 +145,7 @@ impl Instance {
 
         let arc_tcp_proxy = TcpProxy::new(global_ctx.clone(), peer_manager.clone());
         let arc_icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone()).unwrap();
+        let arc_udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone()).unwrap();
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
@@ -162,6 +165,7 @@ impl Instance {
 
             tcp_proxy: arc_tcp_proxy,
             icmp_proxy: arc_icmp_proxy,
+            udp_proxy: arc_udp_proxy,
 
             peer_center,
 
@@ -284,6 +288,7 @@ impl Instance {
 
         self.tcp_proxy.start().await.unwrap();
         self.icmp_proxy.start().await.unwrap();
+        self.udp_proxy.start().await.unwrap();
         self.run_proxy_cidrs_route_updater();
 
         self.udp_hole_puncher.lock().await.run().await?;

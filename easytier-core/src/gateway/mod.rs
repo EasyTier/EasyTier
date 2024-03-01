@@ -6,6 +6,7 @@ use crate::common::global_ctx::ArcGlobalCtx;
 
 pub mod icmp_proxy;
 pub mod tcp_proxy;
+pub mod udp_proxy;
 
 #[derive(Debug)]
 struct CidrSet {
@@ -47,5 +48,9 @@ impl CidrSet {
     pub fn contains_v4(&self, ip: std::net::Ipv4Addr) -> bool {
         let ip = ip.into();
         return self.cidr_set.iter().any(|cidr| cidr.contains(&ip));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        return self.cidr_set.is_empty();
     }
 }

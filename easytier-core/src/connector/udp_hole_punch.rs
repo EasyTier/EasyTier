@@ -56,7 +56,10 @@ impl UdpHolePunchListener {
 
         let mut listener = UdpTunnelListener::new(listen_url.parse().unwrap());
 
-        listener.listen().await?;
+        {
+            let _g = peer_mgr.get_global_ctx().net_ns.guard();
+            listener.listen().await?;
+        }
         let socket = listener.get_socket().unwrap();
 
         let running = Arc::new(AtomicCell::new(true));
@@ -339,7 +342,10 @@ impl UdpHolePunchConnector {
     ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
         tracing::info!(?dst_peer_id, "start hole punching");
         // client: choose a local udp port, and get the pubic mapped port from stun server
-        let socket = UdpSocket::bind("0.0.0.0:0").await.with_context(|| "")?;
+        let socket = {
+            let _g = data.global_ctx.net_ns.guard();
+            UdpSocket::bind("0.0.0.0:0").await.with_context(|| "")?
+        };
         let local_socket_addr = socket.local_addr()?;
         let local_port = socket.local_addr()?.port();
         drop(socket); // drop the socket to release the port
@@ -388,6 +394,7 @@ impl UdpHolePunchConnector {
             .unwrap(),
         );
 
+        let _g = data.global_ctx.net_ns.guard();
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(local_socket_addr),
             socket2::Type::DGRAM,
