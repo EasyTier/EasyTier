@@ -32,6 +32,10 @@ use crate::{
 
 use super::{packet::ArchivedPacketBody, peer_manager::PeerPacketFilter};
 
+const SEND_ROUTE_PERIOD_SEC: u64 = 60;
+const SEND_ROUTE_FAST_REPLY_SEC: u64 = 5;
+const ROUTE_EXPIRED_SEC: u64 = 70;
+
 type Version = u32;
 
 #[derive(Archive, Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -192,7 +196,7 @@ pub struct BasicRoute {
 
     version: RouteVersion,
     myself: Arc<RwLock<SyncPeerInfo>>,
-    last_send_time_map: Arc<DashMap<PeerId, Instant>>,
+    last_send_time_map: Arc<DashMap<PeerId, (Version, Option<Version>, Instant)>>,
 }
 
 impl BasicRoute {
@@ -373,10 +377,10 @@ impl BasicRoute {
                     let last_send_time_map_new = DashMap::new();
                     let peers = interface.list_peers().await;
                     for peer in peers.iter() {
-                        let last_send_time = last_send_time_map.get(peer).map(|v| *v).unwrap_or(Instant::now() - Duration::from_secs(3600));
+                        let last_send_time = last_send_time_map.get(peer).map(|v| *v).unwrap_or((0, None, Instant::now() - Duration::from_secs(3600)));
                         let my_version_peer_saved = sync_peer_from_remote.get(&peer).and_then(|v| v.packet.peer_version);
                         let peer_have_latest_version = my_version_peer_saved == Some(version.get());
-                        if peer_have_latest_version && last_send_time.elapsed().as_secs() < 60 {
+                        if peer_have_latest_version && last_send_time.2.elapsed().as_secs() < SEND_ROUTE_PERIOD_SEC {
                             last_send_time_map_new.insert(*peer, last_send_time);
                             continue;
                         }
@@ -386,11 +390,13 @@ impl BasicRoute {
                             dst_peer_id = ?peer,
                             version = version.get(),
                             ?my_version_peer_saved,
-                            last_send_elapse = ?last_send_time.elapsed().as_secs(),
+                            last_send_version = ?last_send_time.0,
+                            last_send_peer_version = ?last_send_time.1,
+                            last_send_elapse = ?last_send_time.2.elapsed().as_secs(),
                             "need send route info"
                         );
-                        last_send_time_map_new.insert(*peer, Instant::now());
                         let peer_version_we_saved = sync_peer_from_remote.get(&peer).and_then(|v| Some(v.packet.version));
+                        last_send_time_map_new.insert(*peer, (version.get(), peer_version_we_saved, Instant::now()));
                         let ret = Self::send_sync_peer_request(
                             interface,
                             my_peer_id.clone(),
@@ -457,7 +463,7 @@ impl BasicRoute {
                 let connected_peers = interface.lock().await.as_ref().unwrap().list_peers().await;
                 for item in sync_peer_from_remote.iter() {
                     let (k, v) = item.pair();
-                    if now.duration_since(v.last_update).as_secs() > 70
+                    if now.duration_since(v.last_update).as_secs() > ROUTE_EXPIRED_SEC
                         || !connected_peers.contains(k)
                     {
                         need_update_route = true;
@@ -541,7 +547,17 @@ impl BasicRoute {
 
         if packet.need_reply {
             self.last_send_time_map
-                .remove(&packet.myself.peer_id.to_uuid());
+                .entry(packet.myself.peer_id.to_uuid())
+                .and_modify(|v| {
+                    const FAST_REPLY_DURATION: u64 =
+                        SEND_ROUTE_PERIOD_SEC - SEND_ROUTE_FAST_REPLY_SEC;
+                    if v.0 != self.version.get() || v.1 != Some(p.version) {
+                        v.2 = Instant::now() - Duration::from_secs(3600);
+                    } else if v.2.elapsed().as_secs() < FAST_REPLY_DURATION {
+                        // do not send same version route info too frequently
+                        v.2 = Instant::now() - Duration::from_secs(FAST_REPLY_DURATION);
+                    }
+                });
         }
 
         if updated || packet.need_reply {

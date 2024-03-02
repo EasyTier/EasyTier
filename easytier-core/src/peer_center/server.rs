@@ -77,7 +77,7 @@ impl PeerCenterServer {
         let now = std::time::Instant::now();
         let mut to_remove = Vec::new();
         for kv in locked_data.peer_update_time.iter() {
-            if now.duration_since(*kv.value()).as_secs() > 10 {
+            if now.duration_since(*kv.value()).as_secs() > 20 {
                 to_remove.push(*kv.key());
             }
         }
