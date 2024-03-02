@@ -449,7 +449,16 @@ impl StunInfoCollector {
         self.tasks.spawn(async move {
             loop {
                 let detector = UdpNatTypeDetector::new(stun_servers.read().await.clone());
-                let ret = detector.get_udp_nat_type(0).await;
+                let old_nat_type = udp_nat_type.load().0;
+                let mut ret = NatType::Unknown;
+                for _ in 1..5 {
+                    // if nat type degrade, sleep and retry. so result can be relatively stable.
+                    ret = detector.get_udp_nat_type(0).await;
+                    if ret == NatType::Unknown || ret <= old_nat_type {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
                 udp_nat_type.store((ret, std::time::Instant::now()));
 
                 let sleep_sec = match ret {

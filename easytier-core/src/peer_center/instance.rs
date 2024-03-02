@@ -202,7 +202,7 @@ impl PeerCenterInstance {
                 };
 
                 let Some(resp) = resp else {
-                    return Ok(1000);
+                    return Ok(5000);
                 };
 
                 tracing::info!(
@@ -214,7 +214,7 @@ impl PeerCenterInstance {
                 *ctx.job_ctx.global_peer_map.write().await = resp.global_peer_map;
                 *ctx.job_ctx.global_peer_map_digest.write().await = resp.digest;
 
-                Ok(5000)
+                Ok(10000)
             })
             .await;
     }
@@ -223,16 +223,29 @@ impl PeerCenterInstance {
         struct Ctx {
             service: PeerManagerRpcService,
             need_send_peers: AtomicBool,
+            last_report_peers: Mutex<PeerInfoForGlobalMap>,
         }
         let ctx = Arc::new(Ctx {
             service: PeerManagerRpcService::new(self.peer_mgr.clone()),
             need_send_peers: AtomicBool::new(true),
+            last_report_peers: Mutex::new(PeerInfoForGlobalMap::default()),
         });
 
         self.client
             .init_periodic_job(ctx, |client, ctx| async move {
                 let my_node_id = ctx.peer_mgr.my_node_id();
-                let peers: PeerInfoForGlobalMap = ctx.job_ctx.service.list_peers().await.into();
+
+                // if peers are not same in next 10 seconds, report peers to center server
+                let mut peers = PeerInfoForGlobalMap::default();
+                for _ in 1..10 {
+                    peers = ctx.job_ctx.service.list_peers().await.into();
+                    if peers == *ctx.job_ctx.last_report_peers.lock().await {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+
+                *ctx.job_ctx.last_report_peers.lock().await = peers.clone();
                 let mut hasher = DefaultHasher::new();
                 peers.hash(&mut hasher);
 
@@ -262,7 +275,7 @@ impl PeerCenterInstance {
                 }
 
                 ctx.job_ctx.need_send_peers.store(false, Ordering::Relaxed);
-                Ok(1000)
+                Ok(3000)
             })
             .await;
     }
