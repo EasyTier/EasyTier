@@ -616,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn udp_multiple_conns() {
-        let mut listener = UdpTunnelListener::new("udp://0.0.0.0:5556".parse().unwrap());
+        let mut listener = UdpTunnelListener::new("udp://0.0.0.0:5557".parse().unwrap());
         listener.listen().await.unwrap();
 
         let _lis = tokio::spawn(async move {
@@ -630,8 +630,8 @@ mod tests {
             }
         });
 
-        let mut connector1 = UdpTunnelConnector::new("udp://127.0.0.1:5556".parse().unwrap());
-        let mut connector2 = UdpTunnelConnector::new("udp://127.0.0.1:5556".parse().unwrap());
+        let mut connector1 = UdpTunnelConnector::new("udp://127.0.0.1:5557".parse().unwrap());
+        let mut connector2 = UdpTunnelConnector::new("udp://127.0.0.1:5557".parse().unwrap());
 
         let t1 = connector1.connect().await.unwrap();
         let t2 = connector2.connect().await.unwrap();
