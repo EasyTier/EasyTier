@@ -413,7 +413,7 @@ impl PeerManager {
                     peer_map.close_peer(&peer_id).await.unwrap();
                 }
 
-                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
     }
@@ -446,5 +446,9 @@ impl PeerManager {
 
     pub fn get_nic_channel(&self) -> mpsc::Sender<SinkItem> {
         self.nic_channel.clone()
+    }
+
+    pub fn get_basic_route(&self) -> Arc<BasicRoute> {
+        self.basic_route.clone()
     }
 }

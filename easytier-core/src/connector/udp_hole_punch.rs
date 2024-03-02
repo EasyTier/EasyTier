@@ -463,7 +463,7 @@ impl UdpHolePunchConnector {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::sync::Arc;
 
     use crate::rpc::{NatType, StunInfo};
@@ -499,7 +499,9 @@ mod tests {
         }
     }
 
-    async fn create_mock_peer_manager_with_mock_stun(udp_nat_type: NatType) -> Arc<PeerManager> {
+    pub async fn create_mock_peer_manager_with_mock_stun(
+        udp_nat_type: NatType,
+    ) -> Arc<PeerManager> {
         let p_a = create_mock_peer_manager().await;
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });
         p_a.get_global_ctx().replace_stun_info_collector(collector);
