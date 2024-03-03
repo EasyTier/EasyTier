@@ -1,7 +1,10 @@
 use rkyv::{Archive, Deserialize, Serialize};
 use tokio_util::bytes::Bytes;
 
-use crate::common::rkyv_util::{decode_from_bytes, encode_to_bytes};
+use crate::common::{
+    global_ctx::NetworkIdentity,
+    rkyv_util::{decode_from_bytes, encode_to_bytes},
+};
 
 const MAGIC: u32 = 0xd1e1a5e1;
 const VERSION: u32 = 1;
@@ -48,12 +51,36 @@ impl From<&ArchivedUUID> for UUID {
 #[archive(compare(PartialEq), check_bytes)]
 // Derives can be passed through to the generated type:
 #[archive_attr(derive(Debug))]
+pub struct NetworkIdentityForPacket(Vec<u8>);
+
+impl From<NetworkIdentity> for NetworkIdentityForPacket {
+    fn from(network: NetworkIdentity) -> Self {
+        Self(bincode::serialize(&network).unwrap())
+    }
+}
+
+impl From<NetworkIdentityForPacket> for NetworkIdentity {
+    fn from(network: NetworkIdentityForPacket) -> Self {
+        bincode::deserialize(&network.0).unwrap()
+    }
+}
+
+impl From<&ArchivedNetworkIdentityForPacket> for NetworkIdentity {
+    fn from(network: &ArchivedNetworkIdentityForPacket) -> Self {
+        NetworkIdentityForPacket(network.0.to_vec()).into()
+    }
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug)]
+#[archive(compare(PartialEq), check_bytes)]
+// Derives can be passed through to the generated type:
+#[archive_attr(derive(Debug))]
 pub struct HandShake {
     pub magic: u32,
     pub my_peer_id: UUID,
     pub version: u32,
     pub features: Vec<String>,
-    // pub interfaces: Vec<String>,
+    pub network_identity: NetworkIdentityForPacket,
 }
 
 #[derive(Archive, Deserialize, Serialize, Debug)]
@@ -116,7 +143,7 @@ impl From<Packet> for Bytes {
 }
 
 impl Packet {
-    pub fn new_handshake(from_peer: uuid::Uuid) -> Self {
+    pub fn new_handshake(from_peer: uuid::Uuid, network: &NetworkIdentity) -> Self {
         Packet {
             from_peer: from_peer.into(),
             to_peer: None,
@@ -125,6 +152,7 @@ impl Packet {
                 my_peer_id: from_peer.into(),
                 version: VERSION,
                 features: Vec::new(),
+                network_identity: network.clone().into(),
             })),
         }
     }

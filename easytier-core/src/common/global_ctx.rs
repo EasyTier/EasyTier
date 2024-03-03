@@ -2,6 +2,7 @@ use std::{io::Write, sync::Arc};
 
 use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
+use serde::{Deserialize, Serialize};
 
 use super::{
     config_fs::ConfigFs,
@@ -21,11 +22,31 @@ pub enum GlobalCtxEvent {
 type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct NetworkIdentity {
+    pub network_name: String,
+    pub network_secret: String,
+}
+
+impl NetworkIdentity {
+    pub fn new(network_name: String, network_secret: String) -> Self {
+        NetworkIdentity {
+            network_name,
+            network_secret,
+        }
+    }
+
+    pub fn default() -> Self {
+        Self::new("default".to_string(), "".to_string())
+    }
+}
+
 pub struct GlobalCtx {
     pub inst_name: String,
     pub id: uuid::Uuid,
     pub config_fs: ConfigFs,
     pub net_ns: NetNS,
+    pub network: NetworkIdentity,
 
     event_bus: EventBus,
 
@@ -54,11 +75,17 @@ impl std::fmt::Debug for GlobalCtx {
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
 impl GlobalCtx {
-    pub fn new(inst_name: &str, config_fs: ConfigFs, net_ns: NetNS) -> Self {
+    pub fn new(
+        inst_name: &str,
+        config_fs: ConfigFs,
+        net_ns: NetNS,
+        network: Option<NetworkIdentity>,
+    ) -> Self {
         let id = config_fs
             .get_or_add_file("inst_id", || uuid::Uuid::new_v4().to_string())
             .unwrap();
         let id = uuid::Uuid::parse_str(&id).unwrap();
+        let network = network.unwrap_or(NetworkIdentity::default());
 
         let (event_bus, _) = tokio::sync::broadcast::channel(100);
 
@@ -67,6 +94,8 @@ impl GlobalCtx {
             id,
             config_fs,
             net_ns: net_ns.clone(),
+            network,
+
             event_bus,
             cached_ipv4: AtomicCell::new(None),
             cached_proxy_cidrs: AtomicCell::new(None),
@@ -203,7 +232,7 @@ pub mod tests {
     async fn test_global_ctx() {
         let config_fs = ConfigFs::new("/tmp/easytier");
         let net_ns = NetNS::new(None);
-        let global_ctx = GlobalCtx::new("test", config_fs, net_ns);
+        let global_ctx = GlobalCtx::new("test", config_fs, net_ns, None);
 
         let mut subscriber = global_ctx.subscribe();
         global_ctx.issue_event(GlobalCtxEvent::PeerAdded);
@@ -234,6 +263,7 @@ pub mod tests {
             format!("test_{}", node_id).as_str(),
             config_fs,
             net_ns,
+            None,
         ))
     }
 }

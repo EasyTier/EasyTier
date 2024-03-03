@@ -172,6 +172,7 @@ mod tests {
             "test",
             ConfigFs::new("/tmp/easytier-test"),
             NetNS::new(None),
+            None,
         ));
         let local_peer = Peer::new(uuid::Uuid::new_v4(), local_packet_send, global_ctx.clone());
         let remote_peer = Peer::new(uuid::Uuid::new_v4(), remote_packet_send, global_ctx.clone());

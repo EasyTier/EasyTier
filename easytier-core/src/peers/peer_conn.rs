@@ -23,7 +23,7 @@ use tokio_util::{
 use tracing::Instrument;
 
 use crate::{
-    common::global_ctx::ArcGlobalCtx,
+    common::global_ctx::{ArcGlobalCtx, NetworkIdentity},
     define_tunnel_filter_chain,
     rpc::{PeerConnInfo, PeerConnStats},
     tunnels::{
@@ -82,6 +82,7 @@ pub struct PeerInfo {
     version: u32,
     pub features: Vec<String>,
     pub interfaces: Vec<NetworkInterface>,
+    pub network_identity: NetworkIdentity,
 }
 
 impl<'a> From<&ArchivedHandShake> for PeerInfo {
@@ -92,6 +93,7 @@ impl<'a> From<&ArchivedHandShake> for PeerInfo {
             version: hs.version.into(),
             features: hs.features.iter().map(|x| x.to_string()).collect(),
             interfaces: Vec::new(),
+            network_identity: (&hs.network_identity).into(),
         }
     }
 }
@@ -380,7 +382,7 @@ impl PeerConn {
         let hs_req = self
             .global_ctx
             .net_ns
-            .run(|| packet::Packet::new_handshake(self.my_node_id));
+            .run(|| packet::Packet::new_handshake(self.my_node_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
         Ok(())
@@ -393,7 +395,7 @@ impl PeerConn {
         let hs_req = self
             .global_ctx
             .net_ns
-            .run(|| packet::Packet::new_handshake(self.my_node_id));
+            .run(|| packet::Packet::new_handshake(self.my_node_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
         wait_response!(stream, hs_rsp, packet::ArchivedPacketBody::Ctrl(ArchivedCtrlPacketBody::HandShake(x)) => x);
@@ -525,6 +527,10 @@ impl PeerConn {
         self.info.as_ref().unwrap().my_peer_id
     }
 
+    pub fn get_network_identity(&self) -> NetworkIdentity {
+        self.info.as_ref().unwrap().network_identity.clone()
+    }
+
     pub fn set_close_event_sender(&mut self, sender: mpsc::Sender<uuid::Uuid>) {
         self.close_event_sender = Some(sender);
     }
@@ -597,6 +603,7 @@ mod tests {
                 "c",
                 ConfigFs::new_with_dir("c", "/tmp"),
                 NetNS::new(None),
+                None,
             )),
             Box::new(c),
         );
@@ -607,6 +614,7 @@ mod tests {
                 "c",
                 ConfigFs::new_with_dir("c", "/tmp"),
                 NetNS::new(None),
+                None,
             )),
             Box::new(s),
         );
@@ -627,6 +635,8 @@ mod tests {
 
         assert_eq!(c_peer.get_peer_id(), s_uuid);
         assert_eq!(s_peer.get_peer_id(), c_uuid);
+        assert_eq!(c_peer.get_network_identity(), s_peer.get_network_identity());
+        assert_eq!(c_peer.get_network_identity(), NetworkIdentity::default());
     }
 
     async fn peer_conn_pingpong_test_common(drop_start: u32, drop_end: u32, conn_closed: bool) {
