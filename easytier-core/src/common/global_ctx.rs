@@ -3,6 +3,7 @@ use std::{io::Write, sync::Arc};
 use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{
     config_fs::ConfigFs,
@@ -13,8 +14,8 @@ use super::{
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GlobalCtxEvent {
-    PeerAdded,
-    PeerRemoved,
+    PeerAdded(Uuid),
+    PeerRemoved(Uuid),
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
 }
@@ -222,6 +223,10 @@ impl GlobalCtx {
     pub fn get_id(&self) -> uuid::Uuid {
         self.id
     }
+
+    pub fn get_network_identity(&self) -> NetworkIdentity {
+        self.network.clone()
+    }
 }
 
 #[cfg(test)]
@@ -235,15 +240,19 @@ pub mod tests {
         let global_ctx = GlobalCtx::new("test", config_fs, net_ns, None);
 
         let mut subscriber = global_ctx.subscribe();
-        global_ctx.issue_event(GlobalCtxEvent::PeerAdded);
-        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved);
+        let uuid = Uuid::new_v4();
+        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(uuid.clone()));
+        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(uuid.clone()));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnAdded(PeerConnInfo::default()));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default()));
 
-        assert_eq!(subscriber.recv().await.unwrap(), GlobalCtxEvent::PeerAdded);
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerRemoved
+            GlobalCtxEvent::PeerAdded(uuid.clone())
+        );
+        assert_eq!(
+            subscriber.recv().await.unwrap(),
+            GlobalCtxEvent::PeerRemoved(uuid.clone())
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),
@@ -255,7 +264,9 @@ pub mod tests {
         );
     }
 
-    pub fn get_mock_global_ctx() -> ArcGlobalCtx {
+    pub fn get_mock_global_ctx_with_network(
+        network_identy: Option<NetworkIdentity>,
+    ) -> ArcGlobalCtx {
         let node_id = uuid::Uuid::new_v4();
         let config_fs = ConfigFs::new_with_dir(node_id.to_string().as_str(), "/tmp/easytier");
         let net_ns = NetNS::new(None);
@@ -263,7 +274,11 @@ pub mod tests {
             format!("test_{}", node_id).as_str(),
             config_fs,
             net_ns,
-            None,
+            network_identy,
         ))
+    }
+
+    pub fn get_mock_global_ctx() -> ArcGlobalCtx {
+        get_mock_global_ctx_with_network(None)
     }
 }

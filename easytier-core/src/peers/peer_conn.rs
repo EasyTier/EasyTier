@@ -483,20 +483,20 @@ impl PeerConn {
         self.tasks.spawn(
             async move {
                 tracing::info!("start recving peer conn packet");
+                let mut task_ret = Ok(());
                 while let Some(ret) = stream.next().await {
                     if ret.is_err() {
                         tracing::error!(error = ?ret, "peer conn recv error");
-                        if let Err(close_ret) = sink.close().await {
-                            tracing::error!(error = ?close_ret, "peer conn sink close error, ignore it");
-                        }
-                        if let Err(e) = close_event_sender.send(conn_id).await {
-                            tracing::error!(error = ?e, "peer conn close event send error");
-                        }
-                        return Err(ret.err().unwrap());
+                        task_ret = Err(ret.err().unwrap());
+                        break;
                     }
 
                     match Self::get_packet_type(ret.unwrap().into()) {
-                        PeerConnPacketType::Data(item) => sender.send(item).await.unwrap(),
+                        PeerConnPacketType::Data(item) => {
+                            if sender.send(item).await.is_err() {
+                                break;
+                            }
+                        }
                         PeerConnPacketType::CtrlReq(item) => {
                             let ret = Self::handle_ctrl_req_packet(item, &conn_info).unwrap();
                             if let Err(e) = sink.send(ret).await {
@@ -510,8 +510,17 @@ impl PeerConn {
                         }
                     }
                 }
+
                 tracing::info!("end recving peer conn packet");
-                Ok(())
+
+                if let Err(close_ret) = sink.close().await {
+                    tracing::error!(error = ?close_ret, "peer conn sink close error, ignore it");
+                }
+                if let Err(e) = close_event_sender.send(conn_id).await {
+                    tracing::error!(error = ?e, "peer conn close event send error");
+                }
+
+                task_ret
             }
             .instrument(
                 tracing::info_span!("peer conn recv loop", conn_info = ?conn_info_for_instrument),

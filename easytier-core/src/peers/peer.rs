@@ -146,6 +146,8 @@ impl Peer {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.shutdown_notifier.notify_one();
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::PeerRemoved(self.peer_node_id));
         tracing::info!("peer {} drop", self.peer_node_id);
     }
 }

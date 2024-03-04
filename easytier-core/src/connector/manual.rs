@@ -220,8 +220,8 @@ impl ManualConnectorManager {
                 log::warn!("peer conn removed: {:?}", conn_info);
             }
 
-            GlobalCtxEvent::PeerAdded => todo!(),
-            GlobalCtxEvent::PeerRemoved => todo!(),
+            GlobalCtxEvent::PeerAdded(..) => todo!(),
+            GlobalCtxEvent::PeerRemoved(..) => todo!(),
         }
     }
 

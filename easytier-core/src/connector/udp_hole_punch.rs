@@ -499,12 +499,18 @@ pub mod tests {
         }
     }
 
+    pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
+        let collector = Box::new(MockStunInfoCollector { udp_nat_type });
+        peer_mgr
+            .get_global_ctx()
+            .replace_stun_info_collector(collector);
+    }
+
     pub async fn create_mock_peer_manager_with_mock_stun(
         udp_nat_type: NatType,
     ) -> Arc<PeerManager> {
         let p_a = create_mock_peer_manager().await;
-        let collector = Box::new(MockStunInfoCollector { udp_nat_type });
-        p_a.get_global_ctx().replace_stun_info_collector(collector);
+        replace_stun_info_collector(p_a.clone(), udp_nat_type);
         p_a
     }
 

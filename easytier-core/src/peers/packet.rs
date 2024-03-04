@@ -1,3 +1,5 @@
+use std::fmt::Debug;
+
 use rkyv::{Archive, Deserialize, Serialize};
 use tokio_util::bytes::Bytes;
 
@@ -47,10 +49,9 @@ impl From<&ArchivedUUID> for UUID {
     }
 }
 
-#[derive(Archive, Deserialize, Serialize, Debug)]
+#[derive(Archive, Deserialize, Serialize)]
 #[archive(compare(PartialEq), check_bytes)]
 // Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
 pub struct NetworkIdentityForPacket(Vec<u8>);
 
 impl From<NetworkIdentity> for NetworkIdentityForPacket {
@@ -68,6 +69,20 @@ impl From<NetworkIdentityForPacket> for NetworkIdentity {
 impl From<&ArchivedNetworkIdentityForPacket> for NetworkIdentity {
     fn from(network: &ArchivedNetworkIdentityForPacket) -> Self {
         NetworkIdentityForPacket(network.0.to_vec()).into()
+    }
+}
+
+impl Debug for NetworkIdentityForPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let network: NetworkIdentity = bincode::deserialize(&self.0).unwrap();
+        write!(f, "{:?}", network)
+    }
+}
+
+impl Debug for ArchivedNetworkIdentityForPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let network: NetworkIdentity = bincode::deserialize(&self.0).unwrap();
+        write!(f, "{:?}", network)
     }
 }
 

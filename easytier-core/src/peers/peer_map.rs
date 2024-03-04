@@ -51,6 +51,10 @@ impl PeerMap {
         self.peer_map.get(peer_id).map(|v| v.clone())
     }
 
+    pub fn has_peer(&self, peer_id: &PeerId) -> bool {
+        self.peer_map.contains_key(peer_id)
+    }
+
     pub async fn send_msg_directly(
         &self,
         msg: Bytes,
@@ -97,6 +101,10 @@ impl PeerMap {
             }
         }
 
+        if gateway_peer_id.is_none() && self.has_peer(dst_peer_id) {
+            gateway_peer_id = Some(*dst_peer_id);
+        }
+
         let Some(gateway_peer_id) = gateway_peer_id else {
             log::error!("no gateway for dst_peer_id: {}", dst_peer_id);
             return Ok(());
@@ -115,6 +123,10 @@ impl PeerMap {
             }
         }
         None
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.peer_map.is_empty()
     }
 
     pub async fn list_peers(&self) -> Vec<PeerId> {
@@ -174,5 +186,20 @@ impl PeerMap {
     pub async fn add_route(&self, route: ArcRoute) {
         let mut routes = self.routes.write().await;
         routes.insert(0, route);
+    }
+
+    pub async fn clean_peer_without_conn(&self) {
+        let mut to_remove = vec![];
+
+        for peer_id in self.list_peers().await {
+            let conns = self.list_peer_conns(&peer_id).await;
+            if conns.is_none() || conns.as_ref().unwrap().is_empty() {
+                to_remove.push(peer_id);
+            }
+        }
+
+        for peer_id in to_remove {
+            self.close_peer(&peer_id).await.unwrap();
+        }
     }
 }

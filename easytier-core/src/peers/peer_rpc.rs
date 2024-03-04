@@ -222,7 +222,10 @@ impl PeerRpcManager {
         let client_resp_receivers = self.client_resp_receivers.clone();
         tokio::spawn(async move {
             loop {
-                let o = tspt.recv().await.unwrap();
+                let Ok(o) = tspt.recv().await else {
+                    tracing::warn!("peer rpc transport read aborted, exiting");
+                    break;
+                };
                 let packet = Packet::decode(&o);
                 let packet: Packet = packet.deserialize(&mut rkyv::Infallible).unwrap();
                 let info = Self::parse_rpc_packet(&packet).unwrap();
