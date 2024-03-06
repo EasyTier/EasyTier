@@ -6,7 +6,10 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::bytes::Bytes;
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx},
+    common::{
+        error::Error,
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+    },
     rpc::PeerConnInfo,
     tunnels::TunnelError,
 };
@@ -31,7 +34,10 @@ impl PeerMap {
     }
 
     async fn add_new_peer(&self, peer: Peer) {
-        self.peer_map.insert(peer.peer_node_id, Arc::new(peer));
+        let peer_id = peer.peer_node_id.clone();
+        self.peer_map.insert(peer_id.clone(), Arc::new(peer));
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::PeerAdded(peer_id));
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
@@ -174,6 +180,8 @@ impl PeerMap {
 
     pub async fn close_peer(&self, peer_id: &PeerId) -> Result<(), TunnelError> {
         let remove_ret = self.peer_map.remove(peer_id);
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::PeerRemoved(peer_id.clone()));
         tracing::info!(
             ?peer_id,
             has_old_value = ?remove_ret.is_some(),
