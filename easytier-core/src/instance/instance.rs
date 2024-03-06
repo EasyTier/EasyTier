@@ -116,7 +116,7 @@ impl Instance {
 
         let (peer_packet_sender, peer_packet_receiver) = tokio::sync::mpsc::channel(100);
 
-        let global_ctx = Arc::new(GlobalCtx::new(inst_name, config, net_ns.clone()));
+        let global_ctx = Arc::new(GlobalCtx::new(inst_name, config, net_ns.clone(), None));
 
         let id = global_ctx.get_id();
 

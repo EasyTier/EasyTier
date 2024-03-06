@@ -146,6 +146,8 @@ impl Peer {
 impl Drop for Peer {
     fn drop(&mut self) {
         self.shutdown_notifier.notify_one();
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::PeerRemoved(self.peer_node_id));
         tracing::info!("peer {} drop", self.peer_node_id);
     }
 }
@@ -172,6 +174,7 @@ mod tests {
             "test",
             ConfigFs::new("/tmp/easytier-test"),
             NetNS::new(None),
+            None,
         ));
         let local_peer = Peer::new(uuid::Uuid::new_v4(), local_packet_send, global_ctx.clone());
         let remote_peer = Peer::new(uuid::Uuid::new_v4(), remote_packet_send, global_ctx.clone());

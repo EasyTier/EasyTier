@@ -27,6 +27,8 @@ use crate::{
 };
 
 use super::{
+    foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::ForeignNetworkManager,
     peer_map::PeerMap,
     peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
@@ -37,6 +39,7 @@ use super::{
 struct RpcTransport {
     my_peer_id: uuid::Uuid,
     peers: Arc<PeerMap>,
+    foreign_peers: Mutex<Option<Arc<PeerMap>>>,
 
     packet_recv: Mutex<UnboundedReceiver<Bytes>>,
     peer_rpc_tspt_sender: UnboundedSender<Bytes>,
@@ -49,6 +52,11 @@ impl PeerRpcManagerTransport for RpcTransport {
     }
 
     async fn send(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
+        if let Some(foreign_peers) = self.foreign_peers.lock().await.as_ref() {
+            if foreign_peers.has_peer(dst_peer_id) {
+                return foreign_peers.send_msg(msg, dst_peer_id).await;
+            }
+        }
         self.peers
             .send_msg(msg, dst_peer_id)
             .map_err(|e| e.into())
@@ -101,6 +109,9 @@ pub struct PeerManager {
     nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
 
     basic_route: Arc<BasicRoute>,
+
+    foreign_network_manager: Arc<ForeignNetworkManager>,
+    foreign_network_client: Arc<ForeignNetworkClient>,
 }
 
 impl Debug for PeerManager {
@@ -123,11 +134,23 @@ impl PeerManager {
         let rpc_tspt = Arc::new(RpcTransport {
             my_peer_id: global_ctx.get_id(),
             peers: peers.clone(),
+            foreign_peers: Mutex::new(None),
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
             peer_rpc_tspt_sender,
         });
+        let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
 
         let basic_route = Arc::new(BasicRoute::new(global_ctx.get_id(), global_ctx.clone()));
+
+        let foreign_network_manager = Arc::new(ForeignNetworkManager::new(
+            global_ctx.clone(),
+            packet_send.clone(),
+        ));
+        let foreign_network_client = Arc::new(ForeignNetworkClient::new(
+            global_ctx.clone(),
+            packet_send.clone(),
+            peer_rpc_mgr.clone(),
+        ));
 
         PeerManager {
             my_node_id: global_ctx.get_id(),
@@ -140,13 +163,16 @@ impl PeerManager {
 
             peers: peers.clone(),
 
-            peer_rpc_mgr: Arc::new(PeerRpcManager::new(rpc_tspt.clone())),
+            peer_rpc_mgr,
             peer_rpc_tspt: rpc_tspt,
 
             peer_packet_process_pipeline: Arc::new(RwLock::new(Vec::new())),
             nic_packet_process_pipeline: Arc::new(RwLock::new(Vec::new())),
 
             basic_route,
+
+            foreign_network_manager,
+            foreign_network_client,
         }
     }
 
@@ -155,7 +181,11 @@ impl PeerManager {
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
-        self.peers.add_new_peer_conn(peer).await;
+        if peer.get_network_identity() == self.global_ctx.get_network_identity() {
+            self.peers.add_new_peer_conn(peer).await;
+        } else {
+            self.foreign_network_client.add_new_peer_conn(peer).await;
+        }
         Ok((peer_id, conn_id))
     }
 
@@ -176,7 +206,11 @@ impl PeerManager {
         tracing::info!("add tunnel as server start");
         let mut peer = PeerConn::new(self.my_node_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_server().await?;
-        self.peers.add_new_peer_conn(peer).await;
+        if peer.get_network_identity() == self.global_ctx.get_network_identity() {
+            self.peers.add_new_peer_conn(peer).await;
+        } else {
+            self.foreign_network_manager.add_peer_conn(peer).await?;
+        }
         tracing::info!("add tunnel as server done");
         Ok(())
     }
@@ -312,12 +346,15 @@ impl PeerManager {
         struct Interface {
             my_node_id: uuid::Uuid,
             peers: Arc<PeerMap>,
+            foreign_network_client: Arc<ForeignNetworkClient>,
         }
 
         #[async_trait]
         impl RouteInterface for Interface {
             async fn list_peers(&self) -> Vec<PeerId> {
-                self.peers.list_peers_with_conn().await
+                let mut peers = self.foreign_network_client.list_foreign_peers();
+                peers.extend(self.peers.list_peers_with_conn().await);
+                peers
             }
             async fn send_route_packet(
                 &self,
@@ -325,17 +362,18 @@ impl PeerManager {
                 route_id: u8,
                 dst_peer_id: &PeerId,
             ) -> Result<(), Error> {
+                let packet_bytes: Bytes =
+                    packet::Packet::new_route_packet(self.my_node_id, *dst_peer_id, route_id, &msg)
+                        .into();
+                if self.foreign_network_client.has_next_hop(dst_peer_id) {
+                    return self
+                        .foreign_network_client
+                        .send_msg(packet_bytes, &dst_peer_id)
+                        .await;
+                }
+
                 self.peers
-                    .send_msg_directly(
-                        packet::Packet::new_route_packet(
-                            self.my_node_id,
-                            *dst_peer_id,
-                            route_id,
-                            &msg,
-                        )
-                        .into(),
-                        dst_peer_id,
-                    )
+                    .send_msg_directly(packet_bytes, dst_peer_id)
                     .await
             }
         }
@@ -345,6 +383,7 @@ impl PeerManager {
             .open(Box::new(Interface {
                 my_node_id,
                 peers: self.peers.clone(),
+                foreign_network_client: self.foreign_network_client.clone(),
             }))
             .await
             .unwrap();
@@ -400,22 +439,21 @@ impl PeerManager {
         let peer_map = self.peers.clone();
         self.tasks.lock().await.spawn(async move {
             loop {
-                let mut to_remove = vec![];
-
-                for peer_id in peer_map.list_peers().await {
-                    let conns = peer_map.list_peer_conns(&peer_id).await;
-                    if conns.is_none() || conns.as_ref().unwrap().is_empty() {
-                        to_remove.push(peer_id);
-                    }
-                }
-
-                for peer_id in to_remove {
-                    peer_map.close_peer(&peer_id).await.unwrap();
-                }
-
+                peer_map.clean_peer_without_conn().await;
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
+    }
+
+    async fn run_foriegn_network(&self) {
+        self.peer_rpc_tspt
+            .foreign_peers
+            .lock()
+            .await
+            .replace(self.foreign_network_client.get_peer_map().clone());
+
+        self.foreign_network_manager.run().await;
+        self.foreign_network_client.run().await;
     }
 
     pub async fn run(&self) -> Result<(), Error> {
@@ -425,6 +463,8 @@ impl PeerManager {
         self.start_peer_recv().await;
         self.peer_rpc_mgr.run();
         self.run_clean_peer_without_conn_routine().await;
+
+        self.run_foriegn_network().await;
         Ok(())
     }
 
@@ -450,5 +490,13 @@ impl PeerManager {
 
     pub fn get_basic_route(&self) -> Arc<BasicRoute> {
         self.basic_route.clone()
+    }
+
+    pub fn get_foreign_network_manager(&self) -> Arc<ForeignNetworkManager> {
+        self.foreign_network_manager.clone()
+    }
+
+    pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
+        self.foreign_network_client.clone()
     }
 }

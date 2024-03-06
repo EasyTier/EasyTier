@@ -8,6 +8,9 @@ pub mod peer_rpc;
 pub mod route_trait;
 pub mod rpc_service;
 
+pub mod foreign_network_client;
+pub mod foreign_network_manager;
+
 #[cfg(test)]
 pub mod tests;
 
