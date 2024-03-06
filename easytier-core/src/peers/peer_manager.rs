@@ -414,25 +414,50 @@ impl PeerManager {
             ipv4_addr
         );
 
-        let Some(peer_id) = self.peers.get_peer_id_by_ipv4(&ipv4_addr).await else {
-            log::trace!("no peer id for ipv4: {}", ipv4_addr);
+        let mut dst_peers = vec![];
+        // NOTE: currently we only support ipv4 and cidr is 24
+        if ipv4_addr.octets()[3] == 255 {
+            dst_peers.extend(
+                self.peers
+                    .list_routes()
+                    .await
+                    .iter()
+                    .map(|x| x.key().clone()),
+            );
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(&ipv4_addr).await {
+            dst_peers.push(peer_id);
+        }
+
+        if dst_peers.is_empty() {
+            log::error!("no peer id for ipv4: {}", ipv4_addr);
             return Ok(());
-        };
+        }
 
         let msg = self.run_nic_packet_process_pipeline(msg).await;
-        self.peers
-            .send_msg(
-                packet::Packet::new_data_packet(self.my_node_id, peer_id, &msg).into(),
-                &peer_id,
-            )
-            .await?;
+        let mut errs: Vec<Error> = vec![];
 
-        log::trace!(
-            "do send_msg in peer manager done, dst_peer_id: {:?}",
-            peer_id
-        );
+        for peer_id in dst_peers.iter() {
+            let send_ret = self
+                .peers
+                .send_msg(
+                    packet::Packet::new_data_packet(self.my_node_id, peer_id.clone(), &msg).into(),
+                    &peer_id,
+                )
+                .await;
 
-        Ok(())
+            if let Err(send_ret) = send_ret {
+                errs.push(send_ret);
+            }
+        }
+
+        tracing::trace!(?dst_peers, "do send_msg in peer manager done");
+
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            tracing::error!(?errs, "send_msg has error");
+            Err(anyhow::anyhow!("send_msg has error: {:?}", errs).into())
+        }
     }
 
     async fn run_clean_peer_without_conn_routine(&self) {

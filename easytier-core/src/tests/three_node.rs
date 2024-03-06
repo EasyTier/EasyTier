@@ -1,3 +1,7 @@
+use std::sync::{atomic::AtomicU32, Arc};
+
+use tokio::{net::UdpSocket, task::JoinSet};
+
 use super::*;
 
 use crate::{
@@ -258,4 +262,53 @@ pub async fn udp_proxy_three_node_test() {
         NetNS::new(Some("net_a".into())),
     )
     .await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn udp_broadcast_test() {
+    let _insts = init_three_node("tcp").await;
+
+    let udp_broadcast_responder = |net_ns: NetNS, counter: Arc<AtomicU32>| async move {
+        let _g = net_ns.guard();
+        let socket: UdpSocket = UdpSocket::bind("0.0.0.0:22111").await.unwrap();
+        socket.set_broadcast(true).unwrap();
+
+        println!("Awaiting responses..."); // self.recv_buff is a [u8; 8092]
+        let mut recv_buff = [0; 8092];
+        while let Ok((n, addr)) = socket.recv_from(&mut recv_buff).await {
+            println!("{} bytes response from {:?}", n, addr);
+            counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // Remaining code not directly relevant to the question
+        }
+    };
+
+    let mut tasks = JoinSet::new();
+    let counter = Arc::new(AtomicU32::new(0));
+    tasks.spawn(udp_broadcast_responder(
+        NetNS::new(Some("net_b".into())),
+        counter.clone(),
+    ));
+    tasks.spawn(udp_broadcast_responder(
+        NetNS::new(Some("net_c".into())),
+        counter.clone(),
+    ));
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    // send broadcast
+    let net_ns = NetNS::new(Some("net_a".into()));
+    let _g = net_ns.guard();
+    let socket: UdpSocket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+    socket.set_broadcast(true).unwrap();
+    // socket.connect(("10.144.144.255", 22111)).await.unwrap();
+    let call: Vec<u8> = vec![1; 1024];
+    println!("Sending call, {} bytes", call.len());
+    match socket.send_to(&call, "10.144.144.255:22111").await {
+        Err(e) => panic!("Error sending call: {:?}", e),
+        _ => {}
+    }
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
