@@ -71,8 +71,8 @@ easytier-cli route
 - [x] NAT Traverse with relaying.
 - [x] NAT Traverse with UDP hole punching.
 
-- [ ] Support shared public server. So users can use it without a public server.
+- [x] Support shared public server. So users can use it without a public server.
+- [x] Broadcast & Multicast support.
 - [ ] Encryption. With noise framework or other method.
 - [ ] Support mobile platforms.
-- [ ] Broadcast & Multicast support.
 - [ ] UI tools.

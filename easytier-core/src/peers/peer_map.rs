@@ -202,4 +202,17 @@ impl PeerMap {
             self.close_peer(&peer_id).await.unwrap();
         }
     }
+
+    pub async fn list_routes(&self) -> DashMap<PeerId, PeerId> {
+        let route_map = DashMap::new();
+        for route in self.routes.read().await.iter() {
+            for item in route.list_routes().await.iter() {
+                route_map.insert(
+                    item.peer_id.parse().unwrap(),
+                    item.next_hop_peer_id.parse().unwrap(),
+                );
+            }
+        }
+        route_map
+    }
 }
