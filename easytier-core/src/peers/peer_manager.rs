@@ -416,7 +416,7 @@ impl PeerManager {
 
         let mut dst_peers = vec![];
         // NOTE: currently we only support ipv4 and cidr is 24
-        if ipv4_addr.octets()[3] == 255 {
+        if ipv4_addr.is_broadcast() || ipv4_addr.is_multicast() || ipv4_addr.octets()[3] == 255 {
             dst_peers.extend(
                 self.peers
                     .list_routes()
@@ -429,7 +429,7 @@ impl PeerManager {
         }
 
         if dst_peers.is_empty() {
-            log::error!("no peer id for ipv4: {}", ipv4_addr);
+            tracing::info!("no peer id for ipv4: {}", ipv4_addr);
             return Ok(());
         }
 

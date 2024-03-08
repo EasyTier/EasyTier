@@ -7,6 +7,7 @@ use std::{
     ptr,
 };
 
+use network_interface::NetworkInterfaceConfig;
 use windows_sys::{
     core::PCSTR,
     Win32::{
@@ -61,18 +62,21 @@ pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     Ok(())
 }
 
-pub fn find_interface_index_cached(iface_name: &str) -> io::Result<u32> {
-    let ifaces = pnet::datalink::interfaces();
-    for iface in ifaces {
-        if iface.name == iface_name {
-            return Ok(iface.index);
-        }
+pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
+    let ifaces = network_interface::NetworkInterface::show().map_err(|e| {
+        io::Error::new(
+            ErrorKind::NotFound,
+            format!("Failed to get interfaces. {}, error: {}", iface_name, e),
+        )
+    })?;
+    if let Some(iface) = ifaces.iter().find(|iface| iface.name == iface_name) {
+        return Ok(iface.index);
     }
-    let err = io::Error::new(
+    tracing::error!("Failed to find interface index for {}", iface_name);
+    Err(io::Error::new(
         ErrorKind::NotFound,
-        format!("Failed to find interface index for {}", iface_name),
-    );
-    Err(err)
+        format!("{}", iface_name),
+    ))
 }
 
 pub fn set_ip_unicast_if<S: AsRawSocket>(
@@ -82,7 +86,7 @@ pub fn set_ip_unicast_if<S: AsRawSocket>(
 ) -> io::Result<()> {
     let handle = socket.as_raw_socket() as SOCKET;
 
-    let if_index = find_interface_index_cached(iface)?;
+    let if_index = find_interface_index(iface)?;
 
     unsafe {
         // https://docs.microsoft.com/en-us/windows/win32/winsock/ipproto-ip-socket-options

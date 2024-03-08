@@ -7,6 +7,7 @@ use std::{
 
 use async_stream::stream;
 use futures::{Future, FutureExt, Sink, SinkExt, Stream, StreamExt};
+use network_interface::NetworkInterfaceConfig;
 use tokio::{sync::Mutex, time::error::Elapsed};
 
 use std::pin::Pin;
@@ -258,14 +259,19 @@ impl Tunnel for TunnelWithCustomInfo {
 }
 
 pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
-    let ifaces = pnet::datalink::interfaces();
+    if local_ip.is_unspecified() || local_ip.is_multicast() {
+        return None;
+    }
+    let ifaces = network_interface::NetworkInterface::show().ok()?;
     for iface in ifaces {
-        for ip in iface.ips {
-            if ip.ip() == *local_ip {
+        for addr in iface.addr {
+            if addr.ip() == *local_ip {
                 return Some(iface.name);
             }
         }
     }
+
+    tracing::error!(?local_ip, "can not find interface name by ip");
     None
 }
 

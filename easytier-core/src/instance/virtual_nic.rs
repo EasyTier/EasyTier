@@ -54,6 +54,7 @@ impl VirtualNic {
         let mut config = tun::Configuration::default();
         let has_packet_info = cfg!(target_os = "macos");
         config.layer(tun::Layer::L3);
+        config.name(format!("et_{}", self.global_ctx.inst_name));
 
         #[cfg(target_os = "linux")]
         {
