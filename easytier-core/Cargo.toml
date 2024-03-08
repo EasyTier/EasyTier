@@ -90,6 +90,8 @@ clap = { version = "4.4", features = ["derive"] }
 
 async-recursion = "1.0.5"
 
+network-interface = "1.1.1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Networking_WinSock",

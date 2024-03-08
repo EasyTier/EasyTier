@@ -202,7 +202,46 @@ pub struct WindowsIfConfiger {}
 #[cfg(target_os = "windows")]
 impl WindowsIfConfiger {
     pub fn get_interface_index(name: &str) -> Option<u32> {
-        crate::arch::windows::find_interface_index_cached(name).ok()
+        crate::arch::windows::find_interface_index(name).ok()
+    }
+
+    async fn list_ipv4(name: &str) -> Result<Vec<Ipv4Addr>, Error> {
+        use anyhow::Context;
+        use network_interface::NetworkInterfaceConfig;
+        use std::net::IpAddr;
+        let ret = network_interface::NetworkInterface::show().with_context(|| "show interface")?;
+        let addrs = ret
+            .iter()
+            .filter_map(|x| {
+                if x.name != name {
+                    return None;
+                }
+                Some(x.addr.clone())
+            })
+            .flat_map(|x| x)
+            .map(|x| x.ip())
+            .filter_map(|x| {
+                if let IpAddr::V4(ipv4) = x {
+                    Some(ipv4)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        Ok(addrs)
+    }
+
+    async fn remove_one_ipv4(name: &str, ip: Ipv4Addr) -> Result<(), Error> {
+        run_shell_cmd(
+            format!(
+                "netsh interface ipv4 delete address {} address={}",
+                name,
+                ip.to_string()
+            )
+            .as_str(),
+        )
+        .await
     }
 }
 
@@ -283,17 +322,12 @@ impl IfConfiguerTrait for WindowsIfConfiger {
 
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Addr>) -> Result<(), Error> {
         if ip.is_none() {
-            run_shell_cmd(format!("netsh interface ipv4 delete address {}", name).as_str()).await
+            for ip in Self::list_ipv4(name).await?.iter() {
+                Self::remove_one_ipv4(name, *ip).await?;
+            }
+            Ok(())
         } else {
-            run_shell_cmd(
-                format!(
-                    "netsh interface ipv4 delete address {} address={}",
-                    name,
-                    ip.unwrap().to_string()
-                )
-                .as_str(),
-            )
-            .await
+            Self::remove_one_ipv4(name, ip.unwrap()).await
         }
     }
 
@@ -301,18 +335,15 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         Ok(
             tokio::time::timeout(std::time::Duration::from_secs(10), async move {
                 loop {
-                    let Ok(_) = run_shell_cmd(
-                        format!("netsh interface ipv4 show interfaces {}", name).as_str(),
-                    )
-                    .await
-                    else {
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        continue;
-                    };
-                    break;
+                    if let Some(idx) = Self::get_interface_index(name) {
+                        tracing::info!(?name, ?idx, "Interface found");
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
+                Ok::<(), Error>(())
             })
-            .await?,
+            .await??,
         )
     }
 }

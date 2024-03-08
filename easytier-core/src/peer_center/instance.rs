@@ -83,7 +83,7 @@ impl PeerCenterBase {
                 });
                 loop {
                     let Some(center_peer) = Self::select_center_peer(&peer_mgr).await else {
-                        tracing::warn!("no center peer found, sleep 1 second");
+                        tracing::trace!("no center peer found, sleep 1 second");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     };
