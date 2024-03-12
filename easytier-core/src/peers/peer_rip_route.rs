@@ -13,7 +13,6 @@ use tokio::{
 };
 use tokio_util::bytes::Bytes;
 use tracing::Instrument;
-use uuid::Uuid;
 
 use crate::{
     common::{
@@ -21,11 +20,11 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         rkyv_util::{decode_from_bytes, encode_to_bytes, extract_bytes_from_archived_vec},
         stun::StunInfoCollectorTrait,
+        PeerId,
     },
     peers::{
-        packet::{self, UUID},
+        packet::{self},
         route_trait::{Route, RouteInterfaceBox},
-        PeerId,
     },
     rpc::{NatType, StunInfo},
 };
@@ -44,7 +43,7 @@ type Version = u32;
 #[archive_attr(derive(Debug))]
 pub struct SyncPeerInfo {
     // means next hop in route table.
-    pub peer_id: UUID,
+    pub peer_id: PeerId,
     pub cost: u32,
     pub ipv4_addr: Option<Ipv4Addr>,
     pub proxy_cidrs: Vec<String>,
@@ -53,7 +52,7 @@ pub struct SyncPeerInfo {
 }
 
 impl SyncPeerInfo {
-    pub fn new_self(from_peer: UUID, global_ctx: &ArcGlobalCtx) -> Self {
+    pub fn new_self(from_peer: PeerId, global_ctx: &ArcGlobalCtx) -> Self {
         SyncPeerInfo {
             peer_id: from_peer,
             cost: 0,
@@ -71,9 +70,9 @@ impl SyncPeerInfo {
         }
     }
 
-    pub fn clone_for_route_table(&self, next_hop: &UUID, cost: u32, from: &Self) -> Self {
+    pub fn clone_for_route_table(&self, next_hop: PeerId, cost: u32, from: &Self) -> Self {
         SyncPeerInfo {
-            peer_id: next_hop.clone(),
+            peer_id: next_hop,
             cost,
             ipv4_addr: from.ipv4_addr.clone(),
             proxy_cidrs: from.proxy_cidrs.clone(),
@@ -100,8 +99,8 @@ pub struct SyncPeer {
 
 impl SyncPeer {
     pub fn new(
-        from_peer: UUID,
-        _to_peer: UUID,
+        from_peer: PeerId,
+        _to_peer: PeerId,
         neighbors: Vec<SyncPeerInfo>,
         global_ctx: ArcGlobalCtx,
         version: Version,
@@ -124,13 +123,13 @@ struct SyncPeerFromRemote {
     last_update: std::time::Instant,
 }
 
-type SyncPeerFromRemoteMap = Arc<DashMap<uuid::Uuid, SyncPeerFromRemote>>;
+type SyncPeerFromRemoteMap = Arc<DashMap<PeerId, SyncPeerFromRemote>>;
 
 #[derive(Debug)]
 struct RouteTable {
-    route_info: DashMap<uuid::Uuid, SyncPeerInfo>,
-    ipv4_peer_id_map: DashMap<Ipv4Addr, uuid::Uuid>,
-    cidr_peer_id_map: DashMap<cidr::IpCidr, uuid::Uuid>,
+    route_info: DashMap<PeerId, SyncPeerInfo>,
+    ipv4_peer_id_map: DashMap<Ipv4Addr, PeerId>,
+    cidr_peer_id_map: DashMap<cidr::IpCidr, PeerId>,
 }
 
 impl RouteTable {
@@ -182,7 +181,7 @@ impl RouteVersion {
 }
 
 pub struct BasicRoute {
-    my_peer_id: packet::UUID,
+    my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
     interface: Arc<Mutex<Option<RouteInterfaceBox>>>,
 
@@ -200,9 +199,9 @@ pub struct BasicRoute {
 }
 
 impl BasicRoute {
-    pub fn new(my_peer_id: Uuid, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx) -> Self {
         BasicRoute {
-            my_peer_id: my_peer_id.into(),
+            my_peer_id,
             global_ctx: global_ctx.clone(),
             interface: Arc::new(Mutex::new(None)),
 
@@ -223,7 +222,7 @@ impl BasicRoute {
     }
 
     fn update_route_table(
-        my_id: packet::UUID,
+        my_id: PeerId,
         sync_peer_reqs: SyncPeerFromRemoteMap,
         route_table: Arc<RouteTable>,
     ) {
@@ -231,18 +230,18 @@ impl BasicRoute {
 
         let new_route_table = Arc::new(RouteTable::new());
         for item in sync_peer_reqs.iter() {
-            Self::update_route_table_with_req(
-                my_id.clone(),
-                &item.value().packet,
-                new_route_table.clone(),
-            );
+            Self::update_route_table_with_req(my_id, &item.value().packet, new_route_table.clone());
         }
 
         route_table.copy_from(&new_route_table);
     }
 
-    async fn update_myself(myself: &Arc<RwLock<SyncPeerInfo>>, global_ctx: &ArcGlobalCtx) -> bool {
-        let new_myself = SyncPeerInfo::new_self(global_ctx.get_id().into(), &global_ctx);
+    async fn update_myself(
+        my_peer_id: PeerId,
+        myself: &Arc<RwLock<SyncPeerInfo>>,
+        global_ctx: &ArcGlobalCtx,
+    ) -> bool {
+        let new_myself = SyncPeerInfo::new_self(my_peer_id, &global_ctx);
         if *myself.read().await != new_myself {
             *myself.write().await = new_myself;
             true
@@ -251,26 +250,22 @@ impl BasicRoute {
         }
     }
 
-    fn update_route_table_with_req(
-        my_id: packet::UUID,
-        packet: &SyncPeer,
-        route_table: Arc<RouteTable>,
-    ) {
+    fn update_route_table_with_req(my_id: PeerId, packet: &SyncPeer, route_table: Arc<RouteTable>) {
         let peer_id = packet.myself.peer_id.clone();
         let update = |cost: u32, peer_info: &SyncPeerInfo| {
-            let node_id: uuid::Uuid = peer_info.peer_id.clone().into();
+            let node_id: PeerId = peer_info.peer_id.into();
             let ret = route_table
                 .route_info
                 .entry(node_id.clone().into())
                 .and_modify(|info| {
                     if info.cost > cost {
-                        *info = info.clone_for_route_table(&peer_id, cost, &peer_info);
+                        *info = info.clone_for_route_table(peer_id, cost, &peer_info);
                     }
                 })
                 .or_insert(
                     peer_info
                         .clone()
-                        .clone_for_route_table(&peer_id, cost, &peer_info),
+                        .clone_for_route_table(peer_id, cost, &peer_info),
                 )
                 .value()
                 .clone();
@@ -321,7 +316,7 @@ impl BasicRoute {
 
     async fn send_sync_peer_request(
         interface: &RouteInterfaceBox,
-        my_peer_id: packet::UUID,
+        my_peer_id: PeerId,
         global_ctx: ArcGlobalCtx,
         peer_id: PeerId,
         route_table: Arc<RouteTable>,
@@ -333,11 +328,11 @@ impl BasicRoute {
         // copy the route info
         for item in route_table.route_info.iter() {
             let (k, v) = item.pair();
-            route_info_copy.push(v.clone().clone_for_route_table(&(*k).into(), v.cost, &v));
+            route_info_copy.push(v.clone().clone_for_route_table(*k, v.cost, &v));
         }
         let msg = SyncPeer::new(
             my_peer_id,
-            peer_id.into(),
+            peer_id,
             route_info_copy,
             global_ctx,
             my_version,
@@ -346,7 +341,7 @@ impl BasicRoute {
         );
         // TODO: this may exceed the MTU of the tunnel
         interface
-            .send_route_packet(encode_to_bytes::<_, 4096>(&msg), 1, &peer_id)
+            .send_route_packet(encode_to_bytes::<_, 4096>(&msg), 1, peer_id)
             .await
     }
 
@@ -363,7 +358,7 @@ impl BasicRoute {
         self.tasks.lock().await.spawn(
             async move {
                 loop {
-                    if Self::update_myself(&myself, &global_ctx).await {
+                    if Self::update_myself(my_peer_id,&myself, &global_ctx).await {
                         version.inc();
                         tracing::info!(
                             my_id = ?my_peer_id,
@@ -378,7 +373,7 @@ impl BasicRoute {
                     let peers = interface.list_peers().await;
                     for peer in peers.iter() {
                         let last_send_time = last_send_time_map.get(peer).map(|v| *v).unwrap_or((0, None, Instant::now() - Duration::from_secs(3600)));
-                        let my_version_peer_saved = sync_peer_from_remote.get(&peer).and_then(|v| v.packet.peer_version);
+                        let my_version_peer_saved = sync_peer_from_remote.get(peer).and_then(|v| v.packet.peer_version);
                         let peer_have_latest_version = my_version_peer_saved == Some(version.get());
                         if peer_have_latest_version && last_send_time.2.elapsed().as_secs() < SEND_ROUTE_PERIOD_SEC {
                             last_send_time_map_new.insert(*peer, last_send_time);
@@ -478,7 +473,7 @@ impl BasicRoute {
 
                 if need_update_route {
                     Self::update_route_table(
-                        my_peer_id.clone(),
+                        my_peer_id,
                         sync_peer_from_remote.clone(),
                         route_table.clone(),
                     );
@@ -508,13 +503,13 @@ impl BasicRoute {
     }
 
     #[tracing::instrument(skip(self, packet), fields(my_id = ?self.my_peer_id, ctx = ?self.global_ctx))]
-    async fn handle_route_packet(&self, src_peer_id: uuid::Uuid, packet: Bytes) {
+    async fn handle_route_packet(&self, src_peer_id: PeerId, packet: Bytes) {
         let packet = decode_from_bytes::<SyncPeer>(&packet).unwrap();
         let p: SyncPeer = packet.deserialize(&mut rkyv::Infallible).unwrap();
         let mut updated = true;
-        assert_eq!(packet.myself.peer_id.to_uuid(), src_peer_id);
+        assert_eq!(packet.myself.peer_id, src_peer_id);
         self.sync_peer_from_remote
-            .entry(packet.myself.peer_id.to_uuid())
+            .entry(packet.myself.peer_id.into())
             .and_modify(|v| {
                 if v.packet.myself == p.myself && v.packet.neighbors == p.neighbors {
                     updated = false;
@@ -547,7 +542,7 @@ impl BasicRoute {
 
         if packet.need_reply {
             self.last_send_time_map
-                .entry(packet.myself.peer_id.to_uuid())
+                .entry(packet.myself.peer_id.into())
                 .and_modify(|v| {
                     const FAST_REPLY_DURATION: u64 =
                         SEND_ROUTE_PERIOD_SEC - SEND_ROUTE_FAST_REPLY_SEC;
@@ -577,8 +572,8 @@ impl Route for BasicRoute {
 
     async fn close(&self) {}
 
-    async fn get_next_hop(&self, dst_peer_id: &PeerId) -> Option<PeerId> {
-        match self.route_table.route_info.get(dst_peer_id) {
+    async fn get_next_hop(&self, dst_peer_id: PeerId) -> Option<PeerId> {
+        match self.route_table.route_info.get(&dst_peer_id) {
             Some(info) => {
                 return Some(info.peer_id.clone().into());
             }
@@ -592,15 +587,15 @@ impl Route for BasicRoute {
     async fn list_routes(&self) -> Vec<crate::rpc::Route> {
         let mut routes = Vec::new();
 
-        let parse_route_info = |real_peer_id: &Uuid, route_info: &SyncPeerInfo| {
+        let parse_route_info = |real_peer_id: PeerId, route_info: &SyncPeerInfo| {
             let mut route = crate::rpc::Route::default();
             route.ipv4_addr = if let Some(ipv4_addr) = route_info.ipv4_addr {
                 ipv4_addr.to_string()
             } else {
                 "".to_string()
             };
-            route.peer_id = real_peer_id.to_string();
-            route.next_hop_peer_id = Uuid::from(route_info.peer_id.clone()).to_string();
+            route.peer_id = real_peer_id;
+            route.next_hop_peer_id = route_info.peer_id;
             route.cost = route_info.cost as i32;
             route.proxy_cidrs = route_info.proxy_cidrs.clone();
             route.hostname = if let Some(hostname) = &route_info.hostname {
@@ -619,7 +614,7 @@ impl Route for BasicRoute {
         };
 
         self.route_table.route_info.iter().for_each(|item| {
-            routes.push(parse_route_info(item.key(), item.value()));
+            routes.push(parse_route_info(*item.key(), item.value()));
         });
 
         routes
@@ -650,7 +645,7 @@ impl PeerPacketFilter for BasicRoute {
             &packet.body
         {
             self.handle_route_packet(
-                packet.from_peer.to_uuid(),
+                packet.from_peer.into(),
                 extract_bytes_from_archived_vec(&data, &route_packet.body),
             )
             .await;
@@ -666,12 +661,12 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
+        common::PeerId,
         connector::udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
         peers::{
             peer_manager::PeerManager,
             peer_rip_route::Version,
             tests::{connect_peer_manager, wait_route_appear},
-            PeerId,
         },
         rpc::NatType,
     };
@@ -683,10 +678,10 @@ mod tests {
         let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_node_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
             .await
             .unwrap();
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_node_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
             .await
             .unwrap();
 
@@ -694,12 +689,12 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(4)).await;
 
-        let check_version = |version: Version, uuid: PeerId, mgrs: &Vec<Arc<PeerManager>>| {
+        let check_version = |version: Version, peer_id: PeerId, mgrs: &Vec<Arc<PeerManager>>| {
             for mgr in mgrs.iter() {
                 tracing::warn!(
                     "check version: {:?}, {:?}, {:?}, {:?}",
                     version,
-                    uuid,
+                    peer_id,
                     mgr,
                     mgr.get_basic_route().sync_peer_from_remote
                 );
@@ -707,7 +702,7 @@ mod tests {
                     version,
                     mgr.get_basic_route()
                         .sync_peer_from_remote
-                        .get(&uuid)
+                        .get(&peer_id)
                         .unwrap()
                         .packet
                         .version,
@@ -715,7 +710,7 @@ mod tests {
                 assert_eq!(
                     mgr.get_basic_route()
                         .sync_peer_from_remote
-                        .get(&uuid)
+                        .get(&peer_id)
                         .unwrap()
                         .packet
                         .peer_version
@@ -729,19 +724,19 @@ mod tests {
             // check peer version in other peer mgr are correct.
             check_version(
                 peer_mgr_b.get_basic_route().version.get(),
-                peer_mgr_b.my_node_id(),
+                peer_mgr_b.my_peer_id(),
                 &vec![peer_mgr_a.clone(), peer_mgr_c.clone()],
             );
 
             check_version(
                 peer_mgr_a.get_basic_route().version.get(),
-                peer_mgr_a.my_node_id(),
+                peer_mgr_a.my_peer_id(),
                 &vec![peer_mgr_b.clone()],
             );
 
             check_version(
                 peer_mgr_c.get_basic_route().version.get(),
-                peer_mgr_c.my_node_id(),
+                peer_mgr_c.my_peer_id(),
                 &vec![peer_mgr_b.clone()],
             );
         };

@@ -4,6 +4,8 @@ use thiserror::Error;
 
 use crate::tunnels;
 
+use super::PeerId;
+
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("io error")]
@@ -13,7 +15,7 @@ pub enum Error {
     #[error("tunnel error {0}")]
     TunnelError(#[from] tunnels::TunnelError),
     #[error("Peer has no conn, PeerId: {0}")]
-    PeerNoConnectionError(uuid::Uuid),
+    PeerNoConnectionError(PeerId),
     #[error("RouteError: {0}")]
     RouteError(String),
     #[error("Not found")]

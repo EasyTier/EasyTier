@@ -54,7 +54,6 @@ impl VirtualNic {
         let mut config = tun::Configuration::default();
         let has_packet_info = cfg!(target_os = "macos");
         config.layer(tun::Layer::L3);
-        config.name(format!("et_{}", self.global_ctx.inst_name));
 
         #[cfg(target_os = "linux")]
         {
@@ -62,7 +61,6 @@ impl VirtualNic {
                 // detect protocol by ourselves for cross platform
                 config.packet_information(false);
             });
-            config.name(self.dev_name.clone());
         }
 
         if self.queue_num != 1 {

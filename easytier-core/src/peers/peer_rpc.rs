@@ -11,7 +11,10 @@ use tokio::{
 use tokio_util::bytes::Bytes;
 use tracing::Instrument;
 
-use crate::{common::error::Error, peers::packet::Packet};
+use crate::{
+    common::{error::Error, PeerId},
+    peers::packet::Packet,
+};
 
 use super::packet::{CtrlPacketBody, PacketBody};
 
@@ -20,22 +23,22 @@ type PeerRpcServiceId = u32;
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait PeerRpcManagerTransport: Send + Sync + 'static {
-    fn my_peer_id(&self) -> uuid::Uuid;
-    async fn send(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error>;
+    fn my_peer_id(&self) -> PeerId;
+    async fn send(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error>;
     async fn recv(&self) -> Result<Bytes, Error>;
 }
 
 type PacketSender = UnboundedSender<Packet>;
 
 struct PeerRpcEndPoint {
-    peer_id: uuid::Uuid,
+    peer_id: PeerId,
     packet_sender: PacketSender,
     tasks: JoinSet<()>,
 }
 
-type PeerRpcEndPointCreator = Box<dyn Fn(uuid::Uuid) -> PeerRpcEndPoint + Send + Sync + 'static>;
+type PeerRpcEndPointCreator = Box<dyn Fn(PeerId) -> PeerRpcEndPoint + Send + Sync + 'static>;
 #[derive(Hash, Eq, PartialEq, Clone)]
-struct PeerRpcClientCtxKey(uuid::Uuid, PeerRpcServiceId);
+struct PeerRpcClientCtxKey(PeerId, PeerRpcServiceId);
 
 // handle rpc request from one peer
 pub struct PeerRpcManager {
@@ -44,7 +47,7 @@ pub struct PeerRpcManager {
     tspt: Arc<Box<dyn PeerRpcManagerTransport>>,
 
     service_registry: Arc<DashMap<PeerRpcServiceId, PeerRpcEndPointCreator>>,
-    peer_rpc_endpoints: Arc<DashMap<(uuid::Uuid, PeerRpcServiceId), PeerRpcEndPoint>>,
+    peer_rpc_endpoints: Arc<DashMap<(PeerId, PeerRpcServiceId), PeerRpcEndPoint>>,
 
     client_resp_receivers: Arc<DashMap<PeerRpcClientCtxKey, PacketSender>>,
 }
@@ -59,8 +62,8 @@ impl std::fmt::Debug for PeerRpcManager {
 
 #[derive(Debug)]
 struct TaRpcPacketInfo {
-    from_peer: uuid::Uuid,
-    to_peer: uuid::Uuid,
+    from_peer: PeerId,
+    to_peer: PeerId,
     service_id: PeerRpcServiceId,
     is_req: bool,
     content: Vec<u8>,
@@ -89,7 +92,7 @@ impl PeerRpcManager {
         S::Fut: Send + 'static,
     {
         let tspt = self.tspt.clone();
-        let creator = Box::new(move |peer_id: uuid::Uuid| {
+        let creator = Box::new(move |peer_id: PeerId| {
             let mut tasks = JoinSet::new();
             let (packet_sender, mut packet_receiver) = mpsc::unbounded_channel::<Packet>();
             let (mut client_transport, server_transport) = tarpc::transport::channel::unbounded();
@@ -103,7 +106,7 @@ impl PeerRpcManager {
 
             let tspt = tspt.clone();
             tasks.spawn(async move {
-                let mut cur_req_uuid = None;
+                let mut cur_req_peer_id = None;
                 loop {
                     tokio::select! {
                         Some(resp) = client_transport.next() => {
@@ -115,8 +118,8 @@ impl PeerRpcManager {
                             }
                             let resp = resp.unwrap();
 
-                            if cur_req_uuid.is_none() {
-                                tracing::error!("[PEER RPC MGR] cur_req_uuid is none, ignore this resp");
+                            if cur_req_peer_id.is_none() {
+                                tracing::error!("[PEER RPC MGR] cur_req_peer_id is none, ignore this resp");
                                 continue;
                             }
 
@@ -128,13 +131,13 @@ impl PeerRpcManager {
 
                             let msg = Packet::new_tarpc_packet(
                                 tspt.my_peer_id(),
-                                cur_req_uuid.take().unwrap(),
+                                cur_req_peer_id.take().unwrap(),
                                 service_id,
                                 false,
                                 serialized_resp.unwrap(),
                             );
 
-                            if let Err(e) = tspt.send(msg.into(), &peer_id).await {
+                            if let Err(e) = tspt.send(msg.into(), peer_id).await {
                                 tracing::error!(error = ?e, peer_id = ?peer_id, service_id = ?service_id, "send resp to peer failed");
                             }
                         }
@@ -152,7 +155,7 @@ impl PeerRpcManager {
                             }
 
                             assert_eq!(info.service_id, service_id);
-                            cur_req_uuid = Some(packet.from_peer.clone().into());
+                            cur_req_peer_id = Some(packet.from_peer.clone().into());
 
                             tracing::trace!("recv packet from peer, packet: {:?}", packet);
 
@@ -205,8 +208,8 @@ impl PeerRpcManager {
     fn parse_rpc_packet(packet: &Packet) -> Result<TaRpcPacketInfo, Error> {
         match &packet.body {
             PacketBody::Ctrl(CtrlPacketBody::TaRpc(id, is_req, body)) => Ok(TaRpcPacketInfo {
-                from_peer: packet.from_peer.clone().into(),
-                to_peer: packet.to_peer.clone().unwrap().into(),
+                from_peer: packet.from_peer.into(),
+                to_peer: packet.to_peer.into(),
                 service_id: *id,
                 is_req: *is_req,
                 content: body.clone(),
@@ -267,7 +270,7 @@ impl PeerRpcManager {
     pub async fn do_client_rpc_scoped<CM, Req, RpcRet, Fut>(
         &self,
         service_id: PeerRpcServiceId,
-        dst_peer_id: uuid::Uuid,
+        dst_peer_id: PeerId,
         f: impl FnOnce(UnboundedChannel<CM, Req>) -> Fut,
     ) -> RpcRet
     where
@@ -304,7 +307,7 @@ impl PeerRpcManager {
                     a.unwrap(),
                 );
 
-                if let Err(e) = tspt.send(a.into(), &dst_peer_id).await {
+                if let Err(e) = tspt.send(a.into(), dst_peer_id).await {
                     tracing::error!(error = ?e, dst_peer_id = ?dst_peer_id, "send to peer failed");
                 }
             }
@@ -343,7 +346,7 @@ impl PeerRpcManager {
         f(client_transport).await
     }
 
-    pub fn my_peer_id(&self) -> uuid::Uuid {
+    pub fn my_peer_id(&self) -> PeerId {
         self.tspt.my_peer_id()
     }
 }
@@ -354,7 +357,7 @@ mod tests {
     use tokio_util::bytes::Bytes;
 
     use crate::{
-        common::error::Error,
+        common::{error::Error, new_peer_id, PeerId},
         peers::{
             peer_rpc::PeerRpcManager,
             tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
@@ -385,15 +388,15 @@ mod tests {
     async fn peer_rpc_basic_test() {
         struct MockTransport {
             tunnel: Box<dyn tunnels::Tunnel>,
-            my_peer_id: uuid::Uuid,
+            my_peer_id: PeerId,
         }
 
         #[async_trait::async_trait]
         impl PeerRpcManagerTransport for MockTransport {
-            fn my_peer_id(&self) -> uuid::Uuid {
+            fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
             }
-            async fn send(&self, msg: Bytes, _dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
+            async fn send(&self, msg: Bytes, _dst_peer_id: PeerId) -> Result<(), Error> {
                 println!("rpc mgr send: {:?}", msg);
                 self.tunnel.pin_sink().send(msg).await.unwrap();
                 Ok(())
@@ -409,7 +412,7 @@ mod tests {
 
         let server_rpc_mgr = PeerRpcManager::new(MockTransport {
             tunnel: st,
-            my_peer_id: uuid::Uuid::new_v4(),
+            my_peer_id: new_peer_id(),
         });
         server_rpc_mgr.run();
         let s = MockService {
@@ -419,7 +422,7 @@ mod tests {
 
         let client_rpc_mgr = PeerRpcManager::new(MockTransport {
             tunnel: ct,
-            my_peer_id: uuid::Uuid::new_v4(),
+            my_peer_id: new_peer_id(),
         });
         client_rpc_mgr.run();
 
@@ -442,23 +445,23 @@ mod tests {
         let peer_mgr_c = create_mock_peer_manager().await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_node_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
             .await
             .unwrap();
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_node_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
             .await
             .unwrap();
 
         assert_eq!(peer_mgr_a.get_peer_map().list_peers().await.len(), 1);
         assert_eq!(
             peer_mgr_a.get_peer_map().list_peers().await[0],
-            peer_mgr_b.my_node_id()
+            peer_mgr_b.my_peer_id()
         );
 
         assert_eq!(peer_mgr_c.get_peer_map().list_peers().await.len(), 1);
         assert_eq!(
             peer_mgr_c.get_peer_map().list_peers().await[0],
-            peer_mgr_b.my_node_id()
+            peer_mgr_b.my_peer_id()
         );
 
         let s = MockService {
@@ -468,7 +471,7 @@ mod tests {
 
         let ip_list = peer_mgr_a
             .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(1, peer_mgr_b.my_node_id(), |c| async {
+            .do_client_rpc_scoped(1, peer_mgr_b.my_peer_id(), |c| async {
                 let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
                 let ret = c.hello(tarpc::context::current(), "abc".to_owned()).await;
                 ret
@@ -479,7 +482,7 @@ mod tests {
 
         let ip_list = peer_mgr_c
             .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(1, peer_mgr_b.my_node_id(), |c| async {
+            .do_client_rpc_scoped(1, peer_mgr_b.my_peer_id(), |c| async {
                 let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
                 let ret = c.hello(tarpc::context::current(), "bcd".to_owned()).await;
                 ret
@@ -494,14 +497,14 @@ mod tests {
         let peer_mgr_a = create_mock_peer_manager().await;
         let peer_mgr_b = create_mock_peer_manager().await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_node_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
             .await
             .unwrap();
 
         assert_eq!(peer_mgr_a.get_peer_map().list_peers().await.len(), 1);
         assert_eq!(
             peer_mgr_a.get_peer_map().list_peers().await[0],
-            peer_mgr_b.my_node_id()
+            peer_mgr_b.my_peer_id()
         );
 
         let s = MockService {
@@ -515,7 +518,7 @@ mod tests {
 
         let ip_list = peer_mgr_a
             .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(1, peer_mgr_b.my_node_id(), |c| async {
+            .do_client_rpc_scoped(1, peer_mgr_b.my_peer_id(), |c| async {
                 let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
                 let ret = c.hello(tarpc::context::current(), "abc".to_owned()).await;
                 ret
@@ -526,7 +529,7 @@ mod tests {
 
         let ip_list = peer_mgr_a
             .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(2, peer_mgr_b.my_node_id(), |c| async {
+            .do_client_rpc_scoped(2, peer_mgr_b.my_peer_id(), |c| async {
                 let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
                 let ret = c.hello(tarpc::context::current(), "abc".to_owned()).await;
                 ret

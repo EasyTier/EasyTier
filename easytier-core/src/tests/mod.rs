@@ -1,3 +1,5 @@
+use crate::common::PeerId;
+
 mod three_node;
 
 pub fn get_guest_veth_name(net_ns: &str) -> &str {
@@ -124,12 +126,12 @@ pub fn enable_log() {
         .init();
 }
 
-fn check_route(ipv4: &str, dst_peer_id: uuid::Uuid, routes: Vec<crate::rpc::Route>) {
+fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::rpc::Route>) {
     let mut found = false;
     for r in routes.iter() {
         if r.ipv4_addr == ipv4.to_string() {
             found = true;
-            assert_eq!(r.peer_id, dst_peer_id.to_string(), "{:?}", routes);
+            assert_eq!(r.peer_id, dst_peer_id, "{:?}", routes);
         }
     }
     assert!(found);
@@ -138,7 +140,7 @@ fn check_route(ipv4: &str, dst_peer_id: uuid::Uuid, routes: Vec<crate::rpc::Rout
 async fn wait_proxy_route_appear(
     mgr: &std::sync::Arc<crate::peers::peer_manager::PeerManager>,
     ipv4: &str,
-    dst_peer_id: uuid::Uuid,
+    dst_peer_id: PeerId,
     proxy_cidr: &str,
 ) {
     let now = std::time::Instant::now();
@@ -146,7 +148,7 @@ async fn wait_proxy_route_appear(
         for r in mgr.list_routes().await.iter() {
             let r = r;
             if r.proxy_cidrs.contains(&proxy_cidr.to_owned()) {
-                assert_eq!(r.peer_id, dst_peer_id.to_string());
+                assert_eq!(r.peer_id, dst_peer_id);
                 assert_eq!(r.ipv4_addr, ipv4);
                 return;
             }

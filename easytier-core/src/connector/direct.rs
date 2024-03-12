@@ -8,8 +8,9 @@ use crate::{
         error::Error,
         global_ctx::ArcGlobalCtx,
         network::IPCollector,
+        PeerId,
     },
-    peers::{peer_manager::PeerManager, peer_rpc::PeerRpcManager, PeerId},
+    peers::{peer_manager::PeerManager, peer_rpc::PeerRpcManager},
 };
 
 use crate::rpc::{peer::GetIpListResponse, PeerConnInfo};
@@ -37,7 +38,7 @@ impl PeerManagerForDirectConnector for PeerManager {
 
         let routes = self.list_routes().await;
         for r in routes.iter() {
-            ret.push(r.peer_id.parse().unwrap());
+            ret.push(r.peer_id);
         }
 
         ret
@@ -91,7 +92,6 @@ impl std::fmt::Debug for DirectConnectorManagerData {
 }
 
 pub struct DirectConnectorManager {
-    my_node_id: uuid::Uuid,
     global_ctx: ArcGlobalCtx,
     data: Arc<DirectConnectorManagerData>,
 
@@ -99,13 +99,8 @@ pub struct DirectConnectorManager {
 }
 
 impl DirectConnectorManager {
-    pub fn new(
-        my_node_id: uuid::Uuid,
-        global_ctx: ArcGlobalCtx,
-        peer_manager: Arc<PeerManager>,
-    ) -> Self {
+    pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
         Self {
-            my_node_id,
             global_ctx: global_ctx.clone(),
             data: Arc::new(DirectConnectorManagerData {
                 global_ctx,
@@ -130,14 +125,14 @@ impl DirectConnectorManager {
 
     pub fn run_as_client(&mut self) {
         let data = self.data.clone();
-        let my_node_id = self.my_node_id.clone();
+        let my_peer_id = self.data.peer_manager.my_peer_id();
         self.tasks.spawn(
             async move {
                 loop {
                     let peers = data.peer_manager.list_peers().await;
                     let mut tasks = JoinSet::new();
                     for peer_id in peers {
-                        if peer_id == my_node_id {
+                        if peer_id == my_peer_id {
                             continue;
                         }
                         tasks.spawn(Self::do_try_direct_connect(data.clone(), peer_id));
@@ -149,7 +144,9 @@ impl DirectConnectorManager {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 }
             }
-            .instrument(tracing::info_span!("direct_connector_client", my_id = ?self.my_node_id)),
+            .instrument(
+                tracing::info_span!("direct_connector_client", my_id = ?self.global_ctx.id),
+            ),
         );
     }
 
@@ -185,7 +182,7 @@ impl DirectConnectorManager {
             );
             data.peer_manager
                 .get_peer_map()
-                .close_peer_conn(&peer_id, &conn_id)
+                .close_peer_conn(peer_id, &conn_id)
                 .await?;
             return Err(Error::InvalidUrl(addr));
         }
@@ -291,14 +288,12 @@ mod tests {
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
 
-        wait_route_appear(p_a.clone(), p_c.my_node_id())
+        wait_route_appear(p_a.clone(), p_c.my_peer_id())
             .await
             .unwrap();
 
-        let mut dm_a =
-            DirectConnectorManager::new(p_a.my_node_id(), p_a.get_global_ctx(), p_a.clone());
-        let mut dm_c =
-            DirectConnectorManager::new(p_c.my_node_id(), p_c.get_global_ctx(), p_c.clone());
+        let mut dm_a = DirectConnectorManager::new(p_a.get_global_ctx(), p_a.clone());
+        let mut dm_c = DirectConnectorManager::new(p_c.get_global_ctx(), p_c.clone());
 
         dm_a.run_as_client();
         dm_c.run_as_server();
@@ -318,7 +313,7 @@ mod tests {
 
         lis_c.run().await.unwrap();
 
-        wait_route_appear_with_cost(p_a.clone(), p_c.my_node_id(), Some(1))
+        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
             .await
             .unwrap();
     }

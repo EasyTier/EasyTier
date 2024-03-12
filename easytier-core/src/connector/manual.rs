@@ -7,7 +7,7 @@ use tokio::{
     time::timeout,
 };
 
-use crate::rpc as easytier_rpc;
+use crate::{common::PeerId, peers::peer_conn::PeerConnId, rpc as easytier_rpc};
 
 use crate::{
     common::{
@@ -32,8 +32,8 @@ type ConnectorMap = Arc<DashMap<String, Box<dyn TunnelConnector + Send + Sync>>>
 #[derive(Debug, Clone)]
 struct ReconnResult {
     dead_url: String,
-    peer_id: uuid::Uuid,
-    conn_id: uuid::Uuid,
+    peer_id: PeerId,
+    conn_id: PeerConnId,
 }
 
 struct ConnectorManagerData {
@@ -48,24 +48,18 @@ struct ConnectorManagerData {
 }
 
 pub struct ManualConnectorManager {
-    my_node_id: uuid::Uuid,
     global_ctx: ArcGlobalCtx,
     data: Arc<ConnectorManagerData>,
     tasks: JoinSet<()>,
 }
 
 impl ManualConnectorManager {
-    pub fn new(
-        my_node_id: uuid::Uuid,
-        global_ctx: ArcGlobalCtx,
-        peer_manager: Arc<PeerManager>,
-    ) -> Self {
+    pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
         let connectors = Arc::new(DashMap::new());
         let tasks = JoinSet::new();
         let event_subscriber = global_ctx.subscribe();
 
         let mut ret = Self {
-            my_node_id,
             global_ctx: global_ctx.clone(),
             data: Arc::new(ConnectorManagerData {
                 connectors,
@@ -364,8 +358,7 @@ mod tests {
         set_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, 1);
 
         let peer_mgr = create_mock_peer_manager().await;
-        let my_node_id = uuid::Uuid::new_v4();
-        let mgr = ManualConnectorManager::new(my_node_id, peer_mgr.get_global_ctx(), peer_mgr);
+        let mgr = ManualConnectorManager::new(peer_mgr.get_global_ctx(), peer_mgr);
 
         struct MockConnector {}
         #[async_trait::async_trait]

@@ -9,26 +9,26 @@ use tokio::{
 };
 use tokio_util::bytes::Bytes;
 use tracing::Instrument;
-use uuid::Uuid;
 
-use super::peer_conn::PeerConn;
+use super::peer_conn::{PeerConn, PeerConnId};
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+    PeerId,
 };
 use crate::rpc::PeerConnInfo;
 
 type ArcPeerConn = Arc<Mutex<PeerConn>>;
-type ConnMap = Arc<DashMap<Uuid, ArcPeerConn>>;
+type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 
 pub struct Peer {
-    pub peer_node_id: uuid::Uuid,
+    pub peer_node_id: PeerId,
     conns: ConnMap,
     global_ctx: ArcGlobalCtx,
 
     packet_recv_chan: mpsc::Sender<Bytes>,
 
-    close_event_sender: mpsc::Sender<Uuid>,
+    close_event_sender: mpsc::Sender<PeerConnId>,
     close_event_listener: JoinHandle<()>,
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
@@ -36,7 +36,7 @@ pub struct Peer {
 
 impl Peer {
     pub fn new(
-        peer_node_id: uuid::Uuid,
+        peer_node_id: PeerId,
         packet_recv_chan: mpsc::Sender<Bytes>,
         global_ctx: ArcGlobalCtx,
     ) -> Self {
@@ -118,7 +118,7 @@ impl Peer {
         Ok(())
     }
 
-    pub async fn close_peer_conn(&self, conn_id: &Uuid) -> Result<(), Error> {
+    pub async fn close_peer_conn(&self, conn_id: &PeerConnId) -> Result<(), Error> {
         let has_key = self.conns.contains_key(conn_id);
         if !has_key {
             return Err(Error::NotFound);
@@ -157,7 +157,7 @@ mod tests {
     use tokio::{sync::mpsc, time::timeout};
 
     use crate::{
-        common::{config_fs::ConfigFs, global_ctx::GlobalCtx, netns::NetNS},
+        common::{config_fs::ConfigFs, global_ctx::GlobalCtx, netns::NetNS, new_peer_id},
         peers::peer_conn::PeerConn,
         tunnels::ring_tunnel::create_ring_tunnel_pair,
     };
@@ -174,8 +174,8 @@ mod tests {
             NetNS::new(None),
             None,
         ));
-        let local_peer = Peer::new(uuid::Uuid::new_v4(), local_packet_send, global_ctx.clone());
-        let remote_peer = Peer::new(uuid::Uuid::new_v4(), remote_packet_send, global_ctx.clone());
+        let local_peer = Peer::new(new_peer_id(), local_packet_send, global_ctx.clone());
+        let remote_peer = Peer::new(new_peer_id(), remote_packet_send, global_ctx.clone());
 
         let (local_tunnel, remote_tunnel) = create_ring_tunnel_pair();
         let mut local_peer_conn =

@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use tokio::{sync::RwLock, task::JoinSet};
 
-use crate::peers::PeerId;
+use crate::common::PeerId;
 
 use super::{
     service::{GetGlobalPeerMapResponse, GlobalPeerMap, PeerCenterService, PeerInfoForGlobalMap},

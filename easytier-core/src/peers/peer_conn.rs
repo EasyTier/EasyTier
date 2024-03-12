@@ -23,7 +23,10 @@ use tokio_util::{
 use tracing::Instrument;
 
 use crate::{
-    common::global_ctx::{ArcGlobalCtx, NetworkIdentity},
+    common::{
+        global_ctx::{ArcGlobalCtx, NetworkIdentity},
+        PeerId,
+    },
     define_tunnel_filter_chain,
     rpc::{PeerConnInfo, PeerConnStats},
     tunnels::{
@@ -36,6 +39,8 @@ use crate::{
 use super::packet::{self, ArchivedCtrlPacketBody, ArchivedHandShake, Packet};
 
 pub type PacketRecvChan = mpsc::Sender<Bytes>;
+
+pub type PeerConnId = uuid::Uuid;
 
 macro_rules! wait_response {
     ($stream: ident, $out_var:ident, $pattern:pat_param => $value:expr) => {
@@ -78,7 +83,7 @@ fn build_ctrl_msg(msg: Bytes, is_req: bool) -> Bytes {
 
 pub struct PeerInfo {
     magic: u32,
-    pub my_peer_id: uuid::Uuid,
+    pub my_peer_id: PeerId,
     version: u32,
     pub features: Vec<String>,
     pub interfaces: Vec<NetworkInterface>,
@@ -89,7 +94,7 @@ impl<'a> From<&ArchivedHandShake> for PeerInfo {
     fn from(hs: &ArchivedHandShake) -> Self {
         PeerInfo {
             magic: hs.magic.into(),
-            my_peer_id: hs.my_peer_id.to_uuid(),
+            my_peer_id: hs.my_peer_id.into(),
             version: hs.version.into(),
             features: hs.features.iter().map(|x| x.to_string()).collect(),
             interfaces: Vec::new(),
@@ -99,8 +104,8 @@ impl<'a> From<&ArchivedHandShake> for PeerInfo {
 }
 
 struct PeerConnPinger {
-    my_node_id: uuid::Uuid,
-    peer_id: uuid::Uuid,
+    my_peer_id: PeerId,
+    peer_id: PeerId,
     sink: Arc<Mutex<Pin<Box<dyn DatagramSink>>>>,
     ctrl_sender: broadcast::Sender<Bytes>,
     latency_stats: Arc<WindowLatency>,
@@ -111,7 +116,7 @@ struct PeerConnPinger {
 impl Debug for PeerConnPinger {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerConnPinger")
-            .field("my_node_id", &self.my_node_id)
+            .field("my_peer_id", &self.my_peer_id)
             .field("peer_id", &self.peer_id)
             .finish()
     }
@@ -119,15 +124,15 @@ impl Debug for PeerConnPinger {
 
 impl PeerConnPinger {
     pub fn new(
-        my_node_id: uuid::Uuid,
-        peer_id: uuid::Uuid,
+        my_peer_id: PeerId,
+        peer_id: PeerId,
         sink: Pin<Box<dyn DatagramSink>>,
         ctrl_sender: broadcast::Sender<Bytes>,
         latency_stats: Arc<WindowLatency>,
         loss_rate_stats: Arc<AtomicU32>,
     ) -> Self {
         Self {
-            my_node_id,
+            my_peer_id,
             peer_id,
             sink: Arc::new(Mutex::new(sink)),
             tasks: JoinSet::new(),
@@ -137,16 +142,9 @@ impl PeerConnPinger {
         }
     }
 
-    pub async fn ping(&self) -> Result<(), TunnelError> {
-        let mut sink = self.sink.lock().await;
-        let ping_packet = Packet::new_ping_packet(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), 0);
-        sink.send(ping_packet.into()).await?;
-        Ok(())
-    }
-
     async fn do_pingpong_once(
-        my_node_id: uuid::Uuid,
-        peer_id: uuid::Uuid,
+        my_node_id: PeerId,
+        peer_id: PeerId,
         sink: Arc<Mutex<Pin<Box<dyn DatagramSink>>>>,
         receiver: &mut broadcast::Receiver<Bytes>,
         seq: u32,
@@ -207,7 +205,7 @@ impl PeerConnPinger {
 
     async fn pingpong(&mut self) {
         let sink = self.sink.clone();
-        let my_node_id = self.my_node_id;
+        let my_node_id = self.my_peer_id;
         let peer_id = self.peer_id;
         let latency_stats = self.latency_stats.clone();
 
@@ -309,9 +307,9 @@ impl PeerConnPinger {
 define_tunnel_filter_chain!(PeerConnTunnel, stats = StatsRecorderTunnelFilter);
 
 pub struct PeerConn {
-    conn_id: uuid::Uuid,
+    conn_id: PeerConnId,
 
-    my_node_id: uuid::Uuid,
+    my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
 
     sink: Pin<Box<dyn DatagramSink>>,
@@ -321,7 +319,7 @@ pub struct PeerConn {
 
     info: Option<PeerInfo>,
 
-    close_event_sender: Option<mpsc::Sender<uuid::Uuid>>,
+    close_event_sender: Option<mpsc::Sender<PeerConnId>>,
 
     ctrl_resp_sender: broadcast::Sender<Bytes>,
 
@@ -340,15 +338,15 @@ static CTRL_REQ_PACKET_PREFIX: &[u8] = &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xd
 static CTRL_RESP_PACKET_PREFIX: &[u8] = &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf1];
 
 impl PeerConn {
-    pub fn new(node_id: uuid::Uuid, global_ctx: ArcGlobalCtx, tunnel: Box<dyn Tunnel>) -> Self {
+    pub fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx, tunnel: Box<dyn Tunnel>) -> Self {
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(100);
         let peer_conn_tunnel = PeerConnTunnel::new();
         let tunnel = peer_conn_tunnel.wrap_tunnel(tunnel);
 
         PeerConn {
-            conn_id: uuid::Uuid::new_v4(),
+            conn_id: PeerConnId::new_v4(),
 
-            my_node_id: node_id,
+            my_peer_id,
             global_ctx,
 
             sink: tunnel.pin_sink(),
@@ -367,7 +365,7 @@ impl PeerConn {
         }
     }
 
-    pub fn get_conn_id(&self) -> uuid::Uuid {
+    pub fn get_conn_id(&self) -> PeerConnId {
         self.conn_id
     }
 
@@ -382,7 +380,7 @@ impl PeerConn {
         let hs_req = self
             .global_ctx
             .net_ns
-            .run(|| packet::Packet::new_handshake(self.my_node_id, &self.global_ctx.network));
+            .run(|| packet::Packet::new_handshake(self.my_peer_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
         Ok(())
@@ -395,7 +393,7 @@ impl PeerConn {
         let hs_req = self
             .global_ctx
             .net_ns
-            .run(|| packet::Packet::new_handshake(self.my_node_id, &self.global_ctx.network));
+            .run(|| packet::Packet::new_handshake(self.my_peer_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
         wait_response!(stream, hs_rsp, packet::ArchivedPacketBody::Ctrl(ArchivedCtrlPacketBody::HandShake(x)) => x);
@@ -429,8 +427,8 @@ impl PeerConn {
                 log::trace!("recv ping packet: {:?}", packet);
                 Ok(build_ctrl_msg(
                     packet::Packet::new_pong_packet(
-                        conn_info.my_node_id.parse().unwrap(),
-                        conn_info.peer_id.parse().unwrap(),
+                        conn_info.my_peer_id,
+                        conn_info.peer_id,
                         seq.into(),
                     )
                     .into(),
@@ -446,7 +444,7 @@ impl PeerConn {
 
     pub fn start_pingpong(&mut self) {
         let mut pingpong = PeerConnPinger::new(
-            self.my_node_id,
+            self.my_peer_id,
             self.get_peer_id(),
             self.tunnel.pin_sink(),
             self.ctrl_resp_sender.clone(),
@@ -532,7 +530,7 @@ impl PeerConn {
         self.sink.send(msg).await
     }
 
-    pub fn get_peer_id(&self) -> uuid::Uuid {
+    pub fn get_peer_id(&self) -> PeerId {
         self.info.as_ref().unwrap().my_peer_id
     }
 
@@ -540,7 +538,7 @@ impl PeerConn {
         self.info.as_ref().unwrap().network_identity.clone()
     }
 
-    pub fn set_close_event_sender(&mut self, sender: mpsc::Sender<uuid::Uuid>) {
+    pub fn set_close_event_sender(&mut self, sender: mpsc::Sender<PeerConnId>) {
         self.close_event_sender = Some(sender);
     }
 
@@ -559,8 +557,8 @@ impl PeerConn {
     pub fn get_conn_info(&self) -> PeerConnInfo {
         PeerConnInfo {
             conn_id: self.conn_id.to_string(),
-            my_node_id: self.my_node_id.to_string(),
-            peer_id: self.get_peer_id().to_string(),
+            my_peer_id: self.my_peer_id,
+            peer_id: self.get_peer_id(),
             features: self.info.as_ref().unwrap().features.clone(),
             tunnel: self.tunnel.info(),
             stats: Some(self.get_stats()),
@@ -589,6 +587,7 @@ mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::global_ctx::GlobalCtx;
     use crate::common::netns::NetNS;
+    use crate::common::new_peer_id;
     use crate::tunnels::tunnel_filter::tests::DropSendTunnelFilter;
     use crate::tunnels::tunnel_filter::{PacketRecorderTunnelFilter, TunnelWithFilter};
 
@@ -603,11 +602,11 @@ mod tests {
         let c = TunnelWithFilter::new(c, c_recorder.clone());
         let s = TunnelWithFilter::new(s, s_recorder.clone());
 
-        let c_uuid = uuid::Uuid::new_v4();
-        let s_uuid = uuid::Uuid::new_v4();
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
 
         let mut c_peer = PeerConn::new(
-            c_uuid,
+            c_peer_id,
             Arc::new(GlobalCtx::new(
                 "c",
                 ConfigFs::new_with_dir("c", "/tmp"),
@@ -618,7 +617,7 @@ mod tests {
         );
 
         let mut s_peer = PeerConn::new(
-            s_uuid,
+            s_peer_id,
             Arc::new(GlobalCtx::new(
                 "c",
                 ConfigFs::new_with_dir("c", "/tmp"),
@@ -642,8 +641,8 @@ mod tests {
         assert_eq!(s_recorder.sent.lock().unwrap().len(), 1);
         assert_eq!(s_recorder.received.lock().unwrap().len(), 1);
 
-        assert_eq!(c_peer.get_peer_id(), s_uuid);
-        assert_eq!(s_peer.get_peer_id(), c_uuid);
+        assert_eq!(c_peer.get_peer_id(), s_peer_id);
+        assert_eq!(s_peer.get_peer_id(), c_peer_id);
         assert_eq!(c_peer.get_network_identity(), s_peer.get_network_identity());
         assert_eq!(c_peer.get_network_identity(), NetworkIdentity::default());
     }
@@ -656,11 +655,11 @@ mod tests {
         let c_recorder = Arc::new(DropSendTunnelFilter::new(drop_start, drop_end));
         let c = TunnelWithFilter::new(c, c_recorder.clone());
 
-        let c_uuid = uuid::Uuid::new_v4();
-        let s_uuid = uuid::Uuid::new_v4();
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
 
-        let mut c_peer = PeerConn::new(c_uuid, get_mock_global_ctx(), Box::new(c));
-        let mut s_peer = PeerConn::new(s_uuid, get_mock_global_ctx(), Box::new(s));
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c));
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s));
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),

@@ -9,9 +9,9 @@ use tracing::Instrument;
 use crate::{
     common::{
         constants, error::Error, global_ctx::ArcGlobalCtx, rkyv_util::encode_to_bytes,
-        stun::StunInfoCollectorTrait,
+        stun::StunInfoCollectorTrait, PeerId,
     },
-    peers::{peer_manager::PeerManager, PeerId},
+    peers::peer_manager::PeerManager,
     rpc::NatType,
     tunnels::{
         common::setup_sokcet2,
@@ -283,7 +283,7 @@ impl UdpHolePunchConnector {
                 continue;
             };
 
-            let peer_id: PeerId = route.peer_id.parse().unwrap();
+            let peer_id: PeerId = route.peer_id;
             let conns = data.peer_mgr.list_peer_conns(&peer_id).await;
             if conns.is_some() && conns.unwrap().len() > 0 {
                 continue;
@@ -310,7 +310,7 @@ impl UdpHolePunchConnector {
 
             // if we have smae level of full cone, node with smaller peer_id will be the initiator
             if my_nat_type == peer_nat_type {
-                if data.global_ctx.id > peer_id {
+                if data.peer_mgr.my_peer_id() > peer_id {
                     continue;
                 }
             } else {
@@ -522,7 +522,7 @@ pub mod tests {
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
 
-        wait_route_appear(p_a.clone(), p_c.my_node_id())
+        wait_route_appear(p_a.clone(), p_c.my_peer_id())
             .await
             .unwrap();
 
@@ -534,7 +534,7 @@ pub mod tests {
         hole_punching_a.run().await.unwrap();
         hole_punching_c.run().await.unwrap();
 
-        wait_route_appear_with_cost(p_a.clone(), p_c.my_node_id(), Some(1))
+        wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
             .await
             .unwrap();
         println!("{:?}", p_a.list_routes().await);

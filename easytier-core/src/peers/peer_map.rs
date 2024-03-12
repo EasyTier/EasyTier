@@ -9,24 +9,35 @@ use crate::{
     common::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        PeerId,
     },
     rpc::PeerConnInfo,
     tunnels::TunnelError,
 };
 
-use super::{peer::Peer, peer_conn::PeerConn, route_trait::ArcRoute, PeerId};
+use super::{
+    peer::Peer,
+    peer_conn::{PeerConn, PeerConnId},
+    route_trait::ArcRoute,
+};
 
 pub struct PeerMap {
     global_ctx: ArcGlobalCtx,
+    my_peer_id: PeerId,
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: mpsc::Sender<Bytes>,
     routes: RwLock<Vec<ArcRoute>>,
 }
 
 impl PeerMap {
-    pub fn new(packet_send: mpsc::Sender<Bytes>, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new(
+        packet_send: mpsc::Sender<Bytes>,
+        global_ctx: ArcGlobalCtx,
+        my_peer_id: PeerId,
+    ) -> Self {
         PeerMap {
             global_ctx,
+            my_peer_id,
             peer_map: DashMap::new(),
             packet_send,
             routes: RwLock::new(Vec::new()),
@@ -53,20 +64,16 @@ impl PeerMap {
         }
     }
 
-    fn get_peer_by_id(&self, peer_id: &PeerId) -> Option<Arc<Peer>> {
-        self.peer_map.get(peer_id).map(|v| v.clone())
+    fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
+        self.peer_map.get(&peer_id).map(|v| v.clone())
     }
 
-    pub fn has_peer(&self, peer_id: &PeerId) -> bool {
-        self.peer_map.contains_key(peer_id)
+    pub fn has_peer(&self, peer_id: PeerId) -> bool {
+        self.peer_map.contains_key(&peer_id)
     }
 
-    pub async fn send_msg_directly(
-        &self,
-        msg: Bytes,
-        dst_peer_id: &uuid::Uuid,
-    ) -> Result<(), Error> {
-        if *dst_peer_id == self.global_ctx.get_id() {
+    pub async fn send_msg_directly(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
+        if dst_peer_id == self.my_peer_id {
             return Ok(self
                 .packet_send
                 .send(msg)
@@ -87,8 +94,8 @@ impl PeerMap {
         Ok(())
     }
 
-    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
-        if *dst_peer_id == self.global_ctx.get_id() {
+    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
+        if dst_peer_id == self.my_peer_id {
             return Ok(self
                 .packet_send
                 .send(msg)
@@ -108,7 +115,7 @@ impl PeerMap {
         }
 
         if gateway_peer_id.is_none() && self.has_peer(dst_peer_id) {
-            gateway_peer_id = Some(*dst_peer_id);
+            gateway_peer_id = Some(dst_peer_id);
         }
 
         let Some(gateway_peer_id) = gateway_peer_id else {
@@ -116,8 +123,7 @@ impl PeerMap {
             return Ok(());
         };
 
-        self.send_msg_directly(msg.clone(), &gateway_peer_id)
-            .await?;
+        self.send_msg_directly(msg.clone(), gateway_peer_id).await?;
         return Ok(());
     }
 
@@ -148,7 +154,7 @@ impl PeerMap {
         let mut ret = Vec::new();
         let peers = self.list_peers().await;
         for peer_id in peers.iter() {
-            let Some(peer) = self.get_peer_by_id(peer_id) else {
+            let Some(peer) = self.get_peer_by_id(*peer_id) else {
                 continue;
             };
             if peer.list_peer_conns().await.len() > 0 {
@@ -159,7 +165,7 @@ impl PeerMap {
     }
 
     pub async fn list_peer_conns(&self, peer_id: &PeerId) -> Option<Vec<PeerConnInfo>> {
-        if let Some(p) = self.get_peer_by_id(peer_id) {
+        if let Some(p) = self.get_peer_by_id(*peer_id) {
             Some(p.list_peer_conns().await)
         } else {
             return None;
@@ -168,8 +174,8 @@ impl PeerMap {
 
     pub async fn close_peer_conn(
         &self,
-        peer_id: &PeerId,
-        conn_id: &uuid::Uuid,
+        peer_id: PeerId,
+        conn_id: &PeerConnId,
     ) -> Result<(), Error> {
         if let Some(p) = self.get_peer_by_id(peer_id) {
             p.close_peer_conn(conn_id).await
@@ -178,10 +184,10 @@ impl PeerMap {
         }
     }
 
-    pub async fn close_peer(&self, peer_id: &PeerId) -> Result<(), TunnelError> {
-        let remove_ret = self.peer_map.remove(peer_id);
+    pub async fn close_peer(&self, peer_id: PeerId) -> Result<(), TunnelError> {
+        let remove_ret = self.peer_map.remove(&peer_id);
         self.global_ctx
-            .issue_event(GlobalCtxEvent::PeerRemoved(peer_id.clone()));
+            .issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
         tracing::info!(
             ?peer_id,
             has_old_value = ?remove_ret.is_some(),
@@ -207,7 +213,7 @@ impl PeerMap {
         }
 
         for peer_id in to_remove {
-            self.close_peer(&peer_id).await.unwrap();
+            self.close_peer(peer_id).await.unwrap();
         }
     }
 
@@ -215,10 +221,7 @@ impl PeerMap {
         let route_map = DashMap::new();
         for route in self.routes.read().await.iter() {
             for item in route.list_routes().await.iter() {
-                route_map.insert(
-                    item.peer_id.parse().unwrap(),
-                    item.next_hop_peer_id.parse().unwrap(),
-                );
+                route_map.insert(item.peer_id, item.next_hop_peer_id);
             }
         }
         route_map

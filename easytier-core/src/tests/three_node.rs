@@ -105,13 +105,13 @@ pub async fn basic_three_node_test_tcp() {
 
     check_route(
         "10.144.144.2",
-        insts[1].id(),
+        insts[1].peer_id(),
         insts[0].get_peer_manager().list_routes().await,
     );
 
     check_route(
         "10.144.144.3",
-        insts[2].id(),
+        insts[2].peer_id(),
         insts[0].get_peer_manager().list_routes().await,
     );
 }
@@ -123,13 +123,13 @@ pub async fn basic_three_node_test_udp() {
 
     check_route(
         "10.144.144.2",
-        insts[1].id(),
+        insts[1].peer_id(),
         insts[0].get_peer_manager().list_routes().await,
     );
 
     check_route(
         "10.144.144.3",
-        insts[2].id(),
+        insts[2].peer_id(),
         insts[0].get_peer_manager().list_routes().await,
     );
 }
@@ -148,7 +148,7 @@ pub async fn tcp_proxy_three_node_test() {
     wait_proxy_route_appear(
         &insts[0].get_peer_manager(),
         "10.144.144.3",
-        insts[2].id(),
+        insts[2].peer_id(),
         "10.1.2.0/24",
     )
     .await;
@@ -182,7 +182,7 @@ pub async fn icmp_proxy_three_node_test() {
     wait_proxy_route_appear(
         &insts[0].get_peer_manager(),
         "10.144.144.3",
-        insts[2].id(),
+        insts[2].peer_id(),
         "10.1.2.0/24",
     )
     .await;
@@ -244,7 +244,7 @@ pub async fn udp_proxy_three_node_test() {
     wait_proxy_route_appear(
         &insts[0].get_peer_manager(),
         "10.144.144.3",
-        insts[2].id(),
+        insts[2].peer_id(),
         "10.1.2.0/24",
     )
     .await;

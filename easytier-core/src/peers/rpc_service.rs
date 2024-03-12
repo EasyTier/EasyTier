@@ -23,7 +23,7 @@ impl PeerManagerRpcService {
         let mut peer_infos = Vec::new();
         for peer in peers {
             let mut peer_info = PeerInfo::default();
-            peer_info.peer_id = peer.to_string();
+            peer_info.peer_id = peer;
 
             if let Some(conns) = self
                 .peer_manager

@@ -25,11 +25,10 @@ use tokio_util::bytes::Bytes;
 use tracing::Level;
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx},
+    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
     peers::{
         packet,
         peer_manager::{PeerManager, PeerPacketFilter},
-        PeerId,
     },
     tunnels::common::setup_sokcet2,
 };
@@ -276,8 +275,8 @@ impl PeerPacketFilter for UdpProxy {
                 tracing::info!(?packet, ?ipv4, ?udp_packet, "udp nat table entry created");
                 let _g = self.global_ctx.net_ns.guard();
                 Ok(Arc::new(UdpNatEntry::new(
-                    packet.from_peer.to_uuid(),
-                    packet.to_peer.as_ref().unwrap().to_uuid(),
+                    packet.from_peer.into(),
+                    packet.to_peer.into(),
                     nat_key.src_socket,
                 )?))
             })
@@ -366,9 +365,9 @@ impl UdpProxy {
         let peer_manager = self.peer_manager.clone();
         self.tasks.lock().await.spawn(async move {
             while let Some(msg) = receiver.recv().await {
-                let to_peer_id: uuid::Uuid = msg.to_peer.as_ref().unwrap().clone().into();
+                let to_peer_id: PeerId = msg.to_peer.into();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let ret = peer_manager.send_msg(msg.into(), &to_peer_id).await;
+                let ret = peer_manager.send_msg(msg.into(), to_peer_id).await;
                 if ret.is_err() {
                     tracing::error!("send icmp packet to peer failed: {:?}", ret);
                 }

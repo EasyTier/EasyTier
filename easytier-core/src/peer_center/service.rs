@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{peers::PeerId, rpc::DirectConnectedPeerInfo};
+use crate::{common::PeerId, rpc::DirectConnectedPeerInfo};
 
 use super::{Digest, Error};
 use crate::rpc::PeerInfo;

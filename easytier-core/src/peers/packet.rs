@@ -6,6 +6,7 @@ use tokio_util::bytes::Bytes;
 use crate::common::{
     global_ctx::NetworkIdentity,
     rkyv_util::{decode_from_bytes, encode_to_bytes},
+    PeerId,
 };
 
 const MAGIC: u32 = 0xd1e1a5e1;
@@ -92,7 +93,7 @@ impl Debug for ArchivedNetworkIdentityForPacket {
 #[archive_attr(derive(Debug))]
 pub struct HandShake {
     pub magic: u32,
-    pub my_peer_id: UUID,
+    pub my_peer_id: PeerId,
     pub version: u32,
     pub features: Vec<String>,
     pub network_identity: NetworkIdentityForPacket,
@@ -140,8 +141,8 @@ pub enum PacketBody {
 // Derives can be passed through to the generated type:
 #[archive_attr(derive(Debug))]
 pub struct Packet {
-    pub from_peer: UUID,
-    pub to_peer: Option<UUID>,
+    pub from_peer: PeerId,
+    pub to_peer: PeerId,
     pub body: PacketBody,
 }
 
@@ -158,13 +159,13 @@ impl From<Packet> for Bytes {
 }
 
 impl Packet {
-    pub fn new_handshake(from_peer: uuid::Uuid, network: &NetworkIdentity) -> Self {
+    pub fn new_handshake(from_peer: PeerId, network: &NetworkIdentity) -> Self {
         Packet {
             from_peer: from_peer.into(),
-            to_peer: None,
+            to_peer: 0,
             body: PacketBody::Ctrl(CtrlPacketBody::HandShake(HandShake {
                 magic: MAGIC,
-                my_peer_id: from_peer.into(),
+                my_peer_id: from_peer,
                 version: VERSION,
                 features: Vec::new(),
                 network_identity: network.clone().into(),
@@ -172,25 +173,20 @@ impl Packet {
         }
     }
 
-    pub fn new_data_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid, data: &[u8]) -> Self {
+    pub fn new_data_packet(from_peer: PeerId, to_peer: PeerId, data: &[u8]) -> Self {
         Packet {
-            from_peer: from_peer.into(),
-            to_peer: Some(to_peer.into()),
+            from_peer,
+            to_peer,
             body: PacketBody::Data(DataPacketBody {
                 data: data.to_vec(),
             }),
         }
     }
 
-    pub fn new_route_packet(
-        from_peer: uuid::Uuid,
-        to_peer: uuid::Uuid,
-        route_id: u8,
-        data: &[u8],
-    ) -> Self {
+    pub fn new_route_packet(from_peer: PeerId, to_peer: PeerId, route_id: u8, data: &[u8]) -> Self {
         Packet {
-            from_peer: from_peer.into(),
-            to_peer: Some(to_peer.into()),
+            from_peer,
+            to_peer,
             body: PacketBody::Ctrl(CtrlPacketBody::RoutePacket(RoutePacket {
                 route_id,
                 body: data.to_vec(),
@@ -198,32 +194,32 @@ impl Packet {
         }
     }
 
-    pub fn new_ping_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid, seq: u32) -> Self {
+    pub fn new_ping_packet(from_peer: PeerId, to_peer: PeerId, seq: u32) -> Self {
         Packet {
-            from_peer: from_peer.into(),
-            to_peer: Some(to_peer.into()),
+            from_peer,
+            to_peer,
             body: PacketBody::Ctrl(CtrlPacketBody::Ping(seq)),
         }
     }
 
-    pub fn new_pong_packet(from_peer: uuid::Uuid, to_peer: uuid::Uuid, seq: u32) -> Self {
+    pub fn new_pong_packet(from_peer: PeerId, to_peer: PeerId, seq: u32) -> Self {
         Packet {
-            from_peer: from_peer.into(),
-            to_peer: Some(to_peer.into()),
+            from_peer,
+            to_peer,
             body: PacketBody::Ctrl(CtrlPacketBody::Pong(seq)),
         }
     }
 
     pub fn new_tarpc_packet(
-        from_peer: uuid::Uuid,
-        to_peer: uuid::Uuid,
+        from_peer: PeerId,
+        to_peer: PeerId,
         service_id: u32,
         is_req: bool,
         body: Vec<u8>,
     ) -> Self {
         Packet {
-            from_peer: from_peer.into(),
-            to_peer: Some(to_peer.into()),
+            from_peer,
+            to_peer,
             body: PacketBody::Ctrl(CtrlPacketBody::TaRpc(service_id, is_req, body)),
         }
     }
@@ -231,12 +227,14 @@ impl Packet {
 
 #[cfg(test)]
 mod tests {
+    use crate::common::new_peer_id;
+
     use super::*;
 
     #[tokio::test]
     async fn serialize() {
         let a = "abcde";
-        let out = Packet::new_data_packet(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), a.as_bytes());
+        let out = Packet::new_data_packet(new_peer_id(), new_peer_id(), a.as_bytes());
         // let out = T::new(a.as_bytes());
         let out_bytes: Bytes = out.into();
         println!("out str: {:?}", a.as_bytes());
