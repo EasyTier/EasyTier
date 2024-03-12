@@ -13,6 +13,7 @@ use tokio_util::bytes::Bytes;
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, NetworkIdentity},
+    PeerId,
 };
 
 use super::{
@@ -20,12 +21,12 @@ use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::PeerRpcManager,
-    PeerId,
 };
 
 pub struct ForeignNetworkClient {
     global_ctx: ArcGlobalCtx,
     peer_rpc: Arc<PeerRpcManager>,
+    my_peer_id: PeerId,
 
     peer_map: Arc<PeerMap>,
 
@@ -38,13 +39,19 @@ impl ForeignNetworkClient {
         global_ctx: ArcGlobalCtx,
         packet_sender_to_mgr: mpsc::Sender<Bytes>,
         peer_rpc: Arc<PeerRpcManager>,
+        my_peer_id: PeerId,
     ) -> Self {
-        let peer_map = Arc::new(PeerMap::new(packet_sender_to_mgr, global_ctx.clone()));
+        let peer_map = Arc::new(PeerMap::new(
+            packet_sender_to_mgr,
+            global_ctx.clone(),
+            my_peer_id,
+        ));
         let next_hop = Arc::new(DashMap::new());
 
         Self {
             global_ctx,
             peer_rpc,
+            my_peer_id,
 
             peer_map,
 
@@ -130,20 +137,20 @@ impl ForeignNetworkClient {
         new_next_hop
     }
 
-    pub fn has_next_hop(&self, peer_id: &PeerId) -> bool {
+    pub fn has_next_hop(&self, peer_id: PeerId) -> bool {
         self.get_next_hop(peer_id).is_some()
     }
 
-    pub fn get_next_hop(&self, peer_id: &PeerId) -> Option<PeerId> {
+    pub fn get_next_hop(&self, peer_id: PeerId) -> Option<PeerId> {
         if self.peer_map.has_peer(peer_id) {
             return Some(peer_id.clone());
         }
-        self.next_hop.get(peer_id).map(|v| v.clone())
+        self.next_hop.get(&peer_id).map(|v| v.clone())
     }
 
-    pub async fn send_msg(&self, msg: Bytes, peer_id: &PeerId) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: Bytes, peer_id: PeerId) -> Result<(), Error> {
         if let Some(next_hop) = self.get_next_hop(peer_id) {
-            return self.peer_map.send_msg_directly(msg, &next_hop).await;
+            return self.peer_map.send_msg_directly(msg, next_hop).await;
         }
         Err(Error::RouteError("no next hop".to_string()))
     }
@@ -151,7 +158,7 @@ impl ForeignNetworkClient {
     pub fn list_foreign_peers(&self) -> Vec<PeerId> {
         let mut peers = vec![];
         for item in self.next_hop.iter() {
-            if item.key() != &self.global_ctx.get_id() {
+            if item.key() != &self.my_peer_id {
                 peers.push(item.key().clone());
             }
         }

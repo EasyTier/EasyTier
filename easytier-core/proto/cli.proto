@@ -24,8 +24,8 @@ message TunnelInfo {
 
 message PeerConnInfo {
     string conn_id = 1;
-    string my_node_id = 2;
-    string peer_id = 3;
+    uint32 my_peer_id = 2;
+    uint32 peer_id = 3;
     repeated string features = 4;
     TunnelInfo tunnel = 5;
     PeerConnStats stats = 6;
@@ -33,7 +33,7 @@ message PeerConnInfo {
 }
 
 message PeerInfo {
-    string peer_id = 1;
+    uint32 peer_id = 1;
     repeated PeerConnInfo conns = 2;
 }
 
@@ -62,9 +62,9 @@ message StunInfo {
 }
 
 message Route {
-    string peer_id = 1;
+    uint32 peer_id = 1;
     string ipv4_addr = 2;
-    string next_hop_peer_id = 3;
+    uint32 next_hop_peer_id = 3;
     int32 cost = 4;
     repeated string proxy_cidrs = 5;
     string hostname = 6;
@@ -129,13 +129,13 @@ message DirectConnectedPeerInfo {
 }
 
 message PeerInfoForGlobalMap {
-    map<string, DirectConnectedPeerInfo> direct_peers = 1;
+    map<uint32, DirectConnectedPeerInfo> direct_peers = 1;
 }
 
 message GetGlobalPeerMapRequest {}
 
 message GetGlobalPeerMapResponse {
-    map<string, PeerInfoForGlobalMap> global_peer_map = 1;
+    map<uint32, PeerInfoForGlobalMap> global_peer_map = 1;
 }
 
 service PeerCenterRpc {

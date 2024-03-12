@@ -13,15 +13,12 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::bytes::{Bytes, BytesMut};
 
-use uuid::Uuid;
-
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, rkyv_util::extract_bytes_from_archived_vec},
+    common::{
+        error::Error, global_ctx::ArcGlobalCtx, rkyv_util::extract_bytes_from_archived_vec, PeerId,
+    },
     peers::{
-        packet::{self},
-        peer_conn::PeerConn,
-        peer_rpc::PeerRpcManagerTransport,
-        route_trait::RouteInterface,
+        packet, peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport, route_trait::RouteInterface,
     },
     tunnels::{SinkItem, Tunnel, TunnelConnector},
 };
@@ -29,15 +26,15 @@ use crate::{
 use super::{
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkManager,
+    peer_conn::PeerConnId,
     peer_map::PeerMap,
     peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
-    PeerId,
 };
 
 struct RpcTransport {
-    my_peer_id: uuid::Uuid,
+    my_peer_id: PeerId,
     peers: Arc<PeerMap>,
     foreign_peers: Mutex<Option<Arc<PeerMap>>>,
 
@@ -47,11 +44,11 @@ struct RpcTransport {
 
 #[async_trait::async_trait]
 impl PeerRpcManagerTransport for RpcTransport {
-    fn my_peer_id(&self) -> Uuid {
+    fn my_peer_id(&self) -> PeerId {
         self.my_peer_id
     }
 
-    async fn send(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
+    async fn send(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
         if let Some(foreign_peers) = self.foreign_peers.lock().await.as_ref() {
             if foreign_peers.has_peer(dst_peer_id) {
                 return foreign_peers.send_msg(msg, dst_peer_id).await;
@@ -92,7 +89,8 @@ type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
 type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
 
 pub struct PeerManager {
-    my_node_id: uuid::Uuid,
+    my_peer_id: PeerId,
+
     global_ctx: ArcGlobalCtx,
     nic_channel: mpsc::Sender<SinkItem>,
 
@@ -117,7 +115,7 @@ pub struct PeerManager {
 impl Debug for PeerManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerManager")
-            .field("my_node_id", &self.my_node_id)
+            .field("my_peer_id", &self.my_peer_id())
             .field("instance_name", &self.global_ctx.inst_name)
             .field("net_ns", &self.global_ctx.net_ns.name())
             .finish()
@@ -126,13 +124,19 @@ impl Debug for PeerManager {
 
 impl PeerManager {
     pub fn new(global_ctx: ArcGlobalCtx, nic_channel: mpsc::Sender<SinkItem>) -> Self {
+        let my_peer_id = rand::random();
+
         let (packet_send, packet_recv) = mpsc::channel(100);
-        let peers = Arc::new(PeerMap::new(packet_send.clone(), global_ctx.clone()));
+        let peers = Arc::new(PeerMap::new(
+            packet_send.clone(),
+            global_ctx.clone(),
+            my_peer_id,
+        ));
 
         // TODO: remove these because we have impl pipeline processor.
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
         let rpc_tspt = Arc::new(RpcTransport {
-            my_peer_id: global_ctx.get_id(),
+            my_peer_id,
             peers: peers.clone(),
             foreign_peers: Mutex::new(None),
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
@@ -140,9 +144,10 @@ impl PeerManager {
         });
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
 
-        let basic_route = Arc::new(BasicRoute::new(global_ctx.get_id(), global_ctx.clone()));
+        let basic_route = Arc::new(BasicRoute::new(my_peer_id, global_ctx.clone()));
 
         let foreign_network_manager = Arc::new(ForeignNetworkManager::new(
+            my_peer_id,
             global_ctx.clone(),
             packet_send.clone(),
         ));
@@ -150,10 +155,12 @@ impl PeerManager {
             global_ctx.clone(),
             packet_send.clone(),
             peer_rpc_mgr.clone(),
+            my_peer_id,
         ));
 
         PeerManager {
-            my_node_id: global_ctx.get_id(),
+            my_peer_id,
+
             global_ctx,
             nic_channel,
 
@@ -176,8 +183,11 @@ impl PeerManager {
         }
     }
 
-    pub async fn add_client_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(Uuid, Uuid), Error> {
-        let mut peer = PeerConn::new(self.my_node_id, self.global_ctx.clone(), tunnel);
+    pub async fn add_client_tunnel(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
@@ -190,7 +200,7 @@ impl PeerManager {
     }
 
     #[tracing::instrument]
-    pub async fn try_connect<C>(&self, mut connector: C) -> Result<(Uuid, Uuid), Error>
+    pub async fn try_connect<C>(&self, mut connector: C) -> Result<(PeerId, PeerConnId), Error>
     where
         C: TunnelConnector + Debug,
     {
@@ -204,7 +214,7 @@ impl PeerManager {
     #[tracing::instrument]
     pub async fn add_tunnel_as_server(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
-        let mut peer = PeerConn::new(self.my_node_id, self.global_ctx.clone(), tunnel);
+        let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_server().await?;
         if peer.get_network_identity() == self.global_ctx.get_network_identity() {
             self.peers.add_new_peer_conn(peer).await;
@@ -217,7 +227,7 @@ impl PeerManager {
 
     async fn start_peer_recv(&self) {
         let mut recv = ReceiverStream::new(self.packet_recv.lock().await.take().unwrap());
-        let my_node_id = self.my_node_id;
+        let my_peer_id = self.my_peer_id;
         let peers = self.peers.clone();
         let pipe_line = self.peer_packet_process_pipeline.clone();
         self.tasks.lock().await.spawn(async move {
@@ -225,21 +235,21 @@ impl PeerManager {
             while let Some(ret) = recv.next().await {
                 log::trace!("peer recv a packet...: {:?}", ret);
                 let packet = packet::Packet::decode(&ret);
-                let from_peer_uuid = packet.from_peer.to_uuid();
-                let to_peer_uuid = packet.to_peer.as_ref().unwrap().to_uuid();
-                if to_peer_uuid != my_node_id {
+                let from_peer_id: PeerId = packet.from_peer.into();
+                let to_peer_id: PeerId = packet.to_peer.into();
+                if to_peer_id != my_peer_id {
                     log::trace!(
-                        "need forward: to_peer_uuid: {:?}, my_uuid: {:?}",
-                        to_peer_uuid,
-                        my_node_id
+                        "need forward: to_peer_id: {:?}, my_peer_id: {:?}",
+                        to_peer_id,
+                        my_peer_id
                     );
-                    let ret = peers.send_msg(ret.clone(), &to_peer_uuid).await;
+                    let ret = peers.send_msg(ret.clone(), to_peer_id).await;
                     if ret.is_err() {
                         log::error!(
                             "forward packet error: {:?}, dst: {:?}, from: {:?}",
                             ret,
-                            to_peer_uuid,
-                            from_peer_uuid
+                            to_peer_id,
+                            from_peer_id
                         );
                     }
                 } else {
@@ -344,7 +354,7 @@ impl PeerManager {
         T: Route + Send + Sync + 'static,
     {
         struct Interface {
-            my_node_id: uuid::Uuid,
+            my_peer_id: PeerId,
             peers: Arc<PeerMap>,
             foreign_network_client: Arc<ForeignNetworkClient>,
         }
@@ -360,15 +370,15 @@ impl PeerManager {
                 &self,
                 msg: Bytes,
                 route_id: u8,
-                dst_peer_id: &PeerId,
+                dst_peer_id: PeerId,
             ) -> Result<(), Error> {
                 let packet_bytes: Bytes =
-                    packet::Packet::new_route_packet(self.my_node_id, *dst_peer_id, route_id, &msg)
+                    packet::Packet::new_route_packet(self.my_peer_id, dst_peer_id, route_id, &msg)
                         .into();
                 if self.foreign_network_client.has_next_hop(dst_peer_id) {
                     return self
                         .foreign_network_client
-                        .send_msg(packet_bytes, &dst_peer_id)
+                        .send_msg(packet_bytes, dst_peer_id)
                         .await;
                 }
 
@@ -376,12 +386,15 @@ impl PeerManager {
                     .send_msg_directly(packet_bytes, dst_peer_id)
                     .await
             }
+            fn my_peer_id(&self) -> PeerId {
+                self.my_peer_id
+            }
         }
 
-        let my_node_id = self.my_node_id;
+        let my_peer_id = self.my_peer_id;
         let _route_id = route
             .open(Box::new(Interface {
-                my_node_id,
+                my_peer_id,
                 peers: self.peers.clone(),
                 foreign_network_client: self.foreign_network_client.clone(),
             }))
@@ -403,7 +416,7 @@ impl PeerManager {
         data
     }
 
-    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: &PeerId) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
         self.peers.send_msg(msg, dst_peer_id).await
     }
 
@@ -440,8 +453,8 @@ impl PeerManager {
             let send_ret = self
                 .peers
                 .send_msg(
-                    packet::Packet::new_data_packet(self.my_node_id, peer_id.clone(), &msg).into(),
-                    &peer_id,
+                    packet::Packet::new_data_packet(self.my_peer_id, peer_id.clone(), &msg).into(),
+                    *peer_id,
                 )
                 .await;
 
@@ -502,7 +515,11 @@ impl PeerManager {
     }
 
     pub fn my_node_id(&self) -> uuid::Uuid {
-        self.my_node_id
+        self.global_ctx.get_id()
+    }
+
+    pub fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
     }
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {

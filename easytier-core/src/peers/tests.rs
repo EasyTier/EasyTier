@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    common::{error::Error, global_ctx::tests::get_mock_global_ctx},
+    common::{error::Error, global_ctx::tests::get_mock_global_ctx, PeerId},
     tunnels::ring_tunnel::create_ring_tunnel_pair,
 };
 
@@ -28,16 +28,16 @@ pub async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerMana
 
 pub async fn wait_route_appear_with_cost(
     peer_mgr: Arc<PeerManager>,
-    node_id: uuid::Uuid,
+    node_id: PeerId,
     cost: Option<i32>,
 ) -> Result<(), Error> {
     let now = std::time::Instant::now();
     while now.elapsed().as_secs() < 5 {
         let route = peer_mgr.list_routes().await;
-        if route.iter().any(|r| {
-            r.peer_id.clone().parse::<uuid::Uuid>().unwrap() == node_id
-                && (cost.is_none() || r.cost == cost.unwrap())
-        }) {
+        if route
+            .iter()
+            .any(|r| r.peer_id == node_id && (cost.is_none() || r.cost == cost.unwrap()))
+        {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -45,9 +45,6 @@ pub async fn wait_route_appear_with_cost(
     return Err(Error::NotFound);
 }
 
-pub async fn wait_route_appear(
-    peer_mgr: Arc<PeerManager>,
-    node_id: uuid::Uuid,
-) -> Result<(), Error> {
+pub async fn wait_route_appear(peer_mgr: Arc<PeerManager>, node_id: PeerId) -> Result<(), Error> {
     wait_route_appear_with_cost(peer_mgr, node_id, None).await
 }

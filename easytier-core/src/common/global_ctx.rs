@@ -3,19 +3,19 @@ use std::{io::Write, sync::Arc};
 use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use super::{
     config_fs::ConfigFs,
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
+    PeerId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum GlobalCtxEvent {
-    PeerAdded(Uuid),
-    PeerRemoved(Uuid),
+    PeerAdded(PeerId),
+    PeerRemoved(PeerId),
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
 }
@@ -231,6 +231,8 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
+    use crate::common::new_peer_id;
+
     use super::*;
 
     #[tokio::test]
@@ -240,19 +242,19 @@ pub mod tests {
         let global_ctx = GlobalCtx::new("test", config_fs, net_ns, None);
 
         let mut subscriber = global_ctx.subscribe();
-        let uuid = Uuid::new_v4();
-        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(uuid.clone()));
-        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(uuid.clone()));
+        let peer_id = new_peer_id();
+        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id.clone()));
+        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id.clone()));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnAdded(PeerConnInfo::default()));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default()));
 
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerAdded(uuid.clone())
+            GlobalCtxEvent::PeerAdded(peer_id.clone())
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerRemoved(uuid.clone())
+            GlobalCtxEvent::PeerRemoved(peer_id.clone())
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),

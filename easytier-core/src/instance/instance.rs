@@ -9,12 +9,12 @@ use pnet::packet::ipv4::Ipv4Packet;
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::bytes::{Bytes, BytesMut};
 use tonic::transport::Server;
-use uuid::Uuid;
 
 use crate::common::config_fs::ConfigFs;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::netns::NetNS;
+use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
@@ -22,6 +22,7 @@ use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::tcp_proxy::TcpProxy;
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
+use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::tunnels::SinkItem;
@@ -126,19 +127,18 @@ impl Instance {
         ));
 
         let listener_manager = Arc::new(Mutex::new(ListenerManager::new(
-            id,
+            peer_manager.my_node_id(),
             net_ns.clone(),
             peer_manager.clone(),
         )));
 
         let conn_manager = Arc::new(ManualConnectorManager::new(
-            id,
             global_ctx.clone(),
             peer_manager.clone(),
         ));
 
         let mut direct_conn_manager =
-            DirectConnectorManager::new(id, global_ctx.clone(), peer_manager.clone());
+            DirectConnectorManager::new(global_ctx.clone(), peer_manager.clone());
         direct_conn_manager.run();
 
         let udp_hole_puncher = UdpHolePunchConnector::new(global_ctx.clone(), peer_manager.clone());
@@ -302,7 +302,11 @@ impl Instance {
         self.peer_manager.clone()
     }
 
-    pub async fn close_peer_conn(&mut self, peer_id: &Uuid, conn_id: &Uuid) -> Result<(), Error> {
+    pub async fn close_peer_conn(
+        &mut self,
+        peer_id: PeerId,
+        conn_id: &PeerConnId,
+    ) -> Result<(), Error> {
         self.peer_manager
             .get_peer_map()
             .close_peer_conn(peer_id, conn_id)
@@ -319,6 +323,10 @@ impl Instance {
 
     pub fn id(&self) -> uuid::Uuid {
         self.id
+    }
+
+    pub fn peer_id(&self) -> PeerId {
+        self.peer_manager.my_peer_id()
     }
 
     fn run_rpc_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {

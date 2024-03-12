@@ -16,7 +16,8 @@ use tokio::{
 use tracing::Instrument;
 
 use crate::{
-    peers::{peer_manager::PeerManager, rpc_service::PeerManagerRpcService, PeerId},
+    common::PeerId,
+    peers::{peer_manager::PeerManager, rpc_service::PeerManagerRpcService},
     rpc::{GetGlobalPeerMapRequest, GetGlobalPeerMapResponse},
 };
 
@@ -43,7 +44,7 @@ impl PeerCenterBase {
     pub async fn init(&self) -> Result<(), Error> {
         self.peer_mgr.get_peer_rpc_mgr().run_service(
             SERVICE_ID,
-            PeerCenterServer::new(self.peer_mgr.my_node_id()).serve(),
+            PeerCenterServer::new(self.peer_mgr.my_peer_id()).serve(),
         );
 
         Ok(())
@@ -55,13 +56,14 @@ impl PeerCenterBase {
             return None;
         }
         // find peer with alphabetical smallest id.
-        let mut min_peer = peer_mgr.my_node_id().to_string();
+        let mut min_peer = peer_mgr.my_peer_id();
         for peer in peers.iter() {
-            if peer.peer_id < min_peer {
-                min_peer = peer.peer_id.clone();
+            let peer_id = peer.peer_id;
+            if peer_id < min_peer {
+                min_peer = peer_id;
             }
         }
-        Some(min_peer.parse().unwrap())
+        Some(min_peer)
     }
 
     async fn init_periodic_job<
@@ -72,7 +74,7 @@ impl PeerCenterBase {
         job_ctx: T,
         job_fn: (impl Fn(PeerCenterServiceClient, Arc<PeridicJobCtx<T>>) -> Fut + Send + Sync + 'static),
     ) -> () {
-        let my_node_id = self.peer_mgr.my_node_id();
+        let my_peer_id = self.peer_mgr.my_peer_id();
         let peer_mgr = self.peer_mgr.clone();
         let lock = self.lock.clone();
         self.tasks.lock().await.spawn(
@@ -111,7 +113,7 @@ impl PeerCenterBase {
                     }
                 }
             }
-            .instrument(tracing::info_span!("periodic_job", ?my_node_id)),
+            .instrument(tracing::info_span!("periodic_job", ?my_peer_id)),
         );
     }
 
@@ -140,7 +142,7 @@ impl crate::rpc::cli::peer_center_rpc_server::PeerCenterRpc for PeerCenterInstan
             global_peer_map: global_peer_map
                 .map
                 .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
+                .map(|(k, v)| (k, v))
                 .collect(),
         }))
     }
@@ -233,7 +235,7 @@ impl PeerCenterInstance {
 
         self.client
             .init_periodic_job(ctx, |client, ctx| async move {
-                let my_node_id = ctx.peer_mgr.my_node_id();
+                let my_node_id = ctx.peer_mgr.my_peer_id();
 
                 // if peers are not same in next 10 seconds, report peers to center server
                 let mut peers = PeerInfoForGlobalMap::default();
@@ -317,7 +319,7 @@ mod tests {
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
 
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_node_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
             .await
             .unwrap();
 

@@ -13,5 +13,3 @@ pub mod foreign_network_manager;
 
 #[cfg(test)]
 pub mod tests;
-
-pub type PeerId = uuid::Uuid;

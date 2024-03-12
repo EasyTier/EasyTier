@@ -277,7 +277,7 @@ impl CommandHandler {
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or(vec![]).join(",").to_string(),
                     nat_type: p.get_udp_nat_type(),
-                    id: p.route.peer_id.clone(),
+                    id: p.route.peer_id.to_string(),
                 }
             }
         }
@@ -460,7 +460,7 @@ async fn main() -> Result<(), Error> {
                     })
                     .collect::<Vec<_>>();
                 table_rows.push(PeerCenterTableItem {
-                    node_id: node_id.clone(),
+                    node_id: node_id.to_string(),
                     direct_peers: direct_peers.join("\n"),
                 });
             }

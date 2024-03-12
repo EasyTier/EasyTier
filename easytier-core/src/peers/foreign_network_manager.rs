@@ -16,11 +16,11 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_util::bytes::Bytes;
-use uuid::Uuid;
 
 use crate::common::{
     error::Error,
     global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
+    PeerId,
 };
 
 use super::{
@@ -28,7 +28,6 @@ use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
-    PeerId,
 };
 
 struct ForeignNetworkEntry {
@@ -41,8 +40,9 @@ impl ForeignNetworkEntry {
         network: NetworkIdentity,
         packet_sender: mpsc::Sender<Bytes>,
         global_ctx: ArcGlobalCtx,
+        my_peer_id: PeerId,
     ) -> Self {
-        let peer_map = Arc::new(PeerMap::new(packet_sender, global_ctx));
+        let peer_map = Arc::new(PeerMap::new(packet_sender, global_ctx, my_peer_id));
         Self { network, peer_map }
     }
 }
@@ -53,10 +53,10 @@ struct ForeignNetworkManagerData {
 }
 
 impl ForeignNetworkManagerData {
-    async fn send_msg(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
+    async fn send_msg(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
         let network_name = self
             .peer_network_map
-            .get(dst_peer_id)
+            .get(&dst_peer_id)
             .ok_or_else(|| Error::RouteError("network not found".to_string()))?
             .clone();
         let entry = self
@@ -67,16 +67,16 @@ impl ForeignNetworkManagerData {
         entry.peer_map.send_msg(msg, dst_peer_id).await
     }
 
-    fn get_peer_network(&self, peer_id: &uuid::Uuid) -> Option<String> {
-        self.peer_network_map.get(peer_id).map(|v| v.clone())
+    fn get_peer_network(&self, peer_id: PeerId) -> Option<String> {
+        self.peer_network_map.get(&peer_id).map(|v| v.clone())
     }
 
     fn get_network_entry(&self, network_name: &str) -> Option<Arc<ForeignNetworkEntry>> {
         self.network_peer_maps.get(network_name).map(|v| v.clone())
     }
 
-    fn remove_peer(&self, peer_id: &uuid::Uuid) {
-        self.peer_network_map.remove(peer_id);
+    fn remove_peer(&self, peer_id: PeerId) {
+        self.peer_network_map.remove(&peer_id);
         self.network_peer_maps.retain(|_, v| !v.peer_map.is_empty());
     }
 
@@ -91,7 +91,7 @@ impl ForeignNetworkManagerData {
 }
 
 struct RpcTransport {
-    my_peer_id: uuid::Uuid,
+    my_peer_id: PeerId,
     data: Arc<ForeignNetworkManagerData>,
 
     packet_recv: Mutex<UnboundedReceiver<Bytes>>,
@@ -99,11 +99,11 @@ struct RpcTransport {
 
 #[async_trait::async_trait]
 impl PeerRpcManagerTransport for RpcTransport {
-    fn my_peer_id(&self) -> Uuid {
+    fn my_peer_id(&self) -> PeerId {
         self.my_peer_id
     }
 
-    async fn send(&self, msg: Bytes, dst_peer_id: &uuid::Uuid) -> Result<(), Error> {
+    async fn send(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
         self.data.send_msg(msg, dst_peer_id).await
     }
 
@@ -136,6 +136,7 @@ impl ForeignNetworkService for Arc<ForeignNetworkManagerData> {
 }
 
 pub struct ForeignNetworkManager {
+    my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
     packet_sender_to_mgr: mpsc::Sender<Bytes>,
 
@@ -150,7 +151,11 @@ pub struct ForeignNetworkManager {
 }
 
 impl ForeignNetworkManager {
-    pub fn new(global_ctx: ArcGlobalCtx, packet_sender_to_mgr: mpsc::Sender<Bytes>) -> Self {
+    pub fn new(
+        my_peer_id: PeerId,
+        global_ctx: ArcGlobalCtx,
+        packet_sender_to_mgr: mpsc::Sender<Bytes>,
+    ) -> Self {
         // recv packet from all foreign networks
         let (packet_sender, packet_recv) = mpsc::channel(1000);
 
@@ -162,12 +167,13 @@ impl ForeignNetworkManager {
         // handle rpc from foreign networks
         let (rpc_transport_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
         let rpc_mgr = Arc::new(PeerRpcManager::new(RpcTransport {
-            my_peer_id: global_ctx.get_id(),
+            my_peer_id,
             data: data.clone(),
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
         }));
 
         Self {
+            my_peer_id,
             global_ctx,
             packet_sender_to_mgr,
 
@@ -194,6 +200,7 @@ impl ForeignNetworkManager {
                     peer_conn.get_network_identity(),
                     self.packet_sender.clone(),
                     self.global_ctx.clone(),
+                    self.my_peer_id,
                 ))
             })
             .clone();
@@ -217,7 +224,7 @@ impl ForeignNetworkManager {
             while let Ok(e) = s.recv().await {
                 tracing::warn!(?e, "global event");
                 if let GlobalCtxEvent::PeerRemoved(peer_id) = &e {
-                    data.remove_peer(peer_id);
+                    data.remove_peer(*peer_id);
                 } else if let GlobalCtxEvent::PeerConnRemoved(..) = &e {
                     data.clear_no_conn_peer();
                 }
@@ -228,16 +235,16 @@ impl ForeignNetworkManager {
     async fn start_packet_recv(&self) {
         let mut recv = self.packet_recv.lock().await.take().unwrap();
         let sender_to_mgr = self.packet_sender_to_mgr.clone();
-        let my_node_id = self.global_ctx.get_id();
+        let my_node_id = self.my_peer_id;
         let rpc_sender = self.rpc_transport_sender.clone();
         let data = self.data.clone();
 
         self.tasks.lock().await.spawn(async move {
             while let Some(packet_bytes) = recv.recv().await {
                 let packet = packet::Packet::decode(&packet_bytes);
-                let from_peer_uuid = packet.from_peer.to_uuid();
-                let to_peer_uuid = packet.to_peer.as_ref().unwrap().to_uuid();
-                if to_peer_uuid == my_node_id {
+                let from_peer_id = packet.from_peer.into();
+                let to_peer_id = packet.to_peer.into();
+                if to_peer_id == my_node_id {
                     if let ArchivedPacketBody::Ctrl(packet::ArchivedCtrlPacketBody::TaRpc(..)) =
                         &packet.body
                     {
@@ -248,10 +255,10 @@ impl ForeignNetworkManager {
                         tracing::error!("send packet to mgr failed: {:?}", e);
                     }
                 } else {
-                    let Some(from_network) = data.get_peer_network(&from_peer_uuid) else {
+                    let Some(from_network) = data.get_peer_network(from_peer_id) else {
                         continue;
                     };
-                    let Some(to_network) = data.get_peer_network(&to_peer_uuid) else {
+                    let Some(to_network) = data.get_peer_network(to_peer_id) else {
                         continue;
                     };
                     if from_network != to_network {
@@ -259,7 +266,7 @@ impl ForeignNetworkManager {
                     }
 
                     if let Some(entry) = data.get_network_entry(&from_network) {
-                        let ret = entry.peer_map.send_msg(packet_bytes, &to_peer_uuid).await;
+                        let ret = entry.peer_map.send_msg(packet_bytes, to_peer_id).await;
                         if ret.is_err() {
                             tracing::error!("forward packet to peer failed: {:?}", ret.err());
                         }
@@ -339,7 +346,7 @@ mod tests {
         assert!(succ);
 
         assert_eq!(
-            vec![pm_center.my_node_id()],
+            vec![pm_center.my_peer_id()],
             pma_net1
                 .get_foreign_network_client()
                 .get_peer_map()
@@ -347,14 +354,14 @@ mod tests {
                 .await
         );
         assert_eq!(
-            vec![pm_center.my_node_id()],
+            vec![pm_center.my_peer_id()],
             pmb_net1
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
                 .await
         );
-        wait_route_appear(pma_net1.clone(), pmb_net1.my_node_id())
+        wait_route_appear(pma_net1.clone(), pmb_net1.my_peer_id())
             .await
             .unwrap();
         assert_eq!(1, pma_net1.list_routes().await.len());
@@ -362,10 +369,10 @@ mod tests {
 
         let pmc_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
         connect_peer_manager(pmc_net1.clone(), pm_center.clone()).await;
-        wait_route_appear(pma_net1.clone(), pmc_net1.my_node_id())
+        wait_route_appear(pma_net1.clone(), pmc_net1.my_peer_id())
             .await
             .unwrap();
-        wait_route_appear(pmb_net1.clone(), pmc_net1.my_node_id())
+        wait_route_appear(pmb_net1.clone(), pmc_net1.my_peer_id())
             .await
             .unwrap();
         assert_eq!(2, pmc_net1.list_routes().await.len());
@@ -374,7 +381,7 @@ mod tests {
         let pmb_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
         connect_peer_manager(pma_net2.clone(), pm_center.clone()).await;
         connect_peer_manager(pmb_net2.clone(), pm_center.clone()).await;
-        wait_route_appear(pma_net2.clone(), pmb_net2.my_node_id())
+        wait_route_appear(pma_net2.clone(), pmb_net2.my_peer_id())
             .await
             .unwrap();
         assert_eq!(1, pma_net2.list_routes().await.len());
