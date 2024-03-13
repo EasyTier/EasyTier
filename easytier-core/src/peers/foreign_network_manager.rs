@@ -24,7 +24,7 @@ use crate::common::{
 };
 
 use super::{
-    packet::{self, ArchivedPacketBody},
+    packet::{self},
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
@@ -245,7 +245,7 @@ impl ForeignNetworkManager {
                 let from_peer_id = packet.from_peer.into();
                 let to_peer_id = packet.to_peer.into();
                 if to_peer_id == my_node_id {
-                    if let ArchivedPacketBody::TaRpc(..) = &packet.body {
+                    if packet.packet_type == packet::PacketType::TaRpc {
                         rpc_sender.send(packet_bytes.clone()).unwrap();
                         continue;
                     }

@@ -1,4 +1,5 @@
 use rkyv::{
+    string::ArchivedString,
     validation::{validators::DefaultValidator, CheckTypeError},
     vec::ArchivedVec,
     Archive, CheckBytes, Serialize,
@@ -43,6 +44,19 @@ pub fn extract_bytes_from_archived_vec(raw_data: &Bytes, archived_data: &Archive
     return raw_data.slice(offset..offset + len);
 }
 
+pub fn extract_bytes_from_archived_string(
+    raw_data: &Bytes,
+    archived_data: &ArchivedString,
+) -> Bytes {
+    let offset = archived_data.as_ptr() as usize - raw_data.as_ptr() as usize;
+    let len = archived_data.len();
+    if offset + len > raw_data.len() {
+        return Bytes::new();
+    }
+
+    return raw_data.slice(offset..offset + archived_data.len());
+}
+
 pub fn extract_bytes_mut_from_archived_vec(
     raw_data: &mut BytesMut,
     archived_data: &ArchivedVec<u8>,
@@ -51,4 +65,8 @@ pub fn extract_bytes_mut_from_archived_vec(
     let offset = ptr_range.start as usize - raw_data.as_ptr() as usize;
     let len = ptr_range.end as usize - ptr_range.start as usize;
     raw_data.split_off(offset).split_to(len)
+}
+
+pub fn vec_to_string(vec: Vec<u8>) -> String {
+    unsafe { String::from_utf8_unchecked(vec) }
 }

@@ -15,7 +15,8 @@ use tokio_util::bytes::{Bytes, BytesMut};
 
 use crate::{
     common::{
-        error::Error, global_ctx::ArcGlobalCtx, rkyv_util::extract_bytes_from_archived_vec, PeerId,
+        error::Error, global_ctx::ArcGlobalCtx, rkyv_util::extract_bytes_from_archived_string,
+        PeerId,
     },
     peers::{
         packet, peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport, route_trait::RouteInterface,
@@ -287,8 +288,6 @@ impl PeerManager {
     }
 
     async fn init_packet_process_pipeline(&self) {
-        use packet::ArchivedPacketBody;
-
         // for tun/tap ip/eth packet.
         struct NicPacketProcessor {
             nic_channel: mpsc::Sender<SinkItem>,
@@ -300,10 +299,10 @@ impl PeerManager {
                 packet: &packet::ArchivedPacket,
                 data: &Bytes,
             ) -> Option<()> {
-                if let packet::ArchivedPacketBody::Data(x) = &packet.body {
+                if packet.packet_type == packet::PacketType::Data {
                     // TODO: use a function to get the body ref directly for zero copy
                     self.nic_channel
-                        .send(extract_bytes_from_archived_vec(&data, &x))
+                        .send(extract_bytes_from_archived_string(data, &packet.payload))
                         .await
                         .unwrap();
                     Some(())
@@ -333,7 +332,7 @@ impl PeerManager {
                 packet: &packet::ArchivedPacket,
                 data: &Bytes,
             ) -> Option<()> {
-                if let ArchivedPacketBody::TaRpc(..) = &packet.body {
+                if packet.packet_type == packet::PacketType::TaRpc {
                     self.peer_rpc_tspt_sender.send(data.clone()).unwrap();
                     Some(())
                 } else {

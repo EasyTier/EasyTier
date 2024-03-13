@@ -16,10 +16,7 @@ use tokio::{
     time::{timeout, Duration},
 };
 
-use tokio_util::{
-    bytes::{Bytes, BytesMut},
-    sync::PollSender,
-};
+use tokio_util::{bytes::Bytes, sync::PollSender};
 use tracing::Instrument;
 
 use crate::{
@@ -28,6 +25,7 @@ use crate::{
         PeerId,
     },
     define_tunnel_filter_chain,
+    peers::packet::{ArchivedPacketType, CtrlPacketPayload},
     rpc::{PeerConnInfo, PeerConnStats},
     tunnels::{
         stats::{Throughput, WindowLatency},
@@ -36,7 +34,7 @@ use crate::{
     },
 };
 
-use super::packet::{self, ArchivedHandShake, Packet};
+use super::packet::{self, HandShake, Packet};
 
 pub type PacketRecvChan = mpsc::Sender<Bytes>;
 
@@ -54,7 +52,8 @@ macro_rules! wait_response {
 
         let $out_var;
         let rsp_bytes = Packet::decode(&rsp_vec);
-        match &rsp_bytes.body {
+        let resp_payload = CtrlPacketPayload::from_packet(&rsp_bytes);
+        match &resp_payload {
             $pattern => $out_var = $value,
             _ => {
                 log::error!(
@@ -68,19 +67,6 @@ macro_rules! wait_response {
     };
 }
 
-fn build_ctrl_msg(msg: Bytes, is_req: bool) -> Bytes {
-    let prefix: &'static [u8] = if is_req {
-        CTRL_REQ_PACKET_PREFIX
-    } else {
-        CTRL_RESP_PACKET_PREFIX
-    };
-    let mut new_msg = BytesMut::new();
-    new_msg.reserve(prefix.len() + msg.len());
-    new_msg.extend_from_slice(prefix);
-    new_msg.extend_from_slice(&msg);
-    new_msg.into()
-}
-
 pub struct PeerInfo {
     magic: u32,
     pub my_peer_id: PeerId,
@@ -90,15 +76,15 @@ pub struct PeerInfo {
     pub network_identity: NetworkIdentity,
 }
 
-impl<'a> From<&ArchivedHandShake> for PeerInfo {
-    fn from(hs: &ArchivedHandShake) -> Self {
+impl<'a> From<&HandShake> for PeerInfo {
+    fn from(hs: &HandShake) -> Self {
         PeerInfo {
             magic: hs.magic.into(),
             my_peer_id: hs.my_peer_id.into(),
             version: hs.version.into(),
             features: hs.features.iter().map(|x| x.to_string()).collect(),
             interfaces: Vec::new(),
-            network_identity: (&hs.network_identity).into(),
+            network_identity: hs.network_identity.clone(),
         }
     }
 }
@@ -150,10 +136,7 @@ impl PeerConnPinger {
         seq: u32,
     ) -> Result<u128, TunnelError> {
         // should add seq here. so latency can be calculated more accurately
-        let req = build_ctrl_msg(
-            packet::Packet::new_ping_packet(my_node_id, peer_id, seq).into(),
-            true,
-        );
+        let req = packet::Packet::new_ping_packet(my_node_id, peer_id, seq).into();
         tracing::trace!("send ping packet: {:?}", req);
         sink.lock().await.send(req).await.map_err(|e| {
             tracing::warn!("send ping packet error: {:?}", e);
@@ -167,9 +150,10 @@ impl PeerConnPinger {
             loop {
                 match receiver.recv().await {
                     Ok(p) => {
-                        if let packet::ArchivedPacketBody::Pong(resp_seq) = &Packet::decode(&p).body
-                        {
-                            if *resp_seq == seq {
+                        let ctrl_payload =
+                            packet::CtrlPacketPayload::from_packet(Packet::decode(&p));
+                        if let packet::CtrlPacketPayload::Pong(resp_seq) = ctrl_payload {
+                            if resp_seq == seq {
                                 break;
                             }
                         }
@@ -247,7 +231,7 @@ impl PeerConnPinger {
                 });
 
                 req_seq += 1;
-                tokio::time::sleep(Duration::from_millis(350)).await;
+                tokio::time::sleep(Duration::from_millis(1000)).await;
             }
         });
 
@@ -332,9 +316,6 @@ enum PeerConnPacketType {
     CtrlResp(Bytes),
 }
 
-static CTRL_REQ_PACKET_PREFIX: &[u8] = &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
-static CTRL_RESP_PACKET_PREFIX: &[u8] = &[0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf1];
-
 impl PeerConn {
     pub fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx, tunnel: Box<dyn Tunnel>) -> Self {
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(100);
@@ -371,7 +352,7 @@ impl PeerConn {
         let mut stream = self.tunnel.pin_stream();
         let mut sink = self.tunnel.pin_sink();
 
-        wait_response!(stream, hs_req, packet::ArchivedPacketBody::HandShake(x) => x);
+        wait_response!(stream, hs_req, CtrlPacketPayload::HandShake(x) => x);
         self.info = Some(PeerInfo::from(hs_req));
         log::info!("handshake request: {:?}", hs_req);
 
@@ -394,7 +375,7 @@ impl PeerConn {
             .run(|| packet::Packet::new_handshake(self.my_peer_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
-        wait_response!(stream, hs_rsp, packet::ArchivedPacketBody::HandShake(x) => x);
+        wait_response!(stream, hs_rsp, CtrlPacketPayload::HandShake(x) => x);
         self.info = Some(PeerInfo::from(hs_rsp));
         log::info!("handshake response: {:?}", hs_rsp);
 
@@ -403,41 +384,6 @@ impl PeerConn {
 
     pub fn handshake_done(&self) -> bool {
         self.info.is_some()
-    }
-
-    fn get_packet_type(mut bytes_item: Bytes) -> PeerConnPacketType {
-        if bytes_item.starts_with(CTRL_REQ_PACKET_PREFIX) {
-            PeerConnPacketType::CtrlReq(bytes_item.split_off(CTRL_REQ_PACKET_PREFIX.len()))
-        } else if bytes_item.starts_with(CTRL_RESP_PACKET_PREFIX) {
-            PeerConnPacketType::CtrlResp(bytes_item.split_off(CTRL_RESP_PACKET_PREFIX.len()))
-        } else {
-            PeerConnPacketType::Data(bytes_item)
-        }
-    }
-
-    fn handle_ctrl_req_packet(
-        bytes_item: Bytes,
-        conn_info: &PeerConnInfo,
-    ) -> Result<Bytes, TunnelError> {
-        let packet = Packet::decode(&bytes_item);
-        match packet.body {
-            packet::ArchivedPacketBody::Ping(seq) => {
-                log::trace!("recv ping packet: {:?}", packet);
-                Ok(build_ctrl_msg(
-                    packet::Packet::new_pong_packet(
-                        conn_info.my_peer_id,
-                        conn_info.peer_id,
-                        seq.into(),
-                    )
-                    .into(),
-                    false,
-                ))
-            }
-            _ => {
-                log::error!("unexpected packet: {:?}", packet);
-                Err(TunnelError::CommonError("unexpected packet".to_owned()))
-            }
-        }
     }
 
     pub fn start_pingpong(&mut self) {
@@ -487,21 +433,34 @@ impl PeerConn {
                         break;
                     }
 
-                    match Self::get_packet_type(ret.unwrap().into()) {
-                        PeerConnPacketType::Data(item) => {
-                            if sender.send(item).await.is_err() {
-                                break;
-                            }
-                        }
-                        PeerConnPacketType::CtrlReq(item) => {
-                            let ret = Self::handle_ctrl_req_packet(item, &conn_info).unwrap();
-                            if let Err(e) = sink.send(ret).await {
+                    let buf = ret.unwrap();
+                    let p = Packet::decode(&buf);
+                    match p.packet_type {
+                        ArchivedPacketType::Ping => {
+                            let CtrlPacketPayload::Ping(seq) = CtrlPacketPayload::from_packet(p)
+                            else {
+                                log::error!("unexpected packet: {:?}", p);
+                                continue;
+                            };
+
+                            let pong = packet::Packet::new_pong_packet(
+                                conn_info.my_peer_id,
+                                conn_info.peer_id,
+                                seq.into(),
+                            );
+
+                            if let Err(e) = sink.send(pong.into()).await {
                                 tracing::error!(?e, "peer conn send req error");
                             }
                         }
-                        PeerConnPacketType::CtrlResp(item) => {
-                            if let Err(e) = ctrl_sender.send(item) {
+                        ArchivedPacketType::Pong => {
+                            if let Err(e) = ctrl_sender.send(buf.into()) {
                                 tracing::error!(?e, "peer conn send ctrl resp error");
+                            }
+                        }
+                        _ => {
+                            if sender.send(buf.into()).await.is_err() {
+                                break;
                             }
                         }
                     }
@@ -676,7 +635,7 @@ mod tests {
         c_peer.start_recv_loop(tokio::sync::mpsc::channel(200).0);
 
         // wait 5s, conn should not be disconnected
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(15)).await;
 
         if conn_closed {
             assert!(close_recv.try_recv().is_ok());

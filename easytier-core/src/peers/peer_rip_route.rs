@@ -6,7 +6,6 @@ use std::{
 
 use async_trait::async_trait;
 use dashmap::DashMap;
-use rkyv::{Archive, Deserialize, Serialize};
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinSet,
@@ -15,21 +14,15 @@ use tokio_util::bytes::Bytes;
 use tracing::Instrument;
 
 use crate::{
-    common::{
-        error::Error,
-        global_ctx::ArcGlobalCtx,
-        rkyv_util::{decode_from_bytes, encode_to_bytes, extract_bytes_from_archived_vec},
-        stun::StunInfoCollectorTrait,
-        PeerId,
-    },
+    common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::{
-        packet::{self},
+        packet,
         route_trait::{Route, RouteInterfaceBox},
     },
     rpc::{NatType, StunInfo},
 };
 
-use super::{packet::ArchivedPacketBody, peer_manager::PeerPacketFilter};
+use super::{packet::CtrlPacketPayload, peer_manager::PeerPacketFilter};
 
 const SEND_ROUTE_PERIOD_SEC: u64 = 60;
 const SEND_ROUTE_FAST_REPLY_SEC: u64 = 5;
@@ -37,10 +30,8 @@ const ROUTE_EXPIRED_SEC: u64 = 70;
 
 type Version = u32;
 
-#[derive(Archive, Deserialize, Serialize, Clone, Debug, PartialEq)]
-#[archive(compare(PartialEq), check_bytes)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
 // Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
 pub struct SyncPeerInfo {
     // means next hop in route table.
     pub peer_id: PeerId,
@@ -82,10 +73,7 @@ impl SyncPeerInfo {
     }
 }
 
-#[derive(Archive, Deserialize, Serialize, Clone, Debug)]
-#[archive(compare(PartialEq), check_bytes)]
-// Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 pub struct SyncPeer {
     pub myself: SyncPeerInfo,
     pub neighbors: Vec<SyncPeerInfo>,
@@ -341,7 +329,7 @@ impl BasicRoute {
         );
         // TODO: this may exceed the MTU of the tunnel
         interface
-            .send_route_packet(encode_to_bytes::<_, 4096>(&msg), 1, peer_id)
+            .send_route_packet(postcard::to_allocvec(&msg).unwrap().into(), 1, peer_id)
             .await
     }
 
@@ -380,7 +368,7 @@ impl BasicRoute {
                             continue;
                         }
 
-                        tracing::info!(
+                        tracing::trace!(
                             my_id = ?my_peer_id,
                             dst_peer_id = ?peer,
                             version = version.get(),
@@ -504,8 +492,8 @@ impl BasicRoute {
 
     #[tracing::instrument(skip(self, packet), fields(my_id = ?self.my_peer_id, ctx = ?self.global_ctx))]
     async fn handle_route_packet(&self, src_peer_id: PeerId, packet: Bytes) {
-        let packet = decode_from_bytes::<SyncPeer>(&packet).unwrap();
-        let p: SyncPeer = packet.deserialize(&mut rkyv::Infallible).unwrap();
+        let packet = postcard::from_bytes::<SyncPeer>(&packet).unwrap();
+        let p = &packet;
         let mut updated = true;
         assert_eq!(packet.myself.peer_id, src_peer_id);
         self.sync_peer_from_remote
@@ -639,12 +627,18 @@ impl PeerPacketFilter for BasicRoute {
     async fn try_process_packet_from_peer(
         &self,
         packet: &packet::ArchivedPacket,
-        data: &Bytes,
+        _data: &Bytes,
     ) -> Option<()> {
-        if let ArchivedPacketBody::RoutePacket(route_packet) = &packet.body {
+        if packet.packet_type == packet::PacketType::RoutePacket {
+            let CtrlPacketPayload::RoutePacket(route_packet) =
+                CtrlPacketPayload::from_packet(packet)
+            else {
+                return None;
+            };
+
             self.handle_route_packet(
                 packet.from_peer.into(),
-                extract_bytes_from_archived_vec(&data, &route_packet.body),
+                route_packet.body.into_boxed_slice().into(),
             )
             .await;
             Some(())
