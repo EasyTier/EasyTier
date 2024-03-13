@@ -641,9 +641,7 @@ impl PeerPacketFilter for BasicRoute {
         packet: &packet::ArchivedPacket,
         data: &Bytes,
     ) -> Option<()> {
-        if let ArchivedPacketBody::Ctrl(packet::ArchivedCtrlPacketBody::RoutePacket(route_packet)) =
-            &packet.body
-        {
+        if let ArchivedPacketBody::RoutePacket(route_packet) = &packet.body {
             self.handle_route_packet(
                 packet.from_peer.into(),
                 extract_bytes_from_archived_vec(&data, &route_packet.body),

@@ -88,7 +88,7 @@ impl PeerPacketFilter for TcpProxy {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(&x.data)?;
+        let ipv4 = Ipv4Packet::new(&x)?;
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
             return None;
         }
@@ -99,8 +99,8 @@ impl PeerPacketFilter for TcpProxy {
 
         tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
 
-        let mut packet_buffer = BytesMut::with_capacity(x.data.len());
-        packet_buffer.extend_from_slice(&x.data.to_vec());
+        let mut packet_buffer = BytesMut::with_capacity(x.len());
+        packet_buffer.extend_from_slice(&x.to_vec());
 
         let (ip_buffer, tcp_buffer) =
             packet_buffer.split_at_mut(ipv4.get_header_length() as usize * 4);

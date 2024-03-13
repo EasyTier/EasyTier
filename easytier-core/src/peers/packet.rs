@@ -111,29 +111,13 @@ pub struct RoutePacket {
 #[archive(compare(PartialEq), check_bytes)]
 // Derives can be passed through to the generated type:
 #[archive_attr(derive(Debug))]
-pub enum CtrlPacketBody {
+pub enum PacketBody {
+    Data(Vec<u8>),
     HandShake(HandShake),
     RoutePacket(RoutePacket),
     Ping(u32),
     Pong(u32),
     TaRpc(u32, bool, Vec<u8>), // u32: service_id, bool: is_req, Vec<u8>: rpc body
-}
-
-#[derive(Archive, Deserialize, Serialize, Debug)]
-#[archive(compare(PartialEq), check_bytes)]
-// Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
-pub struct DataPacketBody {
-    pub data: Vec<u8>,
-}
-
-#[derive(Archive, Deserialize, Serialize, Debug)]
-#[archive(compare(PartialEq), check_bytes)]
-// Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
-pub enum PacketBody {
-    Ctrl(CtrlPacketBody),
-    Data(DataPacketBody),
 }
 
 #[derive(Archive, Deserialize, Serialize, Debug)]
@@ -163,13 +147,13 @@ impl Packet {
         Packet {
             from_peer: from_peer.into(),
             to_peer: 0,
-            body: PacketBody::Ctrl(CtrlPacketBody::HandShake(HandShake {
+            body: PacketBody::HandShake(HandShake {
                 magic: MAGIC,
                 my_peer_id: from_peer,
                 version: VERSION,
                 features: Vec::new(),
                 network_identity: network.clone().into(),
-            })),
+            }),
         }
     }
 
@@ -177,9 +161,7 @@ impl Packet {
         Packet {
             from_peer,
             to_peer,
-            body: PacketBody::Data(DataPacketBody {
-                data: data.to_vec(),
-            }),
+            body: PacketBody::Data(data.to_vec()),
         }
     }
 
@@ -187,10 +169,10 @@ impl Packet {
         Packet {
             from_peer,
             to_peer,
-            body: PacketBody::Ctrl(CtrlPacketBody::RoutePacket(RoutePacket {
+            body: PacketBody::RoutePacket(RoutePacket {
                 route_id,
                 body: data.to_vec(),
-            })),
+            }),
         }
     }
 
@@ -198,7 +180,7 @@ impl Packet {
         Packet {
             from_peer,
             to_peer,
-            body: PacketBody::Ctrl(CtrlPacketBody::Ping(seq)),
+            body: PacketBody::Ping(seq),
         }
     }
 
@@ -206,7 +188,7 @@ impl Packet {
         Packet {
             from_peer,
             to_peer,
-            body: PacketBody::Ctrl(CtrlPacketBody::Pong(seq)),
+            body: PacketBody::Pong(seq),
         }
     }
 
@@ -220,7 +202,7 @@ impl Packet {
         Packet {
             from_peer,
             to_peer,
-            body: PacketBody::Ctrl(CtrlPacketBody::TaRpc(service_id, is_req, body)),
+            body: PacketBody::TaRpc(service_id, is_req, body),
         }
     }
 }
