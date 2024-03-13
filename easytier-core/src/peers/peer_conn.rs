@@ -36,7 +36,7 @@ use crate::{
     },
 };
 
-use super::packet::{self, ArchivedCtrlPacketBody, ArchivedHandShake, Packet};
+use super::packet::{self, ArchivedHandShake, Packet};
 
 pub type PacketRecvChan = mpsc::Sender<Bytes>;
 
@@ -167,9 +167,7 @@ impl PeerConnPinger {
             loop {
                 match receiver.recv().await {
                     Ok(p) => {
-                        if let packet::ArchivedPacketBody::Ctrl(
-                            packet::ArchivedCtrlPacketBody::Pong(resp_seq),
-                        ) = &Packet::decode(&p).body
+                        if let packet::ArchivedPacketBody::Pong(resp_seq) = &Packet::decode(&p).body
                         {
                             if *resp_seq == seq {
                                 break;
@@ -373,7 +371,7 @@ impl PeerConn {
         let mut stream = self.tunnel.pin_stream();
         let mut sink = self.tunnel.pin_sink();
 
-        wait_response!(stream, hs_req, packet::ArchivedPacketBody::Ctrl(ArchivedCtrlPacketBody::HandShake(x)) => x);
+        wait_response!(stream, hs_req, packet::ArchivedPacketBody::HandShake(x) => x);
         self.info = Some(PeerInfo::from(hs_req));
         log::info!("handshake request: {:?}", hs_req);
 
@@ -396,7 +394,7 @@ impl PeerConn {
             .run(|| packet::Packet::new_handshake(self.my_peer_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
-        wait_response!(stream, hs_rsp, packet::ArchivedPacketBody::Ctrl(ArchivedCtrlPacketBody::HandShake(x)) => x);
+        wait_response!(stream, hs_rsp, packet::ArchivedPacketBody::HandShake(x) => x);
         self.info = Some(PeerInfo::from(hs_rsp));
         log::info!("handshake response: {:?}", hs_rsp);
 
@@ -423,7 +421,7 @@ impl PeerConn {
     ) -> Result<Bytes, TunnelError> {
         let packet = Packet::decode(&bytes_item);
         match packet.body {
-            packet::ArchivedPacketBody::Ctrl(packet::ArchivedCtrlPacketBody::Ping(seq)) => {
+            packet::ArchivedPacketBody::Ping(seq) => {
                 log::trace!("recv ping packet: {:?}", packet);
                 Ok(build_ctrl_msg(
                     packet::Packet::new_pong_packet(

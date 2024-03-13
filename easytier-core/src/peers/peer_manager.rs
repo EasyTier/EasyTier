@@ -303,7 +303,7 @@ impl PeerManager {
                 if let packet::ArchivedPacketBody::Data(x) = &packet.body {
                     // TODO: use a function to get the body ref directly for zero copy
                     self.nic_channel
-                        .send(extract_bytes_from_archived_vec(&data, &x.data))
+                        .send(extract_bytes_from_archived_vec(&data, &x))
                         .await
                         .unwrap();
                     Some(())
@@ -333,9 +333,7 @@ impl PeerManager {
                 packet: &packet::ArchivedPacket,
                 data: &Bytes,
             ) -> Option<()> {
-                if let ArchivedPacketBody::Ctrl(packet::ArchivedCtrlPacketBody::TaRpc(..)) =
-                    &packet.body
-                {
+                if let ArchivedPacketBody::TaRpc(..) = &packet.body {
                     self.peer_rpc_tspt_sender.send(data.clone()).unwrap();
                     Some(())
                 } else {

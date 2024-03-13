@@ -155,7 +155,7 @@ impl PeerPacketFilter for IcmpProxy {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(&x.data)?;
+        let ipv4 = Ipv4Packet::new(&x)?;
 
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
         {

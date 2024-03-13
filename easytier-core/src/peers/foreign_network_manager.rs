@@ -245,9 +245,7 @@ impl ForeignNetworkManager {
                 let from_peer_id = packet.from_peer.into();
                 let to_peer_id = packet.to_peer.into();
                 if to_peer_id == my_node_id {
-                    if let ArchivedPacketBody::Ctrl(packet::ArchivedCtrlPacketBody::TaRpc(..)) =
-                        &packet.body
-                    {
+                    if let ArchivedPacketBody::TaRpc(..) = &packet.body {
                         rpc_sender.send(packet_bytes.clone()).unwrap();
                         continue;
                     }
