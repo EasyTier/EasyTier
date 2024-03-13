@@ -89,7 +89,7 @@ impl PeerCenterBase {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     };
-                    tracing::info!(?center_peer, "run periodic job");
+                    tracing::trace!(?center_peer, "run periodic job");
                     let rpc_mgr = peer_mgr.get_peer_rpc_mgr();
                     let _g = lock.lock().await;
                     let ret = rpc_mgr

@@ -5,7 +5,7 @@ use tokio_util::bytes::Bytes;
 
 use crate::common::{
     global_ctx::NetworkIdentity,
-    rkyv_util::{decode_from_bytes, encode_to_bytes},
+    rkyv_util::{decode_from_bytes, encode_to_bytes, vec_to_string},
     PeerId,
 };
 
@@ -50,69 +50,23 @@ impl From<&ArchivedUUID> for UUID {
     }
 }
 
-#[derive(Archive, Deserialize, Serialize)]
-#[archive(compare(PartialEq), check_bytes)]
-// Derives can be passed through to the generated type:
-pub struct NetworkIdentityForPacket(Vec<u8>);
-
-impl From<NetworkIdentity> for NetworkIdentityForPacket {
-    fn from(network: NetworkIdentity) -> Self {
-        Self(bincode::serialize(&network).unwrap())
-    }
-}
-
-impl From<NetworkIdentityForPacket> for NetworkIdentity {
-    fn from(network: NetworkIdentityForPacket) -> Self {
-        bincode::deserialize(&network.0).unwrap()
-    }
-}
-
-impl From<&ArchivedNetworkIdentityForPacket> for NetworkIdentity {
-    fn from(network: &ArchivedNetworkIdentityForPacket) -> Self {
-        NetworkIdentityForPacket(network.0.to_vec()).into()
-    }
-}
-
-impl Debug for NetworkIdentityForPacket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let network: NetworkIdentity = bincode::deserialize(&self.0).unwrap();
-        write!(f, "{:?}", network)
-    }
-}
-
-impl Debug for ArchivedNetworkIdentityForPacket {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let network: NetworkIdentity = bincode::deserialize(&self.0).unwrap();
-        write!(f, "{:?}", network)
-    }
-}
-
-#[derive(Archive, Deserialize, Serialize, Debug)]
-#[archive(compare(PartialEq), check_bytes)]
-// Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct HandShake {
     pub magic: u32,
     pub my_peer_id: PeerId,
     pub version: u32,
     pub features: Vec<String>,
-    pub network_identity: NetworkIdentityForPacket,
+    pub network_identity: NetworkIdentity,
 }
 
-#[derive(Archive, Deserialize, Serialize, Debug)]
-#[archive(compare(PartialEq), check_bytes)]
-#[archive_attr(derive(Debug))]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub struct RoutePacket {
     pub route_id: u8,
     pub body: Vec<u8>,
 }
 
-#[derive(Archive, Deserialize, Serialize, Debug)]
-#[archive(compare(PartialEq), check_bytes)]
-// Derives can be passed through to the generated type:
-#[archive_attr(derive(Debug))]
-pub enum PacketBody {
-    Data(Vec<u8>),
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum CtrlPacketPayload {
     HandShake(HandShake),
     RoutePacket(RoutePacket),
     Ping(u32),
@@ -120,19 +74,71 @@ pub enum PacketBody {
     TaRpc(u32, bool, Vec<u8>), // u32: service_id, bool: is_req, Vec<u8>: rpc body
 }
 
+impl CtrlPacketPayload {
+    pub fn from_packet(p: &ArchivedPacket) -> CtrlPacketPayload {
+        assert_ne!(p.packet_type, PacketType::Data);
+        postcard::from_bytes(p.payload.as_bytes()).unwrap()
+    }
+
+    pub fn from_packet2(p: &Packet) -> CtrlPacketPayload {
+        postcard::from_bytes(p.payload.as_bytes()).unwrap()
+    }
+}
+
+#[repr(u8)]
 #[derive(Archive, Deserialize, Serialize, Debug)]
 #[archive(compare(PartialEq), check_bytes)]
 // Derives can be passed through to the generated type:
 #[archive_attr(derive(Debug))]
+pub enum PacketType {
+    Data = 1,
+    HandShake = 2,
+    RoutePacket = 3,
+    Ping = 4,
+    Pong = 5,
+    TaRpc = 6,
+}
+
+#[derive(Archive, Deserialize, Serialize, Debug)]
+#[archive(compare(PartialEq), check_bytes)]
+// Derives can be passed through to the generated type:
 pub struct Packet {
     pub from_peer: PeerId,
     pub to_peer: PeerId,
-    pub body: PacketBody,
+    pub packet_type: PacketType,
+    pub payload: String,
+}
+
+impl std::fmt::Debug for ArchivedPacket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Packet {{ from_peer: {}, to_peer: {}, packet_type: {:?}, payload: {:?} }}",
+            self.from_peer,
+            self.to_peer,
+            self.packet_type,
+            &self.payload.as_bytes()
+        )
+    }
 }
 
 impl Packet {
     pub fn decode(v: &[u8]) -> &ArchivedPacket {
         decode_from_bytes::<Packet>(v).unwrap()
+    }
+
+    pub fn new(
+        from_peer: PeerId,
+        to_peer: PeerId,
+        packet_type: PacketType,
+        payload: Vec<u8>,
+    ) -> Self {
+        Packet {
+            from_peer,
+            to_peer,
+            packet_type,
+            payload: vec_to_string(payload),
+        }
     }
 }
 
@@ -144,52 +150,56 @@ impl From<Packet> for Bytes {
 
 impl Packet {
     pub fn new_handshake(from_peer: PeerId, network: &NetworkIdentity) -> Self {
-        Packet {
-            from_peer: from_peer.into(),
-            to_peer: 0,
-            body: PacketBody::HandShake(HandShake {
-                magic: MAGIC,
-                my_peer_id: from_peer,
-                version: VERSION,
-                features: Vec::new(),
-                network_identity: network.clone().into(),
-            }),
-        }
+        let handshake = CtrlPacketPayload::HandShake(HandShake {
+            magic: MAGIC,
+            my_peer_id: from_peer,
+            version: VERSION,
+            features: Vec::new(),
+            network_identity: network.clone().into(),
+        });
+        Packet::new(
+            from_peer.into(),
+            0,
+            PacketType::HandShake,
+            postcard::to_allocvec(&handshake).unwrap(),
+        )
     }
 
     pub fn new_data_packet(from_peer: PeerId, to_peer: PeerId, data: &[u8]) -> Self {
-        Packet {
-            from_peer,
-            to_peer,
-            body: PacketBody::Data(data.to_vec()),
-        }
+        Packet::new(from_peer, to_peer, PacketType::Data, data.to_vec())
     }
 
     pub fn new_route_packet(from_peer: PeerId, to_peer: PeerId, route_id: u8, data: &[u8]) -> Self {
-        Packet {
+        let route = CtrlPacketPayload::RoutePacket(RoutePacket {
+            route_id,
+            body: data.to_vec(),
+        });
+        Packet::new(
             from_peer,
             to_peer,
-            body: PacketBody::RoutePacket(RoutePacket {
-                route_id,
-                body: data.to_vec(),
-            }),
-        }
+            PacketType::RoutePacket,
+            postcard::to_allocvec(&route).unwrap(),
+        )
     }
 
     pub fn new_ping_packet(from_peer: PeerId, to_peer: PeerId, seq: u32) -> Self {
-        Packet {
+        let ping = CtrlPacketPayload::Ping(seq);
+        Packet::new(
             from_peer,
             to_peer,
-            body: PacketBody::Ping(seq),
-        }
+            PacketType::Ping,
+            postcard::to_allocvec(&ping).unwrap(),
+        )
     }
 
     pub fn new_pong_packet(from_peer: PeerId, to_peer: PeerId, seq: u32) -> Self {
-        Packet {
+        let pong = CtrlPacketPayload::Pong(seq);
+        Packet::new(
             from_peer,
             to_peer,
-            body: PacketBody::Pong(seq),
-        }
+            PacketType::Pong,
+            postcard::to_allocvec(&pong).unwrap(),
+        )
     }
 
     pub fn new_tarpc_packet(
@@ -199,11 +209,13 @@ impl Packet {
         is_req: bool,
         body: Vec<u8>,
     ) -> Self {
-        Packet {
+        let ta_rpc = CtrlPacketPayload::TaRpc(service_id, is_req, body);
+        Packet::new(
             from_peer,
             to_peer,
-            body: PacketBody::TaRpc(service_id, is_req, body),
-        }
+            PacketType::TaRpc,
+            postcard::to_allocvec(&ta_rpc).unwrap(),
+        )
     }
 }
 

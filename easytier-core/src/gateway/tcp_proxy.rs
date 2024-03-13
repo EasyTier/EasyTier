@@ -84,11 +84,13 @@ impl PeerPacketFilter for TcpProxy {
     async fn try_process_packet_from_peer(&self, packet: &ArchivedPacket, _: &Bytes) -> Option<()> {
         let ipv4_addr = self.global_ctx.get_ipv4()?;
 
-        let packet::ArchivedPacketBody::Data(x) = &packet.body else {
+        if packet.packet_type != packet::PacketType::Data {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(&x)?;
+        let payload_bytes = packet.payload.as_bytes();
+
+        let ipv4 = Ipv4Packet::new(payload_bytes)?;
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
             return None;
         }
@@ -99,8 +101,8 @@ impl PeerPacketFilter for TcpProxy {
 
         tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
 
-        let mut packet_buffer = BytesMut::with_capacity(x.len());
-        packet_buffer.extend_from_slice(&x.to_vec());
+        let mut packet_buffer = BytesMut::with_capacity(payload_bytes.len());
+        packet_buffer.extend_from_slice(&payload_bytes.to_vec());
 
         let (ip_buffer, tcp_buffer) =
             packet_buffer.split_at_mut(ipv4.get_header_length() as usize * 4);

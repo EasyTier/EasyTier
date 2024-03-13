@@ -16,7 +16,7 @@ use crate::{
     peers::packet::Packet,
 };
 
-use super::packet::PacketBody;
+use super::packet::CtrlPacketPayload;
 
 type PeerRpcServiceId = u32;
 
@@ -206,8 +206,9 @@ impl PeerRpcManager {
     }
 
     fn parse_rpc_packet(packet: &Packet) -> Result<TaRpcPacketInfo, Error> {
-        match &packet.body {
-            PacketBody::TaRpc(id, is_req, body) => Ok(TaRpcPacketInfo {
+        let ctrl_packet_payload = CtrlPacketPayload::from_packet2(&packet);
+        match &ctrl_packet_payload {
+            CtrlPacketPayload::TaRpc(id, is_req, body) => Ok(TaRpcPacketInfo {
                 from_peer: packet.from_peer.into(),
                 to_peer: packet.to_peer.into(),
                 service_id: *id,

@@ -98,7 +98,7 @@ impl PeerCenterService for PeerCenterServer {
         peers: Option<PeerInfoForGlobalMap>,
         digest: Digest,
     ) -> Result<(), Error> {
-        tracing::info!("receive report_peers");
+        tracing::trace!("receive report_peers");
 
         let data = get_global_data(self.my_node_id);
         let mut locked_data = data.write().await;

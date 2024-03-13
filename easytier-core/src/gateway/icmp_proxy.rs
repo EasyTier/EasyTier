@@ -151,11 +151,11 @@ impl PeerPacketFilter for IcmpProxy {
     ) -> Option<()> {
         let _ = self.global_ctx.get_ipv4()?;
 
-        let packet::ArchivedPacketBody::Data(x) = &packet.body else {
+        if packet.packet_type != packet::PacketType::Data {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(&x)?;
+        let ipv4 = Ipv4Packet::new(&packet.payload.as_bytes())?;
 
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
         {
