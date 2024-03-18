@@ -288,9 +288,7 @@ mod tests {
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
 
-        wait_route_appear(p_a.clone(), p_c.my_peer_id())
-            .await
-            .unwrap();
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
 
         let mut dm_a = DirectConnectorManager::new(p_a.get_global_ctx(), p_a.clone());
         let mut dm_c = DirectConnectorManager::new(p_c.get_global_ctx(), p_c.clone());

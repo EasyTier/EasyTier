@@ -653,27 +653,39 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        common::PeerId,
-        connector::udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
+        common::{global_ctx::tests::get_mock_global_ctx, PeerId},
+        connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
-            peer_manager::PeerManager,
+            peer_manager::{PeerManager, RouteAlgoType},
             peer_rip_route::Version,
             tests::{connect_peer_manager, wait_route_appear},
         },
         rpc::NatType,
     };
 
+    async fn create_mock_pmgr() -> Arc<PeerManager> {
+        let (s, _r) = tokio::sync::mpsc::channel(1000);
+        let peer_mgr = Arc::new(PeerManager::new(
+            RouteAlgoType::Rip,
+            get_mock_global_ctx(),
+            s,
+        ));
+        replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
+        peer_mgr.run().await.unwrap();
+        peer_mgr
+    }
+
     #[tokio::test]
     async fn test_rip_route() {
-        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_a = create_mock_pmgr().await;
+        let peer_mgr_b = create_mock_pmgr().await;
+        let peer_mgr_c = create_mock_pmgr().await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
             .await
             .unwrap();
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
             .unwrap();
 

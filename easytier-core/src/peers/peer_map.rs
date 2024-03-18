@@ -119,7 +119,12 @@ impl PeerMap {
         }
 
         let Some(gateway_peer_id) = gateway_peer_id else {
-            log::error!("no gateway for dst_peer_id: {}", dst_peer_id);
+            log::error!(
+                "no gateway for dst_peer_id: {}, peers: {:?}, my_peer_id: {}",
+                dst_peer_id,
+                self.peer_map.iter().map(|v| *v.key()).collect::<Vec<_>>(),
+                self.my_peer_id
+            );
             return Ok(());
         };
 

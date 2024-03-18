@@ -3,6 +3,7 @@ pub mod peer;
 pub mod peer_conn;
 pub mod peer_manager;
 pub mod peer_map;
+pub mod peer_ospf_route;
 pub mod peer_rip_route;
 pub mod peer_rpc;
 pub mod route_trait;

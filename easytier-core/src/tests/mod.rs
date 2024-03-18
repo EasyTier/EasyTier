@@ -134,7 +134,11 @@ fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::rpc::Route>) 
             assert_eq!(r.peer_id, dst_peer_id, "{:?}", routes);
         }
     }
-    assert!(found);
+    assert!(
+        found,
+        "routes: {:?}, dst_peer_id: {}, ipv4: {}",
+        routes, dst_peer_id, ipv4
+    );
 }
 
 async fn wait_proxy_route_appear(

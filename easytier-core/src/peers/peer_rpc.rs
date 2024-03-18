@@ -451,10 +451,10 @@ mod tests {
         let peer_mgr_c = create_mock_peer_manager().await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
             .await
             .unwrap();
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
             .unwrap();
 
@@ -503,7 +503,7 @@ mod tests {
         let peer_mgr_a = create_mock_peer_manager().await;
         let peer_mgr_b = create_mock_peer_manager().await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
             .await
             .unwrap();
 

@@ -297,7 +297,7 @@ mod tests {
             create_mock_peer_manager_with_mock_stun, replace_stun_info_collector,
         },
         peers::{
-            peer_manager::PeerManager,
+            peer_manager::{PeerManager, RouteAlgoType},
             tests::{connect_peer_manager, wait_route_appear},
         },
         rpc::NatType,
@@ -308,6 +308,7 @@ mod tests {
     async fn create_mock_peer_manager_for_foreign_network(network: &str) -> Arc<PeerManager> {
         let (s, _r) = tokio::sync::mpsc::channel(1000);
         let peer_mgr = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
             get_mock_global_ctx_with_network(Some(NetworkIdentity {
                 network_name: network.to_string(),
                 network_secret: network.to_string(),
@@ -359,7 +360,7 @@ mod tests {
                 .list_peers()
                 .await
         );
-        wait_route_appear(pma_net1.clone(), pmb_net1.my_peer_id())
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
             .await
             .unwrap();
         assert_eq!(1, pma_net1.list_routes().await.len());
@@ -367,10 +368,10 @@ mod tests {
 
         let pmc_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
         connect_peer_manager(pmc_net1.clone(), pm_center.clone()).await;
-        wait_route_appear(pma_net1.clone(), pmc_net1.my_peer_id())
+        wait_route_appear(pma_net1.clone(), pmc_net1.clone())
             .await
             .unwrap();
-        wait_route_appear(pmb_net1.clone(), pmc_net1.my_peer_id())
+        wait_route_appear(pmb_net1.clone(), pmc_net1.clone())
             .await
             .unwrap();
         assert_eq!(2, pmc_net1.list_routes().await.len());
@@ -379,7 +380,7 @@ mod tests {
         let pmb_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
         connect_peer_manager(pma_net2.clone(), pm_center.clone()).await;
         connect_peer_manager(pmb_net2.clone(), pm_center.clone()).await;
-        wait_route_appear(pma_net2.clone(), pmb_net2.my_peer_id())
+        wait_route_appear(pma_net2.clone(), pmb_net2.clone())
             .await
             .unwrap();
         assert_eq!(1, pma_net2.list_routes().await.len());

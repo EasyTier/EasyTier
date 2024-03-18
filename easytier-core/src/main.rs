@@ -38,7 +38,7 @@ struct Cli {
     peers: Vec<String>,
 }
 
-fn init_logger() {
+fn init_logger(dir: Option<&str>, file: Option<&str>) {
     // logger to rolling file
     let file_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
@@ -47,8 +47,8 @@ fn init_logger() {
     let file_appender = tracing_appender::rolling::Builder::new()
         .rotation(tracing_appender::rolling::Rotation::DAILY)
         .max_log_files(5)
-        .filename_prefix("core.log")
-        .build("/var/log/easytier")
+        .filename_prefix(file.unwrap_or("easytier"))
+        .build(dir.unwrap_or("/tmp/easytier"))
         .expect("failed to initialize rolling file appender");
     let mut file_layer = tracing_subscriber::fmt::layer();
     file_layer.set_ansi(false);
@@ -77,7 +77,7 @@ fn init_logger() {
 #[tokio::main(flavor = "current_thread")]
 #[tracing::instrument]
 pub async fn main() {
-    init_logger();
+    init_logger(Some("/var/log/easytier"), Some("core.log"));
 
     let cli = Cli::parse();
     tracing::info!(cli = ?cli, "cli args parsed");
