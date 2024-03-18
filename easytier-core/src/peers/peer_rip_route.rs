@@ -22,7 +22,7 @@ use crate::{
     rpc::{NatType, StunInfo},
 };
 
-use super::{packet::CtrlPacketPayload, peer_manager::PeerPacketFilter};
+use super::{packet::CtrlPacketPayload, PeerPacketFilter};
 
 const SEND_ROUTE_PERIOD_SEC: u64 = 60;
 const SEND_ROUTE_FAST_REPLY_SEC: u64 = 5;

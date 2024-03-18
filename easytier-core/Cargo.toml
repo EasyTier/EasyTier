@@ -64,7 +64,6 @@ tonic = "0.10"
 prost = "0.12"
 anyhow = "1.0"
 tarpc = { version = "0.32", features = ["tokio1", "serde1"] }
-bincode = "1.3"
 
 url = "2.5.0"
 

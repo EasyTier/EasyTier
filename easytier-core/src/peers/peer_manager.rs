@@ -1,4 +1,8 @@
-use std::{fmt::Debug, net::Ipv4Addr, sync::Arc};
+use std::{
+    fmt::Debug,
+    net::Ipv4Addr,
+    sync::{Arc, Weak},
+};
 
 use async_trait::async_trait;
 use futures::{StreamExt, TryFutureExt};
@@ -19,7 +23,8 @@ use crate::{
         PeerId,
     },
     peers::{
-        packet, peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport, route_trait::RouteInterface,
+        packet, peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport,
+        route_trait::RouteInterface, PeerPacketFilter,
     },
     tunnels::{SinkItem, Tunnel, TunnelConnector},
 };
@@ -32,12 +37,13 @@ use super::{
     peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
+    BoxNicPacketFilter, BoxPeerPacketFilter,
 };
 
 struct RpcTransport {
     my_peer_id: PeerId,
-    peers: Arc<PeerMap>,
-    foreign_peers: Mutex<Option<Arc<PeerMap>>>,
+    peers: Weak<PeerMap>,
+    foreign_peers: Mutex<Option<Weak<PeerMap>>>,
 
     packet_recv: Mutex<UnboundedReceiver<Bytes>>,
     peer_rpc_tspt_sender: UnboundedSender<Bytes>,
@@ -50,15 +56,21 @@ impl PeerRpcManagerTransport for RpcTransport {
     }
 
     async fn send(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
-        if let Some(foreign_peers) = self.foreign_peers.lock().await.as_ref() {
-            if foreign_peers.has_peer(dst_peer_id) {
-                return foreign_peers.send_msg(msg, dst_peer_id).await;
-            }
-        }
-        self.peers
-            .send_msg(msg, dst_peer_id)
-            .map_err(|e| e.into())
+        let foreign_peers = self
+            .foreign_peers
+            .lock()
             .await
+            .as_ref()
+            .ok_or(Error::Unknown)?
+            .upgrade()
+            .ok_or(Error::Unknown)?;
+        let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
+
+        if foreign_peers.has_peer(dst_peer_id) {
+            return foreign_peers.send_msg(msg, dst_peer_id).await;
+        }
+
+        peers.send_msg(msg, dst_peer_id).map_err(|e| e.into()).await
     }
 
     async fn recv(&self) -> Result<Bytes, Error> {
@@ -69,25 +81,6 @@ impl PeerRpcManagerTransport for RpcTransport {
         }
     }
 }
-
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(Arc)]
-pub trait PeerPacketFilter {
-    async fn try_process_packet_from_peer(
-        &self,
-        packet: &packet::ArchivedPacket,
-        data: &Bytes,
-    ) -> Option<()>;
-}
-
-#[async_trait::async_trait]
-#[auto_impl::auto_impl(Arc)]
-pub trait NicPacketFilter {
-    async fn try_process_packet_from_nic(&self, data: BytesMut) -> BytesMut;
-}
-
-type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
-type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
 
 pub struct PeerManager {
     my_peer_id: PeerId,
@@ -138,7 +131,7 @@ impl PeerManager {
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
         let rpc_tspt = Arc::new(RpcTransport {
             my_peer_id,
-            peers: peers.clone(),
+            peers: Arc::downgrade(&peers),
             foreign_peers: Mutex::new(None),
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
             peer_rpc_tspt_sender,
@@ -316,10 +309,6 @@ impl PeerManager {
         }))
         .await;
 
-        // for route
-        self.add_packet_process_pipeline(Box::new(self.basic_route.clone()))
-            .await;
-
         // for peer rpc packet
         struct PeerRpcPacketProcessor {
             peer_rpc_tspt_sender: UnboundedSender<Bytes>,
@@ -348,19 +337,31 @@ impl PeerManager {
 
     pub async fn add_route<T>(&self, route: T)
     where
-        T: Route + Send + Sync + 'static,
+        T: Route + PeerPacketFilter + Send + Sync + Clone + 'static,
     {
+        // for route
+        self.add_packet_process_pipeline(Box::new(route.clone()))
+            .await;
+
         struct Interface {
             my_peer_id: PeerId,
-            peers: Arc<PeerMap>,
-            foreign_network_client: Arc<ForeignNetworkClient>,
+            peers: Weak<PeerMap>,
+            foreign_network_client: Weak<ForeignNetworkClient>,
         }
 
         #[async_trait]
         impl RouteInterface for Interface {
             async fn list_peers(&self) -> Vec<PeerId> {
-                let mut peers = self.foreign_network_client.list_foreign_peers();
-                peers.extend(self.peers.list_peers_with_conn().await);
+                let Some(foreign_client) = self.foreign_network_client.upgrade() else {
+                    return vec![];
+                };
+
+                let Some(peer_map) = self.peers.upgrade() else {
+                    return vec![];
+                };
+
+                let mut peers = foreign_client.list_foreign_peers();
+                peers.extend(peer_map.list_peers_with_conn().await);
                 peers
             }
             async fn send_route_packet(
@@ -369,19 +370,20 @@ impl PeerManager {
                 route_id: u8,
                 dst_peer_id: PeerId,
             ) -> Result<(), Error> {
+                let foreign_client = self
+                    .foreign_network_client
+                    .upgrade()
+                    .ok_or(Error::Unknown)?;
+                let peer_map = self.peers.upgrade().ok_or(Error::Unknown)?;
+
                 let packet_bytes: Bytes =
                     packet::Packet::new_route_packet(self.my_peer_id, dst_peer_id, route_id, &msg)
                         .into();
-                if self.foreign_network_client.has_next_hop(dst_peer_id) {
-                    return self
-                        .foreign_network_client
-                        .send_msg(packet_bytes, dst_peer_id)
-                        .await;
+                if foreign_client.has_next_hop(dst_peer_id) {
+                    return foreign_client.send_msg(packet_bytes, dst_peer_id).await;
                 }
 
-                self.peers
-                    .send_msg_directly(packet_bytes, dst_peer_id)
-                    .await
+                peer_map.send_msg_directly(packet_bytes, dst_peer_id).await
             }
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
@@ -392,8 +394,8 @@ impl PeerManager {
         let _route_id = route
             .open(Box::new(Interface {
                 my_peer_id,
-                peers: self.peers.clone(),
-                foreign_network_client: self.foreign_network_client.clone(),
+                peers: Arc::downgrade(&self.peers),
+                foreign_network_client: Arc::downgrade(&self.foreign_network_client),
             }))
             .await
             .unwrap();
@@ -485,7 +487,7 @@ impl PeerManager {
             .foreign_peers
             .lock()
             .await
-            .replace(self.foreign_network_client.get_peer_map().clone());
+            .replace(Arc::downgrade(&self.foreign_network_client.get_peer_map()));
 
         self.foreign_network_manager.run().await;
         self.foreign_network_client.run().await;
@@ -537,5 +539,47 @@ impl PeerManager {
 
     pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
         self.foreign_network_client.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::{
+        connector::udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
+        peers::tests::{connect_peer_manager, wait_for_condition, wait_route_appear},
+        rpc::NatType,
+    };
+
+    #[tokio::test]
+    async fn drop_peer_manager() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_c.clone()).await;
+
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
+            .await
+            .unwrap();
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
+            .await
+            .unwrap();
+
+        // wait mgr_a have 2 peers
+        wait_for_condition(
+            || async { peer_mgr_a.get_peer_map().list_peers_with_conn().await.len() == 2 },
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        drop(peer_mgr_b);
+
+        wait_for_condition(
+            || async { peer_mgr_a.get_peer_map().list_peers_with_conn().await.len() == 1 },
+            std::time::Duration::from_secs(5),
+        )
+        .await;
     }
 }

@@ -25,12 +25,7 @@ impl PeerManagerRpcService {
             let mut peer_info = PeerInfo::default();
             peer_info.peer_id = peer;
 
-            if let Some(conns) = self
-                .peer_manager
-                .get_peer_map()
-                .list_peer_conns(&peer)
-                .await
-            {
+            if let Some(conns) = self.peer_manager.get_peer_map().list_peer_conns(peer).await {
                 peer_info.conns = conns;
             }
 
