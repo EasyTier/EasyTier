@@ -164,8 +164,8 @@ impl PeerMap {
         ret
     }
 
-    pub async fn list_peer_conns(&self, peer_id: &PeerId) -> Option<Vec<PeerConnInfo>> {
-        if let Some(p) = self.get_peer_by_id(*peer_id) {
+    pub async fn list_peer_conns(&self, peer_id: PeerId) -> Option<Vec<PeerConnInfo>> {
+        if let Some(p) = self.get_peer_by_id(peer_id) {
             Some(p.list_peer_conns().await)
         } else {
             return None;
@@ -206,7 +206,7 @@ impl PeerMap {
         let mut to_remove = vec![];
 
         for peer_id in self.list_peers().await {
-            let conns = self.list_peer_conns(&peer_id).await;
+            let conns = self.list_peer_conns(peer_id).await;
             if conns.is_none() || conns.as_ref().unwrap().is_empty() {
                 to_remove.push(peer_id);
             }

@@ -18,7 +18,8 @@ use crate::common::error::Result;
 use crate::common::global_ctx::GlobalCtx;
 use crate::common::netns::NetNS;
 use crate::peers::packet::{self, ArchivedPacket};
-use crate::peers::peer_manager::{NicPacketFilter, PeerManager, PeerPacketFilter};
+use crate::peers::peer_manager::PeerManager;
+use crate::peers::{NicPacketFilter, PeerPacketFilter};
 
 use super::CidrSet;
 

@@ -21,10 +21,7 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
-    peers::{
-        packet,
-        peer_manager::{PeerManager, PeerPacketFilter},
-    },
+    peers::{packet, peer_manager::PeerManager, PeerPacketFilter},
 };
 
 use super::CidrSet;

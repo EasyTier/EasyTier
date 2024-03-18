@@ -284,7 +284,7 @@ impl UdpHolePunchConnector {
             };
 
             let peer_id: PeerId = route.peer_id;
-            let conns = data.peer_mgr.list_peer_conns(&peer_id).await;
+            let conns = data.peer_mgr.list_peer_conns(peer_id).await;
             if conns.is_some() && conns.unwrap().len() > 0 {
                 continue;
             }

@@ -110,6 +110,11 @@ impl PeerRpcManager {
                 loop {
                     tokio::select! {
                         Some(resp) = client_transport.next() => {
+                            let Some(cur_req_peer_id)  = cur_req_peer_id.take() else {
+                                tracing::error!("[PEER RPC MGR] cur_req_peer_id is none, ignore this resp");
+                                continue;
+                            };
+
                             tracing::trace!(resp = ?resp, "recv packet from client");
                             if resp.is_err() {
                                 tracing::warn!(err = ?resp.err(),
@@ -118,12 +123,7 @@ impl PeerRpcManager {
                             }
                             let resp = resp.unwrap();
 
-                            if cur_req_peer_id.is_none() {
-                                tracing::error!("[PEER RPC MGR] cur_req_peer_id is none, ignore this resp");
-                                continue;
-                            }
-
-                            let serialized_resp = bincode::serialize(&resp);
+                            let serialized_resp = postcard::to_allocvec(&resp);
                             if serialized_resp.is_err() {
                                 tracing::error!(error = ?serialized_resp.err(), "serialize resp failed");
                                 continue;
@@ -131,7 +131,7 @@ impl PeerRpcManager {
 
                             let msg = Packet::new_tarpc_packet(
                                 tspt.my_peer_id(),
-                                cur_req_peer_id.take().unwrap(),
+                                cur_req_peer_id,
                                 service_id,
                                 false,
                                 serialized_resp.unwrap(),
@@ -154,12 +154,17 @@ impl PeerRpcManager {
                                 continue;
                             }
 
+                            if cur_req_peer_id.is_some() {
+                                tracing::warn!("cur_req_peer_id is not none, ignore this packet");
+                                continue;
+                            }
+
                             assert_eq!(info.service_id, service_id);
                             cur_req_peer_id = Some(packet.from_peer.clone().into());
 
                             tracing::trace!("recv packet from peer, packet: {:?}", packet);
 
-                            let decoded_ret = bincode::deserialize(&info.content.as_slice());
+                            let decoded_ret = postcard::from_bytes(&info.content.as_slice());
                             if let Err(e) = decoded_ret {
                                 tracing::error!(error = ?e, "decode rpc packet failed");
                                 continue;
@@ -294,7 +299,7 @@ impl PeerRpcManager {
                     continue;
                 }
 
-                let a = bincode::serialize(&a.unwrap());
+                let a = postcard::to_allocvec(&a.unwrap());
                 if a.is_err() {
                     tracing::error!(error = ?a.err(), "bincode serialize failed");
                     continue;
@@ -326,7 +331,7 @@ impl PeerRpcManager {
                     continue;
                 }
 
-                let decoded = bincode::deserialize(&info.unwrap().content.as_slice());
+                let decoded = postcard::from_bytes(&info.unwrap().content.as_slice());
                 if let Err(e) = decoded {
                     tracing::error!(error = ?e, "decode rpc packet failed");
                     continue;

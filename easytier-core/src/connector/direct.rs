@@ -27,7 +27,7 @@ pub trait DirectConnectorRpc {
 #[async_trait::async_trait]
 pub trait PeerManagerForDirectConnector {
     async fn list_peers(&self) -> Vec<PeerId>;
-    async fn list_peer_conns(&self, peer_id: &PeerId) -> Option<Vec<PeerConnInfo>>;
+    async fn list_peer_conns(&self, peer_id: PeerId) -> Option<Vec<PeerConnInfo>>;
     fn get_peer_rpc_mgr(&self) -> Arc<PeerRpcManager>;
 }
 
@@ -44,7 +44,7 @@ impl PeerManagerForDirectConnector for PeerManager {
         ret
     }
 
-    async fn list_peer_conns(&self, peer_id: &PeerId) -> Option<Vec<PeerConnInfo>> {
+    async fn list_peer_conns(&self, peer_id: PeerId) -> Option<Vec<PeerConnInfo>> {
         self.get_peer_map().list_peer_conns(peer_id).await
     }
 
@@ -221,7 +221,7 @@ impl DirectConnectorManager {
     ) -> Result<(), Error> {
         let peer_manager = data.peer_manager.clone();
         // check if we have direct connection with dst_peer_id
-        if let Some(c) = peer_manager.list_peer_conns(&dst_peer_id).await {
+        if let Some(c) = peer_manager.list_peer_conns(dst_peer_id).await {
             // currently if we have any type of direct connection (udp or tcp), we will not try to connect
             if !c.is_empty() {
                 return Ok(());
