@@ -92,6 +92,9 @@ async-recursion = "1.0.5"
 
 network-interface = "1.1.1"
 
+# for ospf route
+pathfinding = "4.9.1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Networking_WinSock",

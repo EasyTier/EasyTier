@@ -522,9 +522,7 @@ pub mod tests {
         connect_peer_manager(p_a.clone(), p_b.clone()).await;
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
 
-        wait_route_appear(p_a.clone(), p_c.my_peer_id())
-            .await
-            .unwrap();
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
 
         println!("{:?}", p_a.list_routes().await);
 

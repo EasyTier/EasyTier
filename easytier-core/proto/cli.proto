@@ -69,6 +69,7 @@ message Route {
     repeated string proxy_cidrs = 5;
     string hostname = 6;
     StunInfo stun_info = 7;
+    string inst_id = 8;
 }
 
 message ListRouteRequest {}

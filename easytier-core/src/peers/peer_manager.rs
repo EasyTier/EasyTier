@@ -34,6 +34,7 @@ use super::{
     foreign_network_manager::ForeignNetworkManager,
     peer_conn::PeerConnId,
     peer_map::PeerMap,
+    peer_ospf_route::PeerRoute,
     peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
@@ -43,7 +44,7 @@ use super::{
 struct RpcTransport {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
-    foreign_peers: Mutex<Option<Weak<PeerMap>>>,
+    foreign_peers: Mutex<Option<Weak<ForeignNetworkClient>>>,
 
     packet_recv: Mutex<UnboundedReceiver<Bytes>>,
     peer_rpc_tspt_sender: UnboundedSender<Bytes>,
@@ -66,7 +67,7 @@ impl PeerRpcManagerTransport for RpcTransport {
             .ok_or(Error::Unknown)?;
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
 
-        if foreign_peers.has_peer(dst_peer_id) {
+        if foreign_peers.has_next_hop(dst_peer_id) {
             return foreign_peers.send_msg(msg, dst_peer_id).await;
         }
 
@@ -80,6 +81,18 @@ impl PeerRpcManagerTransport for RpcTransport {
             Err(Error::Unknown)
         }
     }
+}
+
+pub enum RouteAlgoType {
+    Rip,
+    Ospf,
+    None,
+}
+
+enum RouteAlgoInst {
+    Rip(Arc<BasicRoute>),
+    Ospf(Arc<PeerRoute>),
+    None,
 }
 
 pub struct PeerManager {
@@ -100,7 +113,7 @@ pub struct PeerManager {
     peer_packet_process_pipeline: Arc<RwLock<Vec<BoxPeerPacketFilter>>>,
     nic_packet_process_pipeline: Arc<RwLock<Vec<BoxNicPacketFilter>>>,
 
-    basic_route: Arc<BasicRoute>,
+    route_algo_inst: RouteAlgoInst,
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
     foreign_network_client: Arc<ForeignNetworkClient>,
@@ -117,7 +130,11 @@ impl Debug for PeerManager {
 }
 
 impl PeerManager {
-    pub fn new(global_ctx: ArcGlobalCtx, nic_channel: mpsc::Sender<SinkItem>) -> Self {
+    pub fn new(
+        route_algo: RouteAlgoType,
+        global_ctx: ArcGlobalCtx,
+        nic_channel: mpsc::Sender<SinkItem>,
+    ) -> Self {
         let my_peer_id = rand::random();
 
         let (packet_send, packet_recv) = mpsc::channel(100);
@@ -138,7 +155,17 @@ impl PeerManager {
         });
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
 
-        let basic_route = Arc::new(BasicRoute::new(my_peer_id, global_ctx.clone()));
+        let route_algo_inst = match route_algo {
+            RouteAlgoType::Rip => {
+                RouteAlgoInst::Rip(Arc::new(BasicRoute::new(my_peer_id, global_ctx.clone())))
+            }
+            RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
+                my_peer_id,
+                global_ctx.clone(),
+                peer_rpc_mgr.clone(),
+            )),
+            RouteAlgoType::None => RouteAlgoInst::None,
+        };
 
         let foreign_network_manager = Arc::new(ForeignNetworkManager::new(
             my_peer_id,
@@ -170,7 +197,7 @@ impl PeerManager {
             peer_packet_process_pipeline: Arc::new(RwLock::new(Vec::new())),
             nic_packet_process_pipeline: Arc::new(RwLock::new(Vec::new())),
 
-            basic_route,
+            route_algo_inst,
 
             foreign_network_manager,
             foreign_network_client,
@@ -404,8 +431,16 @@ impl PeerManager {
         self.peers.add_route(arc_route).await;
     }
 
+    pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
+        match &self.route_algo_inst {
+            RouteAlgoInst::Rip(route) => Box::new(route.clone()),
+            RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
+            RouteAlgoInst::None => panic!("no route"),
+        }
+    }
+
     pub async fn list_routes(&self) -> Vec<crate::rpc::Route> {
-        self.basic_route.list_routes().await
+        self.get_route().list_routes().await
     }
 
     async fn run_nic_packet_process_pipeline(&self, mut data: BytesMut) -> BytesMut {
@@ -487,21 +522,27 @@ impl PeerManager {
             .foreign_peers
             .lock()
             .await
-            .replace(Arc::downgrade(&self.foreign_network_client.get_peer_map()));
+            .replace(Arc::downgrade(&self.foreign_network_client));
 
         self.foreign_network_manager.run().await;
         self.foreign_network_client.run().await;
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        self.add_route(self.basic_route.clone()).await;
+        match &self.route_algo_inst {
+            RouteAlgoInst::Ospf(route) => self.add_route(route.clone()).await,
+            RouteAlgoInst::Rip(route) => self.add_route(route.clone()).await,
+            RouteAlgoInst::None => {}
+        };
 
         self.init_packet_process_pipeline().await;
-        self.start_peer_recv().await;
         self.peer_rpc_mgr.run();
+
+        self.start_peer_recv().await;
         self.run_clean_peer_without_conn_routine().await;
 
         self.run_foriegn_network().await;
+
         Ok(())
     }
 
@@ -530,7 +571,10 @@ impl PeerManager {
     }
 
     pub fn get_basic_route(&self) -> Arc<BasicRoute> {
-        self.basic_route.clone()
+        match &self.route_algo_inst {
+            RouteAlgoInst::Rip(route) => route.clone(),
+            _ => panic!("not rip route"),
+        }
     }
 
     pub fn get_foreign_network_manager(&self) -> Arc<ForeignNetworkManager> {
@@ -560,10 +604,10 @@ mod tests {
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_c.clone()).await;
 
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
             .await
             .unwrap();
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
             .unwrap();
 

@@ -319,7 +319,7 @@ mod tests {
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
 
-        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.my_peer_id())
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
             .await
             .unwrap();
 

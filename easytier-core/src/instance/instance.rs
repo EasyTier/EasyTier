@@ -23,7 +23,7 @@ use crate::gateway::tcp_proxy::TcpProxy;
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
-use crate::peers::peer_manager::PeerManager;
+use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::tunnels::SinkItem;
 
@@ -122,6 +122,7 @@ impl Instance {
         let id = global_ctx.get_id();
 
         let peer_manager = Arc::new(PeerManager::new(
+            RouteAlgoType::Ospf,
             global_ctx.clone(),
             peer_packet_sender.clone(),
         ));

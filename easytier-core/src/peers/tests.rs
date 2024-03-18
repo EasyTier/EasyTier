@@ -7,11 +7,15 @@ use crate::{
     tunnels::ring_tunnel::create_ring_tunnel_pair,
 };
 
-use super::peer_manager::PeerManager;
+use super::peer_manager::{PeerManager, RouteAlgoType};
 
 pub async fn create_mock_peer_manager() -> Arc<PeerManager> {
     let (s, _r) = tokio::sync::mpsc::channel(1000);
-    let peer_mgr = Arc::new(PeerManager::new(get_mock_global_ctx(), s));
+    let peer_mgr = Arc::new(PeerManager::new(
+        RouteAlgoType::Ospf,
+        get_mock_global_ctx(),
+        s,
+    ));
     peer_mgr.run().await.unwrap();
     peer_mgr
 }
@@ -47,8 +51,12 @@ pub async fn wait_route_appear_with_cost(
     return Err(Error::NotFound);
 }
 
-pub async fn wait_route_appear(peer_mgr: Arc<PeerManager>, node_id: PeerId) -> Result<(), Error> {
-    wait_route_appear_with_cost(peer_mgr, node_id, None).await
+pub async fn wait_route_appear(
+    peer_mgr: Arc<PeerManager>,
+    target_peer: Arc<PeerManager>,
+) -> Result<(), Error> {
+    wait_route_appear_with_cost(peer_mgr.clone(), target_peer.my_peer_id(), None).await?;
+    wait_route_appear_with_cost(target_peer, peer_mgr.my_peer_id(), None).await
 }
 
 pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration) -> ()

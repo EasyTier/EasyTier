@@ -98,7 +98,7 @@ impl ForeignNetworkClient {
         let peers = peer_map.list_peers().await;
         let mut tasks = JoinSet::new();
         if !peers.is_empty() {
-            tracing::warn!(?peers, "collect next hop in foreign network");
+            tracing::warn!(?peers, my_peer_id = ?peer_rpc.my_peer_id(), "collect next hop in foreign network");
         }
         for peer in peers {
             let peer_rpc = peer_rpc.clone();
