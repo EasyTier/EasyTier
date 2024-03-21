@@ -71,7 +71,7 @@ pub enum CtrlPacketPayload {
     RoutePacket(RoutePacket),
     Ping(u32),
     Pong(u32),
-    TaRpc(u32, bool, Vec<u8>), // u32: service_id, bool: is_req, Vec<u8>: rpc body
+    TaRpc(u32, u32, bool, Vec<u8>), // u32: service_id, u32: transact_id, bool: is_req, Vec<u8>: rpc body
 }
 
 impl CtrlPacketPayload {
@@ -206,10 +206,11 @@ impl Packet {
         from_peer: PeerId,
         to_peer: PeerId,
         service_id: u32,
+        transact_id: u32,
         is_req: bool,
         body: Vec<u8>,
     ) -> Self {
-        let ta_rpc = CtrlPacketPayload::TaRpc(service_id, is_req, body);
+        let ta_rpc = CtrlPacketPayload::TaRpc(service_id, transact_id, is_req, body);
         Packet::new(
             from_peer,
             to_peer,

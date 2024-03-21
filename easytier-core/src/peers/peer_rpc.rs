@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicU32, Arc};
 
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
@@ -19,6 +19,7 @@ use crate::{
 use super::packet::CtrlPacketPayload;
 
 type PeerRpcServiceId = u32;
+type PeerRpcTransactId = u32;
 
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
@@ -38,7 +39,7 @@ struct PeerRpcEndPoint {
 
 type PeerRpcEndPointCreator = Box<dyn Fn(PeerId) -> PeerRpcEndPoint + Send + Sync + 'static>;
 #[derive(Hash, Eq, PartialEq, Clone)]
-struct PeerRpcClientCtxKey(PeerId, PeerRpcServiceId);
+struct PeerRpcClientCtxKey(PeerId, PeerRpcServiceId, PeerRpcTransactId);
 
 // handle rpc request from one peer
 pub struct PeerRpcManager {
@@ -50,6 +51,8 @@ pub struct PeerRpcManager {
     peer_rpc_endpoints: Arc<DashMap<(PeerId, PeerRpcServiceId), PeerRpcEndPoint>>,
 
     client_resp_receivers: Arc<DashMap<PeerRpcClientCtxKey, PacketSender>>,
+
+    transact_id: AtomicU32,
 }
 
 impl std::fmt::Debug for PeerRpcManager {
@@ -65,6 +68,7 @@ struct TaRpcPacketInfo {
     from_peer: PeerId,
     to_peer: PeerId,
     service_id: PeerRpcServiceId,
+    transact_id: PeerRpcTransactId,
     is_req: bool,
     content: Vec<u8>,
 }
@@ -80,6 +84,8 @@ impl PeerRpcManager {
             peer_rpc_endpoints: Arc::new(DashMap::new()),
 
             client_resp_receivers: Arc::new(DashMap::new()),
+
+            transact_id: AtomicU32::new(0),
         }
     }
 
@@ -107,6 +113,7 @@ impl PeerRpcManager {
             let tspt = tspt.clone();
             tasks.spawn(async move {
                 let mut cur_req_peer_id = None;
+                let mut cur_transact_id = 0;
                 loop {
                     tokio::select! {
                         Some(resp) = client_transport.next() => {
@@ -133,6 +140,7 @@ impl PeerRpcManager {
                                 tspt.my_peer_id(),
                                 cur_req_peer_id,
                                 service_id,
+                                cur_transact_id,
                                 false,
                                 serialized_resp.unwrap(),
                             );
@@ -161,6 +169,7 @@ impl PeerRpcManager {
 
                             assert_eq!(info.service_id, service_id);
                             cur_req_peer_id = Some(packet.from_peer.clone().into());
+                            cur_transact_id = info.transact_id;
 
                             tracing::trace!("recv packet from peer, packet: {:?}", packet);
 
@@ -213,10 +222,11 @@ impl PeerRpcManager {
     fn parse_rpc_packet(packet: &Packet) -> Result<TaRpcPacketInfo, Error> {
         let ctrl_packet_payload = CtrlPacketPayload::from_packet2(&packet);
         match &ctrl_packet_payload {
-            CtrlPacketPayload::TaRpc(id, is_req, body) => Ok(TaRpcPacketInfo {
+            CtrlPacketPayload::TaRpc(id, tid, is_req, body) => Ok(TaRpcPacketInfo {
                 from_peer: packet.from_peer.into(),
                 to_peer: packet.to_peer.into(),
                 service_id: *id,
+                transact_id: *tid,
                 is_req: *is_req,
                 content: body.clone(),
             }),
@@ -257,9 +267,11 @@ impl PeerRpcManager {
 
                     endpoint.packet_sender.send(packet).unwrap();
                 } else {
-                    if let Some(a) = client_resp_receivers
-                        .get(&PeerRpcClientCtxKey(info.from_peer, info.service_id))
-                    {
+                    if let Some(a) = client_resp_receivers.get(&PeerRpcClientCtxKey(
+                        info.from_peer,
+                        info.service_id,
+                        info.transact_id,
+                    )) {
                         log::trace!("recv resp: {:?}", packet);
                         if let Err(e) = a.send(packet) {
                             tracing::error!(error = ?e, "send resp to client failed");
@@ -291,6 +303,10 @@ impl PeerRpcManager {
 
         let (mut server_s, mut server_r) = server_transport.split();
 
+        let transact_id = self
+            .transact_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let tspt = self.tspt.clone();
         tasks.spawn(async move {
             while let Some(a) = server_r.next().await {
@@ -309,6 +325,7 @@ impl PeerRpcManager {
                     tspt.my_peer_id(),
                     dst_peer_id,
                     service_id,
+                    transact_id,
                     true,
                     a.unwrap(),
                 );
@@ -345,11 +362,16 @@ impl PeerRpcManager {
             tracing::warn!("[PEER RPC MGR] server packet read aborted");
         });
 
+        let key = PeerRpcClientCtxKey(dst_peer_id, service_id, transact_id);
         let _insert_ret = self
             .client_resp_receivers
-            .insert(PeerRpcClientCtxKey(dst_peer_id, service_id), packet_sender);
+            .insert(key.clone(), packet_sender);
 
-        f(client_transport).await
+        let ret = f(client_transport).await;
+
+        self.client_resp_receivers.remove(&key);
+
+        ret
     }
 
     pub fn my_peer_id(&self) -> PeerId {
@@ -485,6 +507,18 @@ mod tests {
             .await;
         println!("ip_list: {:?}", ip_list);
         assert_eq!(ip_list.as_ref().unwrap(), "hello abc");
+
+        // call again
+        let ip_list = peer_mgr_a
+            .get_peer_rpc_mgr()
+            .do_client_rpc_scoped(1, peer_mgr_b.my_peer_id(), |c| async {
+                let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
+                let ret = c.hello(tarpc::context::current(), "abcd".to_owned()).await;
+                ret
+            })
+            .await;
+        println!("ip_list: {:?}", ip_list);
+        assert_eq!(ip_list.as_ref().unwrap(), "hello abcd");
 
         let ip_list = peer_mgr_c
             .get_peer_rpc_mgr()
