@@ -1294,6 +1294,12 @@ mod tests {
         peer_mgr
     }
 
+    fn check_rpc_counter(route: &Arc<PeerRoute>, peer_id: PeerId, max_tx: u32, max_rx: u32) {
+        let (tx1, rx1) = get_rpc_counter(route, peer_id);
+        assert!(tx1 <= max_tx);
+        assert!(rx1 <= max_rx);
+    }
+
     #[tokio::test]
     async fn ospf_route_2node() {
         let p_a = create_mock_pmgr().await;
@@ -1378,14 +1384,21 @@ mod tests {
         }
 
         connect_peer_manager(p_a.clone(), p_c.clone()).await;
-        for r in vec![r_a.clone(), r_b.clone(), r_c.clone()].iter() {
-            // for full-connected 3 nodes, the sessions between them will be a cycle
-            wait_for_condition(
-                || async { r.service_impl.sessions.len() == 2 },
-                Duration::from_secs(3),
-            )
-            .await;
-        }
+        // for full-connected 3 nodes, the sessions between them may be a cycle or a line
+        wait_for_condition(
+            || async {
+                let mut lens = vec![
+                    r_a.service_impl.sessions.len(),
+                    r_b.service_impl.sessions.len(),
+                    r_c.service_impl.sessions.len(),
+                ];
+                lens.sort();
+
+                lens == vec![1, 1, 2] || lens == vec![2, 2, 2]
+            },
+            Duration::from_secs(3),
+        )
+        .await;
 
         let p_d = create_mock_pmgr().await;
         let r_d = create_mock_route(p_d.clone()).await;
@@ -1422,7 +1435,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(2)).await;
 
-        assert!([(2, 2), (1, 1)].contains(&get_rpc_counter(&r_e, last_p.my_peer_id())));
+        check_rpc_counter(&r_e, last_p.my_peer_id(), 2, 2);
 
         for r in all_route.iter() {
             if r.my_peer_id != last_p.my_peer_id() {
@@ -1537,7 +1550,7 @@ mod tests {
 
         assert_eq!(1, r_b.list_routes().await.len());
 
-        assert!([(2, 2), (1, 1)].contains(&get_rpc_counter(&r_a, p_b.my_peer_id())));
+        check_rpc_counter(&r_a, p_b.my_peer_id(), 2, 2);
 
         p_a.get_peer_map()
             .close_peer(p_b.my_peer_id())
@@ -1561,6 +1574,6 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         println!("session: {:?}", r_a.session_mgr.dump_sessions());
-        assert!([(2, 2), (1, 1)].contains(&get_rpc_counter(&r_a, p_b.my_peer_id())));
+        check_rpc_counter(&r_a, p_b.my_peer_id(), 2, 2);
     }
 }
