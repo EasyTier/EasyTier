@@ -81,7 +81,8 @@ jobs:
             sudo ln -s $(pwd)/musl_gcc/$MUSL_URI/bin/*gcc /usr/bin/
           fi
         fi
-        
+        # see https://github.com/rust-lang/rustup/issues/3709
+        rustup set auto-self-update disable
         rustup install 1.75
         rustup default 1.75
         rustup target add $TARGET
