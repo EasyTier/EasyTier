@@ -1,7 +1,8 @@
 use std::borrow::BorrowMut;
-use std::io::Write;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
+use anyhow::Context;
 use futures::StreamExt;
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::ipv4::Ipv4Packet;
@@ -10,10 +11,9 @@ use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::bytes::{Bytes, BytesMut};
 use tonic::transport::Server;
 
-use crate::common::config_fs::ConfigFs;
+use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
-use crate::common::netns::NetNS;
+use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
@@ -31,43 +31,6 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::listeners::ListenerManager;
 use super::virtual_nic;
-
-pub struct InstanceConfigWriter {
-    config: ConfigFs,
-}
-
-impl InstanceConfigWriter {
-    pub fn new(inst_name: &str) -> Self {
-        InstanceConfigWriter {
-            config: ConfigFs::new(inst_name),
-        }
-    }
-
-    pub fn set_ns(self, net_ns: Option<String>) -> Self {
-        let net_ns_in_conf = if let Some(net_ns) = net_ns {
-            net_ns
-        } else {
-            "".to_string()
-        };
-
-        self.config
-            .add_file("net_ns")
-            .unwrap()
-            .write_all(net_ns_in_conf.as_bytes())
-            .unwrap();
-
-        self
-    }
-
-    pub fn set_addr(self, addr: String) -> Self {
-        self.config
-            .add_file("ipv4")
-            .unwrap()
-            .write_all(addr.as_bytes())
-            .unwrap();
-        self
-    }
-}
 
 pub struct Instance {
     inst_name: String,
@@ -95,29 +58,15 @@ pub struct Instance {
 }
 
 impl Instance {
-    pub fn new(inst_name: &str) -> Self {
-        let config = ConfigFs::new(inst_name);
-        let net_ns_in_conf = config.get_or_default("net_ns", || "".to_string()).unwrap();
-        let net_ns = NetNS::new(if net_ns_in_conf.is_empty() {
-            None
-        } else {
-            Some(net_ns_in_conf.clone())
-        });
-
-        let addr = config
-            .get_or_default("ipv4", || "10.144.144.10".to_string())
-            .unwrap();
+    pub fn new(config: impl ConfigLoader + Send + Sync + 'static) -> Self {
+        let global_ctx = Arc::new(GlobalCtx::new(config));
 
         log::info!(
-            "[INIT] instance creating. inst_name: {}, addr: {}, netns: {}",
-            inst_name,
-            addr,
-            net_ns_in_conf
+            "[INIT] instance creating. config: {}",
+            global_ctx.config.dump()
         );
 
         let (peer_packet_sender, peer_packet_receiver) = tokio::sync::mpsc::channel(100);
-
-        let global_ctx = Arc::new(GlobalCtx::new(inst_name, config, net_ns.clone(), None));
 
         let id = global_ctx.get_id();
 
@@ -128,8 +77,7 @@ impl Instance {
         ));
 
         let listener_manager = Arc::new(Mutex::new(ListenerManager::new(
-            peer_manager.my_node_id(),
-            net_ns.clone(),
+            global_ctx.clone(),
             peer_manager.clone(),
         )));
 
@@ -145,13 +93,17 @@ impl Instance {
         let udp_hole_puncher = UdpHolePunchConnector::new(global_ctx.clone(), peer_manager.clone());
 
         let arc_tcp_proxy = TcpProxy::new(global_ctx.clone(), peer_manager.clone());
-        let arc_icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone()).unwrap();
-        let arc_udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone()).unwrap();
+        let arc_icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
+            .with_context(|| "create icmp proxy failed")
+            .unwrap();
+        let arc_udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
+            .with_context(|| "create udp proxy failed")
+            .unwrap();
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
         Instance {
-            inst_name: inst_name.to_string(),
+            inst_name: global_ctx.inst_name.clone(),
             id,
 
             virtual_nic: None,
@@ -251,22 +203,22 @@ impl Instance {
         });
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
-        let ipv4_addr = self.global_ctx.get_ipv4().unwrap();
+    async fn add_initial_peers(&mut self) -> Result<(), Error> {
+        for peer in self.global_ctx.config.get_peers().iter() {
+            self.get_conn_manager()
+                .add_connector_by_url(peer.uri.as_str())
+                .await?;
+        }
+        Ok(())
+    }
 
-        let mut nic = virtual_nic::VirtualNic::new(self.get_global_ctx())
+    async fn prepare_tun_device(&mut self) -> Result<(), Error> {
+        let nic = virtual_nic::VirtualNic::new(self.get_global_ctx())
             .create_dev()
-            .await?
-            .link_up()
-            .await?
-            .remove_ip(None)
-            .await?
-            .add_ip(ipv4_addr, 24)
             .await?;
 
-        if cfg!(target_os = "macos") {
-            nic = nic.add_route(ipv4_addr, 24).await?;
-        }
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
 
         self.virtual_nic = Some(Arc::new(nic));
 
@@ -276,6 +228,26 @@ impl Instance {
             self.virtual_nic.as_ref().unwrap().clone(),
             self.peer_packet_receiver.take(),
         );
+
+        Ok(())
+    }
+
+    async fn assign_ipv4_to_tun_device(&mut self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+        let nic = self.virtual_nic.as_ref().unwrap().clone();
+        nic.link_up().await?;
+        nic.remove_ip(None).await?;
+        nic.add_ip(ipv4_addr, 24).await?;
+        if cfg!(target_os = "macos") {
+            nic.add_route(ipv4_addr, 24).await?;
+        }
+        Ok(())
+    }
+
+    pub async fn run(&mut self) -> Result<(), Error> {
+        self.prepare_tun_device().await?;
+        if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+            self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+        }
 
         self.listener_manager
             .lock()
@@ -295,6 +267,8 @@ impl Instance {
         self.udp_hole_puncher.lock().await.run().await?;
 
         self.peer_center.init().await;
+
+        self.add_initial_peers().await?;
 
         Ok(())
     }
@@ -331,7 +305,10 @@ impl Instance {
     }
 
     fn run_rpc_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let addr = "0.0.0.0:15888".parse()?;
+        let Some(addr) = self.global_ctx.config.get_rpc_portal() else {
+            tracing::info!("rpc server not enabled, because rpc_portal is not set.");
+            return Ok(());
+        };
         let peer_mgr = self.peer_manager.clone();
         let conn_manager = self.conn_manager.clone();
         let net_ns = self.global_ctx.net_ns.clone();
@@ -339,7 +316,6 @@ impl Instance {
 
         self.tasks.spawn(async move {
             let _g = net_ns.guard();
-            log::info!("[INIT RPC] start rpc server. addr: {}", addr);
             Server::builder()
                 .add_service(
                     crate::rpc::peer_manage_rpc_server::PeerManageRpcServer::new(
@@ -358,6 +334,7 @@ impl Instance {
                 )
                 .serve(addr)
                 .await
+                .with_context(|| format!("rpc server failed. addr: {}", addr))
                 .unwrap();
         });
         Ok(())

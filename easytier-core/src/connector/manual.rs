@@ -214,8 +214,7 @@ impl ManualConnectorManager {
                 log::warn!("peer conn removed: {:?}", conn_info);
             }
 
-            GlobalCtxEvent::PeerAdded(..) => {}
-            GlobalCtxEvent::PeerRemoved(..) => {}
+            _ => {}
         }
     }
 
@@ -271,6 +270,11 @@ impl ManualConnectorManager {
             let conn = locked.as_mut().unwrap();
             // TODO: should support set v6 here, use url in connector array
             set_bind_addr_for_peer_connector(conn, true, &ip_collector).await;
+
+            data_clone
+                .global_ctx
+                .issue_event(GlobalCtxEvent::Connecting(conn.remote_url().clone()));
+
             let _g = net_ns.guard();
             log::info!("reconnect try connect... conn: {:?}", conn);
             let tunnel = conn.connect().await?;
@@ -292,6 +296,13 @@ impl ManualConnectorManager {
 
         let ret = timeout(std::time::Duration::from_secs(1), reconn_task).await;
         log::info!("reconnect: {} done, ret: {:?}", dead_url, ret);
+
+        if ret.is_err() || ret.as_ref().unwrap().is_err() {
+            data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
+                dead_url.clone(),
+                format!("{:?}", ret),
+            ));
+        }
 
         let conn = connector.lock().await.take().unwrap();
         data.reconnecting.remove(&dead_url).unwrap();

@@ -3,6 +3,9 @@
 #[cfg(test)]
 mod tests;
 
+use std::net::SocketAddr;
+
+use anyhow::Context;
 use clap::Parser;
 
 mod arch;
@@ -15,51 +18,210 @@ mod peers;
 mod rpc;
 mod tunnels;
 
-use common::get_logger_timer_rfc3339;
-use instance::instance::{Instance, InstanceConfigWriter};
+use common::{
+    config::{ConsoleLoggerConfig, FileLoggerConfig, PeerConfig},
+    get_logger_timer_rfc3339,
+};
+use instance::instance::Instance;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+
+use crate::common::{
+    config::{ConfigLoader, TomlConfigLoader},
+    global_ctx::GlobalCtxEvent,
+};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// the instance name
-    #[arg(short = 'n', long, default_value = "default")]
+    #[arg(
+        short = 'm',
+        long,
+        default_value = "default",
+        help = "instance name to identify this vpn node in same machine"
+    )]
     instance_name: String,
 
-    /// specify the network namespace, default is the root namespace
+    #[arg(
+        short = 'd',
+        long,
+        help = "instance uuid to identify this vpn node in whole vpn network example: 123e4567-e89b-12d3-a456-426614174000"
+    )]
+    instance_id: Option<String>,
+
+    #[arg(short, long, help = "ipv4 address of this vpn node")]
+    ipv4: Option<String>,
+
+    #[arg(short, long, help = "peers to connect initially")]
+    peers: Vec<String>,
+
+    #[arg(short, long, help = "use a public shared node to discover peers")]
+    external_node: Option<String>,
+
+    #[arg(
+        short = 'n',
+        long,
+        help = "export local networks to other peers in the vpn"
+    )]
+    proxy_networks: Vec<String>,
+
+    #[arg(
+        short,
+        long,
+        default_value = "127.0.0.1:15888",
+        help = "rpc portal address to listen for management"
+    )]
+    rpc_portal: SocketAddr,
+
+    #[arg(short, long, help = "listeners to accept connections, pass '' to avoid listening.",
+            default_values_t = ["tcp://0.0.0.0:11010".to_string(),
+                            "udp://0.0.0.0:11010".to_string()])]
+    listeners: Vec<String>,
+
+    /// specify the linux network namespace, default is the root namespace
     #[arg(long)]
     net_ns: Option<String>,
 
-    #[arg(short, long)]
-    ipv4: Option<String>,
+    #[arg(long, help = "console log level", 
+        value_parser = clap::builder::PossibleValuesParser::new(["trace", "debug", "info", "warn", "error", "off"]))]
+    console_log_level: Option<String>,
 
-    #[arg(short, long)]
-    peers: Vec<String>,
+    #[arg(long, help = "file log level", 
+        value_parser = clap::builder::PossibleValuesParser::new(["trace", "debug", "info", "warn", "error", "off"]))]
+    file_log_level: Option<String>,
+    #[arg(long, help = "directory to store log files")]
+    file_log_dir: Option<String>,
 }
 
-fn init_logger(dir: Option<&str>, file: Option<&str>) {
+impl From<Cli> for TomlConfigLoader {
+    fn from(cli: Cli) -> Self {
+        let cfg = TomlConfigLoader::default();
+        cfg.set_inst_name(cli.instance_name.clone());
+
+        cfg.set_netns(cli.net_ns.clone());
+        if let Some(ipv4) = &cli.ipv4 {
+            cfg.set_ipv4(
+                ipv4.parse()
+                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
+                    .unwrap(),
+            )
+        }
+
+        cfg.set_peers(
+            cli.peers
+                .iter()
+                .map(|s| PeerConfig {
+                    uri: s
+                        .parse()
+                        .with_context(|| format!("failed to parse peer uri: {}", s))
+                        .unwrap(),
+                })
+                .collect(),
+        );
+
+        cfg.set_listeners(
+            cli.listeners
+                .iter()
+                .filter_map(|s| {
+                    if s.is_empty() {
+                        return None;
+                    }
+
+                    Some(
+                        s.parse()
+                            .with_context(|| format!("failed to parse listener uri: {}", s))
+                            .unwrap(),
+                    )
+                })
+                .collect(),
+        );
+
+        for n in cli.proxy_networks.iter() {
+            cfg.add_proxy_cidr(
+                n.parse()
+                    .with_context(|| format!("failed to parse proxy network: {}", n))
+                    .unwrap(),
+            );
+        }
+
+        cfg.set_rpc_portal(cli.rpc_portal);
+
+        if cli.external_node.is_some() {
+            let mut old_peers = cfg.get_peers();
+            old_peers.push(PeerConfig {
+                uri: cli
+                    .external_node
+                    .clone()
+                    .unwrap()
+                    .parse()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse external node uri: {}",
+                            cli.external_node.unwrap()
+                        )
+                    })
+                    .unwrap(),
+            });
+            cfg.set_peers(old_peers);
+        }
+
+        if cli.console_log_level.is_some() {
+            cfg.set_console_logger_config(ConsoleLoggerConfig {
+                level: cli.console_log_level.clone(),
+            });
+        }
+
+        if cli.file_log_dir.is_some() || cli.file_log_level.is_some() {
+            cfg.set_file_logger_config(FileLoggerConfig {
+                level: cli.file_log_level.clone(),
+                dir: cli.file_log_dir.clone(),
+                file: Some(format!("easytier-{}", cli.instance_name)),
+            });
+        }
+
+        cfg
+    }
+}
+
+fn init_logger(config: impl ConfigLoader) {
+    let file_config = config.get_file_logger_config();
+    let file_level = file_config
+        .level
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(LevelFilter::OFF);
+
     // logger to rolling file
-    let file_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .from_env()
-        .unwrap();
-    let file_appender = tracing_appender::rolling::Builder::new()
-        .rotation(tracing_appender::rolling::Rotation::DAILY)
-        .max_log_files(5)
-        .filename_prefix(file.unwrap_or("easytier"))
-        .build(dir.unwrap_or("/tmp/easytier"))
-        .expect("failed to initialize rolling file appender");
-    let mut file_layer = tracing_subscriber::fmt::layer();
-    file_layer.set_ansi(false);
-    let file_layer = file_layer
-        .with_writer(file_appender)
-        .with_timer(get_logger_timer_rfc3339())
-        .with_filter(file_filter);
+    let mut file_layer = None;
+    if file_level != LevelFilter::OFF {
+        let mut l = tracing_subscriber::fmt::layer();
+        l.set_ansi(false);
+        let file_filter = EnvFilter::builder()
+            .with_default_directive(file_level.into())
+            .from_env()
+            .unwrap();
+        let file_appender = tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .max_log_files(5)
+            .filename_prefix(file_config.file.unwrap_or("easytier".to_string()))
+            .build(file_config.dir.unwrap_or("./".to_string()))
+            .expect("failed to initialize rolling file appender");
+        file_layer = Some(
+            l.with_writer(file_appender)
+                .with_timer(get_logger_timer_rfc3339())
+                .with_filter(file_filter),
+        );
+    }
 
     // logger to console
+    let console_config = config.get_console_logger_config();
+    let console_level = console_config
+        .level
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(LevelFilter::OFF);
+
     let console_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::WARN.into())
+        .with_default_directive(console_level.into())
         .from_env()
         .unwrap();
     let console_layer = tracing_subscriber::fmt::layer()
@@ -74,36 +236,100 @@ fn init_logger(dir: Option<&str>, file: Option<&str>) {
         .init();
 }
 
+fn print_event(msg: String) {
+    println!(
+        "{}: {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+        msg
+    );
+}
+
+fn peer_conn_info_to_string(p: crate::rpc::PeerConnInfo) -> String {
+    format!(
+        "my_peer_id: {}, dst_peer_id: {}, tunnel_info: {:?}",
+        p.my_peer_id, p.peer_id, p.tunnel
+    )
+}
+
 #[tokio::main(flavor = "current_thread")]
 #[tracing::instrument]
 pub async fn main() {
-    init_logger(Some("/var/log/easytier"), Some("core.log"));
-
     let cli = Cli::parse();
     tracing::info!(cli = ?cli, "cli args parsed");
 
-    let cfg = InstanceConfigWriter::new(cli.instance_name.as_str()).set_ns(cli.net_ns.clone());
-    if let Some(ipv4) = &cli.ipv4 {
-        cfg.set_addr(ipv4.clone());
-    }
+    let cfg: TomlConfigLoader = cli.into();
 
-    let mut inst = Instance::new(cli.instance_name.as_str());
+    init_logger(&cfg);
+    let mut inst = Instance::new(cfg.clone());
 
     let mut events = inst.get_global_ctx().subscribe();
     tokio::spawn(async move {
         while let Ok(e) = events.recv().await {
-            log::warn!("event: {:?}", e);
+            match e {
+                GlobalCtxEvent::PeerAdded(p) => {
+                    print_event(format!("new peer added. peer_id: {}", p));
+                }
+
+                GlobalCtxEvent::PeerRemoved(p) => {
+                    print_event(format!("peer removed. peer_id: {}", p));
+                }
+
+                GlobalCtxEvent::PeerConnAdded(p) => {
+                    print_event(format!(
+                        "new peer connection added. conn_info: {}",
+                        peer_conn_info_to_string(p)
+                    ));
+                }
+
+                GlobalCtxEvent::PeerConnRemoved(p) => {
+                    print_event(format!(
+                        "peer connection removed. conn_info: {}",
+                        peer_conn_info_to_string(p)
+                    ));
+                }
+
+                GlobalCtxEvent::ListenerAdded(p) => {
+                    if p.scheme() == "ring" {
+                        continue;
+                    }
+                    print_event(format!("new listener added. listener: {}", p));
+                }
+
+                GlobalCtxEvent::ConnectionAccepted(local, remote) => {
+                    print_event(format!(
+                        "new connection accepted. local: {}, remote: {}",
+                        local, remote
+                    ));
+                }
+
+                GlobalCtxEvent::ConnectionError(local, remote, err) => {
+                    print_event(format!(
+                        "connection error. local: {}, remote: {}, err: {}",
+                        local, remote, err
+                    ));
+                }
+
+                GlobalCtxEvent::TunDeviceReady(dev) => {
+                    print_event(format!("tun device ready. dev: {}", dev));
+                }
+
+                GlobalCtxEvent::Connecting(dst) => {
+                    print_event(format!("connecting to peer. dst: {}", dst));
+                }
+
+                GlobalCtxEvent::ConnectError(dst, err) => {
+                    print_event(format!("connect to peer error. dst: {}, err: {}", dst, err));
+                }
+            }
         }
     });
 
-    inst.run().await.unwrap();
+    println!("Starting easytier with config:");
+    println!("############### TOML ##############\n");
+    println!("{}", cfg.dump());
+    println!("-----------------------------------");
 
-    for peer in cli.peers {
-        inst.get_conn_manager()
-            .add_connector_by_url(peer.as_str())
-            .await
-            .unwrap();
-    }
+    inst.run().await.unwrap();
 
     inst.wait().await;
 }

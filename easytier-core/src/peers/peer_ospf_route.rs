@@ -1004,6 +1004,7 @@ impl RouteSessionManager {
             tracing::info!(?service_impl.my_peer_id, ?peers, ?session_peers, ?initiator_candidates, "maintain_sessions begin");
 
             if initiator_candidates.is_empty() {
+                next_sleep_ms = 1000;
                 continue;
             }
 

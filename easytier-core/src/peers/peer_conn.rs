@@ -540,10 +540,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::common::config_fs::ConfigFs;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
-    use crate::common::global_ctx::GlobalCtx;
-    use crate::common::netns::NetNS;
     use crate::common::new_peer_id;
     use crate::tunnels::tunnel_filter::tests::DropSendTunnelFilter;
     use crate::tunnels::tunnel_filter::{PacketRecorderTunnelFilter, TunnelWithFilter};
@@ -562,27 +559,9 @@ mod tests {
         let c_peer_id = new_peer_id();
         let s_peer_id = new_peer_id();
 
-        let mut c_peer = PeerConn::new(
-            c_peer_id,
-            Arc::new(GlobalCtx::new(
-                "c",
-                ConfigFs::new_with_dir("c", "/tmp"),
-                NetNS::new(None),
-                None,
-            )),
-            Box::new(c),
-        );
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c));
 
-        let mut s_peer = PeerConn::new(
-            s_peer_id,
-            Arc::new(GlobalCtx::new(
-                "c",
-                ConfigFs::new_with_dir("c", "/tmp"),
-                NetNS::new(None),
-                None,
-            )),
-            Box::new(s),
-        );
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s));
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),

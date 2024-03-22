@@ -296,11 +296,7 @@ mod tests {
         dm_a.run_as_client();
         dm_c.run_as_server();
 
-        let mut lis_c = ListenerManager::new(
-            p_c.my_node_id(),
-            p_c.get_global_ctx().net_ns.clone(),
-            p_c.clone(),
-        );
+        let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
 
         lis_c
             .add_listener(TcpTunnelListener::new(

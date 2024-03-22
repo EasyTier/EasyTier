@@ -38,8 +38,8 @@ impl TunnelListener for TcpTunnelListener {
         };
 
         socket.set_reuseaddr(true)?;
-        #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-        socket.set_reuseport(true)?;
+        // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+        // socket.set_reuseport(true)?;
         socket.bind(addr)?;
 
         self.listener = Some(socket.listen(1024)?);
