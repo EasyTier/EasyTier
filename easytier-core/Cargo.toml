@@ -24,6 +24,8 @@ thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"
 time = "0.3"
+toml = "0.8.12"
+chrono = "0.4.35"
 
 gethostname = "0.4.3"
 
@@ -56,8 +58,14 @@ crossbeam-queue = "0.3"
 once_cell = "1.18.0"
 
 # for packet
-rkyv = { "version" = "0.7.42", features = ["validation", "archive_le", "strict", "copy_unsafe", "arbitrary_enum_discriminant"] }
-postcard = {"version"= "*", features = ["alloc"]}
+rkyv = { "version" = "0.7.42", features = [
+    "validation",
+    "archive_le",
+    "strict",
+    "copy_unsafe",
+    "arbitrary_enum_discriminant",
+] }
+postcard = { "version" = "*", features = ["alloc"] }
 
 # for rpc
 tonic = "0.10"
@@ -65,7 +73,7 @@ prost = "0.12"
 anyhow = "1.0"
 tarpc = { version = "0.32", features = ["tokio1", "serde1"] }
 
-url = "2.5.0"
+url = { version = "2.5", features = ["serde"] }
 
 # for tun packet
 byteorder = "1.5.0"

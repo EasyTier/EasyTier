@@ -1,51 +1,42 @@
-use std::{io::Write, sync::Arc};
+use std::sync::Arc;
 
 use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
-use serde::{Deserialize, Serialize};
 
 use super::{
-    config_fs::ConfigFs,
+    config::ConfigLoader,
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
     PeerId,
 };
 
+pub type NetworkIdentity = crate::common::config::NetworkIdentity;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GlobalCtxEvent {
+    TunDeviceReady(String),
+
     PeerAdded(PeerId),
     PeerRemoved(PeerId),
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
+
+    ListenerAdded(url::Url),
+    ConnectionAccepted(String, String), // (local url, remote url)
+    ConnectionError(String, String, String), // (local url, remote url, error message)
+
+    Connecting(url::Url),
+    ConnectError(String, String), // (dst, error message)
 }
 
 type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct NetworkIdentity {
-    pub network_name: String,
-    pub network_secret: String,
-}
-
-impl NetworkIdentity {
-    pub fn new(network_name: String, network_secret: String) -> Self {
-        NetworkIdentity {
-            network_name,
-            network_secret,
-        }
-    }
-
-    pub fn default() -> Self {
-        Self::new("default".to_string(), "".to_string())
-    }
-}
-
 pub struct GlobalCtx {
     pub inst_name: String,
     pub id: uuid::Uuid,
-    pub config_fs: ConfigFs,
+    pub config: Box<dyn ConfigLoader>,
     pub net_ns: NetNS,
     pub network: NetworkIdentity,
 
@@ -76,24 +67,17 @@ impl std::fmt::Debug for GlobalCtx {
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
 impl GlobalCtx {
-    pub fn new(
-        inst_name: &str,
-        config_fs: ConfigFs,
-        net_ns: NetNS,
-        network: Option<NetworkIdentity>,
-    ) -> Self {
-        let id = config_fs
-            .get_or_add_file("inst_id", || uuid::Uuid::new_v4().to_string())
-            .unwrap();
-        let id = uuid::Uuid::parse_str(&id).unwrap();
-        let network = network.unwrap_or(NetworkIdentity::default());
+    pub fn new(config_fs: impl ConfigLoader + 'static + Send + Sync) -> Self {
+        let id = config_fs.get_id();
+        let network = config_fs.get_network_identity();
+        let net_ns = NetNS::new(config_fs.get_netns());
 
         let (event_bus, _) = tokio::sync::broadcast::channel(100);
 
         GlobalCtx {
-            inst_name: inst_name.to_string(),
+            inst_name: config_fs.get_inst_name(),
             id,
-            config_fs,
+            config: Box::new(config_fs),
             net_ns: net_ns.clone(),
             network,
 
@@ -125,42 +109,24 @@ impl GlobalCtx {
         if let Some(ret) = self.cached_ipv4.load() {
             return Some(ret);
         }
-
-        let Ok(addr) = self.config_fs.get("ipv4") else {
-            return None;
-        };
-
-        let Ok(addr) = addr.parse() else {
-            tracing::error!("invalid ipv4 addr: {}", addr);
-            return None;
-        };
-
-        self.cached_ipv4.store(Some(addr));
-        return Some(addr);
+        let addr = self.config.get_ipv4();
+        self.cached_ipv4.store(addr.clone());
+        return addr;
     }
 
     pub fn set_ipv4(&mut self, addr: std::net::Ipv4Addr) {
-        self.config_fs
-            .add_file("ipv4")
-            .unwrap()
-            .write_all(addr.to_string().as_bytes())
-            .unwrap();
-
+        self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
     }
 
     pub fn add_proxy_cidr(&self, cidr: cidr::IpCidr) -> Result<(), std::io::Error> {
-        let escaped_cidr = cidr.to_string().replace("/", "_");
-        self.config_fs
-            .add_file(&format!("proxy_cidrs/{}", escaped_cidr))?;
+        self.config.add_proxy_cidr(cidr);
         self.cached_proxy_cidrs.store(None);
         Ok(())
     }
 
     pub fn remove_proxy_cidr(&self, cidr: cidr::IpCidr) -> Result<(), std::io::Error> {
-        let escaped_cidr = cidr.to_string().replace("/", "_");
-        self.config_fs
-            .remove(&format!("proxy_cidrs/{}", escaped_cidr))?;
+        self.config.remove_proxy_cidr(cidr);
         self.cached_proxy_cidrs.store(None);
         Ok(())
     }
@@ -171,22 +137,17 @@ impl GlobalCtx {
             return proxy_cidrs;
         }
 
-        let Ok(keys) = self.config_fs.list_keys("proxy_cidrs") else {
-            return vec![];
-        };
-
-        let mut ret = Vec::new();
-        for key in keys.iter() {
-            let key = key.replace("_", "/");
-            let Ok(cidr) = key.parse() else {
-                tracing::error!("invalid proxy cidr: {}", key);
-                continue;
-            };
-            ret.push(cidr);
-        }
-
+        let ret = self.config.get_proxy_cidrs();
         self.cached_proxy_cidrs.store(Some(ret.clone()));
         ret
+    }
+
+    pub fn get_id(&self) -> uuid::Uuid {
+        self.config.get_id()
+    }
+
+    pub fn get_network_identity(&self) -> NetworkIdentity {
+        self.config.get_network_identity()
     }
 
     pub fn get_ip_collector(&self) -> Arc<IPCollector> {
@@ -219,27 +180,18 @@ impl GlobalCtx {
             std::ptr::write(ptr, collector);
         }
     }
-
-    pub fn get_id(&self) -> uuid::Uuid {
-        self.id
-    }
-
-    pub fn get_network_identity(&self) -> NetworkIdentity {
-        self.network.clone()
-    }
 }
 
 #[cfg(test)]
 pub mod tests {
-    use crate::common::new_peer_id;
+    use crate::common::{config::TomlConfigLoader, new_peer_id};
 
     use super::*;
 
     #[tokio::test]
     async fn test_global_ctx() {
-        let config_fs = ConfigFs::new("/tmp/easytier");
-        let net_ns = NetNS::new(None);
-        let global_ctx = GlobalCtx::new("test", config_fs, net_ns, None);
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
 
         let mut subscriber = global_ctx.subscribe();
         let peer_id = new_peer_id();
@@ -269,15 +221,10 @@ pub mod tests {
     pub fn get_mock_global_ctx_with_network(
         network_identy: Option<NetworkIdentity>,
     ) -> ArcGlobalCtx {
-        let node_id = uuid::Uuid::new_v4();
-        let config_fs = ConfigFs::new_with_dir(node_id.to_string().as_str(), "/tmp/easytier");
-        let net_ns = NetNS::new(None);
-        std::sync::Arc::new(GlobalCtx::new(
-            format!("test_{}", node_id).as_str(),
-            config_fs,
-            net_ns,
-            network_identy,
-        ))
+        let config_fs = TomlConfigLoader::default();
+        config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
+        config_fs.set_network_identity(network_identy.unwrap_or(NetworkIdentity::default()));
+        std::sync::Arc::new(GlobalCtx::new(config_fs))
     }
 
     pub fn get_mock_global_ctx() -> ArcGlobalCtx {

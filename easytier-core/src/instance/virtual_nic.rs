@@ -119,32 +119,32 @@ impl VirtualNic {
         self.ifname.as_ref().unwrap().as_str()
     }
 
-    pub async fn link_up(self) -> Result<Self> {
+    pub async fn link_up(&self) -> Result<()> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg.set_link_status(self.ifname(), true).await?;
-        Ok(self)
+        Ok(())
     }
 
-    pub async fn add_route(self, address: Ipv4Addr, cidr: u8) -> Result<Self> {
+    pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<()> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
             .add_ipv4_route(self.ifname(), address, cidr)
             .await?;
-        Ok(self)
+        Ok(())
     }
 
-    pub async fn remove_ip(self, ip: Option<Ipv4Addr>) -> Result<Self> {
+    pub async fn remove_ip(&self, ip: Option<Ipv4Addr>) -> Result<()> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
-        Ok(self)
+        Ok(())
     }
 
-    pub async fn add_ip(self, ip: Ipv4Addr, cidr: i32) -> Result<Self> {
+    pub async fn add_ip(&self, ip: Ipv4Addr, cidr: i32) -> Result<()> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
             .add_ipv4_ip(self.ifname(), ip, cidr as u8)
             .await?;
-        Ok(self)
+        Ok(())
     }
 
     pub fn pin_recv_stream(&self) -> Pin<Box<dyn DatagramStream>> {
@@ -170,12 +170,10 @@ mod tests {
 
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-        dev.link_up()
-            .await?
-            .remove_ip(None)
-            .await?
-            .add_ip("10.144.111.1".parse().unwrap(), 24)
-            .await
+        dev.link_up().await?;
+        dev.remove_ip(None).await?;
+        dev.add_ip("10.144.111.1".parse().unwrap(), 24).await?;
+        Ok(dev)
     }
 
     #[tokio::test]

@@ -289,8 +289,8 @@ pub(crate) fn setup_sokcet2(
     socket2_socket.set_reuse_address(true)?;
     socket2_socket.bind(&socket2::SockAddr::from(*bind_addr))?;
 
-    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    socket2_socket.set_reuse_port(true)?;
+    // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    // socket2_socket.set_reuse_port(true)?;
 
     if bind_addr.ip().is_unspecified() {
         return Ok(());

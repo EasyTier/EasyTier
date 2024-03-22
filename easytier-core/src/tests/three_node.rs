@@ -5,8 +5,11 @@ use tokio::{net::UdpSocket, task::JoinSet};
 use super::*;
 
 use crate::{
-    common::netns::{NetNS, ROOT_NETNS_NAME},
-    instance::instance::{Instance, InstanceConfigWriter},
+    common::{
+        config::{ConfigLoader, TomlConfigLoader},
+        netns::{NetNS, ROOT_NETNS_NAME},
+    },
+    instance::instance::Instance,
     tunnels::{
         common::tests::_tunnel_pingpong_netns,
         ring_tunnel::RingTunnelConnector,
@@ -35,29 +38,25 @@ pub fn prepare_linux_namespaces() {
     add_ns_to_bridge("br_b", "net_d");
 }
 
-pub async fn prepare_inst_configs() {
-    InstanceConfigWriter::new("inst1")
-        .set_ns(Some("net_a".into()))
-        .set_addr("10.144.144.1".to_owned());
-
-    InstanceConfigWriter::new("inst2")
-        .set_ns(Some("net_b".into()))
-        .set_addr("10.144.144.2".to_owned());
-
-    InstanceConfigWriter::new("inst3")
-        .set_ns(Some("net_c".into()))
-        .set_addr("10.144.144.3".to_owned());
+pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str) -> TomlConfigLoader {
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(inst_name.to_owned());
+    config.set_netns(ns.map(|s| s.to_owned()));
+    config.set_ipv4(ipv4.parse().unwrap());
+    config.set_listeners(vec![
+        "tcp://0.0.0.0:11010".parse().unwrap(),
+        "udp://0.0.0.0:11010".parse().unwrap(),
+    ]);
+    config
 }
 
 pub async fn init_three_node(proto: &str) -> Vec<Instance> {
     log::set_max_level(log::LevelFilter::Info);
     prepare_linux_namespaces();
 
-    prepare_inst_configs().await;
-
-    let mut inst1 = Instance::new("inst1");
-    let mut inst2 = Instance::new("inst2");
-    let mut inst3 = Instance::new("inst3");
+    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_a"), "10.144.144.1"));
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_b"), "10.144.144.2"));
+    let mut inst3 = Instance::new(get_inst_config("inst3", Some("net_c"), "10.144.144.3"));
 
     inst1.run().await.unwrap();
     inst2.run().await.unwrap();
@@ -205,11 +204,7 @@ pub async fn icmp_proxy_three_node_test() {
 #[tokio::test]
 #[serial_test::serial]
 pub async fn proxy_three_node_disconnect_test() {
-    InstanceConfigWriter::new("inst4")
-        .set_ns(Some("net_d".into()))
-        .set_addr("10.144.144.4".to_owned());
-
-    let mut inst4 = Instance::new("inst4");
+    let mut inst4 = Instance::new(get_inst_config("inst4", Some("net_d"), "10.144.144.4"));
     inst4
         .get_conn_manager()
         .add_connector(TcpTunnelConnector::new(

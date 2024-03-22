@@ -1,4 +1,4 @@
-pub mod config_fs;
+pub mod config;
 pub mod constants;
 pub mod error;
 pub mod global_ctx;
