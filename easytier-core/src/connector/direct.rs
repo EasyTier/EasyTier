@@ -7,7 +7,6 @@ use crate::{
         constants::{self, DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC},
         error::Error,
         global_ctx::ArcGlobalCtx,
-        network::IPCollector,
         PeerId,
     },
     peers::{peer_manager::PeerManager, peer_rpc::PeerRpcManager},
@@ -56,21 +55,21 @@ impl PeerManagerForDirectConnector for PeerManager {
 #[derive(Clone)]
 struct DirectConnectorManagerRpcServer {
     // TODO: this only cache for one src peer, should make it global
-    ip_list_collector: Arc<IPCollector>,
+    global_ctx: ArcGlobalCtx,
 }
 
 #[tarpc::server]
 impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
     async fn get_ip_list(self, _: tarpc::context::Context) -> GetIpListResponse {
-        return self.ip_list_collector.collect_ip_addrs().await;
+        let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
+        ret.listeners = self.global_ctx.get_running_listeners();
+        ret
     }
 }
 
 impl DirectConnectorManagerRpcServer {
-    pub fn new(ip_collector: Arc<IPCollector>) -> Self {
-        Self {
-            ip_list_collector: ip_collector,
-        }
+    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
+        Self { global_ctx }
     }
 }
 
@@ -119,7 +118,7 @@ impl DirectConnectorManager {
     pub fn run_as_server(&mut self) {
         self.data.peer_manager.get_peer_rpc_mgr().run_service(
             constants::DIRECT_CONNECTOR_SERVICE_ID,
-            DirectConnectorManagerRpcServer::new(self.global_ctx.get_ip_collector()).serve(),
+            DirectConnectorManagerRpcServer::new(self.global_ctx.clone()).serve(),
         );
     }
 
@@ -241,9 +240,19 @@ impl DirectConnectorManager {
             })
             .await?;
 
+        let listener = ip_list
+            .listeners
+            .get(0)
+            .ok_or(anyhow::anyhow!("peer {} have no listener", dst_peer_id))?;
+
         let mut tasks = JoinSet::new();
         ip_list.interface_ipv4s.iter().for_each(|ip| {
-            let addr = format!("{}://{}:{}", "tcp", ip, 11010);
+            let addr = format!(
+                "{}://{}:{}",
+                listener.scheme(),
+                ip,
+                listener.port().unwrap_or(11010)
+            );
             tasks.spawn(Self::try_connect_to_ip(
                 data.clone(),
                 dst_peer_id.clone(),
@@ -251,7 +260,12 @@ impl DirectConnectorManager {
             ));
         });
 
-        let addr = format!("{}://{}:{}", "tcp", ip_list.public_ipv4.clone(), 11010);
+        let addr = format!(
+            "{}://{}:{}",
+            listener.scheme(),
+            ip_list.public_ipv4.clone(),
+            listener.port().unwrap_or(11010)
+        );
         tasks.spawn(Self::try_connect_to_ip(
             data.clone(),
             dst_peer_id.clone(),
@@ -300,7 +314,7 @@ mod tests {
 
         lis_c
             .add_listener(TcpTunnelListener::new(
-                "tcp://0.0.0.0:11010".parse().unwrap(),
+                "tcp://0.0.0.0:11040".parse().unwrap(),
             ))
             .await
             .unwrap();

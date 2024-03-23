@@ -19,7 +19,7 @@ mod rpc;
 mod tunnels;
 
 use common::{
-    config::{ConsoleLoggerConfig, FileLoggerConfig, PeerConfig},
+    config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig},
     get_logger_timer_rfc3339,
 };
 use instance::instance::Instance;
@@ -34,21 +34,18 @@ use crate::common::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// the instance name
     #[arg(
-        short = 'm',
         long,
-        default_value = "default",
-        help = "instance name to identify this vpn node in same machine"
+        help = "network name to identify this vpn network",
+        default_value = "default"
     )]
-    instance_name: String,
-
+    network_name: String,
     #[arg(
-        short = 'd',
         long,
-        help = "instance uuid to identify this vpn node in whole vpn network example: 123e4567-e89b-12d3-a456-426614174000"
+        help = "network secret to verify this node belongs to the vpn network",
+        default_value = ""
     )]
-    instance_id: Option<String>,
+    network_secret: String,
 
     #[arg(short, long, help = "ipv4 address of this vpn node")]
     ipv4: Option<String>,
@@ -92,12 +89,31 @@ struct Cli {
     file_log_level: Option<String>,
     #[arg(long, help = "directory to store log files")]
     file_log_dir: Option<String>,
+
+    #[arg(
+        short = 'm',
+        long,
+        default_value = "default",
+        help = "instance name to identify this vpn node in same machine"
+    )]
+    instance_name: String,
+
+    #[arg(
+        short = 'd',
+        long,
+        help = "instance uuid to identify this vpn node in whole vpn network example: 123e4567-e89b-12d3-a456-426614174000"
+    )]
+    instance_id: Option<String>,
 }
 
 impl From<Cli> for TomlConfigLoader {
     fn from(cli: Cli) -> Self {
         let cfg = TomlConfigLoader::default();
         cfg.set_inst_name(cli.instance_name.clone());
+        cfg.set_network_identity(NetworkIdentity {
+            network_name: cli.network_name.clone(),
+            network_secret: cli.network_secret.clone(),
+        });
 
         cfg.set_netns(cli.net_ns.clone());
         if let Some(ipv4) = &cli.ipv4 {

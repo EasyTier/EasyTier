@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
@@ -50,6 +50,8 @@ pub struct GlobalCtx {
     hotname: AtomicCell<Option<String>>,
 
     stun_info_collection: Box<dyn StunInfoCollectorTrait>,
+
+    running_listeners: Mutex<Vec<url::Url>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -90,6 +92,8 @@ impl GlobalCtx {
             hotname: AtomicCell::new(None),
 
             stun_info_collection: Box::new(StunInfoCollector::new_with_default_servers()),
+
+            running_listeners: Mutex::new(Vec::new()),
         }
     }
 
@@ -179,6 +183,14 @@ impl GlobalCtx {
             #[allow(invalid_reference_casting)]
             std::ptr::write(ptr, collector);
         }
+    }
+
+    pub fn get_running_listeners(&self) -> Vec<url::Url> {
+        self.running_listeners.lock().unwrap().clone()
+    }
+
+    pub fn add_running_listener(&self, url: url::Url) {
+        self.running_listeners.lock().unwrap().push(url);
     }
 }
 

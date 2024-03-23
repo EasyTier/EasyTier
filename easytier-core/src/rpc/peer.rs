@@ -6,6 +6,7 @@ pub struct GetIpListResponse {
     pub interface_ipv4s: Vec<String>,
     pub public_ipv6: String,
     pub interface_ipv6s: Vec<String>,
+    pub listeners: Vec<url::Url>,
 }
 
 impl GetIpListResponse {
@@ -15,6 +16,7 @@ impl GetIpListResponse {
             interface_ipv4s: vec![],
             public_ipv6: "".to_string(),
             interface_ipv6s: vec![],
+            listeners: vec![],
         }
     }
 }

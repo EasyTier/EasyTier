@@ -156,12 +156,7 @@ impl IPCollector {
 
     #[tracing::instrument(skip(net_ns))]
     async fn do_collect_ip_addrs(with_public: bool, net_ns: NetNS) -> GetIpListResponse {
-        let mut ret = crate::rpc::peer::GetIpListResponse {
-            public_ipv4: "".to_string(),
-            interface_ipv4s: vec![],
-            public_ipv6: "".to_string(),
-            interface_ipv6s: vec![],
-        };
+        let mut ret = crate::rpc::peer::GetIpListResponse::new();
 
         if with_public {
             if let Some(v4_addr) =

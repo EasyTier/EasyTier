@@ -91,6 +91,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         global_ctx: ArcGlobalCtx,
     ) {
         let mut l = listener.lock().await;
+        global_ctx.add_running_listener(l.local_url());
         global_ctx.issue_event(GlobalCtxEvent::ListenerAdded(l.local_url()));
         while let Ok(ret) = l.accept().await {
             let tunnel_info = ret.info().unwrap();
