@@ -57,12 +57,12 @@ impl ForeignNetworkManagerData {
         let network_name = self
             .peer_network_map
             .get(&dst_peer_id)
-            .ok_or_else(|| Error::RouteError("network not found".to_string()))?
+            .ok_or_else(|| Error::RouteError(Some("network not found".to_string())))?
             .clone();
         let entry = self
             .network_peer_maps
             .get(&network_name)
-            .ok_or_else(|| Error::RouteError("no peer in network".to_string()))?
+            .ok_or_else(|| Error::RouteError(Some("no peer in network".to_string())))?
             .clone();
         entry.peer_map.send_msg(msg, dst_peer_id).await
     }
@@ -286,6 +286,28 @@ impl ForeignNetworkManager {
         self.start_global_event_handler().await;
         self.start_packet_recv().await;
         self.register_peer_rpc_service().await;
+    }
+
+    pub async fn list_foreign_networks(&self) -> DashMap<String, Vec<PeerId>> {
+        let ret = DashMap::new();
+        for item in self.data.network_peer_maps.iter() {
+            let network_name = item.key().clone();
+            ret.insert(network_name, vec![]);
+        }
+
+        for mut n in ret.iter_mut() {
+            let network_name = n.key().clone();
+            let Some(item) = self
+                .data
+                .network_peer_maps
+                .get(&network_name)
+                .map(|v| v.clone())
+            else {
+                continue;
+            };
+            n.value_mut().extend(item.peer_map.list_peers().await);
+        }
+        ret
     }
 }
 

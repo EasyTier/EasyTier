@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::{StreamExt, TryFutureExt};
+use futures::StreamExt;
 
 use tokio::{
     sync::{
@@ -67,11 +67,18 @@ impl PeerRpcManagerTransport for RpcTransport {
             .ok_or(Error::Unknown)?;
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
 
-        if foreign_peers.has_next_hop(dst_peer_id) {
+        let ret = peers.send_msg(msg.clone(), dst_peer_id).await;
+
+        if matches!(ret, Err(Error::RouteError(..))) && foreign_peers.has_next_hop(dst_peer_id) {
+            tracing::info!(
+                ?dst_peer_id,
+                ?self.my_peer_id,
+                "failed to send msg to peer, try foreign network",
+            );
             return foreign_peers.send_msg(msg, dst_peer_id).await;
         }
 
-        peers.send_msg(msg, dst_peer_id).map_err(|e| e.into()).await
+        ret
     }
 
     async fn recv(&self) -> Result<Bytes, Error> {
@@ -484,13 +491,18 @@ impl PeerManager {
         let mut errs: Vec<Error> = vec![];
 
         for peer_id in dst_peers.iter() {
-            let send_ret = self
-                .peers
-                .send_msg(
-                    packet::Packet::new_data_packet(self.my_peer_id, peer_id.clone(), &msg).into(),
-                    *peer_id,
-                )
-                .await;
+            let msg: Bytes =
+                packet::Packet::new_data_packet(self.my_peer_id, peer_id.clone(), &msg).into();
+            let send_ret = self.peers.send_msg(msg.clone(), *peer_id).await;
+
+            if matches!(send_ret, Err(Error::RouteError(..)))
+                && self.foreign_network_client.has_next_hop(*peer_id)
+            {
+                let foreign_send_ret = self.foreign_network_client.send_msg(msg, *peer_id).await;
+                if foreign_send_ret.is_ok() {
+                    continue;
+                }
+            }
 
             if let Err(send_ret) = send_ret {
                 errs.push(send_ret);

@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicU32, Arc};
+use std::{
+    sync::{atomic::AtomicU32, Arc},
+    time::Duration,
+};
 
 use tokio::{net::UdpSocket, task::JoinSet};
 
@@ -6,10 +9,11 @@ use super::*;
 
 use crate::{
     common::{
-        config::{ConfigLoader, TomlConfigLoader},
+        config::{ConfigLoader, NetworkIdentity, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
+    peers::tests::wait_for_condition,
     tunnels::{
         common::tests::_tunnel_pingpong_netns,
         ring_tunnel::RingTunnelConnector,
@@ -306,4 +310,66 @@ pub async fn udp_broadcast_test() {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn foreign_network_forward_nic_data() {
+    prepare_linux_namespaces();
+
+    let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
+    center_node_config.set_network_identity(NetworkIdentity {
+        network_name: "center".to_string(),
+        network_secret: "".to_string(),
+    });
+    let mut center_inst = Instance::new(center_node_config);
+
+    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1"));
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2"));
+
+    center_inst.run().await.unwrap();
+    inst1.run().await.unwrap();
+    inst2.run().await.unwrap();
+
+    assert_ne!(inst1.id(), center_inst.id());
+    assert_ne!(inst2.id(), center_inst.id());
+
+    inst1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst.id()).parse().unwrap(),
+        ));
+
+    inst2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst.id()).parse().unwrap(),
+        ));
+
+    wait_for_condition(
+        || async {
+            inst1.get_peer_manager().list_routes().await.len() == 1
+                && inst2.get_peer_manager().list_routes().await.len() == 1
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let code = tokio::process::Command::new("ip")
+        .args(&[
+            "netns",
+            "exec",
+            "net_b",
+            "ping",
+            "-c",
+            "1",
+            "-W",
+            "1",
+            "10.144.145.2",
+        ])
+        .status()
+        .await
+        .unwrap();
+    assert_eq!(code.code().unwrap(), 0);
 }

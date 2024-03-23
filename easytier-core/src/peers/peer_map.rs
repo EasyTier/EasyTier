@@ -87,7 +87,7 @@ impl PeerMap {
             }
             None => {
                 log::error!("no peer for dst_peer_id: {}", dst_peer_id);
-                return Ok(());
+                return Err(Error::RouteError(None));
             }
         }
 
@@ -119,13 +119,13 @@ impl PeerMap {
         }
 
         let Some(gateway_peer_id) = gateway_peer_id else {
-            log::error!(
+            tracing::trace!(
                 "no gateway for dst_peer_id: {}, peers: {:?}, my_peer_id: {}",
                 dst_peer_id,
                 self.peer_map.iter().map(|v| *v.key()).collect::<Vec<_>>(),
                 self.my_peer_id
             );
-            return Ok(());
+            return Err(Error::RouteError(None));
         };
 
         self.send_msg_directly(msg.clone(), gateway_peer_id).await?;
