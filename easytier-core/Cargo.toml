@@ -1,9 +1,16 @@
 [package]
 name = "easytier-core"
+description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
+homepage = "https://github.com/KKRainbow/EasyTier"
+repository = "https://github.com/KKRainbow/EasyTier"
 version = "0.1.0"
 edition = "2021"
-authors = ["easytier"]
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming", "command-line-utilities"]
 rust-version = "1.75"
+license-file = "LICENSE"
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
