@@ -56,7 +56,7 @@ macro_rules! wait_response {
         match &resp_payload {
             $pattern => $out_var = $value,
             _ => {
-                log::error!(
+                tracing::error!(
                     "unexpected packet: {:?}, pattern: {:?}",
                     rsp_bytes,
                     stringify!($pattern)
@@ -67,6 +67,7 @@ macro_rules! wait_response {
     };
 }
 
+#[derive(Debug)]
 pub struct PeerInfo {
     magic: u32,
     pub my_peer_id: PeerId,
@@ -348,13 +349,15 @@ impl PeerConn {
         self.conn_id
     }
 
+    #[tracing::instrument]
     pub async fn do_handshake_as_server(&mut self) -> Result<(), TunnelError> {
         let mut stream = self.tunnel.pin_stream();
         let mut sink = self.tunnel.pin_sink();
 
+        tracing::info!("waiting for handshake request from client");
         wait_response!(stream, hs_req, CtrlPacketPayload::HandShake(x) => x);
         self.info = Some(PeerInfo::from(hs_req));
-        log::info!("handshake request: {:?}", hs_req);
+        tracing::info!("handshake request: {:?}", hs_req);
 
         let hs_req = self
             .global_ctx
@@ -365,6 +368,7 @@ impl PeerConn {
         Ok(())
     }
 
+    #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), TunnelError> {
         let mut stream = self.tunnel.pin_stream();
         let mut sink = self.tunnel.pin_sink();
@@ -375,9 +379,10 @@ impl PeerConn {
             .run(|| packet::Packet::new_handshake(self.my_peer_id, &self.global_ctx.network));
         sink.send(hs_req.into()).await?;
 
+        tracing::info!("waiting for handshake request from server");
         wait_response!(stream, hs_rsp, CtrlPacketPayload::HandShake(x) => x);
         self.info = Some(PeerInfo::from(hs_rsp));
-        log::info!("handshake response: {:?}", hs_rsp);
+        tracing::info!("handshake response: {:?}", hs_rsp);
 
         Ok(())
     }
@@ -532,6 +537,16 @@ impl Drop for PeerConn {
             tracing::info!(error = ?ret, "peer conn tunnel closed.");
         });
         log::info!("peer conn {:?} drop", self.conn_id);
+    }
+}
+
+impl Debug for PeerConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerConn")
+            .field("conn_id", &self.conn_id)
+            .field("my_peer_id", &self.my_peer_id)
+            .field("info", &self.info)
+            .finish()
     }
 }
 

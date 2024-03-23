@@ -150,9 +150,18 @@ impl ForeignNetworkClient {
 
     pub async fn send_msg(&self, msg: Bytes, peer_id: PeerId) -> Result<(), Error> {
         if let Some(next_hop) = self.get_next_hop(peer_id) {
-            return self.peer_map.send_msg_directly(msg, next_hop).await;
+            let ret = self.peer_map.send_msg_directly(msg, next_hop).await;
+            if ret.is_err() {
+                tracing::error!(
+                    ?ret,
+                    ?peer_id,
+                    ?next_hop,
+                    "foreign network client send msg failed"
+                );
+            }
+            return ret;
         }
-        Err(Error::RouteError("no next hop".to_string()))
+        Err(Error::RouteError(Some("no next hop".to_string())))
     }
 
     pub fn list_foreign_peers(&self) -> Vec<PeerId> {

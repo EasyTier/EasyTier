@@ -16,8 +16,8 @@ pub enum Error {
     TunnelError(#[from] tunnels::TunnelError),
     #[error("Peer has no conn, PeerId: {0}")]
     PeerNoConnectionError(PeerId),
-    #[error("RouteError: {0}")]
-    RouteError(String),
+    #[error("RouteError: {0:?}")]
+    RouteError(Option<String>),
     #[error("Not found")]
     NotFound,
     #[error("Invalid Url: {0}")]
