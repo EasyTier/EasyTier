@@ -240,8 +240,13 @@ impl DirectConnectorManager {
             })
             .await?;
 
-        let listener = ip_list
+        let available_listeners = ip_list
             .listeners
+            .iter()
+            .filter_map(|l| if l.scheme() != "ring" { Some(l) } else { None })
+            .collect::<Vec<_>>();
+
+        let listener = available_listeners
             .get(0)
             .ok_or(anyhow::anyhow!("peer {} have no listener", dst_peer_id))?;
 

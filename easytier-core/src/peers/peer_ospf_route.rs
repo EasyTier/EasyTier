@@ -392,10 +392,8 @@ impl RouteTable {
     }
 
     fn build_from_synced_info(&self, my_peer_id: PeerId, synced_info: &SyncedRouteInfo) {
-        // build ipv4_peer_id_map, cidr_peer_id_map and peer_infos
+        // build  peer_infos
         self.peer_infos.clear();
-        self.ipv4_peer_id_map.clear();
-        self.cidr_peer_id_map.clear();
         for item in synced_info.peer_infos.iter() {
             let peer_id = item.key();
             let info = item.value();
@@ -405,15 +403,6 @@ impl RouteTable {
             }
 
             self.peer_infos.insert(*peer_id, info.clone());
-
-            if let Some(ipv4_addr) = info.ipv4_addr {
-                self.ipv4_peer_id_map.insert(ipv4_addr, *peer_id);
-            }
-
-            for cidr in info.proxy_cidrs.iter() {
-                self.cidr_peer_id_map
-                    .insert(cidr.parse().unwrap(), *peer_id);
-            }
         }
 
         // build next hop map
@@ -439,6 +428,28 @@ impl RouteTable {
                 assert!(path.len() >= 2);
                 self.next_hop_map
                     .insert(peer_id, (path[1], (path.len() - 1) as i32));
+            }
+        }
+
+        // build ipv4_peer_id_map, cidr_peer_id_map
+        self.ipv4_peer_id_map.clear();
+        self.cidr_peer_id_map.clear();
+        for item in self.peer_infos.iter() {
+            // only set ipv4 map for peers we can reach.
+            if !self.next_hop_map.contains_key(item.key()) {
+                continue;
+            }
+
+            let peer_id = item.key();
+            let info = item.value();
+
+            if let Some(ipv4_addr) = info.ipv4_addr {
+                self.ipv4_peer_id_map.insert(ipv4_addr, *peer_id);
+            }
+
+            for cidr in info.proxy_cidrs.iter() {
+                self.cidr_peer_id_map
+                    .insert(cidr.parse().unwrap(), *peer_id);
             }
         }
     }
