@@ -1,7 +1,15 @@
+#![allow(dead_code)]
+
 use std::{net::SocketAddr, vec};
 
 use clap::{command, Args, Parser, Subcommand};
-use easytier_core::{
+
+mod arch;
+mod common;
+mod rpc;
+mod tunnels;
+
+use crate::{
     common::stun::{StunInfoCollector, UdpNatTypeDetector},
     rpc::{
         connector_manage_rpc_client::ConnectorManageRpcClient,
