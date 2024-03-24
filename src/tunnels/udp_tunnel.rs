@@ -30,7 +30,7 @@ use super::{
 
 pub const UDP_DATA_MTU: usize = 2500;
 
-#[derive(Archive, Deserialize, Serialize, Debug)]
+#[derive(Archive, Deserialize, Serialize)]
 #[archive(compare(PartialEq), check_bytes)]
 // Derives can be passed through to the generated type:
 pub enum UdpPacketPayload {
@@ -38,6 +38,18 @@ pub enum UdpPacketPayload {
     Sack,
     HolePunch(String),
     Data(String),
+}
+
+impl std::fmt::Debug for UdpPacketPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut tmp = f.debug_struct("ArchivedUdpPacketPayload");
+        match self {
+            UdpPacketPayload::Syn => tmp.field("Syn", &"").finish(),
+            UdpPacketPayload::Sack => tmp.field("Sack", &"").finish(),
+            UdpPacketPayload::HolePunch(s) => tmp.field("HolePunch", &s.as_bytes()).finish(),
+            UdpPacketPayload::Data(s) => tmp.field("Data", &s.as_bytes()).finish(),
+        }
+    }
 }
 
 #[derive(Archive, Deserialize, Serialize, Debug)]
