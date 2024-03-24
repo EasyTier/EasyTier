@@ -1,5 +1,7 @@
 # EasyTier
 
+[简体中文](/README_CN.md) [English](/README.md)
+
 ```diff
 ! NOTICE: THIS SOFTWARE IS STILL BEGIN DEVELOPPING, ONLY POC VERSION IS PROVIDED
 ```
