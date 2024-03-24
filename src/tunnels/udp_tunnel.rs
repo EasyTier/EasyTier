@@ -13,7 +13,10 @@ use tokio_util::{
 use tracing::Instrument;
 
 use crate::{
-    common::rkyv_util::{self, encode_to_bytes, vec_to_string},
+    common::{
+        join_joinset_background,
+        rkyv_util::{self, encode_to_bytes, vec_to_string},
+    },
     rpc::TunnelInfo,
     tunnels::{build_url_from_socket_addr, close_tunnel, TunnelConnCounter, TunnelConnector},
 };
@@ -42,8 +45,11 @@ pub enum UdpPacketPayload {
 #[archive_attr(derive(Debug))]
 pub struct UdpPacket {
     pub conn_id: u32,
+    pub magic: u32,
     pub payload: UdpPacketPayload,
 }
+
+const UDP_PACKET_MAGIC: u32 = 0x19941126;
 
 impl std::fmt::Debug for ArchivedUdpPacketPayload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,6 +69,7 @@ impl UdpPacket {
     pub fn new_data_packet(conn_id: u32, data: Vec<u8>) -> Self {
         Self {
             conn_id,
+            magic: UDP_PACKET_MAGIC,
             payload: UdpPacketPayload::Data(vec_to_string(data)),
         }
     }
@@ -70,6 +77,7 @@ impl UdpPacket {
     pub fn new_hole_punch_packet(data: Vec<u8>) -> Self {
         Self {
             conn_id: 0,
+            magic: UDP_PACKET_MAGIC,
             payload: UdpPacketPayload::HolePunch(vec_to_string(data)),
         }
     }
@@ -77,6 +85,7 @@ impl UdpPacket {
     pub fn new_syn_packet(conn_id: u32) -> Self {
         Self {
             conn_id,
+            magic: UDP_PACKET_MAGIC,
             payload: UdpPacketPayload::Syn,
         }
     }
@@ -84,6 +93,7 @@ impl UdpPacket {
     pub fn new_sack_packet(conn_id: u32) -> Self {
         Self {
             conn_id,
+            magic: UDP_PACKET_MAGIC,
             payload: UdpPacketPayload::Sack,
         }
     }
@@ -97,6 +107,11 @@ fn try_get_data_payload(mut buf: BytesMut, conn_id: u32) -> Option<BytesMut> {
 
     if udp_packet.conn_id != conn_id.clone() {
         tracing::warn!(?udp_packet, ?conn_id, "udp conn id not match");
+        return None;
+    }
+
+    if udp_packet.magic != UDP_PACKET_MAGIC {
+        tracing::warn!(?udp_packet, "udp magic not match");
         return None;
     }
 
@@ -189,7 +204,7 @@ pub struct UdpTunnelListener {
     socket: Option<Arc<UdpSocket>>,
 
     sock_map: Arc<DashMap<SocketAddr, ArcStreamSinkPair>>,
-    forward_tasks: Arc<Mutex<JoinSet<()>>>,
+    forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
     conn_recv: tokio::sync::mpsc::Receiver<Box<dyn Tunnel>>,
     conn_send: Option<tokio::sync::mpsc::Sender<Box<dyn Tunnel>>>,
@@ -202,7 +217,7 @@ impl UdpTunnelListener {
             addr,
             socket: None,
             sock_map: Arc::new(DashMap::new()),
-            forward_tasks: Arc::new(Mutex::new(JoinSet::new())),
+            forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             conn_recv,
             conn_send: Some(conn_send),
         }
@@ -234,7 +249,7 @@ impl UdpTunnelListener {
     async fn handle_connect(
         socket: Arc<UdpSocket>,
         addr: SocketAddr,
-        forward_tasks: Arc<Mutex<JoinSet<()>>>,
+        forward_tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
         sock_map: Arc<DashMap<SocketAddr, ArcStreamSinkPair>>,
         local_url: url::Url,
         conn_id: u32,
@@ -251,7 +266,7 @@ impl UdpTunnelListener {
         let addr_copy = addr.clone();
         sock_map.insert(addr, Arc::new(Mutex::new(ss_pair)));
         let ctunnel_stream = ctunnel.pin_stream();
-        forward_tasks.lock().await.spawn(async move {
+        forward_tasks.lock().unwrap().spawn(async move {
             let ret = ctunnel_stream
                 .map(|v| {
                     tracing::trace!(?v, "udp stream recv something in forward task");
@@ -304,7 +319,7 @@ impl TunnelListener for UdpTunnelListener {
         let sock_map = self.sock_map.clone();
         let conn_send = self.conn_send.take().unwrap();
         let local_url = self.local_url().clone();
-        self.forward_tasks.lock().await.spawn(
+        self.forward_tasks.lock().unwrap().spawn(
             async move {
                 loop {
                     let mut buf = BytesMut::new();
@@ -322,6 +337,11 @@ impl TunnelListener for UdpTunnelListener {
                         tracing::warn!(?buf, "udp decode error in forward task");
                         continue;
                     };
+
+                    if udp_packet.magic != UDP_PACKET_MAGIC {
+                        tracing::info!(?udp_packet, "udp magic not match");
+                        continue;
+                    }
 
                     if matches!(udp_packet.payload, ArchivedUdpPacketPayload::Syn) {
                         let Ok(conn) = Self::handle_connect(
@@ -350,22 +370,7 @@ impl TunnelListener for UdpTunnelListener {
             .instrument(tracing::info_span!("udp forward task", ?self.socket)),
         );
 
-        // let forward_tasks_clone = self.forward_tasks.clone();
-        // tokio::spawn(async move {
-        //     loop {
-        //         let mut locked_forward_tasks = forward_tasks_clone.lock().await;
-        //         tokio::select! {
-        //             ret = locked_forward_tasks.join_next() => {
-        //                 tracing::warn!(?ret, "udp forward task exit");
-        //             }
-        //             else => {
-        //                 drop(locked_forward_tasks);
-        //                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        //                 continue;
-        //             }
-        //         }
-        //     }
-        // });
+        join_joinset_background(self.forward_tasks.clone(), "UdpTunnelListener".to_owned());
 
         Ok(())
     }
@@ -452,6 +457,14 @@ impl UdpTunnelConnector {
                 buf
             )));
         };
+
+        if udp_packet.magic != UDP_PACKET_MAGIC {
+            tracing::info!(?udp_packet, "udp magic not match");
+            return Err(super::TunnelError::ConnectError(format!(
+                "udp connect error, magic not match. magic: {:?}",
+                udp_packet.magic
+            )));
+        }
 
         if conn_id != udp_packet.conn_id {
             return Err(super::TunnelError::ConnectError(format!(
