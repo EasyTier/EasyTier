@@ -1,80 +1,200 @@
-# EasyTier
+ # EasyTier
+ 
+ [简体中文](/README_CN.md) [English](/README.md)
+ 
+ [![GitHub](https://img.shields.io/github/license/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE)
+ [![GitHub last commit](https://img.shields.io/github/last-commit/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/commits/main)
+ [![GitHub issues](https://img.shields.io/github/issues/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/issues)
+ [![GitHub actions](https://github.com/KKRainbow/EasyTier/actions/workflows/rust.yml/badge.svg)](https://github.com/KKRainbow/EasyTier/actions/)
+ 
+ EasyTier is a simple, plug-and-play, decentralized VPN networking solution implemented with the Rust language and Tokio framework.
+ 
+ ## Features
+ 
+- **Decentralized**: No need to rely on centralized services, nodes are equal and independent.
+- **Cross-platform**: Supports MacOS/Linux/Windows, will support IOS and Android in the future. The executable file is statically linked, making deployment simple.
+- **Networking without public IP**: Supports networking using shared public nodes, refer to [Configuration Guide](#Networking-without-public-IP)
+- **NAT traversal**: Supports UDP-based NAT traversal, able to establish stable connections even in complex network environments.
+- **Subnet Proxy (Point-to-Network)**: Nodes can expose accessible network segments as proxies to the VPN subnet, allowing other nodes to access these subnets through the node.
+- **Smart Routing**: Selects links based on traffic to reduce latency and increase throughput.
+- **TCP Support**: Provides reliable data transmission through concurrent TCP links when UDP is limited, optimizing performance.
+- **High Availability**: Supports multi-path and switches to healthy paths when high packet loss or network errors are detected.
 
-[简体中文](/README_CN.md) [English](/README.md)
-
-```diff
-! NOTICE: THIS SOFTWARE IS STILL BEGIN DEVELOPPING, ONLY POC VERSION IS PROVIDED
-```
-
-A simple out-of-box alternative of ZeroTier & TailScale in rust. Bring all devices to one virtual net.
-
-this software can serve as a substitute for Zerotier or TailScale in certain scenarios due to following features:
-
-1. Easy to deploy. 
-
-    No roles (moons/derp or other dedicated relay server). All nodes are equal and rely on some p2p algorithms to communicate.
-
-2. Smart route decision.
-
-   Use links charged by traffic to reduce latency but free links for high throughout app.
-
-3. Break the UDP throttling.
-
-   Try use TCP to achieve better performance under enviraonment with throttled UDP. Also use some methods to avoid HOL-blocking of TCP over TCP.
-
-4. High availibility.
-
-    Support multipath and switching to healthy paths when high packet loss rate or network error are detected
-
-EasyTIer also have following common features which are already supported by other softwares, but may be easier to use.
-
-1. Multi-platform support.
-
-2. Effcient P2P hole punching, both UDP & TCP.
-
-3. High performance. Try use multiple wan interface.
-
-5. Subnet Route. node can advertise and proxy one or more subnets, so other nodes can directy access these subnets without any iptables/nft trickys.
-
-
-# Usage
-
-Currently a server with public ip is needed.
-
-run first node on the public node:
-
-```
-sudo easytier-core --ipv4 <VIRTUAL_IP>
-```
-
-run other nodes
-
-```
-sudo easytier-core --ipv4 <VIRTUAL_IP> --peers tcp://<public_ip>:11010
-```
-
-use cli tool to inspect nodes with direct link.
-
-```
-easytier-cli peer
-```
-
-cli tool can also be used to inspect the route table
-
-```
-easytier-cli route
-```
-
-
-# RoadMap
-
-- [x] Windows / Mac / Linux support
-- [x] TCP / UDP tunnel.
-- [x] NAT Traverse with relaying.
-- [x] NAT Traverse with UDP hole punching.
-
-- [x] Support shared public server. So users can use it without a public server.
-- [x] Broadcast & Multicast support.
-- [ ] Encryption. With noise framework or other method.
-- [ ] Support mobile platforms.
-- [ ] UI tools.
+ 
+ ## Installation
+ 
+ 1. **Download the precompiled binary file**
+ 
+     Visit the [GitHub Release page](https://github.com/KKRainbow/EasyTier/releases) to download the binary file suitable for your operating system.
+ 
+ 2. **Install via crates.io**
+    ```sh
+    cargo install easytier
+    ```
+ 
+ 3. **Install from source code**
+    ```sh
+    cargo install --git https://github.com/KKRainbow/EasyTier.git
+    ```
+ 
+ ## Quick Start
+ 
+ Make sure EasyTier is installed according to the [Installation Guide](#Installation), and both easytier-core and easytier-cli commands are available.
+ 
+ ### Two-node Networking
+ 
+ Assuming the network topology of the two nodes is as follows
+ 
+ ```mermaid
+ flowchart LR
+ 
+ subgraph Node A IP 22.1.1.1
+ nodea[EasyTier\n10.144.144.1]
+ end
+ 
+ subgraph Node B
+ nodeb[EasyTier\n10.144.144.2]
+ end
+ 
+ nodea <-----> nodeb
+ 
+ ```
+ 
+ 1. Execute on Node A:
+    ```sh
+    sudo easytier-core --ipv4 10.144.144.1
+    ```
+    Successful execution of the command will print the following.
+ 
+    ![alt text](assets/image-2.png)
+ 
+ 2. Execute on Node B
+    ```sh
+    sudo easytier-core --ipv4 10.144.144.2 --peers udp://22.1.1.1:11010
+    ```
+ 
+ 3. Test Connectivity
+ 
+    The two nodes should connect successfully and be able to communicate within the virtual subnet
+    ```sh
+    ping 10.144.144.2
+    ```
+ 
+    Use easytier-cli to view node information in the subnet
+    ```sh
+    easytier-cli peer
+    ```
+    ![alt text](assets/image.png)
+    ```sh
+    easytier-cli route
+    ```
+    ![alt text](assets/image-1.png)
+ 
+ ### Multi-node Networking
+ 
+ Based on the two-node networking example just now, if more nodes need to join the virtual network, you can use the following command.
+ 
+ ```
+ sudo easytier-core --ipv4 10.144.144.2 --peers udp://22.1.1.1:11010
+ ```
+ 
+ The `--peers` parameter can fill in the listening address of any node already in the virtual network.
+ 
+ ---
+ 
+ ### Subnet Proxy (Point-to-Network) Configuration
+ 
+ Assuming the network topology is as follows, Node B wants to share its accessible subnet 10.1.1.0/24 with other nodes.
+ 
+ ```mermaid
+ flowchart LR
+ 
+ subgraph Node A IP 22.1.1.1
+ nodea[EasyTier\n10.144.144.1]
+ end
+ 
+ subgraph Node B
+ nodeb[EasyTier\n10.144.144.2]
+ end
+ 
+ id1[[10.1.1.0/24]]
+ 
+ nodea <--> nodeb <-.-> id1
+ 
+ ```
+ 
+ Then the startup parameters for Node B's easytier are (new -n parameter)
+ 
+ ```sh
+ sudo easytier-core --ipv4 10.144.144.2 -n 10.1.1.0/24
+ ```
+ 
+ Subnet proxy information will automatically sync to each node in the virtual network, and each node will automatically configure the corresponding route. Node A can check whether the subnet proxy is effective through the following command.
+ 
+ Check whether the routing information has been synchronized, the proxy_cidrs column shows the proxied subnets.
+ 
+ ```sh
+ easytier-cli route
+ ```
+ ![alt text](assets/image-3.png)
+ 
+ Test whether Node A can access nodes under the proxied subnet
+ 
+ ```sh
+ ping 10.1.1.2
+ ```
+ 
+ ---
+ 
+ ### Networking without Public IP
+ 
+ EasyTier supports networking using shared public nodes. The currently deployed shared public node is ``tcp://easytier.public.kkrainbow.top:11010``.
+ 
+ When using shared nodes, each node entering the network needs to provide the same ``--network-name`` and ``--network-secret`` parameters as the unique identifier of the network.
+ 
+ Taking two nodes as an example, Node A executes:
+ 
+ ```sh
+ sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e 'tcp://easytier.public.kkrainbow.top:11010'
+ ```
+ 
+ Node B executes
+ 
+ ```sh
+ sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e 'tcp://easytier.public.kkrainbow.top:11010'
+ ```
+ 
+ After the command is successfully executed, Node A can access Node B through the virtual IP 10.144.144.2.
+ 
+ 
+ ### Configurations
+ 
+ You can use ``sudo easytier-core --help`` to view all configuration items
+ 
+ 
+ # Roadmap
+ 
+ - [ ] Improve documentation and user guides.
+ - [ ] Support features such as encryption, TCP hole punching, etc.
+ - [ ] Support Android, IOS and other mobile platforms.
+ - [ ] Support Web configuration management.
+ 
+ # Community and Contribution
+ 
+ We welcome and encourage community contributions! If you want to get involved, please submit a [GitHub PR](https://github.com/KKRainbow/EasyTier/pulls). Detailed contribution guidelines can be found in [CONTRIBUTING.md](https://github.com/KKRainbow/EasyTier/blob/main/CONTRIBUTING.md).
+ 
+ # Related Projects and Resources
+ 
+ - [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices.
+ - [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration.
+ - [vpncloud](https://github.com/dswd/vpncloud): A P2P Mesh VPN
+ 
+ # License
+ 
+ EasyTier is released under the [Apache License 2.0](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE).
+ 
+ # Contact
+ 
+ - Ask questions or report problems: [GitHub Issues](https://github.com/KKRainbow/EasyTier/issues)
+ - Discussion and exchange: [GitHub Discussions](https://github.com/KKRainbow/EasyTier/discussions)
+ - QQ Group: 949700262
