@@ -7,6 +7,7 @@ pub mod netns;
 pub mod network;
 pub mod rkyv_util;
 pub mod stun;
+pub mod stun_codec_ext;
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,

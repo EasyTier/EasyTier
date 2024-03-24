@@ -1,16 +1,23 @@
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::rpc::{NatType, StunInfo};
+use anyhow::Context;
 use crossbeam::atomic::AtomicCell;
-use stun_format::Attr;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::Level;
 
+use bytecodec::{DecodeExt, EncodeExt};
+use stun_codec::rfc5389::methods::BINDING;
+use stun_codec::rfc5780::attributes::ChangeRequest;
+use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
+
 use crate::common::error::Error;
+
+use super::stun_codec_ext::*;
 
 struct HostResolverIter {
     hostnames: Vec<String>,
@@ -51,6 +58,8 @@ impl HostResolverIter {
 #[derive(Debug, Clone, Copy)]
 struct BindRequestResponse {
     source_addr: SocketAddr,
+    send_to_addr: SocketAddr,
+    recv_from_addr: SocketAddr,
     mapped_socket_addr: Option<SocketAddr>,
     changed_socket_addr: Option<SocketAddr>,
 
@@ -78,7 +87,7 @@ impl Stun {
     pub fn new(stun_server: SocketAddr) -> Self {
         Self {
             stun_server,
-            req_repeat: 3,
+            req_repeat: 5,
             resp_timeout: Duration::from_millis(3000),
         }
     }
@@ -92,7 +101,7 @@ impl Stun {
         expected_ip_changed: bool,
         expected_port_changed: bool,
         stun_host: &SocketAddr,
-    ) -> Result<(stun_format::Msg<'a>, SocketAddr), Error> {
+    ) -> Result<(Message<Attribute>, SocketAddr), Error> {
         let mut now = tokio::time::Instant::now();
         let deadline = now + self.resp_timeout;
 
@@ -110,17 +119,19 @@ impl Stun {
             // TODO:: we cannot borrow `buf` directly in udp recv_from, so we copy it here
             unsafe { std::ptr::copy(udp_buf.as_ptr(), buf.as_ptr() as *mut u8, len) };
 
-            let msg = stun_format::Msg::<'a>::from(&buf[..]);
-            tracing::info!(b = ?&udp_buf[..len], ?msg, ?tids, ?remote_addr, ?stun_host, "recv stun response");
-
-            if msg.typ().is_none() || msg.tid().is_none() {
+            let mut decoder = MessageDecoder::<Attribute>::new();
+            let Ok(msg) = decoder
+                .decode_from_bytes(&buf[..len])
+                .with_context(|| format!("decode stun msg {:?}", buf))?
+            else {
                 continue;
-            }
+            };
 
-            if !matches!(
-                msg.typ().as_ref().unwrap(),
-                stun_format::MsgType::BindingResponse
-            ) || !tids.contains(msg.tid().as_ref().unwrap())
+            tracing::info!(b = ?&udp_buf[..len], ?tids, ?remote_addr, ?stun_host, "recv stun response, msg: {:#?}", msg);
+
+            if msg.class() != MessageClass::SuccessResponse
+                || msg.method() != BINDING
+                || !tids.contains(&tid_to_u128(&msg.transaction_id()))
             {
                 continue;
             }
@@ -143,29 +154,18 @@ impl Stun {
         Err(Error::Unknown)
     }
 
-    fn stun_addr(addr: stun_format::SocketAddr) -> SocketAddr {
-        match addr {
-            stun_format::SocketAddr::V4(ip, port) => {
-                SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port))
-            }
-            stun_format::SocketAddr::V6(ip, port) => {
-                SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(ip), port, 0, 0))
-            }
-        }
-    }
-
-    fn extrace_mapped_addr(msg: &stun_format::Msg) -> Option<SocketAddr> {
+    fn extrace_mapped_addr(msg: &Message<Attribute>) -> Option<SocketAddr> {
         let mut mapped_addr = None;
-        for x in msg.attrs_iter() {
+        for x in msg.attributes() {
             match x {
-                Attr::MappedAddress(addr) => {
+                Attribute::MappedAddress(addr) => {
                     if mapped_addr.is_none() {
-                        let _ = mapped_addr.insert(Self::stun_addr(addr));
+                        let _ = mapped_addr.insert(addr.address());
                     }
                 }
-                Attr::XorMappedAddress(addr) => {
+                Attribute::XorMappedAddress(addr) => {
                     if mapped_addr.is_none() {
-                        let _ = mapped_addr.insert(Self::stun_addr(addr));
+                        let _ = mapped_addr.insert(addr.address());
                     }
                 }
                 _ => {}
@@ -174,13 +174,18 @@ impl Stun {
         mapped_addr
     }
 
-    fn extract_changed_addr(msg: &stun_format::Msg) -> Option<SocketAddr> {
+    fn extract_changed_addr(msg: &Message<Attribute>) -> Option<SocketAddr> {
         let mut changed_addr = None;
-        for x in msg.attrs_iter() {
+        for x in msg.attributes() {
             match x {
-                Attr::ChangedAddress(addr) => {
+                Attribute::OtherAddress(m) => {
                     if changed_addr.is_none() {
-                        let _ = changed_addr.insert(Self::stun_addr(addr));
+                        let _ = changed_addr.insert(m.address());
+                    }
+                }
+                Attribute::ChangedAddress(m) => {
+                    if changed_addr.is_none() {
+                        let _ = changed_addr.insert(m.address());
                     }
                 }
                 _ => {}
@@ -202,24 +207,24 @@ impl Stun {
         // repeat req in case of packet loss
         let mut tids = vec![];
         for _ in 0..self.req_repeat {
+            let tid = rand::random::<u32>();
             let mut buf = [0u8; 28];
             // memset buf
             unsafe { std::ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()) };
-            let mut msg = stun_format::MsgBuilder::from(buf.as_mut_slice());
-            msg.typ(stun_format::MsgType::BindingRequest).unwrap();
-            let tid = rand::random::<u32>();
-            msg.tid(tid as u128).unwrap();
-            if change_ip || change_port {
-                msg.add_attr(Attr::ChangeRequest {
-                    change_ip,
-                    change_port,
-                })
-                .unwrap();
-            }
+
+            let mut message =
+                Message::<Attribute>::new(MessageClass::Request, BINDING, u128_to_tid(tid as u128));
+            message.add_attribute(ChangeRequest::new(change_ip, change_port));
+
+            // Encodes the message
+            let mut encoder = MessageEncoder::new();
+            let msg = encoder
+                .encode_into_bytes(message.clone())
+                .with_context(|| "encode stun message")?;
 
             tids.push(tid as u128);
-            tracing::trace!(b = ?msg.as_bytes(), tid, "send stun request");
-            udp.send_to(msg.as_bytes(), &stun_host).await?;
+            tracing::trace!(?message, ?msg, tid, "send stun request");
+            udp.send_to(msg.as_slice().into(), &stun_host).await?;
         }
 
         tracing::trace!("waiting stun response");
@@ -234,6 +239,8 @@ impl Stun {
 
         let resp = BindRequestResponse {
             source_addr: udp.local_addr()?,
+            send_to_addr: stun_host,
+            recv_from_addr: recv_addr,
             mapped_socket_addr: Self::extrace_mapped_addr(&msg),
             changed_socket_addr,
             ip_changed: change_ip,
@@ -488,6 +495,18 @@ impl StunInfoCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub fn enable_log() {
+        let filter = tracing_subscriber::EnvFilter::builder()
+            .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
+            .from_env()
+            .unwrap()
+            .add_directive("tarpc=error".parse().unwrap());
+        tracing_subscriber::fmt::fmt()
+            .pretty()
+            .with_env_filter(filter)
+            .init();
+    }
 
     #[tokio::test]
     async fn test_stun_bind_request() {

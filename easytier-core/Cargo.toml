@@ -90,11 +90,8 @@ cidr = "0.2.2"
 socket2 = "0.5.5"
 
 # for hole punching
-stun-format = { git = "https://github.com/KKRainbow/stun-format.git", features = [
-    "fmt",
-    "rfc3489",
-    "iana",
-] }
+stun_codec = "0.3.4"
+bytecodec = "0.4.15"
 rand = "0.8.5"
 
 serde = { version = "1.0", features = ["derive"] }
