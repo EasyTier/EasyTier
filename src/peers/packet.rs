@@ -99,7 +99,7 @@ pub enum PacketType {
     TaRpc = 6,
 }
 
-#[derive(Archive, Deserialize, Serialize, Debug)]
+#[derive(Archive, Deserialize, Serialize)]
 #[archive(compare(PartialEq), check_bytes)]
 // Derives can be passed through to the generated type:
 pub struct Packet {
@@ -107,6 +107,19 @@ pub struct Packet {
     pub to_peer: PeerId,
     pub packet_type: PacketType,
     pub payload: String,
+}
+
+impl std::fmt::Debug for Packet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Packet {{ from_peer: {}, to_peer: {}, packet_type: {:?}, payload: {:?} }}",
+            self.from_peer,
+            self.to_peer,
+            self.packet_type,
+            &self.payload.as_bytes()
+        )
+    }
 }
 
 impl std::fmt::Debug for ArchivedPacket {

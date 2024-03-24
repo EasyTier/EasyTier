@@ -16,6 +16,7 @@ use tracing::Instrument;
 
 use crate::common::error::Result;
 use crate::common::global_ctx::GlobalCtx;
+use crate::common::join_joinset_background;
 use crate::common::netns::NetNS;
 use crate::peers::packet::{self, ArchivedPacket};
 use crate::peers::peer_manager::PeerManager;
@@ -71,7 +72,7 @@ pub struct TcpProxy {
     peer_manager: Arc<PeerManager>,
     local_port: AtomicU16,
 
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
     syn_map: SynSockMap,
     conn_map: ConnSockMap,
@@ -215,7 +216,7 @@ impl TcpProxy {
             peer_manager,
 
             local_port: AtomicU16::new(0),
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
 
             syn_map: Arc::new(DashMap::new()),
             conn_map: Arc::new(DashMap::new()),
@@ -247,6 +248,7 @@ impl TcpProxy {
         self.peer_manager
             .add_nic_packet_process_pipeline(Box::new(self.clone()))
             .await;
+        join_joinset_background(self.tasks.clone(), "TcpProxy".to_owned());
 
         Ok(())
     }
@@ -268,7 +270,7 @@ impl TcpProxy {
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         };
-        tasks.lock().await.spawn(syn_map_cleaner_task);
+        tasks.lock().unwrap().spawn(syn_map_cleaner_task);
 
         Ok(())
     }
@@ -312,7 +314,7 @@ impl TcpProxy {
                 let old_nat_val = conn_map.insert(entry_clone.id, entry_clone.clone());
                 assert!(old_nat_val.is_none());
 
-                tasks.lock().await.spawn(Self::connect_to_nat_dst(
+                tasks.lock().unwrap().spawn(Self::connect_to_nat_dst(
                     net_ns.clone(),
                     tcp_stream,
                     conn_map.clone(),
@@ -325,7 +327,7 @@ impl TcpProxy {
         };
         self.tasks
             .lock()
-            .await
+            .unwrap()
             .spawn(accept_task.instrument(tracing::info_span!("tcp_proxy_listener")));
 
         Ok(())

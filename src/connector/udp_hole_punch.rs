@@ -8,8 +8,8 @@ use tracing::Instrument;
 
 use crate::{
     common::{
-        constants, error::Error, global_ctx::ArcGlobalCtx, rkyv_util::encode_to_bytes,
-        stun::StunInfoCollectorTrait, PeerId,
+        constants, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background,
+        rkyv_util::encode_to_bytes, stun::StunInfoCollectorTrait, PeerId,
     },
     peers::peer_manager::PeerManager,
     rpc::NatType,
@@ -75,9 +75,15 @@ impl UdpHolePunchListener {
             while let Ok(conn) = listener.accept().await {
                 last_connected_time_clone.store(std::time::Instant::now());
                 tracing::warn!(?conn, "udp hole punching listener got peer connection");
-                if let Err(e) = peer_mgr.add_tunnel_as_server(conn).await {
-                    tracing::error!(?e, "failed to add tunnel as server in hole punch listener");
-                }
+                let peer_mgr = peer_mgr.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = peer_mgr.add_tunnel_as_server(conn).await {
+                        tracing::error!(
+                            ?e,
+                            "failed to add tunnel as server in hole punch listener"
+                        );
+                    }
+                });
             }
 
             running_clone.store(false);
@@ -115,7 +121,7 @@ struct UdpHolePunchConnectorData {
 struct UdpHolePunchRpcServer {
     data: Arc<UdpHolePunchConnectorData>,
 
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 }
 
 #[tarpc::server]
@@ -140,7 +146,7 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
             || my_udp_nat_type == NatType::Restricted as i32
         {
             // send punch msg to local_mapped_addr for 3 seconds, 3.3 packet per second
-            self.tasks.lock().await.spawn(async move {
+            self.tasks.lock().unwrap().spawn(async move {
                 for _ in 0..10 {
                     tracing::info!(?local_mapped_addr, "sending hole punching packet");
                     // generate a 128 bytes vec with random data
@@ -164,10 +170,9 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
 
 impl UdpHolePunchRpcServer {
     pub fn new(data: Arc<UdpHolePunchConnectorData>) -> Self {
-        Self {
-            data,
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
-        }
+        let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone(), "UdpHolePunchRpcServer".to_owned());
+        Self { data, tasks }
     }
 
     async fn select_listener(&self) -> Option<(Arc<UdpSocket>, SocketAddr)> {
