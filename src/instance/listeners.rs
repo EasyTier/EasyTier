@@ -100,15 +100,19 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 tunnel_info.remote_addr.clone(),
             ));
             tracing::info!(ret = ?ret, "conn accepted");
-            let server_ret = peer_manager.handle_tunnel(ret).await;
-            if let Err(e) = &server_ret {
-                global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
-                    tunnel_info.local_addr,
-                    tunnel_info.remote_addr,
-                    e.to_string(),
-                ));
-                tracing::error!(error = ?e, "handle conn error");
-            }
+            let peer_manager = peer_manager.clone();
+            let global_ctx = global_ctx.clone();
+            tokio::spawn(async move {
+                let server_ret = peer_manager.handle_tunnel(ret).await;
+                if let Err(e) = &server_ret {
+                    global_ctx.issue_event(GlobalCtxEvent::ConnectionError(
+                        tunnel_info.local_addr,
+                        tunnel_info.remote_addr,
+                        e.to_string(),
+                    ));
+                    tracing::error!(error = ?e, "handle conn error");
+                }
+            });
         }
     }
 
