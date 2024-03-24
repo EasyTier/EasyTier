@@ -1,12 +1,12 @@
  # EasyTier
  
- [简体中文](/README_CN.md) [English](/README.md)
- 
  [![GitHub](https://img.shields.io/github/license/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE)
  [![GitHub last commit](https://img.shields.io/github/last-commit/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/commits/main)
  [![GitHub issues](https://img.shields.io/github/issues/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/issues)
  [![GitHub actions](https://github.com/KKRainbow/EasyTier/actions/workflows/rust.yml/badge.svg)](https://github.com/KKRainbow/EasyTier/actions/)
  
+[简体中文](/README_CN.md) | [English](/README.md)
+
  EasyTier is a simple, plug-and-play, decentralized VPN networking solution implemented with the Rust language and Tokio framework.
  
  ## Features
@@ -89,6 +89,8 @@
     easytier-cli route
     ```
     ![alt text](assets/image-1.png)
+
+---
  
  ### Multi-node Networking
  
@@ -131,18 +133,18 @@
  
  Subnet proxy information will automatically sync to each node in the virtual network, and each node will automatically configure the corresponding route. Node A can check whether the subnet proxy is effective through the following command.
  
- Check whether the routing information has been synchronized, the proxy_cidrs column shows the proxied subnets.
+ 1. Check whether the routing information has been synchronized, the proxy_cidrs column shows the proxied subnets.
  
- ```sh
- easytier-cli route
- ```
- ![alt text](assets/image-3.png)
+    ```sh
+    easytier-cli route
+    ```
+    ![alt text](assets/image-3.png)
  
- Test whether Node A can access nodes under the proxied subnet
+2. Test whether Node A can access nodes under the proxied subnet
  
- ```sh
- ping 10.1.1.2
- ```
+    ```sh
+    ping 10.1.1.2
+    ```
  
  ---
  
@@ -169,7 +171,7 @@
  
  ### Configurations
  
- You can use ``sudo easytier-core --help`` to view all configuration items
+ You can use ``easytier-core --help`` to view all configuration items
  
  
  # Roadmap

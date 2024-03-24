@@ -5,6 +5,8 @@
 [![GitHub issues](https://img.shields.io/github/issues/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/issues)
 [![GitHub actions](https://github.com/KKRainbow/EasyTier/actions/workflows/rust.yml/badge.svg)](https://github.com/KKRainbow/EasyTier/actions/)
 
+[简体中文](/README_CN.md) | [English](/README.md)
+
 一个简单、即插即用、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
 ## 特点
@@ -88,6 +90,8 @@ nodea <-----> nodeb
    ```
    ![alt text](assets/image-1.png)
 
+---
+
 ### 多节点组网
 
 基于刚才的双节点组网例子，如果有更多的节点需要加入虚拟网络，可以使用如下命令。
@@ -129,18 +133,18 @@ sudo easytier-core --ipv4 10.144.144.2 -n 10.1.1.0/24
 
 子网代理信息会自动同步到虚拟网络的每个节点，各个节点会自动配置相应的路由，节点 A 可以通过如下命令检查子网代理是否生效。
 
-检查路由信息是否已经同步，proxy_cidrs 列展示了被代理的子网。
+1. 检查路由信息是否已经同步，proxy_cidrs 列展示了被代理的子网。
 
-```sh
-easytier-cli route
-```
-![alt text](assets/image-3.png)
+   ```sh
+   easytier-cli route
+   ```
+   ![alt text](assets/image-3.png)
 
-测试节点 A 是否可访问被代理子网下的节点
+2. 测试节点 A 是否可访问被代理子网下的节点
 
-```sh
-ping 10.1.1.2
-```
+   ```sh
+   ping 10.1.1.2
+   ```
 
 ---
 
@@ -164,10 +168,11 @@ sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -
 
 命令执行成功后，节点 A 即可通过虚拟 IP 10.144.144.2 访问节点 B。
 
+---
 
 ### 其他配置
 
-可使用 ``sudo easytier-core --help`` 查看全部配置项
+可使用 ``easytier-core --help`` 查看全部配置项
 
 
 # 路线图
