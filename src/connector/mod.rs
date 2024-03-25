@@ -4,10 +4,13 @@ use std::{
 };
 
 use crate::{
-    common::{error::Error, network::IPCollector},
+    common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
     tunnels::{
-        ring_tunnel::RingTunnelConnector, tcp_tunnel::TcpTunnelConnector,
-        udp_tunnel::UdpTunnelConnector, TunnelConnector,
+        ring_tunnel::RingTunnelConnector,
+        tcp_tunnel::TcpTunnelConnector,
+        udp_tunnel::UdpTunnelConnector,
+        wireguard::{WgConfig, WgTunnelConnector},
+        TunnelConnector,
     },
 };
 
@@ -41,7 +44,7 @@ async fn set_bind_addr_for_peer_connector(
 
 pub async fn create_connector_by_url(
     url: &str,
-    ip_collector: Arc<IPCollector>,
+    global_ctx: &ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelConnector + Send + Sync + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     match url.scheme() {
@@ -49,21 +52,37 @@ pub async fn create_connector_by_url(
             let dst_addr =
                 crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "tcp")?;
             let mut connector = TcpTunnelConnector::new(url);
-            set_bind_addr_for_peer_connector(&mut connector, dst_addr.is_ipv4(), &ip_collector)
-                .await;
+            set_bind_addr_for_peer_connector(
+                &mut connector,
+                dst_addr.is_ipv4(),
+                &global_ctx.get_ip_collector(),
+            )
+            .await;
             return Ok(Box::new(connector));
         }
         "udp" => {
             let dst_addr =
                 crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "udp")?;
             let mut connector = UdpTunnelConnector::new(url);
-            set_bind_addr_for_peer_connector(&mut connector, dst_addr.is_ipv4(), &ip_collector)
-                .await;
+            set_bind_addr_for_peer_connector(
+                &mut connector,
+                dst_addr.is_ipv4(),
+                &global_ctx.get_ip_collector(),
+            )
+            .await;
             return Ok(Box::new(connector));
         }
         "ring" => {
             crate::tunnels::check_scheme_and_get_socket_addr::<uuid::Uuid>(&url, "ring")?;
             let connector = RingTunnelConnector::new(url);
+            return Ok(Box::new(connector));
+        }
+        "wg" => {
+            crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
+            let nid = global_ctx.get_network_identity();
+            let wg_config =
+                WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
+            let connector = WgTunnelConnector::new(url, wg_config);
             return Ok(Box::new(connector));
         }
         _ => {

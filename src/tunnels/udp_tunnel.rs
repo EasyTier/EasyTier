@@ -204,12 +204,12 @@ fn get_tunnel_from_socket(
     )
 }
 
-struct StreamSinkPair(
-    Pin<Box<dyn DatagramStream>>,
-    Pin<Box<dyn DatagramSink>>,
-    u32,
+pub(crate) struct StreamSinkPair(
+    pub Pin<Box<dyn DatagramStream>>,
+    pub Pin<Box<dyn DatagramSink>>,
+    pub u32,
 );
-type ArcStreamSinkPair = Arc<Mutex<StreamSinkPair>>;
+pub(crate) type ArcStreamSinkPair = Arc<Mutex<StreamSinkPair>>;
 
 pub struct UdpTunnelListener {
     addr: url::Url,

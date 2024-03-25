@@ -19,6 +19,7 @@ use crate::{
         ring_tunnel::RingTunnelConnector,
         tcp_tunnel::{TcpTunnelConnector, TcpTunnelListener},
         udp_tunnel::{UdpTunnelConnector, UdpTunnelListener},
+        wireguard::{WgConfig, WgTunnelConnector},
     },
 };
 
@@ -50,6 +51,7 @@ pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str) -> TomlCon
     config.set_listeners(vec![
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
+        "wg://0.0.0.0:11011".parse().unwrap(),
     ]);
     config
 }
@@ -72,11 +74,21 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
             .add_connector(TcpTunnelConnector::new(
                 "tcp://10.1.1.1:11010".parse().unwrap(),
             ));
-    } else {
+    } else if proto == "udp" {
         inst2
             .get_conn_manager()
             .add_connector(UdpTunnelConnector::new(
                 "udp://10.1.1.1:11010".parse().unwrap(),
+            ));
+    } else if proto == "wg" {
+        inst2
+            .get_conn_manager()
+            .add_connector(WgTunnelConnector::new(
+                "wg://10.1.1.1:11011".parse().unwrap(),
+                WgConfig::new_from_network_identity(
+                    &inst1.get_global_ctx().get_network_identity().network_name,
+                    &inst1.get_global_ctx().get_network_identity().network_secret,
+                ),
             ));
     }
 
@@ -101,10 +113,11 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
     vec![inst1, inst2, inst3]
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn basic_three_node_test_tcp() {
-    let insts = init_three_node("tcp").await;
+pub async fn basic_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    let insts = init_three_node(proto).await;
 
     check_route(
         "10.144.144.2",
@@ -119,28 +132,11 @@ pub async fn basic_three_node_test_tcp() {
     );
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn basic_three_node_test_udp() {
-    let insts = init_three_node("udp").await;
-
-    check_route(
-        "10.144.144.2",
-        insts[1].peer_id(),
-        insts[0].get_peer_manager().list_routes().await,
-    );
-
-    check_route(
-        "10.144.144.3",
-        insts[2].peer_id(),
-        insts[0].get_peer_manager().list_routes().await,
-    );
-}
-
-#[tokio::test]
-#[serial_test::serial]
-pub async fn tcp_proxy_three_node_test() {
-    let insts = init_three_node("tcp").await;
+pub async fn tcp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    let insts = init_three_node(proto).await;
 
     insts[2]
         .get_global_ctx()
@@ -171,10 +167,11 @@ pub async fn tcp_proxy_three_node_test() {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn icmp_proxy_three_node_test() {
-    let insts = init_three_node("tcp").await;
+pub async fn icmp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    let insts = init_three_node(proto).await;
 
     insts[2]
         .get_global_ctx()
@@ -205,34 +202,71 @@ pub async fn icmp_proxy_three_node_test() {
     assert_eq!(code.code().unwrap(), 0);
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn proxy_three_node_disconnect_test() {
+pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str) {
+    let insts = init_three_node(proto).await;
     let mut inst4 = Instance::new(get_inst_config("inst4", Some("net_d"), "10.144.144.4"));
-    inst4
-        .get_conn_manager()
-        .add_connector(TcpTunnelConnector::new(
-            "tcp://10.1.2.3:11010".parse().unwrap(),
-        ));
+    if proto == "tcp" {
+        inst4
+            .get_conn_manager()
+            .add_connector(TcpTunnelConnector::new(
+                "tcp://10.1.2.3:11010".parse().unwrap(),
+            ));
+    } else if proto == "wg" {
+        inst4
+            .get_conn_manager()
+            .add_connector(WgTunnelConnector::new(
+                "wg://10.1.2.3:11011".parse().unwrap(),
+                WgConfig::new_from_network_identity(
+                    &inst4.get_global_ctx().get_network_identity().network_name,
+                    &inst4.get_global_ctx().get_network_identity().network_secret,
+                ),
+            ));
+    } else {
+        unreachable!("not support");
+    }
     inst4.run().await.unwrap();
 
-    tokio::spawn(async {
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
+    let task = tokio::spawn(async move {
+        for _ in 1..=2 {
+            tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
+            // inst4 should be in inst1's route list
+            let routes = insts[0].get_peer_manager().list_routes().await;
+            assert!(
+                routes
+                    .iter()
+                    .find(|r| r.peer_id == inst4.peer_id())
+                    .is_some(),
+                "inst4 should be in inst1's route list, {:?}",
+                routes
+            );
+
             set_link_status("net_d", false);
-            tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
+            let routes = insts[0].get_peer_manager().list_routes().await;
+            assert!(
+                routes
+                    .iter()
+                    .find(|r| r.peer_id == inst4.peer_id())
+                    .is_none(),
+                "inst4 should not be in inst1's route list, {:?}",
+                routes
+            );
             set_link_status("net_d", true);
         }
     });
 
-    // TODO: add some traffic here, also should check route & peer list
-    tokio::time::sleep(tokio::time::Duration::from_secs(35)).await;
+    let (ret,) = tokio::join!(task);
+    assert!(ret.is_ok());
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn udp_proxy_three_node_test() {
-    let insts = init_three_node("tcp").await;
+pub async fn udp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    let insts = init_three_node(proto).await;
 
     insts[2]
         .get_global_ctx()

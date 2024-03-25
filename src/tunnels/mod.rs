@@ -5,6 +5,7 @@ pub mod stats;
 pub mod tcp_tunnel;
 pub mod tunnel_filter;
 pub mod udp_tunnel;
+pub mod wireguard;
 
 use std::{fmt::Debug, net::SocketAddr, pin::Pin, sync::Arc};
 

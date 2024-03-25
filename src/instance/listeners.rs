@@ -12,8 +12,11 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnels::{
-        ring_tunnel::RingTunnelListener, tcp_tunnel::TcpTunnelListener,
-        udp_tunnel::UdpTunnelListener, Tunnel, TunnelListener,
+        ring_tunnel::RingTunnelListener,
+        tcp_tunnel::TcpTunnelListener,
+        udp_tunnel::UdpTunnelListener,
+        wireguard::{WgConfig, WgTunnelListener},
+        Tunnel, TunnelListener,
     },
 };
 
@@ -65,6 +68,13 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 }
                 "udp" => {
                     self.add_listener(UdpTunnelListener::new(l.clone())).await?;
+                }
+                "wg" => {
+                    let nid = self.global_ctx.get_network_identity();
+                    let wg_config =
+                        WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
+                    self.add_listener(WgTunnelListener::new(l.clone(), wg_config))
+                        .await?;
                 }
                 _ => {
                     log::warn!("unsupported listener uri: {}", l);
