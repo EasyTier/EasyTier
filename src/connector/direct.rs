@@ -163,7 +163,7 @@ impl DirectConnectorManager {
             return Err(Error::UrlInBlacklist);
         }
 
-        let connector = create_connector_by_url(&addr, data.global_ctx.get_ip_collector()).await?;
+        let connector = create_connector_by_url(&addr, &data.global_ctx).await?;
         let (peer_id, conn_id) = timeout(
             std::time::Duration::from_secs(5),
             data.peer_manager.try_connect(connector),

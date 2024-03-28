@@ -7,11 +7,12 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-一个简单、即插即用、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
+一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
 ## 特点
 
 - **去中心化**：无需依赖中心化服务，节点平等且独立。
+- **安全**：支持利用 WireGuard 加密通信。
 - **跨平台**：支持 MacOS/Linux/Windows，未来将支持 IOS 和 Android。可执行文件静态链接，部署简单。
 - **无公网 IP 组网**：支持利用共享的公网节点组网，可参考 [配置指南](#无公网IP组网)
 - **NAT 穿透**：支持基于 UDP 的 NAT 穿透，即使在复杂的网络环境下也能建立稳定的连接。
@@ -178,7 +179,7 @@ sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -
 # 路线图
 
 - [ ] 完善文档和用户指南。
-- [ ] 支持加密、TCP 打洞等特性。
+- [ ] 支持 TCP 打洞等特性。
 - [ ] 支持 Android、IOS 等移动平台。
 - [ ] 支持 Web 配置管理。
 

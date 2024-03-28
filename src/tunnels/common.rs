@@ -402,7 +402,7 @@ pub mod tests {
 
         close_tunnel(&tunnel).await.unwrap();
 
-        if connector.remote_url().scheme() == "udp" {
+        if ["udp", "wg"].contains(&connector.remote_url().scheme()) {
             lis.abort();
         } else {
             // lis should finish in 1 second

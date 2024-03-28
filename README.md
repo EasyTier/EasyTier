@@ -7,11 +7,12 @@
  
 [简体中文](/README_CN.md) | [English](/README.md)
 
- EasyTier is a simple, plug-and-play, decentralized VPN networking solution implemented with the Rust language and Tokio framework.
+ EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.
  
  ## Features
  
 - **Decentralized**: No need to rely on centralized services, nodes are equal and independent.
+- **Safe**: Use WireGuard protocol to encrypt data.
 - **Cross-platform**: Supports MacOS/Linux/Windows, will support IOS and Android in the future. The executable file is statically linked, making deployment simple.
 - **Networking without public IP**: Supports networking using shared public nodes, refer to [Configuration Guide](#Networking-without-public-IP)
 - **NAT traversal**: Supports UDP-based NAT traversal, able to establish stable connections even in complex network environments.

@@ -73,7 +73,8 @@ struct Cli {
 
     #[arg(short, long, help = "listeners to accept connections, pass '' to avoid listening.",
             default_values_t = ["tcp://0.0.0.0:11010".to_string(),
-                            "udp://0.0.0.0:11010".to_string()])]
+                                "udp://0.0.0.0:11010".to_string(),
+                                "wg://0.0.0.0:11011".to_string()])]
     listeners: Vec<String>,
 
     /// specify the linux network namespace, default is the root namespace
