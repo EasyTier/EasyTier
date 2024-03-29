@@ -52,6 +52,7 @@ impl SyncPeerInfo {
                 .get_proxy_cidrs()
                 .iter()
                 .map(|x| x.to_string())
+                .chain(global_ctx.get_vpn_portal_cidr().map(|x| x.to_string()))
                 .collect(),
             hostname: global_ctx.get_hostname(),
             udp_stun_info: global_ctx

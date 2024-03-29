@@ -26,6 +26,7 @@ use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::tunnels::SinkItem;
+use crate::vpn_portal::{self, VpnPortal};
 
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -53,6 +54,8 @@ pub struct Instance {
     udp_proxy: Arc<UdpProxy>,
 
     peer_center: Arc<PeerCenterInstance>,
+
+    vpn_portal: Mutex<Box<dyn VpnPortal>>,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -102,6 +105,8 @@ impl Instance {
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
+        let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -121,6 +126,8 @@ impl Instance {
             udp_proxy: arc_udp_proxy,
 
             peer_center,
+
+            vpn_portal: Mutex::new(Box::new(vpn_portal_inst)),
 
             global_ctx,
         }
@@ -269,6 +276,14 @@ impl Instance {
         self.peer_center.init().await;
 
         self.add_initial_peers().await?;
+
+        if let Some(_) = self.global_ctx.get_vpn_portal_cidr() {
+            self.vpn_portal
+                .lock()
+                .await
+                .start(self.get_global_ctx(), self.get_peer_manager())
+                .await?;
+        }
 
         Ok(())
     }

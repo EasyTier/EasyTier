@@ -42,6 +42,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_rpc_portal(&self) -> Option<SocketAddr>;
     fn set_rpc_portal(&self, addr: SocketAddr);
 
+    fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
+    fn set_vpn_portal_config(&self, config: VpnPortalConfig);
+
     fn dump(&self) -> String;
 }
 
@@ -88,6 +91,12 @@ pub struct ConsoleLoggerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct VpnPortalConfig {
+    pub client_cidr: cidr::Ipv4Cidr,
+    pub wireguard_listen: SocketAddr,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Config {
     netns: Option<String>,
     instance_name: Option<String>,
@@ -103,6 +112,8 @@ struct Config {
     console_logger: Option<ConsoleLoggerConfig>,
 
     rpc_portal: Option<SocketAddr>,
+
+    vpn_portal_config: Option<VpnPortalConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +323,13 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_rpc_portal(&self, addr: SocketAddr) {
         self.config.lock().unwrap().rpc_portal = Some(addr);
+    }
+
+    fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig> {
+        self.config.lock().unwrap().vpn_portal_config.clone()
+    }
+    fn set_vpn_portal_config(&self, config: VpnPortalConfig) {
+        self.config.lock().unwrap().vpn_portal_config = Some(config);
     }
 
     fn dump(&self) -> String {

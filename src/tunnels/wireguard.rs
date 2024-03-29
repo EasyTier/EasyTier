@@ -32,12 +32,23 @@ use super::{
 
 const MAX_PACKET: usize = 4096;
 
+#[derive(Debug, Clone)]
+enum WgType {
+    // used by easytier peer, need remove/add ip header for in/out wg msg
+    InternalUse,
+    // used by wireguard peer, keep original ip header
+    ExternalUse,
+}
+
 #[derive(Clone)]
 pub struct WgConfig {
     my_secret_key: StaticSecret,
     my_public_key: PublicKey,
 
+    peer_secret_key: StaticSecret,
     peer_public_key: PublicKey,
+
+    wg_type: WgType,
 }
 
 impl WgConfig {
@@ -56,13 +67,46 @@ impl WgConfig {
 
         let my_secret_key = StaticSecret::from(my_sec);
         let my_public_key = PublicKey::from(&my_secret_key);
+        let peer_secret_key = StaticSecret::from(my_sec);
         let peer_public_key = my_public_key.clone();
 
         WgConfig {
             my_secret_key,
             my_public_key,
+            peer_secret_key,
             peer_public_key,
+
+            wg_type: WgType::InternalUse,
         }
+    }
+
+    pub fn new_for_portal(server_key_seed: &str, client_key_seed: &str) -> Self {
+        let server_cfg = Self::new_from_network_identity("server", server_key_seed);
+        let client_cfg = Self::new_from_network_identity("client", client_key_seed);
+        Self {
+            my_secret_key: server_cfg.my_secret_key,
+            my_public_key: server_cfg.my_public_key,
+            peer_secret_key: client_cfg.my_secret_key,
+            peer_public_key: client_cfg.my_public_key,
+
+            wg_type: WgType::ExternalUse,
+        }
+    }
+
+    pub fn my_secret_key(&self) -> &[u8] {
+        self.my_secret_key.as_bytes()
+    }
+
+    pub fn peer_secret_key(&self) -> &[u8] {
+        self.peer_secret_key.as_bytes()
+    }
+
+    pub fn my_public_key(&self) -> &[u8] {
+        self.my_public_key.as_bytes()
+    }
+
+    pub fn peer_public_key(&self) -> &[u8] {
+        self.peer_public_key.as_bytes()
     }
 }
 
@@ -73,6 +117,7 @@ struct WgPeerData {
     tunn: Arc<Mutex<Tunn>>,
     sink: Arc<Mutex<Pin<Box<dyn DatagramSink>>>>,
     stream: Arc<Mutex<Pin<Box<dyn DatagramStream>>>>,
+    wg_type: WgType,
 }
 
 impl Debug for WgPeerData {
@@ -88,9 +133,14 @@ impl WgPeerData {
     #[tracing::instrument]
     async fn handle_one_packet_from_me(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
         let mut send_buf = [0u8; MAX_PACKET];
+
         let encapsulate_result = {
             let mut peer = self.tunn.lock().await;
-            peer.encapsulate(&packet, &mut send_buf)
+            if matches!(self.wg_type, WgType::InternalUse) {
+                peer.encapsulate(&self.add_ip_header(&packet), &mut send_buf)
+            } else {
+                peer.encapsulate(&packet, &mut send_buf)
+            }
         };
 
         tracing::info!(
@@ -177,9 +227,13 @@ impl WgPeerData {
                     .lock()
                     .await
                     .send(
-                        WgPeer::remove_ip_header(packet, packet[0] >> 4 == 4)
-                            .to_vec()
-                            .into(),
+                        if matches!(self.wg_type, WgType::InternalUse) {
+                            self.remove_ip_header(packet, packet[0] >> 4 == 4)
+                        } else {
+                            packet
+                        }
+                        .to_vec()
+                        .into(),
                     )
                     .await;
                 if ret.is_err() {
@@ -250,6 +304,31 @@ impl WgPeerData {
             self.handle_routine_tun_result(tun_result).await;
         }
     }
+
+    fn add_ip_header(&self, packet: &[u8]) -> Vec<u8> {
+        let mut ret = vec![0u8; packet.len() + 20];
+        let ip_header = ret.as_mut_slice();
+        ip_header[0] = 0x45;
+        ip_header[1] = 0;
+        ip_header[2..4].copy_from_slice(&((packet.len() + 20) as u16).to_be_bytes());
+        ip_header[4..6].copy_from_slice(&0u16.to_be_bytes());
+        ip_header[6..8].copy_from_slice(&0u16.to_be_bytes());
+        ip_header[8] = 64;
+        ip_header[9] = 0;
+        ip_header[10..12].copy_from_slice(&0u16.to_be_bytes());
+        ip_header[12..16].copy_from_slice(&0u32.to_be_bytes());
+        ip_header[16..20].copy_from_slice(&0u32.to_be_bytes());
+        ip_header[20..].copy_from_slice(packet);
+        ret
+    }
+
+    fn remove_ip_header<'a>(&self, packet: &'a [u8], is_v4: bool) -> &'a [u8] {
+        if is_v4 {
+            return &packet[20..];
+        } else {
+            return &packet[40..];
+        }
+    }
 }
 
 struct WgPeer {
@@ -277,36 +356,9 @@ impl WgPeer {
         }
     }
 
-    fn add_ip_header(packet: &[u8]) -> Vec<u8> {
-        let mut ret = vec![0u8; packet.len() + 20];
-        let ip_header = ret.as_mut_slice();
-        ip_header[0] = 0x45;
-        ip_header[1] = 0;
-        ip_header[2..4].copy_from_slice(&((packet.len() + 20) as u16).to_be_bytes());
-        ip_header[4..6].copy_from_slice(&0u16.to_be_bytes());
-        ip_header[6..8].copy_from_slice(&0u16.to_be_bytes());
-        ip_header[8] = 64;
-        ip_header[9] = 0;
-        ip_header[10..12].copy_from_slice(&0u16.to_be_bytes());
-        ip_header[12..16].copy_from_slice(&0u32.to_be_bytes());
-        ip_header[16..20].copy_from_slice(&0u32.to_be_bytes());
-        ip_header[20..].copy_from_slice(packet);
-        ret
-    }
-
-    fn remove_ip_header(packet: &[u8], is_v4: bool) -> &[u8] {
-        if is_v4 {
-            return &packet[20..];
-        } else {
-            return &packet[40..];
-        }
-    }
-
     async fn handle_packet_from_me(data: WgPeerData) {
         while let Some(Ok(packet)) = data.stream.lock().await.next().await {
-            let ret = data
-                .handle_one_packet_from_me(&Self::add_ip_header(&packet))
-                .await;
+            let ret = data.handle_one_packet_from_me(&packet).await;
             if let Err(e) = ret {
                 tracing::error!("Failed to handle packet from me: {}", e);
             }
@@ -315,7 +367,7 @@ impl WgPeer {
 
     async fn handle_packet_from_peer(&mut self, packet: &[u8]) {
         self.access_time = std::time::Instant::now();
-        tracing::info!("Received {} bytes from peer", packet.len());
+        tracing::trace!("Received {} bytes from peer", packet.len());
         let data = self.data.as_ref().unwrap();
         data.handle_one_packet_from_peer(packet).await;
     }
@@ -339,6 +391,7 @@ impl WgPeer {
             )),
             sink: Arc::new(Mutex::new(stunnel.pin_sink())),
             stream: Arc::new(Mutex::new(stunnel.pin_stream())),
+            wg_type: self.config.wg_type.clone(),
         };
 
         self.data = Some(data.clone());
@@ -346,6 +399,17 @@ impl WgPeer {
         self.tasks.spawn(data.routine_task());
 
         ctunnel
+    }
+}
+
+impl Drop for WgPeer {
+    fn drop(&mut self) {
+        self.tasks.abort_all();
+        if let Some(data) = self.data.clone() {
+            tokio::spawn(async move {
+                let _ = data.sink.lock().await.close().await;
+            });
+        }
     }
 }
 
@@ -406,7 +470,7 @@ impl WgTunnelListener {
             };
 
             let data = &buf[..n];
-            tracing::info!("Received {} bytes from {}", n, addr);
+            tracing::trace!("Received {} bytes from {}", n, addr);
 
             if !peer_map.contains_key(&addr) {
                 tracing::info!("New peer: {}", addr);
@@ -636,13 +700,17 @@ pub mod tests {
         let server_cfg = WgConfig {
             my_secret_key: my_secret_key.clone(),
             my_public_key,
+            peer_secret_key: their_secret_key.clone(),
             peer_public_key: their_public_key.clone(),
+            wg_type: WgType::InternalUse,
         };
 
         let client_cfg = WgConfig {
             my_secret_key: their_secret_key,
             my_public_key: their_public_key,
+            peer_secret_key: my_secret_key,
             peer_public_key: my_public_key,
+            wg_type: WgType::InternalUse,
         };
 
         (server_cfg, client_cfg)

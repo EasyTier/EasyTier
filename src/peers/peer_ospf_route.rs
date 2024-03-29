@@ -99,6 +99,7 @@ impl RoutePeerInfo {
                 .get_proxy_cidrs()
                 .iter()
                 .map(|x| x.to_string())
+                .chain(global_ctx.get_vpn_portal_cidr().map(|x| x.to_string()))
                 .collect(),
             hostname: global_ctx.get_hostname(),
             udp_stun_info: global_ctx
@@ -1012,7 +1013,7 @@ impl RouteSessionManager {
                 .map(|x| *x)
                 .collect::<Vec<_>>();
 
-            tracing::info!(?service_impl.my_peer_id, ?peers, ?session_peers, ?initiator_candidates, "maintain_sessions begin");
+            tracing::debug!(?service_impl.my_peer_id, ?peers, ?session_peers, ?initiator_candidates, "maintain_sessions begin");
 
             if initiator_candidates.is_empty() {
                 next_sleep_ms = 1000;
