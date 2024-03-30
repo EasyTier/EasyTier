@@ -142,3 +142,18 @@ message GetGlobalPeerMapResponse {
 service PeerCenterRpc {
     rpc GetGlobalPeerMap (GetGlobalPeerMapRequest) returns (GetGlobalPeerMapResponse);
 }
+
+message VpnPortalInfo {
+    string vpn_type = 1;
+    string client_config = 2;
+    repeated string connected_clients = 3;
+}
+
+message GetVpnPortalInfoRequest {}
+message GetVpnPortalInfoResponse {
+    VpnPortalInfo vpn_portal_info = 1;
+}
+
+service VpnPortalRpc {
+    rpc GetVpnPortalInfo (GetVpnPortalInfoRequest) returns (GetVpnPortalInfoResponse);
+}

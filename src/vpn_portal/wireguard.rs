@@ -34,7 +34,7 @@ use super::VpnPortal;
 type WgPeerIpTable = Arc<DashMap<Ipv4Addr, Arc<ClientEntry>>>;
 
 struct ClientEntry {
-    endpoint_addr: Ipv4Addr,
+    endpoint_addr: Option<url::Url>,
     sink: Mutex<Pin<Box<dyn DatagramSink + 'static>>>,
 }
 
@@ -77,6 +77,7 @@ impl WireGuardImpl {
         let mut ip_registered = false;
 
         let info = t.info().unwrap_or_default();
+        let remote_addr = info.remote_addr.clone();
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
@@ -91,7 +92,7 @@ impl WireGuardImpl {
             };
             if !ip_registered {
                 let client_entry = Arc::new(ClientEntry {
-                    endpoint_addr: i.get_source(),
+                    endpoint_addr: remote_addr.parse().ok(),
                     sink: Mutex::new(t.pin_sink()),
                 });
                 wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
@@ -252,7 +253,7 @@ Address = {client_cidr} # should assign an ip from this cidr manually
 [Peer]
 PublicKey = {my_public_key}
 AllowedIPs = {allow_ips}
-Endpoint = {listenr_addr}
+Endpoint = {listenr_addr} # should be the public ip of the vpn server
 "#,
             peer_secret_key = BASE64_STANDARD.encode(cfg.peer_secret_key()),
             my_public_key = BASE64_STANDARD.encode(cfg.my_public_key()),
@@ -266,6 +267,22 @@ Endpoint = {listenr_addr}
 
     fn name(&self) -> String {
         "wireguard".to_string()
+    }
+
+    async fn list_clients(&self) -> Vec<String> {
+        self.inner
+            .as_ref()
+            .unwrap()
+            .wg_peer_ip_table
+            .iter()
+            .map(|x| {
+                x.value()
+                    .endpoint_addr
+                    .as_ref()
+                    .map(|x| x.to_string())
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 }
 

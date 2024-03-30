@@ -1,6 +1,6 @@
 use std::borrow::BorrowMut;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::Context;
 use futures::StreamExt;
@@ -25,6 +25,8 @@ use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
+use crate::rpc::vpn_portal_rpc_server::VpnPortalRpc;
+use crate::rpc::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::tunnels::SinkItem;
 use crate::vpn_portal::{self, VpnPortal};
 
@@ -55,7 +57,7 @@ pub struct Instance {
 
     peer_center: Arc<PeerCenterInstance>,
 
-    vpn_portal: Mutex<Box<dyn VpnPortal>>,
+    vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -127,7 +129,7 @@ impl Instance {
 
             peer_center,
 
-            vpn_portal: Mutex::new(Box::new(vpn_portal_inst)),
+            vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
 
             global_ctx,
         }
@@ -319,6 +321,45 @@ impl Instance {
         self.peer_manager.my_peer_id()
     }
 
+    fn get_vpn_portal_rpc_service(&self) -> impl VpnPortalRpc {
+        struct VpnPortalRpcService {
+            peer_mgr: Weak<PeerManager>,
+            vpn_portal: Weak<Mutex<Box<dyn VpnPortal>>>,
+        }
+
+        #[tonic::async_trait]
+        impl VpnPortalRpc for VpnPortalRpcService {
+            async fn get_vpn_portal_info(
+                &self,
+                _request: tonic::Request<GetVpnPortalInfoRequest>,
+            ) -> Result<tonic::Response<GetVpnPortalInfoResponse>, tonic::Status> {
+                let Some(vpn_portal) = self.vpn_portal.upgrade() else {
+                    return Err(tonic::Status::unavailable("vpn portal not available"));
+                };
+
+                let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+                    return Err(tonic::Status::unavailable("peer manager not available"));
+                };
+
+                let vpn_portal = vpn_portal.lock().await;
+                let ret = GetVpnPortalInfoResponse {
+                    vpn_portal_info: Some(VpnPortalInfo {
+                        vpn_type: vpn_portal.name(),
+                        client_config: vpn_portal.dump_client_config(peer_mgr).await,
+                        connected_clients: vpn_portal.list_clients().await,
+                    }),
+                };
+
+                Ok(tonic::Response::new(ret))
+            }
+        }
+
+        VpnPortalRpcService {
+            peer_mgr: Arc::downgrade(&self.peer_manager),
+            vpn_portal: Arc::downgrade(&self.vpn_portal),
+        }
+    }
+
     fn run_rpc_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let Some(addr) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
@@ -328,6 +369,7 @@ impl Instance {
         let conn_manager = self.conn_manager.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let peer_center = self.peer_center.clone();
+        let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
 
         self.tasks.spawn(async move {
             let _g = net_ns.guard();
@@ -347,6 +389,9 @@ impl Instance {
                         peer_center.get_rpc_service(),
                     ),
                 )
+                .add_service(crate::rpc::vpn_portal_rpc_server::VpnPortalRpcServer::new(
+                    vpn_portal_rpc,
+                ))
                 .serve(addr)
                 .await
                 .with_context(|| format!("rpc server failed. addr: {}", addr))

@@ -20,4 +20,5 @@ pub trait VpnPortal: Send + Sync {
     ) -> anyhow::Result<()>;
     async fn dump_client_config(&self, peer_mgr: Arc<PeerManager>) -> String;
     fn name(&self) -> String;
+    async fn list_clients(&self) -> Vec<String>;
 }
