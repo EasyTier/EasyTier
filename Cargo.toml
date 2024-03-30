@@ -91,7 +91,7 @@ url = { version = "2.5", features = ["serde"] }
 byteorder = "1.5.0"
 
 # for proxy
-cidr = "0.2.2"
+cidr = { version = "0.2.2", features = ["serde"] }
 socket2 = "0.5.5"
 
 # for hole punching
@@ -118,6 +118,8 @@ boringtun = { version = "0.6.0" }
 # for cli
 tabled = "0.15.*"
 humansize = "2.1.3"
+
+base64 = "0.21.7"
 
 
 [target.'cfg(windows)'.dependencies]

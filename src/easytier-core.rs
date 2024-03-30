@@ -17,9 +17,10 @@ mod peer_center;
 mod peers;
 mod rpc;
 mod tunnels;
+mod vpn_portal;
 
 use common::{
-    config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig},
+    config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig},
     get_logger_timer_rfc3339,
 };
 use instance::instance::Instance;
@@ -105,6 +106,14 @@ struct Cli {
         help = "instance uuid to identify this vpn node in whole vpn network example: 123e4567-e89b-12d3-a456-426614174000"
     )]
     instance_id: Option<String>,
+
+    #[arg(
+        long,
+        help = "url that defines the vpn portal, allow other vpn clients to connect.
+example: wg://0.0.0.0:11010/10.14.14.0/24, means the vpn portal is a wireguard server listening on vpn.example.com:11010,
+and the vpn client is in network of 10.14.14.0/24"
+    )]
+    vpn_portal: Option<String>,
 }
 
 impl From<Cli> for TomlConfigLoader {
@@ -194,6 +203,38 @@ impl From<Cli> for TomlConfigLoader {
                 level: cli.file_log_level.clone(),
                 dir: cli.file_log_dir.clone(),
                 file: Some(format!("easytier-{}", cli.instance_name)),
+            });
+        }
+
+        if cli.vpn_portal.is_some() {
+            let url: url::Url = cli
+                .vpn_portal
+                .clone()
+                .unwrap()
+                .parse()
+                .with_context(|| {
+                    format!(
+                        "failed to parse vpn portal url: {}",
+                        cli.vpn_portal.unwrap()
+                    )
+                })
+                .unwrap();
+            cfg.set_vpn_portal_config(VpnPortalConfig {
+                client_cidr: url.path()[1..]
+                    .parse()
+                    .with_context(|| {
+                        format!("failed to parse vpn portal client cidr: {}", url.path())
+                    })
+                    .unwrap(),
+                wireguard_listen: format!("{}:{}", url.host_str().unwrap(), url.port().unwrap())
+                    .parse()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse vpn portal wireguard listen address: {}",
+                            url.host_str().unwrap()
+                        )
+                    })
+                    .unwrap(),
             });
         }
 
@@ -336,6 +377,20 @@ pub async fn main() {
 
                 GlobalCtxEvent::ConnectError(dst, err) => {
                     print_event(format!("connect to peer error. dst: {}, err: {}", dst, err));
+                }
+
+                GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {
+                    print_event(format!(
+                        "vpn portal client connected. portal: {}, client_addr: {}",
+                        portal, client_addr
+                    ));
+                }
+
+                GlobalCtxEvent::VpnPortalClientDisconnected(portal, client_addr) => {
+                    print_event(format!(
+                        "vpn portal client disconnected. portal: {}, client_addr: {}",
+                        portal, client_addr
+                    ));
                 }
             }
         }

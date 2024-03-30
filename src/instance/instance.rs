@@ -1,6 +1,6 @@
 use std::borrow::BorrowMut;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::Context;
 use futures::StreamExt;
@@ -25,7 +25,10 @@ use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
+use crate::rpc::vpn_portal_rpc_server::VpnPortalRpc;
+use crate::rpc::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::tunnels::SinkItem;
+use crate::vpn_portal::{self, VpnPortal};
 
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -53,6 +56,8 @@ pub struct Instance {
     udp_proxy: Arc<UdpProxy>,
 
     peer_center: Arc<PeerCenterInstance>,
+
+    vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -102,6 +107,8 @@ impl Instance {
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
+        let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -122,6 +129,8 @@ impl Instance {
 
             peer_center,
 
+            vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
+
             global_ctx,
         }
     }
@@ -134,6 +143,7 @@ impl Instance {
         if let Some(ipv4) = Ipv4Packet::new(&ret) {
             if ipv4.get_version() != 4 {
                 tracing::info!("[USER_PACKET] not ipv4 packet: {:?}", ipv4);
+                return;
             }
             let dst_ipv4 = ipv4.get_destination();
             tracing::trace!(
@@ -270,6 +280,14 @@ impl Instance {
 
         self.add_initial_peers().await?;
 
+        if let Some(_) = self.global_ctx.get_vpn_portal_cidr() {
+            self.vpn_portal
+                .lock()
+                .await
+                .start(self.get_global_ctx(), self.get_peer_manager())
+                .await?;
+        }
+
         Ok(())
     }
 
@@ -304,6 +322,45 @@ impl Instance {
         self.peer_manager.my_peer_id()
     }
 
+    fn get_vpn_portal_rpc_service(&self) -> impl VpnPortalRpc {
+        struct VpnPortalRpcService {
+            peer_mgr: Weak<PeerManager>,
+            vpn_portal: Weak<Mutex<Box<dyn VpnPortal>>>,
+        }
+
+        #[tonic::async_trait]
+        impl VpnPortalRpc for VpnPortalRpcService {
+            async fn get_vpn_portal_info(
+                &self,
+                _request: tonic::Request<GetVpnPortalInfoRequest>,
+            ) -> Result<tonic::Response<GetVpnPortalInfoResponse>, tonic::Status> {
+                let Some(vpn_portal) = self.vpn_portal.upgrade() else {
+                    return Err(tonic::Status::unavailable("vpn portal not available"));
+                };
+
+                let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+                    return Err(tonic::Status::unavailable("peer manager not available"));
+                };
+
+                let vpn_portal = vpn_portal.lock().await;
+                let ret = GetVpnPortalInfoResponse {
+                    vpn_portal_info: Some(VpnPortalInfo {
+                        vpn_type: vpn_portal.name(),
+                        client_config: vpn_portal.dump_client_config(peer_mgr).await,
+                        connected_clients: vpn_portal.list_clients().await,
+                    }),
+                };
+
+                Ok(tonic::Response::new(ret))
+            }
+        }
+
+        VpnPortalRpcService {
+            peer_mgr: Arc::downgrade(&self.peer_manager),
+            vpn_portal: Arc::downgrade(&self.vpn_portal),
+        }
+    }
+
     fn run_rpc_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let Some(addr) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
@@ -313,6 +370,7 @@ impl Instance {
         let conn_manager = self.conn_manager.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let peer_center = self.peer_center.clone();
+        let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
 
         self.tasks.spawn(async move {
             let _g = net_ns.guard();
@@ -332,6 +390,9 @@ impl Instance {
                         peer_center.get_rpc_service(),
                     ),
                 )
+                .add_service(crate::rpc::vpn_portal_rpc_server::VpnPortalRpcServer::new(
+                    vpn_portal_rpc,
+                ))
                 .serve(addr)
                 .await
                 .with_context(|| format!("rpc server failed. addr: {}", addr))

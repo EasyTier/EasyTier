@@ -28,6 +28,9 @@ pub enum GlobalCtxEvent {
 
     Connecting(url::Url),
     ConnectError(String, String), // (dst, error message)
+
+    VpnPortalClientConnected(String, String), // (portal, client ip)
+    VpnPortalClientDisconnected(String, String), // (portal, client ip)
 }
 
 type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
@@ -191,6 +194,10 @@ impl GlobalCtx {
 
     pub fn add_running_listener(&self, url: url::Url) {
         self.running_listeners.lock().unwrap().push(url);
+    }
+
+    pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
+        self.config.get_vpn_portal_config().map(|x| x.client_cidr)
     }
 }
 

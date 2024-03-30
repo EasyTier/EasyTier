@@ -3,6 +3,7 @@
 use std::{net::SocketAddr, vec};
 
 use clap::{command, Args, Parser, Subcommand};
+use rpc::vpn_portal_rpc_client::VpnPortalRpcClient;
 
 mod arch;
 mod common;
@@ -38,6 +39,7 @@ enum SubCommand {
     Stun,
     Route,
     PeerCenter,
+    VpnPortal,
 }
 
 #[derive(Args, Debug)]
@@ -214,6 +216,12 @@ impl CommandHandler {
         &self,
     ) -> Result<PeerCenterRpcClient<tonic::transport::Channel>, Error> {
         Ok(PeerCenterRpcClient::connect(self.addr.clone()).await?)
+    }
+
+    async fn get_vpn_portal_client(
+        &self,
+    ) -> Result<VpnPortalRpcClient<tonic::transport::Channel>, Error> {
+        Ok(VpnPortalRpcClient::connect(self.addr.clone()).await?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -451,6 +459,18 @@ async fn main() -> Result<(), Error> {
                     .with(Style::modern())
                     .to_string()
             );
+        }
+        SubCommand::VpnPortal => {
+            let mut vpn_portal_client = handler.get_vpn_portal_client().await?;
+            let resp = vpn_portal_client
+                .get_vpn_portal_info(GetVpnPortalInfoRequest::default())
+                .await?
+                .into_inner()
+                .vpn_portal_info
+                .unwrap_or_default();
+            println!("portal_name: {}\n", resp.vpn_type);
+            println!("client_config:{}", resp.client_config);
+            println!("connected_clients:\n{:#?}", resp.connected_clients);
         }
     }
 

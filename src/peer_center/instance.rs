@@ -242,9 +242,9 @@ impl PeerCenterInstance {
                 for _ in 1..10 {
                     peers = ctx.job_ctx.service.list_peers().await.into();
                     if peers == *ctx.job_ctx.last_report_peers.lock().await {
-                        break;
+                        return Ok(3000);
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
 
                 *ctx.job_ctx.last_report_peers.lock().await = peers.clone();
