@@ -127,7 +127,7 @@ impl Stun {
                 continue;
             };
 
-            tracing::info!(b = ?&udp_buf[..len], ?tids, ?remote_addr, ?stun_host, "recv stun response, msg: {:#?}", msg);
+            tracing::debug!(b = ?&udp_buf[..len], ?tids, ?remote_addr, ?stun_host, "recv stun response, msg: {:#?}", msg);
 
             if msg.class() != MessageClass::SuccessResponse
                 || msg.method() != BINDING
@@ -194,7 +194,7 @@ impl Stun {
         changed_addr
     }
 
-    #[tracing::instrument(ret, err, level = Level::INFO)]
+    #[tracing::instrument(ret, err, level = Level::DEBUG)]
     pub async fn bind_request(
         &self,
         source_port: u16,
@@ -250,7 +250,7 @@ impl Stun {
             real_port_changed,
         };
 
-        tracing::info!(
+        tracing::debug!(
             ?stun_host,
             ?recv_addr,
             ?changed_socket_addr,
@@ -300,7 +300,7 @@ impl UdpNatTypeDetector {
             let ret = stun.bind_request(source_port, true, true).await;
             if let Ok(resp) = ret {
                 if !resp.real_ip_changed || !resp.real_port_changed {
-                    tracing::info!(
+                    tracing::debug!(
                         ?server_ip,
                         ?ret,
                         "stun bind request return with unchanged ip and port"
@@ -311,7 +311,7 @@ impl UdpNatTypeDetector {
             }
             ret_test2 = ret.ok();
             ret_test3 = stun.bind_request(source_port, false, true).await.ok();
-            tracing::info!(?ret_test3, "stun bind request with changed port");
+            tracing::debug!(?ret_test3, "stun bind request with changed port");
             succ = true;
             break;
         }
@@ -320,7 +320,7 @@ impl UdpNatTypeDetector {
             return NatType::Unknown;
         }
 
-        tracing::info!(
+        tracing::debug!(
             ?ret_test1_1,
             ?ret_test1_2,
             ?ret_test2,

@@ -204,7 +204,7 @@ impl PeerCenterInstance {
                 };
 
                 let Some(resp) = resp else {
-                    return Ok(5000);
+                    return Ok(30000);
                 };
 
                 tracing::info!(
@@ -244,7 +244,7 @@ impl PeerCenterInstance {
                     if peers == *ctx.job_ctx.last_report_peers.lock().await {
                         break;
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
 
                 *ctx.job_ctx.last_report_peers.lock().await = peers.clone();

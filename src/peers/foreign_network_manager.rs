@@ -189,7 +189,7 @@ impl ForeignNetworkManager {
     }
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        tracing::warn!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
+        tracing::info!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
 
         let entry = self
             .data
@@ -222,10 +222,11 @@ impl ForeignNetworkManager {
         let mut s = self.global_ctx.subscribe();
         self.tasks.lock().await.spawn(async move {
             while let Ok(e) = s.recv().await {
-                tracing::warn!(?e, "global event");
                 if let GlobalCtxEvent::PeerRemoved(peer_id) = &e {
+                    tracing::info!(?e, "remove peer from foreign network manager");
                     data.remove_peer(*peer_id);
                 } else if let GlobalCtxEvent::PeerConnRemoved(..) = &e {
+                    tracing::info!(?e, "clear no conn peer from foreign network manager");
                     data.clear_no_conn_peer();
                 }
             }

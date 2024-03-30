@@ -123,7 +123,7 @@ fn try_get_data_payload(mut buf: BytesMut, conn_id: u32) -> Option<BytesMut> {
     }
 
     if udp_packet.magic != UDP_PACKET_MAGIC {
-        tracing::warn!(?udp_packet, "udp magic not match");
+        tracing::trace!(?udp_packet, "udp magic not match");
         return None;
     }
 
@@ -351,7 +351,7 @@ impl TunnelListener for UdpTunnelListener {
                     };
 
                     if udp_packet.magic != UDP_PACKET_MAGIC {
-                        tracing::info!(?udp_packet, "udp magic not match");
+                        tracing::trace!(?udp_packet, "udp magic not match");
                         continue;
                     }
 
@@ -471,7 +471,7 @@ impl UdpTunnelConnector {
         };
 
         if udp_packet.magic != UDP_PACKET_MAGIC {
-            tracing::info!(?udp_packet, "udp magic not match");
+            tracing::trace!(?udp_packet, "udp magic not match");
             return Err(super::TunnelError::ConnectError(format!(
                 "udp connect error, magic not match. magic: {:?}",
                 udp_packet.magic

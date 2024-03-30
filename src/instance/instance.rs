@@ -143,6 +143,7 @@ impl Instance {
         if let Some(ipv4) = Ipv4Packet::new(&ret) {
             if ipv4.get_version() != 4 {
                 tracing::info!("[USER_PACKET] not ipv4 packet: {:?}", ipv4);
+                return;
             }
             let dst_ipv4 = ipv4.get_destination();
             tracing::trace!(

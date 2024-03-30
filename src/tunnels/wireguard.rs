@@ -143,7 +143,7 @@ impl WgPeerData {
             }
         };
 
-        tracing::info!(
+        tracing::trace!(
             ?encapsulate_result,
             "Received {} bytes from me",
             packet.len()
