@@ -386,6 +386,10 @@ impl RouteTable {
         self.next_hop_map.get(&dst_peer_id).map(|x| *x)
     }
 
+    fn peer_reachable(&self, peer_id: PeerId) -> bool {
+        self.next_hop_map.contains_key(&peer_id)
+    }
+
     fn get_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
         self.peer_infos
             .get(&peer_id)
@@ -408,10 +412,10 @@ impl RouteTable {
 
         // build next hop map
         self.next_hop_map.clear();
+        self.next_hop_map.insert(my_peer_id, (my_peer_id, 0));
         for item in self.peer_infos.iter() {
             let peer_id = *item.key();
             if peer_id == my_peer_id {
-                self.next_hop_map.insert(peer_id, (peer_id, 0));
                 continue;
             }
             let Some(path) = pathfinding::prelude::bfs(
@@ -618,8 +622,7 @@ impl PeerRouteServiceImpl {
             .synced_route_info
             .update_my_peer_info(self.my_peer_id, &self.global_ctx)
         {
-            self.update_cached_local_conn_bitmap();
-            self.update_route_table();
+            self.update_route_table_and_cached_local_conn_bitmap();
             return true;
         }
         false
@@ -632,8 +635,7 @@ impl PeerRouteServiceImpl {
             .update_my_conn_info(self.my_peer_id, connected_peers);
 
         if updated {
-            self.update_cached_local_conn_bitmap();
-            self.update_route_table();
+            self.update_route_table_and_cached_local_conn_bitmap();
         }
 
         updated
@@ -644,12 +646,27 @@ impl PeerRouteServiceImpl {
             .build_from_synced_info(self.my_peer_id, &self.synced_route_info);
     }
 
-    fn update_cached_local_conn_bitmap(&self) {
+    fn update_route_table_and_cached_local_conn_bitmap(&self) {
+        // update route table first because we want to filter out unreachable peers.
+        self.update_route_table();
+
+        // the conn_bitmap should contain complete list of directly connected peers.
+        // use union of dst peers can preserve this property.
+        let all_dst_peer_ids = self
+            .synced_route_info
+            .conn_map
+            .iter()
+            .map(|x| x.value().clone().0.into_iter())
+            .flatten()
+            .collect::<BTreeSet<_>>();
+
         let all_peer_ids = self
             .synced_route_info
             .conn_map
             .iter()
             .map(|x| (*x.key(), x.value().1.get()))
+            // do not sync conn info of peers that are not reachable from any peer.
+            .filter(|p| all_dst_peer_ids.contains(&p.0) || self.route_table.peer_reachable(p.0))
             .collect::<Vec<_>>();
 
         let mut conn_bitmap = RouteConnBitmap::new();
@@ -681,6 +698,12 @@ impl PeerRouteServiceImpl {
             {
                 continue;
             }
+
+            // do not send unreachable peer info to dst peer.
+            if !self.route_table.peer_reachable(*item.key()) {
+                continue;
+            }
+
             route_infos.push(item.value().clone());
         }
 
@@ -868,8 +891,7 @@ impl RouteService for RouteSessionManager {
             session.update_dst_saved_conn_bitmap_version(conn_bitmap);
         }
 
-        service_impl.update_cached_local_conn_bitmap();
-        service_impl.update_route_table();
+        service_impl.update_route_table_and_cached_local_conn_bitmap();
 
         tracing::debug!(
             "sync_route_info: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",

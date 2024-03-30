@@ -30,7 +30,7 @@ use super::{
     DatagramSink, DatagramStream, Tunnel, TunnelError, TunnelListener,
 };
 
-const MAX_PACKET: usize = 4096;
+const MAX_PACKET: usize = 65500;
 
 #[derive(Debug, Clone)]
 enum WgType {

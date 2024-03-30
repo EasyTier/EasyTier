@@ -28,7 +28,7 @@ use super::{
     DatagramSink, DatagramStream, Tunnel, TunnelListener,
 };
 
-pub const UDP_DATA_MTU: usize = 2500;
+pub const UDP_DATA_MTU: usize = 65000;
 
 #[derive(Archive, Deserialize, Serialize)]
 #[archive(compare(PartialEq), check_bytes)]
