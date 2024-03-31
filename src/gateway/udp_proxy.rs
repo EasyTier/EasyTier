@@ -204,7 +204,7 @@ impl UdpNatEntry {
             else {
                 break;
             };
-            ip_id += 1;
+            ip_id = ip_id.wrapping_add(1);
         }
 
         self.stop();

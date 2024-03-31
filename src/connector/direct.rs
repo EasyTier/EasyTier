@@ -246,9 +246,15 @@ impl DirectConnectorManager {
             .filter_map(|l| if l.scheme() != "ring" { Some(l) } else { None })
             .collect::<Vec<_>>();
 
-        let listener = available_listeners
+        let mut listener = available_listeners
             .get(0)
             .ok_or(anyhow::anyhow!("peer {} have no listener", dst_peer_id))?;
+
+        // if have default listener, use it first
+        listener = available_listeners
+            .iter()
+            .find(|l| l.scheme() == data.global_ctx.get_flags().default_protocol)
+            .unwrap_or(listener);
 
         let mut tasks = JoinSet::new();
         ip_list.interface_ipv4s.iter().for_each(|ip| {

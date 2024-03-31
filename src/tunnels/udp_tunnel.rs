@@ -551,16 +551,13 @@ impl UdpTunnelConnector {
         let mut futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
-            let socket = UdpSocket::bind(*bind_addr).await?;
-
-            // linux does not use interface of bind_addr to send packet, so we need to bind device
-            // mac can handle this with bind correctly
-            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
-                tracing::trace!(dev_name = ?dev_name, "bind device");
-                socket.bind_device(Some(dev_name.as_bytes()))?;
-            }
-
+            let socket2_socket = socket2::Socket::new(
+                socket2::Domain::for_address(*bind_addr),
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )?;
+            setup_sokcet2(&socket2_socket, &bind_addr)?;
+            let socket = UdpSocket::from_std(socket2_socket.into())?;
             futures.push(self.try_connect_with_socket(socket));
         }
 

@@ -231,7 +231,7 @@ impl PeerConnPinger {
                     };
                 });
 
-                req_seq += 1;
+                req_seq = req_seq.wrapping_add(1);
                 tokio::time::sleep(Duration::from_millis(1000)).await;
             }
         });
