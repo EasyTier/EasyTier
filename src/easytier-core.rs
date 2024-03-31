@@ -114,6 +114,9 @@ example: wg://0.0.0.0:11010/10.14.14.0/24, means the vpn portal is a wireguard s
 and the vpn client is in network of 10.14.14.0/24"
     )]
     vpn_portal: Option<String>,
+
+    #[arg(long, help = "default protocol to use when connecting to peers")]
+    default_protocol: Option<String>,
 }
 
 impl From<Cli> for TomlConfigLoader {
@@ -236,6 +239,12 @@ impl From<Cli> for TomlConfigLoader {
                     })
                     .unwrap(),
             });
+        }
+
+        if cli.default_protocol.is_some() {
+            let mut f = cfg.get_flags();
+            f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
+            cfg.set_flags(f);
         }
 
         cfg

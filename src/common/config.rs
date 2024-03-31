@@ -45,6 +45,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
 
+    fn get_flags(&self) -> Flags;
+    fn set_flags(&self, flags: Flags);
+
     fn dump(&self) -> String;
 }
 
@@ -96,6 +99,14 @@ pub struct VpnPortalConfig {
     pub wireguard_listen: SocketAddr,
 }
 
+// Flags is used to control the behavior of the program
+#[derive(derivative::Derivative, Deserialize, Serialize)]
+#[derivative(Debug, Clone, PartialEq, Default)]
+pub struct Flags {
+    #[derivative(Default(value = "\"wg\".to_string()"))]
+    pub default_protocol: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Config {
     netns: Option<String>,
@@ -114,6 +125,8 @@ struct Config {
     rpc_portal: Option<SocketAddr>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
+
+    flags: Option<Flags>,
 }
 
 #[derive(Debug, Clone)]
@@ -330,6 +343,19 @@ impl ConfigLoader for TomlConfigLoader {
     }
     fn set_vpn_portal_config(&self, config: VpnPortalConfig) {
         self.config.lock().unwrap().vpn_portal_config = Some(config);
+    }
+
+    fn get_flags(&self) -> Flags {
+        self.config
+            .lock()
+            .unwrap()
+            .flags
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_flags(&self, flags: Flags) {
+        self.config.lock().unwrap().flags = Some(flags);
     }
 
     fn dump(&self) -> String {

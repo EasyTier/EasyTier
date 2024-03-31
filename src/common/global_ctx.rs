@@ -4,7 +4,7 @@ use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
 
 use super::{
-    config::ConfigLoader,
+    config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
@@ -198,6 +198,10 @@ impl GlobalCtx {
 
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
         self.config.get_vpn_portal_config().map(|x| x.client_cidr)
+    }
+
+    pub fn get_flags(&self) -> Flags {
+        self.config.get_flags()
     }
 }
 

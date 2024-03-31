@@ -121,6 +121,7 @@ humansize = "2.1.3"
 
 base64 = "0.21.7"
 
+derivative = "2.2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
