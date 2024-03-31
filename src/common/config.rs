@@ -103,7 +103,7 @@ pub struct VpnPortalConfig {
 #[derive(derivative::Derivative, Deserialize, Serialize)]
 #[derivative(Debug, Clone, PartialEq, Default)]
 pub struct Flags {
-    #[derivative(Default(value = "\"wg\".to_string()"))]
+    #[derivative(Default(value = "\"tcp\".to_string()"))]
     pub default_protocol: String,
 }
 
