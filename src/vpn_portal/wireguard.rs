@@ -218,7 +218,14 @@ impl VpnPortal for WireGuard {
     }
 
     async fn dump_client_config(&self, peer_mgr: Arc<PeerManager>) -> String {
+        if self.inner.is_none() {
+            return "ERROR: Wireguard VPN Portal Not Started".to_string();
+        }
         let global_ctx = self.inner.as_ref().unwrap().global_ctx.clone();
+        if global_ctx.config.get_vpn_portal_config().is_none() {
+            return "ERROR: VPN Portal Config Not Set".to_string();
+        }
+
         let routes = peer_mgr.list_routes().await;
         let mut allow_ips = routes
             .iter()

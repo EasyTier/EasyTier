@@ -8,6 +8,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use crossbeam::atomic::AtomicCell;
 use futures::Future;
 use tokio::{
     sync::{Mutex, RwLock},
@@ -37,6 +38,7 @@ static SERVICE_ID: u32 = 5;
 
 struct PeridicJobCtx<T> {
     peer_mgr: Arc<PeerManager>,
+    center_peer: AtomicCell<PeerId>,
     job_ctx: T,
 }
 
@@ -81,6 +83,7 @@ impl PeerCenterBase {
             async move {
                 let ctx = Arc::new(PeridicJobCtx {
                     peer_mgr: peer_mgr.clone(),
+                    center_peer: AtomicCell::new(PeerId::default()),
                     job_ctx,
                 });
                 loop {
@@ -89,6 +92,7 @@ impl PeerCenterBase {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     };
+                    ctx.center_peer.store(center_peer.clone());
                     tracing::trace!(?center_peer, "run periodic job");
                     let rpc_mgr = peer_mgr.get_peer_rpc_mgr();
                     let _g = lock.lock().await;
@@ -226,11 +230,13 @@ impl PeerCenterInstance {
             service: PeerManagerRpcService,
             need_send_peers: AtomicBool,
             last_report_peers: Mutex<PeerInfoForGlobalMap>,
+            last_center_peer: AtomicCell<PeerId>,
         }
         let ctx = Arc::new(Ctx {
             service: PeerManagerRpcService::new(self.peer_mgr.clone()),
             need_send_peers: AtomicBool::new(true),
             last_report_peers: Mutex::new(PeerInfoForGlobalMap::default()),
+            last_center_peer: AtomicCell::new(PeerId::default()),
         });
 
         self.client
@@ -241,6 +247,10 @@ impl PeerCenterInstance {
                 let mut peers = PeerInfoForGlobalMap::default();
                 for _ in 1..10 {
                     peers = ctx.job_ctx.service.list_peers().await.into();
+                    if ctx.center_peer.load() != ctx.job_ctx.last_center_peer.load() {
+                        // if center peer changed, report peers immediately
+                        break;
+                    }
                     if peers == *ctx.job_ctx.last_report_peers.lock().await {
                         return Ok(3000);
                     }
@@ -276,6 +286,7 @@ impl PeerCenterInstance {
                     return Ok(500);
                 }
 
+                ctx.job_ctx.last_center_peer.store(ctx.center_peer.load());
                 ctx.job_ctx.need_send_peers.store(false, Ordering::Relaxed);
                 Ok(3000)
             })
