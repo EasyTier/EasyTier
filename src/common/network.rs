@@ -7,7 +7,9 @@ use tokio::{
     task::JoinSet,
 };
 
-use super::{constants::DIRECT_CONNECTOR_IP_LIST_TIMEOUT_SEC, netns::NetNS};
+use super::netns::NetNS;
+
+pub const CACHED_IP_LIST_TIMEOUT_SEC: u64 = 60;
 
 struct InterfaceFilter {
     iface: NetworkInterface,
@@ -162,10 +164,8 @@ impl IPCollector {
                 loop {
                     let ip_addrs = Self::do_collect_ip_addrs(true, net_ns.clone()).await;
                     *cached_ip_list.write().await = ip_addrs;
-                    tokio::time::sleep(std::time::Duration::from_secs(
-                        DIRECT_CONNECTOR_IP_LIST_TIMEOUT_SEC,
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC))
+                        .await;
                 }
             });
         }

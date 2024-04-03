@@ -1,7 +1,3 @@
-pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
-pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 60;
-pub const DIRECT_CONNECTOR_IP_LIST_TIMEOUT_SEC: u64 = 60;
-
 macro_rules! define_global_var {
     ($name:ident, $type:ty, $init:expr) => {
         pub static $name: once_cell::sync::Lazy<tokio::sync::Mutex<$type>> =

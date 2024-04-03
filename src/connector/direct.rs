@@ -3,12 +3,7 @@
 use std::sync::Arc;
 
 use crate::{
-    common::{
-        constants::{self, DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC},
-        error::Error,
-        global_ctx::ArcGlobalCtx,
-        PeerId,
-    },
+    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
     peers::{peer_manager::PeerManager, peer_rpc::PeerRpcManager},
 };
 
@@ -17,6 +12,9 @@ use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
 
 use super::create_connector_by_url;
+
+pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
+pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
 
 #[tarpc::service]
 pub trait DirectConnectorRpc {
@@ -76,10 +74,25 @@ impl DirectConnectorManagerRpcServer {
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct DstBlackListItem(PeerId, String);
 
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct DstSchemeBlackListItem(PeerId, String);
+
 struct DirectConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
     dst_blacklist: timedmap::TimedMap<DstBlackListItem, ()>,
+    dst_sceme_blacklist: timedmap::TimedMap<DstSchemeBlackListItem, ()>,
+}
+
+impl DirectConnectorManagerData {
+    pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
+        Self {
+            global_ctx,
+            peer_manager,
+            dst_blacklist: timedmap::TimedMap::new(),
+            dst_sceme_blacklist: timedmap::TimedMap::new(),
+        }
+    }
 }
 
 impl std::fmt::Debug for DirectConnectorManagerData {
@@ -101,11 +114,7 @@ impl DirectConnectorManager {
     pub fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Self {
         Self {
             global_ctx: global_ctx.clone(),
-            data: Arc::new(DirectConnectorManagerData {
-                global_ctx,
-                peer_manager,
-                dst_blacklist: timedmap::TimedMap::new(),
-            }),
+            data: Arc::new(DirectConnectorManagerData::new(global_ctx, peer_manager)),
             tasks: JoinSet::new(),
         }
     }
@@ -117,7 +126,7 @@ impl DirectConnectorManager {
 
     pub fn run_as_server(&mut self) {
         self.data.peer_manager.get_peer_rpc_mgr().run_service(
-            constants::DIRECT_CONNECTOR_SERVICE_ID,
+            DIRECT_CONNECTOR_SERVICE_ID,
             DirectConnectorManagerRpcServer::new(self.global_ctx.clone()).serve(),
         );
     }
@@ -193,7 +202,7 @@ impl DirectConnectorManager {
         data: Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         addr: String,
-    ) {
+    ) -> Result<(), Error> {
         let ret = Self::do_try_connect_to_ip(data.clone(), dst_peer_id, addr.clone()).await;
         if let Err(e) = ret {
             if !matches!(e, Error::UrlInBlacklist) {
@@ -208,47 +217,36 @@ impl DirectConnectorManager {
                     std::time::Duration::from_secs(DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC),
                 );
             }
+            return Err(e);
         } else {
             log::info!("try_connect_to_ip success, peer_id: {}", dst_peer_id);
+            return Ok(());
         }
     }
 
     #[tracing::instrument]
-    async fn do_try_direct_connect(
+    async fn do_try_direct_connect_internal(
         data: Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
+        ip_list: GetIpListResponse,
     ) -> Result<(), Error> {
-        let peer_manager = data.peer_manager.clone();
-        // check if we have direct connection with dst_peer_id
-        if let Some(c) = peer_manager.list_peer_conns(dst_peer_id).await {
-            // currently if we have any type of direct connection (udp or tcp), we will not try to connect
-            if !c.is_empty() {
-                return Ok(());
-            }
-        }
-
-        log::trace!("try direct connect to peer: {}", dst_peer_id);
-
-        let ip_list = peer_manager
-            .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(1, dst_peer_id, |c| async {
-                let client =
-                    DirectConnectorRpcClient::new(tarpc::client::Config::default(), c).spawn();
-                let ip_list = client.get_ip_list(tarpc::context::current()).await;
-                tracing::info!(ip_list = ?ip_list, dst_peer_id = ?dst_peer_id, "got ip list");
-                ip_list
-            })
-            .await?;
-
         let available_listeners = ip_list
             .listeners
             .iter()
             .filter_map(|l| if l.scheme() != "ring" { Some(l) } else { None })
+            .filter(|l| l.port().is_some())
+            .filter(|l| {
+                !data.dst_sceme_blacklist.contains(&DstSchemeBlackListItem(
+                    dst_peer_id.clone(),
+                    l.scheme().to_string(),
+                ))
+            })
             .collect::<Vec<_>>();
 
-        let mut listener = available_listeners
-            .get(0)
-            .ok_or(anyhow::anyhow!("peer {} have no listener", dst_peer_id))?;
+        let mut listener = available_listeners.get(0).ok_or(anyhow::anyhow!(
+            "peer {} have no valid listener",
+            dst_peer_id
+        ))?;
 
         // if have default listener, use it first
         listener = available_listeners
@@ -283,30 +281,77 @@ impl DirectConnectorManager {
             addr,
         ));
 
+        let mut has_succ = false;
         while let Some(ret) = tasks.join_next().await {
             if let Err(e) = ret {
                 log::error!("join direct connect task failed: {:?}", e);
+            } else if let Ok(Ok(_)) = ret {
+                has_succ = true;
             }
         }
 
+        if !has_succ {
+            data.dst_sceme_blacklist.insert(
+                DstSchemeBlackListItem(dst_peer_id.clone(), listener.scheme().to_string()),
+                (),
+                std::time::Duration::from_secs(DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC),
+            );
+        }
+
         Ok(())
+    }
+
+    #[tracing::instrument]
+    async fn do_try_direct_connect(
+        data: Arc<DirectConnectorManagerData>,
+        dst_peer_id: PeerId,
+    ) -> Result<(), Error> {
+        let peer_manager = data.peer_manager.clone();
+        // check if we have direct connection with dst_peer_id
+        if let Some(c) = peer_manager.list_peer_conns(dst_peer_id).await {
+            // currently if we have any type of direct connection (udp or tcp), we will not try to connect
+            if !c.is_empty() {
+                return Ok(());
+            }
+        }
+
+        log::trace!("try direct connect to peer: {}", dst_peer_id);
+
+        let ip_list = peer_manager
+            .get_peer_rpc_mgr()
+            .do_client_rpc_scoped(1, dst_peer_id, |c| async {
+                let client =
+                    DirectConnectorRpcClient::new(tarpc::client::Config::default(), c).spawn();
+                let ip_list = client.get_ip_list(tarpc::context::current()).await;
+                tracing::info!(ip_list = ?ip_list, dst_peer_id = ?dst_peer_id, "got ip list");
+                ip_list
+            })
+            .await?;
+
+        Self::do_try_direct_connect_internal(data, dst_peer_id, ip_list).await
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::{
-        connector::direct::DirectConnectorManager,
+        connector::direct::{
+            DirectConnectorManager, DirectConnectorManagerData, DstBlackListItem,
+            DstSchemeBlackListItem,
+        },
         instance::listeners::ListenerManager,
         peers::tests::{
             connect_peer_manager, create_mock_peer_manager, wait_route_appear,
             wait_route_appear_with_cost,
         },
-        tunnels::tcp_tunnel::TcpTunnelListener,
+        rpc::peer::GetIpListResponse,
     };
 
+    #[rstest::rstest]
     #[tokio::test]
-    async fn direct_connector_basic_test() {
+    async fn direct_connector_basic_test(#[values("tcp", "udp", "wg")] proto: &str) {
         let p_a = create_mock_peer_manager().await;
         let p_b = create_mock_peer_manager().await;
         let p_c = create_mock_peer_manager().await;
@@ -321,19 +366,46 @@ mod tests {
         dm_a.run_as_client();
         dm_c.run_as_server();
 
+        let port = if proto == "wg" { 11040 } else { 11041 };
+        p_c.get_global_ctx()
+            .config
+            .set_listeners(vec![format!("{}://0.0.0.0:{}", proto, port)
+                .parse()
+                .unwrap()]);
         let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
-
-        lis_c
-            .add_listener(TcpTunnelListener::new(
-                "tcp://0.0.0.0:11040".parse().unwrap(),
-            ))
-            .await
-            .unwrap();
+        lis_c.prepare_listeners().await.unwrap();
 
         lis_c.run().await.unwrap();
 
         wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_connector_scheme_blacklist() {
+        let p_a = create_mock_peer_manager().await;
+        let data = Arc::new(DirectConnectorManagerData::new(
+            p_a.get_global_ctx(),
+            p_a.clone(),
+        ));
+        let mut ip_list = GetIpListResponse::new();
+        ip_list
+            .listeners
+            .push("tcp://127.0.0.1:10222".parse().unwrap());
+
+        ip_list.interface_ipv4s.push("127.0.0.1".to_string());
+
+        DirectConnectorManager::do_try_direct_connect_internal(data.clone(), 1, ip_list.clone())
+            .await
+            .unwrap();
+
+        assert!(data
+            .dst_sceme_blacklist
+            .contains(&DstSchemeBlackListItem(1, "tcp".into())));
+
+        assert!(data
+            .dst_blacklist
+            .contains(&DstBlackListItem(1, ip_list.listeners[0].to_string())));
     }
 }
