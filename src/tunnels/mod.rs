@@ -158,3 +158,35 @@ impl FromUrl for uuid::Uuid {
         Ok(o)
     }
 }
+
+pub struct TunnelUrl {
+    inner: url::Url,
+}
+
+impl From<url::Url> for TunnelUrl {
+    fn from(url: url::Url) -> Self {
+        TunnelUrl { inner: url }
+    }
+}
+
+impl From<TunnelUrl> for url::Url {
+    fn from(url: TunnelUrl) -> Self {
+        url.into_inner()
+    }
+}
+
+impl TunnelUrl {
+    pub fn into_inner(self) -> url::Url {
+        self.inner
+    }
+
+    pub fn bind_dev(&self) -> Option<String> {
+        self.inner.path().strip_prefix("/").and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8(percent_encoding::percent_decode_str(&s).collect()).unwrap())
+            }
+        })
+    }
+}

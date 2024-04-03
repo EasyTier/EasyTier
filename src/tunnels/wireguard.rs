@@ -26,8 +26,10 @@ use crate::{
 };
 
 use super::{
-    check_scheme_and_get_socket_addr, common::setup_sokcet2, ring_tunnel::create_ring_tunnel_pair,
-    DatagramSink, DatagramStream, Tunnel, TunnelError, TunnelListener,
+    check_scheme_and_get_socket_addr,
+    common::{setup_sokcet2, setup_sokcet2_ext},
+    ring_tunnel::create_ring_tunnel_pair,
+    DatagramSink, DatagramStream, Tunnel, TunnelError, TunnelListener, TunnelUrl,
 };
 
 const MAX_PACKET: usize = 65500;
@@ -132,7 +134,7 @@ impl Debug for WgPeerData {
 impl WgPeerData {
     #[tracing::instrument]
     async fn handle_one_packet_from_me(&self, packet: &[u8]) -> Result<(), anyhow::Error> {
-        let mut send_buf = [0u8; MAX_PACKET];
+        let mut send_buf = vec![0u8; MAX_PACKET];
 
         let encapsulate_result = {
             let mut peer = self.tunn.lock().await;
@@ -180,7 +182,7 @@ impl WgPeerData {
     /// decapsulates them, and dispatches newly received IP packets.
     #[tracing::instrument]
     pub async fn handle_one_packet_from_peer(&self, recv_buf: &[u8]) {
-        let mut send_buf = [0u8; MAX_PACKET];
+        let mut send_buf = vec![0u8; MAX_PACKET];
         let data = &recv_buf[..];
         let decapsulate_result = {
             let mut peer = self.tunn.lock().await;
@@ -200,7 +202,7 @@ impl WgPeerData {
                 };
                 let mut peer = self.tunn.lock().await;
                 loop {
-                    let mut send_buf = [0u8; MAX_PACKET];
+                    let mut send_buf = vec![0u8; MAX_PACKET];
                     match peer.decapsulate(None, &[], &mut send_buf) {
                         TunnResult::WriteToNetwork(packet) => {
                             match self.udp.send_to(packet, self.endpoint).await {
@@ -288,10 +290,11 @@ impl WgPeerData {
             }
             TunnResult::Done => {
                 // Sleep for a bit
-                tokio::time::sleep(Duration::from_millis(1)).await;
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
             other => {
                 tracing::warn!("Unexpected WireGuard routine task state: {:?}", other);
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         };
     }
@@ -299,7 +302,7 @@ impl WgPeerData {
     /// WireGuard Routine task. Handles Handshake, keep-alive, etc.
     pub async fn routine_task(self) {
         loop {
-            let mut send_buf = [0u8; MAX_PACKET];
+            let mut send_buf = vec![0u8; MAX_PACKET];
             let tun_result = { self.tunn.lock().await.update_timers(&mut send_buf) };
             self.handle_routine_tun_result(tun_result).await;
         }
@@ -462,7 +465,7 @@ impl WgTunnelListener {
             }
         });
 
-        let mut buf = [0u8; 4096];
+        let mut buf = vec![0u8; MAX_PACKET];
         loop {
             let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
                 tracing::error!("Failed to receive from UDP socket");
@@ -508,7 +511,14 @@ impl TunnelListener for WgTunnelListener {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+
+        let tunnel_url: TunnelUrl = self.addr.clone().into();
+        if let Some(bind_dev) = tunnel_url.bind_dev() {
+            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
+        } else {
+            setup_sokcet2(&socket2_socket, &addr)?;
+        }
+
         self.udp = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
         self.tasks.spawn(Self::handle_udp_incoming(
             self.get_udp_socket(),
@@ -636,7 +646,7 @@ impl WgTunnelConnector {
         let init = Self::create_handshake_init(&mut my_tun);
         udp.send_to(&init, addr).await?;
 
-        let mut buf = [0u8; MAX_PACKET];
+        let mut buf = vec![0u8; MAX_PACKET];
         let (n, _) = udp.recv_from(&mut buf).await.unwrap();
         let keepalive = Self::parse_handshake_resp(&mut my_tun, &buf[..n]);
         udp.send_to(&keepalive, addr).await?;
@@ -647,7 +657,7 @@ impl WgTunnelConnector {
         let data = wg_peer.data.as_ref().unwrap().clone();
         wg_peer.tasks.spawn(async move {
             loop {
-                let mut buf = [0u8; MAX_PACKET];
+                let mut buf = vec![0u8; MAX_PACKET];
                 let (n, recv_addr) = data.udp.recv_from(&mut buf).await.unwrap();
                 if recv_addr != addr {
                     continue;

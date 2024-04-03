@@ -25,7 +25,7 @@ use crate::{
         PeerId,
     },
     define_tunnel_filter_chain,
-    peers::packet::{ArchivedPacketType, CtrlPacketPayload},
+    peers::packet::{ArchivedPacketType, CtrlPacketPayload, PacketType},
     rpc::{PeerConnInfo, PeerConnStats},
     tunnels::{
         stats::{Throughput, WindowLatency},
@@ -52,6 +52,12 @@ macro_rules! wait_response {
 
         let $out_var;
         let rsp_bytes = Packet::decode(&rsp_vec);
+        if rsp_bytes.packet_type != PacketType::HandShake {
+            tracing::error!("unexpected packet type: {:?}", rsp_bytes);
+            return Err(TunnelError::WaitRespError(
+                "unexpected packet type".to_owned(),
+            ));
+        }
         let resp_payload = CtrlPacketPayload::from_packet(&rsp_bytes);
         match &resp_payload {
             $pattern => $out_var = $value,

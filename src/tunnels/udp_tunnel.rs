@@ -23,9 +23,9 @@ use crate::{
 
 use super::{
     codec::BytesCodec,
-    common::{setup_sokcet2, FramedTunnel, TunnelWithCustomInfo},
+    common::{setup_sokcet2, setup_sokcet2_ext, FramedTunnel, TunnelWithCustomInfo},
     ring_tunnel::create_ring_tunnel_pair,
-    DatagramSink, DatagramStream, Tunnel, TunnelListener,
+    DatagramSink, DatagramStream, Tunnel, TunnelListener, TunnelUrl,
 };
 
 pub const UDP_DATA_MTU: usize = 65000;
@@ -323,7 +323,14 @@ impl TunnelListener for UdpTunnelListener {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+
+        let tunnel_url: TunnelUrl = self.addr.clone().into();
+        if let Some(bind_dev) = tunnel_url.bind_dev() {
+            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
+        } else {
+            setup_sokcet2(&socket2_socket, &addr)?;
+        }
+
         self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
 
         let socket = self.socket.as_ref().unwrap().clone();
@@ -335,7 +342,7 @@ impl TunnelListener for UdpTunnelListener {
             async move {
                 loop {
                     let mut buf = BytesMut::new();
-                    buf.resize(2500, 0);
+                    buf.resize(UDP_DATA_MTU, 0);
                     let (_size, addr) = socket.recv_from(&mut buf).await.unwrap();
                     let _ = buf.split_off(_size);
                     log::trace!(
@@ -597,7 +604,16 @@ mod tests {
     use rand::Rng;
     use tokio::time::timeout;
 
-    use crate::tunnels::common::tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong};
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx,
+        tunnels::{
+            check_scheme_and_get_socket_addr,
+            common::{
+                get_interface_name_by_ip, setup_sokcet2_ext,
+                tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong},
+            },
+        },
+    };
 
     use super::*;
 
@@ -722,5 +738,35 @@ mod tests {
         let b = encode_to_bytes::<_, UDP_DATA_MTU>(&udp_packet);
         let a_udp_packet = rkyv_util::decode_from_bytes::<UdpPacket>(&b).unwrap();
         println!("{:?}, {:?}", udp_packet, a_udp_packet);
+    }
+
+    #[tokio::test]
+    async fn bind_multi_ip_to_same_dev() {
+        let global_ctx = get_mock_global_ctx();
+        let ips = global_ctx
+            .get_ip_collector()
+            .collect_ip_addrs()
+            .await
+            .interface_ipv4s;
+        if ips.is_empty() {
+            return;
+        }
+        let bind_dev = get_interface_name_by_ip(&ips[0].parse().unwrap());
+
+        for ip in ips {
+            println!("bind to ip: {:?}, {:?}", ip, bind_dev);
+            let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
+                &format!("udp://{}:11111", ip).parse().unwrap(),
+                "udp",
+            )
+            .unwrap();
+            let socket2_socket = socket2::Socket::new(
+                socket2::Domain::for_address(addr),
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )
+            .unwrap();
+            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
+        }
     }
 }
