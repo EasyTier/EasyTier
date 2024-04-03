@@ -15,33 +15,37 @@ struct InterfaceFilter {
 
 #[cfg(target_os = "linux")]
 impl InterfaceFilter {
-    async fn is_iface_bridge(&self) -> bool {
-        let path = format!("/sys/class/net/{}/bridge", self.iface.name);
+    async fn is_tun_tap_device(&self) -> bool {
+        let path = format!("/sys/class/net/{}/tun_flags", self.iface.name);
         tokio::fs::metadata(&path).await.is_ok()
     }
 
-    async fn is_iface_phsical(&self) -> bool {
-        let path = format!("/sys/class/net/{}/device", self.iface.name);
-        tokio::fs::metadata(&path).await.is_ok()
+    async fn has_valid_ip(&self) -> bool {
+        self.iface
+            .ips
+            .iter()
+            .map(|ip| ip.ip())
+            .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
     }
 
     async fn filter_iface(&self) -> bool {
         tracing::trace!(
-            "filter linux iface: {:?}, is_point_to_point: {}, is_loopback: {}, is_up: {}, is_lower_up: {}, is_bridge: {}, is_physical: {}",
+            "filter linux iface: {:?}, is_point_to_point: {}, is_loopback: {}, is_up: {}, is_lower_up: {}, is_tun: {}, has_valid_ip: {}",
             self.iface,
             self.iface.is_point_to_point(),
             self.iface.is_loopback(),
             self.iface.is_up(),
             self.iface.is_lower_up(),
-            self.is_iface_bridge().await,
-            self.is_iface_phsical().await,
+            self.is_tun_tap_device().await,
+            self.has_valid_ip().await
         );
 
         !self.iface.is_point_to_point()
             && !self.iface.is_loopback()
             && self.iface.is_up()
             && self.iface.is_lower_up()
-            && (self.is_iface_bridge().await || self.is_iface_phsical().await)
+            && !self.is_tun_tap_device().await
+            && self.has_valid_ip().await
     }
 }
 
@@ -85,7 +89,22 @@ impl InterfaceFilter {
 #[cfg(target_os = "windows")]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
-        !self.iface.is_point_to_point() && !self.iface.is_loopback() && self.iface.is_up()
+        tracing::debug!(
+            "iface_name: {:?}, p2p: {:?}, is_up: {:?}, iface: {:?}",
+            self.iface.name,
+            self.iface.is_point_to_point(),
+            self.iface.is_up(),
+            self.iface
+        );
+        !self.iface.is_point_to_point()
+            && !self.iface.is_loopback()
+            && self
+                .iface
+                .ips
+                .iter()
+                .map(|ip| ip.ip())
+                .any(|ip| !ip.is_loopback() && !ip.is_unspecified() && !ip.is_multicast())
+            && self.iface.mac.map(|mac| !mac.is_zero()).unwrap_or(false)
     }
 }
 
@@ -154,6 +173,25 @@ impl IPCollector {
         return self.cached_ip_list.read().await.deref().clone();
     }
 
+    pub async fn collect_interfaces(net_ns: NetNS) -> Vec<NetworkInterface> {
+        let _g = net_ns.guard();
+        let ifaces = pnet::datalink::interfaces();
+        let mut ret = vec![];
+        for iface in ifaces {
+            let f = InterfaceFilter {
+                iface: iface.clone(),
+            };
+
+            if !f.filter_iface().await {
+                continue;
+            }
+
+            ret.push(iface);
+        }
+
+        ret
+    }
+
     #[tracing::instrument(skip(net_ns))]
     async fn do_collect_ip_addrs(with_public: bool, net_ns: NetNS) -> GetIpListResponse {
         let mut ret = crate::rpc::peer::GetIpListResponse::new();
@@ -170,17 +208,9 @@ impl IPCollector {
             }
         }
 
+        let ifaces = Self::collect_interfaces(net_ns.clone()).await;
         let _g = net_ns.guard();
-        let ifaces = pnet::datalink::interfaces();
         for iface in ifaces {
-            let f = InterfaceFilter {
-                iface: iface.clone(),
-            };
-
-            if !f.filter_iface().await {
-                continue;
-            }
-
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
                 if ip.is_loopback() || ip.is_multicast() {

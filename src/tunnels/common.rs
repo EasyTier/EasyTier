@@ -275,14 +275,15 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
     None
 }
 
-pub(crate) fn setup_sokcet2(
+pub(crate) fn setup_sokcet2_ext(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
+    bind_dev: Option<String>,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
         let is_udp = matches!(socket2_socket.r#type()?, socket2::Type::DGRAM);
-        crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, is_udp)?;
+        crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, bind_dev, is_udp)?;
     }
 
     socket2_socket.set_nonblocking(true)?;
@@ -299,7 +300,7 @@ pub(crate) fn setup_sokcet2(
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
     #[cfg(any(target_os = "ios", target_os = "macos"))]
-    if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
+    if let Some(dev_name) = bind_dev {
         // use IP_BOUND_IF to bind device
         unsafe {
             let dev_idx = nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
@@ -310,12 +311,23 @@ pub(crate) fn setup_sokcet2(
     }
 
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    if let Some(dev_name) = super::common::get_interface_name_by_ip(&bind_addr.ip()) {
+    if let Some(dev_name) = bind_dev {
         tracing::trace!(dev_name = ?dev_name, "bind device");
         socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
     }
 
     Ok(())
+}
+
+pub(crate) fn setup_sokcet2(
+    socket2_socket: &socket2::Socket,
+    bind_addr: &SocketAddr,
+) -> Result<(), TunnelError> {
+    setup_sokcet2_ext(
+        socket2_socket,
+        bind_addr,
+        super::common::get_interface_name_by_ip(&bind_addr.ip()),
+    )
 }
 
 pub mod tests {

@@ -86,6 +86,7 @@ anyhow = "1.0"
 tarpc = { version = "0.32", features = ["tokio1", "serde1"] }
 
 url = { version = "2.5", features = ["serde"] }
+percent-encoding = "2.3.1"
 
 # for tun packet
 byteorder = "1.5.0"
@@ -144,8 +145,8 @@ serial_test = "3.0.0"
 rstest = "0.18.2"
 
 [profile.dev]
-panic = "abort"
+panic = "unwind"
 
 [profile.release]
-panic = "abort"
+panic = "unwind"
 lto = true

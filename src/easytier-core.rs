@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::net::SocketAddr;
+use std::{backtrace, io::Write as _, net::SocketAddr};
 
 use anyhow::Context;
 use clap::Parser;
@@ -318,9 +318,21 @@ fn peer_conn_info_to_string(p: crate::rpc::PeerConnInfo) -> String {
     )
 }
 
+fn setup_panic_handler() {
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = backtrace::Backtrace::force_capture();
+        println!("panic occurred: {:?}", info);
+        let _ = std::fs::File::create("easytier-panic.log")
+            .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
+        std::process::exit(1);
+    }));
+}
+
 #[tokio::main(flavor = "current_thread")]
 #[tracing::instrument]
 pub async fn main() {
+    setup_panic_handler();
+
     let cli = Cli::parse();
     tracing::info!(cli = ?cli, "cli args parsed");
 
