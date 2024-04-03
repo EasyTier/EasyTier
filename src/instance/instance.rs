@@ -403,6 +403,7 @@ impl Instance {
 
     fn run_proxy_cidrs_route_updater(&mut self) {
         let peer_mgr = self.peer_manager.clone();
+        let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.virtual_nic.as_ref().unwrap().clone();
 
@@ -418,6 +419,10 @@ impl Instance {
                         };
                         proxy_cidrs.push(cidr);
                     }
+                }
+                // add vpn portal cidr to proxy_cidrs
+                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
+                    proxy_cidrs.push(vpn_cfg.client_cidr);
                 }
 
                 // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.

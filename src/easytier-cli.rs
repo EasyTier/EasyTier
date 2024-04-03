@@ -269,9 +269,9 @@ impl CommandHandler {
         struct PeerTableItem {
             ipv4: String,
             hostname: String,
-            cost: i32,
-            lat_ms: f64,
-            loss_rate: f64,
+            cost: String,
+            lat_ms: String,
+            loss_rate: String,
             rx_bytes: String,
             tx_bytes: String,
             tunnel_proto: String,
@@ -279,14 +279,26 @@ impl CommandHandler {
             id: String,
         }
 
+        fn cost_to_str(cost: i32) -> String {
+            if cost == 1 {
+                "p2p".to_string()
+            } else {
+                format!("relay({})", cost)
+            }
+        }
+
+        fn float_to_str(f: f64, precision: usize) -> String {
+            format!("{:.1$}", f, precision)
+        }
+
         impl From<PeerRoutePair> for PeerTableItem {
             fn from(p: PeerRoutePair) -> Self {
                 PeerTableItem {
                     ipv4: p.route.ipv4_addr.clone(),
                     hostname: p.route.hostname.clone(),
-                    cost: p.route.cost,
-                    lat_ms: p.get_latency_ms().unwrap_or(0.0),
-                    loss_rate: p.get_loss_rate().unwrap_or(0.0),
+                    cost: cost_to_str(p.route.cost),
+                    lat_ms: float_to_str(p.get_latency_ms().unwrap_or(0.0), 3),
+                    loss_rate: float_to_str(p.get_loss_rate().unwrap_or(0.0), 3),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or(vec![]).join(",").to_string(),

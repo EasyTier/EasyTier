@@ -158,13 +158,13 @@
  Taking two nodes as an example, Node A executes:
  
  ```sh
- sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e 'tcp://easytier.public.kkrainbow.top:11010'
+ sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e tcp://easytier.public.kkrainbow.top:11010
  ```
  
  Node B executes
  
  ```sh
- sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e 'tcp://easytier.public.kkrainbow.top:11010'
+ sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e tcp://easytier.public.kkrainbow.top:11010
  ```
  
  After the command is successfully executed, Node A can access Node B through the virtual IP 10.144.144.2.

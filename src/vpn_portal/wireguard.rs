@@ -232,7 +232,11 @@ impl VpnPortal for WireGuard {
             .map(|x| x.proxy_cidrs.iter().map(String::to_string))
             .flatten()
             .collect::<Vec<_>>();
-        for ipv4 in routes.iter().map(|x| &x.ipv4_addr) {
+        for ipv4 in routes
+            .iter()
+            .map(|x| x.ipv4_addr.clone())
+            .chain(global_ctx.get_ipv4().iter().map(|x| x.to_string()))
+        {
             let Ok(ipv4) = ipv4.parse() else {
                 continue;
             };
