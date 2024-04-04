@@ -75,7 +75,7 @@ impl WindowsBuild {
 
     pub fn check_for_win() {
         // add third_party dir to link search path
-        println!("cargo:rustc-link-search=native=third_party/");
+        println!("cargo:rustc-link-search=native=easytier/third_party/");
         let protoc_path = if let Some(o) = Self::check_protoc_exist() {
             println!("cargo:info=use os exist protoc: {:?}", o);
             o

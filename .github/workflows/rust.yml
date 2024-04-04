@@ -95,8 +95,8 @@ jobs:
         # windows is the only OS using a different convention for executable file name
         if [[ $OS =~ ^windows.*$ ]]; then
             SUFFIX=.exe
-            cp third_party/Packet.dll ./artifacts/objects/
-            cp third_party/wintun.dll ./artifacts/objects/
+            cp easytier/third_party/Packet.dll ./artifacts/objects/
+            cp easytier/third_party/wintun.dll ./artifacts/objects/
         fi
         if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
           TAG=$GITHUB_REF_NAME

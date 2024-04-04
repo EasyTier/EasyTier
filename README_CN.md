@@ -67,7 +67,7 @@ nodea <-----> nodeb
    ```
    命令执行成功会有如下打印。
 
-   ![alt text](assets/image-2.png)
+   ![alt text](/assets/image-2.png)
 
 2. 在节点 B 执行
    ```sh
@@ -85,11 +85,11 @@ nodea <-----> nodeb
    ```sh
    easytier-cli peer
    ```
-   ![alt text](assets/image.png)
+   ![alt text](/assets/image.png)
    ```sh
    easytier-cli route
    ```
-   ![alt text](assets/image-1.png)
+   ![alt text](/assets/image-1.png)
 
 ---
 
@@ -139,7 +139,7 @@ sudo easytier-core --ipv4 10.144.144.2 -n 10.1.1.0/24
    ```sh
    easytier-cli route
    ```
-   ![alt text](assets/image-3.png)
+   ![alt text](/assets/image-3.png)
 
 2. 测试节点 A 是否可访问被代理子网下的节点
 
