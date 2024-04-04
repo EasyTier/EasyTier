@@ -67,7 +67,7 @@
     ```
     Successful execution of the command will print the following.
  
-    ![alt text](assets/image-2.png)
+    ![alt text](/assets/image-2.png)
  
  2. Execute on Node B
     ```sh
@@ -85,11 +85,11 @@
     ```sh
     easytier-cli peer
     ```
-    ![alt text](assets/image.png)
+    ![alt text](/assets/image.png)
     ```sh
     easytier-cli route
     ```
-    ![alt text](assets/image-1.png)
+    ![alt text](/assets/image-1.png)
 
 ---
  
@@ -139,7 +139,7 @@
     ```sh
     easytier-cli route
     ```
-    ![alt text](assets/image-3.png)
+    ![alt text](/assets/image-3.png)
  
 2. Test whether Node A can access nodes under the proxied subnet
  
