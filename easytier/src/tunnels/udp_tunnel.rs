@@ -23,7 +23,10 @@ use crate::{
 
 use super::{
     codec::BytesCodec,
-    common::{setup_sokcet2, setup_sokcet2_ext, FramedTunnel, TunnelWithCustomInfo},
+    common::{
+        setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures, FramedTunnel,
+        TunnelWithCustomInfo,
+    },
     ring_tunnel::create_ring_tunnel_pair,
     DatagramSink, DatagramStream, Tunnel, TunnelListener, TunnelUrl,
 };
@@ -555,7 +558,7 @@ impl UdpTunnelConnector {
     }
 
     async fn connect_with_custom_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let mut futures = FuturesUnordered::new();
+        let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
             let socket2_socket = socket2::Socket::new(
@@ -567,14 +570,7 @@ impl UdpTunnelConnector {
             let socket = UdpSocket::from_std(socket2_socket.into())?;
             futures.push(self.try_connect_with_socket(socket));
         }
-
-        let Some(ret) = futures.next().await else {
-            return Err(super::TunnelError::CommonError(
-                "join connect futures failed".to_owned(),
-            ));
-        };
-
-        return ret;
+        wait_for_connect_futures(futures).await
     }
 }
 

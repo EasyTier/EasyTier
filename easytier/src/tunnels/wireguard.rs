@@ -27,7 +27,7 @@ use crate::{
 
 use super::{
     check_scheme_and_get_socket_addr,
-    common::{setup_sokcet2, setup_sokcet2_ext},
+    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
     ring_tunnel::create_ring_tunnel_pair,
     DatagramSink, DatagramStream, Tunnel, TunnelError, TunnelListener, TunnelUrl,
 };
@@ -689,7 +689,7 @@ impl super::TunnelConnector for WgTunnelConnector {
         } else {
             self.bind_addrs.clone()
         };
-        let mut futures = FuturesUnordered::new();
+        let futures = FuturesUnordered::new();
 
         for bind_addr in bind_addrs.into_iter() {
             let socket2_socket = socket2::Socket::new(
@@ -707,13 +707,7 @@ impl super::TunnelConnector for WgTunnelConnector {
             ));
         }
 
-        let Some(ret) = futures.next().await else {
-            return Err(super::TunnelError::CommonError(
-                "join connect futures failed".to_owned(),
-            ));
-        };
-
-        return ret;
+        wait_for_connect_futures(futures).await
     }
 
     fn remote_url(&self) -> url::Url {

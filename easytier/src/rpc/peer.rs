@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, Default)]
 pub struct GetIpListResponse {
     pub public_ipv4: String,
     pub interface_ipv4s: Vec<String>,

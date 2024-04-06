@@ -1,14 +1,16 @@
 use std::net::SocketAddr;
 
 use async_trait::async_trait;
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio_util::codec::{FramedRead, FramedWrite, LengthDelimitedCodec};
 
 use crate::tunnels::common::setup_sokcet2;
 
 use super::{
-    check_scheme_and_get_socket_addr, common::FramedTunnel, Tunnel, TunnelInfo, TunnelListener,
+    check_scheme_and_get_socket_addr,
+    common::{wait_for_connect_futures, FramedTunnel},
+    Tunnel, TunnelInfo, TunnelListener,
 };
 
 #[derive(Debug)]
@@ -115,7 +117,7 @@ impl TcpTunnelConnector {
     }
 
     async fn connect_with_custom_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let mut futures = FuturesUnordered::new();
+        let futures = FuturesUnordered::new();
         let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
 
         for bind_addr in self.bind_addrs.iter() {
@@ -132,12 +134,7 @@ impl TcpTunnelConnector {
             futures.push(socket.connect(dst_addr.clone()));
         }
 
-        let Some(ret) = futures.next().await else {
-            return Err(super::TunnelError::CommonError(
-                "join connect futures failed".to_owned(),
-            ));
-        };
-
+        let ret = wait_for_connect_futures(futures).await;
         return get_tunnel_with_tcp_stream(ret?, self.addr.clone().into());
     }
 }
@@ -162,7 +159,7 @@ impl super::TunnelConnector for TcpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use futures::SinkExt;
+    use futures::{SinkExt, StreamExt};
 
     use crate::tunnels::{
         common::tests::{_tunnel_bench, _tunnel_pingpong},

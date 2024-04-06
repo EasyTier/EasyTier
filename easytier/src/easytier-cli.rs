@@ -4,11 +4,13 @@ use std::{net::SocketAddr, vec};
 
 use clap::{command, Args, Parser, Subcommand};
 use rpc::vpn_portal_rpc_client::VpnPortalRpcClient;
+use utils::{list_peer_route_pair, PeerRoutePair};
 
 mod arch;
 mod common;
 mod rpc;
 mod tunnels;
+mod utils;
 
 use crate::{
     common::stun::{StunInfoCollector, UdpNatTypeDetector},
@@ -17,6 +19,7 @@ use crate::{
         peer_center_rpc_client::PeerCenterRpcClient, peer_manage_rpc_client::PeerManageRpcClient,
         *,
     },
+    utils::{cost_to_str, float_to_str},
 };
 use humansize::format_size;
 use tabled::settings::Style;
@@ -94,107 +97,6 @@ enum Error {
     TonicRpcError(#[from] tonic::Status),
 }
 
-#[derive(Debug)]
-struct PeerRoutePair {
-    route: Route,
-    peer: Option<PeerInfo>,
-}
-
-impl PeerRoutePair {
-    fn get_latency_ms(&self) -> Option<f64> {
-        let mut ret = u64::MAX;
-        let p = self.peer.as_ref()?;
-        for conn in p.conns.iter() {
-            let Some(stats) = &conn.stats else {
-                continue;
-            };
-            ret = ret.min(stats.latency_us);
-        }
-
-        if ret == u64::MAX {
-            None
-        } else {
-            Some(f64::from(ret as u32) / 1000.0)
-        }
-    }
-
-    fn get_rx_bytes(&self) -> Option<u64> {
-        let mut ret = 0;
-        let p = self.peer.as_ref()?;
-        for conn in p.conns.iter() {
-            let Some(stats) = &conn.stats else {
-                continue;
-            };
-            ret += stats.rx_bytes;
-        }
-
-        if ret == 0 {
-            None
-        } else {
-            Some(ret)
-        }
-    }
-
-    fn get_tx_bytes(&self) -> Option<u64> {
-        let mut ret = 0;
-        let p = self.peer.as_ref()?;
-        for conn in p.conns.iter() {
-            let Some(stats) = &conn.stats else {
-                continue;
-            };
-            ret += stats.tx_bytes;
-        }
-
-        if ret == 0 {
-            None
-        } else {
-            Some(ret)
-        }
-    }
-
-    fn get_loss_rate(&self) -> Option<f64> {
-        let mut ret = 0.0;
-        let p = self.peer.as_ref()?;
-        for conn in p.conns.iter() {
-            ret += conn.loss_rate;
-        }
-
-        if ret == 0.0 {
-            None
-        } else {
-            Some(ret as f64)
-        }
-    }
-
-    fn get_conn_protos(&self) -> Option<Vec<String>> {
-        let mut ret = vec![];
-        let p = self.peer.as_ref()?;
-        for conn in p.conns.iter() {
-            let Some(tunnel_info) = &conn.tunnel else {
-                continue;
-            };
-            // insert if not exists
-            if !ret.contains(&tunnel_info.tunnel_type) {
-                ret.push(tunnel_info.tunnel_type.clone());
-            }
-        }
-
-        if ret.is_empty() {
-            None
-        } else {
-            Some(ret)
-        }
-    }
-
-    fn get_udp_nat_type(self: &Self) -> String {
-        let mut ret = NatType::Unknown;
-        if let Some(r) = &self.route.stun_info {
-            ret = NatType::try_from(r.udp_nat_type).unwrap();
-        }
-        format!("{:?}", ret)
-    }
-}
-
 struct CommandHandler {
     addr: String,
 }
@@ -239,19 +141,9 @@ impl CommandHandler {
     }
 
     async fn list_peer_route_pair(&self) -> Result<Vec<PeerRoutePair>, Error> {
-        let mut peers = self.list_peers().await?.peer_infos;
-        let mut routes = self.list_routes().await?.routes;
-        let mut pairs: Vec<PeerRoutePair> = vec![];
-
-        for route in routes.iter_mut() {
-            let peer = peers.iter_mut().find(|peer| peer.peer_id == route.peer_id);
-            pairs.push(PeerRoutePair {
-                route: route.clone(),
-                peer: peer.cloned(),
-            });
-        }
-
-        Ok(pairs)
+        let peers = self.list_peers().await?.peer_infos;
+        let routes = self.list_routes().await?.routes;
+        Ok(list_peer_route_pair(peers, routes))
     }
 
     #[allow(dead_code)]
@@ -277,18 +169,6 @@ impl CommandHandler {
             tunnel_proto: String,
             nat_type: String,
             id: String,
-        }
-
-        fn cost_to_str(cost: i32) -> String {
-            if cost == 1 {
-                "p2p".to_string()
-            } else {
-                format!("relay({})", cost)
-            }
-        }
-
-        fn float_to_str(f: f64, precision: usize) -> String {
-            format!("{:.1$}", f, precision)
         }
 
         impl From<PeerRoutePair> for PeerTableItem {

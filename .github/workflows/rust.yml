@@ -104,6 +104,7 @@ jobs:
           TAG=$GITHUB_SHA
         fi
         mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
+        mv ./target/$TARGET/release/easytier-gui"$SUFFIX" ./artifacts/objects/
         mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
         tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
         rm -rf ./artifacts/objects/
@@ -124,7 +125,6 @@ jobs:
         remote-path: /easytier-releases/${{ github.sha }}/
         no-delete-remote-files: true
         retry: 5
-        increment: true
   test:
     runs-on: ubuntu-latest
     steps:
