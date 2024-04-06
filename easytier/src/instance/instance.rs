@@ -35,6 +35,35 @@ use tokio_stream::wrappers::ReceiverStream;
 use super::listeners::ListenerManager;
 use super::virtual_nic;
 
+#[derive(Clone)]
+struct IpProxy {
+    tcp_proxy: Arc<TcpProxy>,
+    icmp_proxy: Arc<IcmpProxy>,
+    udp_proxy: Arc<UdpProxy>,
+}
+
+impl IpProxy {
+    fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Self, Error> {
+        let tcp_proxy = TcpProxy::new(global_ctx.clone(), peer_manager.clone());
+        let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
+            .with_context(|| "create icmp proxy failed")?;
+        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
+            .with_context(|| "create udp proxy failed")?;
+        Ok(IpProxy {
+            tcp_proxy,
+            icmp_proxy,
+            udp_proxy,
+        })
+    }
+
+    async fn start(&self) -> Result<(), Error> {
+        self.tcp_proxy.start().await?;
+        self.icmp_proxy.start().await?;
+        self.udp_proxy.start().await?;
+        Ok(())
+    }
+}
+
 pub struct Instance {
     inst_name: String,
 
@@ -51,9 +80,7 @@ pub struct Instance {
     direct_conn_manager: Arc<DirectConnectorManager>,
     udp_hole_puncher: Arc<Mutex<UdpHolePunchConnector>>,
 
-    tcp_proxy: Arc<TcpProxy>,
-    icmp_proxy: Arc<IcmpProxy>,
-    udp_proxy: Arc<UdpProxy>,
+    ip_proxy: Option<IpProxy>,
 
     peer_center: Arc<PeerCenterInstance>,
 
@@ -97,14 +124,6 @@ impl Instance {
 
         let udp_hole_puncher = UdpHolePunchConnector::new(global_ctx.clone(), peer_manager.clone());
 
-        let arc_tcp_proxy = TcpProxy::new(global_ctx.clone(), peer_manager.clone());
-        let arc_icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
-            .with_context(|| "create icmp proxy failed")
-            .unwrap();
-        let arc_udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
-            .with_context(|| "create udp proxy failed")
-            .unwrap();
-
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
@@ -123,9 +142,7 @@ impl Instance {
             direct_conn_manager: Arc::new(direct_conn_manager),
             udp_hole_puncher: Arc::new(Mutex::new(udp_hole_puncher)),
 
-            tcp_proxy: arc_tcp_proxy,
-            icmp_proxy: arc_icmp_proxy,
-            udp_proxy: arc_udp_proxy,
+            ip_proxy: None,
 
             peer_center,
 
@@ -269,9 +286,12 @@ impl Instance {
 
         self.run_rpc_server().unwrap();
 
-        self.tcp_proxy.start().await.unwrap();
-        self.icmp_proxy.start().await.unwrap();
-        self.udp_proxy.start().await.unwrap();
+        self.ip_proxy = Some(IpProxy::new(
+            self.get_global_ctx(),
+            self.get_peer_manager(),
+        )?);
+        self.ip_proxy.as_ref().unwrap().start().await?;
+
         self.run_proxy_cidrs_route_updater();
 
         self.udp_hole_puncher.lock().await.run().await?;
@@ -477,5 +497,9 @@ impl Instance {
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
         self.global_ctx.clone()
+    }
+
+    pub fn get_vpn_portal_inst(&self) -> Arc<Mutex<Box<dyn VpnPortal>>> {
+        self.vpn_portal.clone()
     }
 }

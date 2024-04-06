@@ -1,0 +1,48 @@
+[package]
+name = "easytier-gui"
+description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
+homepage = "https://github.com/KKRainbow/EasyTier"
+repository = "https://github.com/KKRainbow/EasyTier"
+version = "0.1.0"
+edition = "2021"
+authors = ["kkrainbow"]
+keywords = ["vpn", "p2p", "network", "easytier"]
+categories = ["network-programming"]
+rust-version = "1.75"
+license-file = "LICENSE"
+readme = "README.md"
+
+[dependencies]
+easytier = { path = "../easytier" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+chrono = "0.4.37"
+
+once_cell = "1.18.0"
+dashmap = "5.5.3"
+egui = { version = "0.27.2" }
+egui-modal = "0.3.6"
+
+humansize = "2.1.3"
+
+eframe = { version = "0.27.2", features = [
+    "default",
+    "serde",
+    "persistence",
+    "wgpu"
+] }
+wgpu = { version = "0.19.3", features = [ "webgpu", "webgl"] }
+
+# For image support:
+egui_extras = { version = "0.27.2", features = ["default", "image"] }
+
+env_logger = { version = "0.10", default-features = false, features = [
+    "auto-color",
+    "humantime",
+] }
+
+egui_tiles = "0.8.0"
+
+derivative = "2.2.0"
+serde = { version = "1.0", features = ["derive"] }
+elevated-command = "1.1.2"

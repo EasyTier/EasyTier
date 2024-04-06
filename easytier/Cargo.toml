@@ -23,6 +23,11 @@ name = "easytier-cli"
 path = "src/easytier-cli.rs"
 test = false
 
+[lib]
+name = "easytier"
+path = "src/lib.rs"
+test = false
+
 [dependencies]
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = [

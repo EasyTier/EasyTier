@@ -22,7 +22,7 @@ pub enum TunnelError {
     CommonError(String),
     #[error("io error")]
     IOError(#[from] std::io::Error),
-    #[error("wait resp error")]
+    #[error("wait resp error {0}")]
     WaitRespError(String),
     #[error("Connect Error: {0}")]
     ConnectError(String),

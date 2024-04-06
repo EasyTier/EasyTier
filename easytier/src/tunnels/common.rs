@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_stream::stream;
-use futures::{Future, FutureExt, Sink, SinkExt, Stream, StreamExt};
+use futures::{stream::FuturesUnordered, Future, FutureExt, Sink, SinkExt, Stream, StreamExt};
 use network_interface::NetworkInterfaceConfig;
 use tokio::{sync::Mutex, time::error::Elapsed};
 
@@ -317,6 +317,29 @@ pub(crate) fn setup_sokcet2_ext(
     }
 
     Ok(())
+}
+
+pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
+    mut futures: FuturesUnordered<Fut>,
+) -> Result<Ret, super::TunnelError>
+where
+    Fut: Future<Output = Result<Ret, E>> + Send + Sync,
+    E: std::error::Error + Into<super::TunnelError> + Send + Sync + 'static,
+{
+    // return last error
+    let mut last_err = None;
+
+    while let Some(ret) = futures.next().await {
+        if let Err(e) = ret {
+            last_err = Some(e.into());
+        } else {
+            return ret.map_err(|e| e.into());
+        }
+    }
+
+    Err(last_err.unwrap_or(super::TunnelError::CommonError(
+        "no connect futures".to_string(),
+    )))
 }
 
 pub(crate) fn setup_sokcet2(
