@@ -4,7 +4,7 @@ use std::{
     hash::Hasher,
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
@@ -120,6 +120,7 @@ struct WgPeerData {
     sink: Arc<Mutex<Pin<Box<dyn DatagramSink>>>>,
     stream: Arc<Mutex<Pin<Box<dyn DatagramStream>>>>,
     wg_type: WgType,
+    stopped: Arc<AtomicBool>,
 }
 
 impl Debug for WgPeerData {
@@ -366,6 +367,8 @@ impl WgPeer {
                 tracing::error!("Failed to handle packet from me: {}", e);
             }
         }
+        data.stopped
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     async fn handle_packet_from_peer(&mut self, packet: &[u8]) {
@@ -395,6 +398,7 @@ impl WgPeer {
             sink: Arc::new(Mutex::new(stunnel.pin_sink())),
             stream: Arc::new(Mutex::new(stunnel.pin_stream())),
             wg_type: self.config.wg_type.clone(),
+            stopped: Arc::new(AtomicBool::new(false)),
         };
 
         self.data = Some(data.clone());
@@ -402,6 +406,14 @@ impl WgPeer {
         self.tasks.spawn(data.routine_task());
 
         ctunnel
+    }
+
+    fn stopped(&self) -> bool {
+        self.data
+            .as_ref()
+            .unwrap()
+            .stopped
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -427,6 +439,8 @@ pub struct WgTunnelListener {
     conn_recv: ConnReceiver,
     conn_send: Option<ConnSender>,
 
+    wg_peer_map: Arc<DashMap<SocketAddr, WgPeer>>,
+
     tasks: JoinSet<()>,
 }
 
@@ -441,6 +455,8 @@ impl WgTunnelListener {
             conn_recv,
             conn_send: Some(conn_send),
 
+            wg_peer_map: Arc::new(DashMap::new()),
+
             tasks: JoinSet::new(),
         }
     }
@@ -453,15 +469,16 @@ impl WgTunnelListener {
         socket: Arc<UdpSocket>,
         config: WgConfig,
         conn_sender: ConnSender,
+        peer_map: Arc<DashMap<SocketAddr, WgPeer>>,
     ) {
         let mut tasks = JoinSet::new();
-        let peer_map: Arc<DashMap<SocketAddr, WgPeer>> = Arc::new(DashMap::new());
 
         let peer_map_clone = peer_map.clone();
         tasks.spawn(async move {
             loop {
-                peer_map_clone.retain(|_, peer| peer.access_time.elapsed().as_secs() < 600);
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                peer_map_clone
+                    .retain(|_, peer| peer.access_time.elapsed().as_secs() < 61 && !peer.stopped());
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
 
@@ -524,6 +541,7 @@ impl TunnelListener for WgTunnelListener {
             self.get_udp_socket(),
             self.config.clone(),
             self.conn_send.take().unwrap(),
+            self.wg_peer_map.clone(),
         ));
 
         Ok(())
@@ -787,5 +805,37 @@ pub mod tests {
             WgTunnelConnector::new("wg://127.0.0.1:5596".parse().unwrap(), client_cfg);
         connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn wg_server_erase_from_map_after_close() {
+        let (server_cfg, client_cfg) = create_wg_config();
+        let mut listener =
+            WgTunnelListener::new("wg://127.0.0.1:5595".parse().unwrap(), server_cfg);
+        listener.listen().await.unwrap();
+
+        const CONN_COUNT: usize = 10;
+
+        tokio::spawn(async move {
+            for _ in 0..CONN_COUNT {
+                let mut connector = WgTunnelConnector::new(
+                    "wg://127.0.0.1:5595".parse().unwrap(),
+                    client_cfg.clone(),
+                );
+                let ret = connector.connect().await;
+                assert!(ret.is_ok());
+                drop(ret);
+            }
+        });
+
+        for _ in 0..CONN_COUNT {
+            let conn = listener.accept().await;
+            assert!(conn.is_ok());
+            drop(conn);
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+        assert_eq!(0, listener.wg_peer_map.len());
     }
 }

@@ -42,13 +42,22 @@ pub type PeerConnId = uuid::Uuid;
 
 macro_rules! wait_response {
     ($stream: ident, $out_var:ident, $pattern:pat_param => $value:expr) => {
-        let rsp_vec = timeout(Duration::from_secs(1), $stream.next()).await;
-        if rsp_vec.is_err() {
+        let Ok(rsp_vec) = timeout(Duration::from_secs(1), $stream.next()).await else {
             return Err(TunnelError::WaitRespError(
                 "wait handshake response timeout".to_owned(),
             ));
-        }
-        let rsp_vec = rsp_vec.unwrap().unwrap()?;
+        };
+        let Some(rsp_vec) = rsp_vec else {
+            return Err(TunnelError::WaitRespError(
+                "wait handshake response get none".to_owned(),
+            ));
+        };
+        let Ok(rsp_vec) = rsp_vec else {
+            return Err(TunnelError::WaitRespError(format!(
+                "wait handshake response get error {}",
+                rsp_vec.err().unwrap()
+            )));
+        };
 
         let $out_var;
         let rsp_bytes = Packet::decode(&rsp_vec);
