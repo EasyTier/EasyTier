@@ -1,0 +1,37 @@
+{
+  "name": "easytier-gui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^1",
+    "pinia": "^2.1.7",
+    "primeflex": "^3.3.1",
+    "primeicons": "^7.0.0",
+    "primevue": "^3.51.0",
+    "vue": "^3.3.4",
+    "vue-router": "^4.3.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1",
+    "@types/uuid": "^9.0.8",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "autoprefixer": "^10.4.19",
+    "naive-ui": "^2.38.1",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.0.2",
+    "unplugin-vue-components": "^0.26.0",
+    "uuid": "^9.0.1",
+    "vfonts": "^0.0.3",
+    "vite": "^5.0.0",
+    "vue-i18n": "^9.12.0",
+    "vue-tsc": "^1.8.5"
+  }
+}

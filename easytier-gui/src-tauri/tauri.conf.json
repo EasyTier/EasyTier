@@ -1,0 +1,49 @@
+{
+  "build": {
+    "beforeDevCommand": "yarn dev",
+    "beforeBuildCommand": "yarn build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "easytier-gui",
+    "version": "0.0.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true
+      },
+      "process": {
+        "exit": true
+      }
+    },
+    "windows": [
+      {
+        "title": "easytier-gui",
+        "width": 800,
+        "height": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "systemTray": {
+      "iconPath": "icons/icon.ico",
+      "iconAsTemplate": true
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.kkrainbow.easyiter-client",
+      "icon": [
+        "icons/icon.png",
+        "icons/icon.rgba",
+        "icons/icon.icns",
+        "icons/icon.ico"
+      ]
+    }
+  }
+}

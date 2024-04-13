@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use crate::rpc::cli::{NatType, PeerInfo, Route};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerRoutePair {
     pub route: Route,
     pub peer: Option<PeerInfo>,
