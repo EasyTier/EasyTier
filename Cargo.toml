@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["easytier", "easytier-gui"]
+members = ["easytier",  "easytier-gui/src-tauri"]
+default-members = [ "easytier" ]
 
 [profile.dev]
 panic = "unwind"
 
 [profile.release]
 panic = "unwind"
-lto = true

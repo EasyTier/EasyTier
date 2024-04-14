@@ -13,7 +13,7 @@ use super::{
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum GlobalCtxEvent {
     TunDeviceReady(String),
 

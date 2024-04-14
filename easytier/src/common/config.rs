@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[auto_impl::auto_impl(Box, &)]
 pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
+    fn set_id(&self, id: uuid::Uuid);
 
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
@@ -111,7 +112,7 @@ pub struct Flags {
 struct Config {
     netns: Option<String>,
     instance_name: Option<String>,
-    instance_id: Option<String>,
+    instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
@@ -246,19 +247,15 @@ impl ConfigLoader for TomlConfigLoader {
         let mut locked_config = self.config.lock().unwrap();
         if locked_config.instance_id.is_none() {
             let id = uuid::Uuid::new_v4();
-            locked_config.instance_id = Some(id.to_string());
+            locked_config.instance_id = Some(id);
             id
         } else {
-            uuid::Uuid::parse_str(locked_config.instance_id.as_ref().unwrap())
-                .with_context(|| {
-                    format!(
-                        "failed to parse instance id as uuid: {}, you can use this id: {}",
-                        locked_config.instance_id.as_ref().unwrap(),
-                        uuid::Uuid::new_v4()
-                    )
-                })
-                .unwrap()
+            locked_config.instance_id.as_ref().unwrap().clone()
         }
+    }
+
+    fn set_id(&self, id: uuid::Uuid) {
+        self.config.lock().unwrap().instance_id = Some(id);
     }
 
     fn get_network_identity(&self) -> NetworkIdentity {
