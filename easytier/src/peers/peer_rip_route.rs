@@ -15,14 +15,12 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
-    peers::{
-        route_trait::{Route, RouteInterfaceBox},
-    },
+    peers::route_trait::{Route, RouteInterfaceBox},
     rpc::{NatType, StunInfo},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
-use super::{PeerPacketFilter};
+use super::PeerPacketFilter;
 
 const SEND_ROUTE_PERIOD_SEC: u64 = 60;
 const SEND_ROUTE_FAST_REPLY_SEC: u64 = 5;

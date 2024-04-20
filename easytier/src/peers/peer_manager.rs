@@ -19,10 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::bytes::{Bytes, BytesMut};
 
 use crate::{
-    common::{
-        error::Error, global_ctx::ArcGlobalCtx,
-        PeerId,
-    },
+    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
     peers::{
         packet, peer_rpc::PeerRpcManagerTransport, route_trait::RouteInterface,
         zc_peer_conn::PeerConn, PeerPacketFilter,
@@ -268,11 +265,11 @@ impl PeerManager {
         self.tasks.lock().await.spawn(async move {
             log::trace!("start_peer_recv");
             while let Some(ret) = recv.next().await {
-                tracing::trace!("peer recv a packet...: {:?}", ret);
                 let Some(hdr) = ret.peer_manager_header() else {
-                    tracing::warn!("invalid packet, skip");
+                    tracing::warn!(?ret, "invalid packet, skip");
                     continue;
                 };
+                tracing::trace!(?hdr, ?ret, "peer recv a packet...");
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
@@ -293,7 +290,10 @@ impl PeerManager {
                 } else {
                     let mut processed = false;
                     let mut zc_packet = Some(ret);
+                    let mut idx = 0;
                     for pipeline in pipe_line.read().await.iter().rev() {
+                        tracing::debug!(?zc_packet, ?idx, "try_process_packet_from_peer");
+                        idx += 1;
                         zc_packet = pipeline
                             .try_process_packet_from_peer(zc_packet.unwrap())
                             .await;
@@ -495,7 +495,7 @@ impl PeerManager {
             return Ok(());
         }
 
-        // let msg = self.run_nic_packet_process_pipeline(msg).await;
+        // TODO: let msg = self.run_nic_packet_process_pipeline(msg).await;
         let mut errs: Vec<Error> = vec![];
 
         let mut msg = Some(msg);

@@ -17,7 +17,7 @@ pub mod foreign_network_manager;
 #[cfg(test)]
 pub mod tests;
 
-use tokio_util::bytes::{BytesMut};
+use tokio_util::bytes::BytesMut;
 
 use crate::tunnel::packet_def::ZCPacket;
 
@@ -25,7 +25,7 @@ use crate::tunnel::packet_def::ZCPacket;
 #[auto_impl::auto_impl(Arc)]
 pub trait PeerPacketFilter {
     async fn try_process_packet_from_peer(&self, _zc_packet: ZCPacket) -> Option<ZCPacket> {
-        None
+        Some(_zc_packet)
     }
 }
 

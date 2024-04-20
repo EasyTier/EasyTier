@@ -19,8 +19,6 @@ use crate::{
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
-
-
 type PeerRpcServiceId = u32;
 type PeerRpcTransactId = u32;
 
@@ -115,7 +113,7 @@ impl PeerRpcManager {
                                 continue;
                             };
 
-                            tracing::trace!(resp = ?resp, "recv packet from client");
+                            tracing::debug!(resp = ?resp, "server recv packet from service provider");
                             if resp.is_err() {
                                 tracing::warn!(err = ?resp.err(),
                                     "[PEER RPC MGR] client_transport in server side got channel error, ignore it.");
@@ -144,6 +142,7 @@ impl PeerRpcManager {
                         }
                         Some(packet) = packet_receiver.recv() => {
                             let info = Self::parse_rpc_packet(&packet);
+                            tracing::debug!(?info, "server recv packet from peer");
                             if let Err(e) = info {
                                 tracing::error!(error = ?e, packet = ?packet, "parse rpc packet failed");
                                 continue;
@@ -256,6 +255,7 @@ impl PeerRpcManager {
                 };
 
                 let info = Self::parse_rpc_packet(&o).unwrap();
+                tracing::debug!(?info, "recv rpc packet from peer");
 
                 if info.is_req {
                     if !service_registry.contains_key(&info.service_id) {
@@ -339,6 +339,8 @@ impl PeerRpcManager {
                     a.unwrap(),
                 );
 
+                tracing::debug!(?packet, "client send rpc packet to peer");
+
                 if let Err(e) = tspt.send(packet, dst_peer_id).await {
                     tracing::error!(error = ?e, dst_peer_id = ?dst_peer_id, "send to peer failed");
                 }
@@ -356,6 +358,7 @@ impl PeerRpcManager {
                     tracing::error!(error = ?e, "parse rpc packet failed");
                     continue;
                 }
+                tracing::debug!(?info, "client recv rpc packet from peer");
 
                 let decoded = postcard::from_bytes(&info.unwrap().content.as_slice());
                 if let Err(e) = decoded {
@@ -394,7 +397,6 @@ mod tests {
 
     use futures::{SinkExt, StreamExt};
     use tokio::sync::Mutex;
-    
 
     use crate::{
         common::{error::Error, new_peer_id, PeerId},
