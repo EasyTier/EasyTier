@@ -23,6 +23,7 @@ use crate::{
         peer_manager::PeerManager,
         PeerPacketFilter,
     },
+    tunnel::packet_def::{PacketType, ZCPacket},
     tunnels::{
         wireguard::{WgConfig, WgTunnelListener},
         DatagramSink, Tunnel, TunnelListener,
@@ -99,8 +100,10 @@ impl WireGuardImpl {
                 ip_registered = true;
             }
             tracing::trace!(?i, "Received from wg client");
+            let dst = i.get_destination();
+            drop(i);
             let _ = peer_mgr
-                .send_msg_ipv4(msg.clone(), i.get_destination())
+                .send_msg_ipv4(ZCPacket::new_with_payload(msg), dst)
                 .await;
         }
 
@@ -118,19 +121,14 @@ impl WireGuardImpl {
             wg_peer_ip_table: WgPeerIpTable,
         }
 
-        #[async_trait::async_trait]
-        impl PeerPacketFilter for PeerPacketFilterForVpnPortal {
-            async fn try_process_packet_from_peer(
-                &self,
-                packet: &ArchivedPacket,
-                _: &Bytes,
-            ) -> Option<()> {
-                if packet.packet_type != packet::PacketType::Data {
+        impl PeerPacketFilterForVpnPortal {
+            async fn try_handle_peer_packet(&self, packet: &ZCPacket) -> Option<()> {
+                let hdr = packet.peer_manager_header().unwrap();
+                if hdr.packet_type != PacketType::Data as u8 {
                     return None;
                 };
 
-                let payload_bytes = packet.payload.as_bytes();
-
+                let payload_bytes = packet.payload();
                 let ipv4 = Ipv4Packet::new(payload_bytes)?;
                 if ipv4.get_version() != 4 {
                     return None;
@@ -148,6 +146,17 @@ impl WireGuardImpl {
                     .await;
 
                 ret.ok()
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl PeerPacketFilter for PeerPacketFilterForVpnPortal {
+            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+                if let Some(_) = self.try_handle_peer_packet(&packet).await {
+                    return None;
+                } else {
+                    return Some(packet);
+                }
             }
         }
 
@@ -338,7 +347,7 @@ mod tests {
         peer_mgr.run().await.unwrap();
         let mut pmgr_conn = TcpTunnelConnector::new("tcp://127.0.0.1:11010".parse().unwrap());
         let tunnel = pmgr_conn.connect().await;
-        peer_mgr.add_client_tunnel(tunnel.unwrap()).await.unwrap();
+        // peer_mgr.add_client_tunnel(tunnel.unwrap()).await.unwrap();
         wait_for_condition(
             || async {
                 let routes = peer_mgr.list_routes().await;

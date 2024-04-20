@@ -46,6 +46,7 @@ pub enum PacketType {
     Ping = 4,
     Pong = 5,
     TaRpc = 6,
+    Route = 7,
 }
 
 #[repr(C, packed)]
@@ -219,6 +220,15 @@ impl ZCPacket {
 
     pub fn buf_len(&self) -> usize {
         self.inner.len()
+    }
+
+    pub fn fill_peer_manager_hdr(&mut self, from_peer_id: u32, to_peer_id: u32, packet_type: u8) {
+        let payload_len = self.payload_len();
+        let hdr = self.mut_peer_manager_header().unwrap();
+        hdr.from_peer_id.set(from_peer_id);
+        hdr.to_peer_id.set(to_peer_id);
+        hdr.packet_type = packet_type;
+        hdr.len.set(payload_len as u32);
     }
 
     pub fn into_bytes(mut self, target_packet_type: ZCPacketType) -> Bytes {

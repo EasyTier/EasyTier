@@ -14,13 +14,7 @@ use crate::{
     },
     instance::instance::Instance,
     peers::tests::wait_for_condition,
-    tunnels::{
-        common::tests::_tunnel_pingpong_netns,
-        ring_tunnel::RingTunnelConnector,
-        tcp_tunnel::{TcpTunnelConnector, TcpTunnelListener},
-        udp_tunnel::{UdpTunnelConnector, UdpTunnelListener},
-        wireguard::{WgConfig, WgTunnelConnector},
-    },
+    tunnel::{ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector},
 };
 
 pub fn prepare_linux_namespaces() {
@@ -81,15 +75,16 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
                 "udp://10.1.1.1:11010".parse().unwrap(),
             ));
     } else if proto == "wg" {
-        inst2
-            .get_conn_manager()
-            .add_connector(WgTunnelConnector::new(
-                "wg://10.1.1.1:11011".parse().unwrap(),
-                WgConfig::new_from_network_identity(
-                    &inst1.get_global_ctx().get_network_identity().network_name,
-                    &inst1.get_global_ctx().get_network_identity().network_secret,
-                ),
-            ));
+        todo!("not support")
+        // inst2
+        //     .get_conn_manager()
+        //     .add_connector(WgTunnelConnector::new(
+        //         "wg://10.1.1.1:11011".parse().unwrap(),
+        //         WgConfig::new_from_network_identity(
+        //             &inst1.get_global_ctx().get_network_identity().network_name,
+        //             &inst1.get_global_ctx().get_network_identity().network_secret,
+        //         ),
+        //     ));
     }
 
     inst2
@@ -136,6 +131,8 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
 #[tokio::test]
 #[serial_test::serial]
 pub async fn tcp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
+
     let insts = init_three_node(proto).await;
 
     insts[2]
@@ -215,15 +212,16 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                 "tcp://10.1.2.3:11010".parse().unwrap(),
             ));
     } else if proto == "wg" {
-        inst4
-            .get_conn_manager()
-            .add_connector(WgTunnelConnector::new(
-                "wg://10.1.2.3:11011".parse().unwrap(),
-                WgConfig::new_from_network_identity(
-                    &inst4.get_global_ctx().get_network_identity().network_name,
-                    &inst4.get_global_ctx().get_network_identity().network_secret,
-                ),
-            ));
+        todo!();
+        // inst4
+        //     .get_conn_manager()
+        //     .add_connector(WgTunnelConnector::new(
+        //         "wg://10.1.2.3:11011".parse().unwrap(),
+        //         WgConfig::new_from_network_identity(
+        //             &inst4.get_global_ctx().get_network_identity().network_name,
+        //             &inst4.get_global_ctx().get_network_identity().network_secret,
+        //         ),
+        //     ));
     } else {
         unreachable!("not support");
     }
@@ -266,6 +264,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
 #[tokio::test]
 #[serial_test::serial]
 pub async fn udp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    use crate::tunnel::{common::tests::_tunnel_pingpong_netns, udp::UdpTunnelListener};
+
     let insts = init_three_node(proto).await;
 
     insts[2]

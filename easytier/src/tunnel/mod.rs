@@ -71,7 +71,7 @@ pub trait Tunnel: Send {
 }
 
 #[auto_impl::auto_impl(Arc)]
-pub trait TunnelConnCounter: 'static + Send + Debug {
+pub trait TunnelConnCounter: 'static + Send + Sync + Debug {
     fn get(&self) -> u32;
 }
 
@@ -95,7 +95,7 @@ pub trait TunnelListener: Send {
 
 #[async_trait]
 #[auto_impl::auto_impl(Box)]
-pub trait TunnelConnector {
+pub trait TunnelConnector: Send {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
@@ -113,7 +113,7 @@ impl std::fmt::Debug for dyn Tunnel {
     }
 }
 
-impl std::fmt::Debug for dyn TunnelConnector + Send {
+impl std::fmt::Debug for dyn TunnelConnector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TunnelConnector")
             .field("remote_url", &self.remote_url())

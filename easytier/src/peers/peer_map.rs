@@ -12,29 +12,27 @@ use crate::{
         PeerId,
     },
     rpc::PeerConnInfo,
+    tunnel::packet_def::ZCPacket,
     tunnels::TunnelError,
 };
 
 use super::{
     peer::Peer,
-    peer_conn::{PeerConn, PeerConnId},
     route_trait::ArcRoute,
+    zc_peer_conn::{PeerConn, PeerConnId},
+    PacketRecvChan,
 };
 
 pub struct PeerMap {
     global_ctx: ArcGlobalCtx,
     my_peer_id: PeerId,
     peer_map: DashMap<PeerId, Arc<Peer>>,
-    packet_send: mpsc::Sender<Bytes>,
+    packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
 }
 
 impl PeerMap {
-    pub fn new(
-        packet_send: mpsc::Sender<Bytes>,
-        global_ctx: ArcGlobalCtx,
-        my_peer_id: PeerId,
-    ) -> Self {
+    pub fn new(packet_send: PacketRecvChan, global_ctx: ArcGlobalCtx, my_peer_id: PeerId) -> Self {
         PeerMap {
             global_ctx,
             my_peer_id,
@@ -72,7 +70,7 @@ impl PeerMap {
         self.peer_map.contains_key(&peer_id)
     }
 
-    pub async fn send_msg_directly(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
+    pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         if dst_peer_id == self.my_peer_id {
             return Ok(self
                 .packet_send
@@ -94,31 +92,29 @@ impl PeerMap {
         Ok(())
     }
 
-    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
+    pub async fn get_gateway_peer_id(&self, dst_peer_id: PeerId) -> Option<PeerId> {
         if dst_peer_id == self.my_peer_id {
-            return Ok(self
-                .packet_send
-                .send(msg)
-                .await
-                .with_context(|| "send msg to self failed")?);
+            return Some(dst_peer_id);
         }
 
         // get route info
         let mut gateway_peer_id = None;
         for route in self.routes.read().await.iter() {
             gateway_peer_id = route.get_next_hop(dst_peer_id).await;
-            if gateway_peer_id.is_none() {
-                continue;
-            } else {
-                break;
+            if gateway_peer_id.is_some() {
+                return gateway_peer_id;
             }
         }
 
-        if gateway_peer_id.is_none() && self.has_peer(dst_peer_id) {
-            gateway_peer_id = Some(dst_peer_id);
+        if self.has_peer(dst_peer_id) {
+            return Some(dst_peer_id);
         }
 
-        let Some(gateway_peer_id) = gateway_peer_id else {
+        None
+    }
+
+    pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+        let Some(gateway_peer_id) = self.get_gateway_peer_id(dst_peer_id).await else {
             tracing::trace!(
                 "no gateway for dst_peer_id: {}, peers: {:?}, my_peer_id: {}",
                 dst_peer_id,
@@ -128,7 +124,7 @@ impl PeerMap {
             return Err(Error::RouteError(None));
         };
 
-        self.send_msg_directly(msg.clone(), gateway_peer_id).await?;
+        self.send_msg_directly(msg, gateway_peer_id).await?;
         return Ok(());
     }
 

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use bytes::{Buf, Bytes, BytesMut};
 use dashmap::DashMap;
 use futures::{stream::FuturesUnordered, Future, Sink, SinkExt, StreamExt};
+use rand::{Rng, SeedableRng};
 use rkyv::{Archive, Deserialize, Serialize};
 use std::net::SocketAddr;
 use tokio::{
@@ -85,6 +86,21 @@ fn new_sack_packet(conn_id: u32, magic: u64) -> ZCPacket {
             header.len.set(8);
         },
         Some(&mut magic.to_le_bytes()),
+    )
+}
+
+pub fn new_hole_punch_packet() -> ZCPacket {
+    // generate a 128 bytes vec with random data
+    let mut rng = rand::rngs::StdRng::from_entropy();
+    let mut buf = vec![0u8; 128];
+    rng.fill(&mut buf[..]);
+    new_udp_packet(
+        |header| {
+            header.msg_type = UdpPacketType::HolePunch as u8;
+            header.conn_id.set(0);
+            header.len.set(0);
+        },
+        Some(&mut buf),
     )
 }
 

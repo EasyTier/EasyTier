@@ -5,11 +5,8 @@ use std::{
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
-    tunnels::{
-        ring_tunnel::RingTunnelConnector,
-        tcp_tunnel::TcpTunnelConnector,
-        udp_tunnel::UdpTunnelConnector,
-        wireguard::{WgConfig, WgTunnelConnector},
+    tunnel::{
+        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
         TunnelConnector,
     },
 };
@@ -19,7 +16,7 @@ pub mod manual;
 pub mod udp_hole_punch;
 
 async fn set_bind_addr_for_peer_connector(
-    connector: &mut impl TunnelConnector,
+    connector: &mut (impl TunnelConnector + ?Sized),
     is_ipv4: bool,
     ip_collector: &Arc<IPCollector>,
 ) {
@@ -45,7 +42,7 @@ async fn set_bind_addr_for_peer_connector(
 pub async fn create_connector_by_url(
     url: &str,
     global_ctx: &ArcGlobalCtx,
-) -> Result<Box<dyn TunnelConnector + Send + Sync + 'static>, Error> {
+) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     match url.scheme() {
         "tcp" => {
@@ -78,19 +75,20 @@ pub async fn create_connector_by_url(
             return Ok(Box::new(connector));
         }
         "wg" => {
-            let dst_addr =
-                crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
-            let nid = global_ctx.get_network_identity();
-            let wg_config =
-                WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
-            let mut connector = WgTunnelConnector::new(url, wg_config);
-            set_bind_addr_for_peer_connector(
-                &mut connector,
-                dst_addr.is_ipv4(),
-                &global_ctx.get_ip_collector(),
-            )
-            .await;
-            return Ok(Box::new(connector));
+            todo!();
+            // let dst_addr =
+            //     crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
+            // let nid = global_ctx.get_network_identity();
+            // let wg_config =
+            //     WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
+            // let mut connector = WgTunnelConnector::new(url, wg_config);
+            // set_bind_addr_for_peer_connector(
+            //     &mut connector,
+            //     dst_addr.is_ipv4(),
+            //     &global_ctx.get_ip_collector(),
+            // )
+            // .await;
+            // return Ok(Box::new(connector));
         }
         _ => {
             return Err(Error::InvalidUrl(url.into()));

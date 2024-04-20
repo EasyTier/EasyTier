@@ -5,6 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use bytes::BufMut;
 use futures::StreamExt;
 
 use tokio::{
@@ -23,22 +24,25 @@ use crate::{
         PeerId,
     },
     peers::{
-        packet, peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport,
-        route_trait::RouteInterface, PeerPacketFilter,
+        packet, peer_rpc::PeerRpcManagerTransport, route_trait::RouteInterface,
+        zc_peer_conn::PeerConn, PeerPacketFilter,
     },
-    tunnels::{SinkItem, Tunnel, TunnelConnector},
+    tunnel::{
+        packet_def::{PacketType, ZCPacket},
+        SinkItem, Tunnel, TunnelConnector,
+    },
 };
 
 use super::{
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkManager,
-    peer_conn::PeerConnId,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
     peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
-    BoxNicPacketFilter, BoxPeerPacketFilter,
+    zc_peer_conn::PeerConnId,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver,
 };
 
 struct RpcTransport {
@@ -46,8 +50,8 @@ struct RpcTransport {
     peers: Weak<PeerMap>,
     foreign_peers: Mutex<Option<Weak<ForeignNetworkClient>>>,
 
-    packet_recv: Mutex<UnboundedReceiver<Bytes>>,
-    peer_rpc_tspt_sender: UnboundedSender<Bytes>,
+    packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
+    peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
 }
 
 #[async_trait::async_trait]
@@ -56,7 +60,7 @@ impl PeerRpcManagerTransport for RpcTransport {
         self.my_peer_id
     }
 
-    async fn send(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
+    async fn send(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         let foreign_peers = self
             .foreign_peers
             .lock()
@@ -67,21 +71,24 @@ impl PeerRpcManagerTransport for RpcTransport {
             .ok_or(Error::Unknown)?;
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
 
-        let ret = peers.send_msg(msg.clone(), dst_peer_id).await;
-
-        if matches!(ret, Err(Error::RouteError(..))) && foreign_peers.has_next_hop(dst_peer_id) {
-            tracing::info!(
+        if let Some(gateway_id) = peers.get_gateway_peer_id(dst_peer_id).await {
+            peers.send_msg(msg, gateway_id).await
+        } else if foreign_peers.has_next_hop(dst_peer_id) {
+            tracing::debug!(
                 ?dst_peer_id,
                 ?self.my_peer_id,
                 "failed to send msg to peer, try foreign network",
             );
-            return foreign_peers.send_msg(msg, dst_peer_id).await;
+            foreign_peers.send_msg(msg, dst_peer_id).await
+        } else {
+            Err(Error::RouteError(Some(format!(
+                "no route for dst_peer_id: {}",
+                dst_peer_id
+            ))))
         }
-
-        ret
     }
 
-    async fn recv(&self) -> Result<Bytes, Error> {
+    async fn recv(&self) -> Result<ZCPacket, Error> {
         if let Some(o) = self.packet_recv.lock().await.recv().await {
             Ok(o)
         } else {
@@ -110,7 +117,7 @@ pub struct PeerManager {
 
     tasks: Arc<Mutex<JoinSet<()>>>,
 
-    packet_recv: Arc<Mutex<Option<mpsc::Receiver<Bytes>>>>,
+    packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
 
     peers: Arc<PeerMap>,
 
@@ -261,17 +268,20 @@ impl PeerManager {
         self.tasks.lock().await.spawn(async move {
             log::trace!("start_peer_recv");
             while let Some(ret) = recv.next().await {
-                log::trace!("peer recv a packet...: {:?}", ret);
-                let packet = packet::Packet::decode(&ret);
-                let from_peer_id: PeerId = packet.from_peer.into();
-                let to_peer_id: PeerId = packet.to_peer.into();
+                tracing::trace!("peer recv a packet...: {:?}", ret);
+                let Some(hdr) = ret.peer_manager_header() else {
+                    tracing::warn!("invalid packet, skip");
+                    continue;
+                };
+                let from_peer_id = hdr.from_peer_id.get();
+                let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
                     log::trace!(
                         "need forward: to_peer_id: {:?}, my_peer_id: {:?}",
                         to_peer_id,
                         my_peer_id
                     );
-                    let ret = peers.send_msg(ret.clone(), to_peer_id).await;
+                    let ret = peers.send_msg(ret, to_peer_id).await;
                     if ret.is_err() {
                         log::error!(
                             "forward packet error: {:?}, dst: {:?}, from: {:?}",
@@ -282,15 +292,18 @@ impl PeerManager {
                     }
                 } else {
                     let mut processed = false;
+                    let mut zc_packet = Some(ret);
                     for pipeline in pipe_line.read().await.iter().rev() {
-                        if let Some(_) = pipeline.try_process_packet_from_peer(&packet, &ret).await
-                        {
+                        zc_packet = pipeline
+                            .try_process_packet_from_peer(zc_packet.unwrap())
+                            .await;
+                        if zc_packet.is_none() {
                             processed = true;
                             break;
                         }
                     }
                     if !processed {
-                        tracing::error!("unexpected packet: {:?}", ret);
+                        tracing::error!(?zc_packet, "unhandled packet");
                     }
                 }
             }
@@ -321,20 +334,14 @@ impl PeerManager {
         }
         #[async_trait::async_trait]
         impl PeerPacketFilter for NicPacketProcessor {
-            async fn try_process_packet_from_peer(
-                &self,
-                packet: &packet::ArchivedPacket,
-                data: &Bytes,
-            ) -> Option<()> {
-                if packet.packet_type == packet::PacketType::Data {
+            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+                let hdr = packet.peer_manager_header().unwrap();
+                if hdr.packet_type == PacketType::Data as u8 {
                     // TODO: use a function to get the body ref directly for zero copy
-                    self.nic_channel
-                        .send(extract_bytes_from_archived_string(data, &packet.payload))
-                        .await
-                        .unwrap();
-                    Some(())
-                } else {
+                    self.nic_channel.send(packet).await.unwrap();
                     None
+                } else {
+                    Some(packet)
                 }
             }
         }
@@ -345,21 +352,18 @@ impl PeerManager {
 
         // for peer rpc packet
         struct PeerRpcPacketProcessor {
-            peer_rpc_tspt_sender: UnboundedSender<Bytes>,
+            peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
         }
 
         #[async_trait::async_trait]
         impl PeerPacketFilter for PeerRpcPacketProcessor {
-            async fn try_process_packet_from_peer(
-                &self,
-                packet: &packet::ArchivedPacket,
-                data: &Bytes,
-            ) -> Option<()> {
-                if packet.packet_type == packet::PacketType::TaRpc {
-                    self.peer_rpc_tspt_sender.send(data.clone()).unwrap();
-                    Some(())
-                } else {
+            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+                let hdr = packet.peer_manager_header().unwrap();
+                if hdr.packet_type == PacketType::TaRpc as u8 {
+                    self.peer_rpc_tspt_sender.send(packet).unwrap();
                     None
+                } else {
+                    Some(packet)
                 }
             }
         }
@@ -409,15 +413,19 @@ impl PeerManager {
                     .upgrade()
                     .ok_or(Error::Unknown)?;
                 let peer_map = self.peers.upgrade().ok_or(Error::Unknown)?;
-
-                let packet_bytes: Bytes =
-                    packet::Packet::new_route_packet(self.my_peer_id, dst_peer_id, route_id, &msg)
-                        .into();
+                let mut buf = BytesMut::new();
+                buf.extend_from_slice(&msg);
+                let mut zc_packet = ZCPacket::new_with_payload(buf);
+                zc_packet.fill_peer_manager_hdr(
+                    self.my_peer_id,
+                    dst_peer_id,
+                    PacketType::Route as u8,
+                );
                 if foreign_client.has_next_hop(dst_peer_id) {
-                    return foreign_client.send_msg(packet_bytes, dst_peer_id).await;
+                    foreign_client.send_msg(zc_packet, dst_peer_id).await
+                } else {
+                    peer_map.send_msg_directly(zc_packet, dst_peer_id).await
                 }
-
-                peer_map.send_msg_directly(packet_bytes, dst_peer_id).await
             }
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
@@ -457,11 +465,11 @@ impl PeerManager {
         data
     }
 
-    pub async fn send_msg(&self, msg: Bytes, dst_peer_id: PeerId) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         self.peers.send_msg(msg, dst_peer_id).await
     }
 
-    pub async fn send_msg_ipv4(&self, msg: BytesMut, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+    pub async fn send_msg_ipv4(&self, msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
         log::trace!(
             "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
             msg,
@@ -487,25 +495,38 @@ impl PeerManager {
             return Ok(());
         }
 
-        let msg = self.run_nic_packet_process_pipeline(msg).await;
+        // let msg = self.run_nic_packet_process_pipeline(msg).await;
         let mut errs: Vec<Error> = vec![];
 
-        for peer_id in dst_peers.iter() {
-            let msg: Bytes =
-                packet::Packet::new_data_packet(self.my_peer_id, peer_id.clone(), &msg).into();
-            let send_ret = self.peers.send_msg(msg.clone(), *peer_id).await;
+        let mut msg = Some(msg);
+        let total_dst_peers = dst_peers.len();
+        for i in 0..total_dst_peers {
+            let mut msg = if i == total_dst_peers - 1 {
+                msg.take().unwrap()
+            } else {
+                msg.clone().unwrap()
+            };
 
-            if matches!(send_ret, Err(Error::RouteError(..)))
-                && self.foreign_network_client.has_next_hop(*peer_id)
-            {
-                let foreign_send_ret = self.foreign_network_client.send_msg(msg, *peer_id).await;
-                if foreign_send_ret.is_ok() {
-                    continue;
+            let peer_id = &dst_peers[i];
+
+            msg.fill_peer_manager_hdr(
+                peer_id.clone(),
+                self.my_peer_id,
+                packet::PacketType::Data as u8,
+            );
+
+            if let Some(gateway) = self.peers.get_gateway_peer_id(*peer_id).await {
+                if let Err(e) = self.peers.send_msg_directly(msg.clone(), gateway).await {
+                    errs.push(e);
                 }
-            }
-
-            if let Err(send_ret) = send_ret {
-                errs.push(send_ret);
+            } else if self.foreign_network_client.has_next_hop(*peer_id) {
+                if let Err(e) = self
+                    .foreign_network_client
+                    .send_msg(msg.clone(), *peer_id)
+                    .await
+                {
+                    errs.push(e);
+                }
             }
         }
 

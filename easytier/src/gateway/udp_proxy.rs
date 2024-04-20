@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use bytes::BytesMut;
 use dashmap::DashMap;
 use pnet::packet::{
     ip::IpNextHeaderProtocols,
@@ -27,6 +28,7 @@ use tracing::Level;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
     peers::{packet, peer_manager::PeerManager, PeerPacketFilter},
+    tunnel::packet_def::{PacketType, ZCPacket},
     tunnels::common::setup_sokcet2,
 };
 
@@ -79,7 +81,7 @@ impl UdpNatEntry {
 
     async fn compose_ipv4_packet(
         self: &Arc<Self>,
-        packet_sender: &mut UnboundedSender<packet::Packet>,
+        packet_sender: &mut UnboundedSender<ZCPacket>,
         buf: &mut [u8],
         src_v4: &SocketAddrV4,
         payload_len: usize,
@@ -140,13 +142,12 @@ impl UdpNatEntry {
 
             tracing::trace!(?ipv4_packet, "udp nat packet response send");
 
-            let peer_packet = packet::Packet::new_data_packet(
-                self.my_peer_id,
-                self.src_peer_id,
-                &ipv4_packet.to_immutable().packet(),
-            );
+            let mut b = BytesMut::new();
+            b.extend_from_slice(ipv4_packet.packet());
+            let mut p = ZCPacket::new_with_payload(b);
+            p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
 
-            if let Err(e) = packet_sender.send(peer_packet) {
+            if let Err(e) = packet_sender.send(p) {
                 tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
                 return Err(Error::AnyhowError(e.into()));
             }
@@ -158,7 +159,7 @@ impl UdpNatEntry {
         Ok(())
     }
 
-    async fn forward_task(self: Arc<Self>, mut packet_sender: UnboundedSender<packet::Packet>) {
+    async fn forward_task(self: Arc<Self>, mut packet_sender: UnboundedSender<ZCPacket>) {
         let mut buf = [0u8; 8192];
         let mut udp_body: &mut [u8] = unsafe { std::mem::transmute(&mut buf[20 + 8..]) };
         let mut ip_id = 1;
@@ -220,31 +221,25 @@ pub struct UdpProxy {
 
     nat_table: Arc<DashMap<UdpNatKey, Arc<UdpNatEntry>>>,
 
-    sender: UnboundedSender<packet::Packet>,
-    receiver: Mutex<Option<UnboundedReceiver<packet::Packet>>>,
+    sender: UnboundedSender<ZCPacket>,
+    receiver: Mutex<Option<UnboundedReceiver<ZCPacket>>>,
 
     tasks: Mutex<JoinSet<()>>,
 }
 
-#[async_trait::async_trait]
-impl PeerPacketFilter for UdpProxy {
-    async fn try_process_packet_from_peer(
-        &self,
-        packet: &packet::ArchivedPacket,
-        _: &Bytes,
-    ) -> Option<()> {
+impl UdpProxy {
+    async fn try_handle_packet(&self, packet: &ZCPacket) -> Option<()> {
         if self.cidr_set.is_empty() {
             return None;
         }
 
         let _ = self.global_ctx.get_ipv4()?;
-
-        if packet.packet_type != packet::PacketType::Data {
+        let hdr = packet.peer_manager_header().unwrap();
+        if hdr.packet_type != PacketType::Data as u8 {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(packet.payload.as_bytes())?;
-
+        let ipv4 = Ipv4Packet::new(packet.payload())?;
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Udp {
             return None;
         }
@@ -272,8 +267,8 @@ impl PeerPacketFilter for UdpProxy {
                 tracing::info!(?packet, ?ipv4, ?udp_packet, "udp nat table entry created");
                 let _g = self.global_ctx.net_ns.guard();
                 Ok(Arc::new(UdpNatEntry::new(
-                    packet.from_peer.into(),
-                    packet.to_peer.into(),
+                    hdr.from_peer_id.get(),
+                    hdr.to_peer_id.get(),
                     nat_key.src_socket,
                 )?))
             })
@@ -313,6 +308,17 @@ impl PeerPacketFilter for UdpProxy {
         }
 
         Some(())
+    }
+}
+
+#[async_trait::async_trait]
+impl PeerPacketFilter for UdpProxy {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        if let Some(_) = self.try_handle_packet(&packet).await {
+            return None;
+        } else {
+            return Some(packet);
+        }
     }
 }
 
@@ -362,9 +368,9 @@ impl UdpProxy {
         let peer_manager = self.peer_manager.clone();
         self.tasks.lock().await.spawn(async move {
             while let Some(msg) = receiver.recv().await {
-                let to_peer_id: PeerId = msg.to_peer.into();
+                let to_peer_id: PeerId = msg.peer_manager_header().unwrap().to_peer_id.get();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let ret = peer_manager.send_msg(msg.into(), to_peer_id).await;
+                let ret = peer_manager.send_msg(msg, to_peer_id).await;
                 if ret.is_err() {
                     tracing::error!("send icmp packet to peer failed: {:?}", ret);
                 }

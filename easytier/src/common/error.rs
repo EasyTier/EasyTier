@@ -2,7 +2,7 @@ use std::{io, result};
 
 use thiserror::Error;
 
-use crate::tunnels;
+use crate::{tunnel, tunnels};
 
 use super::PeerId;
 
@@ -41,6 +41,12 @@ pub enum Error {
 
     #[error("wait resp error: {0}")]
     WaitRespError(String),
+
+    #[error("tunnel error")]
+    TunnelErr(#[from] tunnel::TunnelError),
+
+    #[error("message decode error: {0}")]
+    MessageDecodeError(String),
 }
 
 pub type Result<T> = result::Result<T, Error>;

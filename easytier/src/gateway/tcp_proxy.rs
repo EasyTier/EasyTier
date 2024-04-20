@@ -21,6 +21,7 @@ use crate::common::netns::NetNS;
 use crate::peers::packet::{self, ArchivedPacket};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
+use crate::tunnel::packet_def::{PacketType, ZCPacket};
 
 use super::CidrSet;
 
@@ -83,67 +84,15 @@ pub struct TcpProxy {
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for TcpProxy {
-    async fn try_process_packet_from_peer(&self, packet: &ArchivedPacket, _: &Bytes) -> Option<()> {
-        let ipv4_addr = self.global_ctx.get_ipv4()?;
-
-        if packet.packet_type != packet::PacketType::Data {
+    async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
+        if let Some(_) = self.try_handle_peer_packet(&mut packet).await {
+            if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
+                tracing::error!("send to nic failed: {:?}", e);
+            }
             return None;
-        };
-
-        let payload_bytes = packet.payload.as_bytes();
-
-        let ipv4 = Ipv4Packet::new(payload_bytes)?;
-        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
-            return None;
+        } else {
+            Some(packet)
         }
-
-        if !self.cidr_set.contains_v4(ipv4.get_destination()) {
-            return None;
-        }
-
-        tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
-
-        let mut packet_buffer = BytesMut::with_capacity(payload_bytes.len());
-        packet_buffer.extend_from_slice(&payload_bytes.to_vec());
-
-        let (ip_buffer, tcp_buffer) =
-            packet_buffer.split_at_mut(ipv4.get_header_length() as usize * 4);
-
-        let mut ip_packet = MutableIpv4Packet::new(ip_buffer).unwrap();
-        let mut tcp_packet = MutableTcpPacket::new(tcp_buffer).unwrap();
-
-        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
-        if is_tcp_syn {
-            let source_ip = ip_packet.get_source();
-            let source_port = tcp_packet.get_source();
-            let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
-
-            let dest_ip = ip_packet.get_destination();
-            let dest_port = tcp_packet.get_destination();
-            let dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
-
-            let old_val = self
-                .syn_map
-                .insert(src, Arc::new(NatDstEntry::new(src, dst)));
-            tracing::trace!(src = ?src, dst = ?dst, old_entry = ?old_val, "tcp syn received");
-        }
-
-        ip_packet.set_destination(ipv4_addr);
-        tcp_packet.set_destination(self.get_local_port());
-        Self::update_ipv4_packet_checksum(&mut ip_packet, &mut tcp_packet);
-
-        tracing::trace!(ip_packet = ?ip_packet, tcp_packet = ?tcp_packet, "tcp packet forwarded");
-
-        if let Err(e) = self
-            .peer_manager
-            .get_nic_channel()
-            .send(packet_buffer.freeze())
-            .await
-        {
-            tracing::error!("send to nic failed: {:?}", e);
-        }
-
-        Some(())
     }
 }
 
@@ -403,5 +352,59 @@ impl TcpProxy {
 
     pub fn get_local_port(&self) -> u16 {
         self.local_port.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> Option<()> {
+        let ipv4_addr = self.global_ctx.get_ipv4()?;
+        let hdr = packet.peer_manager_header().unwrap();
+
+        if hdr.packet_type != PacketType::Data as u8 {
+            return None;
+        };
+
+        let payload_bytes = packet.mut_payload();
+
+        let ipv4 = Ipv4Packet::new(payload_bytes)?;
+        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
+            return None;
+        }
+
+        if !self.cidr_set.contains_v4(ipv4.get_destination()) {
+            return None;
+        }
+
+        tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
+
+        let mut packet_buffer = BytesMut::with_capacity(payload_bytes.len());
+        packet_buffer.extend_from_slice(&payload_bytes.to_vec());
+
+        let (ip_buffer, tcp_buffer) =
+            packet_buffer.split_at_mut(ipv4.get_header_length() as usize * 4);
+
+        let mut ip_packet = MutableIpv4Packet::new(ip_buffer).unwrap();
+        let mut tcp_packet = MutableTcpPacket::new(tcp_buffer).unwrap();
+
+        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
+        if is_tcp_syn {
+            let source_ip = ip_packet.get_source();
+            let source_port = tcp_packet.get_source();
+            let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
+
+            let dest_ip = ip_packet.get_destination();
+            let dest_port = tcp_packet.get_destination();
+            let dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
+
+            let old_val = self
+                .syn_map
+                .insert(src, Arc::new(NatDstEntry::new(src, dst)));
+            tracing::trace!(src = ?src, dst = ?dst, old_entry = ?old_val, "tcp syn received");
+        }
+
+        ip_packet.set_destination(ipv4_addr);
+        tcp_packet.set_destination(self.get_local_port());
+        Self::update_ipv4_packet_checksum(&mut ip_packet, &mut tcp_packet);
+
+        tracing::trace!(ip_packet = ?ip_packet, tcp_packet = ?tcp_packet, "tcp packet forwarded");
+        Some(())
     }
 }

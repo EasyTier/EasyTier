@@ -541,7 +541,7 @@ pub mod tests {
 
     pub fn enable_log() {
         let filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::DEBUG.into())
+            .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
             .from_env()
             .unwrap()
             .add_directive("tarpc=error".parse().unwrap());

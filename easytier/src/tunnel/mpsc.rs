@@ -11,10 +11,18 @@ use tachyonix::{channel, Receiver, Sender};
 
 use futures::{SinkExt, StreamExt};
 
-pub type MpscTunnelSender = Sender<ZCPacket>;
+#[derive(Clone)]
+pub struct MpscTunnelSender(Sender<ZCPacket>);
 
-struct MpscTunnel<T> {
-    tx: MpscTunnelSender,
+impl MpscTunnelSender {
+    pub async fn send(&self, item: ZCPacket) -> Result<(), TunnelError> {
+        self.0.send(item).await.with_context(|| "send error")?;
+        Ok(())
+    }
+}
+
+pub struct MpscTunnel<T> {
+    tx: Sender<ZCPacket>,
 
     tunnel: T,
     stream: Option<Pin<Box<dyn ZCPacketStream>>>,
@@ -64,7 +72,7 @@ impl<T: Tunnel> MpscTunnel<T> {
     }
 
     pub fn get_sink(&self) -> MpscTunnelSender {
-        self.tx.clone()
+        MpscTunnelSender(self.tx.clone())
     }
 }
 
