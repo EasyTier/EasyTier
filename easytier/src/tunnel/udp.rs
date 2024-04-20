@@ -1,48 +1,35 @@
-use std::{
-    fmt::{format, Debug},
-    pin::Pin,
-    sync::Arc,
-};
+use std::{fmt::Debug, sync::Arc};
 
 use async_trait::async_trait;
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::BytesMut;
 use dashmap::DashMap;
-use futures::{stream::FuturesUnordered, Future, Sink, SinkExt, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
 use rand::{Rng, SeedableRng};
-use rkyv::{Archive, Deserialize, Serialize};
+
 use std::net::SocketAddr;
 use tokio::{
     net::UdpSocket,
-    sync::{
-        mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
-        Mutex,
-    },
+    sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
     task::{JoinHandle, JoinSet},
 };
-use tokio_util::udp::UdpFramed;
+
 use tracing::{instrument, Instrument};
 
 use crate::{
-    common::{
-        join_joinset_background,
-        rkyv_util::{self, encode_to_bytes, vec_to_string},
-    },
+    common::join_joinset_background,
     rpc::TunnelInfo,
     tunnel::{
         common::TunnelWrapper,
         packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
         ring::RingTunnel,
-        udp,
     },
 };
 
 use super::{
-    buf::BufList,
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
-    ring::{create_ring_tunnel_pair, RingSink, RingStream},
-    SinkError, Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink,
-    ZCPacketStream,
+    ring::{RingSink, RingStream},
+    Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
 };
 
 pub const UDP_DATA_MTU: usize = 65000;
@@ -683,7 +670,7 @@ impl super::TunnelConnector for UdpTunnelConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong, enable_log};
+    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
 
     #[tokio::test]
     async fn udp_pingpong() {

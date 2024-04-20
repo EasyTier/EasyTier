@@ -4,23 +4,22 @@ use bytes::BytesMut;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use prost::Message;
-use rkyv::Deserialize;
+
 use tarpc::{server::Channel, transport::channel::UnboundedChannel};
 use tokio::{
     sync::mpsc::{self, UnboundedSender},
     task::JoinSet,
 };
-use tokio_util::bytes::Bytes;
+
 use tracing::Instrument;
 
 use crate::{
     common::{error::Error, PeerId},
-    peers::packet::Packet,
     rpc::TaRpcPacket,
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
-use super::packet::CtrlPacketPayload;
+
 
 type PeerRpcServiceId = u32;
 type PeerRpcTransactId = u32;
@@ -226,7 +225,7 @@ impl PeerRpcManager {
         is_req: bool,
         content: Vec<u8>,
     ) -> ZCPacket {
-        let mut packet = TaRpcPacket {
+        let packet = TaRpcPacket {
             from_peer,
             to_peer,
             service_id,
@@ -395,7 +394,7 @@ mod tests {
 
     use futures::{SinkExt, StreamExt};
     use tokio::sync::Mutex;
-    use tokio_util::bytes::Bytes;
+    
 
     use crate::{
         common::{error::Error, new_peer_id, PeerId},

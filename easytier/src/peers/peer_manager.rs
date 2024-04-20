@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::BufMut;
+
 use futures::StreamExt;
 
 use tokio::{
@@ -20,7 +20,7 @@ use tokio_util::bytes::{Bytes, BytesMut};
 
 use crate::{
     common::{
-        error::Error, global_ctx::ArcGlobalCtx, rkyv_util::extract_bytes_from_archived_string,
+        error::Error, global_ctx::ArcGlobalCtx,
         PeerId,
     },
     peers::{
@@ -405,7 +405,7 @@ impl PeerManager {
             async fn send_route_packet(
                 &self,
                 msg: Bytes,
-                route_id: u8,
+                _route_id: u8,
                 dst_peer_id: PeerId,
             ) -> Result<(), Error> {
                 let foreign_client = self

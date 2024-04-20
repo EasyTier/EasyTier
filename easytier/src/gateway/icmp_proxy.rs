@@ -17,12 +17,12 @@ use tokio::{
     sync::{mpsc::UnboundedSender, Mutex},
     task::JoinSet,
 };
-use tokio_util::bytes::Bytes;
+
 use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
-    peers::{packet, peer_manager::PeerManager, PeerPacketFilter},
+    peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 

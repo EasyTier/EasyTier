@@ -2,8 +2,7 @@ use std::{net::Ipv4Addr, sync::Arc};
 
 use anyhow::Context;
 use dashmap::DashMap;
-use tokio::sync::{mpsc, RwLock};
-use tokio_util::bytes::Bytes;
+use tokio::sync::RwLock;
 
 use crate::{
     common::{
@@ -98,9 +97,8 @@ impl PeerMap {
         }
 
         // get route info
-        let mut gateway_peer_id = None;
         for route in self.routes.read().await.iter() {
-            gateway_peer_id = route.get_next_hop(dst_peer_id).await;
+            let gateway_peer_id = route.get_next_hop(dst_peer_id).await;
             if gateway_peer_id.is_some() {
                 return gateway_peer_id;
             }

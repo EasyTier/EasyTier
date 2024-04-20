@@ -1,5 +1,4 @@
 use std::{
-    borrow::BorrowMut,
     sync::Arc,
     task::{Context, Poll},
 };
@@ -294,10 +293,10 @@ impl StatsRecorderTunnelFilter {
 pub mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    use bytes::BytesMut;
     use filter::ring::create_ring_tunnel_pair;
 
     use super::*;
-    use crate::tunnels::ring_tunnel::RingTunnel;
 
     pub struct DropSendTunnelFilter {
         start: AtomicU32,
@@ -345,7 +344,7 @@ pub mod tests {
         let (s, _b) = create_ring_tunnel_pair();
         let tunnel = TunnelWithFilter::new(s, filter.clone());
 
-        let (r, mut s) = tunnel.split();
+        let (_r, mut s) = tunnel.split();
         s.send(ZCPacket::new_with_payload(BytesMut::from("ab")))
             .await
             .unwrap();
@@ -355,7 +354,7 @@ pub mod tests {
         let a = out.0 .0 .0 .1;
         let b = out.0 .0 .1;
         let c = out.0 .1;
-        let d = out.1;
+        let _d = out.1;
 
         assert_eq!(1, a.0.len());
         assert_eq!(1, b.0.len());

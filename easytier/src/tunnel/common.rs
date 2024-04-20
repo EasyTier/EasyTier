@@ -1,20 +1,17 @@
 use std::{
     any::Any,
-    borrow::BorrowMut,
-    collections::VecDeque,
     net::{IpAddr, SocketAddr},
-    ops::DerefMut,
-    pin::{pin, Pin},
+    pin::{Pin},
     sync::{Arc, Mutex},
     task::{ready, Poll},
 };
 
-use futures::{pin_mut, stream::FuturesUnordered, Future, FutureExt, Sink, Stream};
+use futures::{stream::FuturesUnordered, Future, Sink, Stream};
 use network_interface::NetworkInterfaceConfig as _;
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use bytes::{buf::Chain, Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use tokio_stream::StreamExt;
 use tokio_util::io::{poll_read_buf, poll_write_buf};
 use zerocopy::FromBytes as _;
@@ -23,7 +20,6 @@ use crate::{
     rpc::TunnelInfo,
     tunnel::{
         packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE},
-        tcp,
     },
 };
 
@@ -389,7 +385,7 @@ pub mod tests {
     use crate::{
         common::netns::NetNS,
         tunnel::{
-            packet_def::{ZCPacket, ZCPacketType},
+            packet_def::{ZCPacket},
             TunnelConnector, TunnelListener,
         },
     };

@@ -1,38 +1,31 @@
 use std::{
-    borrow::Borrow,
     collections::HashMap,
-    pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
-    task::{ready, Poll, Waker},
+    task::{Poll, Waker},
 };
 
-use async_stream::stream;
 use atomicbox::AtomicOptionBox;
 use crossbeam_queue::ArrayQueue;
 
 use async_trait::async_trait;
-use futures::{Sink, SinkExt, Stream};
+use futures::{Sink, Stream};
 use once_cell::sync::Lazy;
-use pin_project_lite::pin_project;
+
 use tokio::sync::{
-    futures::Notified,
     mpsc::{UnboundedReceiver, UnboundedSender},
-    Mutex, Notify,
+    Mutex,
 };
 
-use futures::FutureExt;
-use tokio_util::bytes::BytesMut;
 use uuid::Uuid;
 
 use crate::tunnel::{SinkError, SinkItem};
 
 use super::{
     build_url_from_socket_addr, check_scheme_and_get_socket_addr, common::TunnelWrapper,
-    StreamItem, Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener, ZCPacketSink,
-    ZCPacketStream,
+    StreamItem, Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener,
 };
 
 static RING_TUNNEL_CAP: usize = 128;

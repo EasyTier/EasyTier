@@ -7,19 +7,18 @@ use std::{
     },
 };
 
-use bytes::{Buf, BytesMut};
+use bytes::BytesMut;
 use futures::{SinkExt, StreamExt, TryFutureExt};
-use pnet::datalink::NetworkInterface;
 
 use prost::Message;
-use serde::Serialize;
+
 use tokio::{
-    sync::{broadcast, mpsc, Mutex},
+    sync::{broadcast, mpsc},
     task::JoinSet,
     time::{timeout, Duration},
 };
 
-use tokio_util::{bytes::Bytes, sync::PollSender};
+use tokio_util::sync::PollSender;
 use tracing::Instrument;
 use zerocopy::AsBytes;
 
@@ -29,8 +28,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, NetworkIdentity},
         PeerId,
     },
-    define_tunnel_filter_chain,
-    peers::packet::{ArchivedPacketType, CtrlPacketPayload, PacketType},
+    peers::packet::PacketType,
     rpc::{HandshakeRequest, PeerConnInfo, PeerConnStats, TunnelInfo},
     tunnel::{
         filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter},
@@ -201,12 +199,12 @@ impl PeerConn {
 
     pub fn start_recv_loop(&mut self, packet_recv_chan: PacketRecvChan) {
         let mut stream = self.recv.take().unwrap();
-        let mut sink = self.sink.clone();
+        let sink = self.sink.clone();
         let mut sender = PollSender::new(packet_recv_chan.clone());
         let close_event_sender = self.close_event_sender.clone().unwrap();
         let conn_id = self.conn_id;
         let ctrl_sender = self.ctrl_resp_sender.clone();
-        let conn_info = self.get_conn_info();
+        let _conn_info = self.get_conn_info();
         let conn_info_for_instrument = self.get_conn_info();
 
         self.tasks.spawn(

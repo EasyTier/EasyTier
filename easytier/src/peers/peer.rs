@@ -7,7 +7,7 @@ use tokio::{
     sync::{mpsc, Mutex},
     task::JoinHandle,
 };
-use tokio_util::bytes::Bytes;
+
 use tracing::Instrument;
 
 use super::{

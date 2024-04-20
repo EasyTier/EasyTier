@@ -1,12 +1,12 @@
 use std::{
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     time::Duration,
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::{BytesMut};
 use tokio::{sync::broadcast, task::JoinSet, time::timeout};
 
 use crate::{

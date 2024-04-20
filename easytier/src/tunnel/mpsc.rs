@@ -9,7 +9,7 @@ use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStr
 
 use tachyonix::{channel, Receiver, Sender};
 
-use futures::{SinkExt, StreamExt};
+use futures::SinkExt;
 
 #[derive(Clone)]
 pub struct MpscTunnelSender(Sender<ZCPacket>);

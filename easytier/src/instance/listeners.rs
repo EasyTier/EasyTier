@@ -165,7 +165,7 @@ mod tests {
     impl TunnelHandlerForListener for MockListenerHandler {
         async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
             let data = "abc";
-            let (mut recv, mut send) = tunnel.split();
+            let (_recv, mut send) = tunnel.split();
 
             let zc_packet = ZCPacket::new_with_payload(data.into());
             send.send(zc_packet).await.unwrap();

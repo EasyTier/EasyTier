@@ -19,7 +19,6 @@ use crate::{
         join_joinset_background,
     },
     peers::{
-        packet::{self, ArchivedPacket},
         peer_manager::PeerManager,
         PeerPacketFilter,
     },
@@ -346,7 +345,7 @@ mod tests {
             });
         peer_mgr.run().await.unwrap();
         let mut pmgr_conn = TcpTunnelConnector::new("tcp://127.0.0.1:11010".parse().unwrap());
-        let tunnel = pmgr_conn.connect().await;
+        let _tunnel = pmgr_conn.connect().await;
         // peer_mgr.add_client_tunnel(tunnel.unwrap()).await.unwrap();
         wait_for_condition(
             || async {

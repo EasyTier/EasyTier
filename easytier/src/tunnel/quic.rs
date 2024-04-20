@@ -6,11 +6,11 @@ use std::{error::Error, net::SocketAddr, sync::Arc};
 
 use crate::{
     rpc::TunnelInfo,
-    tunnel::common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
+    tunnel::common::{FramedReader, FramedWriter, TunnelWrapper},
 };
 use anyhow::Context;
 use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
-use tokio::io::AsyncWriteExt;
+
 
 use super::{
     check_scheme_and_get_socket_addr, Tunnel, TunnelConnector, TunnelError, TunnelListener,

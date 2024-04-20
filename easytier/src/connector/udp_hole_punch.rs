@@ -9,13 +9,13 @@ use tracing::Instrument;
 use crate::{
     common::{
         constants, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background,
-        rkyv_util::encode_to_bytes, stun::StunInfoCollectorTrait, PeerId,
+        stun::StunInfoCollectorTrait, PeerId,
     },
     peers::peer_manager::PeerManager,
     rpc::NatType,
     tunnel::{
         common::setup_sokcet2,
-        packet_def::{PacketType, ZCPacketType},
+        packet_def::ZCPacketType,
         udp::{new_hole_punch_packet, UdpTunnelConnector, UdpTunnelListener},
         Tunnel, TunnelConnCounter, TunnelListener,
     },

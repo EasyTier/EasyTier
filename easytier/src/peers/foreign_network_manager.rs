@@ -15,7 +15,7 @@ use tokio::{
     },
     task::JoinSet,
 };
-use tokio_util::bytes::Bytes;
+
 
 use crate::{
     common::{
@@ -27,7 +27,6 @@ use crate::{
 };
 
 use super::{
-    packet,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
     zc_peer_conn::PeerConn,

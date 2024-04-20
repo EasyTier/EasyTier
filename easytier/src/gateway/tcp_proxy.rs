@@ -11,14 +11,14 @@ use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-use tokio_util::bytes::{Bytes, BytesMut};
+use tokio_util::bytes::{BytesMut};
 use tracing::Instrument;
 
 use crate::common::error::Result;
 use crate::common::global_ctx::GlobalCtx;
 use crate::common::join_joinset_background;
 use crate::common::netns::NetNS;
-use crate::peers::packet::{self, ArchivedPacket};
+
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::tunnel::packet_def::{PacketType, ZCPacket};

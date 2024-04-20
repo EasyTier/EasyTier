@@ -3,9 +3,8 @@ use std::{net::SocketAddr, pin::Pin, sync::Arc};
 use async_trait::async_trait;
 use futures::{Sink, Stream};
 use std::fmt::Debug;
-use time::error;
-use tokio::{net::TcpListener, time::error::Elapsed};
-use tokio_util::bytes::{Bytes, BytesMut};
+
+use tokio::time::error::Elapsed;
 
 use crate::rpc::TunnelInfo;
 

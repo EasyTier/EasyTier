@@ -7,8 +7,8 @@ use futures::{SinkExt, StreamExt};
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::ipv4::Ipv4Packet;
 
+use bytes::BytesMut;
 use tokio::{sync::Mutex, task::JoinSet};
-use tokio_util::bytes::{Bytes, BytesMut};
 use tonic::transport::Server;
 
 use crate::common::config::ConfigLoader;
@@ -22,17 +22,15 @@ use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::tcp_proxy::TcpProxy;
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
-use crate::peers::peer_conn::{PacketRecvChan, PeerConnId};
+use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::PacketRecvChanReceiver;
 use crate::rpc::vpn_portal_rpc_server::VpnPortalRpc;
 use crate::rpc::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::tunnel::packet_def::ZCPacket;
-use crate::tunnel::SinkItem;
-use crate::vpn_portal::{self, VpnPortal};
 
-use tokio_stream::wrappers::ReceiverStream;
+use crate::vpn_portal::{self, VpnPortal};
 
 use super::listeners::ListenerManager;
 use super::virtual_nic;

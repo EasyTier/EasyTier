@@ -22,12 +22,12 @@ use tokio::{
     time::timeout,
 };
 
-use tokio_util::bytes::Bytes;
+
 use tracing::Level;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
-    peers::{packet, peer_manager::PeerManager, PeerPacketFilter},
+    peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::packet_def::{PacketType, ZCPacket},
     tunnels::common::setup_sokcet2,
 };
