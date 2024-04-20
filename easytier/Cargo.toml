@@ -58,6 +58,16 @@ async-trait = "0.1.74"
 dashmap = "5.5.3"
 timedmap = "=1.0.1"
 
+# for full-path zero-copy
+zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
+bytes = "1.5.0"
+pin-project-lite = "0.2.13"
+atomicbox = "0.4.0"
+
+quinn = { version = "0.10.2" }
+rustls = { version = "0.21.0", features = ["dangerous_configuration"] }
+rcgen = "0.11.1"
+
 # for tap device
 tun = { version = "0.6.1", features = ["async"] }
 # for net ns
@@ -120,6 +130,7 @@ pathfinding = "4.9.1"
 
 # for encryption
 boringtun = { version = "0.6.0" }
+openssl = "0.10.64"
 
 # for cli
 tabled = "0.15.*"

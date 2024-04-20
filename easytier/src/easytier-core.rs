@@ -16,6 +16,7 @@ mod instance;
 mod peer_center;
 mod peers;
 mod rpc;
+mod tunnel;
 mod tunnels;
 mod vpn_portal;
 
