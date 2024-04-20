@@ -112,7 +112,7 @@ impl ZCPacketType {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ZCPacket {
     inner: BytesMut,
     packet_type: ZCPacketType,

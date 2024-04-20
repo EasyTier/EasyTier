@@ -11,13 +11,16 @@ use crate::rpc::TunnelInfo;
 
 use self::packet_def::ZCPacket;
 
-mod buf;
-mod common;
-mod packet_def;
-mod quic;
-mod ring;
-mod tcp;
-mod udp;
+pub mod buf;
+pub mod common;
+pub mod filter;
+pub mod mpsc;
+pub mod packet_def;
+pub mod quic;
+pub mod ring;
+pub mod stats;
+pub mod tcp;
+pub mod udp;
 
 #[derive(thiserror::Error, Debug)]
 pub enum TunnelError {

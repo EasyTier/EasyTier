@@ -63,6 +63,7 @@ zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 bytes = "1.5.0"
 pin-project-lite = "0.2.13"
 atomicbox = "0.4.0"
+tachyonix = "0.2.1"
 
 quinn = { version = "0.10.2" }
 rustls = { version = "0.21.0", features = ["dangerous_configuration"] }

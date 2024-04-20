@@ -8,6 +8,7 @@ pub mod peer_rip_route;
 pub mod peer_rpc;
 pub mod route_trait;
 pub mod rpc_service;
+pub mod zc_peer_conn;
 
 pub mod foreign_network_client;
 pub mod foreign_network_manager;
