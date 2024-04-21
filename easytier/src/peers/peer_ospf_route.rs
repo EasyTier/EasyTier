@@ -203,6 +203,7 @@ struct SyncRouteInfoResponse {
 trait RouteService {
     async fn sync_route_info(
         my_peer_id: PeerId,
+        my_session_id: SessionId,
         is_initiator: bool,
         peer_infos: Option<Vec<RoutePeerInfo>>,
         conn_bitmap: Option<RouteConnBitmap>,
@@ -547,6 +548,15 @@ impl SyncRouteSession {
         self.we_are_initiator.store(is_initiator, Ordering::Relaxed);
         self.need_sync_initiator_info.store(true, Ordering::Relaxed);
     }
+
+    fn update_dst_session_id(&self, session_id: SessionId) {
+        if session_id != self.dst_session_id.load(Ordering::Relaxed) {
+            tracing::warn!(?self, ?session_id, "session id mismatch, clear saved info.");
+            self.dst_session_id.store(session_id, Ordering::Relaxed);
+            self.dst_saved_conn_bitmap_version.clear();
+            self.dst_saved_peer_info_versions.clear();
+        }
+    }
 }
 
 struct PeerRouteServiceImpl {
@@ -794,6 +804,7 @@ impl PeerRouteServiceImpl {
                     .sync_route_info(
                         rpc_ctx,
                         my_peer_id,
+                        session.my_session_id.load(Ordering::Relaxed),
                         session.we_are_initiator.load(Ordering::Relaxed),
                         peer_infos.clone(),
                         conn_bitmap.clone(),
@@ -814,19 +825,7 @@ impl PeerRouteServiceImpl {
                     .need_sync_initiator_info
                     .store(false, Ordering::Relaxed);
 
-                if ret.session_id != session.dst_session_id.load(Ordering::Relaxed) {
-                    tracing::warn!(
-                        ?ret,
-                        ?my_peer_id,
-                        ?dst_peer_id,
-                        "session id mismatch, clear saved info."
-                    );
-                    session
-                        .dst_session_id
-                        .store(ret.session_id, Ordering::Relaxed);
-                    session.dst_saved_conn_bitmap_version.clear();
-                    session.dst_saved_peer_info_versions.clear();
-                }
+                session.update_dst_session_id(ret.session_id);
 
                 if let Some(peer_infos) = &peer_infos {
                     session.update_dst_saved_peer_info_version(&peer_infos);
@@ -864,6 +863,7 @@ impl RouteService for RouteSessionManager {
         self,
         _: tarpc::context::Context,
         from_peer_id: PeerId,
+        from_session_id: SessionId,
         is_initiator: bool,
         peer_infos: Option<Vec<RoutePeerInfo>>,
         conn_bitmap: Option<RouteConnBitmap>,
@@ -876,6 +876,8 @@ impl RouteService for RouteSessionManager {
         let session = self.get_or_start_session(from_peer_id)?;
 
         session.rpc_rx_count.fetch_add(1, Ordering::Relaxed);
+
+        session.update_dst_session_id(from_session_id);
 
         if let Some(peer_infos) = &peer_infos {
             service_impl.synced_route_info.update_peer_infos(
@@ -1384,9 +1386,8 @@ mod tests {
 
         let i_a = get_is_initiator(&r_a, p_b.my_peer_id());
         let i_b = get_is_initiator(&r_b, p_a.my_peer_id());
-        assert_ne!(i_a.0, i_a.1);
-        assert_ne!(i_b.0, i_b.1);
-        assert_ne!(i_a.0, i_b.0);
+        assert_eq!(i_a.0, i_b.1);
+        assert_eq!(i_b.0, i_a.1);
 
         drop(r_b);
         drop(p_b);
