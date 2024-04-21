@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     net::{IpAddr, SocketAddr},
-    pin::{Pin},
+    pin::Pin,
     sync::{Arc, Mutex},
     task::{ready, Poll},
 };
@@ -18,9 +18,7 @@ use zerocopy::FromBytes as _;
 
 use crate::{
     rpc::TunnelInfo,
-    tunnel::{
-        packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE},
-    },
+    tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE},
 };
 
 use super::{
@@ -38,25 +36,20 @@ pub struct TunnelWrapper<R, W> {
 
 impl<R, W> TunnelWrapper<R, W> {
     pub fn new(reader: R, writer: W, info: Option<TunnelInfo>) -> Self {
-        TunnelWrapper {
-            reader: Arc::new(Mutex::new(Some(reader))),
-            writer: Arc::new(Mutex::new(Some(writer))),
-            info,
-            associate_data: None,
-        }
+        Self::new_with_associate_data(reader, writer, info, None)
     }
 
     pub fn new_with_associate_data(
         reader: R,
         writer: W,
         info: Option<TunnelInfo>,
-        associate_data: Box<dyn Any + Send + 'static>,
+        associate_data: Option<Box<dyn Any + Send + 'static>>,
     ) -> Self {
         TunnelWrapper {
             reader: Arc::new(Mutex::new(Some(reader))),
             writer: Arc::new(Mutex::new(Some(writer))),
             info,
-            associate_data: Some(associate_data),
+            associate_data,
         }
     }
 }
@@ -97,26 +90,20 @@ enum FrameReaderState {
 
 impl<R> FramedReader<R> {
     pub fn new(reader: R, max_packet_size: usize) -> Self {
-        FramedReader {
-            reader,
-            buf: BytesMut::with_capacity(max_packet_size),
-            state: FrameReaderState::ReadingHeader(4),
-            max_packet_size,
-            associate_data: None,
-        }
+        Self::new_with_associate_data(reader, max_packet_size, None)
     }
 
     pub fn new_with_associate_data(
         reader: R,
         max_packet_size: usize,
-        associate_data: Box<dyn Any + Send + 'static>,
+        associate_data: Option<Box<dyn Any + Send + 'static>>,
     ) -> Self {
         FramedReader {
             reader,
             buf: BytesMut::with_capacity(max_packet_size),
             state: FrameReaderState::ReadingHeader(4),
             max_packet_size,
-            associate_data: Some(associate_data),
+            associate_data,
         }
     }
 
@@ -187,21 +174,17 @@ pin_project! {
 
 impl<W> FramedWriter<W> {
     pub fn new(writer: W) -> Self {
-        FramedWriter {
-            writer,
-            sending_bufs: BufList::new(),
-            associate_data: None,
-        }
+        Self::new_with_associate_data(writer, None)
     }
 
     pub fn new_with_associate_data(
         writer: W,
-        associate_data: Box<dyn Any + Send + 'static>,
+        associate_data: Option<Box<dyn Any + Send + 'static>>,
     ) -> Self {
         FramedWriter {
             writer,
             sending_bufs: BufList::new(),
-            associate_data: Some(associate_data),
+            associate_data: associate_data,
         }
     }
 
@@ -384,10 +367,7 @@ pub mod tests {
 
     use crate::{
         common::netns::NetNS,
-        tunnel::{
-            packet_def::{ZCPacket},
-            TunnelConnector, TunnelListener,
-        },
+        tunnel::{packet_def::ZCPacket, TunnelConnector, TunnelListener},
     };
 
     pub async fn _tunnel_echo_server(tunnel: Box<dyn super::Tunnel>, once: bool) {
@@ -526,6 +506,7 @@ pub mod tests {
 
         drop(send);
         drop(connector);
+        drop(tunnel);
 
         tracing::warn!("wait for recv to finish...");
 

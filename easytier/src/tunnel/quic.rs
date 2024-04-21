@@ -139,8 +139,8 @@ impl TunnelListener for QUICTunnelListener {
         };
 
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 4500, Box::new(arc_conn.clone())),
-            FramedWriter::new_with_associate_data(w, Box::new(arc_conn)),
+            FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
+            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
             Some(info),
         )))
     }
@@ -191,11 +191,11 @@ impl TunnelConnector for QUICTunnelConnector {
             remote_addr: self.addr.to_string(),
         };
 
-        Ok(Box::new(TunnelWrapper::new_with_associate_data(
-            FramedReader::new(r, 4500),
-            FramedWriter::new(w),
+        let arc_conn = Arc::new(ConnWrapper { conn: connection });
+        Ok(Box::new(TunnelWrapper::new(
+            FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
+            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
             Some(info),
-            Box::new(connection),
         )))
     }
 

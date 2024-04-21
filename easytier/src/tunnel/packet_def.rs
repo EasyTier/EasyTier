@@ -36,6 +36,13 @@ pub struct UDPTunnelHeader {
 }
 pub const UDP_TUNNEL_HEADER_SIZE: usize = std::mem::size_of::<UDPTunnelHeader>();
 
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct WGTunnelHeader {
+    pub ipv4_header: [u8; 20],
+}
+pub const WG_TUNNEL_HEADER_SIZE: usize = std::mem::size_of::<WGTunnelHeader>();
+
 #[derive(AsBytes, FromZeroes, Clone, Debug)]
 #[repr(u8)]
 pub enum PacketType {
@@ -63,11 +70,13 @@ const fn max(a: usize, b: usize) -> usize {
     [a, b][(a < b) as usize]
 }
 
+#[derive(Default, Debug)]
 struct ZCPacketOffsets {
     pub payload_offset: usize,
     pub peer_manager_header_offset: usize,
     pub tcp_tunnel_header_offset: usize,
     pub udp_tunnel_header_offset: usize,
+    pub wg_tunnel_header_offset: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -76,12 +85,16 @@ pub enum ZCPacketType {
     TCP,
     // received from peer udp connection
     UDP,
+    // received from peer wireguard connection
+    WG,
     // received from local tun device, should reserve header space for tcp or udp tunnel
     NIC,
 }
 
-const PAYLOAD_OFFSET_FOR_NIC_PACKET: usize =
-    max(TCP_TUNNEL_HEADER_SIZE, UDP_TUNNEL_HEADER_SIZE) + PEER_MANAGER_HEADER_SIZE;
+const PAYLOAD_OFFSET_FOR_NIC_PACKET: usize = max(
+    max(TCP_TUNNEL_HEADER_SIZE, UDP_TUNNEL_HEADER_SIZE),
+    WG_TUNNEL_HEADER_SIZE,
+) + PEER_MANAGER_HEADER_SIZE;
 
 impl ZCPacketType {
     fn get_packet_offsets(&self) -> ZCPacketOffsets {
@@ -89,14 +102,17 @@ impl ZCPacketType {
             ZCPacketType::TCP => ZCPacketOffsets {
                 payload_offset: TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
                 peer_manager_header_offset: TCP_TUNNEL_HEADER_SIZE,
-                tcp_tunnel_header_offset: 0,
-                udp_tunnel_header_offset: 0,
+                ..Default::default()
             },
             ZCPacketType::UDP => ZCPacketOffsets {
                 payload_offset: UDP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
                 peer_manager_header_offset: UDP_TUNNEL_HEADER_SIZE,
-                tcp_tunnel_header_offset: 0,
-                udp_tunnel_header_offset: 0,
+                ..Default::default()
+            },
+            ZCPacketType::WG => ZCPacketOffsets {
+                payload_offset: WG_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
+                peer_manager_header_offset: WG_TUNNEL_HEADER_SIZE,
+                ..Default::default()
             },
             ZCPacketType::NIC => ZCPacketOffsets {
                 payload_offset: PAYLOAD_OFFSET_FOR_NIC_PACKET,
@@ -108,6 +124,9 @@ impl ZCPacketType {
                 udp_tunnel_header_offset: PAYLOAD_OFFSET_FOR_NIC_PACKET
                     - PEER_MANAGER_HEADER_SIZE
                     - UDP_TUNNEL_HEADER_SIZE,
+                wg_tunnel_header_offset: PAYLOAD_OFFSET_FOR_NIC_PACKET
+                    - PEER_MANAGER_HEADER_SIZE
+                    - WG_TUNNEL_HEADER_SIZE,
             },
         }
     }
@@ -170,6 +189,15 @@ impl ZCPacket {
                 .packet_type
                 .get_packet_offsets()
                 .udp_tunnel_header_offset..],
+        )
+    }
+
+    pub fn mut_wg_tunnel_header(&mut self) -> Option<&mut WGTunnelHeader> {
+        WGTunnelHeader::mut_from_prefix(
+            &mut self.inner[self
+                .packet_type
+                .get_packet_offsets()
+                .wg_tunnel_header_offset..],
         )
     }
 
@@ -258,6 +286,14 @@ impl ZCPacket {
                     self.packet_type
                         .get_packet_offsets()
                         .udp_tunnel_header_offset,
+                )
+                .freeze(),
+            ZCPacketType::WG => self
+                .inner
+                .split_off(
+                    self.packet_type
+                        .get_packet_offsets()
+                        .wg_tunnel_header_offset,
                 )
                 .freeze(),
             ZCPacketType::NIC => unreachable!(),

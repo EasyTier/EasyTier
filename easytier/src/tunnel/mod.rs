@@ -20,6 +20,7 @@ pub mod ring;
 pub mod stats;
 pub mod tcp;
 pub mod udp;
+pub mod wireguard;
 
 #[derive(thiserror::Error, Debug)]
 pub enum TunnelError {
