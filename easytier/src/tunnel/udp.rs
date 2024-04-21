@@ -454,7 +454,7 @@ impl UdpTunnelConnector {
         addr: SocketAddr,
         conn_id: u32,
         magic: u64,
-    ) -> Result<(), TunnelError> {
+    ) -> Result<SocketAddr, TunnelError> {
         let mut buf = BytesMut::new();
         buf.reserve(UDP_DATA_MTU);
 
@@ -465,10 +465,7 @@ impl UdpTunnelConnector {
         .await??;
         let zc_packet = get_zcpacket_from_buf(buf.split_to(usize))?;
         if recv_addr != addr {
-            return Err(TunnelError::InvalidAddr(format!(
-                "udp connect error, unexpected sack addr: {:?}, {:?}",
-                recv_addr, addr
-            )));
+            tracing::warn!(?recv_addr, ?addr, "udp wait sack addr not match");
         }
 
         let header = zc_packet.udp_tunnel_header().unwrap();
@@ -498,7 +495,7 @@ impl UdpTunnelConnector {
             ));
         }
 
-        Ok(())
+        Ok(recv_addr)
     }
 
     async fn wait_sack_loop(
@@ -506,11 +503,16 @@ impl UdpTunnelConnector {
         addr: SocketAddr,
         conn_id: u32,
         magic: u64,
-    ) -> Result<(), super::TunnelError> {
-        while let Err(err) = Self::wait_sack(socket, addr, conn_id, magic).await {
-            tracing::debug!(?err, "udp wait sack error");
+    ) -> Result<SocketAddr, super::TunnelError> {
+        loop {
+            let ret = Self::wait_sack(socket, addr, conn_id, magic).await;
+            if ret.is_err() {
+                tracing::debug!(?ret, "udp wait sack error");
+                continue;
+            } else {
+                return ret;
+            }
         }
-        Ok(())
     }
 
     async fn build_tunnel(
@@ -590,10 +592,10 @@ impl UdpTunnelConnector {
             Box::new(RingSink::new(ring_for_send_udp)),
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
-                local_addr: self.addr.clone().into(),
-                remote_addr: url::Url::parse(&format!("udp://{}", socket.peer_addr()?))
+                local_addr: url::Url::parse(&format!("udp://{}", socket.local_addr()?))
                     .unwrap()
                     .into(),
+                remote_addr: self.addr.clone().into(),
             }),
         )))
     }
@@ -616,13 +618,13 @@ impl UdpTunnelConnector {
         tracing::warn!(?udp_packet, ?ret, "udp send syn");
 
         // wait sack
-        tokio::time::timeout(
+        let recv_addr = tokio::time::timeout(
             tokio::time::Duration::from_secs(3),
             Self::wait_sack_loop(&socket, addr, conn_id, magic),
         )
         .await??;
 
-        socket.connect(addr).await?;
+        socket.connect(recv_addr).await?;
         self.build_tunnel(socket, addr, conn_id).await
     }
 

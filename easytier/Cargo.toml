@@ -131,7 +131,6 @@ pathfinding = "4.9.1"
 
 # for encryption
 boringtun = { version = "0.6.0" }
-openssl = "0.10.64"
 
 # for cli
 tabled = "0.15.*"

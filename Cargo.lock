@@ -1280,7 +1280,6 @@ dependencies = [
  "network-interface",
  "nix 0.27.1",
  "once_cell",
- "openssl",
  "pathfinding",
  "percent-encoding",
  "pin-project-lite",
