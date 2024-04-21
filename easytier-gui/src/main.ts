@@ -235,7 +235,6 @@ const messages = {
         "instance_id": "Instance ID",
         "network_infos": "Network Infos",
         "parse_network_config": "Parse Network Config",
-        "run_network_instance": "Run Network Instance",
         "retain_network_instance": "Retain Network Instance",
         "collect_network_infos": "Collect Network Infos",
         "settings": "Settings",
@@ -262,6 +261,9 @@ const messages = {
         "upload_bytes": "Upload",
         "download_bytes": "Download",
         "loss_rate": "Loss Rate",
+
+        "run_network": "Run Network",
+        "stop_network": "Stop Network",
     },
     cn: {
         "network": "网络",
@@ -292,7 +294,6 @@ const messages = {
         "instance_id": "实例ID",
         "network_infos": "网络信息",
         "parse_network_config": "解析网络配置",
-        "run_network_instance": "运行网络实例",
         "retain_network_instance": "保留网络实例",
         "collect_network_infos": "收集网络信息",
         "settings": "设置",
@@ -317,6 +318,9 @@ const messages = {
         "upload_bytes": "上传",
         "download_bytes": "下载",
         "loss_rate": "丢包率",
+
+        "run_network": "运行网络",
+        "stop_network": "停止网络",
     }
 }
 
@@ -324,8 +328,13 @@ function saveLocaleToLocalStorage(locale: string) {
     localStorage.setItem("locale", locale);
 }
 
-export function loadLocaleFromLocalStorage(): string {
-    return localStorage.getItem("locale") || "en";
+export function loadLocaleFromLocalStorage(): 'en' | 'cn' {
+    const v = localStorage.getItem("locale")
+    if (v === 'en' || v === 'cn') {
+        return v;
+    } else {
+        return 'en';
+    }
 }
 
 export const i18n = createI18n({

@@ -145,7 +145,7 @@ const presetPublicServers = [
 
 
         <div class="flex pt-4 justify-content-center">
-          <Button label="Run Network" icon="pi pi-arrow-right" iconPos="right" @click="$emit('runNetwork', curNetwork)"
+          <Button :label="$t('run_network')" icon="pi pi-arrow-right" iconPos="right" @click="$emit('runNetwork', curNetwork)"
             :disabled="configInvalid" />
         </div>
       </div>

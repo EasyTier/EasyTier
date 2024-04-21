@@ -286,6 +286,7 @@ fn toggle_window_visibility(window: &Window) {
         window.hide().unwrap();
     } else {
         window.show().unwrap();
+        window.set_focus().unwrap();
     }
 }
 
@@ -305,8 +306,8 @@ fn main() {
     if !check_sudo() {
         process::exit(0);
     }
-    let quit = CustomMenuItem::new("quit".to_string(), "Quit");
-    let hide = CustomMenuItem::new("hide".to_string(), "Show / Hide");
+    let quit = CustomMenuItem::new("quit".to_string(), "退出 Quit");
+    let hide = CustomMenuItem::new("hide".to_string(), "显示 Show / 隐藏 Hide");
     let tray_menu = SystemTrayMenu::new()
         .add_item(quit)
         .add_native_item(SystemTrayMenuItem::Separator)

@@ -147,7 +147,7 @@ const toggle_setting_menu = (event: any) => {
 
 onMounted(async () => {
   networkStore.loadFromLocalStorage();
-  loadLocaleFromLocalStorage();
+  changeLocale(loadLocaleFromLocalStorage());
 });
 
 </script>
@@ -205,7 +205,7 @@ onMounted(async () => {
             <Status :instance-id="networkStore.curNetworkId" />
           </div>
           <div class="flex pt-4 justify-content-center">
-            <Button label="Stop Network" severity="danger" icon="pi pi-arrow-left"
+            <Button :label="$t('stop_network')" severity="danger" icon="pi pi-arrow-left"
               @click="stopNetworkCb(networkStore.curNetwork, prevCallback)" />
           </div>
         </template>
