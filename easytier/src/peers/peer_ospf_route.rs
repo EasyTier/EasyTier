@@ -1289,7 +1289,6 @@ mod tests {
             tests::{connect_peer_manager, wait_for_condition},
         },
         rpc::NatType,
-        tunnel::common::tests::enable_log,
     };
 
     use super::PeerRoute;

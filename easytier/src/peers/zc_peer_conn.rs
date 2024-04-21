@@ -336,7 +336,6 @@ mod tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
-    use crate::tunnel::common::tests::enable_log;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
@@ -419,7 +418,6 @@ mod tests {
 
     #[tokio::test]
     async fn peer_conn_pingpong_timeout() {
-        enable_log();
         peer_conn_pingpong_test_common(3, 5, false).await;
         peer_conn_pingpong_test_common(5, 12, true).await;
     }

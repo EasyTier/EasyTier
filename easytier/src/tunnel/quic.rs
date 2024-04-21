@@ -11,7 +11,6 @@ use crate::{
 use anyhow::Context;
 use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
 
-
 use super::{
     check_scheme_and_get_socket_addr, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
@@ -207,13 +206,12 @@ impl TunnelConnector for QUICTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong, enable_log};
+    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
 
     use super::*;
 
     #[tokio::test]
     async fn quic_pingpong() {
-        enable_log();
         let listener = QUICTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap());
         let connector = QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap());
         _tunnel_pingpong(listener, connector).await
@@ -221,7 +219,6 @@ mod tests {
 
     #[tokio::test]
     async fn quic_bench() {
-        enable_log();
         let listener = QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap());
         let connector = QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap());
         _tunnel_bench(listener, connector).await

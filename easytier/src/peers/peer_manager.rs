@@ -69,7 +69,13 @@ impl PeerRpcManagerTransport for RpcTransport {
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
 
         if let Some(gateway_id) = peers.get_gateway_peer_id(dst_peer_id).await {
-            peers.send_msg(msg, gateway_id).await
+            tracing::trace!(
+                ?dst_peer_id,
+                ?gateway_id,
+                ?self.my_peer_id,
+                "send msg to peer via gateway",
+            );
+            peers.send_msg_directly(msg, gateway_id).await
         } else if foreign_peers.has_next_hop(dst_peer_id) {
             tracing::debug!(
                 ?dst_peer_id,
@@ -79,7 +85,7 @@ impl PeerRpcManagerTransport for RpcTransport {
             foreign_peers.send_msg(msg, dst_peer_id).await
         } else {
             Err(Error::RouteError(Some(format!(
-                "no route for dst_peer_id: {}",
+                "peermgr RpcTransport no route for dst_peer_id: {}",
                 dst_peer_id
             ))))
         }

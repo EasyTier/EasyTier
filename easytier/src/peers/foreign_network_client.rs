@@ -4,11 +4,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use tokio::{
-    sync::{Mutex},
-    task::JoinSet,
-};
-
+use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
     common::{

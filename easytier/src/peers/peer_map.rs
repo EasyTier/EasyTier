@@ -84,7 +84,10 @@ impl PeerMap {
             }
             None => {
                 log::error!("no peer for dst_peer_id: {}", dst_peer_id);
-                return Err(Error::RouteError(None));
+                return Err(Error::RouteError(Some(format!(
+                    "peer map sengmsg directly no connected dst_peer_id: {}",
+                    dst_peer_id
+                ))));
             }
         }
 
@@ -96,16 +99,18 @@ impl PeerMap {
             return Some(dst_peer_id);
         }
 
-        // get route info
-        for route in self.routes.read().await.iter() {
-            let gateway_peer_id = route.get_next_hop(dst_peer_id).await;
-            if gateway_peer_id.is_some() {
-                return gateway_peer_id;
-            }
-        }
-
         if self.has_peer(dst_peer_id) {
             return Some(dst_peer_id);
+        }
+
+        // get route info
+        for route in self.routes.read().await.iter() {
+            if let Some(gateway_peer_id) = route.get_next_hop(dst_peer_id).await {
+                // for foreign network, gateway_peer_id may not connect to me
+                if self.has_peer(gateway_peer_id) {
+                    return Some(gateway_peer_id);
+                }
+            }
         }
 
         None
@@ -119,7 +124,10 @@ impl PeerMap {
                 self.peer_map.iter().map(|v| *v.key()).collect::<Vec<_>>(),
                 self.my_peer_id
             );
-            return Err(Error::RouteError(None));
+            return Err(Error::RouteError(Some(format!(
+                "peer map sengmsg no gateway for dst_peer_id: {}",
+                dst_peer_id
+            ))));
         };
 
         self.send_msg_directly(msg, gateway_peer_id).await?;

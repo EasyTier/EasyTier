@@ -16,7 +16,6 @@ use tokio::{
     task::JoinSet,
 };
 
-
 use crate::{
     common::{
         error::Error,
@@ -350,16 +349,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreign_network_basic() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
+
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        tracing::debug!(
+            "pma_net1: {:?}, pmb_net1: {:?}",
+            pma_net1.my_peer_id(),
+            pmb_net1.my_peer_id()
+        );
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+        assert_eq!(1, pma_net1.list_routes().await.len());
+        assert_eq!(1, pmb_net1.list_routes().await.len());
+    }
+
+    #[tokio::test]
     async fn test_foreign_network_manager() {
         let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
         let pm_center2 =
             create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
         connect_peer_manager(pm_center.clone(), pm_center2.clone()).await;
 
+        tracing::debug!(
+            "pm_center: {:?}, pm_center2: {:?}",
+            pm_center.my_peer_id(),
+            pm_center2.my_peer_id()
+        );
+
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
         let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
         connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
         connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+
+        tracing::debug!(
+            "pma_net1: {:?}, pmb_net1: {:?}",
+            pma_net1.my_peer_id(),
+            pmb_net1.my_peer_id()
+        );
 
         let now = std::time::Instant::now();
         let mut succ = false;
@@ -405,8 +437,15 @@ mod tests {
             .unwrap();
         assert_eq!(2, pmc_net1.list_routes().await.len());
 
+        tracing::debug!("pmc_net1: {:?}", pmc_net1.my_peer_id());
+
         let pma_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
         let pmb_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
+        tracing::debug!(
+            "pma_net2: {:?}, pmb_net2: {:?}",
+            pma_net2.my_peer_id(),
+            pmb_net2.my_peer_id()
+        );
         connect_peer_manager(pma_net2.clone(), pm_center.clone()).await;
         connect_peer_manager(pmb_net2.clone(), pm_center.clone()).await;
         wait_route_appear(pma_net2.clone(), pmb_net2.clone())
