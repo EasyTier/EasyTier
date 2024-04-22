@@ -116,7 +116,7 @@ pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
 
 pub fn enable_log() {
     let filter = tracing_subscriber::EnvFilter::builder()
-        .with_default_directive(tracing::level_filters::LevelFilter::INFO.into())
+        .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
         .from_env()
         .unwrap()
         .add_directive("tarpc=error".parse().unwrap());

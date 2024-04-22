@@ -1,4 +1,5 @@
 use std::{
+    any::Any,
     fmt::Debug,
     pin::Pin,
     sync::{
@@ -52,6 +53,7 @@ pub struct PeerConn {
     my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
 
+    tunnel: Box<dyn Any + Send + 'static>,
     sink: MpscTunnelSender,
     recv: Option<Pin<Box<dyn ZCPacketStream>>>,
     tunnel_info: Option<TunnelInfo>,
@@ -97,6 +99,7 @@ impl PeerConn {
             my_peer_id,
             global_ctx,
 
+            tunnel: Box::new(mpsc_tunnel),
             sink,
             recv: Some(recv),
             tunnel_info,

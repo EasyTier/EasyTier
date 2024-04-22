@@ -813,6 +813,7 @@ pub mod tests {
         const CONN_COUNT: usize = 10;
 
         tokio::spawn(async move {
+            let mut tunnels = vec![];
             for _ in 0..CONN_COUNT {
                 let mut connector = WgTunnelConnector::new(
                     "wg://127.0.0.1:5595".parse().unwrap(),
@@ -820,14 +821,23 @@ pub mod tests {
                 );
                 let ret = connector.connect().await;
                 assert!(ret.is_ok());
-                drop(ret);
+                let t = ret.unwrap();
+                let (_stream, mut sink) = t.split();
+                sink.send(ZCPacket::new_with_payload("payload".into()))
+                    .await
+                    .unwrap();
+                tunnels.push(t);
             }
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         });
 
         for _ in 0..CONN_COUNT {
+            println!("accepting");
             let conn = listener.accept().await;
-            assert!(conn.is_ok());
-            drop(conn);
+            let (mut stream, _sink) = conn.unwrap().split();
+            let packet = stream.next().await.unwrap().unwrap();
+            assert_eq!("payload".as_bytes(), packet.payload());
+            println!("accepting drop");
         }
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;

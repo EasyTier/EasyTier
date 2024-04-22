@@ -17,8 +17,6 @@ pub mod foreign_network_manager;
 #[cfg(test)]
 pub mod tests;
 
-use tokio_util::bytes::BytesMut;
-
 use crate::tunnel::packet_def::ZCPacket;
 
 #[async_trait::async_trait]
@@ -32,7 +30,7 @@ pub trait PeerPacketFilter {
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait NicPacketFilter {
-    async fn try_process_packet_from_nic(&self, data: BytesMut) -> BytesMut;
+    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket);
 }
 
 type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;

@@ -343,6 +343,7 @@ impl PeerManager {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
                 let hdr = packet.peer_manager_header().unwrap();
                 if hdr.packet_type == PacketType::Data as u8 {
+                    tracing::trace!(?packet, "send packet to nic channel");
                     // TODO: use a function to get the body ref directly for zero copy
                     self.nic_channel.send(packet).await.unwrap();
                     None
@@ -464,18 +465,17 @@ impl PeerManager {
         self.get_route().list_routes().await
     }
 
-    async fn run_nic_packet_process_pipeline(&self, mut data: BytesMut) -> BytesMut {
+    async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
-            data = pipeline.try_process_packet_from_nic(data).await;
+            pipeline.try_process_packet_from_nic(data).await;
         }
-        data
     }
 
     pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         self.peers.send_msg(msg, dst_peer_id).await
     }
 
-    pub async fn send_msg_ipv4(&self, msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+    pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
         log::trace!(
             "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
             msg,
@@ -501,7 +501,7 @@ impl PeerManager {
             return Ok(());
         }
 
-        // TODO: let msg = self.run_nic_packet_process_pipeline(msg).await;
+        self.run_nic_packet_process_pipeline(&mut msg).await;
         let mut errs: Vec<Error> = vec![];
 
         let mut msg = Some(msg);
@@ -515,11 +515,7 @@ impl PeerManager {
 
             let peer_id = &dst_peers[i];
 
-            msg.fill_peer_manager_hdr(
-                peer_id.clone(),
-                self.my_peer_id,
-                packet::PacketType::Data as u8,
-            );
+            msg.fill_peer_manager_hdr(self.my_peer_id, *peer_id, packet::PacketType::Data as u8);
 
             if let Some(gateway) = self.peers.get_gateway_peer_id(*peer_id).await {
                 if let Err(e) = self.peers.send_msg_directly(msg.clone(), gateway).await {

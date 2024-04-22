@@ -511,7 +511,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_stun_bind_request() {
-        enable_log();
         // miwifi / qq seems not correctly responde to change_ip and change_port, they always try to change the src ip and port.
         // let mut ips = HostResolverIter::new(vec!["stun1.l.google.com:19302".to_string()]);
         let mut ips_ = HostResolverIter::new(vec!["stun.canets.org:3478".to_string()]);

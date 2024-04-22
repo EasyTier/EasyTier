@@ -143,7 +143,11 @@ where
                 return Poll::Ready(Some(Ok(packet)));
             }
 
-            self_mut.buf.reserve(*self_mut.max_packet_size * 5);
+            reserve_buf(
+                &mut self_mut.buf,
+                *self_mut.max_packet_size,
+                *self_mut.max_packet_size * 64,
+            );
 
             match ready!(poll_read_buf(
                 self_mut.reader.as_mut(),
@@ -357,6 +361,12 @@ pub(crate) fn setup_sokcet2(
         bind_addr,
         super::common::get_interface_name_by_ip(&bind_addr.ip()),
     )
+}
+
+pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
+    if buf.capacity() < min_size {
+        buf.reserve(max_size);
+    }
 }
 
 pub mod tests {

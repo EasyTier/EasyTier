@@ -112,6 +112,26 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
     vec![inst1, inst2, inst3]
 }
 
+async fn ping_test(from_netns: &str, target_ip: &str) -> bool {
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let code = tokio::process::Command::new("ip")
+        .args(&[
+            "netns",
+            "exec",
+            from_netns,
+            "ping",
+            "-c",
+            "1",
+            "-W",
+            "1",
+            target_ip.to_string().as_str(),
+        ])
+        .status()
+        .await
+        .unwrap();
+    code.code().unwrap() == 0
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
@@ -130,24 +150,11 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
         insts[0].get_peer_manager().list_routes().await,
     );
 
-    // send ping with shell in net_a to net_d
-    let _g = NetNS::new(Some("net_c".to_owned())).guard();
-    let code = tokio::process::Command::new("ip")
-        .args(&[
-            "netns",
-            "exec",
-            "net_a",
-            "ping",
-            "-c",
-            "1",
-            "-W",
-            "1",
-            "10.144.144.1",
-        ])
-        .status()
-        .await
-        .unwrap();
-    assert_eq!(code.code().unwrap(), 0);
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.144.1").await },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 #[rstest::rstest]
@@ -207,19 +214,11 @@ pub async fn icmp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &st
     )
     .await;
 
-    // wait updater
-    tokio::time::sleep(tokio::time::Duration::from_secs(6)).await;
-
-    // send ping with shell in net_a to net_d
-    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-    let code = tokio::process::Command::new("ip")
-        .args(&[
-            "netns", "exec", "net_a", "ping", "-c", "1", "-W", "1", "10.1.2.4",
-        ])
-        .status()
-        .await
-        .unwrap();
-    assert_eq!(code.code().unwrap(), 0);
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4").await },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 #[rstest::rstest]
@@ -413,21 +412,9 @@ pub async fn foreign_network_forward_nic_data() {
     )
     .await;
 
-    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
-    let code = tokio::process::Command::new("ip")
-        .args(&[
-            "netns",
-            "exec",
-            "net_b",
-            "ping",
-            "-c",
-            "1",
-            "-W",
-            "1",
-            "10.144.145.2",
-        ])
-        .status()
-        .await
-        .unwrap();
-    assert_eq!(code.code().unwrap(), 0);
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.145.2").await },
+        Duration::from_secs(5),
+    )
+    .await;
 }

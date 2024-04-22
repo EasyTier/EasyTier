@@ -2,7 +2,9 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
-use pnet::packet::tcp::{ipv4_checksum, MutableTcpPacket};
+use pnet::packet::tcp::{ipv4_checksum, MutableTcpPacket, TcpPacket};
+use pnet::packet::MutablePacket;
+use pnet::packet::Packet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::AtomicU16;
 use std::sync::Arc;
@@ -11,7 +13,6 @@ use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
-use tokio_util::bytes::{BytesMut};
 use tracing::Instrument;
 
 use crate::common::error::Result;
@@ -98,32 +99,23 @@ impl PeerPacketFilter for TcpProxy {
 
 #[async_trait::async_trait]
 impl NicPacketFilter for TcpProxy {
-    async fn try_process_packet_from_nic(&self, mut data: BytesMut) -> BytesMut {
+    async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) {
         let Some(my_ipv4) = self.global_ctx.get_ipv4() else {
-            return data;
+            return;
         };
 
-        let header_len = {
-            let Some(ipv4) = &Ipv4Packet::new(&data[..]) else {
-                return data;
-            };
+        let data = zc_packet.payload();
+        let ip_packet = Ipv4Packet::new(data).unwrap();
+        if ip_packet.get_version() != 4
+            || ip_packet.get_source() != my_ipv4
+            || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
+        {
+            return;
+        }
 
-            if ipv4.get_version() != 4
-                || ipv4.get_source() != my_ipv4
-                || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
-            {
-                return data;
-            }
-
-            ipv4.get_header_length() as usize * 4
-        };
-
-        let (ip_buffer, tcp_buffer) = data.split_at_mut(header_len);
-        let mut ip_packet = MutableIpv4Packet::new(ip_buffer).unwrap();
-        let mut tcp_packet = MutableTcpPacket::new(tcp_buffer).unwrap();
-
+        let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
         if tcp_packet.get_source() != self.get_local_port() {
-            return data;
+            return;
         }
 
         let dst_addr = SocketAddr::V4(SocketAddrV4::new(
@@ -136,7 +128,7 @@ impl NicPacketFilter for TcpProxy {
             entry
         } else {
             let Some(syn_entry) = self.syn_map.get(&dst_addr) else {
-                return data;
+                return;
             };
             syn_entry
         };
@@ -148,13 +140,18 @@ impl NicPacketFilter for TcpProxy {
             panic!("v4 nat entry src ip is not v4");
         };
 
+        let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload()).unwrap();
         ip_packet.set_source(ip);
+        let dst = ip_packet.get_destination();
+
+        let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
         tcp_packet.set_source(nat_entry.dst.port());
-        Self::update_ipv4_packet_checksum(&mut ip_packet, &mut tcp_packet);
+
+        Self::update_tcp_packet_checksum(&mut tcp_packet, &ip, &dst);
+        drop(tcp_packet);
+        Self::update_ip_packet_checksum(&mut ip_packet);
 
         tracing::trace!(dst_addr = ?dst_addr, nat_entry = ?nat_entry, packet = ?ip_packet, "tcp packet after modified");
-
-        data
     }
 }
 
@@ -175,17 +172,20 @@ impl TcpProxy {
         })
     }
 
-    fn update_ipv4_packet_checksum(
-        ipv4_packet: &mut MutableIpv4Packet,
+    fn update_tcp_packet_checksum(
         tcp_packet: &mut MutableTcpPacket,
+        ipv4_src: &Ipv4Addr,
+        ipv4_dst: &Ipv4Addr,
     ) {
         tcp_packet.set_checksum(ipv4_checksum(
             &tcp_packet.to_immutable(),
-            &ipv4_packet.get_source(),
-            &ipv4_packet.get_destination(),
+            ipv4_src,
+            ipv4_dst,
         ));
+    }
 
-        ipv4_packet.set_checksum(pnet::packet::ipv4::checksum(&ipv4_packet.to_immutable()));
+    fn update_ip_packet_checksum(ip_packet: &mut MutableIpv4Packet) {
+        ip_packet.set_checksum(pnet::packet::ipv4::checksum(&ip_packet.to_immutable()));
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<()> {
@@ -251,6 +251,7 @@ impl TcpProxy {
                     tracing::error!("tcp connection from unknown source: {:?}", socket_addr);
                     continue;
                 };
+                tracing::info!(?socket_addr, "tcp connection accepted for proxy");
                 assert_eq!(entry.state.load(), NatDstEntryState::SynReceived);
 
                 let entry_clone = entry.clone();
@@ -373,16 +374,10 @@ impl TcpProxy {
             return None;
         }
 
-        tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
+        tracing::info!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
 
-        let mut packet_buffer = BytesMut::with_capacity(payload_bytes.len());
-        packet_buffer.extend_from_slice(&payload_bytes.to_vec());
-
-        let (ip_buffer, tcp_buffer) =
-            packet_buffer.split_at_mut(ipv4.get_header_length() as usize * 4);
-
-        let mut ip_packet = MutableIpv4Packet::new(ip_buffer).unwrap();
-        let mut tcp_packet = MutableTcpPacket::new(tcp_buffer).unwrap();
+        let ip_packet = Ipv4Packet::new(payload_bytes).unwrap();
+        let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
 
         let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
         if is_tcp_syn {
@@ -400,11 +395,19 @@ impl TcpProxy {
             tracing::trace!(src = ?src, dst = ?dst, old_entry = ?old_val, "tcp syn received");
         }
 
+        let mut ip_packet = MutableIpv4Packet::new(payload_bytes).unwrap();
         ip_packet.set_destination(ipv4_addr);
-        tcp_packet.set_destination(self.get_local_port());
-        Self::update_ipv4_packet_checksum(&mut ip_packet, &mut tcp_packet);
+        let source = ip_packet.get_source();
 
-        tracing::trace!(ip_packet = ?ip_packet, tcp_packet = ?tcp_packet, "tcp packet forwarded");
+        let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
+        tcp_packet.set_destination(self.get_local_port());
+
+        Self::update_tcp_packet_checksum(&mut tcp_packet, &source, &ipv4_addr);
+        drop(tcp_packet);
+        Self::update_ip_packet_checksum(&mut ip_packet);
+
+        tracing::info!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
+
         Some(())
     }
 }

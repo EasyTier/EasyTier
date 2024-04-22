@@ -19,7 +19,7 @@ use crate::{
     common::join_joinset_background,
     rpc::TunnelInfo,
     tunnel::{
-        common::TunnelWrapper,
+        common::{reserve_buf, TunnelWrapper},
         packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
         ring::RingTunnel,
     },
@@ -105,7 +105,7 @@ fn get_zcpacket_from_buf(buf: BytesMut) -> Result<ZCPacket, TunnelError> {
     let payload_len = header.len.get() as usize;
     if payload_len != dg_size - UDP_TUNNEL_HEADER_SIZE {
         return Err(TunnelError::InvalidPacket(format!(
-            "udp packet payload len not match: body len: {:?}, header len: {:?}",
+            "udp packet payload len not match: header len: {:?}, real len: {:?}",
             payload_len, dg_size
         )));
     }
@@ -139,7 +139,7 @@ async fn forward_from_ring_to_udp(
         header.msg_type = UdpPacketType::Data as u8;
 
         let buf = packet.into_bytes(ZCPacketType::UDP);
-        tracing::trace!(?buf, "udp forward from ring to udp");
+        tracing::trace!(?udp_payload_len, ?buf, "udp forward from ring to udp");
         let ret = socket.send_to(&buf, &addr).await;
         if ret.is_err() {
             return Some(TunnelError::IOError(ret.unwrap_err()));
@@ -316,7 +316,7 @@ impl UdpTunnelListenerData {
         let socket = self.socket.as_ref().unwrap().clone();
         let mut buf = BytesMut::new();
         loop {
-            buf.reserve(UDP_DATA_MTU * 5);
+            reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 128);
             let (dg_size, addr) = socket.recv_buf_from(&mut buf).await.unwrap();
             tracing::trace!(
                 "udp recv packet: {:?}, buf: {:?}, size: {}",
@@ -325,7 +325,7 @@ impl UdpTunnelListenerData {
                 dg_size
             );
 
-            let zc_packet = match get_zcpacket_from_buf(buf.split_to(dg_size)) {
+            let zc_packet = match get_zcpacket_from_buf(buf.split()) {
                 Ok(v) => v,
                 Err(e) => {
                     tracing::warn!(?e, "udp get zc packet from buf error");
@@ -463,9 +463,9 @@ impl UdpTunnelConnector {
             socket.recv_buf_from(&mut buf),
         )
         .await??;
-        let zc_packet = get_zcpacket_from_buf(buf.split_to(usize))?;
+        let zc_packet = get_zcpacket_from_buf(buf.split())?;
         if recv_addr != addr {
-            tracing::warn!(?recv_addr, ?addr, "udp wait sack addr not match");
+            tracing::warn!(?recv_addr, ?addr, ?usize, "udp wait sack addr not match");
         }
 
         let header = zc_packet.udp_tunnel_header().unwrap();
@@ -546,7 +546,7 @@ impl UdpTunnelConnector {
         tokio::spawn(async move {
             let mut buf = BytesMut::new();
             loop {
-                buf.reserve(UDP_DATA_MTU * 5);
+                reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 128);
                 let ret;
                 tokio::select! {
                     _ = close_event_recv.recv() => {
@@ -563,7 +563,7 @@ impl UdpTunnelConnector {
                     dg_size
                 );
 
-                let zc_packet = match get_zcpacket_from_buf(buf.split_to(dg_size)) {
+                let zc_packet = match get_zcpacket_from_buf(buf.split()) {
                     Ok(v) => v,
                     Err(e) => {
                         tracing::warn!(?e, "connector udp get zc packet from buf error");
@@ -671,8 +671,23 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use futures::SinkExt;
+    use tokio::time::timeout;
+
     use super::*;
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
+    use crate::{
+        common::global_ctx::tests::get_mock_global_ctx,
+        tunnel::{
+            check_scheme_and_get_socket_addr,
+            common::{
+                get_interface_name_by_ip,
+                tests::{_tunnel_bench, _tunnel_echo_server, _tunnel_pingpong},
+            },
+            TunnelConnector,
+        },
+    };
 
     #[tokio::test]
     async fn udp_pingpong() {
@@ -686,5 +701,138 @@ mod tests {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:5555".parse().unwrap());
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:5555".parse().unwrap());
         _tunnel_bench(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn udp_bench_with_bind() {
+        let listener = UdpTunnelListener::new("udp://127.0.0.1:5554".parse().unwrap());
+        let mut connector = UdpTunnelConnector::new("udp://127.0.0.1:5554".parse().unwrap());
+        connector.set_bind_addrs(vec!["127.0.0.1:0".parse().unwrap()]);
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn udp_bench_with_bind_fail() {
+        let listener = UdpTunnelListener::new("udp://127.0.0.1:5553".parse().unwrap());
+        let mut connector = UdpTunnelConnector::new("udp://127.0.0.1:5553".parse().unwrap());
+        connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    async fn send_random_data_to_socket(remote_url: url::Url) {
+        let socket = UdpSocket::bind("0.0.0.0:0").await.unwrap();
+        socket
+            .connect(format!(
+                "{}:{}",
+                remote_url.host().unwrap(),
+                remote_url.port().unwrap()
+            ))
+            .await
+            .unwrap();
+
+        // get a random 100-len buf
+        loop {
+            let mut buf = vec![0u8; 100];
+            rand::thread_rng().fill(&mut buf[..]);
+            socket.send(&buf).await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_multiple_conns() {
+        let mut listener = UdpTunnelListener::new("udp://0.0.0.0:5557".parse().unwrap());
+        listener.listen().await.unwrap();
+
+        let _lis = tokio::spawn(async move {
+            loop {
+                let ret = listener.accept().await.unwrap();
+                assert_eq!(
+                    ret.info().unwrap().local_addr,
+                    listener.local_url().to_string()
+                );
+                tokio::spawn(async move { _tunnel_echo_server(ret, false).await });
+            }
+        });
+
+        let mut connector1 = UdpTunnelConnector::new("udp://127.0.0.1:5557".parse().unwrap());
+        let mut connector2 = UdpTunnelConnector::new("udp://127.0.0.1:5557".parse().unwrap());
+
+        let t1 = connector1.connect().await.unwrap();
+        let t2 = connector2.connect().await.unwrap();
+
+        tokio::spawn(timeout(
+            Duration::from_secs(2),
+            send_random_data_to_socket(t1.info().unwrap().local_addr.parse().unwrap()),
+        ));
+        tokio::spawn(timeout(
+            Duration::from_secs(2),
+            send_random_data_to_socket(t1.info().unwrap().remote_addr.parse().unwrap()),
+        ));
+        tokio::spawn(timeout(
+            Duration::from_secs(2),
+            send_random_data_to_socket(t2.info().unwrap().remote_addr.parse().unwrap()),
+        ));
+
+        let sender1 = tokio::spawn(async move {
+            let (mut stream, mut sink) = t1.split();
+
+            for i in 0..10 {
+                sink.send(ZCPacket::new_with_payload("hello1".into()))
+                    .await
+                    .unwrap();
+                let recv = stream.next().await.unwrap().unwrap();
+                println!("t1 recv: {:?}, {:?}", recv, i);
+                assert_eq!(recv.payload(), "hello1".as_bytes());
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        let sender2 = tokio::spawn(async move {
+            let (mut stream, mut sink) = t2.split();
+
+            for i in 0..10 {
+                sink.send(ZCPacket::new_with_payload("hello2".into()))
+                    .await
+                    .unwrap();
+                let recv = stream.next().await.unwrap().unwrap();
+                println!("t2 recv: {:?}, {:?}", recv, i);
+                assert_eq!(recv.payload(), "hello2".as_bytes());
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        });
+
+        let _ = tokio::join!(sender1, sender2);
+    }
+
+    #[tokio::test]
+    async fn bind_multi_ip_to_same_dev() {
+        let global_ctx = get_mock_global_ctx();
+        let ips = global_ctx
+            .get_ip_collector()
+            .collect_ip_addrs()
+            .await
+            .interface_ipv4s;
+        if ips.is_empty() {
+            return;
+        }
+        let bind_dev = get_interface_name_by_ip(&ips[0].parse().unwrap());
+
+        for ip in ips {
+            println!("bind to ip: {:?}, {:?}", ip, bind_dev);
+            let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
+                &format!("udp://{}:11111", ip).parse().unwrap(),
+                "udp",
+            )
+            .unwrap();
+            let socket2_socket = socket2::Socket::new(
+                socket2::Domain::for_address(addr),
+                socket2::Type::DGRAM,
+                Some(socket2::Protocol::UDP),
+            )
+            .unwrap();
+            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
+        }
     }
 }

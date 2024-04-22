@@ -2,9 +2,7 @@ use std::net::SocketAddr;
 
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
-use tokio::{
-    net::{TcpListener, TcpSocket, TcpStream},
-};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use crate::{rpc::TunnelInfo, tunnel::common::setup_sokcet2};
 
@@ -162,7 +160,10 @@ impl super::TunnelConnector for TcpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
+    use crate::tunnel::{
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
+        TunnelConnector,
+    };
 
     use super::*;
 
@@ -178,5 +179,22 @@ mod tests {
         let listener = TcpTunnelListener::new("tcp://0.0.0.0:31012".parse().unwrap());
         let connector = TcpTunnelConnector::new("tcp://127.0.0.1:31012".parse().unwrap());
         _tunnel_bench(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn tcp_bench_with_bind() {
+        let listener = TcpTunnelListener::new("tcp://127.0.0.1:11013".parse().unwrap());
+        let mut connector = TcpTunnelConnector::new("tcp://127.0.0.1:11013".parse().unwrap());
+        connector.set_bind_addrs(vec!["127.0.0.1:0".parse().unwrap()]);
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn tcp_bench_with_bind_fail() {
+        let listener = TcpTunnelListener::new("tcp://127.0.0.1:11014".parse().unwrap());
+        let mut connector = TcpTunnelConnector::new("tcp://127.0.0.1:11014".parse().unwrap());
+        connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
+        _tunnel_pingpong(listener, connector).await
     }
 }
