@@ -779,7 +779,7 @@ mod tests {
             let (mut stream, mut sink) = t1.split();
 
             for i in 0..10 {
-                sink.send(ZCPacket::new_with_payload("hello1".into()))
+                sink.send(ZCPacket::new_with_payload("hello1".as_bytes()))
                     .await
                     .unwrap();
                 let recv = stream.next().await.unwrap().unwrap();
@@ -793,7 +793,7 @@ mod tests {
             let (mut stream, mut sink) = t2.split();
 
             for i in 0..10 {
-                sink.send(ZCPacket::new_with_payload("hello2".into()))
+                sink.send(ZCPacket::new_with_payload("hello2".as_bytes()))
                     .await
                     .unwrap();
                 let recv = stream.next().await.unwrap().unwrap();

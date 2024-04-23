@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use bytes::BytesMut;
 use dashmap::DashMap;
 use pnet::packet::{
     ip::IpNextHeaderProtocols,
@@ -21,7 +20,6 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
-
 
 use tracing::Level;
 
@@ -142,9 +140,7 @@ impl UdpNatEntry {
 
             tracing::trace!(?ipv4_packet, "udp nat packet response send");
 
-            let mut b = BytesMut::new();
-            b.extend_from_slice(ipv4_packet.packet());
-            let mut p = ZCPacket::new_with_payload(b);
+            let mut p = ZCPacket::new_with_payload(ipv4_packet.packet());
             p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
 
             if let Err(e) = packet_sender.send(p) {

@@ -148,7 +148,7 @@ impl WgPeerData {
             Self::fill_ip_header(&mut zc_packet);
             zc_packet.into_bytes(ZCPacketType::WG)
         } else {
-            zc_packet.into_bytes(ZCPacketType::WG).split_off(20)
+            zc_packet.into_bytes(ZCPacketType::WG)
         };
         tracing::trace!(?packet, "Sending packet to peer");
 
@@ -242,13 +242,14 @@ impl WgPeerData {
                     packet.len()
                 );
                 let mut b = BytesMut::new();
-                b.resize(WG_TUNNEL_HEADER_SIZE, 0);
-                b.extend_from_slice(if matches!(self.wg_type, WgType::InternalUse) {
-                    self.remove_ip_header(packet, packet[0] >> 4 == 4)
+                if matches!(self.wg_type, WgType::InternalUse) {
+                    b.resize(WG_TUNNEL_HEADER_SIZE, 0);
+                    b.extend_from_slice(self.remove_ip_header(packet, packet[0] >> 4 == 4));
                 } else {
-                    packet
-                });
+                    b.extend_from_slice(packet);
+                };
                 let zc_packet = ZCPacket::new_from_buf(b, ZCPacketType::WG);
+                tracing::trace!(?zc_packet, "forward zc_packet to sink");
                 let ret = sink.send(zc_packet).await;
                 if ret.is_err() {
                     tracing::error!("Failed to send packet to tunnel: {:?}", ret);
@@ -639,27 +640,6 @@ impl WgTunnelConnector {
         tracing::warn!("wg connect: {:?}", addr);
         let local_addr = udp.local_addr().unwrap().to_string();
 
-        /*
-            let mut my_tun = Tunn::new(
-                config.my_secret_key.clone(),
-                config.peer_public_key.clone(),
-                None,
-                None,
-                rand::thread_rng().next_u32(),
-                None,
-            )
-            .unwrap();
-
-            // do not need handshake manually
-            let init = Self::create_handshake_init(&mut my_tun);
-            udp.send_to(&init, addr).await?;
-
-            let mut buf = vec![0u8; MAX_PACKET];
-            let (n, _) = udp.recv_from(&mut buf).await.unwrap();
-            let keepalive = Self::parse_handshake_resp(&mut my_tun, &buf[..n]);
-            udp.send_to(&keepalive, addr).await?;
-        */
-
         let mut wg_peer = WgPeer::new(Arc::new(udp), config.clone(), addr);
         let tunnel = wg_peer.start_and_get_tunnel();
 
@@ -823,7 +803,7 @@ pub mod tests {
                 assert!(ret.is_ok());
                 let t = ret.unwrap();
                 let (_stream, mut sink) = t.split();
-                sink.send(ZCPacket::new_with_payload("payload".into()))
+                sink.send(ZCPacket::new_with_payload("payload".as_bytes()))
                     .await
                     .unwrap();
                 tunnels.push(t);

@@ -16,7 +16,7 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::bytes::{Bytes, BytesMut};
+use tokio_util::bytes::Bytes;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
@@ -420,9 +420,7 @@ impl PeerManager {
                     .upgrade()
                     .ok_or(Error::Unknown)?;
                 let peer_map = self.peers.upgrade().ok_or(Error::Unknown)?;
-                let mut buf = BytesMut::new();
-                buf.extend_from_slice(&msg);
-                let mut zc_packet = ZCPacket::new_with_payload(buf);
+                let mut zc_packet = ZCPacket::new_with_payload(&msg);
                 zc_packet.fill_peer_manager_hdr(
                     self.my_peer_id,
                     dst_peer_id,

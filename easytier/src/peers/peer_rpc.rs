@@ -1,6 +1,5 @@
 use std::sync::{atomic::AtomicU32, Arc};
 
-use bytes::BytesMut;
 use dashmap::DashMap;
 use futures::{SinkExt, StreamExt};
 use prost::Message;
@@ -235,9 +234,7 @@ impl PeerRpcManager {
         let mut buf = Vec::new();
         packet.encode(&mut buf).unwrap();
 
-        let mut b = BytesMut::new();
-        b.extend_from_slice(&buf);
-        let mut zc_packet = ZCPacket::new_with_payload(b);
+        let mut zc_packet = ZCPacket::new_with_payload(&buf);
         zc_packet.fill_peer_manager_hdr(from_peer, to_peer, PacketType::TaRpc as u8);
         zc_packet
     }

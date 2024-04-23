@@ -6,7 +6,6 @@ use std::{
     time::Duration,
 };
 
-use bytes::{BytesMut};
 use tokio::{sync::broadcast, task::JoinSet, time::timeout};
 
 use crate::{
@@ -59,9 +58,7 @@ impl PeerConnPinger {
     }
 
     fn new_ping_packet(my_node_id: PeerId, peer_id: PeerId, seq: u32) -> ZCPacket {
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(&seq.to_le_bytes());
-        let mut packet = ZCPacket::new_with_payload(buf);
+        let mut packet = ZCPacket::new_with_payload(&seq.to_le_bytes());
         packet.fill_peer_manager_hdr(my_node_id, peer_id, PacketType::Ping as u8);
         packet
     }

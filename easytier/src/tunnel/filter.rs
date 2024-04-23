@@ -293,7 +293,6 @@ impl StatsRecorderTunnelFilter {
 pub mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use bytes::BytesMut;
     use filter::ring::create_ring_tunnel_pair;
 
     use super::*;
@@ -345,7 +344,7 @@ pub mod tests {
         let tunnel = TunnelWithFilter::new(s, filter.clone());
 
         let (_r, mut s) = tunnel.split();
-        s.send(ZCPacket::new_with_payload(BytesMut::from("ab")))
+        s.send(ZCPacket::new_with_payload("ab".as_bytes()))
             .await
             .unwrap();
 

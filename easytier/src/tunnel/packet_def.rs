@@ -71,7 +71,7 @@ const fn max(a: usize, b: usize) -> usize {
 }
 
 #[derive(Default, Debug)]
-struct ZCPacketOffsets {
+pub struct ZCPacketOffsets {
     pub payload_offset: usize,
     pub peer_manager_header_offset: usize,
     pub tcp_tunnel_header_offset: usize,
@@ -97,7 +97,7 @@ const PAYLOAD_OFFSET_FOR_NIC_PACKET: usize = max(
 ) + PEER_MANAGER_HEADER_SIZE;
 
 impl ZCPacketType {
-    fn get_packet_offsets(&self) -> ZCPacketOffsets {
+    pub fn get_packet_offsets(&self) -> ZCPacketOffsets {
         match self {
             ZCPacketType::TCP => ZCPacketOffsets {
                 payload_offset: TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
@@ -139,9 +139,9 @@ pub struct ZCPacket {
 }
 
 impl ZCPacket {
-    fn new(cap: usize) -> Self {
+    pub fn new_nic_packet() -> Self {
         Self {
-            inner: BytesMut::with_capacity(cap),
+            inner: BytesMut::new(),
             packet_type: ZCPacketType::NIC,
         }
     }
@@ -153,12 +153,16 @@ impl ZCPacket {
         }
     }
 
-    pub fn new_with_payload(payload: BytesMut) -> Self {
-        let mut ret = Self::new(payload.len() + 64);
+    pub fn new_with_payload(payload: &[u8]) -> Self {
+        let mut ret = Self::new_nic_packet();
         let total_len = ret.packet_type.get_packet_offsets().payload_offset + payload.len();
         ret.inner.resize(total_len, 0);
         ret.mut_payload()[..payload.len()].copy_from_slice(&payload);
         ret
+    }
+
+    pub fn packet_type(&self) -> ZCPacketType {
+        self.packet_type
     }
 
     pub fn mut_payload(&mut self) -> &mut [u8] {
@@ -299,6 +303,10 @@ impl ZCPacket {
             ZCPacketType::NIC => unreachable!(),
         }
     }
+
+    pub fn inner(self) -> BytesMut {
+        self.inner
+    }
 }
 
 #[cfg(test)]
@@ -308,9 +316,7 @@ mod tests {
     #[test]
     fn test_zc_packet() {
         let payload = b"hello world";
-        let mut p = BytesMut::new();
-        p.extend_from_slice(payload);
-        let mut packet = ZCPacket::new_with_payload(p);
+        let mut packet = ZCPacket::new_with_payload(payload);
         let peer_manager_header = packet.mut_peer_manager_header().unwrap();
         peer_manager_header.packet_type = PacketType::Data as u8;
         peer_manager_header.len.set(payload.len() as u32);

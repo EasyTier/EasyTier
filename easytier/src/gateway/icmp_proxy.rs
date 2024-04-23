@@ -5,7 +5,6 @@ use std::{
     thread,
 };
 
-use bytes::BytesMut;
 use pnet::packet::{
     icmp::{self, IcmpTypes},
     ip::IpNextHeaderProtocols,
@@ -124,9 +123,7 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
         ipv4_packet.set_destination(dest_ip);
         ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
 
-        let mut b = BytesMut::new();
-        b.extend_from_slice(ipv4_packet.packet());
-        let mut p = ZCPacket::new_with_payload(b);
+        let mut p = ZCPacket::new_with_payload(ipv4_packet.packet());
         p.fill_peer_manager_hdr(
             v.my_peer_id.into(),
             v.src_peer_id.into(),

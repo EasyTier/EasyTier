@@ -132,7 +132,9 @@ mod tests {
         let t2 = tokio::spawn(async move {
             for i in 0..1000000 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                let a = sink1.send(ZCPacket::new_with_payload("hello".into())).await;
+                let a = sink1
+                    .send(ZCPacket::new_with_payload("hello".as_bytes()))
+                    .await;
                 if a.is_err() {
                     tracing::info!(?a, "t2 exit with err");
                     break;
@@ -151,7 +153,7 @@ mod tests {
             for i in 0..1000000 {
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 let a = sink2
-                    .send(ZCPacket::new_with_payload("hello2".into()))
+                    .send(ZCPacket::new_with_payload("hello2".as_bytes()))
                     .await;
                 if a.is_err() {
                     tracing::info!(?a, "t3 exit with err");

@@ -170,7 +170,7 @@ impl Instance {
 
             // TODO: use zero-copy
             let send_ret = mgr
-                .send_msg_ipv4(ZCPacket::new_with_payload(ret), dst_ipv4)
+                .send_msg_ipv4(ZCPacket::new_with_payload(ret.as_ref()), dst_ipv4)
                 .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv4 failed")
@@ -304,14 +304,22 @@ impl Instance {
 
         self.add_initial_peers().await?;
 
-        if let Some(_) = self.global_ctx.get_vpn_portal_cidr() {
-            self.vpn_portal
-                .lock()
-                .await
-                .start(self.get_global_ctx(), self.get_peer_manager())
-                .await?;
+        if self.global_ctx.get_vpn_portal_cidr().is_some() {
+            self.run_vpn_portal().await?;
         }
 
+        Ok(())
+    }
+
+    pub async fn run_vpn_portal(&mut self) -> Result<(), Error> {
+        if self.global_ctx.get_vpn_portal_cidr().is_none() {
+            return Err(anyhow::anyhow!("vpn portal cidr not set.").into());
+        }
+        self.vpn_portal
+            .lock()
+            .await
+            .start(self.get_global_ctx(), self.get_peer_manager())
+            .await?;
         Ok(())
     }
 

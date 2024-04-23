@@ -8,7 +8,6 @@ use std::{
     },
 };
 
-use bytes::BytesMut;
 use futures::{SinkExt, StreamExt, TryFutureExt};
 
 use prost::Message;
@@ -162,7 +161,7 @@ impl PeerConn {
         };
 
         let hs_req = req.encode_to_vec();
-        let mut zc_packet = ZCPacket::new_with_payload(BytesMut::from(hs_req.as_bytes()));
+        let mut zc_packet = ZCPacket::new_with_payload(hs_req.as_bytes());
         zc_packet.fill_peer_manager_hdr(
             self.my_peer_id,
             PeerId::default(),

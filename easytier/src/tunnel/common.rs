@@ -445,8 +445,7 @@ pub mod tests {
 
         let (mut recv, mut send) = tunnel.split();
 
-        let send_data = BytesMut::from("12345678abcdefg");
-        send.send(ZCPacket::new_with_payload(send_data))
+        send.send(ZCPacket::new_with_payload("12345678abcdefg".as_bytes()))
             .await
             .unwrap();
 
@@ -510,7 +509,7 @@ pub mod tests {
         let now = Instant::now();
         while now.elapsed().as_secs() < 10 {
             // send.feed(item)
-            let item = ZCPacket::new_with_payload(send_buf.clone());
+            let item = ZCPacket::new_with_payload(send_buf.as_ref());
             let _ = send.feed(item).await.unwrap();
         }
 

@@ -169,7 +169,7 @@ mod tests {
             let data = "abc";
             let (_recv, mut send) = tunnel.split();
 
-            let zc_packet = ZCPacket::new_with_payload(data.into());
+            let zc_packet = ZCPacket::new_with_payload(data.as_bytes());
             send.send(zc_packet).await.unwrap();
             Err(Error::Unknown)
         }
