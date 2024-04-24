@@ -7,7 +7,9 @@ use tokio::{
     time::timeout,
 };
 
-use crate::{common::PeerId, peers::peer_conn::PeerConnId, rpc as easytier_rpc};
+use crate::{
+    common::PeerId, peers::zc_peer_conn::PeerConnId, rpc as easytier_rpc, tunnel::TunnelConnector,
+};
 
 use crate::{
     common::{
@@ -21,13 +23,13 @@ use crate::{
         connector_manage_rpc_server::ConnectorManageRpc, Connector, ConnectorStatus,
         ListConnectorRequest, ManageConnectorRequest,
     },
-    tunnels::{Tunnel, TunnelConnector},
     use_global_var,
 };
 
 use super::create_connector_by_url;
 
-type ConnectorMap = Arc<DashMap<String, Box<dyn TunnelConnector + Send + Sync>>>;
+type MutexConnector = Arc<Mutex<Box<dyn TunnelConnector>>>;
+type ConnectorMap = Arc<DashMap<String, MutexConnector>>;
 
 #[derive(Debug, Clone)]
 struct ReconnResult {
@@ -81,12 +83,13 @@ impl ManualConnectorManager {
 
     pub fn add_connector<T>(&self, connector: T)
     where
-        T: TunnelConnector + Send + Sync + 'static,
+        T: TunnelConnector + 'static,
     {
         log::info!("add_connector: {}", connector.remote_url());
-        self.data
-            .connectors
-            .insert(connector.remote_url().into(), Box::new(connector));
+        self.data.connectors.insert(
+            connector.remote_url().into(),
+            Arc::new(Mutex::new(Box::new(connector))),
+        );
     }
 
     pub async fn add_connector_by_url(&self, url: &str) -> Result<(), Error> {
@@ -254,7 +257,7 @@ impl ManualConnectorManager {
     async fn conn_reconnect(
         data: Arc<ConnectorManagerData>,
         dead_url: String,
-        connector: Box<dyn TunnelConnector + Send + Sync>,
+        connector: MutexConnector,
     ) -> Result<ReconnResult, Error> {
         let connector = Arc::new(Mutex::new(Some(connector)));
         let net_ns = data.net_ns.clone();
@@ -269,15 +272,17 @@ impl ManualConnectorManager {
             let mut locked = connector_clone.lock().await;
             let conn = locked.as_mut().unwrap();
             // TODO: should support set v6 here, use url in connector array
-            set_bind_addr_for_peer_connector(conn, true, &ip_collector).await;
+            set_bind_addr_for_peer_connector(conn.lock().await.as_mut(), true, &ip_collector).await;
 
             data_clone
                 .global_ctx
-                .issue_event(GlobalCtxEvent::Connecting(conn.remote_url().clone()));
+                .issue_event(GlobalCtxEvent::Connecting(
+                    conn.lock().await.remote_url().clone(),
+                ));
 
             let _g = net_ns.guard();
             log::info!("reconnect try connect... conn: {:?}", conn);
-            let tunnel = conn.connect().await?;
+            let tunnel = conn.lock().await.connect().await?;
             log::info!("reconnect get tunnel succ: {:?}", tunnel);
             assert_eq!(
                 url_clone,
@@ -359,7 +364,7 @@ mod tests {
     use crate::{
         peers::tests::create_mock_peer_manager,
         set_global_var,
-        tunnels::{Tunnel, TunnelError},
+        tunnel::{Tunnel, TunnelError},
     };
 
     use super::*;
@@ -379,7 +384,7 @@ mod tests {
             }
             async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                Err(TunnelError::CommonError("fake error".into()))
+                Err(TunnelError::InvalidPacket("fake error".into()))
             }
         }
 

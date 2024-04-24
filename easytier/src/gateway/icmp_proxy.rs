@@ -16,12 +16,13 @@ use tokio::{
     sync::{mpsc::UnboundedSender, Mutex},
     task::JoinSet,
 };
-use tokio_util::bytes::Bytes;
+
 use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
-    peers::{packet, peer_manager::PeerManager, PeerPacketFilter},
+    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    tunnel::packet_def::{PacketType, ZCPacket},
 };
 
 use super::CidrSet;
@@ -78,11 +79,7 @@ fn socket_recv(socket: &Socket, buf: &mut [MaybeUninit<u8>]) -> Result<(usize, I
     Ok((size, addr))
 }
 
-fn socket_recv_loop(
-    socket: Socket,
-    nat_table: IcmpNatTable,
-    sender: UnboundedSender<packet::Packet>,
-) {
+fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSender<ZCPacket>) {
     let mut buf = [0u8; 4096];
     let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[12..]) };
 
@@ -126,13 +123,14 @@ fn socket_recv_loop(
         ipv4_packet.set_destination(dest_ip);
         ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
 
-        let peer_packet = packet::Packet::new_data_packet(
-            v.my_peer_id,
-            v.src_peer_id,
-            &ipv4_packet.to_immutable().packet(),
+        let mut p = ZCPacket::new_with_payload(ipv4_packet.packet());
+        p.fill_peer_manager_hdr(
+            v.my_peer_id.into(),
+            v.src_peer_id.into(),
+            PacketType::Data as u8,
         );
 
-        if let Err(e) = sender.send(peer_packet) {
+        if let Err(e) = sender.send(p) {
             tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
             break;
         }
@@ -141,61 +139,12 @@ fn socket_recv_loop(
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for IcmpProxy {
-    async fn try_process_packet_from_peer(
-        &self,
-        packet: &packet::ArchivedPacket,
-        _: &Bytes,
-    ) -> Option<()> {
-        let _ = self.global_ctx.get_ipv4()?;
-
-        if packet.packet_type != packet::PacketType::Data {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        if let Some(_) = self.try_handle_peer_packet(&packet).await {
             return None;
-        };
-
-        let ipv4 = Ipv4Packet::new(&packet.payload.as_bytes())?;
-
-        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
-        {
-            return None;
+        } else {
+            return Some(packet);
         }
-
-        if !self.cidr_set.contains_v4(ipv4.get_destination()) {
-            return None;
-        }
-
-        let icmp_packet = icmp::echo_request::EchoRequestPacket::new(&ipv4.payload())?;
-
-        if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
-            // drop it because we do not support other icmp types
-            tracing::trace!("unsupported icmp type: {:?}", icmp_packet.get_icmp_type());
-            return Some(());
-        }
-
-        let icmp_id = icmp_packet.get_identifier();
-        let icmp_seq = icmp_packet.get_sequence_number();
-
-        let key = IcmpNatKey {
-            dst_ip: ipv4.get_destination().into(),
-            icmp_id,
-            icmp_seq,
-        };
-
-        let value = IcmpNatEntry::new(
-            packet.from_peer.into(),
-            packet.to_peer.into(),
-            ipv4.get_source().into(),
-        )
-        .ok()?;
-
-        if let Some(old) = self.nat_table.insert(key, value) {
-            tracing::info!("icmp nat table entry replaced: {:?}", old);
-        }
-
-        if let Err(e) = self.send_icmp_packet(ipv4.get_destination(), &icmp_packet) {
-            tracing::error!("send icmp packet failed: {:?}", e);
-        }
-
-        Some(())
     }
 }
 
@@ -262,8 +211,9 @@ impl IcmpProxy {
         self.tasks.lock().await.spawn(
             async move {
                 while let Some(msg) = receiver.recv().await {
-                    let to_peer_id = msg.to_peer.into();
-                    let ret = peer_manager.send_msg(msg.into(), to_peer_id).await;
+                    let hdr = msg.peer_manager_header().unwrap();
+                    let to_peer_id = hdr.to_peer_id.into();
+                    let ret = peer_manager.send_msg(msg, to_peer_id).await;
                     if ret.is_err() {
                         tracing::error!("send icmp packet to peer failed: {:?}", ret);
                     }
@@ -289,5 +239,59 @@ impl IcmpProxy {
         )?;
 
         Ok(())
+    }
+
+    async fn try_handle_peer_packet(&self, packet: &ZCPacket) -> Option<()> {
+        let _ = self.global_ctx.get_ipv4()?;
+        let hdr = packet.peer_manager_header().unwrap();
+
+        if hdr.packet_type != PacketType::Data as u8 {
+            return None;
+        };
+
+        let ipv4 = Ipv4Packet::new(&packet.payload())?;
+
+        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
+        {
+            return None;
+        }
+
+        if !self.cidr_set.contains_v4(ipv4.get_destination()) {
+            return None;
+        }
+
+        let icmp_packet = icmp::echo_request::EchoRequestPacket::new(&ipv4.payload())?;
+
+        if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
+            // drop it because we do not support other icmp types
+            tracing::trace!("unsupported icmp type: {:?}", icmp_packet.get_icmp_type());
+            return Some(());
+        }
+
+        let icmp_id = icmp_packet.get_identifier();
+        let icmp_seq = icmp_packet.get_sequence_number();
+
+        let key = IcmpNatKey {
+            dst_ip: ipv4.get_destination().into(),
+            icmp_id,
+            icmp_seq,
+        };
+
+        let value = IcmpNatEntry::new(
+            hdr.from_peer_id.into(),
+            hdr.to_peer_id.into(),
+            ipv4.get_source().into(),
+        )
+        .ok()?;
+
+        if let Some(old) = self.nat_table.insert(key, value) {
+            tracing::info!("icmp nat table entry replaced: {:?}", old);
+        }
+
+        if let Err(e) = self.send_icmp_packet(ipv4.get_destination(), &icmp_packet) {
+            tracing::error!("send icmp packet failed: {:?}", e);
+        }
+
+        Some(())
     }
 }

@@ -4,7 +4,7 @@ use futures::Future;
 
 use crate::{
     common::{error::Error, global_ctx::tests::get_mock_global_ctx, PeerId},
-    tunnels::ring_tunnel::create_ring_tunnel_pair,
+    tunnel::ring::create_ring_tunnel_pair,
 };
 
 use super::peer_manager::{PeerManager, RouteAlgoType};

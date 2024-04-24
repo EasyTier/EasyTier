@@ -7,16 +7,22 @@ use tokio::{
     sync::{mpsc, Mutex},
     task::JoinHandle,
 };
-use tokio_util::bytes::Bytes;
+
 use tracing::Instrument;
 
-use super::peer_conn::{PeerConn, PeerConnId};
-use crate::common::{
-    error::Error,
-    global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-    PeerId,
+use super::{
+    zc_peer_conn::{PeerConn, PeerConnId},
+    PacketRecvChan,
 };
 use crate::rpc::PeerConnInfo;
+use crate::{
+    common::{
+        error::Error,
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        PeerId,
+    },
+    tunnel::packet_def::ZCPacket,
+};
 
 type ArcPeerConn = Arc<Mutex<PeerConn>>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
@@ -26,7 +32,7 @@ pub struct Peer {
     conns: ConnMap,
     global_ctx: ArcGlobalCtx,
 
-    packet_recv_chan: mpsc::Sender<Bytes>,
+    packet_recv_chan: PacketRecvChan,
 
     close_event_sender: mpsc::Sender<PeerConnId>,
     close_event_listener: JoinHandle<()>,
@@ -37,7 +43,7 @@ pub struct Peer {
 impl Peer {
     pub fn new(
         peer_node_id: PeerId,
-        packet_recv_chan: mpsc::Sender<Bytes>,
+        packet_recv_chan: PacketRecvChan,
         global_ctx: ArcGlobalCtx,
     ) -> Self {
         let conns: ConnMap = Arc::new(DashMap::new());
@@ -106,7 +112,7 @@ impl Peer {
             .insert(conn.get_conn_id(), Arc::new(Mutex::new(conn)));
     }
 
-    pub async fn send_msg(&self, msg: Bytes) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         let Some(conn) = self.conns.iter().next() else {
             return Err(Error::PeerNoConnectionError(self.peer_node_id));
         };
@@ -157,8 +163,8 @@ mod tests {
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, new_peer_id},
-        peers::peer_conn::PeerConn,
-        tunnels::ring_tunnel::create_ring_tunnel_pair,
+        peers::zc_peer_conn::PeerConn,
+        tunnel::ring::create_ring_tunnel_pair,
     };
 
     use super::Peer;

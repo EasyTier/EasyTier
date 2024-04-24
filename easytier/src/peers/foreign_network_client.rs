@@ -4,23 +4,23 @@ use std::{
 };
 
 use dashmap::DashMap;
-use tokio::{
-    sync::{mpsc, Mutex},
-    task::JoinSet,
-};
-use tokio_util::bytes::Bytes;
+use tokio::{sync::Mutex, task::JoinSet};
 
-use crate::common::{
-    error::Error,
-    global_ctx::{ArcGlobalCtx, NetworkIdentity},
-    PeerId,
+use crate::{
+    common::{
+        error::Error,
+        global_ctx::{ArcGlobalCtx, NetworkIdentity},
+        PeerId,
+    },
+    tunnel::packet_def::ZCPacket,
 };
 
 use super::{
     foreign_network_manager::{ForeignNetworkServiceClient, FOREIGN_NETWORK_SERVICE_ID},
-    peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::PeerRpcManager,
+    zc_peer_conn::PeerConn,
+    PacketRecvChan,
 };
 
 pub struct ForeignNetworkClient {
@@ -37,7 +37,7 @@ pub struct ForeignNetworkClient {
 impl ForeignNetworkClient {
     pub fn new(
         global_ctx: ArcGlobalCtx,
-        packet_sender_to_mgr: mpsc::Sender<Bytes>,
+        packet_sender_to_mgr: PacketRecvChan,
         peer_rpc: Arc<PeerRpcManager>,
         my_peer_id: PeerId,
     ) -> Self {
@@ -148,7 +148,7 @@ impl ForeignNetworkClient {
         self.next_hop.get(&peer_id).map(|v| v.clone())
     }
 
-    pub async fn send_msg(&self, msg: Bytes, peer_id: PeerId) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: ZCPacket, peer_id: PeerId) -> Result<(), Error> {
         if let Some(next_hop) = self.get_next_hop(peer_id) {
             let ret = self.peer_map.send_msg_directly(msg, next_hop).await;
             if ret.is_err() {

@@ -3,12 +3,12 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, Weak};
 
 use anyhow::Context;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use pnet::packet::ethernet::EthernetPacket;
 use pnet::packet::ipv4::Ipv4Packet;
 
+use bytes::BytesMut;
 use tokio::{sync::Mutex, task::JoinSet};
-use tokio_util::bytes::{Bytes, BytesMut};
 use tonic::transport::Server;
 
 use crate::common::config::ConfigLoader;
@@ -22,15 +22,15 @@ use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::tcp_proxy::TcpProxy;
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
-use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
+use crate::peers::zc_peer_conn::PeerConnId;
+use crate::peers::PacketRecvChanReceiver;
 use crate::rpc::vpn_portal_rpc_server::VpnPortalRpc;
 use crate::rpc::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
-use crate::tunnels::SinkItem;
-use crate::vpn_portal::{self, VpnPortal};
+use crate::tunnel::packet_def::ZCPacket;
 
-use tokio_stream::wrappers::ReceiverStream;
+use crate::vpn_portal::{self, VpnPortal};
 
 use super::listeners::ListenerManager;
 use super::virtual_nic;
@@ -70,7 +70,7 @@ pub struct Instance {
     id: uuid::Uuid,
 
     virtual_nic: Option<Arc<virtual_nic::VirtualNic>>,
-    peer_packet_receiver: Option<ReceiverStream<SinkItem>>,
+    peer_packet_receiver: Option<PacketRecvChanReceiver>,
 
     tasks: JoinSet<()>,
 
@@ -133,7 +133,7 @@ impl Instance {
             id,
 
             virtual_nic: None,
-            peer_packet_receiver: Some(ReceiverStream::new(peer_packet_receiver)),
+            peer_packet_receiver: Some(peer_packet_receiver),
 
             tasks: JoinSet::new(),
             peer_manager,
@@ -167,7 +167,11 @@ impl Instance {
                 ?ret,
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
-            let send_ret = mgr.send_msg_ipv4(ret, dst_ipv4).await;
+
+            // TODO: use zero-copy
+            let send_ret = mgr
+                .send_msg_ipv4(ZCPacket::new_with_payload(ret.as_ref()), dst_ipv4)
+                .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv4 failed")
             }
@@ -209,23 +213,23 @@ impl Instance {
     fn do_forward_peers_to_nic(
         tasks: &mut JoinSet<()>,
         nic: Arc<virtual_nic::VirtualNic>,
-        channel: Option<ReceiverStream<Bytes>>,
+        channel: Option<PacketRecvChanReceiver>,
     ) {
         tasks.spawn(async move {
-            let send = nic.pin_send_stream();
-            let channel = channel.unwrap();
-            let ret = channel
-                .map(|packet| {
-                    log::trace!(
-                        "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
-                        packet
-                    );
-                    Ok(packet)
-                })
-                .forward(send)
-                .await;
-            if ret.is_err() {
-                panic!("do_forward_tunnel_to_nic");
+            let mut send = nic.pin_send_stream();
+            let mut channel = channel.unwrap();
+            while let Some(packet) = channel.recv().await {
+                tracing::trace!(
+                    "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
+                    packet
+                );
+                let mut b = BytesMut::new();
+                b.extend_from_slice(packet.payload());
+
+                let ret = send.send(b.freeze()).await;
+                if ret.is_err() {
+                    panic!("do_forward_tunnel_to_nic");
+                }
             }
         });
     }
@@ -300,14 +304,22 @@ impl Instance {
 
         self.add_initial_peers().await?;
 
-        if let Some(_) = self.global_ctx.get_vpn_portal_cidr() {
-            self.vpn_portal
-                .lock()
-                .await
-                .start(self.get_global_ctx(), self.get_peer_manager())
-                .await?;
+        if self.global_ctx.get_vpn_portal_cidr().is_some() {
+            self.run_vpn_portal().await?;
         }
 
+        Ok(())
+    }
+
+    pub async fn run_vpn_portal(&mut self) -> Result<(), Error> {
+        if self.global_ctx.get_vpn_portal_cidr().is_none() {
+            return Err(anyhow::anyhow!("vpn portal cidr not set.").into());
+        }
+        self.vpn_portal
+            .lock()
+            .await
+            .start(self.get_global_ctx(), self.get_peer_manager())
+            .await?;
         Ok(())
     }
 

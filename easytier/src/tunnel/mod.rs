@@ -1,69 +1,73 @@
-pub mod codec;
-pub mod common;
-// pub mod ring_tunnel;
-// pub mod stats;
-// pub mod tcp_tunnel;
-// pub mod tunnel_filter;
-// pub mod udp_tunnel;
-// pub mod wireguard;
+use std::{net::SocketAddr, pin::Pin, sync::Arc};
 
-use std::{fmt::Debug, net::SocketAddr, pin::Pin, sync::Arc};
+use async_trait::async_trait;
+use futures::{Sink, Stream};
+use std::fmt::Debug;
+
+use tokio::time::error::Elapsed;
 
 use crate::rpc::TunnelInfo;
-use async_trait::async_trait;
-use futures::{Sink, SinkExt, Stream};
 
-use thiserror::Error;
-use tokio_util::bytes::{Bytes, BytesMut};
+use self::packet_def::ZCPacket;
 
-#[derive(Error, Debug)]
+pub mod buf;
+pub mod common;
+pub mod filter;
+pub mod mpsc;
+pub mod packet_def;
+pub mod quic;
+pub mod ring;
+pub mod stats;
+pub mod tcp;
+pub mod udp;
+pub mod wireguard;
+
+#[derive(thiserror::Error, Debug)]
 pub enum TunnelError {
-    #[error("Error: {0}")]
-    CommonError(String),
     #[error("io error")]
     IOError(#[from] std::io::Error),
-    #[error("wait resp error {0}")]
-    WaitRespError(String),
-    #[error("Connect Error: {0}")]
-    ConnectError(String),
-    #[error("Invalid Protocol: {0}")]
+    #[error("invalid packet. msg: {0}")]
+    InvalidPacket(String),
+    #[error("exceed max packet size. max: {0}, input: {1}")]
+    ExceedMaxPacketSize(usize, usize),
+
+    #[error("invalid protocol: {0}")]
     InvalidProtocol(String),
-    #[error("Invalid Addr: {0}")]
+    #[error("invalid addr: {0}")]
     InvalidAddr(String),
-    #[error("Tun Error: {0}")]
-    TunError(String),
+
+    #[error("internal error {0}")]
+    InternalError(String),
+
+    #[error("conn id not match, expect: {0}, actual: {1}")]
+    ConnIdNotMatch(u32, u32),
+    #[error("buffer full")]
+    BufferFull,
+
     #[error("timeout")]
-    Timeout(#[from] tokio::time::error::Elapsed),
+    Timeout(#[from] Elapsed),
+
+    #[error("anyhow error: {0}")]
+    Anyhow(#[from] anyhow::Error),
+
+    #[error("shutdown")]
+    Shutdown,
 }
 
-pub type StreamT = BytesMut;
+pub type StreamT = packet_def::ZCPacket;
 pub type StreamItem = Result<StreamT, TunnelError>;
-pub type SinkItem = Bytes;
+pub type SinkItem = packet_def::ZCPacket;
 pub type SinkError = TunnelError;
 
-pub trait DatagramStream: Stream<Item = StreamItem> + Send + Sync {}
-impl<T> DatagramStream for T where T: Stream<Item = StreamItem> + Send + Sync {}
-pub trait DatagramSink: Sink<SinkItem, Error = SinkError> + Send + Sync {}
-impl<T> DatagramSink for T where T: Sink<SinkItem, Error = SinkError> + Send + Sync {}
+pub trait ZCPacketStream: Stream<Item = StreamItem> + Send {}
+impl<T> ZCPacketStream for T where T: Stream<Item = StreamItem> + Send {}
+pub trait ZCPacketSink: Sink<SinkItem, Error = SinkError> + Send {}
+impl<T> ZCPacketSink for T where T: Sink<SinkItem, Error = SinkError> + Send {}
 
 #[auto_impl::auto_impl(Box, Arc)]
-pub trait Tunnel: Send + Sync {
-    fn stream(&self) -> Box<dyn DatagramStream>;
-    fn sink(&self) -> Box<dyn DatagramSink>;
-
-    fn pin_stream(&self) -> Pin<Box<dyn DatagramStream>> {
-        Box::into_pin(self.stream())
-    }
-
-    fn pin_sink(&self) -> Pin<Box<dyn DatagramSink>> {
-        Box::into_pin(self.sink())
-    }
-
+pub trait Tunnel: Send {
+    fn split(&self) -> (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>);
     fn info(&self) -> Option<TunnelInfo>;
-}
-
-pub async fn close_tunnel(t: &Box<dyn Tunnel>) -> Result<(), TunnelError> {
-    t.pin_sink().close().await
 }
 
 #[auto_impl::auto_impl(Arc)]
@@ -73,7 +77,7 @@ pub trait TunnelConnCounter: 'static + Send + Sync + Debug {
 
 #[async_trait]
 #[auto_impl::auto_impl(Box)]
-pub trait TunnelListener: Send + Sync {
+pub trait TunnelListener: Send {
     async fn listen(&mut self) -> Result<(), TunnelError>;
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn local_url(&self) -> url::Url;
@@ -91,7 +95,7 @@ pub trait TunnelListener: Send + Sync {
 
 #[async_trait]
 #[auto_impl::auto_impl(Box)]
-pub trait TunnelConnector {
+pub trait TunnelConnector: Send {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
@@ -109,7 +113,7 @@ impl std::fmt::Debug for dyn Tunnel {
     }
 }
 
-impl std::fmt::Debug for dyn TunnelConnector + Sync + Send {
+impl std::fmt::Debug for dyn TunnelConnector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TunnelConnector")
             .field("remote_url", &self.remote_url())

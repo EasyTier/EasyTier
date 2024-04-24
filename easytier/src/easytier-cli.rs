@@ -9,6 +9,7 @@ use utils::{list_peer_route_pair, PeerRoutePair};
 mod arch;
 mod common;
 mod rpc;
+mod tunnel;
 mod tunnels;
 mod utils;
 

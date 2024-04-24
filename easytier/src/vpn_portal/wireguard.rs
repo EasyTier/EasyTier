@@ -1,6 +1,5 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
-    pin::Pin,
     sync::Arc,
 };
 
@@ -8,24 +7,22 @@ use anyhow::Context;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use cidr::Ipv4Inet;
 use dashmap::DashMap;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use pnet::packet::ipv4::Ipv4Packet;
-use tokio::{sync::Mutex, task::JoinSet};
-use tokio_util::bytes::Bytes;
+use tokio::task::JoinSet;
 
 use crate::{
     common::{
+        config::NetworkIdentity,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         join_joinset_background,
     },
-    peers::{
-        packet::{self, ArchivedPacket},
-        peer_manager::PeerManager,
-        PeerPacketFilter,
-    },
-    tunnels::{
+    peers::{peer_manager::PeerManager, PeerPacketFilter},
+    tunnel::{
+        mpsc::{MpscTunnel, MpscTunnelSender},
+        packet_def::{PacketType, ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},
-        DatagramSink, Tunnel, TunnelListener,
+        Tunnel, TunnelListener,
     },
 };
 
@@ -33,9 +30,14 @@ use super::VpnPortal;
 
 type WgPeerIpTable = Arc<DashMap<Ipv4Addr, Arc<ClientEntry>>>;
 
+pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
+    let key_seed = format!("{}{}", nid.network_name, nid.network_secret);
+    WgConfig::new_for_portal(&key_seed, &key_seed)
+}
+
 struct ClientEntry {
     endpoint_addr: Option<url::Url>,
-    sink: Mutex<Pin<Box<dyn DatagramSink + 'static>>>,
+    sink: MpscTunnelSender,
 }
 
 struct WireGuardImpl {
@@ -52,8 +54,7 @@ struct WireGuardImpl {
 impl WireGuardImpl {
     fn new(global_ctx: ArcGlobalCtx, peer_mgr: Arc<PeerManager>) -> Self {
         let nid = global_ctx.get_network_identity();
-        let key_seed = format!("{}{}", nid.network_name, nid.network_secret);
-        let wg_config = WgConfig::new_for_portal(&key_seed, &key_seed);
+        let wg_config = get_wg_config_for_portal(&nid);
 
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
         let listenr_addr = vpn_cfg.wireguard_listen;
@@ -73,38 +74,41 @@ impl WireGuardImpl {
         peer_mgr: Arc<PeerManager>,
         wg_peer_ip_table: WgPeerIpTable,
     ) {
-        let mut s = t.pin_stream();
+        let info = t.info().unwrap_or_default();
+        let mut mpsc_tunnel = MpscTunnel::new(t);
+        let mut stream = mpsc_tunnel.get_stream();
         let mut ip_registered = false;
 
-        let info = t.info().unwrap_or_default();
         let remote_addr = info.remote_addr.clone();
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
-                info.local_addr,
-                info.remote_addr,
+                info.local_addr.clone(),
+                info.remote_addr.clone(),
             ));
 
-        while let Some(Ok(msg)) = s.next().await {
-            let Some(i) = Ipv4Packet::new(&msg) else {
-                tracing::error!(?msg, "Failed to parse ipv4 packet");
+        while let Some(Ok(msg)) = stream.next().await {
+            assert_eq!(msg.packet_type(), ZCPacketType::WG);
+            let inner = msg.inner();
+            let Some(i) = Ipv4Packet::new(&inner) else {
+                tracing::error!(?inner, "Failed to parse ipv4 packet");
                 continue;
             };
             if !ip_registered {
                 let client_entry = Arc::new(ClientEntry {
                     endpoint_addr: remote_addr.parse().ok(),
-                    sink: Mutex::new(t.pin_sink()),
+                    sink: mpsc_tunnel.get_sink(),
                 });
                 wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
                 ip_registered = true;
             }
             tracing::trace!(?i, "Received from wg client");
+            let dst = i.get_destination();
             let _ = peer_mgr
-                .send_msg_ipv4(msg.clone(), i.get_destination())
+                .send_msg_ipv4(ZCPacket::new_with_payload(inner.as_ref()), dst)
                 .await;
         }
 
-        let info = t.info().unwrap_or_default();
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientDisconnected(
@@ -120,34 +124,38 @@ impl WireGuardImpl {
 
         #[async_trait::async_trait]
         impl PeerPacketFilter for PeerPacketFilterForVpnPortal {
-            async fn try_process_packet_from_peer(
-                &self,
-                packet: &ArchivedPacket,
-                _: &Bytes,
-            ) -> Option<()> {
-                if packet.packet_type != packet::PacketType::Data {
-                    return None;
+            async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+                let hdr = packet.peer_manager_header().unwrap();
+                if hdr.packet_type != PacketType::Data as u8 {
+                    return Some(packet);
                 };
 
-                let payload_bytes = packet.payload.as_bytes();
-
+                let payload_bytes = packet.payload();
                 let ipv4 = Ipv4Packet::new(payload_bytes)?;
                 if ipv4.get_version() != 4 {
-                    return None;
+                    return Some(packet);
                 }
 
-                let entry = self.wg_peer_ip_table.get(&ipv4.get_destination())?.clone();
+                let Some(entry) = self
+                    .wg_peer_ip_table
+                    .get(&ipv4.get_destination())
+                    .map(|f| f.clone())
+                else {
+                    return Some(packet);
+                };
 
                 tracing::trace!(?ipv4, "Packet filter for vpn portal");
 
-                let ret = entry
-                    .sink
-                    .lock()
-                    .await
-                    .send(Bytes::copy_from_slice(payload_bytes))
-                    .await;
+                let payload_offset = packet.packet_type().get_packet_offsets().payload_offset;
+                let packet = ZCPacket::new_from_buf(
+                    packet.inner().split_off(payload_offset),
+                    ZCPacketType::WG,
+                );
 
-                ret.ok()
+                if let Err(ret) = entry.sink.send(packet).await {
+                    tracing::debug!(?ret, "Failed to send packet to wg client");
+                }
+                None
             }
         }
 
@@ -164,9 +172,14 @@ impl WireGuardImpl {
             self.wg_config.clone(),
         );
 
-        l.listen()
-            .await
-            .with_context(|| "Failed to start wireguard listener for vpn portal")?;
+        tracing::info!("Wireguard VPN Portal Starting");
+
+        {
+            let _g = self.global_ctx.net_ns.guard();
+            l.listen()
+                .await
+                .with_context(|| "Failed to start wireguard listener for vpn portal")?;
+        }
 
         join_joinset_background(self.tasks.clone(), "wireguard".to_string());
 
@@ -294,64 +307,5 @@ Endpoint = {listenr_addr} # should be the public ip of the vpn server
                     .unwrap_or_default()
             })
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::*;
-
-    use crate::{
-        common::{
-            config::{NetworkIdentity, VpnPortalConfig},
-            global_ctx::tests::get_mock_global_ctx_with_network,
-        },
-        connector::udp_hole_punch::tests::replace_stun_info_collector,
-        peers::{
-            peer_manager::{PeerManager, RouteAlgoType},
-            tests::wait_for_condition,
-        },
-        rpc::NatType,
-        tunnels::{tcp_tunnel::TcpTunnelConnector, TunnelConnector},
-    };
-
-    async fn portal_test() {
-        let (s, _r) = tokio::sync::mpsc::channel(1000);
-        let peer_mgr = Arc::new(PeerManager::new(
-            RouteAlgoType::Ospf,
-            get_mock_global_ctx_with_network(Some(NetworkIdentity {
-                network_name: "sijie".to_string(),
-                network_secret: "1919119".to_string(),
-            })),
-            s,
-        ));
-        replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);
-        peer_mgr
-            .get_global_ctx()
-            .config
-            .set_vpn_portal_config(VpnPortalConfig {
-                wireguard_listen: "0.0.0.0:11021".parse().unwrap(),
-                client_cidr: "10.14.14.0/24".parse().unwrap(),
-            });
-        peer_mgr.run().await.unwrap();
-        let mut pmgr_conn = TcpTunnelConnector::new("tcp://127.0.0.1:11010".parse().unwrap());
-        let tunnel = pmgr_conn.connect().await;
-        peer_mgr.add_client_tunnel(tunnel.unwrap()).await.unwrap();
-        wait_for_condition(
-            || async {
-                let routes = peer_mgr.list_routes().await;
-                println!("Routes: {:?}", routes);
-                routes.len() != 0
-            },
-            std::time::Duration::from_secs(10),
-        )
-        .await;
-
-        let mut wg = WireGuard::default();
-        wg.start(peer_mgr.get_global_ctx(), peer_mgr.clone())
-            .await
-            .unwrap();
     }
 }

@@ -5,10 +5,10 @@ use std::{
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
-    tunnels::{
-        ring_tunnel::RingTunnelConnector,
-        tcp_tunnel::TcpTunnelConnector,
-        udp_tunnel::UdpTunnelConnector,
+    tunnel::{
+        ring::RingTunnelConnector,
+        tcp::TcpTunnelConnector,
+        udp::UdpTunnelConnector,
         wireguard::{WgConfig, WgTunnelConnector},
         TunnelConnector,
     },
@@ -19,7 +19,7 @@ pub mod manual;
 pub mod udp_hole_punch;
 
 async fn set_bind_addr_for_peer_connector(
-    connector: &mut impl TunnelConnector,
+    connector: &mut (impl TunnelConnector + ?Sized),
     is_ipv4: bool,
     ip_collector: &Arc<IPCollector>,
 ) {
@@ -45,7 +45,7 @@ async fn set_bind_addr_for_peer_connector(
 pub async fn create_connector_by_url(
     url: &str,
     global_ctx: &ArcGlobalCtx,
-) -> Result<Box<dyn TunnelConnector + Send + Sync + 'static>, Error> {
+) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     match url.scheme() {
         "tcp" => {

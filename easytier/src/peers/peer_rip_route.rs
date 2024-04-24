@@ -15,14 +15,12 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
-    peers::{
-        packet,
-        route_trait::{Route, RouteInterfaceBox},
-    },
+    peers::route_trait::{Route, RouteInterfaceBox},
     rpc::{NatType, StunInfo},
+    tunnel::packet_def::{PacketType, ZCPacket},
 };
 
-use super::{packet::CtrlPacketPayload, PeerPacketFilter};
+use super::PeerPacketFilter;
 
 const SEND_ROUTE_PERIOD_SEC: u64 = 60;
 const SEND_ROUTE_FAST_REPLY_SEC: u64 = 5;
@@ -625,26 +623,15 @@ impl Route for BasicRoute {
 
 #[async_trait::async_trait]
 impl PeerPacketFilter for BasicRoute {
-    async fn try_process_packet_from_peer(
-        &self,
-        packet: &packet::ArchivedPacket,
-        _data: &Bytes,
-    ) -> Option<()> {
-        if packet.packet_type == packet::PacketType::RoutePacket {
-            let CtrlPacketPayload::RoutePacket(route_packet) =
-                CtrlPacketPayload::from_packet(packet)
-            else {
-                return None;
-            };
-
-            self.handle_route_packet(
-                packet.from_peer.into(),
-                route_packet.body.into_boxed_slice().into(),
-            )
-            .await;
-            Some(())
-        } else {
+    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+        let hdr = packet.peer_manager_header().unwrap();
+        if hdr.packet_type == PacketType::Route as u8 {
+            let b = packet.payload().to_vec();
+            self.handle_route_packet(hdr.from_peer_id.get(), b.into())
+                .await;
             None
+        } else {
+            Some(packet)
         }
     }
 }

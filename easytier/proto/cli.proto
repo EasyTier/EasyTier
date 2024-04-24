@@ -157,3 +157,21 @@ message GetVpnPortalInfoResponse {
 service VpnPortalRpc {
     rpc GetVpnPortalInfo (GetVpnPortalInfoRequest) returns (GetVpnPortalInfoResponse);
 }
+
+message HandshakeRequest {
+    uint32 magic = 1;
+    uint32 my_peer_id = 2;
+    uint32 version = 3;
+    repeated string features = 4;
+    string network_name = 5;
+    string network_secret = 6;
+}
+
+message TaRpcPacket {
+    uint32 from_peer = 1;
+    uint32 to_peer = 2;
+    uint32 service_id = 3;
+    uint32 transact_id = 4;
+    bool is_req = 5;
+    bytes content = 6;
+}

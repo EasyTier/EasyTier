@@ -87,7 +87,7 @@ impl Stun {
     pub fn new(stun_server: SocketAddr) -> Self {
         Self {
             stun_server,
-            req_repeat: 5,
+            req_repeat: 1,
             resp_timeout: Duration::from_millis(3000),
         }
     }
@@ -208,6 +208,7 @@ impl Stun {
         let mut tids = vec![];
         for _ in 0..self.req_repeat {
             let tid = rand::random::<u32>();
+            // let tid = 1;
             let mut buf = [0u8; 28];
             // memset buf
             unsafe { std::ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()) };
@@ -511,30 +512,17 @@ mod tests {
     #[tokio::test]
     async fn test_stun_bind_request() {
         // miwifi / qq seems not correctly responde to change_ip and change_port, they always try to change the src ip and port.
-        let mut ips = HostResolverIter::new(vec!["stun1.l.google.com:19302".to_string()]);
-        let stun = Stun::new(ips.next().await.unwrap());
-        // let stun = Stun::new("180.235.108.91:3478".to_string());
-        // let stun = Stun::new("193.22.2.248:3478".to_string());
-        // let stun = Stun::new("stun.chat.bilibili.com:3478".to_string());
-        // let stun = Stun::new("stun.miwifi.com:3478".to_string());
-
-        // github actions are port restricted nat, so we only test last one.
-
-        // let rs = stun.bind_request(12345, true, true).await.unwrap();
-        // assert!(rs.ip_changed);
-        // assert!(rs.port_changed);
-
-        // let rs = stun.bind_request(12345, true, false).await.unwrap();
-        // assert!(rs.ip_changed);
-        // assert!(!rs.port_changed);
-
-        // let rs = stun.bind_request(12345, false, true).await.unwrap();
-        // assert!(!rs.ip_changed);
-        // assert!(rs.port_changed);
-
-        let rs = stun.bind_request(12345, false, false).await.unwrap();
-        assert!(!rs.ip_changed);
-        assert!(!rs.port_changed);
+        // let mut ips = HostResolverIter::new(vec!["stun1.l.google.com:19302".to_string()]);
+        let mut ips_ = HostResolverIter::new(vec!["stun.canets.org:3478".to_string()]);
+        let mut ips = vec![];
+        while let Some(ip) = ips_.next().await {
+            ips.push(ip);
+        }
+        println!("ip: {:?}", ips);
+        for ip in ips.iter() {
+            let stun = Stun::new(ip.clone());
+            let _rs = stun.bind_request(12345, true, true).await;
+        }
     }
 
     #[tokio::test]

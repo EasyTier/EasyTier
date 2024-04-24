@@ -11,10 +11,10 @@ use crate::{
         netns::NetNS,
     },
     peers::peer_manager::PeerManager,
-    tunnels::{
-        ring_tunnel::RingTunnelListener,
-        tcp_tunnel::TcpTunnelListener,
-        udp_tunnel::UdpTunnelListener,
+    tunnel::{
+        ring::RingTunnelListener,
+        tcp::TcpTunnelListener,
+        udp::UdpTunnelListener,
         wireguard::{WgConfig, WgTunnelListener},
         Tunnel, TunnelListener,
     },
@@ -155,7 +155,7 @@ mod tests {
 
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
-        tunnels::{ring_tunnel::RingTunnelConnector, TunnelConnector},
+        tunnel::{packet_def::ZCPacket, ring::RingTunnelConnector, TunnelConnector},
     };
 
     use super::*;
@@ -165,9 +165,12 @@ mod tests {
 
     #[async_trait]
     impl TunnelHandlerForListener for MockListenerHandler {
-        async fn handle_tunnel(&self, _tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+        async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
             let data = "abc";
-            _tunnel.pin_sink().send(data.into()).await.unwrap();
+            let (_recv, mut send) = tunnel.split();
+
+            let zc_packet = ZCPacket::new_with_payload(data.as_bytes());
+            send.send(zc_packet).await.unwrap();
             Err(Error::Unknown)
         }
     }
@@ -187,7 +190,11 @@ mod tests {
 
         let connect_once = |ring_id| async move {
             let tunnel = RingTunnelConnector::new(ring_id).connect().await.unwrap();
-            assert_eq!(tunnel.pin_stream().next().await.unwrap().unwrap(), "abc");
+            let (mut recv, _send) = tunnel.split();
+            assert_eq!(
+                recv.next().await.unwrap().unwrap().payload(),
+                "abc".as_bytes()
+            );
             tunnel
         };
 

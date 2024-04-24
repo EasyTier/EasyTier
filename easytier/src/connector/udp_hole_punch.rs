@@ -2,20 +2,21 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::Context;
 use crossbeam::atomic::AtomicCell;
-use rand::{seq::SliceRandom, Rng, SeedableRng};
+use rand::{seq::SliceRandom, SeedableRng};
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 use tracing::Instrument;
 
 use crate::{
     common::{
         constants, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background,
-        rkyv_util::encode_to_bytes, stun::StunInfoCollectorTrait, PeerId,
+        stun::StunInfoCollectorTrait, PeerId,
     },
     peers::peer_manager::PeerManager,
     rpc::NatType,
-    tunnels::{
+    tunnel::{
         common::setup_sokcet2,
-        udp_tunnel::{UdpPacket, UdpTunnelConnector, UdpTunnelListener},
+        packet_def::ZCPacketType,
+        udp::{new_hole_punch_packet, UdpTunnelConnector, UdpTunnelListener},
         Tunnel, TunnelConnCounter, TunnelListener,
     },
 };
@@ -149,15 +150,10 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
             self.tasks.lock().unwrap().spawn(async move {
                 for _ in 0..10 {
                     tracing::info!(?local_mapped_addr, "sending hole punching packet");
-                    // generate a 128 bytes vec with random data
-                    let mut rng = rand::rngs::StdRng::from_entropy();
-                    let mut buf = vec![0u8; 128];
-                    rng.fill(&mut buf[..]);
 
-                    let udp_packet = UdpPacket::new_hole_punch_packet(buf);
-                    let udp_packet_bytes = encode_to_bytes::<_, 256>(&udp_packet);
+                    let udp_packet = new_hole_punch_packet();
                     let _ = socket
-                        .send_to(udp_packet_bytes.as_ref(), local_mapped_addr)
+                        .send_to(&udp_packet.into_bytes(ZCPacketType::UDP), local_mapped_addr)
                         .await;
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }
