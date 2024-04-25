@@ -176,8 +176,8 @@ impl RingSink {
             return Err(TunnelError::Shutdown);
         }
 
-        log::trace!("id: {}, send buffer, buf: {:?}", self.tunnel.id(), &item);
-        self.tunnel.ring.push(item).unwrap();
+        tracing::trace!(id=?self.tunnel.id(), ?item, "send buffer");
+        let _ = self.tunnel.ring.push(item);
         self.tunnel.notify_new_item();
 
         Ok(())

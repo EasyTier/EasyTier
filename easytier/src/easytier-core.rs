@@ -118,6 +118,13 @@ and the vpn client is in network of 10.14.14.0/24"
 
     #[arg(long, help = "default protocol to use when connecting to peers")]
     default_protocol: Option<String>,
+
+    #[arg(
+        long,
+        help = "use multi-thread runtime, default is single-thread",
+        default_value = "false"
+    )]
+    multi_thread: bool,
 }
 
 impl From<Cli> for TomlConfigLoader {
@@ -329,14 +336,8 @@ fn setup_panic_handler() {
     }));
 }
 
-#[tokio::main(flavor = "current_thread")]
 #[tracing::instrument]
-pub async fn main() {
-    setup_panic_handler();
-
-    let cli = Cli::parse();
-    tracing::info!(cli = ?cli, "cli args parsed");
-
+pub async fn async_main(cli: Cli) {
     let cfg: TomlConfigLoader = cli.into();
 
     init_logger(&cfg);
@@ -426,4 +427,25 @@ pub async fn main() {
     inst.run().await.unwrap();
 
     inst.wait().await;
+}
+
+fn main() {
+    setup_panic_handler();
+
+    let cli = Cli::parse();
+    tracing::info!(cli = ?cli, "cli args parsed");
+
+    if cli.multi_thread {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move { async_main(cli).await })
+    } else {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async move { async_main(cli).await })
+    }
 }

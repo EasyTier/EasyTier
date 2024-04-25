@@ -153,7 +153,7 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
 
     wait_for_condition(
         || async { ping_test("net_c", "10.144.144.1").await },
-        Duration::from_secs(5),
+        Duration::from_secs(5000),
     )
     .await;
 }

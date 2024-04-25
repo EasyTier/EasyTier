@@ -52,6 +52,9 @@ pub enum TunnelError {
 
     #[error("shutdown")]
     Shutdown,
+
+    #[error("tunnel error: {0}")]
+    TunError(String),
 }
 
 pub type StreamT = packet_def::ZCPacket;

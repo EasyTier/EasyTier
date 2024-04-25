@@ -1,13 +1,13 @@
 use std::borrow::BorrowMut;
 use std::net::Ipv4Addr;
+use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
 use anyhow::Context;
 use futures::{SinkExt, StreamExt};
-use pnet::packet::ethernet::EthernetPacket;
+
 use pnet::packet::ipv4::Ipv4Packet;
 
-use bytes::BytesMut;
 use tokio::{sync::Mutex, task::JoinSet};
 use tonic::transport::Server;
 
@@ -30,10 +30,13 @@ use crate::rpc::vpn_portal_rpc_server::VpnPortalRpc;
 use crate::rpc::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::tunnel::packet_def::ZCPacket;
 
+use crate::tunnel::{ZCPacketSink, ZCPacketStream};
 use crate::vpn_portal::{self, VpnPortal};
 
 use super::listeners::ListenerManager;
 use super::virtual_nic;
+
+use crate::common::ifcfg::IfConfiguerTrait;
 
 #[derive(Clone)]
 struct IpProxy {
@@ -156,8 +159,8 @@ impl Instance {
         self.conn_manager.clone()
     }
 
-    async fn do_forward_nic_to_peers_ipv4(ret: BytesMut, mgr: &PeerManager) {
-        if let Some(ipv4) = Ipv4Packet::new(&ret) {
+    async fn do_forward_nic_to_peers_ipv4(ret: ZCPacket, mgr: &PeerManager) {
+        if let Some(ipv4) = Ipv4Packet::new(ret.payload()) {
             if ipv4.get_version() != 4 {
                 tracing::info!("[USER_PACKET] not ipv4 packet: {:?}", ipv4);
                 return;
@@ -169,9 +172,7 @@ impl Instance {
             );
 
             // TODO: use zero-copy
-            let send_ret = mgr
-                .send_msg_ipv4(ZCPacket::new_with_payload(ret.as_ref()), dst_ipv4)
-                .await;
+            let send_ret = mgr.send_msg_ipv4(ret, dst_ipv4).await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv4 failed")
             }
@@ -180,23 +181,23 @@ impl Instance {
         }
     }
 
-    async fn do_forward_nic_to_peers_ethernet(mut ret: BytesMut, mgr: &PeerManager) {
-        if let Some(eth) = EthernetPacket::new(&ret) {
-            log::warn!("begin to forward: {:?}, type: {}", eth, eth.get_ethertype());
-            Self::do_forward_nic_to_peers_ipv4(ret.split_off(14), mgr).await;
-        } else {
-            log::warn!("not ipv4 packet: {:?}", ret);
-        }
-    }
+    // async fn do_forward_nic_to_peers_ethernet(mut ret: BytesMut, mgr: &PeerManager) {
+    //     if let Some(eth) = EthernetPacket::new(&ret) {
+    //         log::warn!("begin to forward: {:?}, type: {}", eth, eth.get_ethertype());
+    //         Self::do_forward_nic_to_peers_ipv4(ret.split_off(14), mgr).await;
+    //     } else {
+    //         log::warn!("not ipv4 packet: {:?}", ret);
+    //     }
+    // }
 
-    fn do_forward_nic_to_peers(&mut self) -> Result<(), Error> {
+    fn do_forward_nic_to_peers(
+        &mut self,
+        mut stream: Pin<Box<dyn ZCPacketStream>>,
+    ) -> Result<(), Error> {
         // read from nic and write to corresponding tunnel
-        let nic = self.virtual_nic.as_ref().unwrap();
-        let nic = nic.clone();
         let mgr = self.peer_manager.clone();
 
         self.tasks.spawn(async move {
-            let mut stream = nic.pin_recv_stream();
             while let Some(ret) = stream.next().await {
                 if ret.is_err() {
                     log::error!("read from nic failed: {:?}", ret);
@@ -212,21 +213,17 @@ impl Instance {
 
     fn do_forward_peers_to_nic(
         tasks: &mut JoinSet<()>,
-        nic: Arc<virtual_nic::VirtualNic>,
+        mut sink: Pin<Box<dyn ZCPacketSink>>,
         channel: Option<PacketRecvChanReceiver>,
     ) {
         tasks.spawn(async move {
-            let mut send = nic.pin_send_stream();
             let mut channel = channel.unwrap();
             while let Some(packet) = channel.recv().await {
                 tracing::trace!(
                     "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
                     packet
                 );
-                let mut b = BytesMut::new();
-                b.extend_from_slice(packet.payload());
-
-                let ret = send.send(b.freeze()).await;
+                let ret = sink.send(packet).await;
                 if ret.is_err() {
                     panic!("do_forward_tunnel_to_nic");
                 }
@@ -244,19 +241,19 @@ impl Instance {
     }
 
     async fn prepare_tun_device(&mut self) -> Result<(), Error> {
-        let nic = virtual_nic::VirtualNic::new(self.get_global_ctx())
-            .create_dev()
-            .await?;
+        let mut nic = virtual_nic::VirtualNic::new(self.get_global_ctx());
+        let tunnel = nic.create_dev().await?;
 
         self.global_ctx
             .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
 
+        let (stream, sink) = tunnel.split();
         self.virtual_nic = Some(Arc::new(nic));
 
-        self.do_forward_nic_to_peers().unwrap();
+        self.do_forward_nic_to_peers(stream).unwrap();
         Self::do_forward_peers_to_nic(
             self.tasks.borrow_mut(),
-            self.virtual_nic.as_ref().unwrap().clone(),
+            sink,
             self.peer_packet_receiver.take(),
         );
 
@@ -438,6 +435,8 @@ impl Instance {
         let global_ctx = self.global_ctx.clone();
         let net_ns = self.global_ctx.net_ns.clone();
         let nic = self.virtual_nic.as_ref().unwrap().clone();
+        let ifcfg = nic.get_ifcfg();
+        let ifname = nic.ifname().to_owned();
 
         self.tasks.spawn(async move {
             let mut cur_proxy_cidrs = vec![];
@@ -464,10 +463,9 @@ impl Instance {
                     }
 
                     let _g = net_ns.guard();
-                    let ret = nic
-                        .get_ifcfg()
+                    let ret = ifcfg
                         .remove_ipv4_route(
-                            nic.ifname(),
+                            ifname.as_str(),
                             cidr.first_address(),
                             cidr.network_length(),
                         )
@@ -487,9 +485,12 @@ impl Instance {
                         continue;
                     }
                     let _g = net_ns.guard();
-                    let ret = nic
-                        .get_ifcfg()
-                        .add_ipv4_route(nic.ifname(), cidr.first_address(), cidr.network_length())
+                    let ret = ifcfg
+                        .add_ipv4_route(
+                            ifname.as_str(),
+                            cidr.first_address(),
+                            cidr.network_length(),
+                        )
                         .await;
 
                     if ret.is_err() {
