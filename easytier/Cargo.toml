@@ -46,7 +46,7 @@ chrono = "0.4.35"
 
 gethostname = "0.4.3"
 
-futures = "0.3"
+futures = { version = "0.3", features = ["bilock", "unstable"] }
 
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"

@@ -167,16 +167,41 @@ where
     }
 }
 
+pub trait ZCPacketToBytes {
+    fn into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
+}
+
+pub struct TcpZCPacketToBytes;
+impl ZCPacketToBytes for TcpZCPacketToBytes {
+    fn into_bytes(&self, mut item: ZCPacket) -> Result<Bytes, TunnelError> {
+        let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
+        let Some(header) = item.mut_tcp_tunnel_header() else {
+            return Err(TunnelError::InvalidPacket("packet too short".to_string()));
+        };
+        header.len.set(tcp_len.try_into().unwrap());
+
+        Ok(item.into_bytes(ZCPacketType::TCP))
+    }
+}
+
 pin_project! {
-    pub struct FramedWriter<W> {
+    pub struct FramedWriter<W, C> {
         #[pin]
         writer: W,
         sending_bufs: BufList<Bytes>,
         associate_data: Option<Box<dyn Any + Send + 'static>>,
+
+        converter: C,
     }
 }
 
-impl<W> FramedWriter<W> {
+impl<W, C> FramedWriter<W, C> {
+    fn max_buffer_count(&self) -> usize {
+        64
+    }
+}
+
+impl<W> FramedWriter<W, TcpZCPacketToBytes> {
     pub fn new(writer: W) -> Self {
         Self::new_with_associate_data(writer, None)
     }
@@ -188,18 +213,35 @@ impl<W> FramedWriter<W> {
         FramedWriter {
             writer,
             sending_bufs: BufList::new(),
-            associate_data: associate_data,
+            associate_data,
+            converter: TcpZCPacketToBytes {},
         }
-    }
-
-    fn max_buffer_count(&self) -> usize {
-        64
     }
 }
 
-impl<W> Sink<SinkItem> for FramedWriter<W>
+impl<W, C: ZCPacketToBytes + Send + 'static> FramedWriter<W, C> {
+    pub fn new_with_converter(writer: W, converter: C) -> Self {
+        Self::new_with_converter_and_associate_data(writer, converter, None)
+    }
+
+    pub fn new_with_converter_and_associate_data(
+        writer: W,
+        converter: C,
+        associate_data: Option<Box<dyn Any + Send + 'static>>,
+    ) -> Self {
+        FramedWriter {
+            writer,
+            sending_bufs: BufList::new(),
+            associate_data,
+            converter,
+        }
+    }
+}
+
+impl<W, C> Sink<SinkItem> for FramedWriter<W, C>
 where
     W: AsyncWrite + Send + 'static,
+    C: ZCPacketToBytes + Send + 'static,
 {
     type Error = TunnelError;
 
@@ -216,15 +258,9 @@ where
         }
     }
 
-    fn start_send(self: Pin<&mut Self>, mut item: ZCPacket) -> Result<(), Self::Error> {
-        let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
-        let Some(header) = item.mut_tcp_tunnel_header() else {
-            return Err(TunnelError::InvalidPacket("packet too short".to_string()));
-        };
-        header.len.set(tcp_len.try_into().unwrap());
-
-        let item = item.into_bytes(ZCPacketType::TCP);
-        self.project().sending_bufs.push(item);
+    fn start_send(self: Pin<&mut Self>, item: ZCPacket) -> Result<(), Self::Error> {
+        let pinned = self.project();
+        pinned.sending_bufs.push(pinned.converter.into_bytes(item)?);
 
         Ok(())
     }
