@@ -161,12 +161,25 @@ impl ZCPacket {
         ret
     }
 
+    pub fn new_with_reserved_payload(cap: usize) -> Self {
+        let mut ret = Self::new_nic_packet();
+        ret.inner.reserve(cap);
+        let total_len = ret.packet_type.get_packet_offsets().payload_offset;
+        ret.inner.resize(total_len, 0);
+        ret
+    }
+
     pub fn packet_type(&self) -> ZCPacketType {
         self.packet_type
     }
 
+    pub fn payload_offset(&self) -> usize {
+        self.packet_type.get_packet_offsets().payload_offset
+    }
+
     pub fn mut_payload(&mut self) -> &mut [u8] {
-        &mut self.inner[self.packet_type.get_packet_offsets().payload_offset..]
+        let offset = self.payload_offset();
+        &mut self.inner[offset..]
     }
 
     pub fn mut_peer_manager_header(&mut self) -> Option<&mut PeerManagerHeader> {
@@ -207,7 +220,7 @@ impl ZCPacket {
 
     // ref versions
     pub fn payload(&self) -> &[u8] {
-        &self.inner[self.packet_type.get_packet_offsets().payload_offset..]
+        &self.inner[self.payload_offset()..]
     }
 
     pub fn peer_manager_header(&self) -> Option<&PeerManagerHeader> {
@@ -246,8 +259,7 @@ impl ZCPacket {
     }
 
     pub fn payload_len(&self) -> usize {
-        let payload_offset = self.packet_type.get_packet_offsets().payload_offset;
-        self.inner.len() - payload_offset
+        self.inner.len() - self.payload_offset()
     }
 
     pub fn buf_len(&self) -> usize {
@@ -306,6 +318,10 @@ impl ZCPacket {
 
     pub fn inner(self) -> BytesMut {
         self.inner
+    }
+
+    pub fn mut_inner(&mut self) -> &mut BytesMut {
+        &mut self.inner
     }
 }
 

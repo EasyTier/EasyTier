@@ -6,7 +6,7 @@ use tokio::process::Command;
 use super::error::Error;
 
 #[async_trait]
-pub trait IfConfiguerTrait {
+pub trait IfConfiguerTrait: Send + Sync {
     async fn add_ipv4_route(
         &self,
         name: &str,

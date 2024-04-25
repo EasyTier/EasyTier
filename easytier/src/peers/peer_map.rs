@@ -118,12 +118,6 @@ impl PeerMap {
 
     pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         let Some(gateway_peer_id) = self.get_gateway_peer_id(dst_peer_id).await else {
-            tracing::trace!(
-                "no gateway for dst_peer_id: {}, peers: {:?}, my_peer_id: {}",
-                dst_peer_id,
-                self.peer_map.iter().map(|v| *v.key()).collect::<Vec<_>>(),
-                self.my_peer_id
-            );
             return Err(Error::RouteError(Some(format!(
                 "peer map sengmsg no gateway for dst_peer_id: {}",
                 dst_peer_id

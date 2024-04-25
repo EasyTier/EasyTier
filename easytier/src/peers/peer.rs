@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 
 use tokio::{
@@ -38,6 +39,8 @@ pub struct Peer {
     close_event_listener: JoinHandle<()>,
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
+
+    default_conn_id: AtomicCell<PeerConnId>,
 }
 
 impl Peer {
@@ -99,6 +102,7 @@ impl Peer {
             close_event_listener,
 
             shutdown_notifier,
+            default_conn_id: AtomicCell::new(PeerConnId::default()),
         }
     }
 
@@ -112,8 +116,24 @@ impl Peer {
             .insert(conn.get_conn_id(), Arc::new(Mutex::new(conn)));
     }
 
+    async fn select_conn(&self) -> Option<ArcPeerConn> {
+        let default_conn_id = self.default_conn_id.load();
+        if let Some(conn) = self.conns.get(&default_conn_id) {
+            return Some(conn.clone());
+        }
+
+        let conn = self.conns.iter().next();
+        if conn.is_none() {
+            return None;
+        }
+
+        let conn = conn.unwrap().clone();
+        self.default_conn_id.store(conn.lock().await.get_conn_id());
+        Some(conn)
+    }
+
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
-        let Some(conn) = self.conns.iter().next() else {
+        let Some(conn) = self.select_conn().await else {
             return Err(Error::PeerNoConnectionError(self.peer_node_id));
         };
 
