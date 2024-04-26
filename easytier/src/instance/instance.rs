@@ -225,7 +225,7 @@ impl Instance {
                 );
                 let ret = sink.send(packet).await;
                 if ret.is_err() {
-                    panic!("do_forward_tunnel_to_nic");
+                    tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
                 }
             }
         });

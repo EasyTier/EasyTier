@@ -161,10 +161,10 @@ impl ZCPacket {
         ret
     }
 
-    pub fn new_with_reserved_payload(cap: usize) -> Self {
+    pub fn new_for_tun(cap: usize, packet_info_len: usize) -> Self {
         let mut ret = Self::new_nic_packet();
         ret.inner.reserve(cap);
-        let total_len = ret.packet_type.get_packet_offsets().payload_offset;
+        let total_len = ret.packet_type.get_packet_offsets().payload_offset - packet_info_len;
         ret.inner.resize(total_len, 0);
         ret
     }

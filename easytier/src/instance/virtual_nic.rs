@@ -12,13 +12,14 @@ use crate::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
     tunnel::{
-        common::{FramedWriter, TunnelWrapper, ZCPacketToBytes},
-        packet_def::ZCPacket,
+        common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
+        packet_def::{ZCPacket, ZCPacketType},
         StreamItem, Tunnel, TunnelError,
     },
 };
 
 use byteorder::WriteBytesExt as _;
+use bytes::BytesMut;
 use futures::{lock::BiLock, ready, Stream};
 use pin_project_lite::pin_project;
 use tokio::io::AsyncWrite;
@@ -30,15 +31,23 @@ pin_project! {
     pub struct TunStream {
         #[pin]
         l: BiLock<AsyncDevice>,
-        cur_packet: Option<ZCPacket>,
+        cur_buf: BytesMut,
+        has_packet_info: bool,
+        payload_offset: usize,
     }
 }
 
 impl TunStream {
-    pub fn new(l: BiLock<AsyncDevice>) -> Self {
+    pub fn new(l: BiLock<AsyncDevice>, has_packet_info: bool) -> Self {
+        let mut payload_offset = ZCPacketType::NIC.get_packet_offsets().payload_offset;
+        if has_packet_info {
+            payload_offset -= 4;
+        }
         Self {
             l,
-            cur_packet: None,
+            cur_buf: BytesMut::new(),
+            has_packet_info,
+            payload_offset,
         }
     }
 }
@@ -47,19 +56,20 @@ impl Stream for TunStream {
     type Item = StreamItem;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<StreamItem>> {
-        let self_mut = self.project();
+        let mut self_mut = self.project();
         let mut g = ready!(self_mut.l.poll_lock(cx));
-        if self_mut.cur_packet.is_none() {
-            *self_mut.cur_packet = Some(ZCPacket::new_with_reserved_payload(2048));
+        reserve_buf(&mut self_mut.cur_buf, 2500, 128 * 1024);
+        if self_mut.cur_buf.len() == 0 {
+            unsafe {
+                self_mut.cur_buf.set_len(*self_mut.payload_offset);
+            }
         }
-        let cur_packet = self_mut.cur_packet.as_mut().unwrap();
-        match ready!(poll_read_buf(
-            g.as_pin_mut(),
-            cx,
-            &mut cur_packet.mut_inner()
-        )) {
+        match ready!(poll_read_buf(g.as_pin_mut(), cx, &mut self_mut.cur_buf)) {
             Ok(0) => Poll::Ready(None),
-            Ok(_n) => Poll::Ready(Some(Ok(self_mut.cur_packet.take().unwrap()))),
+            Ok(_n) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(
+                self_mut.cur_buf.split(),
+                ZCPacketType::NIC,
+            )))),
             Err(err) => {
                 println!("tun stream error: {:?}", err);
                 Poll::Ready(None)
@@ -128,11 +138,15 @@ impl TunZCPacketToBytes {
         Self { has_packet_info }
     }
 
-    pub fn fill_packet_info(&self, mut buf: &mut [u8]) -> Result<(), io::Error> {
+    pub fn fill_packet_info(
+        &self,
+        mut buf: &mut [u8],
+        proto: PacketProtocol,
+    ) -> Result<(), io::Error> {
         // flags is always 0
         buf.write_u16::<NativeEndian>(0)?;
         // write the protocol as network byte order
-        buf.write_u16::<NetworkEndian>(infer_proto(&buf).into_pi_field()?)?;
+        buf.write_u16::<NetworkEndian>(proto.into_pi_field()?)?;
         Ok(())
     }
 }
@@ -146,7 +160,8 @@ impl ZCPacketToBytes for TunZCPacketToBytes {
 
         let ret = if self.has_packet_info {
             let mut inner = inner.split_off(payload_offset - 4);
-            self.fill_packet_info(&mut inner[0..4])?;
+            let proto = infer_proto(&inner[4..]);
+            self.fill_packet_info(&mut inner[0..4], proto)?;
             inner
         } else {
             inner.split_off(payload_offset)
@@ -264,7 +279,7 @@ impl VirtualNic {
         let (a, b) = BiLock::new(dev);
 
         let ft = TunnelWrapper::new(
-            TunStream::new(a),
+            TunStream::new(a, has_packet_info),
             FramedWriter::new_with_converter(
                 TunAsyncWrite { l: b },
                 TunZCPacketToBytes::new(has_packet_info),
