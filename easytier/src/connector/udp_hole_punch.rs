@@ -15,7 +15,6 @@ use crate::{
     rpc::NatType,
     tunnel::{
         common::setup_sokcet2,
-        packet_def::ZCPacketType,
         udp::{new_hole_punch_packet, UdpTunnelConnector, UdpTunnelListener},
         Tunnel, TunnelConnCounter, TunnelListener,
     },
@@ -153,7 +152,7 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
 
                     let udp_packet = new_hole_punch_packet();
                     let _ = socket
-                        .send_to(&udp_packet.into_bytes(ZCPacketType::UDP), local_mapped_addr)
+                        .send_to(&udp_packet.into_bytes(), local_mapped_addr)
                         .await;
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                 }

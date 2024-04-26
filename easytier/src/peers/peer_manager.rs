@@ -279,19 +279,10 @@ impl PeerManager {
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
-                    log::trace!(
-                        "need forward: to_peer_id: {:?}, my_peer_id: {:?}",
-                        to_peer_id,
-                        my_peer_id
-                    );
+                    tracing::trace!(?to_peer_id, ?my_peer_id, "need forward");
                     let ret = peers.send_msg(ret, to_peer_id).await;
                     if ret.is_err() {
-                        log::error!(
-                            "forward packet error: {:?}, dst: {:?}, from: {:?}",
-                            ret,
-                            to_peer_id,
-                            from_peer_id
-                        );
+                        tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
                     }
                 } else {
                     let mut processed = false;
@@ -618,11 +609,22 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
 
+    use std::{fmt::Debug, sync::Arc};
+
     use crate::{
-        connector::udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
-        peers::tests::{connect_peer_manager, wait_for_condition, wait_route_appear},
+        connector::{
+            create_connector_by_url, udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
+        },
+        instance::listeners::get_listener_by_url,
+        peers::{
+            peer_rpc::tests::{MockService, TestRpcService, TestRpcServiceClient},
+            tests::{connect_peer_manager, wait_for_condition, wait_route_appear},
+        },
         rpc::NatType,
+        tunnel::{TunnelConnector, TunnelListener},
     };
+
+    use super::PeerManager;
 
     #[tokio::test]
     async fn drop_peer_manager() {
@@ -654,5 +656,99 @@ mod tests {
             std::time::Duration::from_secs(5),
         )
         .await;
+    }
+
+    async fn connect_peer_manager_with<C: TunnelConnector + Debug + 'static, L: TunnelListener>(
+        client_mgr: Arc<PeerManager>,
+        server_mgr: &Arc<PeerManager>,
+        mut client: C,
+        server: &mut L,
+    ) {
+        server.listen().await.unwrap();
+
+        tokio::spawn(async move {
+            client.set_bind_addrs(vec![]);
+            client_mgr.try_connect(client).await.unwrap();
+        });
+
+        server_mgr
+            .add_client_tunnel(server.accept().await.unwrap())
+            .await
+            .unwrap();
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    #[serial_test::serial(forward_packet_test)]
+    async fn forward_packet(
+        #[values("tcp", "udp", "wg", "quic")] proto1: &str,
+        #[values("tcp", "udp", "wg", "quic")] proto2: &str,
+    ) {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        peer_mgr_a.get_peer_rpc_mgr().run_service(
+            100,
+            MockService {
+                prefix: "hello a".to_owned(),
+            }
+            .serve(),
+        );
+
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        peer_mgr_c.get_peer_rpc_mgr().run_service(
+            100,
+            MockService {
+                prefix: "hello c".to_owned(),
+            }
+            .serve(),
+        );
+
+        let mut listener1 = get_listener_by_url(
+            &format!("{}://0.0.0.0:31013", proto1).parse().unwrap(),
+            peer_mgr_b.get_global_ctx(),
+        )
+        .unwrap();
+        let connector1 = create_connector_by_url(
+            format!("{}://127.0.0.1:31013", proto1).as_str(),
+            &peer_mgr_a.get_global_ctx(),
+        )
+        .await
+        .unwrap();
+        connect_peer_manager_with(peer_mgr_a.clone(), &peer_mgr_b, connector1, &mut listener1)
+            .await;
+
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_b.clone())
+            .await
+            .unwrap();
+
+        let mut listener2 = get_listener_by_url(
+            &format!("{}://0.0.0.0:31014", proto2).parse().unwrap(),
+            peer_mgr_c.get_global_ctx(),
+        )
+        .unwrap();
+        let connector2 = create_connector_by_url(
+            format!("{}://127.0.0.1:31014", proto2).as_str(),
+            &peer_mgr_b.get_global_ctx(),
+        )
+        .await
+        .unwrap();
+        connect_peer_manager_with(peer_mgr_b.clone(), &peer_mgr_c, connector2, &mut listener2)
+            .await;
+
+        wait_route_appear(peer_mgr_a.clone(), peer_mgr_c.clone())
+            .await
+            .unwrap();
+
+        let ret = peer_mgr_a
+            .get_peer_rpc_mgr()
+            .do_client_rpc_scoped(100, peer_mgr_c.my_peer_id(), |c| async {
+                let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
+                let ret = c.hello(tarpc::context::current(), "abc".to_owned()).await;
+                ret
+            })
+            .await
+            .unwrap();
+        assert_eq!(ret, "hello c abc");
     }
 }

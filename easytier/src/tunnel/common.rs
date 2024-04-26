@@ -178,14 +178,16 @@ pub trait ZCPacketToBytes {
 
 pub struct TcpZCPacketToBytes;
 impl ZCPacketToBytes for TcpZCPacketToBytes {
-    fn into_bytes(&self, mut item: ZCPacket) -> Result<Bytes, TunnelError> {
+    fn into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
+        let mut item = item.convert_type(ZCPacketType::TCP);
+
         let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
         let Some(header) = item.mut_tcp_tunnel_header() else {
             return Err(TunnelError::InvalidPacket("packet too short".to_string()));
         };
         header.len.set(tcp_len.try_into().unwrap());
 
-        Ok(item.into_bytes(ZCPacketType::TCP))
+        Ok(item.into_bytes())
     }
 }
 

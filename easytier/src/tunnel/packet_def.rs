@@ -96,23 +96,57 @@ const PAYLOAD_OFFSET_FOR_NIC_PACKET: usize = max(
     WG_TUNNEL_HEADER_SIZE,
 ) + PEER_MANAGER_HEADER_SIZE;
 
+const INVALID_OFFSET: usize = usize::MAX;
+
+const fn get_converted_offset(old_hdr_size: usize, new_hdr_size: usize) -> usize {
+    if old_hdr_size < new_hdr_size {
+        INVALID_OFFSET
+    } else {
+        old_hdr_size - new_hdr_size
+    }
+}
+
 impl ZCPacketType {
     pub fn get_packet_offsets(&self) -> ZCPacketOffsets {
         match self {
             ZCPacketType::TCP => ZCPacketOffsets {
                 payload_offset: TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
                 peer_manager_header_offset: TCP_TUNNEL_HEADER_SIZE,
-                ..Default::default()
+                tcp_tunnel_header_offset: 0,
+                udp_tunnel_header_offset: get_converted_offset(
+                    TCP_TUNNEL_HEADER_SIZE,
+                    UDP_TUNNEL_HEADER_SIZE,
+                ),
+                wg_tunnel_header_offset: get_converted_offset(
+                    TCP_TUNNEL_HEADER_SIZE,
+                    WG_TUNNEL_HEADER_SIZE,
+                ),
             },
             ZCPacketType::UDP => ZCPacketOffsets {
                 payload_offset: UDP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
                 peer_manager_header_offset: UDP_TUNNEL_HEADER_SIZE,
-                ..Default::default()
+                tcp_tunnel_header_offset: get_converted_offset(
+                    UDP_TUNNEL_HEADER_SIZE,
+                    TCP_TUNNEL_HEADER_SIZE,
+                ),
+                udp_tunnel_header_offset: 0,
+                wg_tunnel_header_offset: get_converted_offset(
+                    UDP_TUNNEL_HEADER_SIZE,
+                    WG_TUNNEL_HEADER_SIZE,
+                ),
             },
             ZCPacketType::WG => ZCPacketOffsets {
                 payload_offset: WG_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE,
                 peer_manager_header_offset: WG_TUNNEL_HEADER_SIZE,
-                ..Default::default()
+                tcp_tunnel_header_offset: get_converted_offset(
+                    WG_TUNNEL_HEADER_SIZE,
+                    TCP_TUNNEL_HEADER_SIZE,
+                ),
+                udp_tunnel_header_offset: get_converted_offset(
+                    WG_TUNNEL_HEADER_SIZE,
+                    UDP_TUNNEL_HEADER_SIZE,
+                ),
+                wg_tunnel_header_offset: 0,
             },
             ZCPacketType::NIC => ZCPacketOffsets {
                 payload_offset: PAYLOAD_OFFSET_FOR_NIC_PACKET,
@@ -277,45 +311,56 @@ impl ZCPacket {
         hdr.len.set(payload_len as u32);
     }
 
-    pub fn into_bytes(mut self, target_packet_type: ZCPacketType) -> Bytes {
+    fn tunnel_payload(&self) -> &[u8] {
+        &self.inner[self
+            .packet_type
+            .get_packet_offsets()
+            .peer_manager_header_offset..]
+    }
+
+    pub fn convert_type(mut self, target_packet_type: ZCPacketType) -> Self {
         if target_packet_type == self.packet_type {
-            return self.inner.freeze();
-        } else {
-            assert_eq!(
-                self.packet_type,
-                ZCPacketType::NIC,
-                "only support NIC, got {:?}",
-                self
-            );
+            return self;
         }
 
-        match target_packet_type {
-            ZCPacketType::TCP => self
-                .inner
-                .split_off(
-                    self.packet_type
-                        .get_packet_offsets()
-                        .tcp_tunnel_header_offset,
-                )
-                .freeze(),
-            ZCPacketType::UDP => self
-                .inner
-                .split_off(
-                    self.packet_type
-                        .get_packet_offsets()
-                        .udp_tunnel_header_offset,
-                )
-                .freeze(),
-            ZCPacketType::WG => self
-                .inner
-                .split_off(
-                    self.packet_type
-                        .get_packet_offsets()
-                        .wg_tunnel_header_offset,
-                )
-                .freeze(),
+        let new_offset = match target_packet_type {
+            ZCPacketType::TCP => {
+                self.packet_type
+                    .get_packet_offsets()
+                    .tcp_tunnel_header_offset
+            }
+            ZCPacketType::UDP => {
+                self.packet_type
+                    .get_packet_offsets()
+                    .udp_tunnel_header_offset
+            }
+            ZCPacketType::WG => {
+                self.packet_type
+                    .get_packet_offsets()
+                    .wg_tunnel_header_offset
+            }
             ZCPacketType::NIC => unreachable!(),
+        };
+
+        tracing::debug!(?self.packet_type, ?target_packet_type, ?new_offset, "convert zc packet type");
+
+        if new_offset == INVALID_OFFSET {
+            // copy peer manager header and payload to new buffer
+            let tunnel_payload = self.tunnel_payload();
+            let new_pm_offset = target_packet_type
+                .get_packet_offsets()
+                .peer_manager_header_offset;
+            let mut buf = BytesMut::with_capacity(new_pm_offset + tunnel_payload.len());
+            unsafe { buf.set_len(new_pm_offset) };
+            buf.extend_from_slice(tunnel_payload);
+            return Self::new_from_buf(buf, target_packet_type);
         }
+
+        return Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type);
+    }
+
+    pub fn into_bytes(self) -> Bytes {
+        self.inner.freeze()
     }
 
     pub fn inner(self) -> BytesMut {
@@ -351,7 +396,7 @@ mod tests {
         assert_eq!(packet.payload_len(), 11);
         println!("{:?}", packet.inner);
 
-        let tcp_packet = packet.into_bytes(ZCPacketType::TCP);
+        let tcp_packet = packet.convert_type(ZCPacketType::TCP).into_bytes();
         assert_eq!(&tcp_packet[..1], b"\x0b");
         println!("{:?}", tcp_packet);
     }
