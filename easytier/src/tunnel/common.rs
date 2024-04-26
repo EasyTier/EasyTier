@@ -9,11 +9,11 @@ use std::{
 use futures::{stream::FuturesUnordered, Future, Sink, Stream};
 use network_interface::NetworkInterfaceConfig as _;
 use pin_project_lite::pin_project;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_stream::StreamExt;
-use tokio_util::io::{poll_read_buf, poll_write_buf};
+use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
 
 use crate::{
@@ -149,13 +149,18 @@ where
                 *self_mut.max_packet_size * 64,
             );
 
-            match ready!(poll_read_buf(
-                self_mut.reader.as_mut(),
-                cx,
-                &mut self_mut.buf
-            )) {
-                Ok(size) => {
-                    if size == 0 {
+            let cap = self_mut.buf.capacity() - self_mut.buf.len();
+            let buf = self_mut.buf.chunk_mut().as_mut_ptr();
+            let buf = unsafe { std::slice::from_raw_parts_mut(buf, cap) };
+            let mut buf = ReadBuf::new(buf);
+
+            let ret = ready!(self_mut.reader.as_mut().poll_read(cx, &mut buf));
+            let len = buf.filled().len();
+            unsafe { self_mut.buf.advance_mut(len) };
+
+            match ret {
+                Ok(_) => {
+                    if len == 0 {
                         return Poll::Ready(None);
                     }
                 }

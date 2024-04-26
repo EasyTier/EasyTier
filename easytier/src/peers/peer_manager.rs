@@ -516,15 +516,11 @@ impl PeerManager {
             msg.fill_peer_manager_hdr(self.my_peer_id, *peer_id, packet::PacketType::Data as u8);
 
             if let Some(gateway) = self.peers.get_gateway_peer_id(*peer_id).await {
-                if let Err(e) = self.peers.send_msg_directly(msg.clone(), gateway).await {
+                if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {
                     errs.push(e);
                 }
             } else if self.foreign_network_client.has_next_hop(*peer_id) {
-                if let Err(e) = self
-                    .foreign_network_client
-                    .send_msg(msg.clone(), *peer_id)
-                    .await
-                {
+                if let Err(e) = self.foreign_network_client.send_msg(msg, *peer_id).await {
                     errs.push(e);
                 }
             }

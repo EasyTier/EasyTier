@@ -140,6 +140,8 @@ base64 = "0.21.7"
 
 derivative = "2.2.0"
 
+mimalloc-rust = "0.2.1"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Networking_WinSock",

@@ -13,7 +13,7 @@ use futures::{SinkExt, StreamExt, TryFutureExt};
 use prost::Message;
 
 use tokio::{
-    sync::{broadcast, mpsc},
+    sync::{broadcast, mpsc, Mutex},
     task::JoinSet,
     time::{timeout, Duration},
 };
@@ -52,9 +52,9 @@ pub struct PeerConn {
     my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
 
-    tunnel: Box<dyn Any + Send + 'static>,
+    tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
-    recv: Option<Pin<Box<dyn ZCPacketStream>>>,
+    recv: Arc<Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>>,
     tunnel_info: Option<TunnelInfo>,
 
     tasks: JoinSet<Result<(), TunnelError>>,
@@ -98,9 +98,9 @@ impl PeerConn {
             my_peer_id,
             global_ctx,
 
-            tunnel: Box::new(mpsc_tunnel),
+            tunnel: Arc::new(Mutex::new(Box::new(mpsc_tunnel))),
             sink,
-            recv: Some(recv),
+            recv: Arc::new(Mutex::new(Some(recv))),
             tunnel_info,
 
             tasks: JoinSet::new(),
@@ -121,7 +121,8 @@ impl PeerConn {
     }
 
     async fn wait_handshake(&mut self) -> Result<HandshakeRequest, Error> {
-        let recv = self.recv.as_mut().unwrap();
+        let mut locked = self.recv.lock().await;
+        let recv = locked.as_mut().unwrap();
         let Some(rsp) = recv.next().await else {
             return Err(Error::WaitRespError(
                 "conn closed during wait handshake response".to_owned(),
@@ -199,8 +200,8 @@ impl PeerConn {
         self.info.is_some()
     }
 
-    pub fn start_recv_loop(&mut self, packet_recv_chan: PacketRecvChan) {
-        let mut stream = self.recv.take().unwrap();
+    pub async fn start_recv_loop(&mut self, packet_recv_chan: PacketRecvChan) {
+        let mut stream = self.recv.lock().await.take().unwrap();
         let sink = self.sink.clone();
         let mut sender = PollSender::new(packet_recv_chan.clone());
         let close_event_sender = self.close_event_sender.clone().unwrap();
@@ -286,7 +287,7 @@ impl PeerConn {
         });
     }
 
-    pub async fn send_msg(&mut self, msg: ZCPacket) -> Result<(), Error> {
+    pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
         Ok(self.sink.send(msg).await?)
     }
 
@@ -398,7 +399,9 @@ mod tests {
         );
 
         s_peer.set_close_event_sender(tokio::sync::mpsc::channel(1).0);
-        s_peer.start_recv_loop(tokio::sync::mpsc::channel(200).0);
+        s_peer
+            .start_recv_loop(tokio::sync::mpsc::channel(200).0)
+            .await;
 
         assert!(c_ret.is_ok());
         assert!(s_ret.is_ok());
@@ -406,7 +409,9 @@ mod tests {
         let (close_send, mut close_recv) = tokio::sync::mpsc::channel(1);
         c_peer.set_close_event_sender(close_send);
         c_peer.start_pingpong();
-        c_peer.start_recv_loop(tokio::sync::mpsc::channel(200).0);
+        c_peer
+            .start_recv_loop(tokio::sync::mpsc::channel(200).0)
+            .await;
 
         // wait 5s, conn should not be disconnected
         tokio::time::sleep(Duration::from_secs(15)).await;

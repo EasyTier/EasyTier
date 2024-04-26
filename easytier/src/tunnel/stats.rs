@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 pub struct WindowLatency {
     latency_us_window: Vec<AtomicU32>,
@@ -48,48 +48,49 @@ impl WindowLatency {
     }
 }
 
+#[derive(Default)]
 pub struct Throughput {
-    tx_bytes: AtomicU64,
-    rx_bytes: AtomicU64,
+    tx_bytes: u64,
+    rx_bytes: u64,
 
-    tx_packets: AtomicU64,
-    rx_packets: AtomicU64,
+    tx_packets: u64,
+    rx_packets: u64,
 }
 
 impl Throughput {
     pub fn new() -> Self {
-        Self {
-            tx_bytes: AtomicU64::new(0),
-            rx_bytes: AtomicU64::new(0),
-
-            tx_packets: AtomicU64::new(0),
-            rx_packets: AtomicU64::new(0),
-        }
+        Self::default()
     }
 
     pub fn tx_bytes(&self) -> u64 {
-        self.tx_bytes.load(Relaxed)
+        self.tx_bytes
     }
 
     pub fn rx_bytes(&self) -> u64 {
-        self.rx_bytes.load(Relaxed)
+        self.rx_bytes
     }
 
     pub fn tx_packets(&self) -> u64 {
-        self.tx_packets.load(Relaxed)
+        self.tx_packets
     }
 
     pub fn rx_packets(&self) -> u64 {
-        self.rx_packets.load(Relaxed)
+        self.rx_packets
     }
 
     pub fn record_tx_bytes(&self, bytes: u64) {
-        self.tx_bytes.fetch_add(bytes, Relaxed);
-        self.tx_packets.fetch_add(1, Relaxed);
+        #[allow(invalid_reference_casting)]
+        unsafe {
+            *(&self.tx_bytes as *const u64 as *mut u64) += bytes;
+            *(&self.tx_packets as *const u64 as *mut u64) += 1;
+        }
     }
 
     pub fn record_rx_bytes(&self, bytes: u64) {
-        self.rx_bytes.fetch_add(bytes, Relaxed);
-        self.rx_packets.fetch_add(1, Relaxed);
+        #[allow(invalid_reference_casting)]
+        unsafe {
+            *(&self.rx_bytes as *const u64 as *mut u64) += bytes;
+            *(&self.rx_packets as *const u64 as *mut u64) += 1;
+        }
     }
 }

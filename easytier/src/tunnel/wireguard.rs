@@ -650,7 +650,7 @@ impl WgTunnelConnector {
                 let mut buf = vec![0u8; MAX_PACKET];
                 let (n, recv_addr) = data.udp.recv_from(&mut buf).await.unwrap();
                 if recv_addr != addr {
-                    continue;
+                    tracing::warn!(?recv_addr, "Received packet from changed address");
                 }
                 data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             }

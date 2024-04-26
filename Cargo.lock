@@ -984,6 +984,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cty"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b365fabc795046672053e29c954733ec3b05e4be654ab130fe8f1f94d7051f35"
+
+[[package]]
 name = "curve25519-dalek"
 version = "4.0.0-rc.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1298,6 +1304,7 @@ dependencies = [
  "gethostname",
  "humansize",
  "log",
+ "mimalloc-rust",
  "network-interface",
  "nix 0.27.1",
  "once_cell",
@@ -2670,6 +2677,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a634b1c61a95585bd15607c6ab0c4e5b226e695ff2800ba0cdccddf208c406c"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mimalloc-rust"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb726c8298efb4010b2c46d8050e4be36cf807b9d9e98cb112f830914fc9bbe"
+dependencies = [
+ "cty",
+ "mimalloc-rust-sys",
+]
+
+[[package]]
+name = "mimalloc-rust-sys"
+version = "1.7.9-source"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6413e13241a9809f291568133eca6694572cf528c1a6175502d090adce5dd5db"
+dependencies = [
+ "cc",
+ "cty",
 ]
 
 [[package]]

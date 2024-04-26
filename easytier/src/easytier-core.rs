@@ -33,6 +33,11 @@ use crate::common::{
     global_ctx::GlobalCtxEvent,
 };
 
+use mimalloc_rust::*;
+
+#[global_allocator]
+static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -437,6 +442,7 @@ fn main() {
 
     if cli.multi_thread {
         tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
             .enable_all()
             .build()
             .unwrap()

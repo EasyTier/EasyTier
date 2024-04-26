@@ -155,8 +155,10 @@ impl ZCPacket {
 
     pub fn new_with_payload(payload: &[u8]) -> Self {
         let mut ret = Self::new_nic_packet();
-        let total_len = ret.packet_type.get_packet_offsets().payload_offset + payload.len();
-        ret.inner.resize(total_len, 0);
+        let payload_off = ret.packet_type.get_packet_offsets().payload_offset;
+        let total_len = payload_off + payload.len();
+        ret.inner.reserve(total_len);
+        unsafe { ret.inner.set_len(total_len) };
         ret.mut_payload()[..payload.len()].copy_from_slice(&payload);
         ret
     }
@@ -165,7 +167,7 @@ impl ZCPacket {
         let mut ret = Self::new_nic_packet();
         ret.inner.reserve(cap);
         let total_len = ret.packet_type.get_packet_offsets().payload_offset - packet_info_len;
-        ret.inner.resize(total_len, 0);
+        unsafe { ret.inner.set_len(total_len) };
         ret
     }
 
