@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use anyhow::Context;
 use async_trait::async_trait;
 
 use futures::StreamExt;
@@ -31,6 +32,7 @@ use crate::{
 };
 
 use super::{
+    encrypt::{ring_aes_gcm::AesGcmCipher, Encryptor, NullCipher},
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkManager,
     peer_map::PeerMap,
@@ -49,6 +51,8 @@ struct RpcTransport {
 
     packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
     peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
+
+    encryptor: Arc<Box<dyn Encryptor>>,
 }
 
 #[async_trait::async_trait]
@@ -57,7 +61,7 @@ impl PeerRpcManagerTransport for RpcTransport {
         self.my_peer_id
     }
 
-    async fn send(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+    async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         let foreign_peers = self
             .foreign_peers
             .lock()
@@ -75,8 +79,17 @@ impl PeerRpcManagerTransport for RpcTransport {
                 ?self.my_peer_id,
                 "send msg to peer via gateway",
             );
+            self.encryptor
+                .encrypt(&mut msg)
+                .with_context(|| "encrypt failed")?;
             peers.send_msg_directly(msg, gateway_id).await
         } else if foreign_peers.has_next_hop(dst_peer_id) {
+            if !foreign_peers.is_peer_public_node(&dst_peer_id) {
+                // do not encrypt for msg sending to public node
+                self.encryptor
+                    .encrypt(&mut msg)
+                    .with_context(|| "encrypt failed")?;
+            }
             tracing::debug!(
                 ?dst_peer_id,
                 ?self.my_peer_id,
@@ -134,6 +147,8 @@ pub struct PeerManager {
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
     foreign_network_client: Arc<ForeignNetworkClient>,
+
+    encryptor: Arc<Box<dyn Encryptor>>,
 }
 
 impl Debug for PeerManager {
@@ -161,6 +176,13 @@ impl PeerManager {
             my_peer_id,
         ));
 
+        let encryptor: Arc<Box<dyn Encryptor>> =
+            Arc::new(if global_ctx.get_flags().enable_encryption {
+                Box::new(AesGcmCipher::new_128(global_ctx.get_128_key()))
+            } else {
+                Box::new(NullCipher)
+            });
+
         // TODO: remove these because we have impl pipeline processor.
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
         let rpc_tspt = Arc::new(RpcTransport {
@@ -169,6 +191,7 @@ impl PeerManager {
             foreign_peers: Mutex::new(None),
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
             peer_rpc_tspt_sender,
+            encryptor: encryptor.clone(),
         });
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
 
@@ -218,6 +241,8 @@ impl PeerManager {
 
             foreign_network_manager,
             foreign_network_client,
+
+            encryptor,
         }
     }
 
@@ -268,9 +293,10 @@ impl PeerManager {
         let my_peer_id = self.my_peer_id;
         let peers = self.peers.clone();
         let pipe_line = self.peer_packet_process_pipeline.clone();
+        let encryptor = self.encryptor.clone();
         self.tasks.lock().await.spawn(async move {
             log::trace!("start_peer_recv");
-            while let Some(ret) = recv.next().await {
+            while let Some(mut ret) = recv.next().await {
                 let Some(hdr) = ret.peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
                     continue;
@@ -285,6 +311,13 @@ impl PeerManager {
                         tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
                     }
                 } else {
+                    if let Err(e) = encryptor
+                        .decrypt(&mut ret)
+                        .with_context(|| "decrypt failed")
+                    {
+                        tracing::error!(?e, "decrypt failed");
+                    }
+
                     let mut processed = false;
                     let mut zc_packet = Some(ret);
                     let mut idx = 0;
@@ -490,7 +523,12 @@ impl PeerManager {
             return Ok(());
         }
 
+        msg.fill_peer_manager_hdr(self.my_peer_id, 0, packet::PacketType::Data as u8);
         self.run_nic_packet_process_pipeline(&mut msg).await;
+        self.encryptor
+            .encrypt(&mut msg)
+            .with_context(|| "encrypt failed")?;
+
         let mut errs: Vec<Error> = vec![];
 
         let mut msg = Some(msg);
@@ -503,8 +541,10 @@ impl PeerManager {
             };
 
             let peer_id = &dst_peers[i];
-
-            msg.fill_peer_manager_hdr(self.my_peer_id, *peer_id, packet::PacketType::Data as u8);
+            msg.mut_peer_manager_header()
+                .unwrap()
+                .to_peer_id
+                .set(*peer_id);
 
             if let Some(gateway) = self.peers.get_gateway_peer_id(*peer_id).await {
                 if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {

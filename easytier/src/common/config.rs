@@ -106,6 +106,8 @@ pub struct VpnPortalConfig {
 pub struct Flags {
     #[derivative(Default(value = "\"tcp\".to_string()"))]
     pub default_protocol: String,
+    #[derivative(Default(value = "true"))]
+    pub enable_encryption: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

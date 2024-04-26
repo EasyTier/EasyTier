@@ -14,6 +14,8 @@ pub mod zc_peer_conn;
 pub mod foreign_network_client;
 pub mod foreign_network_manager;
 
+pub mod encrypt;
+
 #[cfg(test)]
 pub mod tests;
 

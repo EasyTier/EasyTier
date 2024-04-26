@@ -125,6 +125,14 @@ and the vpn client is in network of 10.14.14.0/24"
     default_protocol: Option<String>,
 
     #[arg(
+        short = 'u',
+        long,
+        help = "disable encryption for peers communication, default is false, must be same with peers",
+        default_value = "false"
+    )]
+    disable_encryption: bool,
+
+    #[arg(
         long,
         help = "use multi-thread runtime, default is single-thread",
         default_value = "false"
@@ -254,11 +262,12 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
+        let mut f = cfg.get_flags();
         if cli.default_protocol.is_some() {
-            let mut f = cfg.get_flags();
             f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
-            cfg.set_flags(f);
         }
+        f.enable_encryption = !cli.disable_encryption;
+        cfg.set_flags(f);
 
         cfg
     }

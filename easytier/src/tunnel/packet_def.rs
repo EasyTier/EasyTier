@@ -56,15 +56,52 @@ pub enum PacketType {
     Route = 7,
 }
 
+bitflags::bitflags! {
+    struct PeerManagerHeaderFlags: u8 {
+        const ENCRYPTED = 0b0000_0001;
+    }
+}
+
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
 pub struct PeerManagerHeader {
     pub from_peer_id: U32<DefaultEndian>,
     pub to_peer_id: U32<DefaultEndian>,
     pub packet_type: u8,
+    pub flags: u8,
+    reserved: U16<DefaultEndian>,
     pub len: U32<DefaultEndian>,
 }
 pub const PEER_MANAGER_HEADER_SIZE: usize = std::mem::size_of::<PeerManagerHeader>();
+
+impl PeerManagerHeader {
+    pub fn is_encrypted(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::ENCRYPTED)
+    }
+
+    pub fn set_encrypted(&mut self, encrypted: bool) {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if encrypted {
+            flags.insert(PeerManagerHeaderFlags::ENCRYPTED);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::ENCRYPTED);
+        }
+        self.flags = flags.bits();
+    }
+}
+
+// reserve the space for aes tag and nonce
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct AesGcmTail {
+    pub tag: [u8; 16],
+    pub nonce: [u8; 12],
+}
+pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
+
+pub const TAIL_RESERVED_SIZE: usize = AES_GCM_ENCRYPTION_RESERVED;
 
 const fn max(a: usize, b: usize) -> usize {
     [a, b][(a < b) as usize]
@@ -308,6 +345,7 @@ impl ZCPacket {
         hdr.from_peer_id.set(from_peer_id);
         hdr.to_peer_id.set(to_peer_id);
         hdr.packet_type = packet_type;
+        hdr.flags = 0;
         hdr.len.set(payload_len as u32);
     }
 
