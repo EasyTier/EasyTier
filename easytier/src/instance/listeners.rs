@@ -12,6 +12,7 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
+        quic::QUICTunnelListener,
         ring::RingTunnelListener,
         tcp::TcpTunnelListener,
         udp::UdpTunnelListener,
@@ -19,6 +20,26 @@ use crate::{
         Tunnel, TunnelListener,
     },
 };
+
+pub fn get_listener_by_url(
+    l: &url::Url,
+    ctx: ArcGlobalCtx,
+) -> Result<Box<dyn TunnelListener>, Error> {
+    Ok(match l.scheme() {
+        "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
+        "udp" => Box::new(UdpTunnelListener::new(l.clone())),
+        "wg" => {
+            let nid = ctx.get_network_identity();
+            let wg_config =
+                WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
+            Box::new(WgTunnelListener::new(l.clone(), wg_config))
+        }
+        "quic" => Box::new(QUICTunnelListener::new(l.clone())),
+        _ => {
+            unreachable!("unsupported listener uri");
+        }
+    })
+}
 
 #[async_trait]
 pub trait TunnelHandlerForListener {
@@ -62,24 +83,8 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         .await?;
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
-            match l.scheme() {
-                "tcp" => {
-                    self.add_listener(TcpTunnelListener::new(l.clone())).await?;
-                }
-                "udp" => {
-                    self.add_listener(UdpTunnelListener::new(l.clone())).await?;
-                }
-                "wg" => {
-                    let nid = self.global_ctx.get_network_identity();
-                    let wg_config =
-                        WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
-                    self.add_listener(WgTunnelListener::new(l.clone(), wg_config))
-                        .await?;
-                }
-                _ => {
-                    log::warn!("unsupported listener uri: {}", l);
-                }
-            }
+            let lis = get_listener_by_url(l, self.global_ctx.clone())?;
+            self.add_listener(lis).await?;
         }
 
         Ok(())

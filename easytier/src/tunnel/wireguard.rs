@@ -138,17 +138,15 @@ impl Debug for WgPeerData {
 
 impl WgPeerData {
     #[tracing::instrument]
-    async fn handle_one_packet_from_me(
-        &self,
-        mut zc_packet: ZCPacket,
-    ) -> Result<(), anyhow::Error> {
+    async fn handle_one_packet_from_me(&self, zc_packet: ZCPacket) -> Result<(), anyhow::Error> {
         let mut send_buf = vec![0u8; MAX_PACKET];
 
         let packet = if matches!(self.wg_type, WgType::InternalUse) {
+            let mut zc_packet = zc_packet.convert_type(ZCPacketType::WG);
             Self::fill_ip_header(&mut zc_packet);
-            zc_packet.into_bytes(ZCPacketType::WG)
+            zc_packet.into_bytes()
         } else {
-            zc_packet.into_bytes(ZCPacketType::WG)
+            zc_packet.convert_type(ZCPacketType::WG).into_bytes()
         };
         tracing::trace!(?packet, "Sending packet to peer");
 
@@ -650,7 +648,7 @@ impl WgTunnelConnector {
                 let mut buf = vec![0u8; MAX_PACKET];
                 let (n, recv_addr) = data.udp.recv_from(&mut buf).await.unwrap();
                 if recv_addr != addr {
-                    continue;
+                    tracing::warn!(?recv_addr, "Received packet from changed address");
                 }
                 data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             }

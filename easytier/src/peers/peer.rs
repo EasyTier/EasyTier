@@ -3,11 +3,7 @@ use std::sync::Arc;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 
-use tokio::{
-    select,
-    sync::{mpsc, Mutex},
-    task::JoinHandle,
-};
+use tokio::{select, sync::mpsc, task::JoinHandle};
 
 use tracing::Instrument;
 
@@ -25,7 +21,7 @@ use crate::{
     tunnel::packet_def::ZCPacket,
 };
 
-type ArcPeerConn = Arc<Mutex<PeerConn>>;
+type ArcPeerConn = Arc<PeerConn>;
 type ConnMap = Arc<DashMap<PeerConnId, ArcPeerConn>>;
 
 pub struct Peer {
@@ -73,7 +69,7 @@ impl Peer {
 
                             if let Some((_, conn)) = conns_copy.remove(&ret) {
                                 global_ctx_copy.issue_event(GlobalCtxEvent::PeerConnRemoved(
-                                    conn.lock().await.get_conn_info(),
+                                    conn.get_conn_info(),
                                 ));
                             }
                         }
@@ -108,12 +104,11 @@ impl Peer {
 
     pub async fn add_peer_conn(&self, mut conn: PeerConn) {
         conn.set_close_event_sender(self.close_event_sender.clone());
-        conn.start_recv_loop(self.packet_recv_chan.clone());
+        conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerConnAdded(conn.get_conn_info()));
-        self.conns
-            .insert(conn.get_conn_id(), Arc::new(Mutex::new(conn)));
+        self.conns.insert(conn.get_conn_id(), Arc::new(conn));
     }
 
     async fn select_conn(&self) -> Option<ArcPeerConn> {
@@ -128,7 +123,7 @@ impl Peer {
         }
 
         let conn = conn.unwrap().clone();
-        self.default_conn_id.store(conn.lock().await.get_conn_id());
+        self.default_conn_id.store(conn.get_conn_id());
         Some(conn)
     }
 
@@ -136,10 +131,7 @@ impl Peer {
         let Some(conn) = self.select_conn().await else {
             return Err(Error::PeerNoConnectionError(self.peer_node_id));
         };
-
-        let conn_clone = conn.clone();
-        drop(conn);
-        conn_clone.lock().await.send_msg(msg).await?;
+        conn.send_msg(msg).await?;
 
         Ok(())
     }
@@ -162,7 +154,7 @@ impl Peer {
 
         let mut ret = Vec::new();
         for conn in conns {
-            ret.push(conn.lock().await.get_conn_info());
+            ret.push(conn.get_conn_info());
         }
         ret
     }

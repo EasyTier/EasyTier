@@ -6,6 +6,7 @@ use std::{
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
     tunnel::{
+        quic::QUICTunnelConnector,
         ring::RingTunnelConnector,
         tcp::TcpTunnelConnector,
         udp::UdpTunnelConnector,
@@ -75,6 +76,18 @@ pub async fn create_connector_by_url(
         "ring" => {
             crate::tunnels::check_scheme_and_get_socket_addr::<uuid::Uuid>(&url, "ring")?;
             let connector = RingTunnelConnector::new(url);
+            return Ok(Box::new(connector));
+        }
+        "quic" => {
+            let dst_addr =
+                crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic")?;
+            let mut connector = QUICTunnelConnector::new(url);
+            set_bind_addr_for_peer_connector(
+                &mut connector,
+                dst_addr.is_ipv4(),
+                &global_ctx.get_ip_collector(),
+            )
+            .await;
             return Ok(Box::new(connector));
         }
         "wg" => {

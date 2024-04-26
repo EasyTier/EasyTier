@@ -19,11 +19,11 @@ use crate::{
 };
 
 use byteorder::WriteBytesExt as _;
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
 use futures::{lock::BiLock, ready, Stream};
 use pin_project_lite::pin_project;
-use tokio::io::AsyncWrite;
-use tokio_util::{bytes::Bytes, io::poll_read_buf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio_util::bytes::Bytes;
 use tun::{create_as_async, AsyncDevice, Configuration, Device as _, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
 
@@ -64,12 +64,24 @@ impl Stream for TunStream {
                 self_mut.cur_buf.set_len(*self_mut.payload_offset);
             }
         }
-        match ready!(poll_read_buf(g.as_pin_mut(), cx, &mut self_mut.cur_buf)) {
-            Ok(0) => Poll::Ready(None),
-            Ok(_n) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(
-                self_mut.cur_buf.split(),
-                ZCPacketType::NIC,
-            )))),
+        let buf = self_mut.cur_buf.chunk_mut().as_mut_ptr();
+        let buf = unsafe { std::slice::from_raw_parts_mut(buf, 2500) };
+        let mut buf = ReadBuf::new(buf);
+
+        let ret = ready!(g.as_pin_mut().poll_read(cx, &mut buf));
+        let len = buf.filled().len();
+        unsafe { self_mut.cur_buf.advance_mut(len) };
+
+        match ret {
+            Ok(_) => {
+                if len == 0 {
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Some(Ok(ZCPacket::new_from_buf(
+                    self_mut.cur_buf.split(),
+                    ZCPacketType::NIC,
+                ))))
+            }
             Err(err) => {
                 println!("tun stream error: {:?}", err);
                 Poll::Ready(None)

@@ -389,7 +389,7 @@ impl PeerRpcManager {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::{pin::Pin, sync::Arc};
 
     use futures::{SinkExt, StreamExt};
@@ -415,8 +415,8 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct MockService {
-        prefix: String,
+    pub struct MockService {
+        pub prefix: String,
     }
 
     #[tarpc::server]

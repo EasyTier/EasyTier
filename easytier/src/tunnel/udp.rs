@@ -125,20 +125,21 @@ async fn forward_from_ring_to_udp(
         let Some(buf) = ring_recv.next().await else {
             return None;
         };
-        let mut packet = match buf {
+        let packet = match buf {
             Ok(v) => v,
             Err(e) => {
                 return Some(e);
             }
         };
 
+        let mut packet = packet.convert_type(ZCPacketType::UDP);
         let udp_payload_len = packet.udp_payload().len();
         let header = packet.mut_udp_tunnel_header().unwrap();
         header.conn_id.set(conn_id);
         header.len.set(udp_payload_len as u16);
         header.msg_type = UdpPacketType::Data as u8;
 
-        let buf = packet.into_bytes(ZCPacketType::UDP);
+        let buf = packet.into_bytes();
         tracing::trace!(?udp_payload_len, ?buf, "udp forward from ring to udp");
         let ret = socket.send_to(&buf, &addr).await;
         if ret.is_err() {
@@ -232,7 +233,7 @@ impl UdpTunnelListenerData {
         tracing::info!(?conn_id, ?remote_addr, "udp connection accept handling",);
         let socket = self.socket.as_ref().unwrap().clone();
 
-        let sack_buf = new_sack_packet(conn_id, magic).into_bytes(ZCPacketType::UDP);
+        let sack_buf = new_sack_packet(conn_id, magic).into_bytes();
         if let Err(e) = socket.send_to(&sack_buf, remote_addr).await {
             tracing::error!(?e, "udp send sack packet error");
             return;
@@ -436,6 +437,7 @@ impl TunnelListener for UdpTunnelListener {
     }
 }
 
+#[derive(Debug)]
 pub struct UdpTunnelConnector {
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
@@ -613,7 +615,7 @@ impl UdpTunnelConnector {
         // send syn
         let conn_id = rand::random();
         let magic = rand::random();
-        let udp_packet = new_syn_packet(conn_id, magic).into_bytes(ZCPacketType::UDP);
+        let udp_packet = new_syn_packet(conn_id, magic).into_bytes();
         let ret = socket.send_to(&udp_packet, &addr).await?;
         tracing::warn!(?udp_packet, ?ret, "udp send syn");
 
