@@ -404,7 +404,7 @@ impl UdpHolePunchConnector {
         let socket = UdpSocket::from_std(socket2_socket.into())?;
 
         Ok(connector
-            .try_connect_with_socket(socket)
+            .try_connect_with_socket(socket, remote_mapped_addr)
             .await
             .with_context(|| "UdpTunnelConnector failed to connect remote")?)
     }

@@ -29,7 +29,7 @@ use super::{
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
     ring::{RingSink, RingStream},
-    Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
+    IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
 };
 
 pub const UDP_DATA_MTU: usize = 65000;
@@ -441,6 +441,7 @@ impl TunnelListener for UdpTunnelListener {
 pub struct UdpTunnelConnector {
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
+    ip_version: IpVersion,
 }
 
 impl UdpTunnelConnector {
@@ -448,6 +449,7 @@ impl UdpTunnelConnector {
         Self {
             addr,
             bind_addrs: vec![],
+            ip_version: IpVersion::Both,
         }
     }
 
@@ -605,8 +607,8 @@ impl UdpTunnelConnector {
     pub async fn try_connect_with_socket(
         &self,
         socket: UdpSocket,
+        addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "udp")?;
         log::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
@@ -633,12 +635,23 @@ impl UdpTunnelConnector {
         self.build_tunnel(socket, addr, conn_id).await
     }
 
-    async fn connect_with_default_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        return self.try_connect_with_socket(socket).await;
+    async fn connect_with_default_bind(
+        &mut self,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+        let socket = if addr.is_ipv4() {
+            UdpSocket::bind("0.0.0.0:0").await?
+        } else {
+            UdpSocket::bind("[::]:0").await?
+        };
+
+        return self.try_connect_with_socket(socket, addr).await;
     }
 
-    async fn connect_with_custom_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn connect_with_custom_bind(
+        &mut self,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
@@ -649,7 +662,7 @@ impl UdpTunnelConnector {
             )?;
             setup_sokcet2(&socket2_socket, &bind_addr)?;
             let socket = UdpSocket::from_std(socket2_socket.into())?;
-            futures.push(self.try_connect_with_socket(socket));
+            futures.push(self.try_connect_with_socket(socket, addr));
         }
         wait_for_connect_futures(futures).await
     }
@@ -658,10 +671,15 @@ impl UdpTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for UdpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        if self.bind_addrs.is_empty() {
-            self.connect_with_default_bind().await
+        let addr = super::check_scheme_and_get_socket_addr_ext::<SocketAddr>(
+            &self.addr,
+            "udp",
+            self.ip_version,
+        )?;
+        if self.bind_addrs.is_empty() || addr.is_ipv6() {
+            self.connect_with_default_bind(addr).await
         } else {
-            self.connect_with_custom_bind().await
+            self.connect_with_custom_bind(addr).await
         }
     }
 
@@ -671,6 +689,10 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
     }
 }
 
@@ -839,5 +861,27 @@ mod tests {
             .unwrap();
             setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn ipv6_pingpong() {
+        let listener = UdpTunnelListener::new("udp://[::1]:31015".parse().unwrap());
+        let connector = UdpTunnelConnector::new("udp://[::1]:31015".parse().unwrap());
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ipv6_domain_pingpong() {
+        let listener = UdpTunnelListener::new("udp://[::1]:31016".parse().unwrap());
+        let mut connector =
+            UdpTunnelConnector::new("udp://test.kkrainbow.top:31016".parse().unwrap());
+        connector.set_ip_version(IpVersion::V6);
+        _tunnel_pingpong(listener, connector).await;
+
+        let listener = UdpTunnelListener::new("udp://127.0.0.1:31016".parse().unwrap());
+        let mut connector =
+            UdpTunnelConnector::new("udp://test.kkrainbow.top:31016".parse().unwrap());
+        connector.set_ip_version(IpVersion::V4);
+        _tunnel_pingpong(listener, connector).await;
     }
 }
