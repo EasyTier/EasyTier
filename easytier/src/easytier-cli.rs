@@ -10,7 +10,6 @@ mod arch;
 mod common;
 mod rpc;
 mod tunnel;
-mod tunnels;
 mod utils;
 
 use crate::{

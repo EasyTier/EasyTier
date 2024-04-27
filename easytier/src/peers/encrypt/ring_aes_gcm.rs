@@ -137,7 +137,7 @@ impl Encryptor for AesGcmCipher {
 mod tests {
     use crate::{
         peers::encrypt::{ring_aes_gcm::AesGcmCipher, Encryptor},
-        tunnel::packet_def::{ZCPacket, ZCPacketType, AES_GCM_ENCRYPTION_RESERVED},
+        tunnel::packet_def::{ZCPacket, AES_GCM_ENCRYPTION_RESERVED},
     };
 
     #[test]

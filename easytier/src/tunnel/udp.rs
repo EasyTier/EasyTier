@@ -626,7 +626,10 @@ impl UdpTunnelConnector {
         )
         .await??;
 
-        socket.connect(recv_addr).await?;
+        if recv_addr != addr {
+            tracing::debug!(?recv_addr, ?addr, "udp connect addr not match");
+        }
+
         self.build_tunnel(socket, addr, conn_id).await
     }
 

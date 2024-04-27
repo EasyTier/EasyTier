@@ -8,7 +8,7 @@ use tokio::{select, sync::mpsc, task::JoinHandle};
 use tracing::Instrument;
 
 use super::{
-    zc_peer_conn::{PeerConn, PeerConnId},
+    peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
 use crate::rpc::PeerConnInfo;
@@ -175,7 +175,7 @@ mod tests {
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, new_peer_id},
-        peers::zc_peer_conn::PeerConn,
+        peers::peer_conn::PeerConn,
         tunnel::ring::create_ring_tunnel_pair,
     };
 

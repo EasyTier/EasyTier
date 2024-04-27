@@ -26,8 +26,10 @@ use tracing::Level;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
     peers::{peer_manager::PeerManager, PeerPacketFilter},
-    tunnel::packet_def::{PacketType, ZCPacket},
-    tunnels::common::setup_sokcet2,
+    tunnel::{
+        common::setup_sokcet2,
+        packet_def::{PacketType, ZCPacket},
+    },
 };
 
 use super::CidrSet;

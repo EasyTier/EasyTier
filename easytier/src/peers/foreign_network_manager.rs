@@ -26,9 +26,9 @@ use crate::{
 };
 
 use super::{
+    peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
-    zc_peer_conn::PeerConn,
     PacketRecvChan, PacketRecvChanReceiver,
 };
 

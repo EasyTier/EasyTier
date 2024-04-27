@@ -6,6 +6,7 @@ use std::{
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
     tunnel::{
+        check_scheme_and_get_socket_addr,
         quic::QUICTunnelConnector,
         ring::RingTunnelConnector,
         tcp::TcpTunnelConnector,
@@ -50,8 +51,7 @@ pub async fn create_connector_by_url(
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
     match url.scheme() {
         "tcp" => {
-            let dst_addr =
-                crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "tcp")?;
+            let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "tcp")?;
             let mut connector = TcpTunnelConnector::new(url);
             set_bind_addr_for_peer_connector(
                 &mut connector,
@@ -62,8 +62,7 @@ pub async fn create_connector_by_url(
             return Ok(Box::new(connector));
         }
         "udp" => {
-            let dst_addr =
-                crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "udp")?;
+            let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "udp")?;
             let mut connector = UdpTunnelConnector::new(url);
             set_bind_addr_for_peer_connector(
                 &mut connector,
@@ -74,13 +73,12 @@ pub async fn create_connector_by_url(
             return Ok(Box::new(connector));
         }
         "ring" => {
-            crate::tunnels::check_scheme_and_get_socket_addr::<uuid::Uuid>(&url, "ring")?;
+            check_scheme_and_get_socket_addr::<uuid::Uuid>(&url, "ring")?;
             let connector = RingTunnelConnector::new(url);
             return Ok(Box::new(connector));
         }
         "quic" => {
-            let dst_addr =
-                crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic")?;
+            let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic")?;
             let mut connector = QUICTunnelConnector::new(url);
             set_bind_addr_for_peer_connector(
                 &mut connector,
@@ -91,8 +89,7 @@ pub async fn create_connector_by_url(
             return Ok(Box::new(connector));
         }
         "wg" => {
-            let dst_addr =
-                crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
+            let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
             let nid = global_ctx.get_network_identity();
             let wg_config = WgConfig::new_from_network_identity(
                 &nid.network_name,
