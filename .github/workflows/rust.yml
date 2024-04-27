@@ -220,6 +220,8 @@ jobs:
       run: |
         sudo sysctl net.bridge.bridge-nf-call-iptables=0
         sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
+        sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
+        sudo ip addr add 2001:db8::2/64 dev lo
     - name: Cargo cache
       uses: actions/cache@v4.0.0
       with:

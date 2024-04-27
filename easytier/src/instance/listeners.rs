@@ -56,10 +56,16 @@ impl TunnelHandlerForListener for PeerManager {
     }
 }
 
+#[derive(Debug, Clone)]
+struct Listener {
+    inner: Arc<Mutex<dyn TunnelListener>>,
+    must_succ: bool,
+}
+
 pub struct ListenerManager<H> {
     global_ctx: ArcGlobalCtx,
     net_ns: NetNS,
-    listeners: Vec<Arc<Mutex<dyn TunnelListener>>>,
+    listeners: Vec<Listener>,
     peer_manager: Arc<H>,
 
     tasks: JoinSet<()>,
@@ -77,27 +83,42 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
     }
 
     pub async fn prepare_listeners(&mut self) -> Result<(), Error> {
-        self.add_listener(RingTunnelListener::new(
-            format!("ring://{}", self.global_ctx.get_id())
-                .parse()
-                .unwrap(),
-        ))
+        self.add_listener(
+            RingTunnelListener::new(
+                format!("ring://{}", self.global_ctx.get_id())
+                    .parse()
+                    .unwrap(),
+            ),
+            true,
+        )
         .await?;
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
             let lis = get_listener_by_url(l, self.global_ctx.clone())?;
-            self.add_listener(lis).await?;
+            self.add_listener(lis, true).await?;
+        }
+
+        if self.global_ctx.config.get_flags().enable_ipv6 {
+            let _ = self
+                .add_listener(
+                    UdpTunnelListener::new("udp://[::]:0".parse().unwrap()),
+                    false,
+                )
+                .await?;
         }
 
         Ok(())
     }
 
-    pub async fn add_listener<Listener>(&mut self, listener: Listener) -> Result<(), Error>
+    pub async fn add_listener<L>(&mut self, listener: L, must_succ: bool) -> Result<(), Error>
     where
-        Listener: TunnelListener + 'static,
+        L: TunnelListener + 'static,
     {
         let listener = Arc::new(Mutex::new(listener));
-        self.listeners.push(listener);
+        self.listeners.push(Listener {
+            inner: listener,
+            must_succ,
+        });
         Ok(())
     }
 
@@ -136,16 +157,17 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
     pub async fn run(&mut self) -> Result<(), Error> {
         for listener in &self.listeners {
             let _guard = self.net_ns.guard();
-            let addr = listener.lock().await.local_url();
+            let addr = listener.inner.lock().await.local_url();
             log::warn!("run listener: {:?}", listener);
             listener
+                .inner
                 .lock()
                 .await
                 .listen()
                 .await
                 .with_context(|| format!("failed to add listener {}", addr))?;
             self.tasks.spawn(Self::run_listener(
-                listener.clone(),
+                listener.inner.clone(),
                 self.peer_manager.clone(),
                 self.global_ctx.clone(),
             ));
@@ -190,7 +212,7 @@ mod tests {
         let ring_id = format!("ring://{}", uuid::Uuid::new_v4());
 
         listener_mgr
-            .add_listener(RingTunnelListener::new(ring_id.parse().unwrap()))
+            .add_listener(RingTunnelListener::new(ring_id.parse().unwrap()), true)
             .await
             .unwrap();
         listener_mgr.run().await.unwrap();

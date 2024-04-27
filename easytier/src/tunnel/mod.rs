@@ -83,7 +83,7 @@ pub trait TunnelConnCounter: 'static + Send + Sync + Debug {
     fn get(&self) -> u32;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum IpVersion {
     V4,
     V6,
