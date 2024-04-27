@@ -45,6 +45,10 @@ impl TunnelListener for TcpTunnelListener {
         // socket.set_reuseport(true)?;
         socket.bind(addr)?;
 
+        self.addr
+            .set_port(Some(socket.local_addr()?.port()))
+            .unwrap();
+
         self.listener = Some(socket.listen(1024)?);
         Ok(())
     }
@@ -231,5 +235,20 @@ mod tests {
             TcpTunnelConnector::new("tcp://test.kkrainbow.top:31015".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
+    }
+
+    #[tokio::test]
+    async fn test_alloc_port() {
+        // v4
+        let mut listener = TcpTunnelListener::new("tcp://0.0.0.0:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
+
+        // v6
+        let mut listener = TcpTunnelListener::new("tcp://[::]:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
     }
 }

@@ -120,6 +120,11 @@ impl TunnelListener for QUICTunnelListener {
         let (endpoint, server_cert) = make_server_endpoint(addr).unwrap();
         self.endpoint = Some(endpoint);
         self.server_cert = Some(server_cert);
+
+        self.addr
+            .set_port(Some(self.endpoint.as_ref().unwrap().local_addr()?.port()))
+            .unwrap();
+
         Ok(())
     }
 
@@ -266,5 +271,20 @@ mod tests {
             QUICTunnelConnector::new("quic://test.kkrainbow.top:31016".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
+    }
+
+    #[tokio::test]
+    async fn test_alloc_port() {
+        // v4
+        let mut listener = QUICTunnelListener::new("quic://0.0.0.0:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
+
+        // v6
+        let mut listener = QUICTunnelListener::new("quic://[::]:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
     }
 }

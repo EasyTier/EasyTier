@@ -388,6 +388,10 @@ impl TunnelListener for UdpTunnelListener {
         self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
         self.data.socket = self.socket.clone();
 
+        self.addr
+            .set_port(Some(self.socket.as_ref().unwrap().local_addr()?.port()))
+            .unwrap();
+
         self.forward_tasks
             .lock()
             .unwrap()
@@ -883,5 +887,20 @@ mod tests {
             UdpTunnelConnector::new("udp://test.kkrainbow.top:31016".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
+    }
+
+    #[tokio::test]
+    async fn test_alloc_port() {
+        // v4
+        let mut listener = UdpTunnelListener::new("udp://0.0.0.0:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
+
+        // v6
+        let mut listener = UdpTunnelListener::new("udp://[::]:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
     }
 }

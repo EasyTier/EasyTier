@@ -537,6 +537,10 @@ impl TunnelListener for WgTunnelListener {
         }
 
         self.udp = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
+        self.addr
+            .set_port(Some(self.udp.as_ref().unwrap().local_addr()?.port()))
+            .unwrap();
+
         self.tasks.spawn(Self::handle_udp_incoming(
             self.get_udp_socket(),
             self.config.clone(),
@@ -867,5 +871,22 @@ pub mod tests {
             WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
+    }
+
+    #[tokio::test]
+    async fn test_alloc_port() {
+        // v4
+        let (server_cfg, _client_cfg) = create_wg_config();
+        let mut listener = WgTunnelListener::new("wg://0.0.0.0:0".parse().unwrap(), server_cfg);
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
+
+        // v6
+        let (server_cfg, _client_cfg) = create_wg_config();
+        let mut listener = WgTunnelListener::new("wg://[::]:0".parse().unwrap(), server_cfg);
+        listener.listen().await.unwrap();
+        let port = listener.local_url().port().unwrap();
+        assert!(port > 0);
     }
 }
