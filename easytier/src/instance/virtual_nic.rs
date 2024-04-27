@@ -13,7 +13,7 @@ use crate::{
     },
     tunnel::{
         common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
-        packet_def::{ZCPacket, ZCPacketType},
+        packet_def::{ZCPacket, ZCPacketType, TAIL_RESERVED_SIZE},
         StreamItem, Tunnel, TunnelError,
     },
 };
@@ -70,18 +70,17 @@ impl Stream for TunStream {
 
         let ret = ready!(g.as_pin_mut().poll_read(cx, &mut buf));
         let len = buf.filled().len();
-        unsafe { self_mut.cur_buf.advance_mut(len) };
+        if len == 0 {
+            return Poll::Ready(None);
+        }
+        unsafe { self_mut.cur_buf.advance_mut(len + TAIL_RESERVED_SIZE) };
+
+        let mut ret_buf = self_mut.cur_buf.split();
+        let cur_len = ret_buf.len();
+        ret_buf.truncate(cur_len - TAIL_RESERVED_SIZE);
 
         match ret {
-            Ok(_) => {
-                if len == 0 {
-                    return Poll::Ready(None);
-                }
-                Poll::Ready(Some(Ok(ZCPacket::new_from_buf(
-                    self_mut.cur_buf.split(),
-                    ZCPacketType::NIC,
-                ))))
-            }
+            Ok(_) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC)))),
             Err(err) => {
                 println!("tun stream error: {:?}", err);
                 Poll::Ready(None)

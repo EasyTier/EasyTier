@@ -1,4 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::collections::hash_map::DefaultHasher;
+use std::{
+    hash::Hasher,
+    sync::{Arc, Mutex},
+};
 
 use crate::rpc::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
@@ -202,6 +206,23 @@ impl GlobalCtx {
 
     pub fn get_flags(&self) -> Flags {
         self.config.get_flags()
+    }
+
+    pub fn get_128_key(&self) -> [u8; 16] {
+        let mut key = [0u8; 16];
+        let secret = self
+            .config
+            .get_network_identity()
+            .network_secret
+            .unwrap_or_default();
+        // fill key according to network secret
+        let mut hasher = DefaultHasher::new();
+        hasher.write(secret.as_bytes());
+        key[0..8].copy_from_slice(&hasher.finish().to_be_bytes());
+        hasher.write(&key[0..8]);
+        key[8..16].copy_from_slice(&hasher.finish().to_be_bytes());
+        hasher.write(&key[0..16]);
+        key
     }
 }
 

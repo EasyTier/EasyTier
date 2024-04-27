@@ -24,8 +24,9 @@ use zerocopy::AsBytes;
 
 use crate::{
     common::{
+        config::{NetworkIdentity, NetworkSecretDigest},
         error::Error,
-        global_ctx::{ArcGlobalCtx, NetworkIdentity},
+        global_ctx::ArcGlobalCtx,
         PeerId,
     },
     peers::packet::PacketType,
@@ -129,10 +130,17 @@ impl PeerConn {
             ));
         };
         let rsp = rsp?;
-        let rsp = HandshakeRequest::decode(rsp.payload())
-            .map_err(|e| Error::WaitRespError(format!("decode handshake response error: {:?}", e)));
+        let rsp = HandshakeRequest::decode(rsp.payload()).map_err(|e| {
+            Error::WaitRespError(format!("decode handshake response error: {:?}", e))
+        })?;
 
-        return Ok(rsp.unwrap());
+        if rsp.network_secret_digrest.len() != std::mem::size_of::<NetworkSecretDigest>() {
+            return Err(Error::WaitRespError(
+                "invalid network secret digest".to_owned(),
+            ));
+        }
+
+        return Ok(rsp);
     }
 
     async fn wait_handshake_loop(&mut self) -> Result<HandshakeRequest, Error> {
@@ -152,14 +160,16 @@ impl PeerConn {
 
     async fn send_handshake(&mut self) -> Result<(), Error> {
         let network = self.global_ctx.get_network_identity();
-        let req = HandshakeRequest {
+        let mut req = HandshakeRequest {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
             features: Vec::new(),
             network_name: network.network_name.clone(),
-            network_secret: network.network_secret.clone(),
+            ..Default::default()
         };
+        req.network_secret_digrest
+            .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
 
         let hs_req = req.encode_to_vec();
         let mut zc_packet = ZCPacket::new_with_payload(hs_req.as_bytes());
@@ -297,10 +307,16 @@ impl PeerConn {
 
     pub fn get_network_identity(&self) -> NetworkIdentity {
         let info = self.info.as_ref().unwrap();
-        NetworkIdentity {
+        let mut ret = NetworkIdentity {
             network_name: info.network_name.clone(),
-            network_secret: info.network_secret.clone(),
-        }
+            ..Default::default()
+        };
+        ret.network_secret_digest = Some([0u8; 32]);
+        ret.network_secret_digest
+            .as_mut()
+            .unwrap()
+            .copy_from_slice(&info.network_secret_digrest);
+        ret
     }
 
     pub fn set_close_event_sender(&mut self, sender: mpsc::Sender<PeerConnId>) {

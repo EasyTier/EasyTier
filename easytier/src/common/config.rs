@@ -6,6 +6,8 @@ use std::{
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
+use crate::tunnel::generate_digest_from_str;
+
 #[auto_impl::auto_impl(Box, &)]
 pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
@@ -52,17 +54,49 @@ pub trait ConfigLoader: Send + Sync {
     fn dump(&self) -> String;
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub type NetworkSecretDigest = [u8; 32];
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct NetworkIdentity {
     pub network_name: String,
-    pub network_secret: String,
+    pub network_secret: Option<String>,
+    #[serde(skip)]
+    pub network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+impl PartialEq for NetworkIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        if self.network_name != other.network_name {
+            return false;
+        }
+
+        if self.network_secret.is_some()
+            && other.network_secret.is_some()
+            && self.network_secret != other.network_secret
+        {
+            return false;
+        }
+
+        if self.network_secret_digest.is_some()
+            && other.network_secret_digest.is_some()
+            && self.network_secret_digest != other.network_secret_digest
+        {
+            return false;
+        }
+
+        return true;
+    }
 }
 
 impl NetworkIdentity {
     pub fn new(network_name: String, network_secret: String) -> Self {
+        let mut network_secret_digest = [0u8; 32];
+        generate_digest_from_str(&network_name, &network_secret, &mut network_secret_digest);
+
         NetworkIdentity {
             network_name,
-            network_secret,
+            network_secret: Some(network_secret),
+            network_secret_digest: Some(network_secret_digest),
         }
     }
 
@@ -106,6 +140,8 @@ pub struct VpnPortalConfig {
 pub struct Flags {
     #[derivative(Default(value = "\"tcp\".to_string()"))]
     pub default_protocol: String,
+    #[derivative(Default(value = "true"))]
+    pub enable_encryption: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

@@ -10,6 +10,7 @@ use dashmap::DashMap;
 use futures::StreamExt;
 use pnet::packet::ipv4::Ipv4Packet;
 use tokio::task::JoinSet;
+use tracing::Level;
 
 use crate::{
     common::{
@@ -31,7 +32,11 @@ use super::VpnPortal;
 type WgPeerIpTable = Arc<DashMap<Ipv4Addr, Arc<ClientEntry>>>;
 
 pub(crate) fn get_wg_config_for_portal(nid: &NetworkIdentity) -> WgConfig {
-    let key_seed = format!("{}{}", nid.network_name, nid.network_secret);
+    let key_seed = format!(
+        "{}{}",
+        nid.network_name,
+        nid.network_secret.as_ref().unwrap_or(&"".to_string())
+    );
     WgConfig::new_for_portal(&key_seed, &key_seed)
 }
 
@@ -166,6 +171,7 @@ impl WireGuardImpl {
             .await;
     }
 
+    #[tracing::instrument(skip(self), err(level = Level::WARN))]
     async fn start(&self) -> anyhow::Result<()> {
         let mut l = WgTunnelListener::new(
             format!("wg://{}", self.listenr_addr).parse().unwrap(),

@@ -47,6 +47,9 @@ pub enum Error {
 
     #[error("message decode error: {0}")]
     MessageDecodeError(String),
+
+    #[error("secret key error: {0}")]
+    SecretKeyError(String),
 }
 
 pub type Result<T> = result::Result<T, Error>;
