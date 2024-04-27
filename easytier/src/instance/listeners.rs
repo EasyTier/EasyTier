@@ -30,8 +30,10 @@ pub fn get_listener_by_url(
         "udp" => Box::new(UdpTunnelListener::new(l.clone())),
         "wg" => {
             let nid = ctx.get_network_identity();
-            let wg_config =
-                WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
+            let wg_config = WgConfig::new_from_network_identity(
+                &nid.network_name,
+                &nid.network_secret.unwrap_or_default(),
+            );
             Box::new(WgTunnelListener::new(l.clone(), wg_config))
         }
         "quic" => Box::new(QUICTunnelListener::new(l.clone())),

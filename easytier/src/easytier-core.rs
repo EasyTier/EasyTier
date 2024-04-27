@@ -144,10 +144,10 @@ impl From<Cli> for TomlConfigLoader {
     fn from(cli: Cli) -> Self {
         let cfg = TomlConfigLoader::default();
         cfg.set_inst_name(cli.instance_name.clone());
-        cfg.set_network_identity(NetworkIdentity {
-            network_name: cli.network_name.clone(),
-            network_secret: cli.network_secret.clone(),
-        });
+        cfg.set_network_identity(NetworkIdentity::new(
+            cli.network_name.clone(),
+            cli.network_secret.clone(),
+        ));
 
         cfg.set_netns(cli.net_ns.clone());
         if let Some(ipv4) = &cli.ipv4 {

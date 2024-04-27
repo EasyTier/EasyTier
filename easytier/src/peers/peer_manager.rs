@@ -246,6 +246,15 @@ impl PeerManager {
         }
     }
 
+    async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
+        if self.global_ctx.get_network_identity() != peer_conn.get_network_identity() {
+            return Err(Error::SecretKeyError(
+                "network identity not match".to_string(),
+            ));
+        }
+        Ok(self.peers.add_new_peer_conn(peer_conn).await)
+    }
+
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,
@@ -254,8 +263,10 @@ impl PeerManager {
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
-        if peer.get_network_identity() == self.global_ctx.get_network_identity() {
-            self.peers.add_new_peer_conn(peer).await;
+        if peer.get_network_identity().network_name
+            == self.global_ctx.get_network_identity().network_name
+        {
+            self.add_new_peer_conn(peer).await?;
         } else {
             self.foreign_network_client.add_new_peer_conn(peer).await;
         }
@@ -279,8 +290,10 @@ impl PeerManager {
         tracing::info!("add tunnel as server start");
         let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_server().await?;
-        if peer.get_network_identity() == self.global_ctx.get_network_identity() {
-            self.peers.add_new_peer_conn(peer).await;
+        if peer.get_network_identity().network_name
+            == self.global_ctx.get_network_identity().network_name
+        {
+            self.add_new_peer_conn(peer).await?;
         } else {
             self.foreign_network_manager.add_peer_conn(peer).await?;
         }

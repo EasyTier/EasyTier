@@ -94,8 +94,10 @@ pub async fn create_connector_by_url(
             let dst_addr =
                 crate::tunnels::check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
             let nid = global_ctx.get_network_identity();
-            let wg_config =
-                WgConfig::new_from_network_identity(&nid.network_name, &nid.network_secret);
+            let wg_config = WgConfig::new_from_network_identity(
+                &nid.network_name,
+                &nid.network_secret.unwrap_or_default(),
+            );
             let mut connector = WgTunnelConnector::new(url, wg_config);
             set_bind_addr_for_peer_connector(
                 &mut connector,

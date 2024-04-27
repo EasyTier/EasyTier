@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::{net::SocketAddr, pin::Pin, sync::Arc};
 
 use async_trait::async_trait;
@@ -195,5 +197,19 @@ impl TunnelUrl {
                 Some(String::from_utf8(percent_encoding::percent_decode_str(&s).collect()).unwrap())
             }
         })
+    }
+}
+
+pub fn generate_digest_from_str(str1: &str, str2: &str, digest: &mut [u8]) {
+    let mut hasher = DefaultHasher::new();
+    hasher.write(str1.as_bytes());
+    hasher.write(str2.as_bytes());
+
+    assert_eq!(digest.len() % 8, 0, "digest length must be multiple of 8");
+
+    let shard_count = digest.len() / 8;
+    for i in 0..shard_count {
+        digest[i * 8..(i + 1) * 8].copy_from_slice(&hasher.finish().to_be_bytes());
+        hasher.write(&digest[..(i + 1) * 8]);
     }
 }

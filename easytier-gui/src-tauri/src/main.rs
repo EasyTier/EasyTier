@@ -71,10 +71,10 @@ impl NetworkConfig {
                 .with_context(|| format!("failed to parse instance id: {}", self.instance_id))?,
         );
         cfg.set_inst_name(self.network_name.clone());
-        cfg.set_network_identity(NetworkIdentity {
-            network_name: self.network_name.clone(),
-            network_secret: self.network_secret.clone(),
-        });
+        cfg.set_network_identity(NetworkIdentity::new(
+            self.network_name.clone(),
+            self.network_secret.clone(),
+        ));
 
         if self.virtual_ipv4.len() > 0 {
             cfg.set_ipv4(

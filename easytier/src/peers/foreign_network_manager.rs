@@ -212,8 +212,13 @@ impl ForeignNetworkManager {
             peer_conn.get_network_identity().network_name.clone(),
         );
 
-        if entry.network.network_secret != peer_conn.get_network_identity().network_secret {
-            return Err(anyhow::anyhow!("network secret not match").into());
+        if entry.network != peer_conn.get_network_identity() {
+            return Err(anyhow::anyhow!(
+                "network secret not match. exp: {:?} real: {:?}",
+                entry.network,
+                peer_conn.get_network_identity()
+            )
+            .into());
         }
 
         Ok(entry.peer_map.add_new_peer_conn(peer_conn).await)
@@ -337,10 +342,10 @@ mod tests {
         let (s, _r) = tokio::sync::mpsc::channel(1000);
         let peer_mgr = Arc::new(PeerManager::new(
             RouteAlgoType::Ospf,
-            get_mock_global_ctx_with_network(Some(NetworkIdentity {
-                network_name: network.to_string(),
-                network_secret: network.to_string(),
-            })),
+            get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+                network.to_string(),
+                network.to_string(),
+            ))),
             s,
         ));
         replace_stun_info_collector(peer_mgr.clone(), NatType::Unknown);

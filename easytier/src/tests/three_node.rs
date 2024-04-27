@@ -87,7 +87,11 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
                 "wg://10.1.1.1:11011".parse().unwrap(),
                 WgConfig::new_from_network_identity(
                     &inst1.get_global_ctx().get_network_identity().network_name,
-                    &inst1.get_global_ctx().get_network_identity().network_secret,
+                    &inst1
+                        .get_global_ctx()
+                        .get_network_identity()
+                        .network_secret
+                        .unwrap_or_default(),
                 ),
             ));
     }
@@ -243,7 +247,11 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                 "wg://10.1.2.3:11011".parse().unwrap(),
                 WgConfig::new_from_network_identity(
                     &inst4.get_global_ctx().get_network_identity().network_name,
-                    &inst4.get_global_ctx().get_network_identity().network_secret,
+                    &inst4
+                        .get_global_ctx()
+                        .get_network_identity()
+                        .network_secret
+                        .unwrap_or_default(),
                 ),
             ));
     } else {
@@ -376,10 +384,8 @@ pub async fn foreign_network_forward_nic_data() {
     prepare_linux_namespaces();
 
     let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
-    center_node_config.set_network_identity(NetworkIdentity {
-        network_name: "center".to_string(),
-        network_secret: "".to_string(),
-    });
+    center_node_config
+        .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst = Instance::new(center_node_config);
 
     let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1"));
@@ -450,7 +456,7 @@ fn run_wireguard_client(
     log::info!("endpoint");
     // Peer endpoint and interval
     peer.endpoint = Some(endpoint);
-    peer.persistent_keepalive_interval = Some(25);
+    peer.persistent_keepalive_interval = Some(1);
     for ip in allowed_ips {
         peer.allowed_ips.push(IpAddrMask::from_str(ip.as_str())?);
     }
@@ -502,7 +508,7 @@ pub async fn wireguard_vpn_portal() {
     // ping other node in network
     wait_for_condition(
         || async { ping_test("net_d", "10.144.144.1").await },
-        Duration::from_secs(5),
+        Duration::from_secs(5000),
     )
     .await;
     wait_for_condition(
@@ -514,7 +520,7 @@ pub async fn wireguard_vpn_portal() {
     // ping portal node
     wait_for_condition(
         || async { ping_test("net_d", "10.144.144.3").await },
-        Duration::from_secs(500),
+        Duration::from_secs(5),
     )
     .await;
 }

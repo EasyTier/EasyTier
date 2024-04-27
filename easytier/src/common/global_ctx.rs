@@ -210,7 +210,11 @@ impl GlobalCtx {
 
     pub fn get_128_key(&self) -> [u8; 16] {
         let mut key = [0u8; 16];
-        let secret = self.config.get_network_identity().network_secret;
+        let secret = self
+            .config
+            .get_network_identity()
+            .network_secret
+            .unwrap_or_default();
         // fill key according to network secret
         let mut hasher = DefaultHasher::new();
         hasher.write(secret.as_bytes());

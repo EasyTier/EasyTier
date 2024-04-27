@@ -1,7 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
     fmt::{Debug, Formatter},
-    hash::Hasher,
     net::SocketAddr,
     pin::Pin,
     sync::{atomic::AtomicBool, Arc},
@@ -33,6 +31,7 @@ use crate::{
 use super::{
     check_scheme_and_get_socket_addr,
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    generate_digest_from_str,
     packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
     ring::create_ring_tunnel_pair,
     Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
@@ -62,16 +61,7 @@ pub struct WgConfig {
 impl WgConfig {
     pub fn new_from_network_identity(network_name: &str, network_secret: &str) -> Self {
         let mut my_sec = [0u8; 32];
-        let mut hasher = DefaultHasher::new();
-        hasher.write(network_name.as_bytes());
-        hasher.write(network_secret.as_bytes());
-        my_sec[0..8].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&my_sec[0..8]);
-        my_sec[8..16].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&my_sec[0..16]);
-        my_sec[16..24].copy_from_slice(&hasher.finish().to_be_bytes());
-        hasher.write(&my_sec[0..24]);
-        my_sec[24..32].copy_from_slice(&hasher.finish().to_be_bytes());
+        generate_digest_from_str(network_name, network_secret, &mut my_sec);
 
         let my_secret_key = StaticSecret::from(my_sec);
         let my_public_key = PublicKey::from(&my_secret_key);
@@ -491,6 +481,7 @@ impl WgTunnelListener {
 
         let mut buf = vec![0u8; MAX_PACKET];
         loop {
+            tracing::info!("Waiting for incoming UDP packet");
             let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
                 tracing::error!("Failed to receive from UDP socket");
                 break;
