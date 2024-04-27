@@ -142,6 +142,8 @@ pub struct Flags {
     pub default_protocol: String,
     #[derivative(Default(value = "true"))]
     pub enable_encryption: bool,
+    #[derivative(Default(value = "true"))]
+    pub enable_ipv6: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

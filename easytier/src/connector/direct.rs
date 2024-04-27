@@ -1,6 +1,6 @@
 // try connect peers directly, with either its public ip or lan ip
 
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
@@ -10,6 +10,7 @@ use crate::{
 use crate::rpc::{peer::GetIpListResponse, PeerConnInfo};
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
+use url::Host;
 
 use super::create_connector_by_url;
 
@@ -230,17 +231,19 @@ impl DirectConnectorManager {
         dst_peer_id: PeerId,
         ip_list: GetIpListResponse,
     ) -> Result<(), Error> {
+        let enable_ipv6 = data.global_ctx.get_flags().enable_ipv6;
         let available_listeners = ip_list
             .listeners
             .iter()
             .filter_map(|l| if l.scheme() != "ring" { Some(l) } else { None })
-            .filter(|l| l.port().is_some())
+            .filter(|l| l.port().is_some() && l.host().is_some())
             .filter(|l| {
                 !data.dst_sceme_blacklist.contains(&DstSchemeBlackListItem(
                     dst_peer_id.clone(),
                     l.scheme().to_string(),
                 ))
             })
+            .filter(|l| enable_ipv6 || !matches!(l.host().unwrap().to_owned(), Host::Ipv6(_)))
             .collect::<Vec<_>>();
 
         let mut listener = available_listeners.get(0).ok_or(anyhow::anyhow!(
@@ -255,31 +258,58 @@ impl DirectConnectorManager {
             .unwrap_or(listener);
 
         let mut tasks = JoinSet::new();
-        ip_list.interface_ipv4s.iter().for_each(|ip| {
-            let addr = format!(
-                "{}://{}:{}",
-                listener.scheme(),
-                ip,
-                listener.port().unwrap_or(11010)
-            );
-            tasks.spawn(Self::try_connect_to_ip(
-                data.clone(),
-                dst_peer_id.clone(),
-                addr,
-            ));
-        });
 
-        let addr = format!(
-            "{}://{}:{}",
-            listener.scheme(),
-            ip_list.public_ipv4.clone(),
-            listener.port().unwrap_or(11010)
-        );
-        tasks.spawn(Self::try_connect_to_ip(
-            data.clone(),
-            dst_peer_id.clone(),
-            addr,
-        ));
+        let listener_host = listener.socket_addrs(|| None).unwrap().pop();
+        match listener_host {
+            Some(SocketAddr::V4(_)) => {
+                ip_list.interface_ipv4s.iter().for_each(|ip| {
+                    let mut addr = (*listener).clone();
+                    if addr.set_host(Some(ip.as_str())).is_ok() {
+                        tasks.spawn(Self::try_connect_to_ip(
+                            data.clone(),
+                            dst_peer_id.clone(),
+                            addr.to_string(),
+                        ));
+                    }
+                });
+
+                let mut addr = (*listener).clone();
+                if addr.set_host(Some(ip_list.public_ipv4.as_str())).is_ok() {
+                    tasks.spawn(Self::try_connect_to_ip(
+                        data.clone(),
+                        dst_peer_id.clone(),
+                        addr.to_string(),
+                    ));
+                }
+            }
+            Some(SocketAddr::V6(_)) => {
+                ip_list.interface_ipv6s.iter().for_each(|ip| {
+                    let mut addr = (*listener).clone();
+                    if addr.set_host(Some(format!("[{}]", ip).as_str())).is_ok() {
+                        tasks.spawn(Self::try_connect_to_ip(
+                            data.clone(),
+                            dst_peer_id.clone(),
+                            addr.to_string(),
+                        ));
+                    }
+                });
+
+                let mut addr = (*listener).clone();
+                if addr
+                    .set_host(Some(format!("[{}]", ip_list.public_ipv6).as_str()))
+                    .is_ok()
+                {
+                    tasks.spawn(Self::try_connect_to_ip(
+                        data.clone(),
+                        dst_peer_id.clone(),
+                        addr.to_string(),
+                    ));
+                }
+            }
+            p => {
+                tracing::error!(?p, ?listener, "failed to parse ip version from listener");
+            }
+        }
 
         let mut has_succ = false;
         while let Some(ret) = tasks.join_next().await {
@@ -351,7 +381,14 @@ mod tests {
 
     #[rstest::rstest]
     #[tokio::test]
-    async fn direct_connector_basic_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    async fn direct_connector_basic_test(
+        #[values("tcp", "udp", "wg")] proto: &str,
+        #[values("true", "false")] ipv6: bool,
+    ) {
+        if ipv6 && proto != "udp" {
+            return;
+        }
+
         let p_a = create_mock_peer_manager().await;
         let p_b = create_mock_peer_manager().await;
         let p_c = create_mock_peer_manager().await;
@@ -366,12 +403,18 @@ mod tests {
         dm_a.run_as_client();
         dm_c.run_as_server();
 
-        let port = if proto == "wg" { 11040 } else { 11041 };
-        p_c.get_global_ctx()
-            .config
-            .set_listeners(vec![format!("{}://0.0.0.0:{}", proto, port)
-                .parse()
-                .unwrap()]);
+        if !ipv6 {
+            let port = if proto == "wg" { 11040 } else { 11041 };
+            p_c.get_global_ctx().config.set_listeners(vec![format!(
+                "{}://0.0.0.0:{}",
+                proto, port
+            )
+            .parse()
+            .unwrap()]);
+        }
+        let mut f = p_c.get_global_ctx().config.get_flags();
+        f.enable_ipv6 = ipv6;
+        p_c.get_global_ctx().config.set_flags(f);
         let mut lis_c = ListenerManager::new(p_c.get_global_ctx(), p_c.clone());
         lis_c.prepare_listeners().await.unwrap();
 

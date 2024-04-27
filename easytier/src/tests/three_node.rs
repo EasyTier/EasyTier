@@ -508,7 +508,7 @@ pub async fn wireguard_vpn_portal() {
     // ping other node in network
     wait_for_condition(
         || async { ping_test("net_d", "10.144.144.1").await },
-        Duration::from_secs(5000),
+        Duration::from_secs(5),
     )
     .await;
     wait_for_condition(

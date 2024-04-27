@@ -137,6 +137,9 @@ and the vpn client is in network of 10.14.14.0/24"
         default_value = "false"
     )]
     multi_thread: bool,
+
+    #[arg(long, help = "do not use ipv6", default_value = "false")]
+    disable_ipv6: bool,
 }
 
 impl From<Cli> for TomlConfigLoader {
@@ -266,6 +269,7 @@ impl From<Cli> for TomlConfigLoader {
             f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
         }
         f.enable_encryption = !cli.disable_encryption;
+        f.enable_ipv6 = !cli.disable_ipv6;
         cfg.set_flags(f);
 
         cfg
