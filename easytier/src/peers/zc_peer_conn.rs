@@ -121,7 +121,9 @@ impl PeerConn {
         self.conn_id
     }
 
-    async fn wait_handshake(&mut self) -> Result<HandshakeRequest, Error> {
+    async fn wait_handshake(&mut self, need_retry: &mut bool) -> Result<HandshakeRequest, Error> {
+        *need_retry = false;
+
         let mut locked = self.recv.lock().await;
         let recv = locked.as_mut().unwrap();
         let Some(rsp) = recv.next().await else {
@@ -129,6 +131,9 @@ impl PeerConn {
                 "conn closed during wait handshake response".to_owned(),
             ));
         };
+
+        *need_retry = true;
+
         let rsp = rsp?;
         let rsp = HandshakeRequest::decode(rsp.payload()).map_err(|e| {
             Error::WaitRespError(format!("decode handshake response error: {:?}", e))
@@ -144,18 +149,22 @@ impl PeerConn {
     }
 
     async fn wait_handshake_loop(&mut self) -> Result<HandshakeRequest, Error> {
-        Ok(timeout(Duration::from_secs(5), async move {
+        timeout(Duration::from_secs(5), async move {
             loop {
-                match self.wait_handshake().await {
-                    Ok(rsp) => return rsp,
+                let mut need_retry = true;
+                match self.wait_handshake(&mut need_retry).await {
+                    Ok(rsp) => return Ok(rsp),
                     Err(e) => {
                         log::warn!("wait handshake error: {:?}", e);
+                        if !need_retry {
+                            return Err(e);
+                        }
                     }
                 }
             }
         })
         .map_err(|e| Error::WaitRespError(format!("wait handshake timeout: {:?}", e)))
-        .await?)
+        .await?
     }
 
     async fn send_handshake(&mut self) -> Result<(), Error> {
