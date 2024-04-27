@@ -34,7 +34,7 @@ use super::{
     generate_digest_from_str,
     packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
     ring::create_ring_tunnel_pair,
-    Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
+    IpVersion, Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
 };
 
 const MAX_PACKET: usize = 65500;
@@ -567,6 +567,7 @@ pub struct WgTunnelConnector {
     udp: Option<Arc<UdpSocket>>,
 
     bind_addrs: Vec<SocketAddr>,
+    ip_version: IpVersion,
 }
 
 impl Debug for WgTunnelConnector {
@@ -585,6 +586,7 @@ impl WgTunnelConnector {
             config,
             udp: None,
             bind_addrs: vec![],
+            ip_version: IpVersion::Both,
         }
     }
 
@@ -624,8 +626,8 @@ impl WgTunnelConnector {
         addr_url: url::Url,
         config: WgConfig,
         udp: UdpSocket,
+        addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&addr_url, "wg")?;
         tracing::warn!("wg connect: {:?}", addr);
         let local_addr = udp.local_addr().unwrap().to_string();
 
@@ -659,19 +661,42 @@ impl WgTunnelConnector {
 
         Ok(ret)
     }
+
+    async fn connect_with_ipv6(
+        &mut self,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+        let socket2_socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        setup_sokcet2_ext(&socket2_socket, &"[::]:0".parse().unwrap(), None)?;
+        let socket = UdpSocket::from_std(socket2_socket.into())?;
+        Self::connect_with_socket(self.addr.clone(), self.config.clone(), socket, addr).await
+    }
 }
 
 #[async_trait]
 impl super::TunnelConnector for WgTunnelConnector {
     #[tracing::instrument]
     async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+        let addr = super::check_scheme_and_get_socket_addr_ext::<SocketAddr>(
+            &self.addr,
+            "wg",
+            self.ip_version,
+        )?;
+
+        if addr.is_ipv6() {
+            return self.connect_with_ipv6(addr).await;
+        }
+
         let bind_addrs = if self.bind_addrs.is_empty() {
             vec!["0.0.0.0:0".parse().unwrap()]
         } else {
             self.bind_addrs.clone()
         };
         let futures = FuturesUnordered::new();
-
         for bind_addr in bind_addrs.into_iter() {
             let socket2_socket = socket2::Socket::new(
                 socket2::Domain::for_address(bind_addr),
@@ -685,6 +710,7 @@ impl super::TunnelConnector for WgTunnelConnector {
                 self.addr.clone(),
                 self.config.clone(),
                 socket,
+                addr,
             ));
         }
 
@@ -697,6 +723,10 @@ impl super::TunnelConnector for WgTunnelConnector {
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
     }
 }
 
@@ -812,5 +842,30 @@ pub mod tests {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         assert_eq!(0, listener.wg_peer_map.len());
+    }
+
+    #[tokio::test]
+    async fn ipv6_pingpong() {
+        let (server_cfg, client_cfg) = create_wg_config();
+        let listener = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
+        let connector = WgTunnelConnector::new("wg://[::1]:31015".parse().unwrap(), client_cfg);
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ipv6_domain_pingpong() {
+        let (server_cfg, client_cfg) = create_wg_config();
+        let listener = WgTunnelListener::new("wg://[::1]:31016".parse().unwrap(), server_cfg);
+        let mut connector =
+            WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
+        connector.set_ip_version(IpVersion::V6);
+        _tunnel_pingpong(listener, connector).await;
+
+        let (server_cfg, client_cfg) = create_wg_config();
+        let listener = WgTunnelListener::new("wg://127.0.0.1:31016".parse().unwrap(), server_cfg);
+        let mut connector =
+            WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
+        connector.set_ip_version(IpVersion::V4);
+        _tunnel_pingpong(listener, connector).await;
     }
 }

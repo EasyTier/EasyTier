@@ -7,9 +7,9 @@ use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use crate::{rpc::TunnelInfo, tunnel::common::setup_sokcet2};
 
 use super::{
-    check_scheme_and_get_socket_addr,
+    check_scheme_and_get_socket_addr, check_scheme_and_get_socket_addr_ext,
     common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
-    Tunnel, TunnelError, TunnelListener,
+    IpVersion, Tunnel, TunnelError, TunnelListener,
 };
 
 const TCP_MTU_BYTES: usize = 64 * 1024;
@@ -99,6 +99,7 @@ pub struct TcpTunnelConnector {
     addr: url::Url,
 
     bind_addrs: Vec<SocketAddr>,
+    ip_version: IpVersion,
 }
 
 impl TcpTunnelConnector {
@@ -106,33 +107,38 @@ impl TcpTunnelConnector {
         TcpTunnelConnector {
             addr,
             bind_addrs: vec![],
+            ip_version: IpVersion::Both,
         }
     }
 
-    async fn connect_with_default_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn connect_with_default_bind(
+        &mut self,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         tracing::info!(addr = ?self.addr, "connect tcp start");
-        let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
         let stream = TcpStream::connect(addr).await?;
         tracing::info!(addr = ?self.addr, "connect tcp succ");
         return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
     }
 
-    async fn connect_with_custom_bind(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn connect_with_custom_bind(
+        &mut self,
+        addr: SocketAddr,
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();
-        let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
 
         for bind_addr in self.bind_addrs.iter() {
-            tracing::info!(bind_addr = ?bind_addr, ?dst_addr, "bind addr");
+            tracing::info!(bind_addr = ?bind_addr, ?addr, "bind addr");
 
             let socket2_socket = socket2::Socket::new(
-                socket2::Domain::for_address(dst_addr),
+                socket2::Domain::for_address(addr),
                 socket2::Type::STREAM,
                 Some(socket2::Protocol::TCP),
             )?;
             setup_sokcet2(&socket2_socket, bind_addr)?;
 
             let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            futures.push(socket.connect(dst_addr.clone()));
+            futures.push(socket.connect(addr.clone()));
         }
 
         let ret = wait_for_connect_futures(futures).await;
@@ -143,18 +149,25 @@ impl TcpTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        if self.bind_addrs.is_empty() {
-            self.connect_with_default_bind().await
+        let addr =
+            check_scheme_and_get_socket_addr_ext::<SocketAddr>(&self.addr, "tcp", self.ip_version)?;
+        if self.bind_addrs.is_empty() || addr.is_ipv6() {
+            self.connect_with_default_bind(addr).await
         } else {
-            self.connect_with_custom_bind().await
+            self.connect_with_custom_bind(addr).await
         }
     }
 
     fn remote_url(&self) -> url::Url {
         self.addr.clone()
     }
+
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
     }
 }
 
@@ -196,5 +209,27 @@ mod tests {
         let mut connector = TcpTunnelConnector::new("tcp://127.0.0.1:11014".parse().unwrap());
         connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ipv6_pingpong() {
+        let listener = TcpTunnelListener::new("tcp://[::1]:31015".parse().unwrap());
+        let connector = TcpTunnelConnector::new("tcp://[::1]:31015".parse().unwrap());
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ipv6_domain_pingpong() {
+        let listener = TcpTunnelListener::new("tcp://[::1]:31015".parse().unwrap());
+        let mut connector =
+            TcpTunnelConnector::new("tcp://test.kkrainbow.top:31015".parse().unwrap());
+        connector.set_ip_version(IpVersion::V6);
+        _tunnel_pingpong(listener, connector).await;
+
+        let listener = TcpTunnelListener::new("tcp://127.0.0.1:31015".parse().unwrap());
+        let mut connector =
+            TcpTunnelConnector::new("tcp://test.kkrainbow.top:31015".parse().unwrap());
+        connector.set_ip_version(IpVersion::V4);
+        _tunnel_pingpong(listener, connector).await;
     }
 }

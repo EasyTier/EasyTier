@@ -6,13 +6,17 @@ use std::{error::Error, net::SocketAddr, sync::Arc};
 
 use crate::{
     rpc::TunnelInfo,
-    tunnel::common::{FramedReader, FramedWriter, TunnelWrapper},
+    tunnel::{
+        check_scheme_and_get_socket_addr_ext,
+        common::{FramedReader, FramedWriter, TunnelWrapper},
+    },
 };
 use anyhow::Context;
 use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
 
 use super::{
-    check_scheme_and_get_socket_addr, Tunnel, TunnelConnector, TunnelError, TunnelListener,
+    check_scheme_and_get_socket_addr, IpVersion, Tunnel, TunnelConnector, TunnelError,
+    TunnelListener,
 };
 
 /// Dummy certificate verifier that treats any certificate as valid.
@@ -153,6 +157,7 @@ impl TunnelListener for QUICTunnelListener {
 pub struct QUICTunnelConnector {
     addr: url::Url,
     endpoint: Option<Endpoint>,
+    ip_version: IpVersion,
 }
 
 impl QUICTunnelConnector {
@@ -160,6 +165,7 @@ impl QUICTunnelConnector {
         QUICTunnelConnector {
             addr,
             endpoint: None,
+            ip_version: IpVersion::Both,
         }
     }
 }
@@ -167,9 +173,18 @@ impl QUICTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for QUICTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic")?;
+        let addr = check_scheme_and_get_socket_addr_ext::<SocketAddr>(
+            &self.addr,
+            "quic",
+            self.ip_version,
+        )?;
+        let local_addr = if addr.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
 
-        let mut endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap())?;
+        let mut endpoint = Endpoint::client(local_addr.parse().unwrap())?;
         endpoint.set_default_client_config(configure_client());
 
         // connect to server
@@ -202,11 +217,18 @@ impl TunnelConnector for QUICTunnelConnector {
     fn remote_url(&self) -> url::Url {
         self.addr.clone()
     }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
+    use crate::tunnel::{
+        common::tests::{_tunnel_bench, _tunnel_pingpong},
+        IpVersion,
+    };
 
     use super::*;
 
@@ -222,5 +244,27 @@ mod tests {
         let listener = QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap());
         let connector = QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap());
         _tunnel_bench(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ipv6_pingpong() {
+        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap());
+        let connector = QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap());
+        _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn ipv6_domain_pingpong() {
+        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap());
+        let mut connector =
+            QUICTunnelConnector::new("quic://test.kkrainbow.top:31016".parse().unwrap());
+        connector.set_ip_version(IpVersion::V6);
+        _tunnel_pingpong(listener, connector).await;
+
+        let listener = QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap());
+        let mut connector =
+            QUICTunnelConnector::new("quic://test.kkrainbow.top:31016".parse().unwrap());
+        connector.set_ip_version(IpVersion::V4);
+        _tunnel_pingpong(listener, connector).await;
     }
 }

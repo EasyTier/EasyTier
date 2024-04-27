@@ -55,6 +55,9 @@ pub enum TunnelError {
     #[error("shutdown")]
     Shutdown,
 
+    #[error("no dns record found")]
+    NoDnsRecordFound(IpVersion),
+
     #[error("tunnel error: {0}")]
     TunError(String),
 }
@@ -78,6 +81,13 @@ pub trait Tunnel: Send {
 #[auto_impl::auto_impl(Arc)]
 pub trait TunnelConnCounter: 'static + Send + Sync + Debug {
     fn get(&self) -> u32;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum IpVersion {
+    V4,
+    V6,
+    Both,
 }
 
 #[async_trait]
@@ -104,6 +114,7 @@ pub trait TunnelConnector: Send {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
+    fn set_ip_version(&mut self, _ip_version: IpVersion) {}
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
@@ -135,9 +146,24 @@ impl std::fmt::Debug for dyn TunnelListener {
 }
 
 pub(crate) trait FromUrl {
-    fn from_url(url: url::Url) -> Result<Self, TunnelError>
+    fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError>
     where
         Self: Sized;
+}
+
+pub(crate) fn check_scheme_and_get_socket_addr_ext<T>(
+    url: &url::Url,
+    scheme: &str,
+    ip_version: IpVersion,
+) -> Result<T, TunnelError>
+where
+    T: FromUrl,
+{
+    if url.scheme() != scheme {
+        return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
+    }
+
+    Ok(T::from_url(url.clone(), ip_version)?)
 }
 
 pub(crate) fn check_scheme_and_get_socket_addr<T>(
@@ -151,17 +177,27 @@ where
         return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
     }
 
-    Ok(T::from_url(url.clone())?)
+    Ok(T::from_url(url.clone(), IpVersion::Both)?)
 }
 
 impl FromUrl for SocketAddr {
-    fn from_url(url: url::Url) -> Result<Self, TunnelError> {
-        Ok(url.socket_addrs(|| None)?.pop().unwrap())
+    fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
+        let addrs = url.socket_addrs(|| None)?;
+        tracing::debug!(?addrs, ?ip_version, ?url, "convert url to socket addrs");
+        let mut addrs = addrs
+            .into_iter()
+            .filter(|addr| match ip_version {
+                IpVersion::V4 => addr.is_ipv4(),
+                IpVersion::V6 => addr.is_ipv6(),
+                IpVersion::Both => true,
+            })
+            .collect::<Vec<_>>();
+        addrs.pop().ok_or(TunnelError::NoDnsRecordFound(ip_version))
     }
 }
 
 impl FromUrl for uuid::Uuid {
-    fn from_url(url: url::Url) -> Result<Self, TunnelError> {
+    fn from_url(url: url::Url, _ip_version: IpVersion) -> Result<Self, TunnelError> {
         let o = url.host_str().unwrap();
         let o = uuid::Uuid::parse_str(o).map_err(|e| TunnelError::InvalidAddr(e.to_string()))?;
         Ok(o)
