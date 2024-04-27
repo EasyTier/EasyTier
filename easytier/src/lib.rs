@@ -9,6 +9,5 @@ pub mod peer_center;
 pub mod peers;
 pub mod rpc;
 pub mod tunnel;
-pub mod tunnels;
 pub mod utils;
 pub mod vpn_portal;

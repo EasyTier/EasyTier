@@ -8,7 +8,7 @@ use tokio::{
 };
 
 use crate::{
-    common::PeerId, peers::zc_peer_conn::PeerConnId, rpc as easytier_rpc, tunnel::TunnelConnector,
+    common::PeerId, peers::peer_conn::PeerConnId, rpc as easytier_rpc, tunnel::TunnelConnector,
 };
 
 use crate::{

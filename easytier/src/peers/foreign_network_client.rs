@@ -17,9 +17,9 @@ use crate::{
 
 use super::{
     foreign_network_manager::{ForeignNetworkServiceClient, FOREIGN_NETWORK_SERVICE_ID},
+    peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::PeerRpcManager,
-    zc_peer_conn::PeerConn,
     PacketRecvChan,
 };
 

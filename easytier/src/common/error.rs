@@ -2,7 +2,7 @@ use std::{io, result};
 
 use thiserror::Error;
 
-use crate::{tunnel, tunnels};
+use crate::tunnel;
 
 use super::PeerId;
 
@@ -13,7 +13,7 @@ pub enum Error {
     #[error("rust tun error {0}")]
     TunError(#[from] tun::Error),
     #[error("tunnel error {0}")]
-    TunnelError(#[from] tunnels::TunnelError),
+    TunnelError(#[from] tunnel::TunnelError),
     #[error("Peer has no conn, PeerId: {0}")]
     PeerNoConnectionError(PeerId),
     #[error("RouteError: {0:?}")]
@@ -41,9 +41,6 @@ pub enum Error {
 
     #[error("wait resp error: {0}")]
     WaitRespError(String),
-
-    #[error("tunnel error")]
-    TunnelErr(#[from] tunnel::TunnelError),
 
     #[error("message decode error: {0}")]
     MessageDecodeError(String),

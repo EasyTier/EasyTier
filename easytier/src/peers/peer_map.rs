@@ -12,13 +12,13 @@ use crate::{
     },
     rpc::PeerConnInfo,
     tunnel::packet_def::ZCPacket,
-    tunnels::TunnelError,
+    tunnel::TunnelError,
 };
 
 use super::{
     peer::Peer,
+    peer_conn::{PeerConn, PeerConnId},
     route_trait::ArcRoute,
-    zc_peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
 
