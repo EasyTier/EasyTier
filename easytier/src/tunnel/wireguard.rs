@@ -481,7 +481,6 @@ impl WgTunnelListener {
 
         let mut buf = vec![0u8; MAX_PACKET];
         loop {
-            tracing::info!("Waiting for incoming UDP packet");
             let Ok((n, addr)) = socket.recv_from(&mut buf).await else {
                 tracing::error!("Failed to receive from UDP socket");
                 break;
@@ -846,6 +845,16 @@ pub mod tests {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
         assert_eq!(0, listener.wg_peer_map.len());
+    }
+
+    #[tokio::test]
+    async fn bind_same_port() {
+        let (server_cfg, _client_cfg) = create_wg_config();
+        let mut listener = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
+        let (server_cfg, _client_cfg) = create_wg_config();
+        let mut listener2 = WgTunnelListener::new("wg://[::1]:31015".parse().unwrap(), server_cfg);
+        listener.listen().await.unwrap();
+        listener2.listen().await.unwrap();
     }
 
     #[tokio::test]

@@ -87,7 +87,7 @@ impl Stun {
     pub fn new(stun_server: SocketAddr) -> Self {
         Self {
             stun_server,
-            req_repeat: 1,
+            req_repeat: 2,
             resp_timeout: Duration::from_millis(3000),
         }
     }
@@ -432,9 +432,9 @@ impl StunInfoCollector {
         // stun server cross nation may return a external ip address with high latency and loss rate
         vec![
             "stun.miwifi.com:3478".to_string(),
-            "stun.qq.com:3478".to_string(),
-            // "stun.chat.bilibili.com:3478".to_string(), // bilibili's stun server doesn't repond to change_ip and change_port
-            "fwa.lifesizecloud.com:3478".to_string(),
+            "stun.chat.bilibili.com:3478".to_string(), // bilibili's stun server doesn't repond to change_ip and change_port
+            "stun.cloudflare.com:3478".to_string(),
+            "stun.syncthing.net:3478".to_string(),
             "stun.isp.net.au:3478".to_string(),
             "stun.nextcloud.com:3478".to_string(),
             "stun.freeswitch.org:3478".to_string(),
@@ -444,9 +444,6 @@ impl StunInfoCollector {
             "stun.radiojar.com:3478".to_string(),
             "stun.sonetel.com:3478".to_string(),
             "stun.voipgate.com:3478".to_string(),
-            "stun.counterpath.com:3478".to_string(),
-            "180.235.108.91:3478".to_string(),
-            "193.22.2.248:3478".to_string(),
         ]
     }
 

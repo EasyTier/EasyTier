@@ -118,7 +118,14 @@ pub trait TunnelConnector: Send {
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
-    url::Url::parse(format!("{}://{}", scheme, addr).as_str()).unwrap()
+    if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
+        let mut ret_url = url::Url::parse(format!("{}://0.0.0.0", scheme).as_str()).unwrap();
+        ret_url.set_ip_host(sock_addr.ip()).unwrap();
+        ret_url.set_port(Some(sock_addr.port())).unwrap();
+        ret_url
+    } else {
+        url::Url::parse(format!("{}://{}", scheme, addr).as_str()).unwrap()
+    }
 }
 
 impl std::fmt::Debug for dyn Tunnel {
