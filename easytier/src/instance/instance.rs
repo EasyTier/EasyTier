@@ -9,6 +9,7 @@ use futures::{SinkExt, StreamExt};
 use pnet::packet::ipv4::Ipv4Packet;
 
 use tokio::{sync::Mutex, task::JoinSet};
+use tonic::transport::server::TcpIncoming;
 use tonic::transport::Server;
 
 use crate::common::config::ConfigLoader;
@@ -285,7 +286,7 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        self.run_rpc_server().unwrap();
+        self.run_rpc_server()?;
 
         self.ip_proxy = Some(IpProxy::new(
             self.get_global_ctx(),
@@ -390,7 +391,7 @@ impl Instance {
         }
     }
 
-    fn run_rpc_server(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    fn run_rpc_server(&mut self) -> Result<(), Error> {
         let Some(addr) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
             return Ok(());
@@ -401,6 +402,8 @@ impl Instance {
         let peer_center = self.peer_center.clone();
         let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
 
+        let incoming = TcpIncoming::new(addr, true, None)
+            .map_err(|e| anyhow::anyhow!("create rpc server failed. addr: {}, err: {}", addr, e))?;
         self.tasks.spawn(async move {
             let _g = net_ns.guard();
             Server::builder()
@@ -422,7 +425,7 @@ impl Instance {
                 .add_service(crate::rpc::vpn_portal_rpc_server::VpnPortalRpcServer::new(
                     vpn_portal_rpc,
                 ))
-                .serve(addr)
+                .serve_with_incoming(incoming)
                 .await
                 .with_context(|| format!("rpc server failed. addr: {}", addr))
                 .unwrap();
