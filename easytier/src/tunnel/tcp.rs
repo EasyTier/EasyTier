@@ -34,16 +34,13 @@ impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
 
-        let socket = if addr.is_ipv4() {
-            TcpSocket::new_v4()?
-        } else {
-            TcpSocket::new_v6()?
-        };
-
-        socket.set_reuseaddr(true)?;
-        // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-        // socket.set_reuseport(true)?;
-        socket.bind(addr)?;
+        let socket2_socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )?;
+        setup_sokcet2(&socket2_socket, &addr)?;
+        let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         self.addr
             .set_port(Some(socket.local_addr()?.port()))
@@ -213,6 +210,14 @@ mod tests {
         let mut connector = TcpTunnelConnector::new("tcp://127.0.0.1:11014".parse().unwrap());
         connector.set_bind_addrs(vec!["10.0.0.1:0".parse().unwrap()]);
         _tunnel_pingpong(listener, connector).await
+    }
+
+    #[tokio::test]
+    async fn bind_same_port() {
+        let mut listener = TcpTunnelListener::new("tcp://[::]:31014".parse().unwrap());
+        let mut listener2 = TcpTunnelListener::new("tcp://0.0.0.0:31014".parse().unwrap());
+        listener.listen().await.unwrap();
+        listener2.listen().await.unwrap();
     }
 
     #[tokio::test]

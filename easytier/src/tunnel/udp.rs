@@ -19,6 +19,7 @@ use crate::{
     common::join_joinset_background,
     rpc::TunnelInfo,
     tunnel::{
+        build_url_from_socket_addr,
         common::{reserve_buf, TunnelWrapper},
         packet_def::{UdpPacketType, ZCPacket, ZCPacketType},
         ring::RingTunnel,
@@ -263,11 +264,11 @@ impl UdpTunnelListenerData {
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
                 local_addr: self.local_url.clone().into(),
-                remote_addr: url::Url::parse(&format!("udp://{}", remote_addr))
-                    .unwrap()
-                    .into(),
+                remote_addr: build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
             }),
         ));
+
+        tracing::info!(info = ?conn.info().unwrap().remote_addr, "udp connection accept done");
 
         if let Err(e) = self.conn_send.send(conn).await {
             tracing::warn!(?e, "udp send conn to accept channel error");
@@ -600,8 +601,7 @@ impl UdpTunnelConnector {
             Box::new(RingSink::new(ring_for_send_udp)),
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
-                local_addr: url::Url::parse(&format!("udp://{}", socket.local_addr()?))
-                    .unwrap()
+                local_addr: build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp")
                     .into(),
                 remote_addr: self.addr.clone().into(),
             }),
@@ -865,6 +865,15 @@ mod tests {
             .unwrap();
             setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn bind_same_port() {
+        println!("{}", "[::]:8888".parse::<SocketAddr>().unwrap());
+        let mut listener = UdpTunnelListener::new("udp://[::]:31014".parse().unwrap());
+        let mut listener2 = UdpTunnelListener::new("udp://0.0.0.0:31014".parse().unwrap());
+        listener.listen().await.unwrap();
+        listener2.listen().await.unwrap();
     }
 
     #[tokio::test]

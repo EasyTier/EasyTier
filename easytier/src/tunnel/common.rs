@@ -341,6 +341,10 @@ pub(crate) fn setup_sokcet2_ext(
         crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, bind_dev, is_udp)?;
     }
 
+    if bind_addr.is_ipv6() {
+        socket2_socket.set_only_v6(true)?;
+    }
+
     socket2_socket.set_nonblocking(true)?;
     socket2_socket.set_reuse_address(true)?;
     socket2_socket.bind(&socket2::SockAddr::from(*bind_addr))?;
@@ -472,6 +476,7 @@ pub mod tests {
 
         let lis = tokio::spawn(async move {
             let ret = listener.accept().await.unwrap();
+            println!("accept: {:?}", ret.info());
             assert_eq!(
                 ret.info().unwrap().local_addr,
                 listener.local_url().to_string()
@@ -480,6 +485,7 @@ pub mod tests {
         });
 
         let tunnel = c_netns.run_async(|| connector.connect()).await.unwrap();
+        println!("connect: {:?}", tunnel.info());
 
         assert_eq!(
             tunnel.info().unwrap().remote_addr,
