@@ -6,9 +6,11 @@ import StepperPanel from 'primevue/stepperpanel';
 
 import { useToast } from "primevue/usetoast";
 
-import { i18n, loadLocaleFromLocalStorage, NetworkConfig, parseNetworkConfig,
+import {
+  i18n, loadLocaleFromLocalStorage, NetworkConfig, parseNetworkConfig,
   useNetworkStore, runNetworkInstance, retainNetworkInstance, collectNetworkInfos,
-  changeLocale } from './main';
+  changeLocale
+} from './main';
 
 import Config from './components/Config.vue';
 import Status from './components/Status.vue';
@@ -35,7 +37,9 @@ const items = ref([
   {
     label: () => i18n.global.t('del_cur_network'),
     icon: 'pi pi-times',
-    command: () => {
+    command: async () => {
+      networkStore.removeNetworkInstance(networkStore.curNetwork.instance_id);
+      await retainNetworkInstance(networkStore.networkInstanceIds);
       networkStore.delCurNetwork();
     },
     disabled: () => networkStore.networkList.length <= 1,

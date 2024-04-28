@@ -273,6 +273,15 @@ impl VirtualNic {
             });
         }
 
+        #[cfg(target_os = "windows")]
+        {
+            use std::net::IpAddr;
+            let c = crate::arch::windows::interface_count()?;
+            config.name(format!("et{}_{}", self.dev_name, c));
+            // set a temporary address
+            config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
+        }
+
         if self.queue_num != 1 {
             todo!("queue_num != 1")
         }

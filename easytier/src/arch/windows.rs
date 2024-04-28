@@ -60,6 +60,16 @@ pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     Ok(())
 }
 
+pub fn interface_count() -> io::Result<usize> {
+    let ifaces = network_interface::NetworkInterface::show().map_err(|e| {
+        io::Error::new(
+            ErrorKind::NotFound,
+            format!("Failed to get interfaces. error: {}", e),
+        )
+    })?;
+    Ok(ifaces.len())
+}
+
 pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
     let ifaces = network_interface::NetworkInterface::show().map_err(|e| {
         io::Error::new(
