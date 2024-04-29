@@ -8,11 +8,17 @@
 [简体中文](/README_CN.md) | [English](/README.md)
 
  EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.
+
+<p align="center">
+<img src="assets/image-5.png" width="300">
+<img src="assets/image-4.png" width="300">
+</p>
  
  ## Features
  
 - **Decentralized**: No need to rely on centralized services, nodes are equal and independent.
 - **Safe**: Use WireGuard protocol to encrypt data.
+- **High Performance**: Full-link zero-copy, with performance comparable to mainstream networking software.
 - **Cross-platform**: Supports MacOS/Linux/Windows, will support IOS and Android in the future. The executable file is statically linked, making deployment simple.
 - **Networking without public IP**: Supports networking using shared public nodes, refer to [Configuration Guide](#Networking-without-public-IP)
 - **NAT traversal**: Supports UDP-based NAT traversal, able to establish stable connections even in complex network environments.
@@ -20,13 +26,15 @@
 - **Smart Routing**: Selects links based on traffic to reduce latency and increase throughput.
 - **TCP Support**: Provides reliable data transmission through concurrent TCP links when UDP is limited, optimizing performance.
 - **High Availability**: Supports multi-path and switches to healthy paths when high packet loss or network errors are detected.
+- **IPv6 Support**: Supports networking using IPv6.
+
 
  
  ## Installation
  
  1. **Download the precompiled binary file**
  
-     Visit the [GitHub Release page](https://github.com/KKRainbow/EasyTier/releases) to download the binary file suitable for your operating system.
+     Visit the [GitHub Release page](https://github.com/KKRainbow/EasyTier/releases) to download the binary file suitable for your operating system. Release includes both command-line programs and GUI programs in the compressed package.
  
  2. **Install via crates.io**
     ```sh
@@ -39,6 +47,8 @@
     ```
  
  ## Quick Start
+
+ > The following text only describes the use of the command-line tool; the GUI program can be configured by referring to the following concepts.
  
  Make sure EasyTier is installed according to the [Installation Guide](#Installation), and both easytier-core and easytier-cli commands are available.
  
