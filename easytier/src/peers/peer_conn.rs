@@ -135,6 +135,20 @@ impl PeerConn {
         *need_retry = true;
 
         let rsp = rsp?;
+        let Some(peer_mgr_hdr) = rsp.peer_manager_header() else {
+            return Err(Error::WaitRespError(format!(
+                "unexpected packet: {:?}, cannot decode peer manager hdr",
+                rsp
+            )));
+        };
+
+        if peer_mgr_hdr.packet_type != PacketType::HandShake as u8 {
+            return Err(Error::WaitRespError(format!(
+                "unexpected packet type: {:?}",
+                peer_mgr_hdr.packet_type
+            )));
+        }
+
         let rsp = HandshakeRequest::decode(rsp.payload()).map_err(|e| {
             Error::WaitRespError(format!("decode handshake response error: {:?}", e))
         })?;

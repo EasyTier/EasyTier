@@ -302,16 +302,20 @@ Endpoint = {listenr_addr} # should be the public ip of the vpn server
     async fn list_clients(&self) -> Vec<String> {
         self.inner
             .as_ref()
-            .unwrap()
-            .wg_peer_ip_table
-            .iter()
-            .map(|x| {
-                x.value()
-                    .endpoint_addr
-                    .as_ref()
-                    .map(|x| x.to_string())
-                    .unwrap_or_default()
+            .and_then(|w| {
+                Some(
+                    w.wg_peer_ip_table
+                        .iter()
+                        .map(|x| {
+                            x.value()
+                                .endpoint_addr
+                                .as_ref()
+                                .map(|x| x.to_string())
+                                .unwrap_or_default()
+                        })
+                        .collect(),
+                )
             })
-            .collect()
+            .unwrap_or_default()
     }
 }
