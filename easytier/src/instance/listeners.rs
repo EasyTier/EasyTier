@@ -4,6 +4,10 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tokio::{sync::Mutex, task::JoinSet};
 
+#[cfg(feature = "quic")]
+use crate::tunnel::quic::QUICTunnelListener;
+#[cfg(feature = "wireguard")]
+use crate::tunnel::wireguard::{WgConfig, WgTunnelListener};
 use crate::{
     common::{
         error::Error,
@@ -12,30 +16,28 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        quic::QUICTunnelListener,
-        ring::RingTunnelListener,
-        tcp::TcpTunnelListener,
-        udp::UdpTunnelListener,
-        wireguard::{WgConfig, WgTunnelListener},
-        Tunnel, TunnelListener,
+        ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, Tunnel,
+        TunnelListener,
     },
 };
 
 pub fn get_listener_by_url(
     l: &url::Url,
-    ctx: ArcGlobalCtx,
+    _ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.scheme() {
         "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
         "udp" => Box::new(UdpTunnelListener::new(l.clone())),
+        #[cfg(feature = "wireguard")]
         "wg" => {
-            let nid = ctx.get_network_identity();
+            let nid = _ctx.get_network_identity();
             let wg_config = WgConfig::new_from_network_identity(
                 &nid.network_name,
                 &nid.network_secret.unwrap_or_default(),
             );
             Box::new(WgTunnelListener::new(l.clone(), wg_config))
         }
+        #[cfg(feature = "quic")]
         "quic" => Box::new(QUICTunnelListener::new(l.clone())),
         _ => {
             unreachable!("unsupported listener uri");

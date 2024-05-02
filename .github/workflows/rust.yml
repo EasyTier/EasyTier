@@ -26,6 +26,12 @@ jobs:
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
             GUI_TARGET: x86_64-unknown-linux-gnu
+          - TARGET: mips-unknown-linux-musl
+            OS: ubuntu-latest
+            GUI_TARGET:
+          - TARGET: mipsel-unknown-linux-musl
+            OS: ubuntu-latest
+            GUI_TARGET:
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
             GUI_TARGET: x86_64-apple-darwin
@@ -81,27 +87,27 @@ jobs:
           #  curl -s musl.cc | grep mipsel
           case $TARGET in 
             mipsel-unknown-linux-musl)
-              MUSL_URI=mipsel-linux-musl-cross
+              MUSL_URI=mipsel-linux-muslsf
               ;;
             aarch64-unknown-linux-musl)
-              MUSL_URI=aarch64-linux-musl-cross
+              MUSL_URI=aarch64-linux-musl
               ;;
             armv7-unknown-linux-musleabihf)
-              MUSL_URI=armv7l-linux-musleabihf-cross
+              MUSL_URI=armv7l-linux-musleabihf
               ;;   
             arm-unknown-linux-musleabihf)
-              MUSL_URI=arm-linux-musleabihf-cross
+              MUSL_URI=arm-linux-musleabihf
               ;;        
             mips-unknown-linux-musl)
-              MUSL_URI=mips-linux-musl-cross
+              MUSL_URI=mips-linux-muslsf
               ;;
           esac
         
           if [  -n "$MUSL_URI" ]; then
             mkdir -p ./musl_gcc 
-            wget -c https://musl.cc/$MUSL_URI.tgz -P ./musl_gcc/
-            tar zxf ./musl_gcc/$MUSL_URI.tgz -C ./musl_gcc/
-            sudo ln -s $(pwd)/musl_gcc/$MUSL_URI/bin/*gcc /usr/bin/
+            wget -c https://musl.cc/${MUSL_URI}-cross.tgz -P ./musl_gcc/
+            tar zxf ./musl_gcc/${MUSL_URI}-cross.tgz -C ./musl_gcc/
+            sudo ln -s $(pwd)/musl_gcc/${MUSL_URI}-cross/bin/*gcc /usr/bin/
           fi
         fi
         
@@ -109,10 +115,25 @@ jobs:
         rustup set auto-self-update disable
         rustup install 1.75
         rustup default 1.75
-        rustup target add $TARGET
-        rustup target add $GUI_TARGET
+
+        # mips/mipsel cannot add target from rustup, need compile by ourselves
+        if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
+          cd "$PWD/musl_gcc/${MUSL_URI}-cross/lib/gcc/${MUSL_URI}/11.2.1" || exit 255
+          cp libgcc_eh.a libunwind.a
+          rustup toolchain install nightly-x86_64-unknown-linux-gnu
+          rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+          cd -
+        else
+          rustup target add $TARGET
+          rustup target add $GUI_TARGET
+        fi
     - name: Run build
-      run: cargo build --release --verbose --target $TARGET
+      run: |
+        if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
+          cargo +nightly build -r --verbose --target $TARGET -Z build-std --no-default-features --features mips
+        else
+          cargo build --release --verbose --target $TARGET
+        fi
     - name: Install for aarch64 gui cross compile
       run: |
         # see https://tauri.app/v1/guides/building/linux/
@@ -148,6 +169,9 @@ jobs:
         fi
     - name: Run build GUI
       run: |
+        if [ ! -n "$GUI_TARGET" ]; then
+          exit 0
+        fi
         cd easytier-gui
         yarn install
         if [[ $OS =~ ^ubuntu.*$ && ! $GUI_TARGET =~ ^x86_64.*$ ]]; then
@@ -178,7 +202,7 @@ jobs:
             mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
         elif [[ $OS =~ ^macos.*$ ]]; then
             mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
-        elif [[ $OS =~ ^ubuntu.*$ ]]; then
+        elif [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^mips.*$ ]]; then
             mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
             if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
               # currently only x86 appimage is supported

@@ -3,7 +3,7 @@ use std::{
     fmt::Debug,
     net::Ipv4Addr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Weak,
     },
     time::{Duration, SystemTime},
@@ -473,7 +473,8 @@ impl RouteTable {
 }
 
 type SessionId = u64;
-type AtomicSessionId = AtomicU64;
+
+type AtomicSessionId = atomic_shim::AtomicU64;
 
 // if we need to sync route info with one peer, we create a SyncRouteSession with that peer.
 #[derive(Debug)]

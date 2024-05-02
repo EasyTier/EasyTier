@@ -17,12 +17,16 @@ pub mod common;
 pub mod filter;
 pub mod mpsc;
 pub mod packet_def;
-pub mod quic;
 pub mod ring;
 pub mod stats;
 pub mod tcp;
 pub mod udp;
+
+#[cfg(feature = "wireguard")]
 pub mod wireguard;
+
+#[cfg(feature = "quic")]
+pub mod quic;
 
 #[derive(thiserror::Error, Debug)]
 pub enum TunnelError {

@@ -1,6 +1,10 @@
 use crate::tunnel::packet_def::ZCPacket;
 
+#[cfg(feature = "wireguard")]
 pub mod ring_aes_gcm;
+
+#[cfg(feature = "aes-gcm")]
+pub mod aes_gcm;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
