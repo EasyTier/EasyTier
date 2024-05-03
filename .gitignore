@@ -24,3 +24,5 @@ nohup.out
 .DS_Store
 
 components.d.ts
+
+musl_gcc

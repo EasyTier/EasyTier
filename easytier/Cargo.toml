@@ -168,7 +168,7 @@ defguard_wireguard_rs = "0.4.2"
 
 [features]
 default = ["wireguard", "quic", "mimalloc"]
-mips = ["aes-gcm"]
+mips = ["aes-gcm", "mimalloc"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc-rust"]

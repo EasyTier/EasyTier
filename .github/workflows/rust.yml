@@ -119,7 +119,13 @@ jobs:
         # mips/mipsel cannot add target from rustup, need compile by ourselves
         if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
           cd "$PWD/musl_gcc/${MUSL_URI}-cross/lib/gcc/${MUSL_URI}/11.2.1" || exit 255
+          # for panic-abort
           cp libgcc_eh.a libunwind.a
+
+          # for mimalloc
+          ar x libgcc.a _ctzsi2.o _clz.o
+          ar rcs libctz.a _ctzsi2.o _clz.o
+
           rustup toolchain install nightly-x86_64-unknown-linux-gnu
           rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
           cd -
