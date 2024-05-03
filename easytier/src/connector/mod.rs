@@ -3,16 +3,15 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(feature = "quic")]
+use crate::tunnel::quic::QUICTunnelConnector;
+#[cfg(feature = "wireguard")]
+use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
     tunnel::{
-        check_scheme_and_get_socket_addr,
-        quic::QUICTunnelConnector,
-        ring::RingTunnelConnector,
-        tcp::TcpTunnelConnector,
-        udp::UdpTunnelConnector,
-        wireguard::{WgConfig, WgTunnelConnector},
-        TunnelConnector,
+        check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
+        udp::UdpTunnelConnector, TunnelConnector,
     },
 };
 
@@ -77,6 +76,7 @@ pub async fn create_connector_by_url(
             let connector = RingTunnelConnector::new(url);
             return Ok(Box::new(connector));
         }
+        #[cfg(feature = "quic")]
         "quic" => {
             let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic")?;
             let mut connector = QUICTunnelConnector::new(url);
@@ -88,6 +88,7 @@ pub async fn create_connector_by_url(
             .await;
             return Ok(Box::new(connector));
         }
+        #[cfg(feature = "wireguard")]
         "wg" => {
             let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "wg")?;
             let nid = global_ctx.get_network_identity();

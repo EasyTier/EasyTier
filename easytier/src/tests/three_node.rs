@@ -9,17 +9,18 @@ use super::*;
 
 use crate::{
     common::{
-        config::{ConfigLoader, NetworkIdentity, TomlConfigLoader, VpnPortalConfig},
+        config::{ConfigLoader, NetworkIdentity, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
     peers::tests::wait_for_condition,
-    tunnel::{
-        ring::RingTunnelConnector,
-        tcp::TcpTunnelConnector,
-        udp::UdpTunnelConnector,
-        wireguard::{WgConfig, WgTunnelConnector},
-    },
+    tunnel::{ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector},
+};
+
+#[cfg(feature = "wireguard")]
+use crate::{
+    common::config::VpnPortalConfig,
+    tunnel::wireguard::{WgConfig, WgTunnelConnector},
     vpn_portal::wireguard::get_wg_config_for_portal,
 };
 
@@ -81,6 +82,7 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
                 "udp://10.1.1.1:11010".parse().unwrap(),
             ));
     } else if proto == "wg" {
+        #[cfg(feature = "wireguard")]
         inst2
             .get_conn_manager()
             .add_connector(WgTunnelConnector::new(
@@ -226,6 +228,7 @@ pub async fn icmp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &st
     .await;
 }
 
+#[cfg(feature = "wireguard")]
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
@@ -478,6 +481,7 @@ fn run_wireguard_client(
     Ok(())
 }
 
+#[cfg(feature = "wireguard")]
 #[tokio::test]
 #[serial_test::serial]
 pub async fn wireguard_vpn_portal() {

@@ -5,3 +5,19 @@ linker = "aarch64-linux-musl-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.mipsel-unknown-linux-musl]
+linker = "mipsel-linux-muslsf-gcc"
+rustflags = ["-C", "target-feature=+crt-static",
+    "-L", "./musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
+    "-L", "./musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
+    "-l", "atomic"
+    ]
+
+[target.mips-unknown-linux-musl]
+linker = "mips-linux-muslsf-gcc"
+rustflags = ["-C", "target-feature=+crt-static",
+    "-L", "./musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
+    "-L", "./musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
+    "-l", "atomic"
+    ]

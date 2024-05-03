@@ -130,7 +130,10 @@ impl Instance {
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
+        #[cfg(feature = "wireguard")]
         let vpn_portal_inst = vpn_portal::wireguard::WireGuard::default();
+        #[cfg(not(feature = "wireguard"))]
+        let vpn_portal_inst = vpn_portal::NullVpnPortal;
 
         Instance {
             inst_name: global_ctx.inst_name.clone(),

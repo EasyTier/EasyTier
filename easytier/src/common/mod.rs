@@ -13,7 +13,6 @@ pub mod global_ctx;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;
-pub mod rkyv_util;
 pub mod stun;
 pub mod stun_codec_ext;
 

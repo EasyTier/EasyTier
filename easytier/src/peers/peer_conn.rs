@@ -29,8 +29,8 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         PeerId,
     },
-    peers::packet::PacketType,
     rpc::{HandshakeRequest, PeerConnInfo, PeerConnStats, TunnelInfo},
+    tunnel::packet_def::PacketType,
     tunnel::{
         filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter},
         mpsc::{MpscTunnel, MpscTunnelSender},

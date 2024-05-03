@@ -22,17 +22,18 @@ use tokio_util::bytes::Bytes;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
     peers::{
-        packet, peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport,
-        route_trait::RouteInterface, PeerPacketFilter,
+        peer_conn::PeerConn, peer_rpc::PeerRpcManagerTransport, route_trait::RouteInterface,
+        PeerPacketFilter,
     },
     tunnel::{
+        self,
         packet_def::{PacketType, ZCPacket},
         SinkItem, Tunnel, TunnelConnector,
     },
 };
 
 use super::{
-    encrypt::{ring_aes_gcm::AesGcmCipher, Encryptor, NullCipher},
+    encrypt::{Encryptor, NullCipher},
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::ForeignNetworkManager,
     peer_conn::PeerConnId,
@@ -176,12 +177,25 @@ impl PeerManager {
             my_peer_id,
         ));
 
-        let encryptor: Arc<Box<dyn Encryptor>> =
-            Arc::new(if global_ctx.get_flags().enable_encryption {
-                Box::new(AesGcmCipher::new_128(global_ctx.get_128_key()))
-            } else {
-                Box::new(NullCipher)
-            });
+        let mut encryptor: Arc<Box<dyn Encryptor>> = Arc::new(Box::new(NullCipher));
+        if global_ctx.get_flags().enable_encryption {
+            #[cfg(feature = "wireguard")]
+            {
+                use super::encrypt::ring_aes_gcm::AesGcmCipher;
+                encryptor = Arc::new(Box::new(AesGcmCipher::new_128(global_ctx.get_128_key())));
+            }
+
+            #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
+            {
+                use super::encrypt::aes_gcm::AesGcmCipher;
+                encryptor = Arc::new(Box::new(AesGcmCipher::new_128(global_ctx.get_128_key())));
+            }
+
+            #[cfg(all(not(feature = "wireguard"), not(feature = "aes-gcm")))]
+            {
+                compile_error!("wireguard or aes-gcm feature must be enabled for encryption");
+            }
+        }
 
         // TODO: remove these because we have impl pipeline processor.
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
@@ -536,7 +550,11 @@ impl PeerManager {
             return Ok(());
         }
 
-        msg.fill_peer_manager_hdr(self.my_peer_id, 0, packet::PacketType::Data as u8);
+        msg.fill_peer_manager_hdr(
+            self.my_peer_id,
+            0,
+            tunnel::packet_def::PacketType::Data as u8,
+        );
         self.run_nic_packet_process_pipeline(&mut msg).await;
         self.encryptor
             .encrypt(&mut msg)

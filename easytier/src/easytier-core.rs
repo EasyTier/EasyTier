@@ -32,8 +32,10 @@ use crate::common::{
     global_ctx::GlobalCtxEvent,
 };
 
+#[cfg(feature = "mimalloc")]
 use mimalloc_rust::*;
 
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
