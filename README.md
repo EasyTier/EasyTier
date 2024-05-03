@@ -265,4 +265,5 @@ Before using the Client Config, you need to modify the Interface Address and Pee
  
  - Ask questions or report problems: [GitHub Issues](https://github.com/KKRainbow/EasyTier/issues)
  - Discussion and exchange: [GitHub Discussions](https://github.com/KKRainbow/EasyTier/discussions)
-- Telegram：https://t.me/easytier
+ - Telegram：https://t.me/easytier
+ - QQ Group: 949700262
