@@ -1,0 +1,55 @@
+network: 网络
+networking_method: 网络方式
+public_server: 公共服务器
+manual: 手动
+standalone: 独立
+virtual_ipv4: 虚拟IPv4地址
+network_name: 网络名称
+network_secret: 网络密码
+public_server_url: 公共服务器地址
+peer_urls: 对等节点地址
+proxy_cidrs: 子网代理CIDR
+enable_vpn_portal: 启用VPN门户
+vpn_portal_listen_port: 监听端口
+vpn_portal_client_network: 客户端子网
+advanced_settings: 高级设置
+listener_urls: 监听地址
+rpc_port: RPC端口
+config_network: 配置网络
+running: 运行中
+error_msg: 错误信息
+detail: 详情
+add_new_network: 添加新网络
+del_cur_network: 删除当前网络
+select_network: 选择网络
+network_instances: 网络实例
+instance_id: 实例ID
+network_infos: 网络信息
+parse_network_config: 解析网络配置
+retain_network_instance: 保留网络实例
+collect_network_infos: 收集网络信息
+settings: 设置
+exchange_language: Switch to English
+exit: 退出
+chips_placeholder: 例如： {0}, 按回车添加
+off_text: 点击关闭
+on_text: 点击开启
+show_config: 显示配置
+close: 关闭
+
+my_node_info: 当前节点信息
+peer_count: 已连接
+upload: 上传
+download: 下载
+show_vpn_portal_config: 显示VPN门户配置
+show_event_log: 显示事件日志
+peer_info: 节点信息
+hostname: 主机名
+route_cost: 路由
+latency: 延迟
+upload_bytes: 上传
+download_bytes: 下载
+loss_rate: 丢包率
+
+run_network: 运行网络
+stop_network: 停止网络
