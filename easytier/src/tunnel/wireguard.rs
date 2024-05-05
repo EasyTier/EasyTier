@@ -392,17 +392,14 @@ impl WgPeer {
         let data = WgPeerData {
             udp: self.udp.clone(),
             endpoint: self.endpoint,
-            tunn: Arc::new(Mutex::new(
-                Tunn::new(
-                    self.config.my_secret_key.clone(),
-                    self.config.peer_public_key.clone(),
-                    None,
-                    None,
-                    rand::thread_rng().next_u32(),
-                    None,
-                )
-                .unwrap(),
-            )),
+            tunn: Arc::new(Mutex::new(Tunn::new(
+                self.config.my_secret_key.clone(),
+                self.config.peer_public_key.clone(),
+                None,
+                None,
+                rand::thread_rng().next_u32(),
+                None,
+            ))),
             wg_type: self.config.wg_type.clone(),
             stopped: Arc::new(AtomicBool::new(false)),
         };
