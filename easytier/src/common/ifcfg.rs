@@ -50,9 +50,19 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
 
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     let cmd_out = if cfg!(target_os = "windows") {
-        Command::new("cmd").arg("/C").arg(cmd).output().await?
+        Command::new("cmd")
+            .creation_flags(0x08000000)
+            .arg("/C")
+            .arg(cmd)
+            .output()
+            .await?
     } else {
-        Command::new("sh").arg("-c").arg(cmd).output().await?
+        Command::new("sh")
+            .creation_flags(0x08000000)
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .await?
     };
     let stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice());
     let stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice());
