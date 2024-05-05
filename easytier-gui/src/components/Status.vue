@@ -1,8 +1,4 @@
 <script setup lang="ts">
-
-import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useNetworkStore } from '../main';
-
 const networkStore = useNetworkStore();
 
 const props = defineProps<{
@@ -230,7 +226,7 @@ let prevRxSum = 0;
 let txRate = ref('0');
 let rxRate = ref('0');
 onMounted(() => {
-    rateIntervalId = setInterval(() => {
+    rateIntervalId = window.setInterval(() => {
         let curTxSum = txGlobalSum();
         txRate.value = humanFileSize((curTxSum - prevTxSum) / (rateInterval / 1000));
         prevTxSum = curTxSum;
