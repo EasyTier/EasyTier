@@ -122,7 +122,6 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
 async fn ping_test(from_netns: &str, target_ip: &str) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
-        .creation_flags(0x08000000)
         .args(&[
             "netns",
             "exec",
