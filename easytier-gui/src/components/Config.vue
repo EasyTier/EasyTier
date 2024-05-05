@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import InputGroup from "primevue/inputgroup";
 import InputGroupAddon from "primevue/inputgroupaddon";
-import { ref, defineProps, computed } from "vue";
-import { i18n, useNetworkStore, NetworkingMethod } from "../main";
-
+import { i18n } from "~/modules/i18n";
+import { NetworkingMethod } from "~/types/network";
 
 const networking_methods = ref([
   { value: NetworkingMethod.PublicServer, label: i18n.global.t('public_server') },
@@ -145,8 +144,8 @@ const presetPublicServers = [
 
 
         <div class="flex pt-4 justify-content-center">
-          <Button :label="$t('run_network')" icon="pi pi-arrow-right" iconPos="right" @click="$emit('runNetwork', curNetwork)"
-            :disabled="configInvalid" />
+          <Button :label="$t('run_network')" icon="pi pi-arrow-right" iconPos="right"
+            @click="$emit('runNetwork', curNetwork)" :disabled="configInvalid" />
         </div>
       </div>
     </div>
