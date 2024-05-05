@@ -55,7 +55,11 @@ struct Cli {
     )]
     network_secret: String,
 
-    #[arg(short, long, help = "ipv4 address of this vpn node")]
+    #[arg(
+        short,
+        long,
+        help = "ipv4 address of this vpn node, if empty, this node will only forward packets and no TUN device will be created"
+    )]
     ipv4: Option<String>,
 
     #[arg(short, long, help = "peers to connect initially")]
@@ -417,8 +421,11 @@ pub async fn async_main(cli: Cli) {
                     print_event(format!("connecting to peer. dst: {}", dst));
                 }
 
-                GlobalCtxEvent::ConnectError(dst, err) => {
-                    print_event(format!("connect to peer error. dst: {}, err: {}", dst, err));
+                GlobalCtxEvent::ConnectError(dst, ip_version, err) => {
+                    print_event(format!(
+                        "connect to peer error. dst: {}, ip_version: {}, err: {}",
+                        dst, ip_version, err
+                    ));
                 }
 
                 GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {

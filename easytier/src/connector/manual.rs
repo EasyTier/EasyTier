@@ -192,8 +192,13 @@ impl ManualConnectorManager {
                         let (_, connector) = data.connectors.remove(&dead_url).unwrap();
                         let insert_succ = data.reconnecting.insert(dead_url.clone());
                         assert!(insert_succ);
+
                         reconn_tasks.spawn(async move {
-                            sender.send(Self::conn_reconnect(data_clone.clone(), dead_url, connector).await).await.unwrap();
+                            let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone(), connector.clone()).await;
+                            sender.send(reconn_ret).await.unwrap();
+
+                            data_clone.reconnecting.remove(&dead_url).unwrap();
+                            data_clone.connectors.insert(dead_url.clone(), connector);
                         });
                     }
                     log::info!("reconn_interval tick, done");
@@ -355,10 +360,13 @@ impl ManualConnectorManager {
                 } else if ret.as_ref().unwrap().is_err() {
                     reconn_ret = Err(ret.unwrap().unwrap_err());
                 }
+                data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
+                    dead_url.clone(),
+                    format!("{:?}", ip_version),
+                    format!("{:?}", reconn_ret),
+                ));
             }
         }
-        data.reconnecting.remove(&dead_url).unwrap();
-        data.connectors.insert(dead_url.clone(), connector);
 
         reconn_ret
     }
