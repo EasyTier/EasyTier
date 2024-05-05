@@ -49,10 +49,21 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
 }
 
 async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
-    let cmd_out = if cfg!(target_os = "windows") {
-        Command::new("cmd").arg("/C").arg(cmd).output().await?
-    } else {
-        Command::new("sh").arg("-c").arg(cmd).output().await?
+    let cmd_out: std::process::Output;
+    #[cfg(target_os = "windows")]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd_out = Command::new("cmd")
+            .arg("/C")
+            .arg(cmd)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .await?
+    };
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        cmd_out = Command::new("sh").arg("-c").arg(cmd).output().await?
     };
     let stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice());
     let stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice());
