@@ -276,11 +276,6 @@ impl Instance {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
-        self.prepare_tun_device().await?;
-        if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
-            self.assign_ipv4_to_tun_device(ipv4_addr).await?;
-        }
-
         self.listener_manager
             .lock()
             .await
@@ -297,7 +292,11 @@ impl Instance {
         )?);
         self.ip_proxy.as_ref().unwrap().start().await?;
 
-        self.run_proxy_cidrs_route_updater();
+        if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+            self.prepare_tun_device().await?;
+            self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+            self.run_proxy_cidrs_route_updater();
+        }
 
         self.udp_hole_puncher.lock().await.run().await?;
 
