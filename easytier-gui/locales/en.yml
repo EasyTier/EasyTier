@@ -1,0 +1,55 @@
+network: Network
+networking_method: Networking Method
+public_server: Public Server
+manual: Manual
+standalone: Standalone
+virtual_ipv4: Virtual IPv4
+network_name: Network Name
+network_secret: Network Secret
+public_server_url: Public Server URL
+peer_urls: Peer URLs
+proxy_cidrs: Subnet Proxy CIDRs
+enable_vpn_portal: Enable VPN Portal
+vpn_portal_listen_port: VPN Portal Listen Port
+vpn_portal_client_network: Client Sub Network
+advanced_settings: Advanced Settings
+listener_urls: Listener URLs
+rpc_port: RPC Port
+config_network: Config Network
+running: Running
+error_msg: Error Message
+detail: Detail
+add_new_network: Add New Network
+del_cur_network: Delete Current Network
+select_network: Select Network
+network_instances: Network Instances
+instance_id: Instance ID
+network_infos: Network Infos
+parse_network_config: Parse Network Config
+retain_network_instance: Retain Network Instance
+collect_network_infos: Collect Network Infos
+settings: Settings
+exchange_language: 切换中文
+exit: Exit
+
+chips_placeholder: "e.g: {0}, press Enter to add"
+off_text: Press to disable
+on_text: Press to enable
+show_config: Show Config
+close: Close
+my_node_info: My Node Info
+peer_count: Connected
+upload: Upload
+download: Download
+show_vpn_portal_config: Show VPN Portal Config
+show_event_log: Show Event Log
+peer_info: Peer Info
+route_cost: Route Cost
+hostname: Hostname
+latency: Latency
+upload_bytes: Upload
+download_bytes: Download
+loss_rate: Loss Rate
+
+run_network: Run Network
+stop_network: Stop Network
