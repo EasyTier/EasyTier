@@ -19,8 +19,8 @@ impl WindowsBuild {
 
         let path = env::var_os("PATH").unwrap_or_default();
         for p in env::split_paths(&path) {
-            let p = p.join("protoc");
-            if p.exists() {
+            let p = p.join("protoc.exe");
+            if p.exists() && p.is_file() {
                 return Some(p);
             }
         }
