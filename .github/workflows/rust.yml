@@ -47,6 +47,7 @@ jobs:
       TARGET: ${{ matrix.TARGET }}
       OS: ${{ matrix.OS }}
       GUI_TARGET: ${{ matrix.GUI_TARGET }}
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
     steps:
     - uses: actions/checkout@v3
     - name: Setup protoc
@@ -225,6 +226,7 @@ jobs:
         path: |
           ./artifacts/*
     - name: Upload OSS
+      if: ${{ env.OSS_BUCKET != '' }}
       uses: Menci/upload-to-oss@main
       with:
         access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
