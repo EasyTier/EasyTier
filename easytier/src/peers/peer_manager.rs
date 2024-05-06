@@ -338,11 +338,9 @@ impl PeerManager {
                         tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
                     }
                 } else {
-                    if let Err(e) = encryptor
-                        .decrypt(&mut ret)
-                        .with_context(|| "decrypt failed")
-                    {
+                    if let Err(e) = encryptor.decrypt(&mut ret) {
                         tracing::error!(?e, "decrypt failed");
+                        continue;
                     }
 
                     let mut processed = false;
@@ -680,14 +678,16 @@ impl PeerManager {
 #[cfg(test)]
 mod tests {
 
-    use std::{fmt::Debug, sync::Arc};
+    use std::{fmt::Debug, sync::Arc, time::Duration};
 
     use crate::{
+        common::{config::Flags, global_ctx::tests::get_mock_global_ctx},
         connector::{
             create_connector_by_url, udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
         },
         instance::listeners::get_listener_by_url,
         peers::{
+            peer_manager::RouteAlgoType,
             peer_rpc::tests::{MockService, TestRpcService, TestRpcServiceClient},
             tests::{connect_peer_manager, wait_for_condition, wait_route_appear},
         },
@@ -821,5 +821,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ret, "hello c abc");
+    }
+
+    #[tokio::test]
+    async fn communicate_between_enc_and_non_enc() {
+        let create_mgr = |enable_encryption| async move {
+            let (s, _r) = tokio::sync::mpsc::channel(1000);
+            let mock_global_ctx = get_mock_global_ctx();
+            mock_global_ctx.config.set_flags(Flags {
+                enable_encryption,
+                ..Default::default()
+            });
+            let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, mock_global_ctx, s));
+            peer_mgr.run().await.unwrap();
+            peer_mgr
+        };
+
+        let peer_mgr_a = create_mgr(true).await;
+        let peer_mgr_b = create_mgr(false).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+
+        // wait 5sec should not crash.
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        // both mgr should alive
+        let mgr_c = create_mgr(true).await;
+        connect_peer_manager(peer_mgr_a.clone(), mgr_c.clone()).await;
+        wait_route_appear(mgr_c, peer_mgr_a).await.unwrap();
+
+        let mgr_d = create_mgr(false).await;
+        connect_peer_manager(peer_mgr_b.clone(), mgr_d.clone()).await;
+        wait_route_appear(mgr_d, peer_mgr_b).await.unwrap();
     }
 }
