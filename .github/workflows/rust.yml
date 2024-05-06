@@ -5,6 +5,7 @@ on:
     branches: ["develop", "main"]
   pull_request:
     branches: ["develop", "main"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
