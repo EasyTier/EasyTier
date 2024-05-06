@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::{backtrace, io::Write as _, net::SocketAddr};
+use std::{backtrace, io::Write as _, net::SocketAddr, path::PathBuf};
 
 use anyhow::Context;
 use clap::Parser;
@@ -42,6 +42,13 @@ static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    #[arg(
+        short,
+        long,
+        help = "path to the config file, NOTE: if this is set, all other options will be ignored"
+    )]
+    config_file: Option<PathBuf>,
+
     #[arg(
         long,
         help = "network name to identify this vpn network",
@@ -156,7 +163,18 @@ and the vpn client is in network of 10.14.14.0/24"
 
 impl From<Cli> for TomlConfigLoader {
     fn from(cli: Cli) -> Self {
+        if let Some(config_file) = &cli.config_file {
+            println!(
+                "NOTICE: loading config file: {:?}, will ignore all command line flags\n",
+                config_file
+            );
+            return TomlConfigLoader::new(config_file)
+                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))
+                .unwrap();
+        }
+
         let cfg = TomlConfigLoader::default();
+
         cfg.set_inst_name(cli.instance_name.clone());
         cfg.set_network_identity(NetworkIdentity::new(
             cli.network_name.clone(),
