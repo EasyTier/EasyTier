@@ -387,9 +387,10 @@ dependencies = [
 [[package]]
 name = "boringtun"
 version = "0.6.0"
-source = "git+https://github.com/cloudflare/boringtun.git#f672bb6c1e1e371240a8d151f15854687eb740bb"
+source = "git+https://github.com/KKRainbow/boringtun.git#449204c3eca736dc23b075d81426527a357e2f2a"
 dependencies = [
  "aead",
+ "atomic-shim",
  "base64 0.13.1",
  "blake2",
  "chacha20poly1305",
@@ -1309,7 +1310,7 @@ dependencies = [
  "rand 0.8.5",
  "rcgen",
  "reqwest",
- "ring 0.16.20",
+ "ring 0.17.8",
  "rstest",
  "rustls",
  "serde",

@@ -125,8 +125,8 @@ network-interface = "1.1.1"
 pathfinding = "4.9.1"
 
 # for encryption
-boringtun = { git = "https://github.com/cloudflare/boringtun.git", optional = true }
-ring = { version = "0.16", optional = true }
+boringtun = { git = "https://github.com/EasyTier/boringtun.git", optional = true }
+ring = { version = "0.17", optional = true }
 bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
 
@@ -168,7 +168,7 @@ defguard_wireguard_rs = "0.4.2"
 
 [features]
 default = ["wireguard", "quic", "mimalloc"]
-mips = ["aes-gcm", "mimalloc"]
+mips = ["aes-gcm", "mimalloc", "wireguard"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc-rust"]
