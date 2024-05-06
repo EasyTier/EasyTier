@@ -17,19 +17,20 @@ mod peer_center;
 mod peers;
 mod rpc;
 mod tunnel;
+mod utils;
 mod vpn_portal;
 
-use common::{
-    config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig},
-    get_logger_timer_rfc3339,
+use common::config::{
+    ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig,
 };
 use instance::instance::Instance;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-use crate::common::{
-    config::{ConfigLoader, TomlConfigLoader},
-    global_ctx::GlobalCtxEvent,
+use crate::{
+    common::{
+        config::{ConfigLoader, TomlConfigLoader},
+        global_ctx::GlobalCtxEvent,
+    },
+    utils::init_logger,
 };
 
 #[cfg(feature = "mimalloc")]
@@ -309,58 +310,6 @@ impl From<Cli> for TomlConfigLoader {
     }
 }
 
-fn init_logger(config: impl ConfigLoader) {
-    let file_config = config.get_file_logger_config();
-    let file_level = file_config
-        .level
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(LevelFilter::OFF);
-
-    // logger to rolling file
-    let mut file_layer = None;
-    if file_level != LevelFilter::OFF {
-        let mut l = tracing_subscriber::fmt::layer();
-        l.set_ansi(false);
-        let file_filter = EnvFilter::builder()
-            .with_default_directive(file_level.into())
-            .from_env()
-            .unwrap();
-        let file_appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .max_log_files(5)
-            .filename_prefix(file_config.file.unwrap_or("easytier".to_string()))
-            .build(file_config.dir.unwrap_or("./".to_string()))
-            .expect("failed to initialize rolling file appender");
-        file_layer = Some(
-            l.with_writer(file_appender)
-                .with_timer(get_logger_timer_rfc3339())
-                .with_filter(file_filter),
-        );
-    }
-
-    // logger to console
-    let console_config = config.get_console_logger_config();
-    let console_level = console_config
-        .level
-        .map(|s| s.parse().unwrap())
-        .unwrap_or(LevelFilter::OFF);
-
-    let console_filter = EnvFilter::builder()
-        .with_default_directive(console_level.into())
-        .from_env()
-        .unwrap();
-    let console_layer = tracing_subscriber::fmt::layer()
-        .pretty()
-        .with_timer(get_logger_timer_rfc3339())
-        .with_writer(std::io::stderr)
-        .with_filter(console_filter);
-
-    tracing_subscriber::Registry::default()
-        .with(console_layer)
-        .with(file_layer)
-        .init();
-}
-
 fn print_event(msg: String) {
     println!(
         "{}: {}",
@@ -390,7 +339,7 @@ fn setup_panic_handler() {
 pub async fn async_main(cli: Cli) {
     let cfg: TomlConfigLoader = cli.into();
 
-    init_logger(&cfg);
+    init_logger(&cfg, false).unwrap();
     let mut inst = Instance::new(cfg.clone());
 
     let mut events = inst.get_global_ctx().subscribe();
