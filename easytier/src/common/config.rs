@@ -1,5 +1,6 @@
 use std::{
     net::SocketAddr,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
@@ -144,6 +145,8 @@ pub struct Flags {
     pub enable_encryption: bool,
     #[derivative(Default(value = "true"))]
     pub enable_ipv6: bool,
+    #[derivative(Default(value = "1420"))]
+    pub mtu: u16,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -192,9 +195,9 @@ impl TomlConfigLoader {
         })
     }
 
-    pub fn new(config_path: &str) -> Result<Self, anyhow::Error> {
+    pub fn new(config_path: &PathBuf) -> Result<Self, anyhow::Error> {
         let config_str = std::fs::read_to_string(config_path)
-            .with_context(|| format!("failed to read config file: {}", config_path))?;
+            .with_context(|| format!("failed to read config file: {:?}", config_path))?;
         Self::new_from_str(&config_str)
     }
 }

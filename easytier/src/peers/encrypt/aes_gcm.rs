@@ -38,7 +38,7 @@ impl Encryptor for AesGcmCipher {
     fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if !pm_header.is_encrypted() {
-            return Err(Error::NotEcrypted);
+            return Ok(());
         }
 
         let payload_len = zc_packet.payload().len();
