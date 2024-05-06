@@ -10,10 +10,6 @@
 			"path": "easytier"
 		}
 	],
-	"recommendations": [
-		"vue.volar",
-		"dbaeumer.vscode-eslint"
-	],
 	"settings": {
 		"i18n-ally.localesPaths": [
 			"locales"
