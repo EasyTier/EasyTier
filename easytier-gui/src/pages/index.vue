@@ -124,7 +124,7 @@ const setting_menu_items = ref([
     items: [
       {
         label: () => t('exchange_language'),
-        icon: 'pi pi-refresh',
+        icon: 'pi pi-language',
         command: async () => {
           await loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'));
         }
