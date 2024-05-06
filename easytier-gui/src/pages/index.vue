@@ -156,7 +156,6 @@ onMounted(async () => {
 </script>
 
 <template>
-  <!-- <n-config-provider :theme="lightTheme"> -->
   <div id="root" class="flex flex-column">
     <Dialog v-model:visible="visible" modal header="Config File" :style="{ width: '70%' }">
       <Panel>
