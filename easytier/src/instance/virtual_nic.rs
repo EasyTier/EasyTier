@@ -286,6 +286,14 @@ impl VirtualNic {
             todo!("queue_num != 1")
         }
         config.queues(self.queue_num);
+
+        let flags = self.global_ctx.config.get_flags();
+        let mut mtu_in_config = flags.mtu;
+        if flags.enable_encryption {
+            mtu_in_config -= 20;
+        }
+
+        config.mtu(mtu_in_config as i32);
         config.up();
 
         let dev = {

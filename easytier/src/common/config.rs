@@ -144,6 +144,8 @@ pub struct Flags {
     pub enable_encryption: bool,
     #[derivative(Default(value = "true"))]
     pub enable_ipv6: bool,
+    #[derivative(Default(value = "1420"))]
+    pub mtu: u16,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
