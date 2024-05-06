@@ -1,37 +1,37 @@
-import { setupLayouts } from "virtual:generated-layouts";
-import { createRouter, createWebHistory } from "vue-router/auto";
+import { setupLayouts } from 'virtual:generated-layouts'
+import { createRouter, createWebHistory } from 'vue-router/auto'
 
-import PrimeVue from 'primevue/config';
-import ToastService from 'primevue/toastservice';
-import App from "~/App.vue";
+import PrimeVue from 'primevue/config'
+import ToastService from 'primevue/toastservice'
+import App from '~/App.vue'
 
-import "~/styles.css";
-import "primevue/resources/themes/aura-light-green/theme.css";
-import "primeicons/primeicons.css";
-import "primeflex/primeflex.css";
-import { i18n, loadLanguageAsync } from "~/modules/i18n";
+import '~/styles.css'
+import 'primevue/resources/themes/aura-light-green/theme.css'
+import 'primeicons/primeicons.css'
+import 'primeflex/primeflex.css'
+import { i18n, loadLanguageAsync } from '~/modules/i18n'
 
 if (import.meta.env.PROD) {
-  document.addEventListener("keydown", (event) => {
+  document.addEventListener('keydown', (event) => {
     if (
-      event.key === "F5" ||
-      (event.ctrlKey && event.key === "r") ||
-      (event.metaKey && event.key === "r")
+      event.key === 'F5'
+      || (event.ctrlKey && event.key === 'r')
+      || (event.metaKey && event.key === 'r')
     )
-      event.preventDefault();
-  });
+      event.preventDefault()
+  })
 
-  document.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-  });
+  document.addEventListener('contextmenu', (event) => {
+    event.preventDefault()
+  })
 }
 
 const app = createApp(App)
 
 const router = createRouter({
   history: createWebHistory(),
-  extendRoutes: (routes) => setupLayouts(routes),
-});
+  extendRoutes: routes => setupLayouts(routes),
+})
 
 app.use(router)
 app.use(createPinia())
@@ -40,5 +40,4 @@ loadLanguageAsync(localStorage.getItem('lang') || 'en')
 
 app.use(PrimeVue)
 app.use(ToastService)
-app.mount("#app")
-
+app.mount('#app')

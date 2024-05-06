@@ -9,8 +9,6 @@
     "baseUrl": ".",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
     "paths": {
       "~/*": [
         "src/*"
@@ -23,10 +21,12 @@
       "unplugin-vue-macros/macros-global",
       "unplugin-vue-router/client"
     ],
+    "allowImportingTsExtensions": true,
     "allowJs": true,
     "strict": true,
     "strictNullChecks": true,
     "noUnusedLocals": true,
+    "noEmit": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,

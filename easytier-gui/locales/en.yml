@@ -32,7 +32,7 @@ settings: Settings
 exchange_language: 切换中文
 exit: Exit
 
-chips_placeholder: "e.g: {0}, press Enter to add"
+chips_placeholder: 'e.g: {0}, press Enter to add'
 off_text: Press to disable
 on_text: Press to enable
 show_config: Show Config

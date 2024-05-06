@@ -9,13 +9,13 @@ import VueI18n from '@intlify/unplugin-vue-i18n/vite'
 import VueDevTools from 'vite-plugin-vue-devtools'
 import VueRouter from 'unplugin-vue-router/vite'
 import { VueRouterAutoImports } from 'unplugin-vue-router'
-import { PrimeVueResolver } from 'unplugin-vue-components/resolvers';
+import { PrimeVueResolver } from 'unplugin-vue-components/resolvers'
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
   resolve: {
     alias: {
-      "~/": `${path.resolve(__dirname, "src")}/`,
+      '~/': `${path.resolve(__dirname, 'src')}/`,
     },
   },
   plugins: [
@@ -64,8 +64,8 @@ export default defineConfig(async () => ({
       include: [/\.vue$/, /\.vue\?vue/, /\.md$/],
       dts: 'src/components.d.ts',
       resolvers: [
-        PrimeVueResolver()
-      ]
+        PrimeVueResolver(),
+      ],
     }),
 
     // https://github.com/intlify/bundle-tools/tree/main/packages/unplugin-vue-i18n
@@ -90,7 +90,7 @@ export default defineConfig(async () => ({
     strictPort: true,
     watch: {
       // 3. tell vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      ignored: ['**/src-tauri/**'],
     },
   },
-}));
+}))
