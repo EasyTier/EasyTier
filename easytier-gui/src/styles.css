@@ -1,12 +1,12 @@
 @layer tailwind-base, primevue, tailwind-utilities;
 
 @layer tailwind-base {
-    @tailwind base;
+  @tailwind base;
 }
 
 @layer tailwind-utilities {
-    @tailwind components;
-    @tailwind utilities;
+  @tailwind components;
+  @tailwind utilities;
 }
 
 :root {
@@ -26,8 +26,8 @@
 }
 
 .card {
-    background: var(--surface-card);
-    padding: 2rem;
-    border-radius: 10px;
-    margin-bottom: 1rem;
+  background: var(--surface-card);
+  padding: 2rem;
+  border-radius: 10px;
+  margin-bottom: 1rem;
 }
