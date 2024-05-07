@@ -8,7 +8,5 @@ export default antfu({
   },
   ignores: [
     'src-tauri/**',
-    '**/vite-env.d.ts',
-    '**/typed-router.d.ts',
   ],
 })
