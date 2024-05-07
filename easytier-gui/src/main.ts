@@ -36,7 +36,7 @@ const router = createRouter({
 app.use(router)
 app.use(createPinia())
 app.use(i18n, { useScope: 'global' })
-loadLanguageAsync(localStorage.getItem('lang') || 'en')
+await loadLanguageAsync(localStorage.getItem('lang') || 'en')
 
 app.use(PrimeVue)
 app.use(ToastService)
