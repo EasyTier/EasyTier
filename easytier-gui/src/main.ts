@@ -26,18 +26,22 @@ if (import.meta.env.PROD) {
   })
 }
 
-const app = createApp(App)
+async function main() {
+  await loadLanguageAsync(localStorage.getItem('lang') || 'en')
 
-const router = createRouter({
-  history: createWebHistory(),
-  extendRoutes: routes => setupLayouts(routes),
-})
+  const app = createApp(App)
 
-app.use(router)
-app.use(createPinia())
-app.use(i18n, { useScope: 'global' })
-loadLanguageAsync(localStorage.getItem('lang') || 'en')
+  const router = createRouter({
+    history: createWebHistory(),
+    extendRoutes: routes => setupLayouts(routes),
+  })
 
-app.use(PrimeVue)
-app.use(ToastService)
-app.mount('#app')
+  app.use(router)
+  app.use(createPinia())
+  app.use(i18n, { useScope: 'global' })
+  app.use(PrimeVue)
+  app.use(ToastService)
+  app.mount('#app')
+}
+
+main()
