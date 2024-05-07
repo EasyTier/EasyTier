@@ -3,13 +3,12 @@ import antfu from '@antfu/eslint-config'
 
 export default antfu({
   formatters: true,
+  rules: {
+    'style/eol-last': ['error', 'always'],
+  },
   ignores: [
-    'dist',
-    'node_modules',
-    'src-tauri',
-    'src/vite-env.d.ts',
-    'src/typed-router.d.ts',
-    'src/auto-imports.d.ts',
-    'src/components.d.ts',
+    'src-tauri/**',
+    '**/vite-env.d.ts',
+    '**/typed-router.d.ts',
   ],
 })
