@@ -21,7 +21,7 @@ const loadedLanguages: string[] = []
 
 function setI18nLanguage(lang: Locale) {
   i18n.global.locale.value = lang as any
-  localStorage.setItem('locale', lang)
+  localStorage.setItem('lang', lang)
   return lang
 }
 
