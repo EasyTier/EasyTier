@@ -8,7 +8,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "lint": "eslint . --ignore-pattern src-tauri --ignore-pattern src/**.d.ts"
+    "lint": "eslint . --ignore-pattern src-tauri",
+    "lint:fix": "eslint . --ignore-pattern src-tauri --fix"
   },
   "dependencies": {
     "@tauri-apps/api": "^1",
