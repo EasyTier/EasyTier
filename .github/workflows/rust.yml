@@ -32,12 +32,14 @@ jobs:
           - TARGET: mipsel-unknown-linux-musl
             OS: ubuntu-latest
             GUI_TARGET:
+
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
             GUI_TARGET: x86_64-apple-darwin
           - TARGET: aarch64-apple-darwin
             OS: macos-latest
             GUI_TARGET: aarch64-apple-darwin
+
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             GUI_TARGET: x86_64-pc-windows-msvc
@@ -50,17 +52,13 @@ jobs:
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
     steps:
       - uses: actions/checkout@v3
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: 21
 
-      - uses: pnpm/action-setup@v3
-        name: Install pnpm
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
         with:
           version: 9
           run_install: false
@@ -70,13 +68,18 @@ jobs:
         run: |
           echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
 
-      - uses: actions/cache@v4
-        name: Setup pnpm cache
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
         with:
           path: ${{ env.STORE_PATH }}
           key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
             ${{ runner.os }}-pnpm-store-
+
+      - name: Install frontend dependencies
+        run: |
+          cd easytier-gui
+          pnpm install
 
       - name: Cargo cache
         uses: actions/cache@v4
@@ -85,6 +88,7 @@ jobs:
             ~/.cargo
             ./target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install rust target
         run: |
           # dependencies are only needed on ubuntu as that's the only place where
@@ -92,15 +96,18 @@ jobs:
           if [[ $OS =~ ^ubuntu.*$ ]]; then
             sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
             # for easytier-gui
-            sudo apt install libwebkit2gtk-4.0-dev \
-                build-essential \
-                curl \
-                wget \
-                file \
-                libssl-dev \
-                libgtk-3-dev \
-                libayatana-appindicator3-dev \
-                librsvg2-dev
+            if [[ $GUI_TARGET != '' ]]; then
+              sudo apt install libwebkit2gtk-4.0-dev \
+                  build-essential \
+                  curl \
+                  wget \
+                  file \
+                  libssl-dev \
+                  libgtk-3-dev \
+                  libayatana-appindicator3-dev \
+                  librsvg2-dev \
+                  patchelf
+            fi
             #  curl -s musl.cc | grep mipsel
             case $TARGET in 
               mipsel-unknown-linux-musl)
@@ -150,59 +157,61 @@ jobs:
             rustup target add $TARGET
             rustup target add $GUI_TARGET
           fi
-      - name: Run build
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          # GitHub repo token to use to avoid rate limiter
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Core & Cli
         run: |
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
             cargo +nightly build -r --verbose --target $TARGET -Z build-std --no-default-features --features mips
           else
             cargo build --release --verbose --target $TARGET
           fi
-      - name: Install for aarch64 gui cross compile
+
+      - name: Install GUI cross compile (aarch64 only)
+        if: ${{ matrix.TARGET == 'aarch64-unknown-linux-musl' }}
         run: |
           # see https://tauri.app/v1/guides/building/linux/
-          if [[ $TARGET == "aarch64-unknown-linux-musl" ]]; then
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted" | sudo tee /etc/apt/sources.list
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy universe" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates universe" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security universe" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
 
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted" | sudo tee /etc/apt/sources.list
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy universe" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates universe" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy multiverse" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security universe" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy universe" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates universe" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security universe" | sudo tee -a /etc/apt/sources.list
+          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
 
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy universe" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates universe" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy multiverse" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security universe" | sudo tee -a /etc/apt/sources.list
-            echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
+          sudo dpkg --add-architecture arm64
+          sudo apt-get update && sudo apt-get upgrade -y
+          sudo apt install libwebkit2gtk-4.0-dev:arm64
+          sudo apt install libssl-dev:arm64
+          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
 
-            sudo dpkg --add-architecture arm64
-            sudo apt-get update && sudo apt-get upgrade -y
-            sudo apt install libwebkit2gtk-4.0-dev:arm64
-            sudo apt install libssl-dev:arm64
-            echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
-          fi
-      - name: Run build GUI
-        run: |
-          if [ ! -n "$GUI_TARGET" ]; then
-            exit 0
-          fi
-          cd easytier-gui
-          pnpm install
-          if [[ $OS =~ ^ubuntu.*$ && ! $GUI_TARGET =~ ^x86_64.*$ ]]; then
-            # only build deb for non-x86_64 linux
-            pnpm tauri build -- --target $GUI_TARGET --verbose --bundles deb
-          else
-            pnpm tauri build -- --target $GUI_TARGET --verbose
-          fi
+      - name: Build GUI
+        if: ${{ matrix.GUI_TARGET != '' }}
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: ./easytier-gui
+          # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
+          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-latest' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+
       - name: Compress
         run: |
           mkdir -p ./artifacts/objects/
@@ -235,12 +244,14 @@ jobs:
 
           tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
           rm -rf ./artifacts/objects/
+
       - name: Archive artifact
         uses: actions/upload-artifact@v4
         with:
           name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
           path: |
             ./artifacts/*
+
       - name: Upload OSS
         if: ${{ env.OSS_BUCKET != '' }}
         uses: Menci/upload-to-oss@main
@@ -257,26 +268,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+
       - name: Setup protoc
         uses: arduino/setup-protoc@v2
         with:
           # GitHub repo token to use to avoid rate limiter
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup tools for test
         run: sudo apt install bridge-utils
+
       - name: Setup system for test
         run: |
           sudo sysctl net.bridge.bridge-nf-call-iptables=0
           sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
           sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
           sudo ip addr add 2001:db8::2/64 dev lo
+
       - name: Cargo cache
-        uses: actions/cache@v4.0.0
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo
             ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Run tests
         run: |
           sudo -E env "PATH=$PATH" cargo test --verbose
