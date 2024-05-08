@@ -1,22 +1,18 @@
 import { invoke } from '@tauri-apps/api/tauri'
-import type { NetworkConfig } from '~/types/network'
+import type { NetworkConfig, NetworkInstanceRunningInfo } from '~/types/network'
 
 export async function parseNetworkConfig(cfg: NetworkConfig): Promise<string> {
-  const ret: string = await invoke('parse_network_config', { cfg: JSON.stringify(cfg) })
-  return ret
+  return await invoke('parse_network_config', { cfg: JSON.stringify(cfg) })
 }
 
-export async function runNetworkInstance(cfg: NetworkConfig) {
-  const ret: string = await invoke('run_network_instance', { cfg: JSON.stringify(cfg) })
-  return ret
+export async function runNetworkInstance(cfg: NetworkConfig): Promise<string> {
+  return await invoke<string>('run_network_instance', { cfg: JSON.stringify(cfg) })
 }
 
-export async function retainNetworkInstance(instanceIds: Array<string>) {
-  const ret: string = await invoke('retain_network_instance', { instanceIds: JSON.stringify(instanceIds) })
-  return ret
+export async function retainNetworkInstance(instanceIds: string[]): Promise<string> {
+  return await invoke<string>('retain_network_instance', { instanceIds: JSON.stringify(instanceIds) })
 }
 
-export async function collectNetworkInfos() {
-  const ret: string = await invoke('collect_network_infos', {})
-  return JSON.parse(ret)
+export async function collectNetworkInfos(): Promise<Record<string, NetworkInstanceRunningInfo>> {
+  return JSON.parse(await invoke<string>('collect_network_infos'))
 }

@@ -1,4 +1,4 @@
-import type { NetworkConfig, NetworkInstance } from '~/types/network'
+import type { NetworkConfig, NetworkInstance, NetworkInstanceRunningInfo } from '~/types/network'
 import { DEFAULT_NETWORK_CONFIG } from '~/types/network'
 
 export const useNetworkStore = defineStore('networkStore', {
@@ -13,7 +13,7 @@ export const useNetworkStore = defineStore('networkStore', {
       // uuid -> instance
       instances: {} as Record<string, NetworkInstance>,
 
-      networkInfos: {} as Record<string, any>,
+      networkInfos: {} as Record<string, NetworkInstanceRunningInfo>,
     }
   },
 
@@ -56,18 +56,18 @@ export const useNetworkStore = defineStore('networkStore', {
         instance_id: instanceId,
         running: false,
         error_msg: '',
-        detail: {},
+        detail: {} as NetworkInstanceRunningInfo,
       }
     },
 
-    updateWithNetworkInfos(networkInfos: Record<string, any>) {
+    updateWithNetworkInfos(networkInfos: Record<string, NetworkInstanceRunningInfo>) {
       this.networkInfos = networkInfos
       for (const [instanceId, info] of Object.entries(networkInfos)) {
         if (this.instances[instanceId] === undefined)
           this.addNetworkInstance(instanceId)
 
         this.instances[instanceId].running = info.running
-        this.instances[instanceId].error_msg = info.error_msg
+        this.instances[instanceId].error_msg = info.error_msg || ''
         this.instances[instanceId].detail = info
       }
     },
