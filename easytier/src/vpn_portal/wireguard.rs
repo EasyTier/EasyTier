@@ -284,6 +284,7 @@ Address = {client_cidr} # should assign an ip from this cidr manually
 PublicKey = {my_public_key}
 AllowedIPs = {allow_ips}
 Endpoint = {listenr_addr} # should be the public ip of the vpn server
+PersistentKeepalive = 25
 "#,
             peer_secret_key = BASE64_STANDARD.encode(cfg.peer_secret_key()),
             my_public_key = BASE64_STANDARD.encode(cfg.my_public_key()),
