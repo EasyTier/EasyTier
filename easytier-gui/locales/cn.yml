@@ -32,6 +32,7 @@ settings: 设置
 exchange_language: Switch to English
 exit: 退出
 chips_placeholder: 例如： {0}, 按回车添加
+hostname_placeholder: '留空默认为主机名: {0}'
 off_text: 点击关闭
 on_text: 点击开启
 show_config: 显示配置

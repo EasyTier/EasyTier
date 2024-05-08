@@ -14,6 +14,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
+    fn get_hostname(&self) -> String;
+    fn set_hostname(&self, name: Option<String>);
+
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
 
@@ -152,6 +155,7 @@ pub struct Flags {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Config {
     netns: Option<String>,
+    hostname: Option<String>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -190,6 +194,7 @@ impl TomlConfigLoader {
                 config_str, config_str
             )
         })?;
+
         Ok(TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
         })
@@ -214,6 +219,36 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_inst_name(&self, name: String) {
         self.config.lock().unwrap().instance_name = Some(name);
+    }
+
+    fn get_hostname(&self) -> String {
+        let hostname = self.config.lock().unwrap().hostname.clone();
+
+        match hostname {
+            Some(hostname) => {
+                if !hostname.is_empty() {
+                    let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
+                    let mut name = re.replace_all(&hostname, "").to_string();
+
+                    if name.len() > 32 {
+                        name = name.chars().take(32).collect::<String>();
+                    }
+
+                    if hostname != name {
+                        self.set_hostname(Some(name.clone()));
+                    }
+                    name
+                } else {
+                    self.set_hostname(None);
+                    gethostname::gethostname().to_string_lossy().to_string()
+                }
+            }
+            None => gethostname::gethostname().to_string_lossy().to_string(),
+        }
+    }
+
+    fn set_hostname(&self, name: Option<String>) {
+        self.config.lock().unwrap().hostname = name;
     }
 
     fn get_netns(&self) -> Option<String> {

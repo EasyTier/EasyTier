@@ -54,7 +54,7 @@ pub struct GlobalCtx {
 
     ip_collector: Arc<IPCollector>,
 
-    hotname: AtomicCell<Option<String>>,
+    hostname: String,
 
     stun_info_collection: Box<dyn StunInfoCollectorTrait>,
 
@@ -80,6 +80,7 @@ impl GlobalCtx {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
         let net_ns = NetNS::new(config_fs.get_netns());
+        let hostname = config_fs.get_hostname();
 
         let (event_bus, _) = tokio::sync::broadcast::channel(100);
 
@@ -96,7 +97,7 @@ impl GlobalCtx {
 
             ip_collector: Arc::new(IPCollector::new(net_ns)),
 
-            hotname: AtomicCell::new(None),
+            hostname,
 
             stun_info_collection: Box::new(StunInfoCollector::new_with_default_servers()),
 
@@ -165,15 +166,8 @@ impl GlobalCtx {
         self.ip_collector.clone()
     }
 
-    pub fn get_hostname(&self) -> Option<String> {
-        if let Some(hostname) = self.hotname.take() {
-            self.hotname.store(Some(hostname.clone()));
-            return Some(hostname);
-        }
-
-        let hostname = gethostname::gethostname().to_string_lossy().to_string();
-        self.hotname.store(Some(hostname.clone()));
-        return Some(hostname);
+    pub fn get_hostname(&self) -> String {
+        return self.hostname.clone();
     }
 
     pub fn get_stun_info_collector(&self) -> impl StunInfoCollectorTrait + '_ {

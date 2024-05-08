@@ -348,14 +348,14 @@ function showEventLogs() {
         {{ $t('peer_info') }}
       </template>
       <template #content>
-        <DataTable :value="peerRouteInfos" table-style="min-width: 50rem">
-          <Column field="route.ipv4_addr" :header="$t('virtual_ipv4')" />
-          <Column field="route.hostname" :header="$t('hostname')" />
-          <Column :field="routeCost" :header="$t('route_cost')" />
-          <Column :field="latencyMs" :header="$t('latency')" />
-          <Column :field="txBytes" :header="$t('upload_bytes')" />
-          <Column :field="rxBytes" :header="$t('download_bytes')" />
-          <Column :field="lossRate" :header="$t('loss_rate')" />
+        <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
+          <Column field="route.ipv4_addr" style="width: 100px;" :header="$t('virtual_ipv4')" />
+          <Column field="route.hostname" style="max-width: 250px;" :header="$t('hostname')" />
+          <Column :field="routeCost" style="width: 60px;" :header="$t('route_cost')" />
+          <Column :field="latencyMs" style="width: 80px;" :header="$t('latency')" />
+          <Column :field="txBytes" style="width: 80px;" :header="$t('upload_bytes')" />
+          <Column :field="rxBytes" style="width: 80px;" :header="$t('download_bytes')" />
+          <Column :field="lossRate" style="width: 60px;" :header="$t('loss_rate')" />
         </DataTable>
       </template>
     </Card>
