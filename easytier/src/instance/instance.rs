@@ -284,19 +284,20 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        self.run_rpc_server()?;
-
-        self.ip_proxy = Some(IpProxy::new(
-            self.get_global_ctx(),
-            self.get_peer_manager(),
-        )?);
-        self.ip_proxy.as_ref().unwrap().start().await?;
-
         if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
             self.prepare_tun_device().await?;
             self.assign_ipv4_to_tun_device(ipv4_addr).await?;
             self.run_proxy_cidrs_route_updater();
         }
+
+        self.run_rpc_server()?;
+
+        // run after tun device created, so listener can bind to tun device, which may be required by win 10
+        self.ip_proxy = Some(IpProxy::new(
+            self.get_global_ctx(),
+            self.get_peer_manager(),
+        )?);
+        self.ip_proxy.as_ref().unwrap().start().await?;
 
         self.udp_hole_puncher.lock().await.run().await?;
 
