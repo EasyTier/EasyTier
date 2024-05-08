@@ -226,17 +226,22 @@ impl ConfigLoader for TomlConfigLoader {
 
         match hostname {
             Some(hostname) => {
-                let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
-                let mut name = re.replace_all(&hostname, "").to_string();
+                if !hostname.is_empty() {
+                    let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
+                    let mut name = re.replace_all(&hostname, "").to_string();
 
-                if name.len() > 32 {
-                    name = name.chars().take(32).collect::<String>();
-                }
+                    if name.len() > 32 {
+                        name = name.chars().take(32).collect::<String>();
+                    }
 
-                if hostname != name {
-                    self.set_hostname(Some(name.clone()));
+                    if hostname != name {
+                        self.set_hostname(Some(name.clone()));
+                    }
+                    name
+                } else {
+                    self.set_hostname(None);
+                    gethostname::gethostname().to_string_lossy().to_string()
                 }
-                name
             }
             None => gethostname::gethostname().to_string_lossy().to_string(),
         }
