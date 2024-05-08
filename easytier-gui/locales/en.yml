@@ -33,6 +33,7 @@ exchange_language: 切换中文
 exit: Exit
 
 chips_placeholder: 'e.g: {0}, press Enter to add'
+hostname_placeholder: Leave blank and default to device name
 off_text: Press to disable
 on_text: Press to enable
 show_config: Show Config

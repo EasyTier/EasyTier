@@ -14,6 +14,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
     fn set_id(&self, id: uuid::Uuid);
 
+    fn get_hostname(&self) -> String;
+    fn set_hostname(&self, name: Option<String>);
+
     fn get_inst_name(&self) -> String;
     fn set_inst_name(&self, name: String);
 
@@ -152,6 +155,7 @@ pub struct Flags {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Config {
     netns: Option<String>,
+    hostname: Option<String>,
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
@@ -214,6 +218,19 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_inst_name(&self, name: String) {
         self.config.lock().unwrap().instance_name = Some(name);
+    }
+
+    fn get_hostname(&self) -> String {
+        self.config
+            .lock()
+            .unwrap()
+            .hostname
+            .clone()
+            .unwrap_or(gethostname::gethostname().to_string_lossy().to_string())
+    }
+
+    fn set_hostname(&self, name: Option<String>) {
+        self.config.lock().unwrap().hostname = name;
     }
 
     fn get_netns(&self) -> Option<String> {

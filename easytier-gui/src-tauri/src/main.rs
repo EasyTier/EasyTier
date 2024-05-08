@@ -42,6 +42,7 @@ struct NetworkConfig {
     instance_id: String,
 
     virtual_ipv4: String,
+    hostname: Option<String>,
     network_name: String,
     network_secret: String,
     networking_method: NetworkingMethod,
@@ -70,6 +71,7 @@ impl NetworkConfig {
                 .parse()
                 .with_context(|| format!("failed to parse instance id: {}", self.instance_id))?,
         );
+        cfg.set_hostname(self.hostname.clone());
         cfg.set_inst_name(self.network_name.clone());
         cfg.set_network_identity(NetworkIdentity::new(
             self.network_name.clone(),
