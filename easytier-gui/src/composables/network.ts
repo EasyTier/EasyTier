@@ -20,3 +20,7 @@ export async function collectNetworkInfos() {
   const ret: string = await invoke('collect_network_infos', {})
   return JSON.parse(ret)
 }
+
+export async function getOsHostname(): Promise<string> {
+  return await invoke('get_os_hostname')
+}

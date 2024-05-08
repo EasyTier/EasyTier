@@ -283,6 +283,11 @@ fn collect_network_infos() -> Result<String, String> {
     Ok(serde_json::to_string(&ret).map_err(|e| e.to_string())?)
 }
 
+#[tauri::command]
+fn get_os_hostname() -> Result<String, String> {
+    Ok(gethostname::gethostname().to_string_lossy().to_string())
+}
+
 fn toggle_window_visibility(window: &Window) {
     if window.is_visible().unwrap() {
         window.hide().unwrap();
@@ -320,7 +325,8 @@ fn main() {
             parse_network_config,
             run_network_instance,
             retain_network_instance,
-            collect_network_infos
+            collect_network_infos,
+            get_os_hostname
         ])
         .system_tray(SystemTray::new().with_menu(tray_menu))
         .on_system_tray_event(|app, event| match event {

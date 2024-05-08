@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
+import { getOsHostname } from '~/composables/network'
 import { i18n } from '~/modules/i18n'
 import { NetworkingMethod } from '~/types/network'
 
@@ -44,6 +45,12 @@ function validateHostname() {
       curNetwork.value.hostname = name
   }
 }
+
+const osHostname = ref<string>('')
+
+onMounted(async () => {
+  osHostname.value = await getOsHostname()
+})
 </script>
 
 <template>
@@ -167,7 +174,8 @@ function validateHostname() {
               <div class="flex flex-column gap-2 basis-5/12 grow">
                 <label for="hostname">{{ $t('hostname') }}</label>
                 <InputText
-                  id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true" @blur="validateHostname"
+                  id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
+                  :placeholder="$t('hostname_placeholder', [osHostname])" @blur="validateHostname"
                 />
               </div>
             </div>
