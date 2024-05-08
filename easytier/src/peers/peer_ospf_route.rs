@@ -68,7 +68,7 @@ struct RoutePeerInfo {
     cost: u8,
     ipv4_addr: Option<Ipv4Addr>,
     proxy_cidrs: Vec<String>,
-    hostname: String,
+    hostname: Option<String>,
     udp_stun_info: i8,
     last_update: SystemTime,
     version: Version,
@@ -82,7 +82,7 @@ impl RoutePeerInfo {
             cost: 0,
             ipv4_addr: None,
             proxy_cidrs: Vec::new(),
-            hostname: String::new(),
+            hostname: None,
             udp_stun_info: 0,
             last_update: SystemTime::now(),
             version: 0,
@@ -101,7 +101,7 @@ impl RoutePeerInfo {
                 .map(|x| x.to_string())
                 .chain(global_ctx.get_vpn_portal_cidr().map(|x| x.to_string()))
                 .collect(),
-            hostname: global_ctx.get_hostname(),
+            hostname: Some(global_ctx.get_hostname()),
             udp_stun_info: global_ctx
                 .get_stun_info_collector()
                 .get_stun_info()
@@ -138,7 +138,7 @@ impl Into<crate::rpc::Route> for RoutePeerInfo {
             next_hop_peer_id: 0,
             cost: self.cost as i32,
             proxy_cidrs: self.proxy_cidrs.clone(),
-            hostname: self.hostname,
+            hostname: self.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
                 if let Ok(udp_nat_type) = NatType::try_from(self.udp_stun_info as i32) {
