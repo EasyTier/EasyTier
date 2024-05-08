@@ -181,24 +181,7 @@ impl From<Cli> for TomlConfigLoader {
 
         cfg.set_inst_name(cli.instance_name.clone());
 
-        let hostname = gethostname::gethostname().to_string_lossy().to_string();
-        let hostname = match cli.hostname {
-            Some(name) => {
-                // when allowing custom hostname, there may be empty
-                if name.is_empty() {
-                    hostname
-                } else {
-                    name
-                }
-            }
-            None => hostname,
-        };
-        let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
-        let mut hostname = re.replace_all(&hostname, "").to_string();
-        if hostname.len() > 32 {
-            hostname = hostname.chars().take(32).collect::<String>();
-        }
-        cfg.set_hostname(Some(hostname));
+        cfg.set_hostname(cli.hostname.clone());
 
         cfg.set_network_identity(NetworkIdentity::new(
             cli.network_name.clone(),

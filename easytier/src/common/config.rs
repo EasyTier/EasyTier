@@ -194,6 +194,7 @@ impl TomlConfigLoader {
                 config_str, config_str
             )
         })?;
+
         Ok(TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
         })
@@ -221,12 +222,24 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_hostname(&self) -> String {
-        self.config
-            .lock()
-            .unwrap()
-            .hostname
-            .clone()
-            .unwrap_or(gethostname::gethostname().to_string_lossy().to_string())
+        let hostname = self.config.lock().unwrap().hostname.clone();
+
+        match hostname {
+            Some(hostname) => {
+                let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
+                let mut name = re.replace_all(&hostname, "").to_string();
+
+                if name.len() > 32 {
+                    name = name.chars().take(32).collect::<String>();
+                }
+
+                if hostname != name {
+                    self.set_hostname(Some(name.clone()));
+                }
+                name
+            }
+            None => gethostname::gethostname().to_string_lossy().to_string(),
+        }
     }
 
     fn set_hostname(&self, name: Option<String>) {

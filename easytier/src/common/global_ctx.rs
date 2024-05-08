@@ -54,7 +54,7 @@ pub struct GlobalCtx {
 
     ip_collector: Arc<IPCollector>,
 
-    hostname: AtomicCell<Option<String>>,
+    hostname: String,
 
     stun_info_collection: Box<dyn StunInfoCollectorTrait>,
 
@@ -97,7 +97,7 @@ impl GlobalCtx {
 
             ip_collector: Arc::new(IPCollector::new(net_ns)),
 
-            hostname: AtomicCell::new(Some(hostname)),
+            hostname,
 
             stun_info_collection: Box::new(StunInfoCollector::new_with_default_servers()),
 
@@ -166,29 +166,8 @@ impl GlobalCtx {
         self.ip_collector.clone()
     }
 
-    pub fn get_hostname(&self) -> Option<String> {
-        let hostname = gethostname::gethostname().to_string_lossy().to_string();
-
-        let hostname = match self.hostname.take() {
-            Some(name) => {
-                // when allowing custom hostname, there may be empty
-                if name.is_empty() {
-                    hostname
-                } else {
-                    name
-                }
-            },
-            None => hostname,
-        };
-
-        let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
-        let mut hostname = re.replace_all(&hostname, "").to_string();
-        if hostname.len() > 32 {
-            hostname = hostname.chars().take(32).collect::<String>();
-        }
-
-        self.hostname.store(Some(hostname.clone()));
-        return Some(hostname);
+    pub fn get_hostname(&self) -> String {
+        return self.hostname.clone();
     }
 
     pub fn get_stun_info_collector(&self) -> impl StunInfoCollectorTrait + '_ {

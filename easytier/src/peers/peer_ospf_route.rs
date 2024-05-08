@@ -68,7 +68,7 @@ struct RoutePeerInfo {
     cost: u8,
     ipv4_addr: Option<Ipv4Addr>,
     proxy_cidrs: Vec<String>,
-    hostname: Option<String>,
+    hostname: String,
     udp_stun_info: i8,
     last_update: SystemTime,
     version: Version,
@@ -82,7 +82,7 @@ impl RoutePeerInfo {
             cost: 0,
             ipv4_addr: None,
             proxy_cidrs: Vec::new(),
-            hostname: None,
+            hostname: String::new(),
             udp_stun_info: 0,
             last_update: SystemTime::now(),
             version: 0,
@@ -138,11 +138,7 @@ impl Into<crate::rpc::Route> for RoutePeerInfo {
             next_hop_peer_id: 0,
             cost: self.cost as i32,
             proxy_cidrs: self.proxy_cidrs.clone(),
-            hostname: if let Some(hostname) = &self.hostname {
-                hostname.clone()
-            } else {
-                "".to_string()
-            },
+            hostname: self.hostname,
             stun_info: {
                 let mut stun_info = StunInfo::default();
                 if let Ok(udp_nat_type) = NatType::try_from(self.udp_stun_info as i32) {

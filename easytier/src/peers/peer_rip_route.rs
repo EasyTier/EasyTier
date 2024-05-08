@@ -36,7 +36,7 @@ pub struct SyncPeerInfo {
     pub cost: u32,
     pub ipv4_addr: Option<Ipv4Addr>,
     pub proxy_cidrs: Vec<String>,
-    pub hostname: Option<String>,
+    pub hostname: String,
     pub udp_stun_info: i8,
 }
 
@@ -585,11 +585,7 @@ impl Route for BasicRoute {
             route.next_hop_peer_id = route_info.peer_id;
             route.cost = route_info.cost as i32;
             route.proxy_cidrs = route_info.proxy_cidrs.clone();
-            route.hostname = if let Some(hostname) = &route_info.hostname {
-                hostname.clone()
-            } else {
-                "".to_string()
-            };
+            route.hostname = route_info.hostname.clone();
 
             let mut stun_info = StunInfo::default();
             if let Ok(udp_nat_type) = NatType::try_from(route_info.udp_stun_info as i32) {
