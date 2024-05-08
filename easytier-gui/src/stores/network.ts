@@ -73,18 +73,19 @@ export const useNetworkStore = defineStore('networkStore', {
     },
 
     loadFromLocalStorage() {
-      const networkList = JSON.parse(localStorage.getItem('networkList') || '[]')
-      const result = []
-      for (const cfg of networkList) {
-        result.push({
-          ...DEFAULT_NETWORK_CONFIG,
-          ...cfg,
+      let networkList: NetworkConfig[]
+
+      try {
+        networkList = JSON.parse(localStorage.getItem('networkList') || '[]')
+        networkList = networkList.map((cfg) => {
+          return { ...DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkConfig
         })
       }
-      if (result.length === 0)
-        result.push(DEFAULT_NETWORK_CONFIG)
+      catch {
+        networkList = [DEFAULT_NETWORK_CONFIG()]
+      }
 
-      this.networkList = result
+      this.networkList = networkList
       this.curNetwork = this.networkList[0]
     },
 
