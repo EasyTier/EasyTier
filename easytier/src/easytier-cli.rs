@@ -25,7 +25,7 @@ use humansize::format_size;
 use tabled::settings::Style;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "easytier-cli", author, version, about, long_about = None)]
 struct Cli {
     /// the instance name
     #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]
@@ -360,8 +360,15 @@ async fn main() -> Result<(), Error> {
                 .into_inner()
                 .vpn_portal_info
                 .unwrap_or_default();
-            println!("portal_name: {}\n", resp.vpn_type);
-            println!("client_config:{}", resp.client_config);
+            println!("portal_name: {}", resp.vpn_type);
+            println!(
+                r#"
+############### client_config_start ###############
+{}
+############### client_config_end ###############
+"#,
+                resp.client_config
+            );
             println!("connected_clients:\n{:#?}", resp.connected_clients);
         }
     }

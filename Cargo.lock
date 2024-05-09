@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "boringtun"
 version = "0.6.0"
-source = "git+https://github.com/KKRainbow/boringtun.git#449204c3eca736dc23b075d81426527a357e2f2a"
+source = "git+https://github.com/EasyTier/boringtun.git?rev=449204c#449204c3eca736dc23b075d81426527a357e2f2a"
 dependencies = [
  "aead",
  "atomic-shim",
@@ -1266,7 +1266,7 @@ checksum = "56ce8c6da7551ec6c462cbaf3bfbc75131ebbfa1c944aeaa9dab51ca1c5f0c3b"
 
 [[package]]
 name = "easytier"
-version = "1.0.0"
+version = "1.0.1-pre"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1309,6 +1309,7 @@ dependencies = [
  "quinn",
  "rand 0.8.5",
  "rcgen",
+ "regex",
  "reqwest",
  "ring 0.17.8",
  "rstest",
@@ -1348,6 +1349,7 @@ dependencies = [
  "chrono",
  "dashmap",
  "easytier",
+ "gethostname",
  "once_cell",
  "privilege",
  "serde",

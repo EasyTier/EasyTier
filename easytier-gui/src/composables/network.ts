@@ -16,3 +16,7 @@ export async function retainNetworkInstance(instanceIds: string[]): Promise<stri
 export async function collectNetworkInfos(): Promise<Record<string, NetworkInstanceRunningInfo>> {
   return JSON.parse(await invoke<string>('collect_network_infos'))
 }
+
+export async function getOsHostname(): Promise<string> {
+  return await invoke('get_os_hostname')
+}

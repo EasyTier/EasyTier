@@ -10,6 +10,7 @@ export interface NetworkConfig {
   instance_id: string
 
   virtual_ipv4: string
+  hostname?: string
   network_name: string
   network_secret: string
 

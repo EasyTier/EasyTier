@@ -101,7 +101,7 @@ impl RoutePeerInfo {
                 .map(|x| x.to_string())
                 .chain(global_ctx.get_vpn_portal_cidr().map(|x| x.to_string()))
                 .collect(),
-            hostname: global_ctx.get_hostname(),
+            hostname: Some(global_ctx.get_hostname()),
             udp_stun_info: global_ctx
                 .get_stun_info_collector()
                 .get_stun_info()
@@ -138,11 +138,7 @@ impl Into<crate::rpc::Route> for RoutePeerInfo {
             next_hop_peer_id: 0,
             cost: self.cost as i32,
             proxy_cidrs: self.proxy_cidrs.clone(),
-            hostname: if let Some(hostname) = &self.hostname {
-                hostname.clone()
-            } else {
-                "".to_string()
-            },
+            hostname: self.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
                 if let Ok(udp_nat_type) = NatType::try_from(self.udp_stun_info as i32) {

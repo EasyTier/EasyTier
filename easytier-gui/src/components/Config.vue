@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
+import { getOsHostname } from '~/composables/network'
 import { i18n } from '~/modules/i18n'
 import { NetworkingMethod } from '~/types/network'
 
@@ -32,6 +33,24 @@ const curNetwork = computed(() => {
 const presetPublicServers = [
   'tcp://easytier.public.kkrainbow.top:11010',
 ]
+
+function validateHostname() {
+  if (curNetwork.value.hostname) {
+    // eslint no-useless-escape
+    let name = curNetwork.value.hostname!.replaceAll(/[^\u4E00-\u9FA5a-zA-Z0-9\-]*/g, '')
+    if (name.length > 32)
+      name = name.substring(0, 32)
+
+    if (curNetwork.value.hostname !== name)
+      curNetwork.value.hostname = name
+  }
+}
+
+const osHostname = ref<string>('')
+
+onMounted(async () => {
+  osHostname.value = await getOsHostname()
+})
 </script>
 
 <template>
@@ -148,6 +167,15 @@ const presetPublicServers = [
                 <InputNumber
                   id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="username-help"
                   :format="false" :min="0" :max="65535"
+                />
+              </div>
+            </div>
+            <div class="flex flex-row gap-x-9 flex-wrap">
+              <div class="flex flex-column gap-2 basis-5/12 grow">
+                <label for="hostname">{{ $t('hostname') }}</label>
+                <InputText
+                  id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
+                  :placeholder="$t('hostname_placeholder', [osHostname])" @blur="validateHostname"
                 />
               </div>
             </div>

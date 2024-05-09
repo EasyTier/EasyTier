@@ -41,7 +41,7 @@ use mimalloc_rust::*;
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "easytier-core", author, version, about, long_about = None)]
 struct Cli {
     #[arg(
         short,
@@ -111,6 +111,9 @@ struct Cli {
     #[arg(long, help = "directory to store log files")]
     file_log_dir: Option<String>,
 
+    #[arg(long, help = "host name to identify this device")]
+    hostname: Option<String>,
+
     #[arg(
         short = 'm',
         long,
@@ -177,6 +180,9 @@ impl From<Cli> for TomlConfigLoader {
         let cfg = TomlConfigLoader::default();
 
         cfg.set_inst_name(cli.instance_name.clone());
+
+        cfg.set_hostname(cli.hostname.clone());
+
         cfg.set_network_identity(NetworkIdentity::new(
             cli.network_name.clone(),
             cli.network_secret.clone(),
@@ -422,7 +428,7 @@ pub async fn async_main(cli: Cli) {
     });
 
     println!("Starting easytier with config:");
-    println!("############### TOML ##############\n");
+    println!("############### TOML ###############\n");
     println!("{}", cfg.dump());
     println!("-----------------------------------");
 
