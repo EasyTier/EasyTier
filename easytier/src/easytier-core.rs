@@ -41,7 +41,7 @@ use mimalloc_rust::*;
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "easytier-core", author, version, about, long_about = None)]
 struct Cli {
     #[arg(
         short,
