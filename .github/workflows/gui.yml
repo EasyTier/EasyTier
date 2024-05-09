@@ -209,7 +209,12 @@ jobs:
       - name: Compress
         run: |
           mkdir -p ./artifacts/objects/
-
+          
+          if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
+            TAG=$GITHUB_REF_NAME
+          else
+            TAG=$GITHUB_SHA
+          fi
           # copy gui bundle, gui is built without specific target
           if [[ $OS =~ ^windows.*$ ]]; then
               mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
