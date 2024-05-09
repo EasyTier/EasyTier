@@ -264,33 +264,35 @@ impl VpnPortal for WireGuard {
             break;
         }
 
+        let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
+        let client_cidr = vpn_cfg.client_cidr;
+
+        allow_ips.push(client_cidr.to_string());
+
         let allow_ips = allow_ips
             .into_iter()
             .map(|x| x.to_string())
             .collect::<Vec<_>>()
             .join(",");
 
-        let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
-        let client_cidr = vpn_cfg.client_cidr;
-
         let cfg = self.inner.as_ref().unwrap().wg_config.clone();
         let cfg_str = format!(
             r#"
 [Interface]
 PrivateKey = {peer_secret_key}
-Address = {client_cidr} # should assign an ip from this cidr manually
+Address = {address} # should assign an ip from this cidr manually
 
 [Peer]
 PublicKey = {my_public_key}
 AllowedIPs = {allow_ips}
-Endpoint = {listenr_addr} # should be the public ip of the vpn server
+Endpoint = {listenr_addr} # should be the public ip(or domain) of the vpn server
 PersistentKeepalive = 25
 "#,
             peer_secret_key = BASE64_STANDARD.encode(cfg.peer_secret_key()),
             my_public_key = BASE64_STANDARD.encode(cfg.my_public_key()),
             listenr_addr = self.inner.as_ref().unwrap().listenr_addr,
             allow_ips = allow_ips,
-            client_cidr = client_cidr,
+            address = client_cidr.first_address().to_string() + "/32",
         );
 
         cfg_str

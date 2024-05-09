@@ -428,7 +428,7 @@ pub async fn async_main(cli: Cli) {
     });
 
     println!("Starting easytier with config:");
-    println!("############### TOML ##############\n");
+    println!("############### TOML ###############\n");
     println!("{}", cfg.dump());
     println!("-----------------------------------");
 
