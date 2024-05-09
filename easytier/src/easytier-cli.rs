@@ -25,7 +25,7 @@ use humansize::format_size;
 use tabled::settings::Style;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(name = "easytier-cli", author, version, about, long_about = None)]
 struct Cli {
     /// the instance name
     #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]
