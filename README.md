@@ -218,20 +218,22 @@ After successfully starting easytier-core, use easytier-cli to obtain the WireGu
 $> easytier-cli vpn-portal
 portal_name: wireguard
 
-client_config:
+############### client_config_start ###############
+
 [Interface]
 PrivateKey = 9VDvlaIC9XHUvRuE06hD2CEDrtGF+0lDthgr9SZfIho=
-Address = 10.14.14.0/24 # should assign an ip from this cidr manually
+Address = 10.14.14.0/32 # should assign an ip from this cidr manually
 
 [Peer]
 PublicKey = zhrZQg4QdPZs8CajT3r4fmzcNsWpBL9ImQCUsnlXyGM=
-AllowedIPs = 192.168.80.0/20,10.147.223.0/24,10.144.144.0/24
-Endpoint = 0.0.0.0:11013 # should be the public ip of the vpn server
+AllowedIPs = 10.144.144.0/24,10.14.14.0/24
+Endpoint = 0.0.0.0:11013 # should be the public ip(or domain) of the vpn server
 PersistentKeepalive = 25
+
+############### client_config_end ###############
 
 connected_clients:
 []
-
 ```
 
 Before using the Client Config, you need to modify the Interface Address and Peer Endpoint to the client's IP and the IP of the EasyTier node, respectively. Import the configuration file into the WireGuard client to access the EasyTier network.

@@ -219,20 +219,22 @@ easytier-core 启动成功后，使用 easytier-cli 获取 WireGuard Client 的�
 $> easytier-cli vpn-portal
 portal_name: wireguard
 
-client_config:
+############### client_config_start ###############
+
 [Interface]
 PrivateKey = 9VDvlaIC9XHUvRuE06hD2CEDrtGF+0lDthgr9SZfIho=
-Address = 10.14.14.0/24 # should assign an ip from this cidr manually
+Address = 10.14.14.0/32 # should assign an ip from this cidr manually
 
 [Peer]
 PublicKey = zhrZQg4QdPZs8CajT3r4fmzcNsWpBL9ImQCUsnlXyGM=
-AllowedIPs = 192.168.80.0/20,10.147.223.0/24,10.144.144.0/24
-Endpoint = 0.0.0.0:11013 # should be the public ip of the vpn server
+AllowedIPs = 10.144.144.0/24,10.14.14.0/24
+Endpoint = 0.0.0.0:11013 # should be the public ip(or domain) of the vpn server
 PersistentKeepalive = 25
+
+############### client_config_end ###############
 
 connected_clients:
 []
-
 ```
 
 使用 Client Config 前，需要将 Interface Address 和 Peer Endpoint 分别修改为客户端的 IP 和 EasyTier 节点的 IP。将配置文件导入 WireGuard 客户端，即可访问 EasyTier 网络。
