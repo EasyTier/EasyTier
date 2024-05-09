@@ -360,8 +360,15 @@ async fn main() -> Result<(), Error> {
                 .into_inner()
                 .vpn_portal_info
                 .unwrap_or_default();
-            println!("portal_name: {}\n", resp.vpn_type);
-            println!("client_config:{}", resp.client_config);
+            println!("portal_name: {}", resp.vpn_type);
+            println!(
+                r#"
+############### client_config_start ###############
+{}
+############### client_config_end ###############
+"#,
+                resp.client_config
+            );
             println!("connected_clients:\n{:#?}", resp.connected_clients);
         }
     }
