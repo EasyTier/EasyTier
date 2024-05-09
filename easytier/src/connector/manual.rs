@@ -167,7 +167,6 @@ impl ManualConnectorManager {
         let mut reconn_interval = tokio::time::interval(std::time::Duration::from_millis(
             use_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
         ));
-        let mut reconn_tasks = JoinSet::new();
         let (reconn_result_send, mut reconn_result_recv) = mpsc::channel(100);
 
         loop {
@@ -176,8 +175,8 @@ impl ManualConnectorManager {
                     if let Ok(event) = event {
                         Self::handle_event(&event, data.clone()).await;
                     } else {
-                        log::warn!("event_recv closed");
-                        panic!("event_recv closed");
+                        tracing::warn!(?event, "event_recv got error");
+                        panic!("event_recv got error, err: {:?}", event);
                     }
                 }
 
@@ -193,7 +192,7 @@ impl ManualConnectorManager {
                         let insert_succ = data.reconnecting.insert(dead_url.clone());
                         assert!(insert_succ);
 
-                        reconn_tasks.spawn(async move {
+                        tokio::spawn(async move {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone(), connector.clone()).await;
                             sender.send(reconn_ret).await.unwrap();
 
@@ -205,8 +204,7 @@ impl ManualConnectorManager {
                 }
 
                 ret = reconn_result_recv.recv() => {
-                    log::warn!("reconn_tasks done, out: {:?}", ret);
-                    let _ = reconn_tasks.join_next().await.unwrap();
+                    log::warn!("reconn_tasks done, reconn result: {:?}", ret);
                 }
             }
         }
