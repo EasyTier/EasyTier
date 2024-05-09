@@ -26,3 +26,6 @@ nohup.out
 components.d.ts
 
 musl_gcc
+
+# log
+easytier-panic.log
