@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "boringtun"
 version = "0.6.0"
-source = "git+https://github.com/EasyTier/boringtun.git#449204c3eca736dc23b075d81426527a357e2f2a"
+source = "git+https://github.com/EasyTier/boringtun.git?rev=449204c#449204c3eca736dc23b075d81426527a357e2f2a"
 dependencies = [
  "aead",
  "atomic-shim",

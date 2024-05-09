@@ -127,7 +127,7 @@ network-interface = "1.1.1"
 pathfinding = "4.9.1"
 
 # for encryption
-boringtun = { git = "https://github.com/EasyTier/boringtun.git", optional = true }
+boringtun = { git = "https://github.com/EasyTier/boringtun.git", optional = true, rev = "449204c" }
 ring = { version = "0.17", optional = true }
 bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
