@@ -235,15 +235,13 @@ static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
-fn parse_network_config(cfg: &str) -> Result<String, String> {
-    let cfg: NetworkConfig = serde_json::from_str(cfg).map_err(|e| e.to_string())?;
+fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
     let toml = cfg.gen_config().map_err(|e| e.to_string())?;
     Ok(toml.dump())
 }
 
 #[tauri::command]
-fn run_network_instance(cfg: &str) -> Result<String, String> {
-    let cfg: NetworkConfig = serde_json::from_str(cfg).map_err(|e| e.to_string())?;
+fn run_network_instance(cfg: NetworkConfig) -> Result<(), String> {
     if INSTANCE_MAP.contains_key(&cfg.instance_id) {
         return Err("instance already exists".to_string());
     }
@@ -254,13 +252,11 @@ fn run_network_instance(cfg: &str) -> Result<String, String> {
 
     println!("instance {} started", instance_id);
     INSTANCE_MAP.insert(instance_id, instance);
-    Ok("".to_string())
+    Ok(())
 }
 
 #[tauri::command]
-fn retain_network_instance(instance_ids: &str) -> Result<(), String> {
-    let instance_ids: Vec<String> =
-        serde_json::from_str(instance_ids).map_err(|e| e.to_string())?;
+fn retain_network_instance(instance_ids: Vec<String>) -> Result<(), String> {
     let _ = INSTANCE_MAP.retain(|k, _| instance_ids.contains(k));
     println!(
         "instance {:?} retained",
@@ -273,14 +269,14 @@ fn retain_network_instance(instance_ids: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn collect_network_infos() -> Result<String, String> {
+fn collect_network_infos() -> Result<BTreeMap<String, NetworkInstanceRunningInfo>, String> {
     let mut ret = BTreeMap::new();
     for instance in INSTANCE_MAP.iter() {
         if let Some(info) = instance.get_running_info() {
             ret.insert(instance.key().clone(), info);
         }
     }
-    Ok(serde_json::to_string(&ret).map_err(|e| e.to_string())?)
+    Ok(ret)
 }
 
 #[tauri::command]
