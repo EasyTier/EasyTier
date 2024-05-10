@@ -129,3 +129,13 @@ jobs:
           remote-path: /easytier-releases/${{ github.sha }}/
           no-delete-remote-files: true
           retry: 5
+  core-result:
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    runs-on: ubuntu-latest
+    needs:
+      - pre_job
+      - build
+    steps:
+      - name: Mark result as failed
+        if: needs.build.result != 'success'
+        run: exit 1
