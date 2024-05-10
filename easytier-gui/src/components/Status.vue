@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { NodeInfo } from '~/types/network'
+
 const props = defineProps<{
   instanceId?: string
 }>()
@@ -92,7 +94,7 @@ function lossRate(info: any) {
 
 const myNodeInfo = computed(() => {
   if (!curNetworkInst.value)
-    return {}
+    return {} as NodeInfo
 
   return curNetworkInst.value.detail?.my_node_info
 })
@@ -233,7 +235,7 @@ onUnmounted(() => {
 })
 
 const dialogVisible = ref(false)
-const dialogContent = ref('')
+const dialogContent = ref<any>('')
 
 function showVpnPortalConfig() {
   const my_node_info = myNodeInfo.value
