@@ -192,3 +192,13 @@ jobs:
           remote-path: /easytier-releases/${{ github.sha }}/gui
           no-delete-remote-files: true
           retry: 5
+  gui-result:
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    runs-on: ubuntu-latest
+    needs:
+      - pre_job
+      - build-gui
+    steps:
+      - name: Mark result as failed
+        if: needs.build-gui.result != 'success'
+        run: exit 1
