@@ -3,18 +3,8 @@ name: EasyTier Test
 on:
   push:
     branches: ["develop", "main"]
-    paths:
-      - "easytier.toml"
-      - "easytier/**"
-      - "easytier-gui/**"
-      - ".github/workflows/test.yml"
   pull_request:
     branches: ["develop", "main"]
-    paths:
-      - "easytier.toml"
-      - "easytier/**"
-      - "easytier-gui/**"
-      - ".github/workflows/test.yml"
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,6 +15,20 @@ defaults:
     shell: bash
 
 jobs:
+  pre_job:
+    # continue-on-error: true # Uncomment once integration is finished
+    runs-on: ubuntu-latest
+    # Map a step output to a job output
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          # All of these options are optional, so you can remove them if you are happy with the defaults
+          concurrent_skipping: 'never'
+          skip_after_successful_duplicate: 'true'
+          paths: '["Cargo.toml", "easytier/**", ".github/workflows/test.yml"]'
   test:
     runs-on: ubuntu-latest
     steps:

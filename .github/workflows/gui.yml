@@ -3,18 +3,8 @@ name: EasyTier GUI
 on:
   push:
     branches: ["develop", "main"]
-    paths:
-      - "easytier.toml"
-      - "easytier/**"
-      - "easytier-gui/**"
-      - ".github/workflows/gui.yml"
   pull_request:
     branches: ["develop", "main"]
-    paths:
-      - "easytier.toml"
-      - "easytier/**"
-      - "easytier-gui/**"
-      - ".github/workflows/gui.yml"
       
 env:
   CARGO_TERM_COLOR: always
@@ -25,6 +15,20 @@ defaults:
     shell: bash
 
 jobs:
+  pre_job:
+    # continue-on-error: true # Uncomment once integration is finished
+    runs-on: ubuntu-latest
+    # Map a step output to a job output
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          # All of these options are optional, so you can remove them if you are happy with the defaults
+          concurrent_skipping: 'never'
+          skip_after_successful_duplicate: 'true'
+          paths: '["Cargo.toml", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml"]'
   build-gui:
     strategy:
       fail-fast: false
@@ -54,6 +58,8 @@ jobs:
       OS: ${{ matrix.OS }}
       GUI_TARGET: ${{ matrix.GUI_TARGET }}
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
       - uses: actions/checkout@v3
 
