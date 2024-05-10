@@ -1,0 +1,175 @@
+name: EasyTier Core
+
+on:
+  push:
+    branches: ["develop", "main"]
+    paths:
+      - "easytier.toml"
+      - "easytier/**"
+      - ".github/workflows/core.yml"
+  pull_request:
+    branches: ["develop", "main"]
+    paths:
+      - "easytier.toml"
+      - "easytier/**"
+      - ".github/workflows/core.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # necessary for windows
+    shell: bash
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - TARGET: aarch64-unknown-linux-musl
+            OS: ubuntu-latest
+          - TARGET: x86_64-unknown-linux-musl
+            OS: ubuntu-latest
+          - TARGET: mips-unknown-linux-musl
+            OS: ubuntu-latest
+          - TARGET: mipsel-unknown-linux-musl
+            OS: ubuntu-latest
+
+          - TARGET: x86_64-apple-darwin
+            OS: macos-latest
+          - TARGET: aarch64-apple-darwin
+            OS: macos-latest
+
+          - TARGET: x86_64-pc-windows-msvc
+            OS: windows-latest
+    runs-on: ${{ matrix.OS }}
+    env:
+      NAME: easytier
+      TARGET: ${{ matrix.TARGET }}
+      OS: ${{ matrix.OS }}
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 21
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            ./target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install rust target
+        run: |
+          # dependencies are only needed on ubuntu as that's the only place where
+          # we make cross-compilation
+          if [[ $OS =~ ^ubuntu.*$ ]]; then
+            sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
+            #  curl -s musl.cc | grep mipsel
+            case $TARGET in 
+              mipsel-unknown-linux-musl)
+                MUSL_URI=mipsel-linux-muslsf
+                ;;
+              aarch64-unknown-linux-musl)
+                MUSL_URI=aarch64-linux-musl
+                ;;
+              armv7-unknown-linux-musleabihf)
+                MUSL_URI=armv7l-linux-musleabihf
+                ;;   
+              arm-unknown-linux-musleabihf)
+                MUSL_URI=arm-linux-musleabihf
+                ;;        
+              mips-unknown-linux-musl)
+                MUSL_URI=mips-linux-muslsf
+                ;;
+            esac
+
+            if [  -n "$MUSL_URI" ]; then
+              mkdir -p ./musl_gcc 
+              wget -c https://musl.cc/${MUSL_URI}-cross.tgz -P ./musl_gcc/
+              tar zxf ./musl_gcc/${MUSL_URI}-cross.tgz -C ./musl_gcc/
+              sudo ln -s $(pwd)/musl_gcc/${MUSL_URI}-cross/bin/*gcc /usr/bin/
+            fi
+          fi
+
+          # see https://github.com/rust-lang/rustup/issues/3709
+          rustup set auto-self-update disable
+          rustup install 1.75
+          rustup default 1.75
+
+          # mips/mipsel cannot add target from rustup, need compile by ourselves
+          if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
+            cd "$PWD/musl_gcc/${MUSL_URI}-cross/lib/gcc/${MUSL_URI}/11.2.1" || exit 255
+            # for panic-abort
+            cp libgcc_eh.a libunwind.a
+
+            # for mimalloc
+            ar x libgcc.a _ctzsi2.o _clz.o  _bswapsi2.o
+            ar rcs libctz.a _ctzsi2.o _clz.o  _bswapsi2.o
+
+            rustup toolchain install nightly-x86_64-unknown-linux-gnu
+            rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+            cd -
+          else
+            rustup target add $TARGET
+          fi
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          # GitHub repo token to use to avoid rate limiter
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Core & Cli
+        run: |
+          if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
+            cargo +nightly build -r --verbose --target $TARGET -Z build-std --no-default-features --features mips
+          else
+            cargo build --release --verbose --target $TARGET
+          fi
+
+      - name: Compress
+        run: |
+          mkdir -p ./artifacts/objects/
+          # windows is the only OS using a different convention for executable file name
+          if [[ $OS =~ ^windows.*$ ]]; then
+              SUFFIX=.exe
+              cp easytier/third_party/Packet.dll ./artifacts/objects/
+              cp easytier/third_party/wintun.dll ./artifacts/objects/
+          fi
+          if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
+            TAG=$GITHUB_REF_NAME
+          else
+            TAG=$GITHUB_SHA
+          fi
+          mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
+          mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
+
+          tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
+          rm -rf ./artifacts/objects/
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
+          path: |
+            ./artifacts/*
+
+      - name: Upload OSS
+        if: ${{ env.OSS_BUCKET != '' }}
+        uses: Menci/upload-to-oss@main
+        with:
+          access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
+          access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
+          endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          local-path: ./artifacts/
+          remote-path: /easytier-releases/${{ github.sha }}/
+          no-delete-remote-files: true
+          retry: 5

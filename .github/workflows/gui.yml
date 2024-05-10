@@ -1,11 +1,21 @@
-name: Rust
+name: EasyTier GUI
 
 on:
   push:
     branches: ["develop", "main"]
+    paths:
+      - "easytier.toml"
+      - "easytier/**"
+      - "easytier-gui/**"
+      - ".github/workflows/gui.yml"
   pull_request:
     branches: ["develop", "main"]
-
+    paths:
+      - "easytier.toml"
+      - "easytier/**"
+      - "easytier-gui/**"
+      - ".github/workflows/gui.yml"
+      
 env:
   CARGO_TERM_COLOR: always
 
@@ -26,12 +36,6 @@ jobs:
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
             GUI_TARGET: x86_64-unknown-linux-gnu
-          - TARGET: mips-unknown-linux-musl
-            OS: ubuntu-latest
-            GUI_TARGET:
-          - TARGET: mipsel-unknown-linux-musl
-            OS: ubuntu-latest
-            GUI_TARGET:
 
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
@@ -164,14 +168,6 @@ jobs:
           # GitHub repo token to use to avoid rate limiter
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Core & Cli
-        run: |
-          if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly build -r --verbose --target $TARGET -Z build-std --no-default-features --features mips
-          else
-            cargo build --release --verbose --target $TARGET
-          fi
-
       - name: Install GUI cross compile (aarch64 only)
         if: ${{ matrix.TARGET == 'aarch64-unknown-linux-musl' }}
         run: |
@@ -215,20 +211,12 @@ jobs:
       - name: Compress
         run: |
           mkdir -p ./artifacts/objects/
-          # windows is the only OS using a different convention for executable file name
-          if [[ $OS =~ ^windows.*$ ]]; then
-              SUFFIX=.exe
-              cp easytier/third_party/Packet.dll ./artifacts/objects/
-              cp easytier/third_party/wintun.dll ./artifacts/objects/
-          fi
+          
           if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
             TAG=$GITHUB_REF_NAME
           else
             TAG=$GITHUB_SHA
           fi
-          mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
-          mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
-
           # copy gui bundle, gui is built without specific target
           if [[ $OS =~ ^windows.*$ ]]; then
               mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
@@ -264,37 +252,3 @@ jobs:
           remote-path: /easytier-releases/${{ github.sha }}/
           no-delete-remote-files: true
           retry: 5
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Setup tools for test
-        run: sudo apt install bridge-utils
-
-      - name: Setup system for test
-        run: |
-          sudo sysctl net.bridge.bridge-nf-call-iptables=0
-          sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
-          sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
-          sudo ip addr add 2001:db8::2/64 dev lo
-
-      - name: Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Run tests
-        run: |
-          sudo -E env "PATH=$PATH" cargo test --verbose
-          sudo chown -R $USER:$USER ./target
-          sudo chown -R $USER:$USER ~/.cargo
