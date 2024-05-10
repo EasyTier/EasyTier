@@ -5,12 +5,14 @@ on:
     branches: ["develop", "main"]
     paths:
       - "easytier.toml"
+      - "easytier/**"
       - "easytier-gui/**"
       - ".github/workflows/gui.yml"
   pull_request:
     branches: ["develop", "main"]
     paths:
       - "easytier.toml"
+      - "easytier/**"
       - "easytier-gui/**"
       - ".github/workflows/gui.yml"
       
