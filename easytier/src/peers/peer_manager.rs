@@ -347,7 +347,7 @@ impl PeerManager {
                     let mut zc_packet = Some(ret);
                     let mut idx = 0;
                     for pipeline in pipe_line.read().await.iter().rev() {
-                        tracing::debug!(?zc_packet, ?idx, "try_process_packet_from_peer");
+                        tracing::trace!(?zc_packet, ?idx, "try_process_packet_from_peer");
                         idx += 1;
                         zc_packet = pipeline
                             .try_process_packet_from_peer(zc_packet.unwrap())
@@ -519,7 +519,13 @@ impl PeerManager {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
-        self.peers.send_msg(msg, dst_peer_id).await
+        if let Some(gateway) = self.peers.get_gateway_peer_id(dst_peer_id).await {
+            self.peers.send_msg_directly(msg, gateway).await
+        } else if self.foreign_network_client.has_next_hop(dst_peer_id) {
+            self.foreign_network_client.send_msg(msg, dst_peer_id).await
+        } else {
+            Err(Error::RouteError(None))
+        }
     }
 
     pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {

@@ -80,8 +80,8 @@ fn socket_recv(socket: &Socket, buf: &mut [MaybeUninit<u8>]) -> Result<(usize, I
 }
 
 fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSender<ZCPacket>) {
-    let mut buf = [0u8; 4096];
-    let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[12..]) };
+    let mut buf = [0u8; 2048];
+    let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[..]) };
 
     loop {
         let Ok((len, peer_ip)) = socket_recv(&socket, data) else {
@@ -92,7 +92,7 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
             continue;
         }
 
-        let Some(mut ipv4_packet) = MutableIpv4Packet::new(&mut buf[12..12 + len]) else {
+        let Some(mut ipv4_packet) = MutableIpv4Packet::new(&mut buf[..len]) else {
             continue;
         };
 
@@ -121,6 +121,10 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
         };
 
         ipv4_packet.set_destination(dest_ip);
+
+        // MacOS do not correctly set ip length when receiving from raw socket
+        ipv4_packet.set_total_length(len as u16);
+
         ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
 
         let mut p = ZCPacket::new_with_payload(ipv4_packet.packet());
