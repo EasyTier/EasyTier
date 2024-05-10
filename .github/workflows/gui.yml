@@ -25,7 +25,7 @@ defaults:
     shell: bash
 
 jobs:
-  build:
+  build-gui:
     strategy:
       fail-fast: false
       matrix:
@@ -236,7 +236,7 @@ jobs:
       - name: Archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
+          name: easytier-gui-${{ matrix.OS }}-${{ matrix.TARGET }}
           path: |
             ./artifacts/*
 
@@ -249,6 +249,6 @@ jobs:
           endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
           bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
           local-path: ./artifacts/
-          remote-path: /easytier-releases/${{ github.sha }}/
+          remote-path: /easytier-releases/${{ github.sha }}/gui
           no-delete-remote-files: true
           retry: 5
