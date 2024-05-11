@@ -431,7 +431,14 @@ pub mod tests {
         let (mut recv, mut send) = tunnel.split();
 
         if !once {
-            recv.forward(send).await.unwrap();
+            while let Some(item) = recv.next().await {
+                let Ok(msg) = item else {
+                    continue;
+                };
+                if let Err(_) = send.send(msg).await {
+                    break;
+                }
+            }
         } else {
             let Some(ret) = recv.next().await else {
                 assert!(false, "recv error");
@@ -447,6 +454,8 @@ pub mod tests {
             tracing::debug!(?res, "recv a msg, try echo back");
             send.send(res).await.unwrap();
         }
+        let _ = send.flush().await;
+        let _ = send.close().await;
 
         tracing::warn!("echo server exit...");
     }
@@ -506,7 +515,7 @@ pub mod tests {
         println!("echo back: {:?}", ret);
         assert_eq!(ret.payload(), Bytes::from("12345678abcdefg"));
 
-        drop(send);
+        send.close().await.unwrap();
 
         if ["udp", "wg"].contains(&connector.remote_url().scheme()) {
             lis.abort();
@@ -562,6 +571,7 @@ pub mod tests {
             let _ = send.feed(item).await.unwrap();
         }
 
+        send.close().await.unwrap();
         drop(send);
         drop(connector);
         drop(tunnel);
@@ -576,7 +586,7 @@ pub mod tests {
 
     pub fn enable_log() {
         let filter = tracing_subscriber::EnvFilter::builder()
-            .with_default_directive(tracing::level_filters::LevelFilter::TRACE.into())
+            .with_default_directive(tracing::level_filters::LevelFilter::DEBUG.into())
             .from_env()
             .unwrap()
             .add_directive("tarpc=error".parse().unwrap());

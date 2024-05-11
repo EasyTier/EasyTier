@@ -67,11 +67,24 @@ pin-project-lite = "0.2.13"
 atomicbox = "0.4.0"
 tachyonix = "0.2.1"
 
-quinn = { version = "0.10.2", optional = true }
-rustls = { version = "0.21.0", features = [
-    "dangerous_configuration",
-], optional = true }
+quinn = { version = "0.11.0", optional = true, features = ["ring"] }
+rustls = { version = "0.23.0", features = [
+    "ring",
+], default-features = false, optional = true }
 rcgen = { version = "0.11.1", optional = true }
+
+# for websocket
+tokio-websockets = { version = "0.8.2", optional = true, features = [
+    "rustls-webpki-roots",
+    "client",
+    "server",
+    "fastrand",
+    "ring",
+] }
+http = { version = "1", default-features = false, features = [
+    "std",
+], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, optional = true }
 
 # for tap device
 tun = { version = "0.6.1", features = ["async"] }
@@ -169,9 +182,10 @@ defguard_wireguard_rs = "0.4.2"
 
 
 [features]
-default = ["wireguard", "quic", "mimalloc"]
+default = ["wireguard", "quic", "mimalloc", "websocket"]
 mips = ["aes-gcm", "mimalloc", "wireguard"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc-rust"]
 aes-gcm = ["dep:aes-gcm"]
+websocket = ["dep:tokio-websockets", "dep:http", "dep:tokio-rustls"]

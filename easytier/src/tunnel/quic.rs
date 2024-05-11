@@ -12,44 +12,18 @@ use crate::{
     },
 };
 use anyhow::Context;
-use quinn::{ClientConfig, Connection, Endpoint, ServerConfig};
+use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig};
 
 use super::{
-    check_scheme_and_get_socket_addr, IpVersion, Tunnel, TunnelConnector, TunnelError,
-    TunnelListener,
+    check_scheme_and_get_socket_addr,
+    insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
+    IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
-/// Dummy certificate verifier that treats any certificate as valid.
-/// NOTE, such verification is vulnerable to MITM attacks, but convenient for testing.
-struct SkipServerVerification;
-
-impl SkipServerVerification {
-    fn new() -> Arc<Self> {
-        Arc::new(Self)
-    }
-}
-
-impl rustls::client::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::Certificate,
-        _intermediates: &[rustls::Certificate],
-        _server_name: &rustls::ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: std::time::SystemTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
-    }
-}
-
 fn configure_client() -> ClientConfig {
-    let crypto = rustls::ClientConfig::builder()
-        .with_safe_defaults()
-        .with_custom_certificate_verifier(SkipServerVerification::new())
-        .with_no_client_auth();
-
-    ClientConfig::new(Arc::new(crypto))
+    ClientConfig::new(Arc::new(
+        QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
+    ))
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
@@ -68,18 +42,14 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>)
 
 /// Returns default server configuration along with its certificate.
 fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert_der = cert.serialize_der().unwrap();
-    let priv_key = cert.serialize_private_key_der();
-    let priv_key = rustls::PrivateKey(priv_key);
-    let cert_chain = vec![rustls::Certificate(cert_der.clone())];
+    let (certs, key) = get_insecure_tls_cert();
 
-    let mut server_config = ServerConfig::with_single_cert(cert_chain, priv_key)?;
+    let mut server_config = ServerConfig::with_single_cert(certs.clone(), key.into())?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
 
-    Ok((server_config, cert_der))
+    Ok((server_config, certs[0].to_vec()))
 }
 
 #[allow(unused)]

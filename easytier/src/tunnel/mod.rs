@@ -28,6 +28,12 @@ pub mod wireguard;
 #[cfg(feature = "quic")]
 pub mod quic;
 
+#[cfg(feature = "websocket")]
+pub mod websocket;
+
+#[cfg(any(feature = "quic", feature = "websocket"))]
+pub mod insecure_tls;
+
 #[derive(thiserror::Error, Debug)]
 pub enum TunnelError {
     #[error("io error")]
@@ -61,6 +67,10 @@ pub enum TunnelError {
 
     #[error("no dns record found")]
     NoDnsRecordFound(IpVersion),
+
+    #[cfg(feature = "websocket")]
+    #[error("websocket error: {0}")]
+    WebSocketError(#[from] tokio_websockets::Error),
 
     #[error("tunnel error: {0}")]
     TunError(String),

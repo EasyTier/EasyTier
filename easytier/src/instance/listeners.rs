@@ -39,6 +39,11 @@ pub fn get_listener_by_url(
         }
         #[cfg(feature = "quic")]
         "quic" => Box::new(QUICTunnelListener::new(l.clone())),
+        #[cfg(feature = "websocket")]
+        "ws" | "wss" => {
+            use crate::tunnel::websocket::WSTunnelListener;
+            Box::new(WSTunnelListener::new(l.clone()))
+        }
         _ => {
             unreachable!("unsupported listener uri");
         }
@@ -154,6 +159,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 }
             });
         }
+        tracing::warn!("listener exit");
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
