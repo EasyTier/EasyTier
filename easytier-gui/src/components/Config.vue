@@ -57,7 +57,7 @@ onMounted(async () => {
   <div class="flex flex-column h-full">
     <div class="flex flex-column">
       <div class="w-10/12 max-w-fit self-center ">
-        <Panel header="Basic Settings">
+        <Panel :header="$t('basic_settings')">
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
@@ -107,6 +107,22 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
+          </div>
+        </Panel>
+
+        <Divider />
+
+        <Panel :header="$t('advanced_settings')" toggleable>
+          <div class="flex flex-column gap-y-2">
+            <div class="flex flex-row gap-x-9 flex-wrap">
+              <div class="flex flex-column gap-2 basis-5/12 grow">
+                <label for="hostname">{{ $t('hostname') }}</label>
+                <InputText
+                  id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
+                  :placeholder="$t('hostname_placeholder', [osHostname])" @blur="validateHostname"
+                />
+              </div>
+            </div>
 
             <div class="flex flex-row gap-x-9 flex-wrap w-full">
               <div class="flex flex-column gap-2 grow p-fluid">
@@ -144,14 +160,8 @@ onMounted(async () => {
                 </div>
               </div>
             </div>
-          </div>
-        </Panel>
 
-        <Divider />
-
-        <Panel :header="$t('advanced_settings')" toggleable>
-          <div class="flex flex-column gap-y-2">
-            <div class="flex flex-row gap-x-9 flex-wrap w-full">
+            <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 grow p-fluid">
                 <label for="listener_urls">{{ $t('listener_urls') }}</label>
                 <Chips
@@ -170,19 +180,8 @@ onMounted(async () => {
                 />
               </div>
             </div>
-            <div class="flex flex-row gap-x-9 flex-wrap">
-              <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="hostname">{{ $t('hostname') }}</label>
-                <InputText
-                  id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
-                  :placeholder="$t('hostname_placeholder', [osHostname])" @blur="validateHostname"
-                />
-              </div>
-            </div>
           </div>
         </Panel>
-
-        <Divider />
 
         <div class="flex pt-4 justify-content-center">
           <Button

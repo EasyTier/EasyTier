@@ -13,6 +13,7 @@ enable_vpn_portal: 启用VPN门户
 vpn_portal_listen_port: 监听端口
 vpn_portal_client_network: 客户端子网
 advanced_settings: 高级设置
+basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
 config_network: 配置网络
@@ -43,7 +44,9 @@ peer_count: 已连接
 upload: 上传
 download: 下载
 show_vpn_portal_config: 显示VPN门户配置
+vpn_portal_config: VPN门户配置
 show_event_log: 显示事件日志
+event_log: 事件日志
 peer_info: 节点信息
 hostname: 主机名
 route_cost: 路由
@@ -54,3 +57,5 @@ loss_rate: 丢包率
 
 run_network: 运行网络
 stop_network: 停止网络
+network_running: 运行中
+network_stopped: 已停止
