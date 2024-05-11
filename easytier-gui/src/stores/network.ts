@@ -75,20 +75,15 @@ export const useNetworkStore = defineStore('networkStore', {
     loadFromLocalStorage() {
       let networkList: NetworkConfig[]
 
-      try {
-        networkList = JSON.parse(localStorage.getItem('networkList') || '[{}]')
-        networkList = networkList.map((cfg) => {
-          return { ...DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkConfig
-        })
+      // if localStorage default is [{}], instanceId will be undefined
+      networkList = JSON.parse(localStorage.getItem('networkList') || '[]')
+      networkList = networkList.map((cfg) => {
+        return { ...DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkConfig
+      })
 
-        // prevent a empty list from localStorage, should not happen
-        if (networkList.length === 0) {
-          networkList = [DEFAULT_NETWORK_CONFIG()]
-        }
-      }
-      catch {
+      // prevent a empty list from localStorage, should not happen
+      if (networkList.length === 0)
         networkList = [DEFAULT_NETWORK_CONFIG()]
-      }
 
       this.networkList = networkList
       this.curNetwork = this.networkList[0]

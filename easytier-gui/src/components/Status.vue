@@ -42,7 +42,7 @@ function resolveObjPath(path: string, obj = globalThis, separator = '.') {
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
-function statsCommon(info: any, field: string) {
+function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
@@ -73,8 +73,11 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
 }
 
 function latencyMs(info: any) {
-  const lat_us_sum = statsCommon(info, 'stats.latency_us')
-  return lat_us_sum ? `${lat_us_sum / 1000 / info.peer.conns.length}ms` : ''
+  let lat_us_sum = statsCommon(info, 'stats.latency_us')
+  if (lat_us_sum === undefined)
+    return ''
+  lat_us_sum = lat_us_sum / 1000 / info.peer.conns.length
+  return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
 }
 
 function txBytes(info: any) {
@@ -236,6 +239,7 @@ onUnmounted(() => {
 
 const dialogVisible = ref(false)
 const dialogContent = ref<any>('')
+const dialogHeader = ref('event_log')
 
 function showVpnPortalConfig() {
   const my_node_info = myNodeInfo.value
@@ -244,6 +248,7 @@ function showVpnPortalConfig() {
 
   const url = 'https://www.wireguardconfig.com/qrcode'
   dialogContent.value = `${my_node_info.vpn_portal_cfg}\n\n # can generate QR code: ${url}`
+  dialogHeader.value = 'vpn_portal_config'
   dialogVisible.value = true
 }
 
@@ -253,13 +258,14 @@ function showEventLogs() {
     return
 
   dialogContent.value = detail.events
+  dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
 </script>
 
 <template>
   <div>
-    <Dialog v-model:visible="dialogVisible" modal header="Dialog" :style="{ width: '70%' }">
+    <Dialog v-model:visible="dialogVisible" modal :header="$t(dialogHeader)" :style="{ width: '70%' }">
       <Panel>
         <ScrollPanel style="width: 100%; height: 400px">
           <pre>{{ dialogContent }}</pre>
@@ -267,7 +273,7 @@ function showEventLogs() {
       </Panel>
       <Divider />
       <div class="flex justify-content-end gap-2">
-        <Button type="button" label="Close" @click="dialogVisible = false" />
+        <Button type="button" :label="$t('close')" @click="dialogVisible = false" />
       </div>
     </Dialog>
 
@@ -292,7 +298,7 @@ function showEventLogs() {
         <div class="flex w-full flex-column gap-y-5">
           <div class="m-0 flex flex-row justify-center gap-x-5">
             <div
-              class="rounded-full w-36 h-36 flex flex-column align-items-center pt-4"
+              class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
               style="border: 1px solid green"
             >
               <div class="font-bold">
@@ -304,7 +310,7 @@ function showEventLogs() {
             </div>
 
             <div
-              class="rounded-full w-36 h-36 flex flex-column align-items-center pt-4"
+              class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
               style="border: 1px solid purple"
             >
               <div class="font-bold">
@@ -316,7 +322,7 @@ function showEventLogs() {
             </div>
 
             <div
-              class="rounded-full w-36 h-36 flex flex-column align-items-center pt-4"
+              class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
               style="border: 1px solid fuchsia"
             >
               <div class="font-bold">
@@ -353,11 +359,11 @@ function showEventLogs() {
         <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
           <Column field="route.ipv4_addr" style="width: 100px;" :header="$t('virtual_ipv4')" />
           <Column field="route.hostname" style="max-width: 250px;" :header="$t('hostname')" />
-          <Column :field="routeCost" style="width: 60px;" :header="$t('route_cost')" />
+          <Column :field="routeCost" style="width: 100px;" :header="$t('route_cost')" />
           <Column :field="latencyMs" style="width: 80px;" :header="$t('latency')" />
           <Column :field="txBytes" style="width: 80px;" :header="$t('upload_bytes')" />
           <Column :field="rxBytes" style="width: 80px;" :header="$t('download_bytes')" />
-          <Column :field="lossRate" style="width: 60px;" :header="$t('loss_rate')" />
+          <Column :field="lossRate" style="width: 100px;" :header="$t('loss_rate')" />
         </DataTable>
       </template>
     </Card>

@@ -13,6 +13,7 @@ enable_vpn_portal: Enable VPN Portal
 vpn_portal_listen_port: VPN Portal Listen Port
 vpn_portal_client_network: Client Sub Network
 advanced_settings: Advanced Settings
+basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
 config_network: Config Network
@@ -43,7 +44,9 @@ peer_count: Connected
 upload: Upload
 download: Download
 show_vpn_portal_config: Show VPN Portal Config
+vpn_portal_config: VPN Portal Config
 show_event_log: Show Event Log
+event_log: Event Log
 peer_info: Peer Info
 route_cost: Route Cost
 hostname: Hostname
@@ -54,3 +57,5 @@ loss_rate: Loss Rate
 
 run_network: Run Network
 stop_network: Stop Network
+network_running: running
+network_stopped: stopped

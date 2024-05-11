@@ -62,10 +62,6 @@ function addNewNetwork() {
   networkStore.curNetwork = networkStore.lastNetwork
 }
 
-function networkMenuName(network: NetworkConfig) {
-  return `${network.network_name} (${network.instance_id})`
-}
-
 networkStore.$subscribe(async () => {
   networkStore.saveToLocalStorage()
   try {
@@ -150,6 +146,10 @@ function toggle_setting_menu(event: any) {
 onMounted(async () => {
   networkStore.loadFromLocalStorage()
 })
+
+function isRunning(id: string) {
+  return networkStore.networkInstanceIds.includes(id)
+}
 </script>
 
 <script lang="ts">
@@ -183,10 +183,38 @@ onMounted(async () => {
         <template #center>
           <div class="min-w-80 mr-20">
             <Dropdown
-              v-model="networkStore.curNetwork" :options="networkStore.networkList"
-              :option-label="networkMenuName" :placeholder="$t('select_network')" :highlight-on-select="true"
-              :checkmark="true" class="w-full md:w-32rem"
-            />
+              v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
+              :placeholder="$t('select_network')" class="w-full"
+            >
+              <template #value="slotProps">
+                <div class="flex items-start content-center">
+                  <div class="mr-3">
+                    <span>{{ slotProps.value.network_name }}</span>
+                    <span v-if="isRunning(slotProps.value.instance_id)" class="ml-3">
+                      {{ slotProps.value.virtual_ipv4 }}
+                    </span>
+                  </div>
+                  <Tag
+                    class="my-auto" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
+                    :value="$t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')"
+                  />
+                </div>
+              </template>
+              <template #option="slotProps">
+                <div class="flex flex-col items-start content-center">
+                  <div class="flex">
+                    <div class="mr-3">
+                      {{ $t('network_name') }}: {{ slotProps.option.network_name }}
+                    </div>
+                    <Tag
+                      class="my-auto" :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
+                      :value="$t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')"
+                    />
+                  </div>
+                  <div>{{ slotProps.option.public_server_url }}</div>
+                </div>
+              </template>
+            </Dropdown>
           </div>
         </template>
 
@@ -201,7 +229,7 @@ onMounted(async () => {
     </div>
 
     <Stepper class="h-full overflow-y-auto" :active-step="activeStep">
-      <StepperPanel :header="$t('config_network')" class="w">
+      <StepperPanel :header="$t('config_network')">
         <template #content="{ nextCallback }">
           <Config
             :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
@@ -233,10 +261,14 @@ onMounted(async () => {
   </div>
 </template>
 
-<style scoped>
+<style scoped lang="postcss">
 #root {
   height: 100vh;
   width: 100vw;
+}
+
+.p-dropdown :deep(.p-dropdown-panel .p-dropdown-items .p-dropdown-item) {
+  padding: 0 0.5rem;
 }
 </style>
 
