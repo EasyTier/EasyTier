@@ -53,6 +53,8 @@ pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str) -> TomlCon
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
         "wg://0.0.0.0:11011".parse().unwrap(),
+        "ws://0.0.0.0:11011".parse().unwrap(),
+        "wss://0.0.0.0:11012".parse().unwrap(),
     ]);
     config
 }
@@ -96,6 +98,20 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
                         .unwrap_or_default(),
                 ),
             ));
+    } else if proto == "ws" {
+        #[cfg(feature = "websocket")]
+        inst2
+            .get_conn_manager()
+            .add_connector(crate::tunnel::websocket::WSTunnelConnector::new(
+                "ws://10.1.1.1:11011".parse().unwrap(),
+            ));
+    } else if proto == "wss" {
+        #[cfg(feature = "websocket")]
+        inst2
+            .get_conn_manager()
+            .add_connector(crate::tunnel::websocket::WSTunnelConnector::new(
+                "wss://10.1.1.1:11012".parse().unwrap(),
+            ));
     }
 
     inst2
@@ -105,16 +121,17 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
         ));
 
     // wait inst2 have two route.
-    let now = std::time::Instant::now();
-    loop {
-        if inst2.get_peer_manager().list_routes().await.len() == 2 {
-            break;
-        }
-        if now.elapsed().as_secs() > 5 {
-            panic!("wait inst2 have two route timeout");
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    }
+    wait_for_condition(
+        || async { inst2.get_peer_manager().list_routes().await.len() == 2 },
+        Duration::from_secs(5000),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { inst1.get_peer_manager().list_routes().await.len() == 2 },
+        Duration::from_secs(5000),
+    )
+    .await;
 
     vec![inst1, inst2, inst3]
 }
@@ -142,7 +159,7 @@ async fn ping_test(from_netns: &str, target_ip: &str) -> bool {
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn basic_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] proto: &str) {
     let insts = init_three_node(proto).await;
 
     check_route(

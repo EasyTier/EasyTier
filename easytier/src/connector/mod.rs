@@ -105,6 +105,11 @@ pub async fn create_connector_by_url(
             .await;
             return Ok(Box::new(connector));
         }
+        #[cfg(feature = "websocket")]
+        "ws" | "wss" => {
+            let connector = crate::tunnel::websocket::WSTunnelConnector::new(url);
+            return Ok(Box::new(connector));
+        }
         _ => {
             return Err(Error::InvalidUrl(url.into()));
         }

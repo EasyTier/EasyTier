@@ -1,9 +1,9 @@
 // this mod wrap tunnel to a mpsc tunnel, based on crossbeam_channel
 
-use std::pin::Pin;
+use std::{pin::Pin, time::Duration};
 
 use anyhow::Context;
-use tokio::task::JoinHandle;
+use tokio::{task::JoinHandle, time::timeout};
 
 use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 
@@ -42,6 +42,8 @@ impl<T: Tunnel> MpscTunnel<T> {
                     break;
                 }
             }
+            let close_ret = timeout(Duration::from_secs(5), sink.close()).await;
+            tracing::warn!(?close_ret, "mpsc close sink");
         });
 
         Self {
