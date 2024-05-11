@@ -27,7 +27,8 @@ pub enum GlobalCtxEvent {
     PeerConnRemoved(PeerConnInfo),
 
     ListenerAdded(url::Url),
-    ConnectionAccepted(String, String), // (local url, remote url)
+    ListenerAddFailed(url::Url, String), // (url, error message)
+    ConnectionAccepted(String, String),  // (local url, remote url)
     ConnectionError(String, String, String), // (local url, remote url, error message)
 
     Connecting(url::Url),

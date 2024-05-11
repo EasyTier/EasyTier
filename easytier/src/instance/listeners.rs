@@ -45,7 +45,7 @@ pub fn get_listener_by_url(
             Box::new(WSTunnelListener::new(l.clone()))
         }
         _ => {
-            unreachable!("unsupported listener uri");
+            return Err(Error::InvalidUrl(l.to_string()));
         }
     })
 }
@@ -101,7 +101,12 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         .await?;
 
         for l in self.global_ctx.config.get_listener_uris().iter() {
-            let lis = get_listener_by_url(l, self.global_ctx.clone())?;
+            let Ok(lis) = get_listener_by_url(l, self.global_ctx.clone()) else {
+                let msg = format!("failed to get listener by url: {}, maybe not supported", l);
+                self.global_ctx
+                    .issue_event(GlobalCtxEvent::ListenerAddFailed(l.clone(), msg));
+                continue;
+            };
             self.add_listener(lis, true).await?;
         }
 

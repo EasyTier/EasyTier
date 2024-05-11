@@ -374,6 +374,13 @@ pub async fn async_main(cli: Cli) {
                     ));
                 }
 
+                GlobalCtxEvent::ListenerAddFailed(p, msg) => {
+                    print_event(format!(
+                        "listener add failed. listener: {}, msg: {}",
+                        p, msg
+                    ));
+                }
+
                 GlobalCtxEvent::ListenerAdded(p) => {
                     if p.scheme() == "ring" {
                         continue;
