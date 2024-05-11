@@ -7,6 +7,8 @@ use zerocopy::FromZeroes;
 
 type DefaultEndian = LittleEndian;
 
+pub const DEFAULT_TTL: u8 = 8;
+
 // TCP TunnelHeader
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
@@ -69,7 +71,8 @@ pub struct PeerManagerHeader {
     pub to_peer_id: U32<DefaultEndian>,
     pub packet_type: u8,
     pub flags: u8,
-    reserved: U16<DefaultEndian>,
+    pub ttl: u8,
+    reserved: u8,
     pub len: U32<DefaultEndian>,
 }
 pub const PEER_MANAGER_HEADER_SIZE: usize = std::mem::size_of::<PeerManagerHeader>();
@@ -362,6 +365,7 @@ impl ZCPacket {
         hdr.to_peer_id.set(to_peer_id);
         hdr.packet_type = packet_type;
         hdr.flags = 0;
+        hdr.ttl = DEFAULT_TTL;
         hdr.len.set(payload_len as u32);
     }
 

@@ -324,14 +324,20 @@ impl PeerManager {
         self.tasks.lock().await.spawn(async move {
             log::trace!("start_peer_recv");
             while let Some(mut ret) = recv.next().await {
-                let Some(hdr) = ret.peer_manager_header() else {
+                let Some(hdr) = ret.mut_peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
                     continue;
                 };
-                tracing::trace!(?hdr, ?ret, "peer recv a packet...");
+                tracing::trace!(?hdr, "peer recv a packet...");
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
+                    if hdr.ttl <= 1 {
+                        tracing::warn!(?hdr, "ttl is 0, drop packet");
+                        continue;
+                    }
+
+                    hdr.ttl -= 1;
                     tracing::trace!(?to_peer_id, ?my_peer_id, "need forward");
                     let ret = peers.send_msg(ret, to_peer_id).await;
                     if ret.is_err() {
