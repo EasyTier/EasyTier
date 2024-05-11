@@ -229,7 +229,7 @@ function isRunning(id: string) {
     </div>
 
     <Stepper class="h-full overflow-y-auto" :active-step="activeStep">
-      <StepperPanel :header="$t('config_network')" class="w">
+      <StepperPanel :header="$t('config_network')">
         <template #content="{ nextCallback }">
           <Config
             :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"

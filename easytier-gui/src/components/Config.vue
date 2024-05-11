@@ -56,7 +56,7 @@ onMounted(async () => {
 <template>
   <div class="flex flex-column h-full">
     <div class="flex flex-column">
-      <div class="w-10/12 max-w-fit self-center ">
+      <div class="w-7/12 self-center ">
         <Panel :header="$t('basic_settings')">
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
