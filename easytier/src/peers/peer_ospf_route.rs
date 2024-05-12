@@ -683,16 +683,18 @@ impl PeerRouteServiceImpl {
             DefaultRouteCostCalculator::default(),
         );
 
-        let calc_locked = self.cost_calculator.lock().unwrap();
+        let mut calc_locked = self.cost_calculator.lock().unwrap();
         if calc_locked.is_none() {
             return;
         }
 
+        calc_locked.as_mut().unwrap().begin_update();
         self.route_table_with_cost.build_from_synced_info(
             self.my_peer_id,
             &self.synced_route_info,
-            &calc_locked.as_ref().unwrap(),
+            calc_locked.as_mut().unwrap(),
         );
+        calc_locked.as_mut().unwrap().end_update();
     }
 
     fn cost_calculator_need_update(&self) -> bool {
