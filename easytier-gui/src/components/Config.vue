@@ -155,7 +155,7 @@ onMounted(async () => {
                     </InputGroup>
                   </div>
                   <InputNumber
-                    v-if="curNetwork.enable_vpn_portal" v-model="curNetwork.vpn_portal_listne_port"
+                    v-if="curNetwork.enable_vpn_portal" v-model="curNetwork.vpn_portal_listen_port"
                     :placeholder="$t('vpn_portal_listen_port')" class="" :format="false" :min="0" :max="65535"
                   />
                 </div>

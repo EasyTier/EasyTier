@@ -53,7 +53,7 @@ struct NetworkConfig {
     proxy_cidrs: Vec<String>,
 
     enable_vpn_portal: bool,
-    vpn_portal_listne_port: i32,
+    vpn_portal_listen_port: i32,
     vpn_portal_client_network_addr: String,
     vpn_portal_client_network_len: i32,
 
@@ -150,12 +150,12 @@ impl NetworkConfig {
                 client_cidr: cidr
                     .parse()
                     .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
-                wireguard_listen: format!("0.0.0.0:{}", self.vpn_portal_listne_port)
+                wireguard_listen: format!("0.0.0.0:{}", self.vpn_portal_listen_port)
                     .parse()
                     .with_context(|| {
                         format!(
                             "failed to parse vpn portal wireguard listen port. {}",
-                            self.vpn_portal_listne_port
+                            self.vpn_portal_listen_port
                         )
                     })?,
             });

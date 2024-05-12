@@ -22,7 +22,7 @@ export interface NetworkConfig {
   proxy_cidrs: Array<string>
 
   enable_vpn_portal: boolean
-  vpn_portal_listne_port: number
+  vpn_portal_listen_port: number
   vpn_portal_client_network_addr: string
   vpn_portal_client_network_len: number
 
@@ -48,7 +48,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     proxy_cidrs: [],
 
     enable_vpn_portal: false,
-    vpn_portal_listne_port: 22022,
+    vpn_portal_listen_port: 22022,
     vpn_portal_client_network_addr: '',
     vpn_portal_client_network_len: 24,
 
