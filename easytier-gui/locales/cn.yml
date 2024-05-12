@@ -4,6 +4,7 @@ public_server: 公共服务器
 manual: 手动
 standalone: 独立
 virtual_ipv4: 虚拟IPv4地址
+virtual_ipv4_auto: 自动
 network_name: 网络名称
 network_secret: 网络密码
 public_server_url: 公共服务器地址

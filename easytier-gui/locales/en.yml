@@ -4,6 +4,7 @@ public_server: Public Server
 manual: Manual
 standalone: Standalone
 virtual_ipv4: Virtual IPv4
+virtual_ipv4_auto: Auto
 network_name: Network Name
 network_secret: Network Secret
 public_server_url: Public Server URL

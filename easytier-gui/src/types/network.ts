@@ -9,6 +9,7 @@ export enum NetworkingMethod {
 export interface NetworkConfig {
   instance_id: string
 
+  virtual_ip_auto: boolean
   virtual_ipv4: string
   hostname?: string
   network_name: string
@@ -17,9 +18,9 @@ export interface NetworkConfig {
   networking_method: NetworkingMethod
 
   public_server_url: string
-  peer_urls: Array<string>
+  peer_urls: string[]
 
-  proxy_cidrs: Array<string>
+  proxy_cidrs: string[]
 
   enable_vpn_portal: boolean
   vpn_portal_listen_port: number
@@ -28,7 +29,7 @@ export interface NetworkConfig {
 
   advanced_settings: boolean
 
-  listener_urls: Array<string>
+  listener_urls: string[]
   rpc_port: number
 }
 
@@ -36,8 +37,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   return {
     instance_id: uuidv4(),
 
+    virtual_ip_auto: true,
     virtual_ipv4: '',
-    network_name: 'default',
+    network_name: 'easytier',
     network_secret: '',
 
     networking_method: NetworkingMethod.PublicServer,
@@ -59,7 +61,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    rpc_port: 15888,
+    rpc_port: 0,
   }
 }
 

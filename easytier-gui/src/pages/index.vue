@@ -8,7 +8,7 @@ import { exit } from '@tauri-apps/api/process'
 import Config from '~/components/Config.vue'
 import Status from '~/components/Status.vue'
 
-import type { NetworkConfig } from '~/types/network'
+import type { NetworkConfig, NetworkInstanceRunningInfo } from '~/types/network'
 import { loadLanguageAsync } from '~/modules/i18n'
 
 const { t, locale } = useI18n()
@@ -75,7 +75,9 @@ networkStore.$subscribe(async () => {
 })
 
 async function runNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
-  cb({} as MouseEvent)
+  if (cfg.virtual_ip_auto)
+    cfg.virtual_ipv4 = await getAvailableIP(cfg)
+
   networkStore.removeNetworkInstance(cfg.instance_id)
   await retainNetworkInstance(networkStore.networkInstanceIds)
   networkStore.addNetworkInstance(cfg.instance_id)
@@ -91,13 +93,83 @@ async function runNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
 
 async function stopNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
   // console.log('stopNetworkCb', cfg, cb)
-  cb({} as MouseEvent)
   networkStore.removeNetworkInstance(cfg.instance_id)
+  delete networkStore.networkAutoIpv4Ids[cfg.instance_id]
   await retainNetworkInstance(networkStore.networkInstanceIds)
+  cb({} as MouseEvent)
 }
 
 async function updateNetworkInfos() {
   networkStore.updateWithNetworkInfos(await collectNetworkInfos())
+}
+
+async function getAvailableIP(cfg: NetworkConfig) {
+  cfg.virtual_ipv4 = ''
+  let ipv4 = ''
+  networkStore.networkAutoIpv4Ids[cfg.instance_id] = { ...cfg } as NetworkConfig
+  networkStore.removeNetworkInstance(cfg.instance_id)
+  await retainNetworkInstance(networkStore.networkInstanceIds)
+  networkStore.addNetworkInstance(cfg.instance_id)
+  try {
+    await runNetworkInstance(cfg)
+  }
+  catch (e: any) {
+    // console.error(e)
+    toast.add({ severity: 'info', detail: e })
+  }
+  let num = 10
+  // almost need 3000ms
+  while (num >= 0) {
+    num -= 1
+    await new Promise(resolve => setTimeout(resolve, 500))
+    const infos: Record<string, NetworkInstanceRunningInfo> = await collectNetworkInfos()
+    const ip_set = new Set<string>()
+    Object.values(infos).forEach((info) => {
+      if (info.peer_route_pairs.length > 0) {
+        info.peer_route_pairs.forEach((pair) => {
+          ip_set.add(pair.route.ipv4_addr)
+        })
+      }
+    })
+    const ip_arr: string[] = Array.from(ip_set).filter(ip => ip !== '')
+    // it is possible that some other nodes may not have obtained their ip
+    if (ip_arr.length > 0) {
+      const addr = ip_arr[0].split('.').map(Number)
+      while (ip_arr.includes(addr.join('.'))) {
+        if (addr[3] < 254) { addr[3] += 1 }
+        else {
+          addr[3] = 2
+          if (addr[2] < 254) {
+            addr[2] += 1
+          }
+          else {
+            addr[2] = 2
+            if (addr[1] < 254) {
+              addr[1] += 1
+            }
+            else {
+              addr[1] = 2
+              if (addr[0] < 254)
+                addr[0] += 1
+              else
+                addr[0] = 10
+            }
+          }
+        }
+      }
+      ipv4 = addr.join('.')
+      break
+    }
+  }
+
+  if (ipv4 === '')
+    ipv4 = '10.25.2.2'
+
+  networkStore.removeNetworkInstance(cfg.instance_id)
+  delete networkStore.networkAutoIpv4Ids[cfg.instance_id]
+  await retainNetworkInstance(networkStore.networkInstanceIds)
+
+  return ipv4
 }
 
 let intervalId = 0
@@ -108,12 +180,8 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(intervalId))
 
-const curNetworkHasInstance = computed(() => {
-  return networkStore.networkInstanceIds.includes(networkStore.curNetworkId)
-})
-
 const activeStep = computed(() => {
-  return curNetworkHasInstance.value ? 1 : 0
+  return (!Object.keys(networkStore.networkAutoIpv4Ids).includes(networkStore.curNetworkId) && networkStore.networkInstanceIds.includes(networkStore.curNetworkId)) ? 1 : 0
 })
 
 const setting_menu = ref()
@@ -139,6 +207,10 @@ const setting_menu_items = ref([
   },
 ])
 
+const networkConfigList = computed(() => {
+  return networkStore.networkList.filter(c => !Object.keys(networkStore.networkAutoIpv4Ids).includes(c.instance_id))
+})
+
 function toggle_setting_menu(event: any) {
   setting_menu.value.toggle(event)
 }
@@ -148,7 +220,7 @@ onMounted(async () => {
 })
 
 function isRunning(id: string) {
-  return networkStore.networkInstanceIds.includes(id)
+  return (!Object.keys(networkStore.networkAutoIpv4Ids).includes(id) && networkStore.networkInstanceIds.includes(id))
 }
 </script>
 
@@ -183,7 +255,7 @@ function isRunning(id: string) {
         <template #center>
           <div class="min-w-80 mr-20">
             <Dropdown
-              v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
+              v-model="networkStore.curNetwork" :options="networkConfigList" :highlight-on-select="false"
               :placeholder="$t('select_network')" class="w-full"
             >
               <template #value="slotProps">
