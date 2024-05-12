@@ -2,7 +2,6 @@
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { getOsHostname } from '~/composables/network'
-import { i18n } from '~/modules/i18n'
 import { NetworkingMethod } from '~/types/network'
 
 const props = defineProps<{
@@ -12,10 +11,12 @@ const props = defineProps<{
 
 defineEmits(['runNetwork'])
 
+const { t } = useI18n()
+
 const networking_methods = ref([
-  { value: NetworkingMethod.PublicServer, label: i18n.global.t('public_server') },
-  { value: NetworkingMethod.Manual, label: i18n.global.t('manual') },
-  { value: NetworkingMethod.Standalone, label: i18n.global.t('standalone') },
+  { value: NetworkingMethod.PublicServer, label: t('public_server') },
+  { value: NetworkingMethod.Manual, label: t('manual') },
+  { value: NetworkingMethod.Standalone, label: t('standalone') },
 ])
 
 const networkStore = useNetworkStore()
