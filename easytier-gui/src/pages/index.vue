@@ -52,7 +52,6 @@ enum Severity {
 
 const messageBarSeverity = ref(Severity.None)
 const messageBarContent = ref('')
-
 const toast = useToast()
 
 const networkStore = useNetworkStore()
@@ -74,7 +73,12 @@ networkStore.$subscribe(async () => {
   }
 })
 
+const runBtnDisabled = ref(false)
+
 async function runNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
+  if ((Object.keys(networkStore.networkAutoIpv4Ids).includes(networkStore.curNetworkId) && networkStore.networkInstanceIds.includes(networkStore.curNetworkId)))
+    return
+  runBtnDisabled.value = true
   if (cfg.virtual_ip_auto)
     cfg.virtual_ipv4 = await getAvailableIP(cfg)
 
@@ -89,6 +93,7 @@ async function runNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
     // console.error(e)
     toast.add({ severity: 'info', detail: e })
   }
+  runBtnDisabled.value = false
 }
 
 async function stopNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
@@ -104,72 +109,71 @@ async function updateNetworkInfos() {
 }
 
 async function getAvailableIP(cfg: NetworkConfig) {
-  cfg.virtual_ipv4 = ''
-  let ipv4 = ''
-  networkStore.networkAutoIpv4Ids[cfg.instance_id] = { ...cfg } as NetworkConfig
-  networkStore.removeNetworkInstance(cfg.instance_id)
+  const t_cfg = JSON.parse(JSON.stringify(cfg))
+  t_cfg.virtual_ipv4 = ''
+  t_cfg.hostname = 'pseudo-dhcp'
+  networkStore.networkAutoIpv4Ids[t_cfg.instance_id] = { ...t_cfg } as NetworkConfig
+  networkStore.removeNetworkInstance(t_cfg.instance_id)
   await retainNetworkInstance(networkStore.networkInstanceIds)
-  networkStore.addNetworkInstance(cfg.instance_id)
+  networkStore.addNetworkInstance(t_cfg.instance_id)
   try {
-    await runNetworkInstance(cfg)
+    await runNetworkInstance(t_cfg)
+    // almost need 3000ms
+    for (let num = 10; num >= 0; num--) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      const infos: Record<string, NetworkInstanceRunningInfo> = await collectNetworkInfos()
+      const ip_set = new Set<string>()
+      Object.values(infos).forEach((info) => {
+        if (info.peer_route_pairs.length > 0) {
+          info.peer_route_pairs.forEach((pair) => {
+            ip_set.add(pair.route.ipv4_addr)
+          })
+        }
+      })
+      const ip_arr: string[] = Array.from(ip_set).filter(ip => ip !== '')
+      // it is possible that some other nodes may not have obtained their ip
+      if (ip_arr.length > 0) {
+        const addr = ip_arr[0].split('.').map(Number)
+        while (ip_arr.includes(addr.join('.'))) {
+          if (addr[3] < 254) { addr[3] += 1 }
+          else {
+            addr[3] = 2
+            if (addr[2] < 254) {
+              addr[2] += 1
+            }
+            else {
+              addr[2] = 2
+              if (addr[1] < 254) {
+                addr[1] += 1
+              }
+              else {
+                addr[1] = 2
+                if (addr[0] < 254)
+                  addr[0] += 1
+                else
+                  addr[0] = 10
+              }
+            }
+          }
+        }
+        t_cfg.virtual_ipv4 = addr.join('.')
+        break
+      }
+    }
   }
   catch (e: any) {
     // console.error(e)
     toast.add({ severity: 'info', detail: e })
   }
-  let num = 10
-  // almost need 3000ms
-  while (num >= 0) {
-    num -= 1
-    await new Promise(resolve => setTimeout(resolve, 500))
-    const infos: Record<string, NetworkInstanceRunningInfo> = await collectNetworkInfos()
-    const ip_set = new Set<string>()
-    Object.values(infos).forEach((info) => {
-      if (info.peer_route_pairs.length > 0) {
-        info.peer_route_pairs.forEach((pair) => {
-          ip_set.add(pair.route.ipv4_addr)
-        })
-      }
-    })
-    const ip_arr: string[] = Array.from(ip_set).filter(ip => ip !== '')
-    // it is possible that some other nodes may not have obtained their ip
-    if (ip_arr.length > 0) {
-      const addr = ip_arr[0].split('.').map(Number)
-      while (ip_arr.includes(addr.join('.'))) {
-        if (addr[3] < 254) { addr[3] += 1 }
-        else {
-          addr[3] = 2
-          if (addr[2] < 254) {
-            addr[2] += 1
-          }
-          else {
-            addr[2] = 2
-            if (addr[1] < 254) {
-              addr[1] += 1
-            }
-            else {
-              addr[1] = 2
-              if (addr[0] < 254)
-                addr[0] += 1
-              else
-                addr[0] = 10
-            }
-          }
-        }
-      }
-      ipv4 = addr.join('.')
-      break
-    }
-  }
 
-  if (ipv4 === '')
-    ipv4 = '10.25.2.2'
+  if (t_cfg.virtual_ipv4 === '')
+    t_cfg.virtual_ipv4 = '10.25.2.2'
 
-  networkStore.removeNetworkInstance(cfg.instance_id)
-  delete networkStore.networkAutoIpv4Ids[cfg.instance_id]
+  networkStore.removeNetworkInstance(t_cfg.instance_id)
+  delete networkStore.networkAutoIpv4Ids[t_cfg.instance_id]
   await retainNetworkInstance(networkStore.networkInstanceIds)
 
-  return ipv4
+  return t_cfg.virtual_ipv4
 }
 
 let intervalId = 0
@@ -304,7 +308,8 @@ function isRunning(id: string) {
       <StepperPanel :header="$t('config_network')">
         <template #content="{ nextCallback }">
           <Config
-            :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
+            :instance-id="networkStore.curNetworkId"
+            :config-invalid="messageBarSeverity !== Severity.None || runBtnDisabled"
             @run-network="runNetworkCb($event, nextCallback)"
           />
         </template>
