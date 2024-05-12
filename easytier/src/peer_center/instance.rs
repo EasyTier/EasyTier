@@ -308,7 +308,7 @@ impl PeerCenterInstance {
                     .get(&src)
                     .and_then(|src_peer_info| src_peer_info.direct_peers.get(&dst))
                     .and_then(|info| Some(info.latency_ms));
-                ret.unwrap_or(i32::MAX)
+                ret.unwrap_or(80)
             }
 
             fn begin_update(&mut self) {
@@ -344,7 +344,6 @@ mod tests {
         peers::tests::{
             connect_peer_manager, create_mock_peer_manager, wait_for_condition, wait_route_appear,
         },
-        tunnel::common::tests::enable_log,
     };
 
     use super::*;

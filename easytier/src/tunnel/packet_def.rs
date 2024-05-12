@@ -7,8 +7,6 @@ use zerocopy::FromZeroes;
 
 type DefaultEndian = LittleEndian;
 
-pub const DEFAULT_TTL: u8 = 8;
-
 // TCP TunnelHeader
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
@@ -61,6 +59,7 @@ pub enum PacketType {
 bitflags::bitflags! {
     struct PeerManagerHeaderFlags: u8 {
         const ENCRYPTED = 0b0000_0001;
+        const LATENCY_FIRST = 0b0000_0010;
     }
 }
 
@@ -71,7 +70,7 @@ pub struct PeerManagerHeader {
     pub to_peer_id: U32<DefaultEndian>,
     pub packet_type: u8,
     pub flags: u8,
-    pub ttl: u8,
+    pub forward_counter: u8,
     reserved: u8,
     pub len: U32<DefaultEndian>,
 }
@@ -90,6 +89,22 @@ impl PeerManagerHeader {
             flags.insert(PeerManagerHeaderFlags::ENCRYPTED);
         } else {
             flags.remove(PeerManagerHeaderFlags::ENCRYPTED);
+        }
+        self.flags = flags.bits();
+    }
+
+    pub fn is_latency_first(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::LATENCY_FIRST)
+    }
+
+    pub fn set_latency_first(&mut self, latency_first: bool) {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if latency_first {
+            flags.insert(PeerManagerHeaderFlags::LATENCY_FIRST);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::LATENCY_FIRST);
         }
         self.flags = flags.bits();
     }
@@ -365,7 +380,7 @@ impl ZCPacket {
         hdr.to_peer_id.set(to_peer_id);
         hdr.packet_type = packet_type;
         hdr.flags = 0;
-        hdr.ttl = DEFAULT_TTL;
+        hdr.forward_counter = 1;
         hdr.len.set(payload_len as u32);
     }
 

@@ -302,6 +302,11 @@ impl Instance {
         self.udp_hole_puncher.lock().await.run().await?;
 
         self.peer_center.init().await;
+        let route_calc = self.peer_center.get_cost_calculator();
+        self.peer_manager
+            .get_route()
+            .set_route_cost_fn(route_calc)
+            .await;
 
         self.add_initial_peers().await?;
 

@@ -400,11 +400,42 @@ impl RouteTable {
             .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap())
     }
 
+    fn find_path_with_least_cost<T: RouteCostCalculatorInterface>(
+        my_peer_id: PeerId,
+        peer_id: PeerId,
+        synced_info: &SyncedRouteInfo,
+        cost_calc: &mut T,
+    ) -> Option<Vec<PeerId>> {
+        let Some((path, _cost)): Option<(Vec<u32>, i32)> = pathfinding::prelude::dijkstra(
+            &my_peer_id,
+            |src_peer| {
+                synced_info
+                    .get_connected_peers(*src_peer)
+                    .unwrap_or_else(|| BTreeSet::new())
+                    .into_iter()
+                    .map(|dst_peer| {
+                        let cost = cost_calc.calculate_cost(*src_peer, dst_peer);
+                        (dst_peer, cost)
+                    })
+                    .collect::<BTreeSet<_>>()
+            },
+            |x| *x == peer_id,
+        ) else {
+            return None;
+        };
+
+        if !path.is_empty() {
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     fn build_from_synced_info<T: RouteCostCalculatorInterface>(
         &self,
         my_peer_id: PeerId,
         synced_info: &SyncedRouteInfo,
-        cost_calc: T,
+        mut cost_calc: T,
     ) {
         // build  peer_infos
         self.peer_infos.clear();
@@ -427,24 +458,11 @@ impl RouteTable {
             if peer_id == my_peer_id {
                 continue;
             }
-            let Some((path, _cost)): Option<(Vec<u32>, i32)> = pathfinding::prelude::dijkstra(
-                &my_peer_id,
-                |src_peer| {
-                    synced_info
-                        .get_connected_peers(*src_peer)
-                        .unwrap_or_else(|| BTreeSet::new())
-                        .into_iter()
-                        .map(|dst_peer| {
-                            let cost = cost_calc.calculate_cost(*src_peer, dst_peer);
-                            (dst_peer, cost)
-                        })
-                        .collect::<BTreeSet<_>>()
-                },
-                |x| *x == peer_id,
-            ) else {
-                continue;
-            };
-            if !path.is_empty() {
+
+            let path =
+                Self::find_path_with_least_cost(my_peer_id, peer_id, synced_info, &mut cost_calc);
+
+            if let Some(path) = path {
                 assert!(path.len() >= 2);
                 self.next_hop_map
                     .insert(peer_id, (path[1], (path.len() - 1) as i32));
@@ -1226,6 +1244,7 @@ impl PeerRoute {
         session_mgr.maintain_sessions(service_impl).await;
     }
 
+    #[tracing::instrument(skip(session_mgr))]
     async fn update_my_peer_info_routine(
         service_impl: Arc<PeerRouteServiceImpl>,
         session_mgr: RouteSessionManager,
@@ -1237,6 +1256,7 @@ impl PeerRoute {
             }
 
             if service_impl.cost_calculator_need_update() {
+                tracing::debug!("cost_calculator_need_update");
                 service_impl.update_route_table();
             }
 

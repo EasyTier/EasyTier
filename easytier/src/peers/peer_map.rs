@@ -18,7 +18,7 @@ use crate::{
 use super::{
     peer::Peer,
     peer_conn::{PeerConn, PeerConnId},
-    route_trait::ArcRoute,
+    route_trait::{ArcRoute, NextHopPolicy},
     PacketRecvChan,
 };
 
@@ -94,7 +94,11 @@ impl PeerMap {
         Ok(())
     }
 
-    pub async fn get_gateway_peer_id(&self, dst_peer_id: PeerId) -> Option<PeerId> {
+    pub async fn get_gateway_peer_id(
+        &self,
+        dst_peer_id: PeerId,
+        policy: NextHopPolicy,
+    ) -> Option<PeerId> {
         if dst_peer_id == self.my_peer_id {
             return Some(dst_peer_id);
         }
@@ -105,7 +109,10 @@ impl PeerMap {
 
         // get route info
         for route in self.routes.read().await.iter() {
-            if let Some(gateway_peer_id) = route.get_next_hop(dst_peer_id).await {
+            if let Some(gateway_peer_id) = route
+                .get_next_hop_with_policy(dst_peer_id, policy.clone())
+                .await
+            {
                 // for foreign network, gateway_peer_id may not connect to me
                 if self.has_peer(gateway_peer_id) {
                     return Some(gateway_peer_id);
@@ -116,8 +123,13 @@ impl PeerMap {
         None
     }
 
-    pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
-        let Some(gateway_peer_id) = self.get_gateway_peer_id(dst_peer_id).await else {
+    pub async fn send_msg(
+        &self,
+        msg: ZCPacket,
+        dst_peer_id: PeerId,
+        policy: NextHopPolicy,
+    ) -> Result<(), Error> {
+        let Some(gateway_peer_id) = self.get_gateway_peer_id(dst_peer_id, policy).await else {
             return Err(Error::RouteError(Some(format!(
                 "peer map sengmsg no gateway for dst_peer_id: {}",
                 dst_peer_id
