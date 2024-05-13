@@ -189,19 +189,24 @@ impl From<Cli> for TomlConfigLoader {
         cfg.set_inst_name(cli.instance_name.clone());
 
         cfg.set_hostname(cli.hostname.clone());
-        cfg.set_dhcp(cli.dhcp);
+
         cfg.set_network_identity(NetworkIdentity::new(
             cli.network_name.clone(),
             cli.network_secret.clone(),
         ));
 
         cfg.set_netns(cli.net_ns.clone());
-        if let Some(ipv4) = &cli.ipv4 {
-            cfg.set_ipv4(
-                ipv4.parse()
-                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
-                    .unwrap(),
-            )
+
+        cfg.set_dhcp(cli.dhcp);
+
+        if !cli.dhcp {
+            if let Some(ipv4) = &cli.ipv4 {
+                cfg.set_ipv4(
+                    ipv4.parse()
+                        .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
+                        .unwrap(),
+                )
+            }
         }
 
         cfg.set_peers(

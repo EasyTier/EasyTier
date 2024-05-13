@@ -291,9 +291,12 @@ impl Instance {
             let peer_manager_c = self.peer_manager.clone();
             let global_ctx_c = self.get_global_ctx();
             let nic_c = self.virtual_nic.as_ref().unwrap().clone();
+
             tokio::spawn(async move {
                 let mut ipv4_addr = Ipv4Addr::new(10, 0, 0, 2);
-                for _ in 0..10 {
+                // let start = time::Instant::now();
+                let tries = 6;
+                for _ in 0..tries {
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     let routes = peer_manager_c.list_routes().await;
                     let mut unique_ipv4 = vec![];
@@ -306,7 +309,7 @@ impl Instance {
                     }
 
                     unique_ipv4.sort();
-                    println!("routes: {:?}", unique_ipv4);
+
                     if unique_ipv4.len() > 0 {
                         let mut addr = unique_ipv4[0]
                             .clone()
@@ -337,11 +340,18 @@ impl Instance {
                         break;
                     }
                 }
+                // let duration = start.elapsed();
+                // println!("[dhcp] duration: {:?}s, ipv4_addr: {:?}", duration.as_seconds_f32(), ipv4_addr);
+                
                 global_ctx_c.config.set_ipv4(ipv4_addr);
                 // assign_ipv4_to_tun_device
+                println!("link_up");
                 nic_c.link_up().await.unwrap();
+                println!("remove_ip");
                 nic_c.remove_ip(None).await.unwrap();
+                println!("add_ip");
                 nic_c.add_ip(ipv4_addr, 24).await.unwrap();
+                println!("end");
                 if cfg!(target_os = "macos") {
                     nic_c.add_route(ipv4_addr, 24).await.unwrap();
                 }

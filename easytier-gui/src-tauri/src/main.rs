@@ -80,12 +80,12 @@ impl NetworkConfig {
             self.network_secret.clone(),
         ));
 
-        if self.virtual_ipv4.len() > 0 {
-            cfg.set_ipv4(
-                self.virtual_ipv4.parse().with_context(|| {
+        if !self.dhcp {
+            if self.virtual_ipv4.len() > 0 {
+                cfg.set_ipv4(self.virtual_ipv4.parse().with_context(|| {
                     format!("failed to parse ipv4 address: {}", self.virtual_ipv4)
-                })?,
-            )
+                })?)
+            }
         }
 
         match self.networking_method {
