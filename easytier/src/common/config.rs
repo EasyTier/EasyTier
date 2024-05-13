@@ -150,6 +150,8 @@ pub struct Flags {
     pub enable_ipv6: bool,
     #[derivative(Default(value = "1420"))]
     pub mtu: u16,
+    #[derivative(Default(value = "true"))]
+    pub latency_first: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

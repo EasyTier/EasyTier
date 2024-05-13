@@ -97,10 +97,6 @@ struct Cli {
                                 "wg://0.0.0.0:11011".to_string()])]
     listeners: Vec<String>,
 
-    /// specify the linux network namespace, default is the root namespace
-    #[arg(long)]
-    net_ns: Option<String>,
-
     #[arg(long, help = "console log level", 
         value_parser = clap::builder::PossibleValuesParser::new(["trace", "debug", "info", "warn", "error", "off"]))]
     console_log_level: Option<String>,
@@ -121,13 +117,6 @@ struct Cli {
         help = "instance name to identify this vpn node in same machine"
     )]
     instance_name: String,
-
-    #[arg(
-        short = 'd',
-        long,
-        help = "instance uuid to identify this vpn node in whole vpn network example: 123e4567-e89b-12d3-a456-426614174000"
-    )]
-    instance_id: Option<String>,
 
     #[arg(
         long,
@@ -163,6 +152,13 @@ and the vpn client is in network of 10.14.14.0/24"
         help = "mtu of the TUN device, default is 1420 for non-encryption, 1400 for encryption"
     )]
     mtu: Option<u16>,
+
+    #[arg(
+        long,
+        help = "path to the log file, if not set, will print to stdout",
+        default_value = "false"
+    )]
+    latency_first: bool,
 }
 
 impl From<Cli> for TomlConfigLoader {
@@ -188,7 +184,6 @@ impl From<Cli> for TomlConfigLoader {
             cli.network_secret.clone(),
         ));
 
-        cfg.set_netns(cli.net_ns.clone());
         if let Some(ipv4) = &cli.ipv4 {
             cfg.set_ipv4(
                 ipv4.parse()
@@ -307,6 +302,7 @@ impl From<Cli> for TomlConfigLoader {
         }
         f.enable_encryption = !cli.disable_encryption;
         f.enable_ipv6 = !cli.disable_ipv6;
+        f.latency_first = cli.latency_first;
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu;
         }
