@@ -11,12 +11,14 @@ impl From<Vec<PeerInfo>> for PeerInfoForGlobalMap {
     fn from(peers: Vec<PeerInfo>) -> Self {
         let mut peer_map = BTreeMap::new();
         for peer in peers {
-            let min_lat = peer
+            let Some(min_lat) = peer
                 .conns
                 .iter()
                 .map(|conn| conn.stats.as_ref().unwrap().latency_us)
                 .min()
-                .unwrap_or(u32::MAX as u64);
+            else {
+                continue;
+            };
 
             let dp_info = DirectConnectedPeerInfo {
                 latency_ms: std::cmp::max(1, (min_lat as u32 / 1000) as i32),

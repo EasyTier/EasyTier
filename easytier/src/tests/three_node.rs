@@ -187,12 +187,13 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
 pub async fn tcp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
 
-    let insts = init_three_node(proto).await;
+    let mut insts = init_three_node(proto).await;
 
     insts[2]
         .get_global_ctx()
         .add_proxy_cidr("10.1.2.0/24".parse().unwrap())
         .unwrap();
+    insts[2].run_ip_proxy().await.unwrap();
     assert_eq!(insts[2].get_global_ctx().get_proxy_cidrs().len(), 1);
 
     wait_proxy_route_appear(
@@ -222,12 +223,13 @@ pub async fn tcp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str
 #[tokio::test]
 #[serial_test::serial]
 pub async fn icmp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
-    let insts = init_three_node(proto).await;
+    let mut insts = init_three_node(proto).await;
 
     insts[2]
         .get_global_ctx()
         .add_proxy_cidr("10.1.2.0/24".parse().unwrap())
         .unwrap();
+    insts[2].run_ip_proxy().await.unwrap();
     assert_eq!(insts[2].get_global_ctx().get_proxy_cidrs().len(), 1);
 
     wait_proxy_route_appear(
@@ -318,12 +320,13 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
 pub async fn udp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, udp::UdpTunnelListener};
 
-    let insts = init_three_node(proto).await;
+    let mut insts = init_three_node(proto).await;
 
     insts[2]
         .get_global_ctx()
         .add_proxy_cidr("10.1.2.0/24".parse().unwrap())
         .unwrap();
+    insts[2].run_ip_proxy().await.unwrap();
     assert_eq!(insts[2].get_global_ctx().get_proxy_cidrs().len(), 1);
 
     wait_proxy_route_appear(

@@ -103,7 +103,7 @@ impl PeerMap {
             return Some(dst_peer_id);
         }
 
-        if self.has_peer(dst_peer_id) {
+        if self.has_peer(dst_peer_id) && matches!(policy, NextHopPolicy::LeastHop) {
             return Some(dst_peer_id);
         }
 
