@@ -137,7 +137,7 @@ async-recursion = "1.0.5"
 network-interface = "1.1.1"
 
 # for ospf route
-pathfinding = "4.9.1"
+petgraph = "0.6.5"
 
 # for encryption
 boringtun = { git = "https://github.com/EasyTier/boringtun.git", optional = true, rev = "449204c" }
