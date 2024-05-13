@@ -64,12 +64,12 @@ onMounted(async () => {
               <div class="flex flex-column gap-2 basis-5/12 grow">
                 <div class="flex align-items-center" for="virtual_ip">
                   <label class="mr-2"> {{ $t('virtual_ipv4') }} </label>
-                  <Checkbox v-model="curNetwork.virtual_ip_auto" input-id="virtual_ip_auto" :binary="true" />
+                  <Checkbox v-model="curNetwork.dhcp" input-id="virtual_ip_auto" :binary="true" />
                   <label for="virtual_ip_auto" class="ml-2">{{ t('virtual_ipv4_auto') }}</label>
                 </div>
                 <InputGroup>
                   <InputText
-                    id="virtual_ip" v-model="curNetwork.virtual_ipv4" :disabled="curNetwork.virtual_ip_auto"
+                    id="virtual_ip" v-model="curNetwork.virtual_ipv4" :disabled="curNetwork.dhcp"
                     aria-describedby="virtual_ipv4-help"
                   />
                   <InputGroupAddon>

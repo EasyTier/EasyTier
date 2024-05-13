@@ -9,7 +9,7 @@ export enum NetworkingMethod {
 export interface NetworkConfig {
   instance_id: string
 
-  virtual_ip_auto: boolean
+  dhcp: boolean
   virtual_ipv4: string
   hostname?: string
   network_name: string
@@ -37,7 +37,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   return {
     instance_id: uuidv4(),
 
-    virtual_ip_auto: true,
+    dhcp: false,
     virtual_ipv4: '',
     network_name: 'easytier',
     network_secret: '',
@@ -71,7 +71,7 @@ export interface NetworkInstance {
   running: boolean
   error_msg: string
 
-  detail: NetworkInstanceRunningInfo
+  detail?: NetworkInstanceRunningInfo
 }
 
 export interface NetworkInstanceRunningInfo {

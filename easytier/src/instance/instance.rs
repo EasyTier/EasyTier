@@ -1,4 +1,5 @@
 use std::borrow::BorrowMut;
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
@@ -284,7 +285,68 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+        if self.global_ctx.config.get_dhcp() {
+            self.prepare_tun_device().await?;
+            self.run_proxy_cidrs_route_updater();
+            let peer_manager_c = self.peer_manager.clone();
+            let global_ctx_c = self.get_global_ctx();
+            let nic_c = self.virtual_nic.as_ref().unwrap().clone();
+            tokio::spawn(async move {
+                let mut ipv4_addr = Ipv4Addr::new(10, 0, 0, 2);
+                for _ in 0..10 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let routes = peer_manager_c.list_routes().await;
+                    let mut unique_ipv4 = vec![];
+                    let mut set = HashSet::new();
+                    for route in routes {
+                        let ipv4 = route.ipv4_addr.clone();
+                        if !route.ipv4_addr.is_empty() && set.insert(ipv4.clone()) {
+                            unique_ipv4.push(ipv4);
+                        }
+                    }
+
+                    unique_ipv4.sort();
+                    println!("routes: {:?}", unique_ipv4);
+                    if unique_ipv4.len() > 0 {
+                        let mut addr = unique_ipv4[0]
+                            .clone()
+                            .split('.')
+                            .map(|s| s.parse::<u8>().unwrap_or_default())
+                            .collect::<Vec<_>>();
+                        while !set
+                            .insert(format!("{}.{}.{}.{}", addr[0], addr[1], addr[2], addr[3]))
+                        {
+                            // 10.0.0.2
+                            addr[3] = addr[3].wrapping_add(1);
+                            if addr[3] == 0 || addr[3] == 1 {
+                                addr[3] = 2;
+                                addr[2] = addr[2].wrapping_add(1);
+                                if addr[2] == 0 {
+                                    addr[1] = addr[1].wrapping_add(1);
+                                    if addr[1] == 0 {
+                                        addr[0] = addr[0].wrapping_add(1);
+                                        if addr[0] == 0 {
+                                            addr[0] = 10;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ipv4_addr = Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]);
+                        break;
+                    }
+                }
+                global_ctx_c.config.set_ipv4(ipv4_addr);
+                // assign_ipv4_to_tun_device
+                nic_c.link_up().await.unwrap();
+                nic_c.remove_ip(None).await.unwrap();
+                nic_c.add_ip(ipv4_addr, 24).await.unwrap();
+                if cfg!(target_os = "macos") {
+                    nic_c.add_route(ipv4_addr, 24).await.unwrap();
+                }
+            });
+        } else if let Some(ipv4_addr) = self.global_ctx.config.get_ipv4() {
             self.prepare_tun_device().await?;
             self.assign_ipv4_to_tun_device(ipv4_addr).await?;
             self.run_proxy_cidrs_route_updater();

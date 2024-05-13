@@ -70,6 +70,13 @@ struct Cli {
     )]
     ipv4: Option<String>,
 
+    #[arg(
+        short,
+        long,
+        help = "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.2 by default"
+    )]
+    dhcp: bool,
+
     #[arg(short, long, help = "peers to connect initially")]
     peers: Vec<String>,
 
@@ -182,7 +189,7 @@ impl From<Cli> for TomlConfigLoader {
         cfg.set_inst_name(cli.instance_name.clone());
 
         cfg.set_hostname(cli.hostname.clone());
-
+        cfg.set_dhcp(cli.dhcp);
         cfg.set_network_identity(NetworkIdentity::new(
             cli.network_name.clone(),
             cli.network_secret.clone(),

@@ -41,6 +41,7 @@ impl Default for NetworkingMethod {
 struct NetworkConfig {
     instance_id: String,
 
+    dhcp: bool,
     virtual_ipv4: String,
     hostname: Option<String>,
     network_name: String,
@@ -72,6 +73,7 @@ impl NetworkConfig {
                 .with_context(|| format!("failed to parse instance id: {}", self.instance_id))?,
         );
         cfg.set_hostname(self.hostname.clone());
+        cfg.set_dhcp(self.dhcp);
         cfg.set_inst_name(self.network_name.clone());
         cfg.set_network_identity(NetworkIdentity::new(
             self.network_name.clone(),

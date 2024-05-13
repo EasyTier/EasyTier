@@ -14,8 +14,6 @@ export const useNetworkStore = defineStore('networkStore', {
       instances: {} as Record<string, NetworkInstance>,
 
       networkInfos: {} as Record<string, NetworkInstanceRunningInfo>,
-
-      networkAutoIpv4Ids: {} as Record<string, NetworkConfig>,
     }
   },
 
@@ -58,7 +56,7 @@ export const useNetworkStore = defineStore('networkStore', {
         instance_id: instanceId,
         running: false,
         error_msg: '',
-        detail: {} as NetworkInstanceRunningInfo,
+        detail: undefined,
       }
     },
 

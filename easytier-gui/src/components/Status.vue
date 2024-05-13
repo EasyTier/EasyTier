@@ -24,7 +24,7 @@ const curNetworkInst = computed(() => {
 
 const peerRouteInfos = computed(() => {
   if (curNetworkInst.value)
-    return curNetworkInst.value.detail.peer_route_pairs
+    return curNetworkInst.value.detail?.peer_route_pairs || []
 
   return []
 })
