@@ -116,6 +116,13 @@ const myNodeInfoChips = computed(() => {
   if (!my_node_info)
     return chips
 
+  // virtual ipv4
+
+  chips.push({
+    label: `Virtual IPv4: ${my_node_info.virtual_ipv4}`,
+    icon: '',
+  } as Chip)
+
   // local ipv4s
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
   for (const [idx, ip] of local_ipv4s?.entries()) {
