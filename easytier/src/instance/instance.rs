@@ -371,7 +371,7 @@ impl Instance {
                 }
 
                 // check every 20 seconds
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(20)).await;
             }
         });
     }
