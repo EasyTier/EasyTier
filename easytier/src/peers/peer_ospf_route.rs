@@ -10,6 +10,11 @@ use std::{
 };
 
 use dashmap::DashMap;
+use petgraph::{
+    algo::{all_simple_paths, astar, dijkstra},
+    graph::NodeIndex,
+    Directed, Graph,
+};
 use serde::{Deserialize, Serialize};
 use tokio::{select, sync::Mutex, task::JoinSet};
 
@@ -19,7 +24,14 @@ use crate::{
     rpc::{NatType, StunInfo},
 };
 
-use super::{peer_rpc::PeerRpcManager, PeerPacketFilter};
+use super::{
+    peer_rpc::PeerRpcManager,
+    route_trait::{
+        DefaultRouteCostCalculator, NextHopPolicy, RouteCostCalculator,
+        RouteCostCalculatorInterface,
+    },
+    PeerPacketFilter,
+};
 
 static SERVICE_ID: u32 = 7;
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
@@ -360,11 +372,15 @@ impl SyncedRouteInfo {
     }
 }
 
+type PeerGraph = Graph<PeerId, i32, Directed>;
+type PeerIdToNodexIdxMap = DashMap<PeerId, NodeIndex>;
+type NextHopMap = DashMap<PeerId, (PeerId, i32)>;
+
 // computed with SyncedRouteInfo. used to get next hop.
 #[derive(Debug)]
 struct RouteTable {
     peer_infos: DashMap<PeerId, RoutePeerInfo>,
-    next_hop_map: DashMap<PeerId, (PeerId, i32)>,
+    next_hop_map: NextHopMap,
     ipv4_peer_id_map: DashMap<Ipv4Addr, PeerId>,
     cidr_peer_id_map: DashMap<cidr::IpCidr, PeerId>,
 }
@@ -393,7 +409,121 @@ impl RouteTable {
             .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap())
     }
 
-    fn build_from_synced_info(&self, my_peer_id: PeerId, synced_info: &SyncedRouteInfo) {
+    fn build_peer_graph_from_synced_info<T: RouteCostCalculatorInterface>(
+        peers: Vec<PeerId>,
+        synced_info: &SyncedRouteInfo,
+        cost_calc: &mut T,
+    ) -> (PeerGraph, PeerIdToNodexIdxMap) {
+        let mut graph: PeerGraph = Graph::new();
+        let peer_id_to_node_index = PeerIdToNodexIdxMap::new();
+        for peer_id in peers.iter() {
+            peer_id_to_node_index.insert(*peer_id, graph.add_node(*peer_id));
+        }
+
+        for peer_id in peers.iter() {
+            let connected_peers = synced_info
+                .get_connected_peers(*peer_id)
+                .unwrap_or(BTreeSet::new());
+            for dst_peer_id in connected_peers.iter() {
+                let Some(dst_idx) = peer_id_to_node_index.get(dst_peer_id) else {
+                    continue;
+                };
+
+                graph.add_edge(
+                    *peer_id_to_node_index.get(&peer_id).unwrap(),
+                    *dst_idx,
+                    cost_calc.calculate_cost(*peer_id, *dst_peer_id),
+                );
+            }
+        }
+
+        (graph, peer_id_to_node_index)
+    }
+
+    fn gen_next_hop_map_with_least_hop<T: RouteCostCalculatorInterface>(
+        my_peer_id: PeerId,
+        graph: &PeerGraph,
+        idx_map: &PeerIdToNodexIdxMap,
+        cost_calc: &mut T,
+    ) -> NextHopMap {
+        let res = dijkstra(&graph, *idx_map.get(&my_peer_id).unwrap(), None, |_| 1);
+        let next_hop_map = NextHopMap::new();
+        for (node_idx, cost) in res.iter() {
+            if *cost == 0 {
+                continue;
+            }
+            let all_paths = all_simple_paths::<Vec<_>, _>(
+                graph,
+                *idx_map.get(&my_peer_id).unwrap(),
+                *node_idx,
+                *cost - 1,
+                Some(*cost - 1),
+            )
+            .collect::<Vec<_>>();
+
+            assert!(!all_paths.is_empty());
+
+            // find a path with least cost.
+            let mut min_cost = i32::MAX;
+            let mut min_path = Vec::new();
+            for path in all_paths.iter() {
+                let mut cost = 0;
+                for i in 0..path.len() - 1 {
+                    let src_peer_id = *graph.node_weight(path[i]).unwrap();
+                    let dst_peer_id = *graph.node_weight(path[i + 1]).unwrap();
+                    cost += cost_calc.calculate_cost(src_peer_id, dst_peer_id);
+                }
+
+                if cost <= min_cost {
+                    min_cost = cost;
+                    min_path = path.clone();
+                }
+            }
+            next_hop_map.insert(
+                *graph.node_weight(*node_idx).unwrap(),
+                (*graph.node_weight(min_path[1]).unwrap(), *cost as i32),
+            );
+        }
+
+        next_hop_map
+    }
+
+    fn gen_next_hop_map_with_least_cost(
+        my_peer_id: PeerId,
+        graph: &PeerGraph,
+        idx_map: &PeerIdToNodexIdxMap,
+    ) -> NextHopMap {
+        let next_hop_map = NextHopMap::new();
+        for item in idx_map.iter() {
+            if *item.key() == my_peer_id {
+                continue;
+            }
+
+            let dst_peer_node_idx = *item.value();
+
+            let Some((cost, path)) = astar::astar(
+                graph,
+                *idx_map.get(&my_peer_id).unwrap(),
+                |node_idx| node_idx == dst_peer_node_idx,
+                |e| *e.weight(),
+                |_| 0,
+            ) else {
+                continue;
+            };
+
+            next_hop_map.insert(*item.key(), (*graph.node_weight(path[1]).unwrap(), cost));
+        }
+
+        next_hop_map
+    }
+
+    fn build_from_synced_info<T: RouteCostCalculatorInterface>(
+        &self,
+        my_peer_id: PeerId,
+        synced_info: &SyncedRouteInfo,
+        policy: NextHopPolicy,
+        mut cost_calc: T,
+    ) {
         // build  peer_infos
         self.peer_infos.clear();
         for item in synced_info.peer_infos.iter() {
@@ -410,28 +540,20 @@ impl RouteTable {
         // build next hop map
         self.next_hop_map.clear();
         self.next_hop_map.insert(my_peer_id, (my_peer_id, 0));
-        for item in self.peer_infos.iter() {
-            let peer_id = *item.key();
-            if peer_id == my_peer_id {
-                continue;
-            }
-            let Some(path) = pathfinding::prelude::bfs(
-                &my_peer_id,
-                |p| {
-                    synced_info
-                        .get_connected_peers(*p)
-                        .unwrap_or_else(|| BTreeSet::new())
-                },
-                |x| *x == peer_id,
-            ) else {
-                continue;
-            };
-            if !path.is_empty() {
-                assert!(path.len() >= 2);
-                self.next_hop_map
-                    .insert(peer_id, (path[1], (path.len() - 1) as i32));
-            }
+        let (graph, idx_map) = Self::build_peer_graph_from_synced_info(
+            self.peer_infos.iter().map(|x| *x.key()).collect(),
+            &synced_info,
+            &mut cost_calc,
+        );
+        let next_hop_map = if matches!(policy, NextHopPolicy::LeastHop) {
+            Self::gen_next_hop_map_with_least_hop(my_peer_id, &graph, &idx_map, &mut cost_calc)
+        } else {
+            Self::gen_next_hop_map_with_least_cost(my_peer_id, &graph, &idx_map)
+        };
+        for item in next_hop_map.iter() {
+            self.next_hop_map.insert(*item.key(), *item.value());
         }
+        // build graph
 
         // build ipv4_peer_id_map, cidr_peer_id_map
         self.ipv4_peer_id_map.clear();
@@ -563,7 +685,9 @@ struct PeerRouteServiceImpl {
 
     interface: Arc<Mutex<Option<RouteInterfaceBox>>>,
 
+    cost_calculator: Arc<std::sync::Mutex<Option<RouteCostCalculator>>>,
     route_table: RouteTable,
+    route_table_with_cost: RouteTable,
     synced_route_info: Arc<SyncedRouteInfo>,
     cached_local_conn_map: std::sync::Mutex<RouteConnBitmap>,
 }
@@ -585,9 +709,17 @@ impl PeerRouteServiceImpl {
         PeerRouteServiceImpl {
             my_peer_id,
             global_ctx,
-            interface: Arc::new(Mutex::new(None)),
             sessions: DashMap::new(),
+
+            interface: Arc::new(Mutex::new(None)),
+
+            cost_calculator: Arc::new(std::sync::Mutex::new(Some(Box::new(
+                DefaultRouteCostCalculator,
+            )))),
+
             route_table: RouteTable::new(),
+            route_table_with_cost: RouteTable::new(),
+
             synced_route_info: Arc::new(SyncedRouteInfo {
                 peer_infos: DashMap::new(),
                 conn_map: DashMap::new(),
@@ -649,8 +781,32 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_route_table(&self) {
-        self.route_table
-            .build_from_synced_info(self.my_peer_id, &self.synced_route_info);
+        let mut calc_locked = self.cost_calculator.lock().unwrap();
+
+        calc_locked.as_mut().unwrap().begin_update();
+        self.route_table.build_from_synced_info(
+            self.my_peer_id,
+            &self.synced_route_info,
+            NextHopPolicy::LeastHop,
+            calc_locked.as_mut().unwrap(),
+        );
+
+        self.route_table_with_cost.build_from_synced_info(
+            self.my_peer_id,
+            &self.synced_route_info,
+            NextHopPolicy::LeastCost,
+            calc_locked.as_mut().unwrap(),
+        );
+        calc_locked.as_mut().unwrap().end_update();
+    }
+
+    fn cost_calculator_need_update(&self) -> bool {
+        self.cost_calculator
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|x| x.need_update())
+            .unwrap_or(false)
     }
 
     fn update_route_table_and_cached_local_conn_bitmap(&self) {
@@ -1173,6 +1329,7 @@ impl PeerRoute {
         session_mgr.maintain_sessions(service_impl).await;
     }
 
+    #[tracing::instrument(skip(session_mgr))]
     async fn update_my_peer_info_routine(
         service_impl: Arc<PeerRouteServiceImpl>,
         session_mgr: RouteSessionManager,
@@ -1181,6 +1338,11 @@ impl PeerRoute {
         loop {
             if service_impl.update_my_infos().await {
                 session_mgr.sync_now("update_my_infos");
+            }
+
+            if service_impl.cost_calculator_need_update() {
+                tracing::debug!("cost_calculator_need_update");
+                service_impl.update_route_table();
             }
 
             select! {
@@ -1234,6 +1396,19 @@ impl Route for PeerRoute {
         route_table.get_next_hop(dst_peer_id).map(|x| x.0)
     }
 
+    async fn get_next_hop_with_policy(
+        &self,
+        dst_peer_id: PeerId,
+        policy: NextHopPolicy,
+    ) -> Option<PeerId> {
+        let route_table = if matches!(policy, NextHopPolicy::LeastCost) {
+            &self.service_impl.route_table_with_cost
+        } else {
+            &self.service_impl.route_table
+        };
+        route_table.get_next_hop(dst_peer_id).map(|x| x.0)
+    }
+
     async fn list_routes(&self) -> Vec<crate::rpc::Route> {
         let route_table = &self.service_impl.route_table;
         let mut routes = Vec::new();
@@ -1265,6 +1440,11 @@ impl Route for PeerRoute {
         tracing::info!(?ipv4_addr, "no peer id for ipv4");
         None
     }
+
+    async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {
+        *self.service_impl.cost_calculator.lock().unwrap() = Some(_cost_fn);
+        self.service_impl.update_route_table();
+    }
 }
 
 impl PeerPacketFilter for Arc<PeerRoute> {}
@@ -1282,7 +1462,7 @@ mod tests {
         connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
             peer_manager::{PeerManager, RouteAlgoType},
-            route_trait::Route,
+            route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface},
             tests::{connect_peer_manager, wait_for_condition},
         },
         rpc::NatType,
@@ -1608,5 +1788,92 @@ mod tests {
 
         println!("session: {:?}", r_a.session_mgr.dump_sessions());
         check_rpc_counter(&r_a, p_b.my_peer_id(), 2, 2);
+    }
+
+    #[tokio::test]
+    async fn test_cost_calculator() {
+        let p_a = create_mock_pmgr().await;
+        let p_b = create_mock_pmgr().await;
+        let p_c = create_mock_pmgr().await;
+        let p_d = create_mock_pmgr().await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_a.clone(), p_c.clone()).await;
+        connect_peer_manager(p_d.clone(), p_b.clone()).await;
+        connect_peer_manager(p_d.clone(), p_c.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+
+        let _r_a = create_mock_route(p_a.clone()).await;
+        let _r_b = create_mock_route(p_b.clone()).await;
+        let _r_c = create_mock_route(p_c.clone()).await;
+        let r_d = create_mock_route(p_d.clone()).await;
+
+        // in normal mode, packet from p_c should directly forward to p_a
+        wait_for_condition(
+            || async { r_d.get_next_hop(p_a.my_peer_id()).await != None },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        struct TestCostCalculator {
+            p_a_peer_id: PeerId,
+            p_b_peer_id: PeerId,
+            p_c_peer_id: PeerId,
+            p_d_peer_id: PeerId,
+        }
+
+        impl RouteCostCalculatorInterface for TestCostCalculator {
+            fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
+                if src == self.p_d_peer_id && dst == self.p_b_peer_id {
+                    return 100;
+                }
+
+                if src == self.p_d_peer_id && dst == self.p_c_peer_id {
+                    return 1;
+                }
+
+                if src == self.p_c_peer_id && dst == self.p_a_peer_id {
+                    return 101;
+                }
+
+                if src == self.p_b_peer_id && dst == self.p_a_peer_id {
+                    return 1;
+                }
+
+                if src == self.p_c_peer_id && dst == self.p_b_peer_id {
+                    return 2;
+                }
+
+                1
+            }
+        }
+
+        r_d.set_route_cost_fn(Box::new(TestCostCalculator {
+            p_a_peer_id: p_a.my_peer_id(),
+            p_b_peer_id: p_b.my_peer_id(),
+            p_c_peer_id: p_c.my_peer_id(),
+            p_d_peer_id: p_d.my_peer_id(),
+        }))
+        .await;
+
+        // after set cost, packet from p_c should forward to p_b first
+        wait_for_condition(
+            || async {
+                r_d.get_next_hop_with_policy(p_a.my_peer_id(), NextHopPolicy::LeastCost)
+                    .await
+                    == Some(p_c.my_peer_id())
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        wait_for_condition(
+            || async {
+                r_d.get_next_hop_with_policy(p_a.my_peer_id(), NextHopPolicy::LeastHop)
+                    .await
+                    == Some(p_b.my_peer_id())
+            },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 }

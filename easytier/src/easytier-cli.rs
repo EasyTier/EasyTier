@@ -331,13 +331,7 @@ async fn main() -> Result<(), Error> {
                 let direct_peers = v
                     .direct_peers
                     .iter()
-                    .map(|(k, v)| {
-                        format!(
-                            "{}:{:?}",
-                            k,
-                            LatencyLevel::try_from(v.latency_level).unwrap()
-                        )
-                    })
+                    .map(|(k, v)| format!("{}: {:?}ms", k, v.latency_ms,))
                     .collect::<Vec<_>>();
                 table_rows.push(PeerCenterTableItem {
                     node_id: node_id.to_string(),

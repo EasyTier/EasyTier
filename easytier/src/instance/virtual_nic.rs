@@ -275,9 +275,18 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
+            use rand::distributions::Distribution as _;
             use std::net::IpAddr;
             let c = crate::arch::windows::interface_count()?;
-            config.name(format!("et{}_{}", self.dev_name, c));
+            let mut rng = rand::thread_rng();
+            let s: String = rand::distributions::Alphanumeric
+                .sample_iter(&mut rng)
+                .take(4)
+                .map(char::from)
+                .collect::<String>()
+                .to_lowercase();
+
+            config.name(format!("et{}_{}_{}", self.dev_name, c, s));
             // set a temporary address
             config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
         }

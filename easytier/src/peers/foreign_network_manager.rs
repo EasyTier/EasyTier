@@ -29,6 +29,7 @@ use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
+    route_trait::NextHopPolicy,
     PacketRecvChan, PacketRecvChanReceiver,
 };
 
@@ -66,7 +67,10 @@ impl ForeignNetworkManagerData {
             .get(&network_name)
             .ok_or_else(|| Error::RouteError(Some("no peer in network".to_string())))?
             .clone();
-        entry.peer_map.send_msg(msg, dst_peer_id).await
+        entry
+            .peer_map
+            .send_msg(msg, dst_peer_id, NextHopPolicy::LeastHop)
+            .await
     }
 
     fn get_peer_network(&self, peer_id: PeerId) -> Option<String> {
@@ -275,7 +279,10 @@ impl ForeignNetworkManager {
                     }
 
                     if let Some(entry) = data.get_network_entry(&from_network) {
-                        let ret = entry.peer_map.send_msg(packet_bytes, to_peer_id).await;
+                        let ret = entry
+                            .peer_map
+                            .send_msg(packet_bytes, to_peer_id, NextHopPolicy::LeastHop)
+                            .await;
                         if ret.is_err() {
                             tracing::error!("forward packet to peer failed: {:?}", ret.err());
                         }

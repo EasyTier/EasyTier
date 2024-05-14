@@ -2,6 +2,7 @@ use std::borrow::BorrowMut;
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::Context;
@@ -45,6 +46,8 @@ struct IpProxy {
     tcp_proxy: Arc<TcpProxy>,
     icmp_proxy: Arc<IcmpProxy>,
     udp_proxy: Arc<UdpProxy>,
+    global_ctx: ArcGlobalCtx,
+    started: Arc<AtomicBool>,
 }
 
 impl IpProxy {
@@ -58,10 +61,17 @@ impl IpProxy {
             tcp_proxy,
             icmp_proxy,
             udp_proxy,
+            global_ctx,
+            started: Arc::new(AtomicBool::new(false)),
         })
     }
 
     async fn start(&self) -> Result<(), Error> {
+        if self.global_ctx.get_proxy_cidrs().is_empty() || self.started.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        self.started.store(true, Ordering::Relaxed);
         self.tcp_proxy.start().await?;
         self.icmp_proxy.start().await?;
         self.udp_proxy.start().await?;
@@ -402,11 +412,16 @@ impl Instance {
             self.get_global_ctx(),
             self.get_peer_manager(),
         )?);
-        self.ip_proxy.as_ref().unwrap().start().await?;
+        self.run_ip_proxy().await?;
 
         self.udp_hole_puncher.lock().await.run().await?;
 
         self.peer_center.init().await;
+        let route_calc = self.peer_center.get_cost_calculator();
+        self.peer_manager
+            .get_route()
+            .set_route_cost_fn(route_calc)
+            .await;
 
         self.add_initial_peers().await?;
 
@@ -414,6 +429,14 @@ impl Instance {
             self.run_vpn_portal().await?;
         }
 
+        Ok(())
+    }
+
+    pub async fn run_ip_proxy(&mut self) -> Result<(), Error> {
+        if self.ip_proxy.is_none() {
+            return Err(anyhow::anyhow!("ip proxy not enabled.").into());
+        }
+        self.ip_proxy.as_ref().unwrap().start().await?;
         Ok(())
     }
 
