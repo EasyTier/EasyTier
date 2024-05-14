@@ -73,7 +73,7 @@ struct Cli {
     #[arg(
         short,
         long,
-        help = "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.2 by default"
+        help = "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
     )]
     dhcp: bool,
 

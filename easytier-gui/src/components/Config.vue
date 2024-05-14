@@ -58,6 +58,11 @@ onMounted(async () => {
   <div class="flex flex-column h-full">
     <div class="flex flex-column">
       <div class="w-7/12 self-center ">
+        <Message severity="warn">
+          {{ $t('dhcp_experimental_warning') }}
+        </Message>
+      </div>
+      <div class="w-7/12 self-center ">
         <Panel :header="$t('basic_settings')">
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
@@ -65,7 +70,10 @@ onMounted(async () => {
                 <div class="flex align-items-center" for="virtual_ip">
                   <label class="mr-2"> {{ $t('virtual_ipv4') }} </label>
                   <Checkbox v-model="curNetwork.dhcp" input-id="virtual_ip_auto" :binary="true" />
-                  <label for="virtual_ip_auto" class="ml-2">{{ t('virtual_ipv4_auto') }}</label>
+
+                  <label for="virtual_ip_auto" class="ml-2">
+                    {{ t('virtual_ipv4_dhcp') }}
+                  </label>
                 </div>
                 <InputGroup>
                   <InputText
