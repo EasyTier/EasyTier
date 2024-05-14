@@ -229,8 +229,11 @@ impl ConfigLoader for TomlConfigLoader {
         match hostname {
             Some(hostname) => {
                 if !hostname.is_empty() {
-                    let re = regex::Regex::new(r"[^\u4E00-\u9FA5a-zA-Z0-9\-]*").unwrap();
-                    let mut name = re.replace_all(&hostname, "").to_string();
+                    let mut name = hostname
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                        .take(32)
+                        .collect::<String>();
 
                     if name.len() > 32 {
                         name = name.chars().take(32).collect::<String>();
