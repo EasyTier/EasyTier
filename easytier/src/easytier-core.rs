@@ -439,6 +439,20 @@ pub async fn async_main(cli: Cli) {
                         portal, client_addr
                     ));
                 }
+
+                GlobalCtxEvent::DhcpIpv4Changed(old, new) => {
+                    print_event(format!(
+                        "dhcp ip changed. old: {:?}, new: {:?}",
+                        old, new
+                    ));
+                }
+                
+                GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
+                    print_event(format!(
+                        "dhcp ip conflict. ip: {:?}",
+                        ip
+                    ));
+                }
             }
         }
     });

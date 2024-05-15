@@ -36,6 +36,9 @@ pub enum GlobalCtxEvent {
 
     VpnPortalClientConnected(String, String), // (portal, client ip)
     VpnPortalClientDisconnected(String, String), // (portal, client ip)
+
+    DhcpIpv4Changed(Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>), // (old, new)
+    DhcpIpv4Conflicted(Option<std::net::Ipv4Addr>),
 }
 
 type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
@@ -127,7 +130,7 @@ impl GlobalCtx {
         return addr;
     }
 
-    pub fn set_ipv4(&mut self, addr: std::net::Ipv4Addr) {
+    pub fn set_ipv4(&self, addr: std::net::Ipv4Addr) {
         self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
     }

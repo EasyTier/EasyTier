@@ -342,6 +342,12 @@ impl VirtualNic {
         Ok(())
     }
 
+    pub async fn link_down(&self) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg.set_link_status(self.ifname(), false).await?;
+        Ok(())
+    }
+
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
