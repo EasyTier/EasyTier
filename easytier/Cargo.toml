@@ -164,6 +164,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_IO",
 ] }
+encoding = "0.2"
 
 [build-dependencies]
 tonic-build = "0.10"
