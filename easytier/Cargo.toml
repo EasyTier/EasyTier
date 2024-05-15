@@ -45,6 +45,7 @@ toml = "0.8.12"
 chrono = "0.4.35"
 
 gethostname = "0.4.3"
+encoding = "0.2"
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 

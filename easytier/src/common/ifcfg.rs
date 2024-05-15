@@ -65,8 +65,8 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     {
         cmd_out = Command::new("sh").arg("-c").arg(cmd).output().await?
     };
-    let stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice());
-    let stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice());
+    let stdout = crate::utils::utf8_or_gbk_to_string(cmd_out.stdout.as_slice());
+    let stderr = crate::utils::utf8_or_gbk_to_string(cmd_out.stderr.as_slice());
     let ec = cmd_out.status.code();
     let succ = cmd_out.status.success();
     tracing::info!(?cmd, ?ec, ?succ, ?stdout, ?stderr, "run shell cmd");
