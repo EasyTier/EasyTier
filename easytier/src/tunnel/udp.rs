@@ -33,7 +33,7 @@ use super::{
     IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
 };
 
-pub const UDP_DATA_MTU: usize = 65000;
+pub const UDP_DATA_MTU: usize = 2000;
 
 type UdpCloseEventSender = UnboundedSender<Option<TunnelError>>;
 type UdpCloseEventReceiver = UnboundedReceiver<Option<TunnelError>>;
@@ -318,7 +318,7 @@ impl UdpTunnelListenerData {
         let socket = self.socket.as_ref().unwrap().clone();
         let mut buf = BytesMut::new();
         loop {
-            reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 128);
+            reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 16);
             let (dg_size, addr) = socket.recv_buf_from(&mut buf).await.unwrap();
             tracing::trace!(
                 "udp recv packet: {:?}, buf: {:?}, size: {}",
@@ -555,7 +555,7 @@ impl UdpTunnelConnector {
         tokio::spawn(async move {
             let mut buf = BytesMut::new();
             loop {
-                reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 128);
+                reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 16);
                 let ret;
                 tokio::select! {
                     _ = close_event_recv.recv() => {
