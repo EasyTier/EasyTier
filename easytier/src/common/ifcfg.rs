@@ -68,8 +68,8 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     #[cfg(not(target_os = "windows"))]
     {
         cmd_out = Command::new("sh").arg("-c").arg(cmd).output().await?;
-        stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice());
-        stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice());
+        stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice()).to_string();
+        stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice()).to_string();
     };
 
     let ec = cmd_out.status.code();
@@ -78,7 +78,7 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
 
     if !cmd_out.status.success() {
         return Err(Error::ShellCommandError(
-            stdout.to_string() + &stderr.to_string(),
+            stdout + &stderr,
         ));
     }
     Ok(())
