@@ -318,7 +318,7 @@ impl UdpTunnelListenerData {
         let socket = self.socket.as_ref().unwrap().clone();
         let mut buf = BytesMut::new();
         loop {
-            reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 128);
+            reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 2);
             let (dg_size, addr) = socket.recv_buf_from(&mut buf).await.unwrap();
             tracing::trace!(
                 "udp recv packet: {:?}, buf: {:?}, size: {}",
@@ -555,7 +555,7 @@ impl UdpTunnelConnector {
         tokio::spawn(async move {
             let mut buf = BytesMut::new();
             loop {
-                reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 128);
+                reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 2);
                 let ret;
                 tokio::select! {
                     _ = close_event_recv.recv() => {

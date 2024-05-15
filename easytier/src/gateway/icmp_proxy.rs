@@ -63,7 +63,7 @@ pub struct IcmpProxy {
     peer_manager: Arc<PeerManager>,
 
     cidr_set: CidrSet,
-    socket: socket2::Socket,
+    socket: std::sync::Mutex<Option<socket2::Socket>>,
 
     nat_table: IcmpNatTable,
 
@@ -158,23 +158,11 @@ impl IcmpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new(global_ctx.clone());
-
-        let _g = global_ctx.net_ns.guard();
-        let socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::RAW,
-            Some(socket2::Protocol::ICMPV4),
-        )?;
-        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
-            std::net::Ipv4Addr::UNSPECIFIED,
-            0,
-        )))?;
-
         let ret = Self {
             global_ctx,
             peer_manager,
             cidr_set,
-            socket,
+            socket: std::sync::Mutex::new(None),
 
             nat_table: Arc::new(dashmap::DashMap::new()),
             tasks: Mutex::new(JoinSet::new()),
@@ -184,6 +172,18 @@ impl IcmpProxy {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::RAW,
+            Some(socket2::Protocol::ICMPV4),
+        )?;
+        socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
+            std::net::Ipv4Addr::UNSPECIFIED,
+            0,
+        )))?;
+        self.socket.lock().unwrap().replace(socket);
+
         self.start_icmp_proxy().await?;
         self.start_nat_table_cleaner().await?;
         Ok(())
@@ -204,7 +204,7 @@ impl IcmpProxy {
     }
 
     async fn start_icmp_proxy(self: &Arc<Self>) -> Result<(), Error> {
-        let socket = self.socket.try_clone()?;
+        let socket = self.socket.lock().unwrap().as_ref().unwrap().try_clone()?;
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let nat_table = self.nat_table.clone();
         thread::spawn(|| {
@@ -237,7 +237,7 @@ impl IcmpProxy {
         dst_ip: Ipv4Addr,
         icmp_packet: &icmp::echo_request::EchoRequestPacket,
     ) -> Result<(), Error> {
-        self.socket.send_to(
+        self.socket.lock().unwrap().as_ref().unwrap().send_to(
             icmp_packet.packet(),
             &SocketAddrV4::new(dst_ip.into(), 0).into(),
         )?;
