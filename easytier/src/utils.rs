@@ -225,6 +225,7 @@ pub fn init_logger(
     Ok(ret_sender)
 }
 
+#[cfg(target_os = "windows")]
 pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
     use encoding::{all::GBK, DecoderTrap, Encoding};
     if let Ok(utf8_str) = String::from_utf8(s.to_vec()) {
