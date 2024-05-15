@@ -60,6 +60,8 @@ bitflags::bitflags! {
     struct PeerManagerHeaderFlags: u8 {
         const ENCRYPTED = 0b0000_0001;
         const LATENCY_FIRST = 0b0000_0010;
+
+        const _ = !0;
     }
 }
 
