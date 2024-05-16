@@ -24,7 +24,7 @@ pub trait ConfigLoader: Send + Sync {
     fn set_netns(&self, ns: Option<String>);
 
     fn get_ipv4(&self) -> Option<std::net::Ipv4Addr>;
-    fn set_ipv4(&self, addr: std::net::Ipv4Addr);
+    fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>);
 
     fn get_dhcp(&self) -> bool;
     fn set_dhcp(&self, dhcp: bool);
@@ -274,8 +274,12 @@ impl ConfigLoader for TomlConfigLoader {
             .flatten()
     }
 
-    fn set_ipv4(&self, addr: std::net::Ipv4Addr) {
-        self.config.lock().unwrap().ipv4 = Some(addr.to_string());
+    fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>) {
+        self.config.lock().unwrap().ipv4 = if let Some(addr) = addr {
+            Some(addr.to_string())
+        } else {
+            None
+        };
     }
 
     fn get_dhcp(&self) -> bool {

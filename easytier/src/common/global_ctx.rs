@@ -130,7 +130,7 @@ impl GlobalCtx {
         return addr;
     }
 
-    pub fn set_ipv4(&self, addr: std::net::Ipv4Addr) {
+    pub fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>) {
         self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
     }

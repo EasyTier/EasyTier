@@ -2,10 +2,12 @@ use std::borrow::BorrowMut;
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
 use anyhow::Context;
+use cidr::Ipv4Inet;
 use futures::{SinkExt, StreamExt};
 
 use pnet::packet::ipv4::Ipv4Packet;
@@ -292,108 +294,109 @@ impl Instance {
         let global_ctx_c = self.get_global_ctx();
         let nic_c = self.virtual_nic.as_ref().unwrap().clone();
         tokio::spawn(async move {
-            let mut dhcp_ip: Option<Ipv4Addr> = None;
+            let default_ipv4_addr = Ipv4Addr::new(10, 0, 0, 0);
+            let mut dhcp_ip: Option<Ipv4Inet> = None;
             let mut tries = 6;
-            let mut conflict = false;
             loop {
-                let mut ipv4_addr = Ipv4Addr::new(10, 0, 0, 1);
-                'tries: for _ in 0..tries {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    let routes = peer_manager_c.list_routes().await;
-                    let mut unique_ipv4 = vec![];
-                    let mut set = HashSet::new();
-                    for route in routes {
-                        let ipv4 = route
-                            .ipv4_addr
-                            .clone()
-                            .split('.')
-                            .map(|s| s.parse::<u8>().unwrap_or_default())
-                            .collect::<Vec<_>>();
-                        if !route.ipv4_addr.is_empty() && set.insert(ipv4.clone()) {
-                            unique_ipv4.push(ipv4);
+                let mut ipv4_addr: Option<Ipv4Inet> = None;
+                let mut unique_ipv4 = HashSet::new();
+
+                'tries: for i in 0..tries {
+                    for route in peer_manager_c.list_routes().await {
+                        if !route.ipv4_addr.is_empty() {
+                            if let Ok(ip) = Ipv4Inet::new(
+                                if let Ok(ipv4) = route.ipv4_addr.parse::<Ipv4Addr>() {
+                                    ipv4
+                                } else {
+                                    default_ipv4_addr
+                                },
+                                24,
+                            ) {
+                                unique_ipv4.insert(ip);
+                            }
                         }
                     }
 
-                    unique_ipv4.sort();
-
-                    if unique_ipv4.len() > 0 {
-                        if let Some(ip) = dhcp_ip {
-                            if set.insert(ip.octets().to_vec()) {
-                                ipv4_addr = ip;
-                                break;
-                            }
+                    if dhcp_ip.is_none() {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if i == 5 {
+                            unique_ipv4
+                                .insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
                         }
-                        let mut addr = unique_ipv4[0].clone();
-                        let mut same_flag: Option<Vec<u8>> = None;
+                    }
 
-                        for i in 0..=unique_ipv4.len() {
-                            if let Some(flag) = same_flag.clone() {
-                                if addr[0..3] == flag[0..3] {
-                                    continue;
-                                }
-                            }
+                    if let Some(ip) = dhcp_ip {
+                        if !unique_ipv4.contains(&ip) {
+                            ipv4_addr = dhcp_ip;
+                            break;
+                        } else {
+                            unique_ipv4
+                                .insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
+                        }
+                    }
 
-                            let mut cycle_flag = Some(addr[3]);
-                            while !set.insert(addr.clone()) {
-                                addr[3] = addr[3].wrapping_add(1);
-                                if addr[3] == 0 {
-                                    addr[3] = 1;
-                                }
-
-                                if addr[3] == cycle_flag.unwrap() {
-                                    cycle_flag = None;
-                                    break;
-                                }
-                            }
-
-                            if cycle_flag.is_some() {
-                                ipv4_addr = Ipv4Addr::new(addr[0], addr[1], addr[2], addr[3]);
-                                break;
-                            } else {
-                                if i == unique_ipv4.len() {
-                                    // panic!("10.0.0.1/24 all occupied!");
-                                    global_ctx_c
-                                        .issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(dhcp_ip));
-                                    dhcp_ip = None;
-                                    // conflict = true;
-                                    break 'tries;
-                                }
-
-                                same_flag = Some(addr.clone());
-                                if i == unique_ipv4.len() - 1 {
-                                    addr = vec![10, 0, 0, 1];
-                                } else {
-                                    addr = unique_ipv4[i + 1].clone();
-                                }
-                            }
+                    for net in unique_ipv4.iter().map(|inet| inet.network()) {
+                        if let Some(ip) = net.iter().find(|ip| {
+                            ip.address() != net.first_address()
+                                && ip.address() != net.last_address()
+                                && !unique_ipv4.contains(ip)
+                        }) {
+                            ipv4_addr = Some(ip);
+                            break 'tries;
                         }
                     }
                 }
 
-                if dhcp_ip.is_none() || dhcp_ip != Some(ipv4_addr) {
-                    nic_c.remove_ip(dhcp_ip).await.unwrap();
-                    if !conflict {
-                        global_ctx_c
-                            .issue_event(GlobalCtxEvent::DhcpIpv4Changed(dhcp_ip, Some(ipv4_addr)));
-                        global_ctx_c.set_ipv4(ipv4_addr);
+                if dhcp_ip != ipv4_addr {
+                    let last_ip = if let Some(last_ip) = dhcp_ip {
+                        Some(last_ip.address())
+                    } else {
+                        None
+                    };
+
+                    nic_c.remove_ip(last_ip).await.unwrap();
+
+                    if let Some(ip) = ipv4_addr {
+                        global_ctx_c.set_ipv4(Some(ip.address()));
                         nic_c.link_up().await.unwrap();
-                        nic_c.add_ip(ipv4_addr, 24).await.unwrap();
+                        nic_c.add_ip(ip.address(), 24).await.unwrap();
                         #[cfg(target_os = "macos")]
-                        nic_c.add_route(ipv4_addr, 24).await.unwrap();
-                        dhcp_ip = Some(ipv4_addr);
+                        nic_c.add_route(ip.address(), 24).await.unwrap();
+                        global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(
+                            last_ip,
+                            Some(ip.address()),
+                        ));
+                        dhcp_ip = Some(ip);
                         tries = 1;
                     } else {
-                        todo!("dhcp ip conflict");
-                        // nic_c.link_down().await.unwrap();
-                        // break;
+                        #[cfg(target_os = "macos")]
+                        if last_ip.is_some() {
+                            let _g = global_ctx_c.net_ns.guard();
+                            let ret = nic_c
+                                .get_ifcfg()
+                                .remove_ipv4_route(nic_c.ifname(), last_ip.unwrap(), 24)
+                                .await;
+
+                            if ret.is_err() {
+                                tracing::trace!(
+                                    cidr = 24,
+                                    err = ?ret,
+                                    "remove route failed.",
+                                );
+                            }
+                        }
+                        global_ctx_c.set_ipv4(None);
+                        global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
+                        dhcp_ip = None;
+                        tries = 6;
                     }
                 }
 
+                use rand::Rng;
+                let sleep: u64 = rand::thread_rng().gen_range(10..20);
+
                 // check every 10 ~ 20 seconds
-                tokio::time::sleep(std::time::Duration::from_secs_f32(
-                    ((rand::random::<u8>() + 1) as f32 / 25.6) + 10.0,
-                ))
-                .await;
+                tokio::time::sleep(std::time::Duration::from_secs(sleep)).await;
             }
         });
     }

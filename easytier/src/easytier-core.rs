@@ -191,18 +191,16 @@ impl From<Cli> for TomlConfigLoader {
             cli.network_secret.clone(),
         ));
 
-
         cfg.set_dhcp(cli.dhcp);
 
         if !cli.dhcp {
             if let Some(ipv4) = &cli.ipv4 {
-                cfg.set_ipv4(
+                cfg.set_ipv4(Some(
                     ipv4.parse()
                         .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
                         .unwrap(),
-                )
+                ))
             }
-
         }
 
         cfg.set_peers(
@@ -441,17 +439,11 @@ pub async fn async_main(cli: Cli) {
                 }
 
                 GlobalCtxEvent::DhcpIpv4Changed(old, new) => {
-                    print_event(format!(
-                        "dhcp ip changed. old: {:?}, new: {:?}",
-                        old, new
-                    ));
+                    print_event(format!("dhcp ip changed. old: {:?}, new: {:?}", old, new));
                 }
-                
+
                 GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
-                    print_event(format!(
-                        "dhcp ip conflict. ip: {:?}",
-                        ip
-                    ));
+                    print_event(format!("dhcp ip conflict. ip: {:?}", ip));
                 }
             }
         }

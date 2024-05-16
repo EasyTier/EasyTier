@@ -48,7 +48,7 @@ pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str) -> TomlCon
     let config = TomlConfigLoader::default();
     config.set_inst_name(inst_name.to_owned());
     config.set_netns(ns.map(|s| s.to_owned()));
-    config.set_ipv4(ipv4.parse().unwrap());
+    config.set_ipv4(Some(ipv4.parse().unwrap()));
     config.set_listeners(vec![
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
