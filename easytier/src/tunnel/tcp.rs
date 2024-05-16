@@ -12,7 +12,7 @@ use super::{
     IpVersion, Tunnel, TunnelError, TunnelListener,
 };
 
-const TCP_MTU_BYTES: usize = 64 * 1024;
+const TCP_MTU_BYTES: usize = 2000;
 
 #[derive(Debug)]
 pub struct TcpTunnelListener {
