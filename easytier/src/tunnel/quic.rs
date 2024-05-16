@@ -118,7 +118,7 @@ impl TunnelListener for QUICTunnelListener {
         };
 
         Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 4500, Some(Box::new(arc_conn.clone()))),
+            FramedReader::new_with_associate_data(r, 2000, Some(Box::new(arc_conn.clone()))),
             FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
             Some(info),
         )))

@@ -196,6 +196,17 @@ impl PeerCenterInstance {
                 let mut rpc_ctx = tarpc::context::current();
                 rpc_ctx.deadline = SystemTime::now() + Duration::from_secs(3);
 
+                if ctx
+                    .job_ctx
+                    .global_peer_map_update_time
+                    .load()
+                    .elapsed()
+                    .as_secs()
+                    > 60
+                {
+                    ctx.job_ctx.global_peer_map_digest.store(Digest::default());
+                }
+
                 let ret = client
                     .get_global_peer_map(rpc_ctx, ctx.job_ctx.global_peer_map_digest.load())
                     .await?;

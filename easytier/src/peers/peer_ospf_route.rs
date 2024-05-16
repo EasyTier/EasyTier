@@ -537,6 +537,10 @@ impl RouteTable {
             self.peer_infos.insert(*peer_id, info.clone());
         }
 
+        if self.peer_infos.is_empty() {
+            return;
+        }
+
         // build next hop map
         self.next_hop_map.clear();
         self.next_hop_map.insert(my_peer_id, (my_peer_id, 0));

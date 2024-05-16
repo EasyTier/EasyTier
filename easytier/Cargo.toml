@@ -58,8 +58,6 @@ async-trait = "0.1.74"
 dashmap = "5.5.3"
 timedmap = "=1.0.1"
 
-regex = "1"
-
 # for full-path zero-copy
 zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 bytes = "1.5.0"
@@ -166,6 +164,7 @@ windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_IO",
 ] }
+encoding = "0.2"
 
 [build-dependencies]
 tonic-build = "0.10"
