@@ -166,4 +166,7 @@ message TaRpcPacket {
     uint32 transact_id = 4;
     bool is_req = 5;
     bytes content = 6;
+
+    uint32 total_pieces = 7;
+    uint32 piece_idx = 8;
 }
