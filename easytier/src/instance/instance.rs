@@ -2,7 +2,6 @@ use std::borrow::BorrowMut;
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -290,6 +289,7 @@ impl Instance {
 
     // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
     fn check_dhcp_ip_conflict(&self) {
+        use rand::Rng;
         let peer_manager_c = self.peer_manager.clone();
         let global_ctx_c = self.get_global_ctx();
         let nic_c = self.virtual_nic.as_ref().unwrap().clone();
@@ -301,7 +301,11 @@ impl Instance {
                 let mut ipv4_addr: Option<Ipv4Inet> = None;
                 let mut unique_ipv4 = HashSet::new();
 
-                'tries: for i in 0..tries {
+                for i in 0..tries {
+                    if dhcp_ip.is_none() {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+
                     for route in peer_manager_c.list_routes().await {
                         if !route.ipv4_addr.is_empty() {
                             if let Ok(ip) = Ipv4Inet::new(
@@ -317,74 +321,67 @@ impl Instance {
                         }
                     }
 
-                    if dhcp_ip.is_none() {
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        if i == 5 {
-                            unique_ipv4
-                                .insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
-                        }
+                    if i == 5 && unique_ipv4.is_empty() {
+                        unique_ipv4.insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
                     }
 
                     if let Some(ip) = dhcp_ip {
                         if !unique_ipv4.contains(&ip) {
                             ipv4_addr = dhcp_ip;
                             break;
-                        } else {
-                            unique_ipv4
-                                .insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
                         }
                     }
 
-                    for net in unique_ipv4.iter().map(|inet| inet.network()) {
+                    for net in unique_ipv4.iter().map(|inet| inet.network()).take(1) {
                         if let Some(ip) = net.iter().find(|ip| {
                             ip.address() != net.first_address()
                                 && ip.address() != net.last_address()
                                 && !unique_ipv4.contains(ip)
                         }) {
                             ipv4_addr = Some(ip);
-                            break 'tries;
                         }
                     }
                 }
 
                 if dhcp_ip != ipv4_addr {
-                    let last_ip = if let Some(last_ip) = dhcp_ip {
-                        Some(last_ip.address())
-                    } else {
-                        None
-                    };
+                    let last_ip = dhcp_ip.map(|p| p.address());
+                    println!("last_ip: {:?}", last_ip);
+                    let _ = nic_c.remove_ip(last_ip).await;
+                    #[cfg(target_os = "macos")]
+                    if last_ip.is_some() {
+                        let _g = global_ctx_c.net_ns.guard();
+                        let ret = nic_c
+                            .get_ifcfg()
+                            .remove_ipv4_route(nic_c.ifname(), last_ip.unwrap(), 24)
+                            .await;
 
-                    nic_c.remove_ip(last_ip).await.unwrap();
+                        if ret.is_err() {
+                            tracing::trace!(
+                                cidr = 24,
+                                err = ?ret,
+                                "remove route failed.",
+                            );
+                        }
+                    }
 
                     if let Some(ip) = ipv4_addr {
-                        global_ctx_c.set_ipv4(Some(ip.address()));
-                        nic_c.link_up().await.unwrap();
-                        nic_c.add_ip(ip.address(), 24).await.unwrap();
+                        let _ = nic_c.link_up().await;
+                        dhcp_ip = Some(ip);
+                        tries = 1;
+                        if nic_c.add_ip(ip.address(), 24).await.is_err() {
+                            global_ctx_c.set_ipv4(None);
+                            let sleep: u64 = rand::thread_rng().gen_range(200..500);
+                            tokio::time::sleep(std::time::Duration::from_millis(sleep)).await;
+                            continue;
+                        }
                         #[cfg(target_os = "macos")]
-                        nic_c.add_route(ip.address(), 24).await.unwrap();
+                        let _ = nic_c.add_route(ip.address(), 24).await;
+                        global_ctx_c.set_ipv4(Some(ip.address()));
                         global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(
                             last_ip,
                             Some(ip.address()),
                         ));
-                        dhcp_ip = Some(ip);
-                        tries = 1;
                     } else {
-                        #[cfg(target_os = "macos")]
-                        if last_ip.is_some() {
-                            let _g = global_ctx_c.net_ns.guard();
-                            let ret = nic_c
-                                .get_ifcfg()
-                                .remove_ipv4_route(nic_c.ifname(), last_ip.unwrap(), 24)
-                                .await;
-
-                            if ret.is_err() {
-                                tracing::trace!(
-                                    cidr = 24,
-                                    err = ?ret,
-                                    "remove route failed.",
-                                );
-                            }
-                        }
                         global_ctx_c.set_ipv4(None);
                         global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
                         dhcp_ip = None;
@@ -392,8 +389,7 @@ impl Instance {
                     }
                 }
 
-                use rand::Rng;
-                let sleep: u64 = rand::thread_rng().gen_range(10..20);
+                let sleep: u64 = rand::thread_rng().gen_range(5..10);
 
                 // check every 10 ~ 20 seconds
                 tokio::time::sleep(std::time::Duration::from_secs(sleep)).await;
