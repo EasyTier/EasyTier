@@ -9,6 +9,7 @@ export enum NetworkingMethod {
 export interface NetworkConfig {
   instance_id: string
 
+  dhcp: boolean
   virtual_ipv4: string
   hostname?: string
   network_name: string
@@ -17,18 +18,18 @@ export interface NetworkConfig {
   networking_method: NetworkingMethod
 
   public_server_url: string
-  peer_urls: Array<string>
+  peer_urls: string[]
 
-  proxy_cidrs: Array<string>
+  proxy_cidrs: string[]
 
   enable_vpn_portal: boolean
-  vpn_portal_listne_port: number
+  vpn_portal_listen_port: number
   vpn_portal_client_network_addr: string
   vpn_portal_client_network_len: number
 
   advanced_settings: boolean
 
-  listener_urls: Array<string>
+  listener_urls: string[]
   rpc_port: number
 }
 
@@ -36,8 +37,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   return {
     instance_id: uuidv4(),
 
+    dhcp: false,
     virtual_ipv4: '',
-    network_name: 'default',
+    network_name: 'easytier',
     network_secret: '',
 
     networking_method: NetworkingMethod.PublicServer,
@@ -48,7 +50,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     proxy_cidrs: [],
 
     enable_vpn_portal: false,
-    vpn_portal_listne_port: 22022,
+    vpn_portal_listen_port: 22022,
     vpn_portal_client_network_addr: '',
     vpn_portal_client_network_len: 24,
 
@@ -59,7 +61,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    rpc_port: 15888,
+    rpc_port: 0,
   }
 }
 
@@ -69,7 +71,7 @@ export interface NetworkInstance {
   running: boolean
   error_msg: string
 
-  detail: NetworkInstanceRunningInfo
+  detail?: NetworkInstanceRunningInfo
 }
 
 export interface NetworkInstanceRunningInfo {

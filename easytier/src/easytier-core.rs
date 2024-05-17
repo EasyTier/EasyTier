@@ -71,6 +71,13 @@ struct Cli {
     )]
     ipv4: Option<String>,
 
+    #[arg(
+        short,
+        long,
+        help = "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
+    )]
+    dhcp: bool,
+
     #[arg(short, long, help = "peers to connect initially", num_args = 0..)]
     peers: Vec<String>,
 
@@ -271,12 +278,16 @@ impl From<Cli> for TomlConfigLoader {
             cli.network_secret.clone(),
         ));
 
-        if let Some(ipv4) = &cli.ipv4 {
-            cfg.set_ipv4(
-                ipv4.parse()
-                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
-                    .unwrap(),
-            )
+        cfg.set_dhcp(cli.dhcp);
+
+        if !cli.dhcp {
+            if let Some(ipv4) = &cli.ipv4 {
+                cfg.set_ipv4(Some(
+                    ipv4.parse()
+                        .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
+                        .unwrap(),
+                ))
+            }
         }
 
         cfg.set_peers(
@@ -502,6 +513,14 @@ pub async fn async_main(cli: Cli) {
                         "vpn portal client disconnected. portal: {}, client_addr: {}",
                         portal, client_addr
                     ));
+                }
+
+                GlobalCtxEvent::DhcpIpv4Changed(old, new) => {
+                    print_event(format!("dhcp ip changed. old: {:?}, new: {:?}", old, new));
+                }
+
+                GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
+                    print_event(format!("dhcp ip conflict. ip: {:?}", ip));
                 }
             }
         }

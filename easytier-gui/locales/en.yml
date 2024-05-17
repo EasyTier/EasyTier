@@ -4,6 +4,7 @@ public_server: Public Server
 manual: Manual
 standalone: Standalone
 virtual_ipv4: Virtual IPv4
+virtual_ipv4_dhcp: DHCP
 network_name: Network Name
 network_secret: Network Secret
 public_server_url: Public Server URL
@@ -59,3 +60,4 @@ run_network: Run Network
 stop_network: Stop Network
 network_running: running
 network_stopped: stopped
+dhcp_experimental_warning: Experimental warning! if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.

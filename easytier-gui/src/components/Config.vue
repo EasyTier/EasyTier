@@ -2,7 +2,6 @@
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { getOsHostname } from '~/composables/network'
-import { i18n } from '~/modules/i18n'
 import { NetworkingMethod } from '~/types/network'
 
 const props = defineProps<{
@@ -12,10 +11,12 @@ const props = defineProps<{
 
 defineEmits(['runNetwork'])
 
+const { t } = useI18n()
+
 const networking_methods = ref([
-  { value: NetworkingMethod.PublicServer, label: i18n.global.t('public_server') },
-  { value: NetworkingMethod.Manual, label: i18n.global.t('manual') },
-  { value: NetworkingMethod.Standalone, label: i18n.global.t('standalone') },
+  { value: NetworkingMethod.PublicServer, label: t('public_server') },
+  { value: NetworkingMethod.Manual, label: t('manual') },
+  { value: NetworkingMethod.Standalone, label: t('standalone') },
 ])
 
 const networkStore = useNetworkStore()
@@ -57,13 +58,28 @@ onMounted(async () => {
   <div class="flex flex-column h-full">
     <div class="flex flex-column">
       <div class="w-7/12 self-center ">
+        <Message severity="warn">
+          {{ $t('dhcp_experimental_warning') }}
+        </Message>
+      </div>
+      <div class="w-7/12 self-center ">
         <Panel :header="$t('basic_settings')">
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="virtual_ip">{{ $t('virtual_ipv4') }}</label>
+                <div class="flex align-items-center" for="virtual_ip">
+                  <label class="mr-2"> {{ $t('virtual_ipv4') }} </label>
+                  <Checkbox v-model="curNetwork.dhcp" input-id="virtual_ip_auto" :binary="true" />
+
+                  <label for="virtual_ip_auto" class="ml-2">
+                    {{ t('virtual_ipv4_dhcp') }}
+                  </label>
+                </div>
                 <InputGroup>
-                  <InputText id="virtual_ip" v-model="curNetwork.virtual_ipv4" aria-describedby="virtual_ipv4-help" />
+                  <InputText
+                    id="virtual_ip" v-model="curNetwork.virtual_ipv4" :disabled="curNetwork.dhcp"
+                    aria-describedby="virtual_ipv4-help"
+                  />
                   <InputGroupAddon>
                     <span>/24</span>
                   </InputGroupAddon>
@@ -112,7 +128,7 @@ onMounted(async () => {
 
         <Divider />
 
-        <Panel :header="$t('advanced_settings')" toggleable>
+        <Panel :header="$t('advanced_settings')" toggleable collapsed>
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
@@ -154,7 +170,7 @@ onMounted(async () => {
                     </InputGroup>
                   </div>
                   <InputNumber
-                    v-if="curNetwork.enable_vpn_portal" v-model="curNetwork.vpn_portal_listne_port"
+                    v-if="curNetwork.enable_vpn_portal" v-model="curNetwork.vpn_portal_listen_port"
                     :placeholder="$t('vpn_portal_listen_port')" class="" :format="false" :min="0" :max="65535"
                   />
                 </div>

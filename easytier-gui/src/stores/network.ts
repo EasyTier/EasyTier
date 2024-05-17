@@ -56,7 +56,7 @@ export const useNetworkStore = defineStore('networkStore', {
         instance_id: instanceId,
         running: false,
         error_msg: '',
-        detail: {} as NetworkInstanceRunningInfo,
+        detail: undefined,
       }
     },
 

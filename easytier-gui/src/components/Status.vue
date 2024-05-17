@@ -24,7 +24,7 @@ const curNetworkInst = computed(() => {
 
 const peerRouteInfos = computed(() => {
   if (curNetworkInst.value)
-    return curNetworkInst.value.detail.peer_route_pairs
+    return curNetworkInst.value.detail?.peer_route_pairs || []
 
   return []
 })
@@ -115,6 +115,13 @@ const myNodeInfoChips = computed(() => {
   const my_node_info = curNetworkInst.value.detail?.my_node_info
   if (!my_node_info)
     return chips
+
+  // virtual ipv4
+
+  chips.push({
+    label: `Virtual IPv4: ${my_node_info.virtual_ipv4}`,
+    icon: '',
+  } as Chip)
 
   // local ipv4s
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
@@ -290,82 +297,84 @@ function showEventLogs() {
       </template>
     </Card>
 
-    <Card v-if="!curNetworkInst?.error_msg">
-      <template #title>
-        {{ $t('my_node_info') }}
-      </template>
-      <template #content>
-        <div class="flex w-full flex-column gap-y-5">
-          <div class="m-0 flex flex-row justify-center gap-x-5">
-            <div
-              class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
-              style="border: 1px solid green"
-            >
-              <div class="font-bold">
-                {{ $t('peer_count') }}
+    <template v-else>
+      <Card>
+        <template #title>
+          {{ $t('my_node_info') }}
+        </template>
+        <template #content>
+          <div class="flex w-full flex-column gap-y-5">
+            <div class="m-0 flex flex-row justify-center gap-x-5">
+              <div
+                class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
+                style="border: 1px solid green"
+              >
+                <div class="font-bold">
+                  {{ $t('peer_count') }}
+                </div>
+                <div class="text-5xl mt-1">
+                  {{ peerCount }}
+                </div>
               </div>
-              <div class="text-5xl mt-1">
-                {{ peerCount }}
+
+              <div
+                class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
+                style="border: 1px solid purple"
+              >
+                <div class="font-bold">
+                  {{ $t('upload') }}
+                </div>
+                <div class="text-xl mt-2">
+                  {{ txRate }}/s
+                </div>
+              </div>
+
+              <div
+                class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
+                style="border: 1px solid fuchsia"
+              >
+                <div class="font-bold">
+                  {{ $t('download') }}
+                </div>
+                <div class="text-xl mt-2">
+                  {{ rxRate }}/s
+                </div>
               </div>
             </div>
 
-            <div
-              class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
-              style="border: 1px solid purple"
-            >
-              <div class="font-bold">
-                {{ $t('upload') }}
-              </div>
-              <div class="text-xl mt-2">
-                {{ txRate }}/s
-              </div>
+            <div class="flex flex-row align-items-center flex-wrap w-full">
+              <Chip
+                v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
+                class="mr-2 mt-2"
+              />
             </div>
 
-            <div
-              class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
-              style="border: 1px solid fuchsia"
-            >
-              <div class="font-bold">
-                {{ $t('download') }}
-              </div>
-              <div class="text-xl mt-2">
-                {{ rxRate }}/s
-              </div>
+            <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
+              <Button severity="info" :label="$t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
+              <Button severity="info" :label="$t('show_event_log')" @click="showEventLogs" />
             </div>
           </div>
+        </template>
+      </Card>
 
-          <div class="flex flex-row align-items-center flex-wrap w-full">
-            <Chip
-              v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
-              class="mr-2 mt-2"
-            />
-          </div>
+      <Divider />
 
-          <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
-            <Button severity="info" :label="$t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
-            <Button severity="info" :label="$t('show_event_log')" @click="showEventLogs" />
-          </div>
-        </div>
-      </template>
-    </Card>
-
-    <Divider />
-
-    <Card v-if="!curNetworkInst?.error_msg">
-      <template #title>
-        {{ $t('peer_info') }}
-      </template>
-      <template #content>
-        <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
-          <Column field="route.ipv4_addr" style="width: 100px;" :header="$t('virtual_ipv4')" />
-          <Column field="route.hostname" style="max-width: 250px;" :header="$t('hostname')" />
-          <Column :field="routeCost" style="width: 100px;" :header="$t('route_cost')" />
-          <Column :field="latencyMs" style="width: 80px;" :header="$t('latency')" />
-          <Column :field="txBytes" style="width: 80px;" :header="$t('upload_bytes')" />
-          <Column :field="rxBytes" style="width: 80px;" :header="$t('download_bytes')" />
-          <Column :field="lossRate" style="width: 100px;" :header="$t('loss_rate')" />
-        </DataTable>
-      </template>
-    </Card>
+      <Card>
+        <template #title>
+          {{ $t('peer_info') }}
+        </template>
+        <template #content>
+          <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
+            <Column field="route.ipv4_addr" style="width: 100px;" :header="$t('virtual_ipv4')" />
+            <Column field="route.hostname" style="max-width: 250px;" :header="$t('hostname')" />
+            <Column :field="routeCost" style="width: 100px;" :header="$t('route_cost')" />
+            <Column :field="latencyMs" style="width: 80px;" :header="$t('latency')" />
+            <Column :field="txBytes" style="width: 80px;" :header="$t('upload_bytes')" />
+            <Column :field="rxBytes" style="width: 80px;" :header="$t('download_bytes')" />
+            <Column :field="lossRate" style="width: 100px;" :header="$t('loss_rate')" />
+          </DataTable>
+        </template>
+      </Card>
+    </template>
   </div>
 </template>

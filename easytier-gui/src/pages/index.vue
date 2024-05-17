@@ -52,7 +52,6 @@ enum Severity {
 
 const messageBarSeverity = ref(Severity.None)
 const messageBarContent = ref('')
-
 const toast = useToast()
 
 const networkStore = useNetworkStore()
@@ -108,12 +107,8 @@ onMounted(() => {
 })
 onUnmounted(() => clearInterval(intervalId))
 
-const curNetworkHasInstance = computed(() => {
-  return networkStore.networkInstanceIds.includes(networkStore.curNetworkId)
-})
-
 const activeStep = computed(() => {
-  return curNetworkHasInstance.value ? 1 : 0
+  return networkStore.networkInstanceIds.includes(networkStore.curNetworkId) ? 1 : 0
 })
 
 const setting_menu = ref()
@@ -190,8 +185,12 @@ function isRunning(id: string) {
                 <div class="flex items-start content-center">
                   <div class="mr-3">
                     <span>{{ slotProps.value.network_name }}</span>
-                    <span v-if="isRunning(slotProps.value.instance_id)" class="ml-3">
-                      {{ slotProps.value.virtual_ipv4 }}
+                    <span
+                      v-if="isRunning(slotProps.value.instance_id) && networkStore.instances[slotProps.value.instance_id].detail && (networkStore.instances[slotProps.value.instance_id].detail?.my_node_info.virtual_ipv4 !== '')"
+                      class="ml-3"
+                    >
+                      {{ networkStore.instances[slotProps.value.instance_id].detail
+                        ? networkStore.instances[slotProps.value.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
                     </span>
                   </div>
                   <Tag

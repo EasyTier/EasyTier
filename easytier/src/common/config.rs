@@ -24,7 +24,10 @@ pub trait ConfigLoader: Send + Sync {
     fn set_netns(&self, ns: Option<String>);
 
     fn get_ipv4(&self) -> Option<std::net::Ipv4Addr>;
-    fn set_ipv4(&self, addr: std::net::Ipv4Addr);
+    fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>);
+
+    fn get_dhcp(&self) -> bool;
+    fn set_dhcp(&self, dhcp: bool);
 
     fn add_proxy_cidr(&self, cidr: cidr::IpCidr);
     fn remove_proxy_cidr(&self, cidr: cidr::IpCidr);
@@ -161,6 +164,7 @@ struct Config {
     instance_name: Option<String>,
     instance_id: Option<uuid::Uuid>,
     ipv4: Option<String>,
+    dhcp: Option<bool>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
 
@@ -280,8 +284,20 @@ impl ConfigLoader for TomlConfigLoader {
             .flatten()
     }
 
-    fn set_ipv4(&self, addr: std::net::Ipv4Addr) {
-        self.config.lock().unwrap().ipv4 = Some(addr.to_string());
+    fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>) {
+        self.config.lock().unwrap().ipv4 = if let Some(addr) = addr {
+            Some(addr.to_string())
+        } else {
+            None
+        };
+    }
+
+    fn get_dhcp(&self) -> bool {
+        self.config.lock().unwrap().dhcp.unwrap_or_default()
+    }
+
+    fn set_dhcp(&self, dhcp: bool) {
+        self.config.lock().unwrap().dhcp = Some(dhcp);
     }
 
     fn add_proxy_cidr(&self, cidr: cidr::IpCidr) {

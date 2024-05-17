@@ -41,6 +41,7 @@ impl Default for NetworkingMethod {
 struct NetworkConfig {
     instance_id: String,
 
+    dhcp: bool,
     virtual_ipv4: String,
     hostname: Option<String>,
     network_name: String,
@@ -53,7 +54,7 @@ struct NetworkConfig {
     proxy_cidrs: Vec<String>,
 
     enable_vpn_portal: bool,
-    vpn_portal_listne_port: i32,
+    vpn_portal_listen_port: i32,
     vpn_portal_client_network_addr: String,
     vpn_portal_client_network_len: i32,
 
@@ -72,18 +73,19 @@ impl NetworkConfig {
                 .with_context(|| format!("failed to parse instance id: {}", self.instance_id))?,
         );
         cfg.set_hostname(self.hostname.clone());
+        cfg.set_dhcp(self.dhcp);
         cfg.set_inst_name(self.network_name.clone());
         cfg.set_network_identity(NetworkIdentity::new(
             self.network_name.clone(),
             self.network_secret.clone(),
         ));
 
-        if self.virtual_ipv4.len() > 0 {
-            cfg.set_ipv4(
-                self.virtual_ipv4.parse().with_context(|| {
+        if !self.dhcp {
+            if self.virtual_ipv4.len() > 0 {
+                cfg.set_ipv4(Some(self.virtual_ipv4.parse().with_context(|| {
                     format!("failed to parse ipv4 address: {}", self.virtual_ipv4)
-                })?,
-            )
+                })?))
+            }
         }
 
         match self.networking_method {
@@ -150,12 +152,12 @@ impl NetworkConfig {
                 client_cidr: cidr
                     .parse()
                     .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
-                wireguard_listen: format!("0.0.0.0:{}", self.vpn_portal_listne_port)
+                wireguard_listen: format!("0.0.0.0:{}", self.vpn_portal_listen_port)
                     .parse()
                     .with_context(|| {
                         format!(
                             "failed to parse vpn portal wireguard listen port. {}",
-                            self.vpn_portal_listne_port
+                            self.vpn_portal_listen_port
                         )
                     })?,
             });
