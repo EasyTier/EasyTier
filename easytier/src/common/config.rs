@@ -205,7 +205,14 @@ impl TomlConfigLoader {
     pub fn new(config_path: &PathBuf) -> Result<Self, anyhow::Error> {
         let config_str = std::fs::read_to_string(config_path)
             .with_context(|| format!("failed to read config file: {:?}", config_path))?;
-        Self::new_from_str(&config_str)
+        let ret = Self::new_from_str(&config_str)?;
+        let old_ns = ret.get_network_identity();
+        ret.set_network_identity(NetworkIdentity::new(
+            old_ns.network_name,
+            old_ns.network_secret.unwrap_or_default(),
+        ));
+
+        Ok(ret)
     }
 }
 

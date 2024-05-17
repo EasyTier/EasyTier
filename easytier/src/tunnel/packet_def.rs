@@ -156,6 +156,9 @@ const PAYLOAD_OFFSET_FOR_NIC_PACKET: usize = max(
     WG_TUNNEL_HEADER_SIZE,
 ) + PEER_MANAGER_HEADER_SIZE;
 
+// UDP Tunnel: TUN MTU + 24 (Easy) + 20 (Encrypted) + 8(UDP) + 20(IP) = TUN MTU + 72
+// TCP Tunnel: TUN MTU + 20 (Easy) + 20 (Encrypted) + 20(TCP) + 20(IP) = TUN MTU + 80
+
 const INVALID_OFFSET: usize = usize::MAX;
 
 const fn get_converted_offset(old_hdr_size: usize, new_hdr_size: usize) -> usize {
