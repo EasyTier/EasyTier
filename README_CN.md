@@ -3,7 +3,8 @@
 [![GitHub](https://img.shields.io/github/license/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE)
 [![GitHub last commit](https://img.shields.io/github/last-commit/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/commits/main)
 [![GitHub issues](https://img.shields.io/github/issues/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/issues)
-[![GitHub actions](https://github.com/KKRainbow/EasyTier/actions/workflows/rust.yml/badge.svg)](https://github.com/KKRainbow/EasyTier/actions/)
+[![GitHub Core Actions](https://github.com/KKRainbow/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
+[![GitHub GUI Actions](https://github.com/KKRainbow/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
@@ -262,6 +263,7 @@ connected_clients:
 - [ZeroTier](https://www.zerotier.com/): 一个全球虚拟网络，用于连接设备。
 - [TailScale](https://tailscale.com/): 一个旨在简化网络配置的 VPN 解决方案。
 - [vpncloud](https://github.com/dswd/vpncloud): 一个 P2P Mesh VPN
+- [Candy](https://github.com/lanthora/candy): 可靠、低延迟、抗审查的虚拟专用网络
 
 # 许可证
 

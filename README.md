@@ -3,7 +3,8 @@
  [![GitHub](https://img.shields.io/github/license/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE)
  [![GitHub last commit](https://img.shields.io/github/last-commit/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/commits/main)
  [![GitHub issues](https://img.shields.io/github/issues/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/issues)
- [![GitHub actions](https://github.com/KKRainbow/EasyTier/actions/workflows/rust.yml/badge.svg)](https://github.com/KKRainbow/EasyTier/actions/)
+ [![GitHub Core Actions](https://github.com/KKRainbow/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
+ [![GitHub GUI Actions](https://github.com/KKRainbow/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
  
 [简体中文](/README_CN.md) | [English](/README.md)
 
@@ -259,6 +260,7 @@ Before using the Client Config, you need to modify the Interface Address and Pee
  - [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices.
  - [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration.
  - [vpncloud](https://github.com/dswd/vpncloud): A P2P Mesh VPN
+ - [Candy](https://github.com/lanthora/candy): A reliable, low-latency, and anti-censorship virtual private network
  
  # License
  
