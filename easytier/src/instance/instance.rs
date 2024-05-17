@@ -321,7 +321,7 @@ impl Instance {
                         }
                     }
 
-                    if i == 5 && unique_ipv4.is_empty() {
+                    if i == tries - 1 && unique_ipv4.is_empty() {
                         unique_ipv4.insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
                     }
 
@@ -345,7 +345,7 @@ impl Instance {
 
                 if dhcp_ip != ipv4_addr {
                     let last_ip = dhcp_ip.map(|p| p.address());
-                    println!("last_ip: {:?}", last_ip);
+                    tracing::debug!("last_ip: {:?}", last_ip);
                     let _ = nic_c.remove_ip(last_ip).await;
                     #[cfg(target_os = "macos")]
                     if last_ip.is_some() {
@@ -368,7 +368,8 @@ impl Instance {
                         let _ = nic_c.link_up().await;
                         dhcp_ip = Some(ip);
                         tries = 1;
-                        if nic_c.add_ip(ip.address(), 24).await.is_err() {
+                        if let Err(e) = nic_c.add_ip(ip.address(), 24).await {
+                            tracing::error!("add ip failed: {:?}", e);
                             global_ctx_c.set_ipv4(None);
                             let sleep: u64 = rand::thread_rng().gen_range(200..500);
                             tokio::time::sleep(std::time::Duration::from_millis(sleep)).await;
@@ -391,7 +392,6 @@ impl Instance {
 
                 let sleep: u64 = rand::thread_rng().gen_range(5..10);
 
-                // check every 10 ~ 20 seconds
                 tokio::time::sleep(std::time::Duration::from_secs(sleep)).await;
             }
         });
