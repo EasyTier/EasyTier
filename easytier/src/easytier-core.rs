@@ -3,7 +3,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::{backtrace, io::Write as _, net::SocketAddr, path::PathBuf};
+use std::{
+    backtrace,
+    io::Write as _,
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 
 use anyhow::Context;
 use clap::Parser;
@@ -179,6 +184,20 @@ and the vpn client is in network of 10.14.14.0/24"
         default_value = "false"
     )]
     latency_first: bool,
+
+    #[arg(
+        long,
+        help = "exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list",
+        num_args = 0..
+    )]
+    exit_nodes: Vec<Ipv4Addr>,
+
+    #[arg(
+        long,
+        help = "allow this node to be an exit node, default is false",
+        default_value = "false"
+    )]
+    enable_exit_node: bool,
 }
 
 impl Cli {
@@ -394,7 +413,10 @@ impl From<Cli> for TomlConfigLoader {
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu;
         }
+        f.enable_exit_node = cli.enable_exit_node;
         cfg.set_flags(f);
+
+        cfg.set_exit_nodes(cli.exit_nodes.clone());
 
         cfg
     }

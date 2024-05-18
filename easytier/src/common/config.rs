@@ -1,5 +1,5 @@
 use std::{
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -57,6 +57,9 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_flags(&self) -> Flags;
     fn set_flags(&self, flags: Flags);
+
+    fn get_exit_nodes(&self) -> Vec<Ipv4Addr>;
+    fn set_exit_nodes(&self, nodes: Vec<Ipv4Addr>);
 
     fn dump(&self) -> String;
 }
@@ -155,6 +158,8 @@ pub struct Flags {
     pub mtu: u16,
     #[derivative(Default(value = "true"))]
     pub latency_first: bool,
+    #[derivative(Default(value = "false"))]
+    pub enable_exit_node: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -167,6 +172,7 @@ struct Config {
     dhcp: Option<bool>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
+    exit_nodes: Option<Vec<Ipv4Addr>>,
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<NetworkConfig>>,
@@ -457,6 +463,19 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_flags(&self, flags: Flags) {
         self.config.lock().unwrap().flags = Some(flags);
+    }
+
+    fn get_exit_nodes(&self) -> Vec<Ipv4Addr> {
+        self.config
+            .lock()
+            .unwrap()
+            .exit_nodes
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_exit_nodes(&self, nodes: Vec<Ipv4Addr>) {
+        self.config.lock().unwrap().exit_nodes = Some(nodes);
     }
 
     fn dump(&self) -> String {

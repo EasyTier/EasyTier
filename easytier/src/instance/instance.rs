@@ -68,7 +68,9 @@ impl IpProxy {
     }
 
     async fn start(&self) -> Result<(), Error> {
-        if self.global_ctx.get_proxy_cidrs().is_empty() || self.started.load(Ordering::Relaxed) {
+        if (self.global_ctx.get_proxy_cidrs().is_empty() || self.started.load(Ordering::Relaxed))
+            && !self.global_ctx.config.get_flags().enable_exit_node
+        {
             return Ok(());
         }
 
