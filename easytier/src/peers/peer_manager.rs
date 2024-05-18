@@ -155,6 +155,8 @@ pub struct PeerManager {
     foreign_network_client: Arc<ForeignNetworkClient>,
 
     encryptor: Arc<Box<dyn Encryptor>>,
+
+    exit_nodes: Vec<Ipv4Addr>,
 }
 
 impl Debug for PeerManager {
@@ -238,6 +240,8 @@ impl PeerManager {
             my_peer_id,
         ));
 
+        let exit_nodes = global_ctx.config.get_exit_nodes();
+
         PeerManager {
             my_peer_id,
 
@@ -262,6 +266,7 @@ impl PeerManager {
             foreign_network_client,
 
             encryptor,
+            exit_nodes,
         }
     }
 
@@ -573,6 +578,7 @@ impl PeerManager {
             ipv4_addr
         );
 
+        let mut is_exit_node = false;
         let mut dst_peers = vec![];
         // NOTE: currently we only support ipv4 and cidr is 24
         if ipv4_addr.is_broadcast() || ipv4_addr.is_multicast() || ipv4_addr.octets()[3] == 255 {
@@ -585,6 +591,14 @@ impl PeerManager {
             );
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(&ipv4_addr).await {
             dst_peers.push(peer_id);
+        } else {
+            for exit_node in &self.exit_nodes {
+                if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_node).await {
+                    dst_peers.push(peer_id);
+                    is_exit_node = true;
+                    break;
+                }
+            }
         }
 
         if dst_peers.is_empty() {
@@ -605,7 +619,8 @@ impl PeerManager {
         let is_latency_first = self.global_ctx.get_flags().latency_first;
         msg.mut_peer_manager_header()
             .unwrap()
-            .set_latency_first(is_latency_first);
+            .set_latency_first(is_latency_first)
+            .set_exit_node(is_exit_node);
         let next_hop_policy = Self::get_next_hop_policy(is_latency_first);
 
         let mut errs: Vec<Error> = vec![];

@@ -60,6 +60,7 @@ bitflags::bitflags! {
     struct PeerManagerHeaderFlags: u8 {
         const ENCRYPTED = 0b0000_0001;
         const LATENCY_FIRST = 0b0000_0010;
+        const EXIT_NODE = 0b0000_0100;
 
         const _ = !0;
     }
@@ -101,7 +102,13 @@ impl PeerManagerHeader {
             .contains(PeerManagerHeaderFlags::LATENCY_FIRST)
     }
 
-    pub fn set_latency_first(&mut self, latency_first: bool) {
+    pub fn is_exit_node(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::EXIT_NODE)
+    }
+
+    pub fn set_latency_first(&mut self, latency_first: bool) -> &mut Self {
         let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
         if latency_first {
             flags.insert(PeerManagerHeaderFlags::LATENCY_FIRST);
@@ -109,6 +116,18 @@ impl PeerManagerHeader {
             flags.remove(PeerManagerHeaderFlags::LATENCY_FIRST);
         }
         self.flags = flags.bits();
+        self
+    }
+
+    pub fn set_exit_node(&mut self, exit_node: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if exit_node {
+            flags.insert(PeerManagerHeaderFlags::EXIT_NODE);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::EXIT_NODE);
+        }
+        self.flags = flags.bits();
+        self
     }
 }
 

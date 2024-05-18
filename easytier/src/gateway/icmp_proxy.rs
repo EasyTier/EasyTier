@@ -248,6 +248,7 @@ impl IcmpProxy {
     async fn try_handle_peer_packet(&self, packet: &ZCPacket) -> Option<()> {
         let _ = self.global_ctx.get_ipv4()?;
         let hdr = packet.peer_manager_header().unwrap();
+        let is_exit_node = hdr.is_exit_node();
 
         if hdr.packet_type != PacketType::Data as u8 {
             return None;
@@ -260,7 +261,7 @@ impl IcmpProxy {
             return None;
         }
 
-        if !self.cidr_set.contains_v4(ipv4.get_destination()) {
+        if !self.cidr_set.contains_v4(ipv4.get_destination()) && !is_exit_node {
             return None;
         }
 
