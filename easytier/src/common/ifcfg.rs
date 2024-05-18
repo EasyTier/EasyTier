@@ -30,6 +30,7 @@ pub trait IfConfiguerTrait: Send + Sync {
     async fn wait_interface_show(&self, _name: &str) -> Result<(), Error> {
         return Ok(());
     }
+    async fn set_mtu(&self, _name: &str, _mtu: u32) -> Result<(), Error>;
 }
 
 fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
@@ -77,9 +78,7 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     tracing::info!(?cmd, ?ec, ?succ, ?stdout, ?stderr, "run shell cmd");
 
     if !cmd_out.status.success() {
-        return Err(Error::ShellCommandError(
-            stdout + &stderr,
-        ));
+        return Err(Error::ShellCommandError(stdout + &stderr));
     }
     Ok(())
 }
@@ -154,6 +153,10 @@ impl IfConfiguerTrait for MacIfConfiger {
             .await
         }
     }
+
+    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        run_shell_cmd(format!("ifconfig {} mtu {}", name, mtu).as_str()).await
+    }
 }
 
 pub struct LinuxIfConfiger {}
@@ -209,6 +212,10 @@ impl IfConfiguerTrait for LinuxIfConfiger {
             )
             .await
         }
+    }
+
+    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        run_shell_cmd(format!("ip link set dev {} mtu {}", name, mtu).as_str()).await
     }
 }
 
@@ -361,6 +368,13 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             })
             .await??,
         )
+    }
+
+    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        run_shell_cmd(
+            format!("netsh interface ipv4 set subinterface {} mtu={}", name, mtu).as_str(),
+        )
+        .await
     }
 }
 
