@@ -38,7 +38,7 @@ use super::{
     IpVersion, Tunnel, TunnelError, TunnelListener, TunnelUrl, ZCPacketSink, ZCPacketStream,
 };
 
-const MAX_PACKET: usize = 65500;
+const MAX_PACKET: usize = 2048;
 
 #[derive(Debug, Clone)]
 enum WgType {
@@ -335,6 +335,7 @@ impl WgPeerData {
 }
 
 struct WgPeer {
+    tunn: Option<Mutex<Tunn>>,
     udp: Arc<UdpSocket>, // only for send
     config: WgConfig,
     endpoint: SocketAddr,
@@ -350,10 +351,18 @@ struct WgPeer {
 impl WgPeer {
     fn new(udp: Arc<UdpSocket>, config: WgConfig, endpoint: SocketAddr) -> Self {
         WgPeer {
+            tunn: Some(Mutex::new(Tunn::new(
+                config.my_secret_key.clone(),
+                config.peer_public_key.clone(),
+                None,
+                None,
+                rand::thread_rng().next_u32(),
+                None,
+            ))),
+
             udp,
             config,
             endpoint,
-
             sink: std::sync::Mutex::new(None),
 
             data: None,
@@ -392,14 +401,7 @@ impl WgPeer {
         let data = WgPeerData {
             udp: self.udp.clone(),
             endpoint: self.endpoint,
-            tunn: Arc::new(Mutex::new(Tunn::new(
-                self.config.my_secret_key.clone(),
-                self.config.peer_public_key.clone(),
-                None,
-                None,
-                rand::thread_rng().next_u32(),
-                None,
-            ))),
+            tunn: Arc::new(self.tunn.take().unwrap()),
             wg_type: self.config.wg_type.clone(),
             stopped: Arc::new(AtomicBool::new(false)),
         };
@@ -420,6 +422,29 @@ impl WgPeer {
             .unwrap()
             .stopped
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    async fn create_handshake_init(&self) -> Vec<u8> {
+        let mut dst = vec![0u8; 2048];
+        let handshake_init = self
+            .tunn
+            .as_ref()
+            .unwrap()
+            .lock()
+            .await
+            .format_handshake_initiation(&mut dst, false);
+        assert!(matches!(handshake_init, TunnResult::WriteToNetwork(_)));
+        let handshake_init = if let TunnResult::WriteToNetwork(sent) = handshake_init {
+            sent
+        } else {
+            unreachable!();
+        };
+
+        handshake_init.into()
+    }
+
+    fn udp_socket(&self) -> Arc<UdpSocket> {
+        self.udp.clone()
     }
 }
 
@@ -592,37 +617,6 @@ impl WgTunnelConnector {
         }
     }
 
-    fn create_handshake_init(tun: &mut Tunn) -> Vec<u8> {
-        let mut dst = vec![0u8; 2048];
-        let handshake_init = tun.format_handshake_initiation(&mut dst, false);
-        assert!(matches!(handshake_init, TunnResult::WriteToNetwork(_)));
-        let handshake_init = if let TunnResult::WriteToNetwork(sent) = handshake_init {
-            sent
-        } else {
-            unreachable!();
-        };
-
-        handshake_init.into()
-    }
-
-    fn parse_handshake_resp(tun: &mut Tunn, handshake_resp: &[u8]) -> Vec<u8> {
-        let mut dst = vec![0u8; 2048];
-        let keepalive = tun.decapsulate(None, handshake_resp, &mut dst);
-        assert!(
-            matches!(keepalive, TunnResult::WriteToNetwork(_)),
-            "Failed to parse handshake response, {:?}",
-            keepalive
-        );
-
-        let keepalive = if let TunnResult::WriteToNetwork(sent) = keepalive {
-            sent
-        } else {
-            unreachable!();
-        };
-
-        keepalive.into()
-    }
-
     #[tracing::instrument(skip(config))]
     async fn connect_with_socket(
         addr_url: url::Url,
@@ -634,17 +628,25 @@ impl WgTunnelConnector {
         let local_addr = udp.local_addr().unwrap().to_string();
 
         let mut wg_peer = WgPeer::new(Arc::new(udp), config.clone(), addr);
-        let tunnel = wg_peer.start_and_get_tunnel();
+        let udp = wg_peer.udp_socket();
 
+        // do handshake here so we will return after receive first packet
+        let handshake = wg_peer.create_handshake_init().await;
+        udp.send_to(&handshake, addr).await?;
+        let mut buf = [0u8; MAX_PACKET];
+        let (n, recv_addr) = udp.recv_from(&mut buf).await.unwrap();
+        if recv_addr != addr {
+            tracing::warn!(?recv_addr, "Received packet from changed address");
+        }
+
+        let tunnel = wg_peer.start_and_get_tunnel();
         let data = wg_peer.data.as_ref().unwrap().clone();
         let mut sink = wg_peer.sink.lock().unwrap().take().unwrap();
         wg_peer.tasks.spawn(async move {
+            data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             loop {
                 let mut buf = vec![0u8; MAX_PACKET];
-                let (n, recv_addr) = data.udp.recv_from(&mut buf).await.unwrap();
-                if recv_addr != addr {
-                    tracing::warn!(?recv_addr, "Received packet from changed address");
-                }
+                let (n, _) = data.udp.recv_from(&mut buf).await.unwrap();
                 data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             }
         });

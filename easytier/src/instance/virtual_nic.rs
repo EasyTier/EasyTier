@@ -295,14 +295,6 @@ impl VirtualNic {
             todo!("queue_num != 1")
         }
         config.queues(self.queue_num);
-
-        let flags = self.global_ctx.config.get_flags();
-        let mut mtu_in_config = flags.mtu;
-        if flags.enable_encryption {
-            mtu_in_config -= 20;
-        }
-
-        config.mtu(mtu_in_config as i32);
         config.up();
 
         let dev = {
@@ -312,6 +304,19 @@ impl VirtualNic {
 
         let ifname = dev.get_ref().name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        let flags = self.global_ctx.config.get_flags();
+        let mut mtu_in_config = flags.mtu;
+        if flags.enable_encryption {
+            mtu_in_config -= 20;
+        }
+        {
+            // set mtu by ourselves, rust-tun does not handle it correctly on windows
+            let _g = self.global_ctx.net_ns.guard();
+            self.ifcfg
+                .set_mtu(ifname.as_str(), mtu_in_config as u32)
+                .await?;
+        }
 
         let (a, b) = BiLock::new(dev);
 

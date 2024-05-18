@@ -151,7 +151,7 @@ pub struct Flags {
     pub enable_encryption: bool,
     #[derivative(Default(value = "true"))]
     pub enable_ipv6: bool,
-    #[derivative(Default(value = "1420"))]
+    #[derivative(Default(value = "1380"))]
     pub mtu: u16,
     #[derivative(Default(value = "true"))]
     pub latency_first: bool,
