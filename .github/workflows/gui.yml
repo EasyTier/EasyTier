@@ -28,7 +28,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml"]'
   build-gui:
     strategy:
       fail-fast: false
