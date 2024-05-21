@@ -59,6 +59,7 @@ message StunInfo {
     NatType udp_nat_type = 1;
     NatType tcp_nat_type = 2;
     int64 last_update_time = 3;
+    string public_ip = 4;
 }
 
 message Route {

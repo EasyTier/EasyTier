@@ -491,6 +491,7 @@ pub mod tests {
                 udp_nat_type: self.udp_nat_type as i32,
                 tcp_nat_type: NatType::Unknown as i32,
                 last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
+                ..Default::default()
             }
         }
 
