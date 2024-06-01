@@ -8,6 +8,7 @@ use tracing::Instrument;
 
 pub mod config;
 pub mod constants;
+pub mod defer;
 pub mod error;
 pub mod global_ctx;
 pub mod ifcfg;

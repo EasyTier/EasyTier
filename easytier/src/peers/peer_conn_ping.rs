@@ -76,7 +76,7 @@ impl PeerConnPinger {
 
         let now = std::time::Instant::now();
         // wait until we get a pong packet in ctrl_resp_receiver
-        let resp = timeout(Duration::from_secs(1), async {
+        let resp = timeout(Duration::from_secs(2), async {
             loop {
                 match receiver.recv().await {
                     Ok(p) => {

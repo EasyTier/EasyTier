@@ -1,9 +1,11 @@
 #![allow(dead_code)]
 
-use std::{net::SocketAddr, vec};
+use std::{net::SocketAddr, time::Duration, vec};
 
 use clap::{command, Args, Parser, Subcommand};
+use common::stun::StunInfoCollectorTrait;
 use rpc::vpn_portal_rpc_client::VpnPortalRpcClient;
+use tokio::time::timeout;
 use utils::{list_peer_route_pair, PeerRoutePair};
 
 mod arch;
@@ -13,7 +15,7 @@ mod tunnel;
 mod utils;
 
 use crate::{
-    common::stun::{StunInfoCollector, UdpNatTypeDetector},
+    common::stun::StunInfoCollector,
     rpc::{
         connector_manage_rpc_client::ConnectorManageRpcClient,
         peer_center_rpc_client::PeerCenterRpcClient, peer_manage_rpc_client::PeerManageRpcClient,
@@ -309,8 +311,19 @@ async fn main() -> Result<(), Error> {
             handler.handle_route_list().await?;
         }
         SubCommand::Stun => {
-            let stun = UdpNatTypeDetector::new(StunInfoCollector::get_default_servers());
-            println!("udp type: {:?}", stun.get_udp_nat_type(0).await);
+            timeout(Duration::from_secs(5), async move {
+                let collector = StunInfoCollector::new_with_default_servers();
+                loop {
+                    let ret = collector.get_stun_info();
+                    if ret.udp_nat_type != NatType::Unknown as i32 {
+                        println!("stun info: {:#?}", ret);
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            })
+            .await
+            .unwrap();
         }
         SubCommand::PeerCenter => {
             let mut peer_center_client = handler.get_peer_center_client().await?;

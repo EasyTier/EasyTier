@@ -77,16 +77,16 @@ fn new_sack_packet(conn_id: u32, magic: u64) -> ZCPacket {
     )
 }
 
-pub fn new_hole_punch_packet() -> ZCPacket {
+pub fn new_hole_punch_packet(tid: u32, buf_len: u16) -> ZCPacket {
     // generate a 128 bytes vec with random data
     let mut rng = rand::rngs::StdRng::from_entropy();
-    let mut buf = vec![0u8; 128];
+    let mut buf = vec![0u8; buf_len as usize];
     rng.fill(&mut buf[..]);
     new_udp_packet(
         |header| {
             header.msg_type = UdpPacketType::HolePunch as u8;
-            header.conn_id.set(0);
-            header.len.set(0);
+            header.conn_id.set(tid);
+            header.len.set(buf_len);
         },
         Some(&mut buf),
     )
@@ -304,7 +304,7 @@ impl UdpTunnelListenerData {
         let header = zc_packet.udp_tunnel_header().unwrap();
         if header.msg_type == UdpPacketType::Syn as u8 {
             tokio::spawn(Self::handle_new_connect(self.clone(), *addr, zc_packet));
-        } else {
+        } else if header.msg_type != UdpPacketType::HolePunch as u8 {
             if let Err(e) = self
                 .try_forward_packet(addr, header.conn_id.get(), zc_packet)
                 .await
@@ -526,11 +526,10 @@ impl UdpTunnelConnector {
 
     async fn build_tunnel(
         &self,
-        socket: UdpSocket,
+        socket: Arc<UdpSocket>,
         dst_addr: SocketAddr,
         conn_id: u32,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let socket = Arc::new(socket);
         let ring_for_send_udp = Arc::new(RingTunnel::new(128));
         let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
         tracing::debug!(
@@ -610,13 +609,13 @@ impl UdpTunnelConnector {
 
     pub async fn try_connect_with_socket(
         &self,
-        socket: UdpSocket,
+        socket: Arc<UdpSocket>,
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         log::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
-        crate::arch::windows::disable_connection_reset(&socket)?;
+        crate::arch::windows::disable_connection_reset(socket.as_ref())?;
 
         // send syn
         let conn_id = rand::random();
@@ -649,7 +648,7 @@ impl UdpTunnelConnector {
             UdpSocket::bind("[::]:0").await?
         };
 
-        return self.try_connect_with_socket(socket, addr).await;
+        return self.try_connect_with_socket(Arc::new(socket), addr).await;
     }
 
     async fn connect_with_custom_bind(
@@ -666,7 +665,7 @@ impl UdpTunnelConnector {
             )?;
             setup_sokcet2(&socket2_socket, &bind_addr)?;
             let socket = UdpSocket::from_std(socket2_socket.into())?;
-            futures.push(self.try_connect_with_socket(socket, addr));
+            futures.push(self.try_connect_with_socket(Arc::new(socket), addr));
         }
         wait_for_connect_futures(futures).await
     }

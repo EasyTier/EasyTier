@@ -1,11 +1,12 @@
 use std::net::SocketAddr;
 
+use bytecodec::fixnum::{U32beDecoder, U32beEncoder};
 use stun_codec::net::{socket_addr_xor, SocketAddrDecoder, SocketAddrEncoder};
 
 use stun_codec::rfc5389::attributes::{
     MappedAddress, Software, XorMappedAddress, XorMappedAddress2,
 };
-use stun_codec::rfc5780::attributes::{ChangeRequest, OtherAddress, ResponseOrigin};
+use stun_codec::rfc5780::attributes::{OtherAddress, ResponseOrigin};
 use stun_codec::{define_attribute_enums, AttributeType, Message, TransactionId};
 
 use bytecodec::{ByteCount, Decode, Encode, Eos, Result, SizedEncode, TryTaggedDecode};
@@ -195,6 +196,75 @@ impl SourceAddressEncoder {
 }
 impl_encode!(SourceAddressEncoder, SourceAddress, |item: Self::Item| {
     item.0
+});
+
+/// `CHANGE-REQUEST` attribute.
+///
+/// See [RFC 5780 -- 7.2. CHANGE-REQUEST] about this attribute.
+///
+/// [RFC 5780 -- 7.2. CHANGE-REQUEST]: https://tools.ietf.org/html/rfc5780#section-7.2
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChangeRequest(bool, bool);
+
+impl ChangeRequest {
+    /// The codepoint of the type of the attribute.
+    pub const CODEPOINT: u16 = 0x0003;
+
+    /// Makes a new `ChangeRequest` instance.
+    pub fn new(ip: bool, port: bool) -> Self {
+        ChangeRequest(ip, port)
+    }
+
+    /// Returns whether the client requested the server to send the Binding Response with a
+    /// different IP address than the one the Binding Request was received on
+    pub fn ip(&self) -> bool {
+        self.0
+    }
+
+    /// Returns whether the client requested the server to send the Binding Response with a
+    /// different port than the one the Binding Request was received on
+    pub fn port(&self) -> bool {
+        self.1
+    }
+}
+
+impl stun_codec::Attribute for ChangeRequest {
+    type Decoder = ChangeRequestDecoder;
+    type Encoder = ChangeRequestEncoder;
+
+    fn get_type(&self) -> AttributeType {
+        AttributeType::new(Self::CODEPOINT)
+    }
+}
+
+/// [`ChangeRequest`] decoder.
+#[derive(Debug, Default)]
+pub struct ChangeRequestDecoder(U32beDecoder);
+
+impl ChangeRequestDecoder {
+    /// Makes a new `ChangeRequestDecoder` instance.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+impl_decode!(ChangeRequestDecoder, ChangeRequest, |item| {
+    Ok(ChangeRequest((item & 0x4) != 0, (item & 0x2) != 0))
+});
+
+/// [`ChangeRequest`] encoder.
+#[derive(Debug, Default)]
+pub struct ChangeRequestEncoder(U32beEncoder);
+
+impl ChangeRequestEncoder {
+    /// Makes a new `ChangeRequestEncoder` instance.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+impl_encode!(ChangeRequestEncoder, ChangeRequest, |item: Self::Item| {
+    let ip = item.0 as u8;
+    let port = item.1 as u8;
+    ((ip << 1 | port) << 1) as u32
 });
 
 pub fn tid_to_u128(tid: &TransactionId) -> u128 {
