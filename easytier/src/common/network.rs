@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::{net::IpAddr, ops::Deref, sync::Arc};
 
 use crate::rpc::peer::GetIpListResponse;
 use pnet::datalink::NetworkInterface;
@@ -7,7 +7,7 @@ use tokio::{
     task::JoinSet,
 };
 
-use super::netns::NetNS;
+use super::{netns::NetNS, stun::StunInfoCollectorTrait};
 
 pub const CACHED_IP_LIST_TIMEOUT_SEC: u64 = 60;
 
@@ -142,14 +142,16 @@ pub struct IPCollector {
     cached_ip_list: Arc<RwLock<GetIpListResponse>>,
     collect_ip_task: Mutex<JoinSet<()>>,
     net_ns: NetNS,
+    stun_info_collector: Arc<Box<dyn StunInfoCollectorTrait>>,
 }
 
 impl IPCollector {
-    pub fn new(net_ns: NetNS) -> Self {
+    pub fn new<T: StunInfoCollectorTrait + 'static>(net_ns: NetNS, stun_info_collector: T) -> Self {
         Self {
             cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::new())),
             collect_ip_task: Mutex::new(JoinSet::new()),
             net_ns,
+            stun_info_collector: Arc::new(Box::new(stun_info_collector)),
         }
     }
 
@@ -158,14 +160,39 @@ impl IPCollector {
         if task.is_empty() {
             let cached_ip_list = self.cached_ip_list.clone();
             *cached_ip_list.write().await =
-                Self::do_collect_ip_addrs(false, self.net_ns.clone()).await;
+                Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
             let net_ns = self.net_ns.clone();
+            let stun_info_collector = self.stun_info_collector.clone();
             task.spawn(async move {
                 loop {
-                    let ip_addrs = Self::do_collect_ip_addrs(true, net_ns.clone()).await;
+                    let ip_addrs = Self::do_collect_local_ip_addrs(net_ns.clone()).await;
                     *cached_ip_list.write().await = ip_addrs;
                     tokio::time::sleep(std::time::Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC))
                         .await;
+                }
+            });
+
+            let cached_ip_list = self.cached_ip_list.clone();
+            task.spawn(async move {
+                loop {
+                    let stun_info = stun_info_collector.get_stun_info();
+                    for ip in stun_info.public_ip.iter() {
+                        let Ok(ip_addr) = ip.parse::<IpAddr>() else {
+                            continue;
+                        };
+                        if ip_addr.is_ipv4() {
+                            cached_ip_list.write().await.public_ipv4 = ip.clone();
+                        } else {
+                            cached_ip_list.write().await.public_ipv6 = ip.clone();
+                        }
+                    }
+
+                    let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_empty() {
+                        CACHED_IP_LIST_TIMEOUT_SEC
+                    } else {
+                        3
+                    };
+                    tokio::time::sleep(std::time::Duration::from_secs(sleep_sec)).await;
                 }
             });
         }
@@ -193,20 +220,8 @@ impl IPCollector {
     }
 
     #[tracing::instrument(skip(net_ns))]
-    async fn do_collect_ip_addrs(with_public: bool, net_ns: NetNS) -> GetIpListResponse {
+    async fn do_collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
         let mut ret = crate::rpc::peer::GetIpListResponse::new();
-
-        if with_public {
-            if let Some(v4_addr) =
-                public_ip::addr_with(public_ip::http::ALL, public_ip::Version::V4).await
-            {
-                ret.public_ipv4 = v4_addr.to_string();
-            }
-
-            if let Some(v6_addr) = public_ip::addr_v6().await {
-                ret.public_ipv6 = v6_addr.to_string();
-            }
-        }
 
         let ifaces = Self::collect_interfaces(net_ns.clone()).await;
         let _g = net_ns.guard();

@@ -7,9 +7,7 @@ default-members = ["easytier"]
 panic = "unwind"
 
 [profile.release]
-panic = "unwind"
-# panic = "abort"
-# lto = true
-# codegen-units = 1
-# strip = true
-# opt-level = "z"
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
