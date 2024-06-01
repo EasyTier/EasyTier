@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -6,7 +7,6 @@ use crate::rpc::{NatType, StunInfo};
 use anyhow::Context;
 use chrono::Local;
 use crossbeam::atomic::AtomicCell;
-use dashmap::{DashMap, DashSet};
 use rand::seq::IteratorRandom;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::{broadcast, Mutex};
@@ -53,6 +53,7 @@ impl HostResolverIter {
             match lookup_host(&host).await {
                 Ok(ips) => {
                     self.ips = ips
+                        .filter(|x| x.is_ipv4())
                         .choose_multiple(&mut rand::thread_rng(), self.max_ip_per_domain as usize);
                 }
                 Err(e) => {
@@ -258,7 +259,7 @@ impl StunClient {
 
         let changed_socket_addr = Self::extract_changed_addr(&msg);
         let real_ip_changed = stun_host.ip() != recv_addr.ip();
-        let real_port_changed = real_ip_changed || stun_host.port() != recv_addr.port();
+        let real_port_changed = stun_host.port() != recv_addr.port();
 
         let resp = BindRequestResponse {
             local_addr: self.socket.local_addr()?,
@@ -330,6 +331,11 @@ impl StunClientBuilder {
             self.stun_packet_sender.subscribe(),
         )
     }
+
+    pub async fn stop(&mut self) {
+        self.task_set.abort_all();
+        while let Some(_) = self.task_set.join_next().await {}
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -382,38 +388,45 @@ impl UdpNatTypeDetectResult {
         false
     }
 
-    fn is_port_restricted(&self) -> bool {
-        // if two stun server return the same mapped addr, it is port restricted
-        let sock_to_stun_server = DashMap::new();
-        for resp in self.stun_resps.iter() {
-            if let Some(mapped_addr) = &resp.mapped_socket_addr {
-                let ret = sock_to_stun_server
-                    .entry(mapped_addr)
-                    .and_modify(|x: &mut DashSet<SocketAddr>| {
-                        x.insert(resp.stun_server_addr);
-                    })
-                    .or_insert_with(|| DashSet::new());
-                if ret.value().len() > 1 {
-                    return true;
-                }
-            }
-        }
-        return false;
+    fn stun_server_count(&self) -> usize {
+        // find resp with distinct stun server
+        self.stun_resps
+            .iter()
+            .map(|x| x.stun_server_addr)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn is_cone(&self) -> bool {
+        // if unique mapped addr count is less than stun server count, it is cone
+        let mapped_addr_count = self
+            .stun_resps
+            .iter()
+            .filter_map(|x| x.mapped_socket_addr)
+            .collect::<BTreeSet<_>>()
+            .len();
+        mapped_addr_count < self.stun_server_count()
     }
 
     pub fn nat_type(&self) -> NatType {
-        if self.has_ip_changed_resp() {
-            if self.is_open_internet() {
-                return NatType::OpenInternet;
-            } else if self.is_pat() {
-                return NatType::NoPat;
+        if self.stun_server_count() < 2 {
+            return NatType::Unknown;
+        }
+
+        if self.is_cone() {
+            if self.has_ip_changed_resp() {
+                if self.is_open_internet() {
+                    return NatType::OpenInternet;
+                } else if self.is_pat() {
+                    return NatType::NoPat;
+                } else {
+                    return NatType::FullCone;
+                }
+            } else if self.has_port_changed_resp() {
+                return NatType::Restricted;
             } else {
-                return NatType::FullCone;
+                return NatType::PortRestricted;
             }
-        } else if self.has_port_changed_resp() {
-            return NatType::Restricted;
-        } else if self.is_port_restricted() {
-            return NatType::PortRestricted;
         } else if !self.stun_resps.is_empty() {
             return NatType::Symmetric;
         } else {
@@ -421,13 +434,13 @@ impl UdpNatTypeDetectResult {
         }
     }
 
-    pub fn public_ip(&self) -> Option<IpAddr> {
-        for resp in self.stun_resps.iter() {
-            if let Some(addr) = resp.mapped_socket_addr {
-                return Some(addr.ip());
-            }
-        }
-        None
+    pub fn public_ips(&self) -> Vec<IpAddr> {
+        self.stun_resps
+            .iter()
+            .filter_map(|x| x.mapped_socket_addr.map(|x| x.ip()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 
     pub fn collect_available_stun_server(&self) -> Vec<SocketAddr> {
@@ -438,6 +451,30 @@ impl UdpNatTypeDetectResult {
             }
         }
         ret
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.source_addr
+    }
+
+    pub fn extend_result(&mut self, other: UdpNatTypeDetectResult) {
+        self.stun_resps.extend(other.stun_resps);
+    }
+
+    pub fn min_port(&self) -> u16 {
+        self.stun_resps
+            .iter()
+            .filter_map(|x| x.mapped_socket_addr.map(|x| x.port()))
+            .min()
+            .unwrap_or(0)
+    }
+
+    pub fn max_port(&self) -> u16 {
+        self.stun_resps
+            .iter()
+            .filter_map(|x| x.mapped_socket_addr.map(|x| x.port()))
+            .max()
+            .unwrap_or(u16::MAX)
     }
 }
 
@@ -521,18 +558,16 @@ pub struct StunInfoCollector {
 #[async_trait::async_trait]
 impl StunInfoCollectorTrait for StunInfoCollector {
     fn get_stun_info(&self) -> StunInfo {
-        let result = self.udp_nat_test_result.read().unwrap().clone();
+        let Some(result) = self.udp_nat_test_result.read().unwrap().clone() else {
+            return Default::default();
+        };
         StunInfo {
-            udp_nat_type: result
-                .as_ref()
-                .and_then(|f| Some(f.nat_type()))
-                .unwrap_or(NatType::Unknown) as i32,
+            udp_nat_type: result.nat_type() as i32,
             tcp_nat_type: 0,
             last_update_time: self.nat_test_result_time.load().timestamp(),
-            public_ip: result
-                .and_then(|f| f.public_ip())
-                .map(|x| x.to_string())
-                .unwrap_or_default(),
+            public_ip: result.public_ips().iter().map(|x| x.to_string()).collect(),
+            min_port: result.min_port() as u32,
+            max_port: result.max_port() as u32,
         }
     }
 
@@ -546,7 +581,7 @@ impl StunInfoCollectorTrait for StunInfoCollector {
             .ok_or(Error::NotFound)?;
 
         let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
-        let client_builder = StunClientBuilder::new(udp.clone());
+        let mut client_builder = StunClientBuilder::new(udp.clone());
 
         for server in stun_servers.iter() {
             let Ok(ret) = client_builder
@@ -558,6 +593,8 @@ impl StunInfoCollectorTrait for StunInfoCollector {
                 continue;
             };
             if let Some(mapped_addr) = ret.mapped_socket_addr {
+                // make sure udp socket is available after return ok.
+                client_builder.stop().await;
                 return Ok(mapped_addr);
             }
         }
@@ -590,8 +627,8 @@ impl StunInfoCollector {
         // stun server cross nation may return a external ip address with high latency and loss rate
         vec![
             "stun.miwifi.com",
-            "stun.hitv.com",
             "stun.cdnbye.com",
+            "stun.hitv.com",
             "stun.chat.bilibili.com",
             "stun.douyucdn.cn:18000",
             "fwa.lifesizecloud.com",
@@ -622,25 +659,45 @@ impl StunInfoCollector {
                 // use first three and random choose one from the rest
                 let servers = servers
                     .iter()
-                    .take(3)
-                    .chain(servers.iter().skip(3).choose(&mut rand::thread_rng()))
+                    .take(2)
+                    .chain(servers.iter().skip(2).choose(&mut rand::thread_rng()))
                     .map(|x| x.to_string())
                     .collect();
-                let detector = UdpNatTypeDetector::new(servers, 3);
+                let detector = UdpNatTypeDetector::new(servers, 1);
                 let ret = detector.detect_nat_type(0).await;
                 tracing::debug!(?ret, "finish udp nat type detect");
-                let sleep_sec = match ret {
+                let mut nat_type = NatType::Unknown;
+                let sleep_sec = match &ret {
                     Ok(resp) => {
                         *udp_nat_test_result.write().unwrap() = Some(resp.clone());
                         udp_test_time.store(Local::now());
-                        if resp.nat_type() == NatType::Unknown {
-                            60
+                        nat_type = resp.nat_type();
+                        if nat_type == NatType::Unknown {
+                            15
                         } else {
                             600
                         }
                     }
-                    _ => 60,
+                    _ => 15,
                 };
+
+                // if nat type is symmtric, detect with another port to gather more info
+                if nat_type == NatType::Symmetric {
+                    let old_resp = ret.unwrap();
+                    let old_local_port = old_resp.local_addr().port();
+                    let new_port = if old_local_port >= 65535 {
+                        old_local_port - 1
+                    } else {
+                        old_local_port + 1
+                    };
+                    let ret = detector.detect_nat_type(new_port).await;
+                    tracing::debug!(?ret, "finish udp nat type detect with another port");
+                    if let Ok(resp) = ret {
+                        udp_nat_test_result.write().unwrap().as_mut().map(|x| {
+                            x.extend_result(resp);
+                        });
+                    }
+                }
 
                 tokio::select! {
                     _ = redetect_notify.notified() => {}

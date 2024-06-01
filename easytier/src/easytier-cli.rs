@@ -313,11 +313,10 @@ async fn main() -> Result<(), Error> {
         SubCommand::Stun => {
             timeout(Duration::from_secs(5), async move {
                 let collector = StunInfoCollector::new_with_default_servers();
-                collector.update_stun_info();
                 loop {
                     let ret = collector.get_stun_info();
                     if ret.udp_nat_type != NatType::Unknown as i32 {
-                        println!("udp type: {:?}", ret.udp_nat_type);
+                        println!("stun info: {:#?}", ret);
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(200)).await;
