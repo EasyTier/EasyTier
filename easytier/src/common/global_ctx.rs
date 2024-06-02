@@ -88,6 +88,8 @@ impl GlobalCtx {
 
         let (event_bus, _) = tokio::sync::broadcast::channel(100);
 
+        let stun_info_collection = Arc::new(StunInfoCollector::new_with_default_servers());
+
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -99,11 +101,11 @@ impl GlobalCtx {
             cached_ipv4: AtomicCell::new(None),
             cached_proxy_cidrs: AtomicCell::new(None),
 
-            ip_collector: Arc::new(IPCollector::new(net_ns)),
+            ip_collector: Arc::new(IPCollector::new(net_ns, stun_info_collection.clone())),
 
             hostname,
 
-            stun_info_collection: Box::new(StunInfoCollector::new_with_default_servers()),
+            stun_info_collection: Box::new(stun_info_collection),
 
             running_listeners: Mutex::new(Vec::new()),
         }

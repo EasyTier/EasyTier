@@ -85,10 +85,20 @@ jobs:
       - name: Build Core & Cli
         run: |
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly build -r --verbose --target $TARGET -Z build-std --no-default-features --features mips
+            cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips
           else
             cargo build --release --verbose --target $TARGET
           fi
+
+      - name: Run UPX
+        if: ${{ matrix.OS != 'macos-latest' }}
+        uses: crazy-max/ghaction-upx@v3
+        with:
+          version: latest
+          files: |
+            ./target/$TARGET/release/easytier-core*
+            ./target/$TARGET/release/easytier-cli*
+          args: -9
 
       - name: Compress
         run: |
