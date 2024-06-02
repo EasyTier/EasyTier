@@ -8,6 +8,8 @@
  
 [简体中文](/README_CN.md) | [English](/README.md)
 
+ **Please visit the [EasyTier Official Website](https://www.easytier.top/en/) to view the full documentation.**
+
  EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.
 
 <p align="center">
@@ -28,7 +30,7 @@
 - **TCP Support**: Provides reliable data transmission through concurrent TCP links when UDP is limited, optimizing performance.
 - **High Availability**: Supports multi-path and switches to healthy paths when high packet loss or network errors are detected.
 - **IPv6 Support**: Supports networking using IPv6.
-
+- **Multiple Protocol Types**: Supports communication between nodes using protocols such as WebSocket and QUIC.
 
  
  ## Installation

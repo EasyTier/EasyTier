@@ -385,9 +385,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "boringtun"
+name = "boringtun-easytier"
 version = "0.6.0"
-source = "git+https://github.com/EasyTier/boringtun.git?rev=449204c#449204c3eca736dc23b075d81426527a357e2f2a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a62bfb866a2a03e8aea22e83a0c1e385304563ee77c89ebd2043c67d0a73065"
 dependencies = [
  "aead",
  "atomic-shim",
@@ -1177,7 +1178,7 @@ checksum = "56ce8c6da7551ec6c462cbaf3bfbc75131ebbfa1c944aeaa9dab51ca1c5f0c3b"
 
 [[package]]
 name = "easytier"
-version = "1.0.1-pre"
+version = "1.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1189,7 +1190,7 @@ dependencies = [
  "auto_impl",
  "base64 0.21.7",
  "bitflags 2.5.0",
- "boringtun",
+ "boringtun-easytier",
  "bytecodec",
  "byteorder",
  "bytes",
@@ -1246,7 +1247,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "tun",
+ "tun-easytier",
  "url",
  "uuid",
  "windows-sys 0.52.0",
@@ -5489,9 +5490,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
-name = "tun"
+name = "tun-easytier"
 version = "0.6.1"
-source = "git+https://github.com/EasyTier/rust-tun.git?rev=e4fd1cd#e4fd1cdd5321ac1ad6f19954e982194688b95aff"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6d01bd11265e1cb5ca22e9103daf57194afa43b1dc4c8cd49b950c969ffbe7c"
 dependencies = [
  "byteorder",
  "bytes",
