@@ -11,7 +11,7 @@ use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
     tunnel::{
         check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
-        udp::UdpTunnelConnector, TunnelConnector,
+        udp::UdpTunnelConnector, FromUrl, IpVersion, TunnelConnector,
     },
 };
 
@@ -107,7 +107,14 @@ pub async fn create_connector_by_url(
         }
         #[cfg(feature = "websocket")]
         "ws" | "wss" => {
-            let connector = crate::tunnel::websocket::WSTunnelConnector::new(url);
+            let dst_addr = SocketAddr::from_url(url.clone(), IpVersion::Both)?;
+            let mut connector = crate::tunnel::websocket::WSTunnelConnector::new(url);
+            set_bind_addr_for_peer_connector(
+                &mut connector,
+                dst_addr.is_ipv4(),
+                &global_ctx.get_ip_collector(),
+            )
+            .await;
             return Ok(Box::new(connector));
         }
         _ => {
