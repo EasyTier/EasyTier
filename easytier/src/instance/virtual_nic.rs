@@ -289,6 +289,12 @@ impl VirtualNic {
             config.name(format!("et{}_{}_{}", self.dev_name, c, s));
             // set a temporary address
             config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
+
+            config.platform(|config| {
+                config.skip_config(true);
+                config.guid(None);
+                config.ring_cap(Some(config.min_ring_cap() * 2));
+            });
         }
 
         if self.queue_num != 1 {
