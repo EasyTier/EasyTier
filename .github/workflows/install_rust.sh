@@ -27,17 +27,23 @@ if [[ $OS =~ ^ubuntu.*$ ]]; then
     mipsel-unknown-linux-musl)
         MUSL_URI=mipsel-linux-muslsf
         ;;
+    mips-unknown-linux-musl)
+        MUSL_URI=mips-linux-muslsf
+        ;;
     aarch64-unknown-linux-musl)
         MUSL_URI=aarch64-linux-musl
         ;;
     armv7-unknown-linux-musleabihf)
         MUSL_URI=armv7l-linux-musleabihf
         ;;
+    armv7-unknown-linux-musleabi)
+        MUSL_URI=armv7m-linux-musleabi
+        ;;
     arm-unknown-linux-musleabihf)
         MUSL_URI=arm-linux-musleabihf
         ;;
-    mips-unknown-linux-musl)
-        MUSL_URI=mips-linux-muslsf
+    arm-unknown-linux-musleabi)
+        MUSL_URI=arm-linux-musleabi
         ;;
     esac
 

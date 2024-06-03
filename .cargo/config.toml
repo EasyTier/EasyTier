@@ -14,18 +14,64 @@ rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.mipsel-unknown-linux-musl]
 linker = "mipsel-linux-muslsf-gcc"
-rustflags = ["-C", "target-feature=+crt-static",
-    "-L", "./musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
-    "-L", "./musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
-    "-l", "atomic",
-    "-l", "ctz"
-    ]
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-L",
+    "./musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
+    "-L",
+    "./musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
+    "-l",
+    "atomic",
+    "-l",
+    "ctz",
+]
 
 [target.mips-unknown-linux-musl]
 linker = "mips-linux-muslsf-gcc"
-rustflags = ["-C", "target-feature=+crt-static",
-    "-L", "./musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
-    "-L", "./musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
-    "-l", "atomic",
-    "-l", "ctz"
-    ]
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-L",
+    "./musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
+    "-L",
+    "./musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
+    "-l",
+    "atomic",
+    "-l",
+    "ctz",
+]
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "armv7l-linux-musleabihf-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.armv7-unknown-linux-musleabi]
+linker = "armv7m-linux-musleabi-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.arm-unknown-linux-musleabihf]
+linker = "arm-linux-musleabihf-gcc"
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-L",
+    "./musl_gcc/arm-linux-musleabihf-cross/arm-linux-musleabihf/lib",
+    "-L",
+    "./musl_gcc/arm-linux-musleabihf-cross/lib/gcc/arm-linux-musleabihf/11.2.1",
+    "-l",
+    "atomic",
+]
+
+[target.arm-unknown-linux-musleabi]
+linker = "arm-linux-musleabi-gcc"
+rustflags = [
+    "-C",
+    "target-feature=+crt-static",
+    "-L",
+    "./musl_gcc/arm-linux-musleabi-cross/arm-linux-musleabi/lib",
+    "-L",
+    "./musl_gcc/arm-linux-musleabi-cross/lib/gcc/arm-linux-musleabi/11.2.1",
+    "-l",
+    "atomic",
+]
