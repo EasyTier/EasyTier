@@ -1,5 +1,8 @@
 use std::{
-    sync::{atomic::AtomicU32, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
+    },
     time::Instant,
 };
 
@@ -40,11 +43,13 @@ type PacketSender = UnboundedSender<ZCPacket>;
 struct PeerRpcEndPoint {
     peer_id: PeerId,
     packet_sender: PacketSender,
-    last_used: AtomicCell<Instant>,
+    create_time: AtomicCell<Instant>,
+    finished: Arc<AtomicBool>,
     tasks: JoinSet<()>,
 }
 
-type PeerRpcEndPointCreator = Box<dyn Fn(PeerId) -> PeerRpcEndPoint + Send + Sync + 'static>;
+type PeerRpcEndPointCreator =
+    Box<dyn Fn(PeerId, PeerRpcTransactId) -> PeerRpcEndPoint + Send + Sync + 'static>;
 #[derive(Hash, Eq, PartialEq, Clone)]
 struct PeerRpcClientCtxKey(PeerId, PeerRpcServiceId, PeerRpcTransactId);
 
@@ -55,8 +60,8 @@ pub struct PeerRpcManager {
     tspt: Arc<Box<dyn PeerRpcManagerTransport>>,
 
     service_registry: Arc<DashMap<PeerRpcServiceId, PeerRpcEndPointCreator>>,
-    peer_rpc_endpoints: Arc<DashMap<(PeerId, PeerRpcServiceId), PeerRpcEndPoint>>,
 
+    peer_rpc_endpoints: Arc<DashMap<PeerRpcClientCtxKey, PeerRpcEndPoint>>,
     client_resp_receivers: Arc<DashMap<PeerRpcClientCtxKey, PacketSender>>,
 
     transact_id: AtomicU32,
@@ -109,10 +114,18 @@ impl PacketMerger {
         Some(tmpl_packet)
     }
 
-    fn feed(&mut self, packet: ZCPacket) -> Result<Option<TaRpcPacket>, Error> {
+    fn feed(
+        &mut self,
+        packet: ZCPacket,
+        expected_tid: Option<PeerRpcTransactId>,
+    ) -> Result<Option<TaRpcPacket>, Error> {
         let payload = packet.payload();
         let rpc_packet =
             TaRpcPacket::decode(payload).map_err(|e| Error::MessageDecodeError(e.to_string()))?;
+
+        if expected_tid.is_some() && rpc_packet.transact_id != expected_tid.unwrap() {
+            return Ok(None);
+        }
 
         let total_pieces = rpc_packet.total_pieces;
         let piece_idx = rpc_packet.piece_idx;
@@ -176,11 +189,12 @@ impl PeerRpcManager {
         S::Fut: Send + 'static,
     {
         let tspt = self.tspt.clone();
-        let creator = Box::new(move |peer_id: PeerId| {
+        let creator = Box::new(move |peer_id: PeerId, transact_id: PeerRpcTransactId| {
             let mut tasks = JoinSet::new();
             let (packet_sender, mut packet_receiver) = mpsc::unbounded_channel();
             let (mut client_transport, server_transport) = tarpc::transport::channel::unbounded();
             let server = tarpc::server::BaseChannel::with_defaults(server_transport);
+            let finished = Arc::new(AtomicBool::new(false));
 
             let my_peer_id_clone = tspt.my_peer_id();
             let peer_id_clone = peer_id.clone();
@@ -189,19 +203,13 @@ impl PeerRpcManager {
             tasks.spawn(o);
 
             let tspt = tspt.clone();
+            let finished_clone = finished.clone();
             tasks.spawn(async move {
-                let mut cur_req_peer_id = None;
-                let mut cur_transact_id = 0;
                 let mut packet_merger = PacketMerger::new();
                 loop {
                     tokio::select! {
                         Some(resp) = client_transport.next() => {
-                            let Some(cur_req_peer_id)  = cur_req_peer_id.take() else {
-                                tracing::error!("[PEER RPC MGR] cur_req_peer_id is none, ignore this resp");
-                                continue;
-                            };
-
-                            tracing::debug!(resp = ?resp, "server recv packet from service provider");
+                            tracing::debug!(resp = ?resp, ?transact_id, ?peer_id, "server recv packet from service provider");
                             if resp.is_err() {
                                 tracing::warn!(err = ?resp.err(),
                                     "[PEER RPC MGR] client_transport in server side got channel error, ignore it.");
@@ -217,11 +225,11 @@ impl PeerRpcManager {
 
                             let msgs = Self::build_rpc_packet(
                                 tspt.my_peer_id(),
-                                cur_req_peer_id,
+                                peer_id,
                                 service_id,
-                                cur_transact_id,
+                                transact_id,
                                 false,
-                                serialized_resp.unwrap(),
+                                serialized_resp.as_ref().unwrap(),
                             );
 
                             for msg in msgs {
@@ -230,11 +238,13 @@ impl PeerRpcManager {
                                     break;
                                 }
                             }
+
+                            finished_clone.store(true, Ordering::Relaxed);
                         }
                         Some(packet) = packet_receiver.recv() => {
                             tracing::trace!("recv packet from peer, packet: {:?}", packet);
 
-                            let info = match packet_merger.feed(packet) {
+                            let info = match packet_merger.feed(packet, None) {
                                 Err(e) => {
                                     tracing::error!(error = ?e, "feed packet to merger failed");
                                     continue;
@@ -247,10 +257,9 @@ impl PeerRpcManager {
                                 }
                             };
 
-                            cur_req_peer_id = Some(info.from_peer);
-                            cur_transact_id = info.transact_id;
-
                             assert_eq!(info.service_id, service_id);
+                            assert_eq!(info.from_peer, peer_id);
+                            assert_eq!(info.transact_id, transact_id);
 
                             let decoded_ret = postcard::from_bytes(&info.content.as_slice());
                             if let Err(e) = decoded_ret {
@@ -279,7 +288,8 @@ impl PeerRpcManager {
             return PeerRpcEndPoint {
                 peer_id,
                 packet_sender,
-                last_used: AtomicCell::new(Instant::now()),
+                create_time: AtomicCell::new(Instant::now()),
+                finished,
                 tasks,
             };
             // let resp = client_transport.next().await;
@@ -310,7 +320,7 @@ impl PeerRpcManager {
         service_id: PeerRpcServiceId,
         transact_id: PeerRpcTransactId,
         is_req: bool,
-        content: Vec<u8>,
+        content: &Vec<u8>,
     ) -> Vec<ZCPacket> {
         let mut ret = Vec::new();
         let content_mtu = RPC_PACKET_CONTENT_MTU;
@@ -373,12 +383,18 @@ impl PeerRpcManager {
                     }
 
                     let endpoint = peer_rpc_endpoints
-                        .entry((info.from_peer, info.service_id))
+                        .entry(PeerRpcClientCtxKey(
+                            info.from_peer,
+                            info.service_id,
+                            info.transact_id,
+                        ))
                         .or_insert_with(|| {
-                            service_registry.get(&info.service_id).unwrap()(info.from_peer)
+                            service_registry.get(&info.service_id).unwrap()(
+                                info.from_peer,
+                                info.transact_id,
+                            )
                         });
 
-                    endpoint.last_used.store(Instant::now());
                     endpoint.packet_sender.send(o).unwrap();
                 } else {
                     if let Some(a) = client_resp_receivers.get(&PeerRpcClientCtxKey(
@@ -400,29 +416,42 @@ impl PeerRpcManager {
         let peer_rpc_endpoints = self.peer_rpc_endpoints.clone();
         tokio::spawn(async move {
             loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                peer_rpc_endpoints.retain(|_, v| v.last_used.load().elapsed().as_secs() < 60);
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                peer_rpc_endpoints.retain(|_, v| {
+                    v.create_time.load().elapsed().as_secs() < 30
+                        && !v.finished.load(Ordering::Relaxed)
+                });
             }
         });
     }
 
     #[tracing::instrument(skip(f))]
-    pub async fn do_client_rpc_scoped<CM, Req, RpcRet, Fut>(
+    pub async fn do_client_rpc_scoped<Resp, Req, RpcRet, Fut>(
         &self,
         service_id: PeerRpcServiceId,
         dst_peer_id: PeerId,
-        f: impl FnOnce(UnboundedChannel<CM, Req>) -> Fut,
+        f: impl FnOnce(UnboundedChannel<Resp, Req>) -> Fut,
     ) -> RpcRet
     where
-        CM: serde::Serialize + for<'a> serde::Deserialize<'a> + Send + Sync + 'static,
-        Req: serde::Serialize + for<'a> serde::Deserialize<'a> + Send + Sync + 'static,
+        Resp: serde::Serialize
+            + for<'a> serde::Deserialize<'a>
+            + Send
+            + Sync
+            + std::fmt::Debug
+            + 'static,
+        Req: serde::Serialize
+            + for<'a> serde::Deserialize<'a>
+            + Send
+            + Sync
+            + std::fmt::Debug
+            + 'static,
         Fut: std::future::Future<Output = RpcRet>,
     {
         let mut tasks = JoinSet::new();
         let (packet_sender, mut packet_receiver) = mpsc::unbounded_channel();
 
         let (client_transport, server_transport) =
-            tarpc::transport::channel::unbounded::<CM, Req>();
+            tarpc::transport::channel::unbounded::<Resp, Req>();
 
         let (mut server_s, mut server_r) = server_transport.split();
 
@@ -438,9 +467,9 @@ impl PeerRpcManager {
                     continue;
                 }
 
-                let a = postcard::to_allocvec(&a.unwrap());
-                if a.is_err() {
-                    tracing::error!(error = ?a.err(), "bincode serialize failed");
+                let req = postcard::to_allocvec(&a.unwrap());
+                if req.is_err() {
+                    tracing::error!(error = ?req.err(), "bincode serialize failed");
                     continue;
                 }
 
@@ -450,10 +479,10 @@ impl PeerRpcManager {
                     service_id,
                     transact_id,
                     true,
-                    a.unwrap(),
+                    req.as_ref().unwrap(),
                 );
 
-                tracing::debug!(?packets, "client send rpc packet to peer");
+                tracing::debug!(?packets, ?req, ?transact_id, "client send rpc packet to peer");
 
                 for packet in packets {
                     if let Err(e) = tspt.send(packet, dst_peer_id).await {
@@ -471,7 +500,7 @@ impl PeerRpcManager {
             while let Some(packet) = packet_receiver.recv().await {
                 tracing::trace!("tunnel recv: {:?}", packet);
 
-                let info = match packet_merger.feed(packet) {
+                let info = match packet_merger.feed(packet, Some(transact_id)) {
                     Err(e) => {
                         tracing::error!(error = ?e, "feed packet to merger failed");
                         continue;
@@ -482,9 +511,11 @@ impl PeerRpcManager {
                     Ok(Some(info)) => info,
                 };
 
-                tracing::debug!(?info, "client recv rpc packet from peer");
-
                 let decoded = postcard::from_bytes(&info.content.as_slice());
+
+                tracing::debug!(?info, ?decoded, "client recv rpc packet from peer");
+                assert_eq!(info.transact_id, transact_id);
+
                 if let Err(e) = decoded {
                     tracing::error!(error = ?e, "decode rpc packet failed");
                     continue;
@@ -517,7 +548,7 @@ impl PeerRpcManager {
 
 #[cfg(test)]
 pub mod tests {
-    use std::{pin::Pin, sync::Arc};
+    use std::{pin::Pin, sync::Arc, time::Duration};
 
     use futures::{SinkExt, StreamExt};
     use tokio::sync::Mutex;
@@ -526,7 +557,10 @@ pub mod tests {
         common::{error::Error, new_peer_id, PeerId},
         peers::{
             peer_rpc::PeerRpcManager,
-            tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
+            tests::{
+                connect_peer_manager, create_mock_peer_manager, wait_for_condition,
+                wait_route_appear,
+            },
         },
         tunnel::{
             packet_def::ZCPacket, ring::create_ring_tunnel_pair, Tunnel, ZCPacketSink,
@@ -634,6 +668,12 @@ pub mod tests {
 
         println!("ret: {:?}", ret);
         assert_eq!(ret.unwrap(), format!("hello {}", msg));
+
+        wait_for_condition(
+            || async { server_rpc_mgr.peer_rpc_endpoints.is_empty() },
+            Duration::from_secs(10),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -751,5 +791,11 @@ pub mod tests {
             .await;
 
         assert_eq!(ip_list.unwrap(), format!("hello_b {}", msg));
+
+        wait_for_condition(
+            || async { peer_mgr_b.get_peer_rpc_mgr().peer_rpc_endpoints.is_empty() },
+            Duration::from_secs(10),
+        )
+        .await;
     }
 }
