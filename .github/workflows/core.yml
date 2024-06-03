@@ -121,7 +121,7 @@ jobs:
             TAG=$GITHUB_SHA
           fi
 
-          if [[ $OS =~ ^windows.*$ ]]; then
+          if [[ ! $OS =~ ^macos.*$ ]]; then
             upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"
             upx --lzma --best ./target/$TARGET/release/easytier-cli"$SUFFIX"
           fi
