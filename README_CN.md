@@ -8,6 +8,8 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
+**请访问 [EasyTier 官网](https://www.easytier.top/) 以查看完整的文档。**
+
 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
 <p align="center">
@@ -28,6 +30,7 @@
 - **TCP 支持**：在 UDP 受限的情况下，通过并发 TCP 链接提供可靠的数据传输，优化性能。
 - **高可用性**：支持多路径和在检测到高丢包率或网络错误时切换到健康路径。
 - **IPV6 支持**：支持利用 IPV6 组网。
+- **多协议类型**: 支持使用 WebSocket、QUIC 等协议进行节点间通信。
 
 ## 安装
 

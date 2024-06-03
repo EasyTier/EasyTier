@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { NodeInfo } from '~/types/network'
+const { t } = useI18n()
 
 const props = defineProps<{
   instanceId?: string
@@ -272,7 +273,7 @@ function showEventLogs() {
 
 <template>
   <div>
-    <Dialog v-model:visible="dialogVisible" modal :header="$t(dialogHeader)" :style="{ width: '70%' }">
+    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" :style="{ width: '70%' }">
       <Panel>
         <ScrollPanel style="width: 100%; height: 400px">
           <pre>{{ dialogContent }}</pre>
@@ -280,7 +281,7 @@ function showEventLogs() {
       </Panel>
       <Divider />
       <div class="flex justify-content-end gap-2">
-        <Button type="button" :label="$t('close')" @click="dialogVisible = false" />
+        <Button type="button" :label="t('close')" @click="dialogVisible = false" />
       </div>
     </Dialog>
 
@@ -300,7 +301,7 @@ function showEventLogs() {
     <template v-else>
       <Card>
         <template #title>
-          {{ $t('my_node_info') }}
+          {{ t('my_node_info') }}
         </template>
         <template #content>
           <div class="flex w-full flex-column gap-y-5">
@@ -310,7 +311,7 @@ function showEventLogs() {
                 style="border: 1px solid green"
               >
                 <div class="font-bold">
-                  {{ $t('peer_count') }}
+                  {{ t('peer_count') }}
                 </div>
                 <div class="text-5xl mt-1">
                   {{ peerCount }}
@@ -322,7 +323,7 @@ function showEventLogs() {
                 style="border: 1px solid purple"
               >
                 <div class="font-bold">
-                  {{ $t('upload') }}
+                  {{ t('upload') }}
                 </div>
                 <div class="text-xl mt-2">
                   {{ txRate }}/s
@@ -334,7 +335,7 @@ function showEventLogs() {
                 style="border: 1px solid fuchsia"
               >
                 <div class="font-bold">
-                  {{ $t('download') }}
+                  {{ t('download') }}
                 </div>
                 <div class="text-xl mt-2">
                   {{ rxRate }}/s
@@ -350,8 +351,8 @@ function showEventLogs() {
             </div>
 
             <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
-              <Button severity="info" :label="$t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
-              <Button severity="info" :label="$t('show_event_log')" @click="showEventLogs" />
+              <Button severity="info" :label="t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
+              <Button severity="info" :label="t('show_event_log')" @click="showEventLogs" />
             </div>
           </div>
         </template>
@@ -361,17 +362,17 @@ function showEventLogs() {
 
       <Card>
         <template #title>
-          {{ $t('peer_info') }}
+          {{ t('peer_info') }}
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
-            <Column field="route.ipv4_addr" style="width: 100px;" :header="$t('virtual_ipv4')" />
-            <Column field="route.hostname" style="max-width: 250px;" :header="$t('hostname')" />
-            <Column :field="routeCost" style="width: 100px;" :header="$t('route_cost')" />
-            <Column :field="latencyMs" style="width: 80px;" :header="$t('latency')" />
-            <Column :field="txBytes" style="width: 80px;" :header="$t('upload_bytes')" />
-            <Column :field="rxBytes" style="width: 80px;" :header="$t('download_bytes')" />
-            <Column :field="lossRate" style="width: 100px;" :header="$t('loss_rate')" />
+            <Column field="route.ipv4_addr" style="width: 100px;" :header="t('virtual_ipv4')" />
+            <Column field="route.hostname" style="max-width: 250px;" :header="t('hostname')" />
+            <Column :field="routeCost" style="width: 100px;" :header="t('route_cost')" />
+            <Column :field="latencyMs" style="width: 80px;" :header="t('latency')" />
+            <Column :field="txBytes" style="width: 80px;" :header="t('upload_bytes')" />
+            <Column :field="rxBytes" style="width: 80px;" :header="t('download_bytes')" />
+            <Column :field="lossRate" style="width: 100px;" :header="t('loss_rate')" />
           </DataTable>
         </template>
       </Card>

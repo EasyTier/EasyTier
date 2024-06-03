@@ -160,7 +160,7 @@ function isRunning(id: string) {
       </Panel>
       <Divider />
       <div class="flex justify-content-end gap-2">
-        <Button type="button" :label="$t('close')" @click="visible = false" />
+        <Button type="button" :label="t('close')" @click="visible = false" />
       </div>
     </Dialog>
 
@@ -169,7 +169,7 @@ function isRunning(id: string) {
         <template #start>
           <div class="flex align-items-center gap-2">
             <Button
-              icon="pi pi-plus" class="mr-2" severity="primary" :label="$t('add_new_network')"
+              icon="pi pi-plus" class="mr-2" severity="primary" :label="t('add_new_network')"
               @click="addNewNetwork"
             />
           </div>
@@ -179,7 +179,7 @@ function isRunning(id: string) {
           <div class="min-w-80 mr-20">
             <Dropdown
               v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
-              :placeholder="$t('select_network')" class="w-full"
+              :placeholder="t('select_network')" class="w-full"
             >
               <template #value="slotProps">
                 <div class="flex items-start content-center">
@@ -195,7 +195,7 @@ function isRunning(id: string) {
                   </div>
                   <Tag
                     class="my-auto" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
-                    :value="$t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')"
+                    :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')"
                   />
                 </div>
               </template>
@@ -203,11 +203,11 @@ function isRunning(id: string) {
                 <div class="flex flex-col items-start content-center">
                   <div class="flex">
                     <div class="mr-3">
-                      {{ $t('network_name') }}: {{ slotProps.option.network_name }}
+                      {{ t('network_name') }}: {{ slotProps.option.network_name }}
                     </div>
                     <Tag
                       class="my-auto" :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
-                      :value="$t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')"
+                      :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')"
                     />
                   </div>
                   <div>{{ slotProps.option.public_server_url }}</div>
@@ -219,7 +219,7 @@ function isRunning(id: string) {
 
         <template #end>
           <Button
-            icon="pi pi-cog" class="mr-2" severity="secondary" aria-haspopup="true" :label="$t('settings')"
+            icon="pi pi-cog" class="mr-2" severity="secondary" aria-haspopup="true" :label="t('settings')"
             aria-controls="overlay_setting_menu" @click="toggle_setting_menu"
           />
           <Menu id="overlay_setting_menu" ref="setting_menu" :model="setting_menu_items" :popup="true" />
@@ -228,7 +228,7 @@ function isRunning(id: string) {
     </div>
 
     <Stepper class="h-full overflow-y-auto" :active-step="activeStep">
-      <StepperPanel :header="$t('config_network')">
+      <StepperPanel :header="t('config_network')">
         <template #content="{ nextCallback }">
           <Config
             :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
@@ -236,14 +236,14 @@ function isRunning(id: string) {
           />
         </template>
       </StepperPanel>
-      <StepperPanel :header="$t('running')">
+      <StepperPanel :header="t('running')">
         <template #content="{ prevCallback }">
           <div class="flex flex-column">
             <Status :instance-id="networkStore.curNetworkId" />
           </div>
           <div class="flex pt-4 justify-content-center">
             <Button
-              :label="$t('stop_network')" severity="danger" icon="pi pi-arrow-left"
+              :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
               @click="stopNetworkCb(networkStore.curNetwork, prevCallback)"
             />
           </div>

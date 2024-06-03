@@ -260,9 +260,8 @@ impl VirtualNic {
         Ok(self)
     }
 
-    async fn create_dev_ret_err(&mut self) -> Result<Box<dyn Tunnel>, Error> {
+    async fn create_tun(&mut self) -> Result<AsyncDevice, Error> {
         let mut config = Configuration::default();
-        let has_packet_info = cfg!(target_os = "macos");
         config.layer(Layer::L3);
 
         #[cfg(target_os = "linux")]
@@ -303,11 +302,12 @@ impl VirtualNic {
         config.queues(self.queue_num);
         config.up();
 
-        let dev = {
-            let _g = self.global_ctx.net_ns.guard();
-            create_as_async(&config)?
-        };
+        let _g = self.global_ctx.net_ns.guard();
+        Ok(create_as_async(&config)?)
+    }
 
+    async fn create_dev_ret_err(&mut self) -> Result<Box<dyn Tunnel>, Error> {
+        let dev = self.create_tun().await?;
         let ifname = dev.get_ref().name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
 
@@ -324,8 +324,8 @@ impl VirtualNic {
                 .await?;
         }
 
+        let has_packet_info = cfg!(target_os = "macos");
         let (a, b) = BiLock::new(dev);
-
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
             FramedWriter::new_with_converter(
