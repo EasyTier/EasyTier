@@ -3,6 +3,7 @@ import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { getOsHostname } from '~/composables/network'
 import { NetworkingMethod } from '~/types/network'
+const { t } = useI18n()
 
 const props = defineProps<{
   configInvalid?: boolean
@@ -10,8 +11,6 @@ const props = defineProps<{
 }>()
 
 defineEmits(['runNetwork'])
-
-const { t } = useI18n()
 
 const networking_methods = ref([
   { value: NetworkingMethod.PublicServer, label: t('public_server') },
@@ -59,16 +58,16 @@ onMounted(async () => {
     <div class="flex flex-column">
       <div class="w-7/12 self-center ">
         <Message severity="warn">
-          {{ $t('dhcp_experimental_warning') }}
+          {{ t('dhcp_experimental_warning') }}
         </Message>
       </div>
       <div class="w-7/12 self-center ">
-        <Panel :header="$t('basic_settings')">
+        <Panel :header="t('basic_settings')">
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
                 <div class="flex align-items-center" for="virtual_ip">
-                  <label class="mr-2"> {{ $t('virtual_ipv4') }} </label>
+                  <label class="mr-2"> {{ t('virtual_ipv4') }} </label>
                   <Checkbox v-model="curNetwork.dhcp" input-id="virtual_ip_auto" :binary="true" />
 
                   <label for="virtual_ip_auto" class="ml-2">
@@ -89,11 +88,11 @@ onMounted(async () => {
 
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="network_name">{{ $t('network_name') }}</label>
+                <label for="network_name">{{ t('network_name') }}</label>
                 <InputText id="network_name" v-model="curNetwork.network_name" aria-describedby="network_name-help" />
               </div>
               <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="network_secret">{{ $t('network_secret') }}</label>
+                <label for="network_secret">{{ t('network_secret') }}</label>
                 <InputText
                   id="network_secret" v-model="curNetwork.network_secret"
                   aria-describedby=" network_secret-help"
@@ -103,7 +102,7 @@ onMounted(async () => {
 
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="nm">{{ $t('networking_method') }}</label>
+                <label for="nm">{{ t('networking_method') }}</label>
                 <div class="items-center flex flex-row p-fluid gap-x-1">
                   <Dropdown
                     v-model="curNetwork.networking_method" :options="networking_methods" option-label="label"
@@ -111,7 +110,7 @@ onMounted(async () => {
                   />
                   <Chips
                     v-if="curNetwork.networking_method === NetworkingMethod.Manual" id="chips"
-                    v-model="curNetwork.peer_urls" :placeholder="$t('chips_placeholder', ['tcp://8.8.8.8:11010'])"
+                    v-model="curNetwork.peer_urls" :placeholder="t('chips_placeholder', ['tcp://8.8.8.8:11010'])"
                     separator=" " class="grow"
                   />
 
@@ -128,24 +127,24 @@ onMounted(async () => {
 
         <Divider />
 
-        <Panel :header="$t('advanced_settings')" toggleable collapsed>
+        <Panel :header="t('advanced_settings')" toggleable collapsed>
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="hostname">{{ $t('hostname') }}</label>
+                <label for="hostname">{{ t('hostname') }}</label>
                 <InputText
                   id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
-                  :placeholder="$t('hostname_placeholder', [osHostname])" @blur="validateHostname"
+                  :placeholder="t('hostname_placeholder', [osHostname])" @blur="validateHostname"
                 />
               </div>
             </div>
 
             <div class="flex flex-row gap-x-9 flex-wrap w-full">
               <div class="flex flex-column gap-2 grow p-fluid">
-                <label for="username">{{ $t('proxy_cidrs') }}</label>
+                <label for="username">{{ t('proxy_cidrs') }}</label>
                 <Chips
                   id="chips" v-model="curNetwork.proxy_cidrs"
-                  :placeholder="$t('chips_placeholder', ['10.0.0.0/24'])" separator=" " class="w-full"
+                  :placeholder="t('chips_placeholder', ['10.0.0.0/24'])" separator=" " class="w-full"
                 />
               </div>
             </div>
@@ -156,13 +155,13 @@ onMounted(async () => {
                 <div class="items-center flex flex-row gap-x-4">
                   <ToggleButton
                     v-model="curNetwork.enable_vpn_portal" on-icon="pi pi-check" off-icon="pi pi-times"
-                    :on-label="$t('off_text')" :off-label="$t('on_text')"
+                    :on-label="t('off_text')" :off-label="t('on_text')"
                   />
                   <div v-if="curNetwork.enable_vpn_portal" class="grow">
                     <InputGroup>
                       <InputText
                         v-model="curNetwork.vpn_portal_client_network_addr"
-                        :placeholder="$t('vpn_portal_client_network')"
+                        :placeholder="t('vpn_portal_client_network')"
                       />
                       <InputGroupAddon>
                         <span>/{{ curNetwork.vpn_portal_client_network_len }}</span>
@@ -171,7 +170,7 @@ onMounted(async () => {
                   </div>
                   <InputNumber
                     v-if="curNetwork.enable_vpn_portal" v-model="curNetwork.vpn_portal_listen_port"
-                    :placeholder="$t('vpn_portal_listen_port')" class="" :format="false" :min="0" :max="65535"
+                    :placeholder="t('vpn_portal_listen_port')" class="" :format="false" :min="0" :max="65535"
                   />
                 </div>
               </div>
@@ -179,17 +178,17 @@ onMounted(async () => {
 
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 grow p-fluid">
-                <label for="listener_urls">{{ $t('listener_urls') }}</label>
+                <label for="listener_urls">{{ t('listener_urls') }}</label>
                 <Chips
                   id="listener_urls" v-model="curNetwork.listener_urls"
-                  :placeholder="$t('chips_placeholder', ['tcp://1.1.1.1:11010'])" separator=" " class="w-full"
+                  :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" separator=" " class="w-full"
                 />
               </div>
             </div>
 
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
-                <label for="rpc_port">{{ $t('rpc_port') }}</label>
+                <label for="rpc_port">{{ t('rpc_port') }}</label>
                 <InputNumber
                   id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="username-help"
                   :format="false" :min="0" :max="65535"
@@ -201,7 +200,7 @@ onMounted(async () => {
 
         <div class="flex pt-4 justify-content-center">
           <Button
-            :label="$t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid"
+            :label="t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid"
             @click="$emit('runNetwork', curNetwork)"
           />
         </div>
