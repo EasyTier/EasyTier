@@ -1,4 +1,3 @@
-use std::borrow::BorrowMut;
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::pin::Pin;
@@ -82,16 +81,216 @@ impl IpProxy {
     }
 }
 
+struct NicCtx {
+    global_ctx: ArcGlobalCtx,
+    peer_mgr: Weak<PeerManager>,
+    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+
+    nic: Arc<Mutex<virtual_nic::VirtualNic>>,
+    tasks: JoinSet<()>,
+}
+
+impl NicCtx {
+    fn new(
+        global_ctx: ArcGlobalCtx,
+        peer_manager: &Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+    ) -> Self {
+        NicCtx {
+            global_ctx: global_ctx.clone(),
+            peer_mgr: Arc::downgrade(&peer_manager),
+            peer_packet_receiver,
+            nic: Arc::new(Mutex::new(virtual_nic::VirtualNic::new(global_ctx))),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    async fn assign_ipv4_to_tun_device(&self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.link_up().await?;
+        nic.remove_ip(None).await?;
+        nic.add_ip(ipv4_addr, 24).await?;
+        if cfg!(target_os = "macos") {
+            nic.add_route(ipv4_addr, 24).await?;
+        }
+        Ok(())
+    }
+
+    async fn do_forward_nic_to_peers_ipv4(ret: ZCPacket, mgr: &PeerManager) {
+        if let Some(ipv4) = Ipv4Packet::new(ret.payload()) {
+            if ipv4.get_version() != 4 {
+                tracing::info!("[USER_PACKET] not ipv4 packet: {:?}", ipv4);
+                return;
+            }
+            let dst_ipv4 = ipv4.get_destination();
+            tracing::trace!(
+                ?ret,
+                "[USER_PACKET] recv new packet from tun device and forward to peers."
+            );
+
+            // TODO: use zero-copy
+            let send_ret = mgr.send_msg_ipv4(ret, dst_ipv4).await;
+            if send_ret.is_err() {
+                tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv4 failed")
+            }
+        } else {
+            tracing::warn!(?ret, "[USER_PACKET] not ipv4 packet");
+        }
+    }
+
+    fn do_forward_nic_to_peers(
+        &mut self,
+        mut stream: Pin<Box<dyn ZCPacketStream>>,
+    ) -> Result<(), Error> {
+        // read from nic and write to corresponding tunnel
+        let Some(mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager not available").into());
+        };
+        self.tasks.spawn(async move {
+            while let Some(ret) = stream.next().await {
+                if ret.is_err() {
+                    log::error!("read from nic failed: {:?}", ret);
+                    break;
+                }
+                Self::do_forward_nic_to_peers_ipv4(ret.unwrap(), mgr.as_ref()).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    fn do_forward_peers_to_nic(&mut self, mut sink: Pin<Box<dyn ZCPacketSink>>) {
+        let channel = self.peer_packet_receiver.clone();
+        self.tasks.spawn(async move {
+            // unlock until coroutine finished
+            let mut channel = channel.lock().await;
+            while let Some(packet) = channel.recv().await {
+                tracing::trace!(
+                    "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
+                    packet
+                );
+                let ret = sink.send(packet).await;
+                if ret.is_err() {
+                    tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
+                }
+            }
+        });
+    }
+
+    async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager not available").into());
+        };
+        let global_ctx = self.global_ctx.clone();
+        let net_ns = self.global_ctx.net_ns.clone();
+        let nic = self.nic.lock().await;
+        let ifcfg = nic.get_ifcfg();
+        let ifname = nic.ifname().to_owned();
+
+        self.tasks.spawn(async move {
+            let mut cur_proxy_cidrs = vec![];
+            loop {
+                let mut proxy_cidrs = vec![];
+                let routes = peer_mgr.list_routes().await;
+                for r in routes {
+                    for cidr in r.proxy_cidrs {
+                        let Ok(cidr) = cidr.parse::<cidr::Ipv4Cidr>() else {
+                            continue;
+                        };
+                        proxy_cidrs.push(cidr);
+                    }
+                }
+                // add vpn portal cidr to proxy_cidrs
+                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
+                    proxy_cidrs.push(vpn_cfg.client_cidr);
+                }
+
+                // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
+                for cidr in cur_proxy_cidrs.iter() {
+                    if proxy_cidrs.contains(cidr) {
+                        continue;
+                    }
+
+                    let _g = net_ns.guard();
+                    let ret = ifcfg
+                        .remove_ipv4_route(
+                            ifname.as_str(),
+                            cidr.first_address(),
+                            cidr.network_length(),
+                        )
+                        .await;
+
+                    if ret.is_err() {
+                        tracing::trace!(
+                            cidr = ?cidr,
+                            err = ?ret,
+                            "remove route failed.",
+                        );
+                    }
+                }
+
+                for cidr in proxy_cidrs.iter() {
+                    if cur_proxy_cidrs.contains(cidr) {
+                        continue;
+                    }
+                    let _g = net_ns.guard();
+                    let ret = ifcfg
+                        .add_ipv4_route(
+                            ifname.as_str(),
+                            cidr.first_address(),
+                            cidr.network_length(),
+                        )
+                        .await;
+
+                    if ret.is_err() {
+                        tracing::trace!(
+                            cidr = ?cidr,
+                            err = ?ret,
+                            "add route failed.",
+                        );
+                    }
+                }
+
+                cur_proxy_cidrs = proxy_cidrs;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+
+        Ok(())
+    }
+
+    async fn run(&mut self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+        let tunnel = {
+            let mut nic = self.nic.lock().await;
+            let ret = nic.create_dev().await?;
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
+            ret
+        };
+
+        let (stream, sink) = tunnel.split();
+
+        self.do_forward_nic_to_peers(stream)?;
+        self.do_forward_peers_to_nic(sink);
+
+        self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+        self.run_proxy_cidrs_route_updater().await?;
+        Ok(())
+    }
+}
+
+type ArcNicCtx = Arc<Mutex<Option<NicCtx>>>;
+
 pub struct Instance {
     inst_name: String,
 
     id: uuid::Uuid,
 
-    virtual_nic: Option<Arc<virtual_nic::VirtualNic>>,
-    peer_packet_receiver: Option<PacketRecvChanReceiver>,
+    nic_ctx: ArcNicCtx,
 
     tasks: JoinSet<()>,
 
+    peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     listener_manager: Arc<Mutex<ListenerManager<PeerManager>>>,
     conn_manager: Arc<ManualConnectorManager>,
@@ -153,8 +352,8 @@ impl Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
 
-            virtual_nic: None,
-            peer_packet_receiver: Some(peer_packet_receiver),
+            peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
+            nic_ctx: Arc::new(Mutex::new(None)),
 
             tasks: JoinSet::new(),
             peer_manager,
@@ -177,78 +376,6 @@ impl Instance {
         self.conn_manager.clone()
     }
 
-    async fn do_forward_nic_to_peers_ipv4(ret: ZCPacket, mgr: &PeerManager) {
-        if let Some(ipv4) = Ipv4Packet::new(ret.payload()) {
-            if ipv4.get_version() != 4 {
-                tracing::info!("[USER_PACKET] not ipv4 packet: {:?}", ipv4);
-                return;
-            }
-            let dst_ipv4 = ipv4.get_destination();
-            tracing::trace!(
-                ?ret,
-                "[USER_PACKET] recv new packet from tun device and forward to peers."
-            );
-
-            // TODO: use zero-copy
-            let send_ret = mgr.send_msg_ipv4(ret, dst_ipv4).await;
-            if send_ret.is_err() {
-                tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv4 failed")
-            }
-        } else {
-            tracing::warn!(?ret, "[USER_PACKET] not ipv4 packet");
-        }
-    }
-
-    // async fn do_forward_nic_to_peers_ethernet(mut ret: BytesMut, mgr: &PeerManager) {
-    //     if let Some(eth) = EthernetPacket::new(&ret) {
-    //         log::warn!("begin to forward: {:?}, type: {}", eth, eth.get_ethertype());
-    //         Self::do_forward_nic_to_peers_ipv4(ret.split_off(14), mgr).await;
-    //     } else {
-    //         log::warn!("not ipv4 packet: {:?}", ret);
-    //     }
-    // }
-
-    fn do_forward_nic_to_peers(
-        &mut self,
-        mut stream: Pin<Box<dyn ZCPacketStream>>,
-    ) -> Result<(), Error> {
-        // read from nic and write to corresponding tunnel
-        let mgr = self.peer_manager.clone();
-
-        self.tasks.spawn(async move {
-            while let Some(ret) = stream.next().await {
-                if ret.is_err() {
-                    log::error!("read from nic failed: {:?}", ret);
-                    break;
-                }
-                Self::do_forward_nic_to_peers_ipv4(ret.unwrap(), mgr.as_ref()).await;
-                // Self::do_forward_nic_to_peers_ethernet(ret.into(), mgr.as_ref()).await;
-            }
-        });
-
-        Ok(())
-    }
-
-    fn do_forward_peers_to_nic(
-        tasks: &mut JoinSet<()>,
-        mut sink: Pin<Box<dyn ZCPacketSink>>,
-        channel: Option<PacketRecvChanReceiver>,
-    ) {
-        tasks.spawn(async move {
-            let mut channel = channel.unwrap();
-            while let Some(packet) = channel.recv().await {
-                tracing::trace!(
-                    "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
-                    packet
-                );
-                let ret = sink.send(packet).await;
-                if ret.is_err() {
-                    tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
-                }
-            }
-        });
-    }
-
     async fn add_initial_peers(&mut self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
             self.get_conn_manager()
@@ -258,35 +385,13 @@ impl Instance {
         Ok(())
     }
 
-    async fn prepare_tun_device(&mut self) -> Result<(), Error> {
-        let mut nic = virtual_nic::VirtualNic::new(self.get_global_ctx());
-        let tunnel = nic.create_dev().await?;
-
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
-
-        let (stream, sink) = tunnel.split();
-        self.virtual_nic = Some(Arc::new(nic));
-
-        self.do_forward_nic_to_peers(stream).unwrap();
-        Self::do_forward_peers_to_nic(
-            self.tasks.borrow_mut(),
-            sink,
-            self.peer_packet_receiver.take(),
-        );
-
-        Ok(())
+    async fn clear_nic_ctx(arc_nic_ctx: ArcNicCtx) {
+        let _ = arc_nic_ctx.lock().await.take();
     }
 
-    async fn assign_ipv4_to_tun_device(&mut self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
-        let nic = self.virtual_nic.as_ref().unwrap().clone();
-        nic.link_up().await?;
-        nic.remove_ip(None).await?;
-        nic.add_ip(ipv4_addr, 24).await?;
-        if cfg!(target_os = "macos") {
-            nic.add_route(ipv4_addr, 24).await?;
-        }
-        Ok(())
+    async fn use_new_nic_ctx(arc_nic_ctx: ArcNicCtx, nic_ctx: NicCtx) {
+        let mut g = arc_nic_ctx.lock().await;
+        *g = Some(nic_ctx);
     }
 
     // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
@@ -294,7 +399,8 @@ impl Instance {
         use rand::Rng;
         let peer_manager_c = self.peer_manager.clone();
         let global_ctx_c = self.get_global_ctx();
-        let nic_c = self.virtual_nic.as_ref().unwrap().clone();
+        let nic_ctx = self.nic_ctx.clone();
+        let peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
             let default_ipv4_addr = Ipv4Addr::new(10, 0, 0, 0);
             let mut dhcp_ip: Option<Ipv4Inet> = None;
@@ -348,42 +454,30 @@ impl Instance {
                 if dhcp_ip != ipv4_addr {
                     let last_ip = dhcp_ip.map(|p| p.address());
                     tracing::debug!("last_ip: {:?}", last_ip);
-                    let _ = nic_c.remove_ip(last_ip).await;
-                    #[cfg(target_os = "macos")]
-                    if last_ip.is_some() {
-                        let _g = global_ctx_c.net_ns.guard();
-                        let ret = nic_c
-                            .get_ifcfg()
-                            .remove_ipv4_route(nic_c.ifname(), last_ip.unwrap(), 24)
-                            .await;
 
-                        if ret.is_err() {
-                            tracing::trace!(
-                                cidr = 24,
-                                err = ?ret,
-                                "remove route failed.",
-                            );
-                        }
-                    }
+                    Self::clear_nic_ctx(nic_ctx.clone()).await;
 
                     if let Some(ip) = ipv4_addr {
-                        let _ = nic_c.link_up().await;
+                        let mut new_nic_ctx = NicCtx::new(
+                            global_ctx_c.clone(),
+                            &peer_manager_c,
+                            peer_packet_receiver.clone(),
+                        );
                         dhcp_ip = Some(ip);
                         tries = 1;
-                        if let Err(e) = nic_c.add_ip(ip.address(), 24).await {
+                        if let Err(e) = new_nic_ctx.run(ip.address()).await {
                             tracing::error!("add ip failed: {:?}", e);
                             global_ctx_c.set_ipv4(None);
                             let sleep: u64 = rand::thread_rng().gen_range(200..500);
                             tokio::time::sleep(std::time::Duration::from_millis(sleep)).await;
                             continue;
                         }
-                        #[cfg(target_os = "macos")]
-                        let _ = nic_c.add_route(ip.address(), 24).await;
                         global_ctx_c.set_ipv4(Some(ip.address()));
                         global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(
                             last_ip,
                             Some(ip.address()),
                         ));
+                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                     } else {
                         global_ctx_c.set_ipv4(None);
                         global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
@@ -409,13 +503,15 @@ impl Instance {
         self.peer_manager.run().await?;
 
         if self.global_ctx.config.get_dhcp() {
-            self.prepare_tun_device().await?;
-            self.run_proxy_cidrs_route_updater();
             self.check_dhcp_ip_conflict();
         } else if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
-            self.prepare_tun_device().await?;
-            self.assign_ipv4_to_tun_device(ipv4_addr).await?;
-            self.run_proxy_cidrs_route_updater();
+            let mut new_nic_ctx = NicCtx::new(
+                self.global_ctx.clone(),
+                &self.peer_manager,
+                self.peer_packet_receiver.clone(),
+            );
+            new_nic_ctx.run(ipv4_addr).await?;
+            Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
         }
 
         self.run_rpc_server()?;
@@ -575,84 +671,6 @@ impl Instance {
                 .unwrap();
         });
         Ok(())
-    }
-
-    fn run_proxy_cidrs_route_updater(&mut self) {
-        let peer_mgr = self.peer_manager.clone();
-        let global_ctx = self.global_ctx.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
-        let nic = self.virtual_nic.as_ref().unwrap().clone();
-        let ifcfg = nic.get_ifcfg();
-        let ifname = nic.ifname().to_owned();
-
-        self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = vec![];
-            loop {
-                let mut proxy_cidrs = vec![];
-                let routes = peer_mgr.list_routes().await;
-                for r in routes {
-                    for cidr in r.proxy_cidrs {
-                        let Ok(cidr) = cidr.parse::<cidr::Ipv4Cidr>() else {
-                            continue;
-                        };
-                        proxy_cidrs.push(cidr);
-                    }
-                }
-                // add vpn portal cidr to proxy_cidrs
-                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
-                    proxy_cidrs.push(vpn_cfg.client_cidr);
-                }
-
-                // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
-                for cidr in cur_proxy_cidrs.iter() {
-                    if proxy_cidrs.contains(cidr) {
-                        continue;
-                    }
-
-                    let _g = net_ns.guard();
-                    let ret = ifcfg
-                        .remove_ipv4_route(
-                            ifname.as_str(),
-                            cidr.first_address(),
-                            cidr.network_length(),
-                        )
-                        .await;
-
-                    if ret.is_err() {
-                        tracing::trace!(
-                            cidr = ?cidr,
-                            err = ?ret,
-                            "remove route failed.",
-                        );
-                    }
-                }
-
-                for cidr in proxy_cidrs.iter() {
-                    if cur_proxy_cidrs.contains(cidr) {
-                        continue;
-                    }
-                    let _g = net_ns.guard();
-                    let ret = ifcfg
-                        .add_ipv4_route(
-                            ifname.as_str(),
-                            cidr.first_address(),
-                            cidr.network_length(),
-                        )
-                        .await;
-
-                    if ret.is_err() {
-                        tracing::trace!(
-                            cidr = ?cidr,
-                            err = ?ret,
-                            "add route failed.",
-                        );
-                    }
-                }
-
-                cur_proxy_cidrs = proxy_cidrs;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
     }
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
