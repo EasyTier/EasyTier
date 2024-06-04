@@ -227,7 +227,7 @@ pub struct UdpProxy {
 
 impl UdpProxy {
     async fn try_handle_packet(&self, packet: &ZCPacket) -> Option<()> {
-        if self.cidr_set.is_empty() {
+        if self.cidr_set.is_empty() && !self.global_ctx.enable_exit_node() {
             return None;
         }
 
