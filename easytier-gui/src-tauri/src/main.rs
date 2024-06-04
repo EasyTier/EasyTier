@@ -164,8 +164,6 @@ impl NetworkConfig {
 
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
-static mut AUTO_LAUNCH: once_cell::sync::Lazy<Option<auto_launch::AutoLaunch>> =
-    once_cell::sync::Lazy::new(Default::default);
 
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
@@ -221,14 +219,7 @@ fn get_os_hostname() -> Result<String, String> {
 
 #[tauri::command]
 fn set_auto_launch_status(app_handle: tauri::AppHandle, enable: bool) -> Result<bool, String> {
-    Ok(unsafe {
-        if let Some(tmp) = AUTO_LAUNCH.as_ref() {
-            if enable { tmp.enable() } else { tmp.disable() }.map_err(|e| e.to_string())?;
-            tmp.is_enabled().map_err(|e| e.to_string())?
-        } else {
-            init_launch(&app_handle, enable).map_err(|e| e.to_string())?
-        }
-    })
+    Ok(init_launch(&app_handle, enable).map_err(|e| e.to_string())?)
 }
 
 fn toggle_window_visibility(window: &Window) {
@@ -253,7 +244,7 @@ fn check_sudo() -> bool {
 }
 
 /// init the auto launch
-pub fn init_launch(app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, anyhow::Error> {
+pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, anyhow::Error> {
     let app_exe = current_exe()?;
     let app_exe = dunce::canonicalize(app_exe)?;
     let app_name = app_exe
@@ -285,7 +276,7 @@ pub fn init_launch(app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, 
 
     #[cfg(target_os = "linux")]
     let app_path = {
-        let appimage = app_handle.env().appimage;
+        let appimage = _app_handle.env().appimage;
         appimage
             .and_then(|p| p.to_str().map(|s| s.to_string()))
             .unwrap_or(app_path)
@@ -294,33 +285,19 @@ pub fn init_launch(app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, 
     let auto = AutoLaunchBuilder::new()
         .set_app_name(app_name)
         .set_app_path(&app_path)
-        .build()?;
+        .build()
+        .with_context(|| "failed to build auto launch")?;
 
-    // 避免在开发时将自启动关了
-    #[cfg(feature = "verge-dev")]
-    if !enable {
-        return Ok(());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        if enable && !auto.is_enabled().unwrap_or(false) {
-            // 避免重复设置登录项
-            let _ = auto.disable();
-            auto.enable()?;
-        } else if !enable {
-            let _ = auto.disable();
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    if enable {
-        auto.enable()?;
+    if enable && !auto.is_enabled().unwrap_or(false) {
+        // 避免重复设置登录项
+        let _ = auto.disable();
+        auto.enable()
+            .with_context(|| "failed to enable auto launch")?
+    } else if !enable {
+        let _ = auto.disable();
     }
 
     let enabled = auto.is_enabled()?;
-
-    unsafe { AUTO_LAUNCH.replace(auto) };
 
     Ok(enabled)
 }

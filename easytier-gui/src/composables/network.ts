@@ -20,3 +20,7 @@ export async function collectNetworkInfos() {
 export async function getOsHostname() {
   return await invoke<string>('get_os_hostname')
 }
+
+export async function setAutoLaunchStatus(enable: boolean) {
+  return await invoke<boolean>('set_auto_launch_status', { enable })
+}

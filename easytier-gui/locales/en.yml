@@ -32,6 +32,8 @@ retain_network_instance: Retain Network Instance
 collect_network_infos: Collect Network Infos
 settings: Settings
 exchange_language: 切换中文
+disable_auto_launch: Disable Launch on Reboot
+enable_auto_launch: Enable Launch on Reboot
 exit: Exit
 
 chips_placeholder: 'e.g: {0}, press Enter to add'

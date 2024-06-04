@@ -57,6 +57,7 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
         cmd_out = Command::new("cmd")
+            .stdin(std::process::Stdio::null())
             .arg("/C")
             .arg(cmd)
             .creation_flags(CREATE_NO_WINDOW)

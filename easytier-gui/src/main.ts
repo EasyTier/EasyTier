@@ -10,6 +10,7 @@ import 'primevue/resources/themes/aura-light-green/theme.css'
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 import { i18n, loadLanguageAsync } from '~/modules/i18n'
+import { loadAutoLaunchStatusAsync, getAutoLaunchStatusAsync } from './modules/auto_launch'
 
 if (import.meta.env.PROD) {
   document.addEventListener('keydown', (event) => {
@@ -28,6 +29,7 @@ if (import.meta.env.PROD) {
 
 async function main() {
   await loadLanguageAsync(localStorage.getItem('lang') || 'en')
+  await loadAutoLaunchStatusAsync(getAutoLaunchStatusAsync())
 
   const app = createApp(App)
 

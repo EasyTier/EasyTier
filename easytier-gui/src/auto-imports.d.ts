@@ -27,6 +27,7 @@ declare global {
   const isReactive: typeof import('vue')['isReactive']
   const isReadonly: typeof import('vue')['isReadonly']
   const isRef: typeof import('vue')['isRef']
+  const loadRunningInstanceIdsFromLocalStorage: typeof import('./stores/network')['loadRunningInstanceIdsFromLocalStorage']
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
   const mapState: typeof import('pinia')['mapState']
@@ -58,6 +59,7 @@ declare global {
   const retainNetworkInstance: typeof import('./composables/network')['retainNetworkInstance']
   const runNetworkInstance: typeof import('./composables/network')['runNetworkInstance']
   const setActivePinia: typeof import('pinia')['setActivePinia']
+  const setAutoLaunchStatus: typeof import('./composables/network')['setAutoLaunchStatus']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
   const shallowReactive: typeof import('vue')['shallowReactive']
   const shallowReadonly: typeof import('vue')['shallowReadonly']
@@ -116,6 +118,7 @@ declare module 'vue' {
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
     readonly isRef: UnwrapRef<typeof import('vue')['isRef']>
+    readonly loadRunningInstanceIdsFromLocalStorage: UnwrapRef<typeof import('./stores/network')['loadRunningInstanceIdsFromLocalStorage']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
     readonly mapState: UnwrapRef<typeof import('pinia')['mapState']>
@@ -147,6 +150,7 @@ declare module 'vue' {
     readonly retainNetworkInstance: UnwrapRef<typeof import('./composables/network')['retainNetworkInstance']>
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/network')['runNetworkInstance']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
+    readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
@@ -198,6 +202,7 @@ declare module '@vue/runtime-core' {
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
     readonly isRef: UnwrapRef<typeof import('vue')['isRef']>
+    readonly loadRunningInstanceIdsFromLocalStorage: UnwrapRef<typeof import('./stores/network')['loadRunningInstanceIdsFromLocalStorage']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
     readonly mapState: UnwrapRef<typeof import('pinia')['mapState']>
@@ -229,6 +234,7 @@ declare module '@vue/runtime-core' {
     readonly retainNetworkInstance: UnwrapRef<typeof import('./composables/network')['retainNetworkInstance']>
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/network')['runNetworkInstance']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
+    readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
