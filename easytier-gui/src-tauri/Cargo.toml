@@ -29,6 +29,10 @@ dashmap = "5.5.3"
 
 privilege = "0.3"
 gethostname = "0.4.3"
+
+auto-launch = "0.5.0"
+dunce = "1.0.4"
+
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
