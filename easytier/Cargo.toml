@@ -42,7 +42,7 @@ auto_impl = "1.1.0"
 crossbeam = "0.8.4"
 time = "0.3"
 toml = "0.8.12"
-chrono = "0.4.35"
+chrono = { version = "0.4.37", features = ["serde"] }
 
 gethostname = "0.4.3"
 

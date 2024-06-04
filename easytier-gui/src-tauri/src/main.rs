@@ -1,22 +1,17 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod launcher;
-
 use std::{collections::BTreeMap, env::current_exe, process};
 
 use anyhow::Context;
-use chrono::{DateTime, Local};
+use auto_launch::AutoLaunchBuilder;
 use dashmap::DashMap;
 use easytier::{
-    common::{
-        config::{ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader, VpnPortalConfig},
-        global_ctx::GlobalCtxEvent,
+    common::config::{
+        ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader, VpnPortalConfig,
     },
-    rpc::{PeerInfo, Route},
-    utils::{list_peer_route_pair, PeerRoutePair},
+    launcher::{NetworkInstance, NetworkInstanceRunningInfo},
 };
-use launcher::{EasyTierLauncher, MyNodeInfo};
 use serde::{Deserialize, Serialize};
 
 use tauri::{
@@ -167,71 +162,6 @@ impl NetworkConfig {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-struct NetworkInstanceRunningInfo {
-    my_node_info: MyNodeInfo,
-    events: Vec<(DateTime<Local>, GlobalCtxEvent)>,
-    node_info: MyNodeInfo,
-    routes: Vec<Route>,
-    peers: Vec<PeerInfo>,
-    peer_route_pairs: Vec<PeerRoutePair>,
-    running: bool,
-    error_msg: Option<String>,
-}
-
-struct NetworkInstance {
-    config: TomlConfigLoader,
-    launcher: Option<EasyTierLauncher>,
-}
-
-impl NetworkInstance {
-    fn new(cfg: NetworkConfig) -> Result<Self, anyhow::Error> {
-        Ok(Self {
-            config: cfg.gen_config()?,
-            launcher: None,
-        })
-    }
-
-    fn is_easytier_running(&self) -> bool {
-        self.launcher.is_some() && self.launcher.as_ref().unwrap().running()
-    }
-
-    fn get_running_info(&self) -> Option<NetworkInstanceRunningInfo> {
-        if self.launcher.is_none() {
-            return None;
-        }
-
-        let launcher = self.launcher.as_ref().unwrap();
-
-        let peers = launcher.get_peers();
-        let routes = launcher.get_routes();
-        let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
-
-        Some(NetworkInstanceRunningInfo {
-            my_node_info: launcher.get_node_info(),
-            events: launcher.get_events(),
-            node_info: launcher.get_node_info(),
-            routes,
-            peers,
-            peer_route_pairs,
-            running: launcher.running(),
-            error_msg: launcher.error_msg(),
-        })
-    }
-
-    fn start(&mut self) -> Result<(), anyhow::Error> {
-        if self.is_easytier_running() {
-            return Ok(());
-        }
-
-        let mut launcher = EasyTierLauncher::new();
-        launcher.start(|| Ok(self.config.clone()));
-
-        self.launcher = Some(launcher);
-        Ok(())
-    }
-}
-
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
 
@@ -249,7 +179,8 @@ fn run_network_instance(cfg: NetworkConfig) -> Result<(), String> {
     }
     let instance_id = cfg.instance_id.clone();
 
-    let mut instance = NetworkInstance::new(cfg).map_err(|e| e.to_string())?;
+    let cfg = cfg.gen_config().map_err(|e| e.to_string())?;
+    let mut instance = NetworkInstance::new(cfg);
     instance.start().map_err(|e| e.to_string())?;
 
     println!("instance {} started", instance_id);
@@ -286,6 +217,11 @@ fn get_os_hostname() -> Result<String, String> {
     Ok(gethostname::gethostname().to_string_lossy().to_string())
 }
 
+#[tauri::command]
+fn set_auto_launch_status(app_handle: tauri::AppHandle, enable: bool) -> Result<bool, String> {
+    Ok(init_launch(&app_handle, enable).map_err(|e| e.to_string())?)
+}
+
 fn toggle_window_visibility(window: &Window) {
     if window.is_visible().unwrap() {
         window.hide().unwrap();
@@ -307,6 +243,65 @@ fn check_sudo() -> bool {
     is_elevated
 }
 
+/// init the auto launch
+pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, anyhow::Error> {
+    let app_exe = current_exe()?;
+    let app_exe = dunce::canonicalize(app_exe)?;
+    let app_name = app_exe
+        .file_stem()
+        .and_then(|f| f.to_str())
+        .ok_or(anyhow::anyhow!("failed to get file stem"))?;
+
+    let app_path = app_exe
+        .as_os_str()
+        .to_str()
+        .ok_or(anyhow::anyhow!("failed to get app_path"))?
+        .to_string();
+
+    #[cfg(target_os = "windows")]
+    let app_path = format!("\"{app_path}\"");
+
+    // use the /Applications/easytier-gui.app
+    #[cfg(target_os = "macos")]
+    let app_path = (|| -> Option<String> {
+        let path = std::path::PathBuf::from(&app_path);
+        let path = path.parent()?.parent()?.parent()?;
+        let extension = path.extension()?.to_str()?;
+        match extension == "app" {
+            true => Some(path.as_os_str().to_str()?.to_string()),
+            false => None,
+        }
+    })()
+    .unwrap_or(app_path);
+
+    #[cfg(target_os = "linux")]
+    let app_path = {
+        let appimage = _app_handle.env().appimage;
+        appimage
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .unwrap_or(app_path)
+    };
+
+    let auto = AutoLaunchBuilder::new()
+        .set_app_name(app_name)
+        .set_app_path(&app_path)
+        .build()
+        .with_context(|| "failed to build auto launch")?;
+
+    if enable && !auto.is_enabled().unwrap_or(false) {
+        // 避免重复设置登录项
+        let _ = auto.disable();
+        auto.enable()
+            .with_context(|| "failed to enable auto launch")?
+    } else if !enable {
+        let _ = auto.disable();
+    }
+
+    let enabled = auto.is_enabled()?;
+
+    Ok(enabled)
+}
+
 fn main() {
     if !check_sudo() {
         process::exit(0);
@@ -324,7 +319,8 @@ fn main() {
             run_network_instance,
             retain_network_instance,
             collect_network_infos,
-            get_os_hostname
+            get_os_hostname,
+            set_auto_launch_status
         ])
         .system_tray(SystemTray::new().with_menu(tray_menu))
         .on_system_tray_event(|app, event| match event {

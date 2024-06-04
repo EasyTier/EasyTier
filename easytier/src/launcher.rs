@@ -3,8 +3,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
 
-use chrono::{DateTime, Local};
-use easytier::{
+use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
         global_ctx::GlobalCtxEvent,
@@ -16,7 +15,9 @@ use easytier::{
         cli::{PeerInfo, Route, StunInfo},
         peer::GetIpListResponse,
     },
+    utils::{list_peer_route_pair, PeerRoutePair},
 };
+use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
@@ -210,5 +211,70 @@ impl Drop for EasyTierLauncher {
                 println!("Error when joining thread: {:?}", e);
             }
         }
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct NetworkInstanceRunningInfo {
+    pub my_node_info: MyNodeInfo,
+    pub events: Vec<(DateTime<Local>, GlobalCtxEvent)>,
+    pub node_info: MyNodeInfo,
+    pub routes: Vec<Route>,
+    pub peers: Vec<PeerInfo>,
+    pub peer_route_pairs: Vec<PeerRoutePair>,
+    pub running: bool,
+    pub error_msg: Option<String>,
+}
+
+pub struct NetworkInstance {
+    config: TomlConfigLoader,
+    launcher: Option<EasyTierLauncher>,
+}
+
+impl NetworkInstance {
+    pub fn new(config: TomlConfigLoader) -> Self {
+        Self {
+            config,
+            launcher: None,
+        }
+    }
+
+    pub fn is_easytier_running(&self) -> bool {
+        self.launcher.is_some() && self.launcher.as_ref().unwrap().running()
+    }
+
+    pub fn get_running_info(&self) -> Option<NetworkInstanceRunningInfo> {
+        if self.launcher.is_none() {
+            return None;
+        }
+
+        let launcher = self.launcher.as_ref().unwrap();
+
+        let peers = launcher.get_peers();
+        let routes = launcher.get_routes();
+        let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
+
+        Some(NetworkInstanceRunningInfo {
+            my_node_info: launcher.get_node_info(),
+            events: launcher.get_events(),
+            node_info: launcher.get_node_info(),
+            routes,
+            peers,
+            peer_route_pairs,
+            running: launcher.running(),
+            error_msg: launcher.error_msg(),
+        })
+    }
+
+    pub fn start(&mut self) -> Result<(), anyhow::Error> {
+        if self.is_easytier_running() {
+            return Ok(());
+        }
+
+        let mut launcher = EasyTierLauncher::new();
+        launcher.start(|| Ok(self.config.clone()));
+
+        self.launcher = Some(launcher);
+        Ok(())
     }
 }

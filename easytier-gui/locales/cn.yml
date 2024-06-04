@@ -32,6 +32,8 @@ retain_network_instance: 保留网络实例
 collect_network_infos: 收集网络信息
 settings: 设置
 exchange_language: Switch to English
+disable_auto_launch: 关闭开机自启
+enable_auto_launch: 开启开机自启
 exit: 退出
 chips_placeholder: 例如： {0}, 按回车添加
 hostname_placeholder: '留空默认为主机名: {0}'

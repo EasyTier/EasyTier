@@ -70,6 +70,7 @@ export const useNetworkStore = defineStore('networkStore', {
         this.instances[instanceId].error_msg = info.error_msg || ''
         this.instances[instanceId].detail = info
       }
+      this.saveRunningInstanceIdsToLocalStorage()
     },
 
     loadFromLocalStorage() {
@@ -92,8 +93,22 @@ export const useNetworkStore = defineStore('networkStore', {
     saveToLocalStorage() {
       localStorage.setItem('networkList', JSON.stringify(this.networkList))
     },
+
+    saveRunningInstanceIdsToLocalStorage() {
+      let instance_ids = Object.keys(this.instances).filter((instanceId) => this.instances[instanceId].running)
+      localStorage.setItem('runningInstanceIds', JSON.stringify(instance_ids))
+    }
   },
 })
 
 if (import.meta.hot)
   import.meta.hot.accept(acceptHMRUpdate(useNetworkStore as any, import.meta.hot))
+
+export function loadRunningInstanceIdsFromLocalStorage(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem('runningInstanceIds') || '[]')
+  } catch (e) {
+    console.error(e)
+    return []
+  }
+}

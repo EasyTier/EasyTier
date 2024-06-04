@@ -10,6 +10,8 @@ import Status from '~/components/Status.vue'
 
 import type { NetworkConfig } from '~/types/network'
 import { loadLanguageAsync } from '~/modules/i18n'
+import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
+import { loadRunningInstanceIdsFromLocalStorage } from '~/stores/network'
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -63,6 +65,7 @@ function addNewNetwork() {
 
 networkStore.$subscribe(async () => {
   networkStore.saveToLocalStorage()
+  networkStore.saveRunningInstanceIdsToLocalStorage()
   try {
     await parseNetworkConfig(networkStore.curNetwork)
     messageBarSeverity.value = Severity.None
@@ -124,8 +127,15 @@ const setting_menu_items = ref([
         },
       },
       {
+        label: () => getAutoLaunchStatus() ? t('disable_auto_launch') : t('enable_auto_launch'),
+        icon: 'pi pi-desktop',
+        command: async () => {
+          await loadAutoLaunchStatusAsync(!getAutoLaunchStatus())
+        },
+      },
+      {
         label: () => t('exit'),
-        icon: 'pi pi-times',
+        icon: 'pi pi-power-off',
         command: async () => {
           await exit(1)
         },
@@ -140,6 +150,16 @@ function toggle_setting_menu(event: any) {
 
 onMounted(async () => {
   networkStore.loadFromLocalStorage()
+  if (getAutoLaunchStatus()) {
+    let prev_running_ids = loadRunningInstanceIdsFromLocalStorage()
+    for (let id of prev_running_ids) {
+      let cfg = networkStore.networkList.find((item) => item.instance_id === id)
+      if (cfg) {
+        networkStore.addNetworkInstance(cfg.instance_id)
+        await runNetworkInstance(cfg)
+      }
+    }
+  }
 })
 
 function isRunning(id: string) {
@@ -168,35 +188,28 @@ function isRunning(id: string) {
       <Toolbar>
         <template #start>
           <div class="flex align-items-center gap-2">
-            <Button
-              icon="pi pi-plus" class="mr-2" severity="primary" :label="t('add_new_network')"
-              @click="addNewNetwork"
-            />
+            <Button icon="pi pi-plus" class="mr-2" severity="primary" :label="t('add_new_network')"
+              @click="addNewNetwork" />
           </div>
         </template>
 
         <template #center>
           <div class="min-w-80 mr-20">
-            <Dropdown
-              v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
-              :placeholder="t('select_network')" class="w-full"
-            >
+            <Dropdown v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
+              :placeholder="t('select_network')" class="w-full">
               <template #value="slotProps">
                 <div class="flex items-start content-center">
                   <div class="mr-3">
                     <span>{{ slotProps.value.network_name }}</span>
                     <span
                       v-if="isRunning(slotProps.value.instance_id) && networkStore.instances[slotProps.value.instance_id].detail && (networkStore.instances[slotProps.value.instance_id].detail?.my_node_info.virtual_ipv4 !== '')"
-                      class="ml-3"
-                    >
+                      class="ml-3">
                       {{ networkStore.instances[slotProps.value.instance_id].detail
                         ? networkStore.instances[slotProps.value.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
                     </span>
                   </div>
-                  <Tag
-                    class="my-auto" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
-                    :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')"
-                  />
+                  <Tag class="my-auto" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
+                    :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')" />
                 </div>
               </template>
               <template #option="slotProps">
@@ -205,10 +218,8 @@ function isRunning(id: string) {
                     <div class="mr-3">
                       {{ t('network_name') }}: {{ slotProps.option.network_name }}
                     </div>
-                    <Tag
-                      class="my-auto" :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
-                      :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')"
-                    />
+                    <Tag class="my-auto" :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
+                      :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')" />
                   </div>
                   <div>{{ slotProps.option.public_server_url }}</div>
                 </div>
@@ -218,10 +229,8 @@ function isRunning(id: string) {
         </template>
 
         <template #end>
-          <Button
-            icon="pi pi-cog" class="mr-2" severity="secondary" aria-haspopup="true" :label="t('settings')"
-            aria-controls="overlay_setting_menu" @click="toggle_setting_menu"
-          />
+          <Button icon="pi pi-cog" class="mr-2" severity="secondary" aria-haspopup="true" :label="t('settings')"
+            aria-controls="overlay_setting_menu" @click="toggle_setting_menu" />
           <Menu id="overlay_setting_menu" ref="setting_menu" :model="setting_menu_items" :popup="true" />
         </template>
       </Toolbar>
@@ -230,10 +239,8 @@ function isRunning(id: string) {
     <Stepper class="h-full overflow-y-auto" :active-step="activeStep">
       <StepperPanel :header="t('config_network')">
         <template #content="{ nextCallback }">
-          <Config
-            :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
-            @run-network="runNetworkCb($event, nextCallback)"
-          />
+          <Config :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
+            @run-network="runNetworkCb($event, nextCallback)" />
         </template>
       </StepperPanel>
       <StepperPanel :header="t('running')">
@@ -242,10 +249,8 @@ function isRunning(id: string) {
             <Status :instance-id="networkStore.curNetworkId" />
           </div>
           <div class="flex pt-4 justify-content-center">
-            <Button
-              :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
-              @click="stopNetworkCb(networkStore.curNetwork, prevCallback)"
-            />
+            <Button :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
+              @click="stopNetworkCb(networkStore.curNetwork, prevCallback)" />
           </div>
         </template>
       </StepperPanel>
