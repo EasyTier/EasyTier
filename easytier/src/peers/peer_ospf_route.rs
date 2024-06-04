@@ -1467,9 +1467,10 @@ mod tests {
         peers::{
             peer_manager::{PeerManager, RouteAlgoType},
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface},
-            tests::{connect_peer_manager, wait_for_condition},
+            tests::connect_peer_manager,
         },
         rpc::NatType,
+        tunnel::common::tests::wait_for_condition,
     };
 
     use super::PeerRoute;

@@ -419,7 +419,7 @@ pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
 pub mod tests {
     use std::time::Instant;
 
-    use futures::{SinkExt, StreamExt, TryStreamExt};
+    use futures::{Future, SinkExt, StreamExt, TryStreamExt};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
     use crate::{
@@ -594,5 +594,20 @@ pub mod tests {
             .pretty()
             .with_env_filter(filter)
             .init();
+    }
+
+    pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration) -> ()
+    where
+        F: FnMut() -> FRet + Send,
+        FRet: Future<Output = bool>,
+    {
+        let now = std::time::Instant::now();
+        while now.elapsed() < timeout {
+            if condition().await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(condition().await, "Timeout")
     }
 }

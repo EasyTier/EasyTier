@@ -1,7 +1,5 @@
 use std::sync::Arc;
 
-use futures::Future;
-
 use crate::{
     common::{error::Error, global_ctx::tests::get_mock_global_ctx, PeerId},
     tunnel::ring::create_ring_tunnel_pair,
@@ -57,19 +55,4 @@ pub async fn wait_route_appear(
 ) -> Result<(), Error> {
     wait_route_appear_with_cost(peer_mgr.clone(), target_peer.my_peer_id(), None).await?;
     wait_route_appear_with_cost(target_peer, peer_mgr.my_peer_id(), None).await
-}
-
-pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration) -> ()
-where
-    F: FnMut() -> FRet + Send,
-    FRet: Future<Output = bool>,
-{
-    let now = std::time::Instant::now();
-    while now.elapsed() < timeout {
-        if condition().await {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(condition().await, "Timeout")
 }
