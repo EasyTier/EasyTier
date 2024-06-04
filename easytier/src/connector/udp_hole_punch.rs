@@ -1008,8 +1008,8 @@ pub mod tests {
     use tokio::net::UdpSocket;
 
     use crate::connector::udp_hole_punch::UdpHolePunchListener;
-    use crate::peers::tests::wait_for_condition;
     use crate::rpc::{NatType, StunInfo};
+    use crate::tunnel::common::tests::wait_for_condition;
 
     use crate::{
         common::{error::Error, stun::StunInfoCollectorTrait},

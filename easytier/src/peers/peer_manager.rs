@@ -758,9 +758,10 @@ mod tests {
         peers::{
             peer_manager::RouteAlgoType,
             peer_rpc::tests::{MockService, TestRpcService, TestRpcServiceClient},
-            tests::{connect_peer_manager, wait_for_condition, wait_route_appear},
+            tests::{connect_peer_manager, wait_route_appear},
         },
         rpc::NatType,
+        tunnel::common::tests::wait_for_condition,
         tunnel::{TunnelConnector, TunnelListener},
     };
 

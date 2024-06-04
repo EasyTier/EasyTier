@@ -557,14 +557,11 @@ pub mod tests {
         common::{error::Error, new_peer_id, PeerId},
         peers::{
             peer_rpc::PeerRpcManager,
-            tests::{
-                connect_peer_manager, create_mock_peer_manager, wait_for_condition,
-                wait_route_appear,
-            },
+            tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
         },
         tunnel::{
-            packet_def::ZCPacket, ring::create_ring_tunnel_pair, Tunnel, ZCPacketSink,
-            ZCPacketStream,
+            common::tests::wait_for_condition, packet_def::ZCPacket, ring::create_ring_tunnel_pair,
+            Tunnel, ZCPacketSink, ZCPacketStream,
         },
     };
 

@@ -13,7 +13,7 @@ use crate::{
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
-    peers::tests::wait_for_condition,
+    tunnel::common::tests::wait_for_condition,
     tunnel::{ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector},
 };
 

@@ -352,9 +352,8 @@ impl PeerCenterInstance {
 mod tests {
     use crate::{
         peer_center::server::get_global_data,
-        peers::tests::{
-            connect_peer_manager, create_mock_peer_manager, wait_for_condition, wait_route_appear,
-        },
+        peers::tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
+        tunnel::common::tests::wait_for_condition,
     };
 
     use super::*;
