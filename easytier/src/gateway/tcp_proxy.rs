@@ -356,6 +356,10 @@ impl TcpProxy {
     }
 
     async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> Option<()> {
+        if self.cidr_set.is_empty() && !self.global_ctx.enable_exit_node() {
+            return None;
+        }
+
         let ipv4_addr = self.global_ctx.get_ipv4()?;
         let hdr = packet.peer_manager_header().unwrap();
         let is_exit_node = hdr.is_exit_node();
