@@ -198,6 +198,20 @@ and the vpn client is in network of 10.14.14.0/24"
         default_value = "false"
     )]
     enable_exit_node: bool,
+
+    #[arg(
+        long,
+        help = "do not create TUN device, can use subnet proxy to access node",
+        default_value = "false"
+    )]
+    no_tun: bool,
+
+    #[arg(
+        long,
+        help = "enable smoltcp stack for subnet proxy",
+        default_value = "true"
+    )]
+    use_smoltcp: bool,
 }
 
 impl Cli {
@@ -414,6 +428,8 @@ impl From<Cli> for TomlConfigLoader {
             f.mtu = mtu;
         }
         f.enable_exit_node = cli.enable_exit_node;
+        f.no_tun = cli.no_tun;
+        f.use_smoltcp = cli.use_smoltcp;
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());

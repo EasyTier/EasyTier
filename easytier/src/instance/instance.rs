@@ -68,7 +68,8 @@ impl IpProxy {
 
     async fn start(&self) -> Result<(), Error> {
         if (self.global_ctx.get_proxy_cidrs().is_empty() || self.started.load(Ordering::Relaxed))
-            && !self.global_ctx.config.get_flags().enable_exit_node
+            && !self.global_ctx.enable_exit_node()
+            && !self.global_ctx.no_tun()
         {
             return Ok(());
         }
@@ -502,16 +503,20 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        if self.global_ctx.config.get_dhcp() {
-            self.check_dhcp_ip_conflict();
-        } else if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
-            let mut new_nic_ctx = NicCtx::new(
-                self.global_ctx.clone(),
-                &self.peer_manager,
-                self.peer_packet_receiver.clone(),
-            );
-            new_nic_ctx.run(ipv4_addr).await?;
-            Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
+        if !self.global_ctx.config.get_flags().no_tun {
+            if self.global_ctx.config.get_dhcp() {
+                self.check_dhcp_ip_conflict();
+            } else if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+                let mut new_nic_ctx = NicCtx::new(
+                    self.global_ctx.clone(),
+                    &self.peer_manager,
+                    self.peer_packet_receiver.clone(),
+                );
+                new_nic_ctx.run(ipv4_addr).await?;
+                Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
+            }
+        } else {
+            self.peer_packet_receiver.lock().await.close();
         }
 
         self.run_rpc_server()?;

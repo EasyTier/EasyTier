@@ -160,6 +160,10 @@ pub struct Flags {
     pub latency_first: bool,
     #[derivative(Default(value = "false"))]
     pub enable_exit_node: bool,
+    #[derivative(Default(value = "false"))]
+    pub no_tun: bool,
+    #[derivative(Default(value = "false"))]
+    pub use_smoltcp: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

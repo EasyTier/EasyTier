@@ -65,6 +65,7 @@ pub struct GlobalCtx {
     running_listeners: Mutex<Vec<url::Url>>,
 
     enable_exit_node: bool,
+    no_tun: bool,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -93,6 +94,7 @@ impl GlobalCtx {
         let stun_info_collection = Arc::new(StunInfoCollector::new_with_default_servers());
 
         let enable_exit_node = config_fs.get_flags().enable_exit_node;
+        let no_tun = config_fs.get_flags().no_tun;
 
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
@@ -114,6 +116,7 @@ impl GlobalCtx {
             running_listeners: Mutex::new(Vec::new()),
 
             enable_exit_node,
+            no_tun,
         }
     }
 
@@ -233,6 +236,10 @@ impl GlobalCtx {
 
     pub fn enable_exit_node(&self) -> bool {
         self.enable_exit_node
+    }
+
+    pub fn no_tun(&self) -> bool {
+        self.no_tun
     }
 }
 

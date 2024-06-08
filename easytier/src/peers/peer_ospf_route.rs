@@ -1441,7 +1441,7 @@ impl Route for PeerRoute {
             return Some(peer_id);
         }
 
-        tracing::info!(?ipv4_addr, "no peer id for ipv4");
+        tracing::debug!(?ipv4_addr, "no peer id for ipv4");
         None
     }
 

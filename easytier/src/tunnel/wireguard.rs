@@ -245,7 +245,7 @@ impl WgPeerData {
                 }
             }
             _ => {
-                tracing::warn!(
+                tracing::debug!(
                     "Unexpected WireGuard state during decapsulation: {:?}",
                     decapsulate_result
                 );
