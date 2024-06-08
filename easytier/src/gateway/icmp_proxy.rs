@@ -3,12 +3,13 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddrV4},
     sync::Arc,
     thread,
+    time::Duration,
 };
 
 use pnet::packet::{
     icmp::{self, IcmpTypes},
     ip::IpNextHeaderProtocols,
-    ipv4::{self, Ipv4Packet, MutableIpv4Packet},
+    ipv4::Ipv4Packet,
     Packet,
 };
 use socket2::Socket;
@@ -25,7 +26,10 @@ use crate::{
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
-use super::CidrSet;
+use super::{
+    ip_reassembler::{compose_ipv4_packet, IpReassembler},
+    CidrSet,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IcmpNatKey {
@@ -68,6 +72,8 @@ pub struct IcmpProxy {
     nat_table: IcmpNatTable,
 
     tasks: Mutex<JoinSet<()>>,
+
+    ip_resemmbler: Arc<IpReassembler>,
 }
 
 fn socket_recv(socket: &Socket, buf: &mut [MaybeUninit<u8>]) -> Result<(usize, IpAddr), Error> {
@@ -80,7 +86,7 @@ fn socket_recv(socket: &Socket, buf: &mut [MaybeUninit<u8>]) -> Result<(usize, I
 }
 
 fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSender<ZCPacket>) {
-    let mut buf = [0u8; 2048];
+    let mut buf = [0u8; 8192];
     let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[..]) };
 
     loop {
@@ -92,7 +98,7 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
             continue;
         }
 
-        let Some(mut ipv4_packet) = MutableIpv4Packet::new(&mut buf[..len]) else {
+        let Some(ipv4_packet) = Ipv4Packet::new(&buf[..len]) else {
             continue;
         };
 
@@ -120,24 +126,31 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
             continue;
         };
 
-        ipv4_packet.set_destination(dest_ip);
+        let src_v4 = ipv4_packet.get_source();
+        let payload_len = len - ipv4_packet.get_header_length() as usize * 4;
+        let id = ipv4_packet.get_identification();
+        let _ = compose_ipv4_packet(
+            &mut buf[..],
+            &src_v4,
+            &dest_ip,
+            IpNextHeaderProtocols::Icmp,
+            payload_len,
+            1200,
+            id,
+            |buf| {
+                let mut p = ZCPacket::new_with_payload(buf);
+                p.fill_peer_manager_hdr(
+                    v.my_peer_id.into(),
+                    v.src_peer_id.into(),
+                    PacketType::Data as u8,
+                );
 
-        // MacOS do not correctly set ip length when receiving from raw socket
-        ipv4_packet.set_total_length(len as u16);
-
-        ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
-
-        let mut p = ZCPacket::new_with_payload(ipv4_packet.packet());
-        p.fill_peer_manager_hdr(
-            v.my_peer_id.into(),
-            v.src_peer_id.into(),
-            PacketType::Data as u8,
+                if let Err(e) = sender.send(p) {
+                    tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
+                }
+                Ok(())
+            },
         );
-
-        if let Err(e) = sender.send(p) {
-            tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
-            break;
-        }
     }
 }
 
@@ -166,6 +179,8 @@ impl IcmpProxy {
 
             nat_table: Arc::new(dashmap::DashMap::new()),
             tasks: Mutex::new(JoinSet::new()),
+
+            ip_resemmbler: Arc::new(IpReassembler::new(Duration::from_secs(10))),
         };
 
         Ok(Arc::new(ret))
@@ -226,6 +241,14 @@ impl IcmpProxy {
             .instrument(tracing::info_span!("icmp proxy send loop")),
         );
 
+        let ip_resembler = self.ip_resemmbler.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                ip_resembler.remove_expired_packets();
+            }
+        });
+
         self.peer_manager
             .add_packet_process_pipeline(Box::new(self.clone()))
             .await;
@@ -269,7 +292,18 @@ impl IcmpProxy {
             return None;
         }
 
-        let icmp_packet = icmp::echo_request::EchoRequestPacket::new(&ipv4.payload())?;
+        let resembled_buf: Option<Vec<u8>>;
+        let icmp_packet = if IpReassembler::is_packet_fragmented(&ipv4) {
+            resembled_buf =
+                self.ip_resemmbler
+                    .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
+            if resembled_buf.is_none() {
+                return None;
+            };
+            icmp::echo_request::EchoRequestPacket::new(resembled_buf.as_ref().unwrap())?
+        } else {
+            icmp::echo_request::EchoRequestPacket::new(&ipv4.payload())?
+        };
 
         if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
             // drop it because we do not support other icmp types

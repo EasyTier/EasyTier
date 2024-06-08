@@ -107,7 +107,10 @@ impl<R> FramedReader<R> {
         }
     }
 
-    fn extract_one_packet(buf: &mut BytesMut) -> Option<ZCPacket> {
+    fn extract_one_packet(
+        buf: &mut BytesMut,
+        max_packet_size: usize,
+    ) -> Option<Result<ZCPacket, TunnelError>> {
         if buf.len() < TCP_TUNNEL_HEADER_SIZE {
             // header is not complete
             return None;
@@ -115,6 +118,11 @@ impl<R> FramedReader<R> {
 
         let header = TCPTunnelHeader::ref_from_prefix(&buf[..]).unwrap();
         let body_len = header.len.get() as usize;
+        if body_len > max_packet_size {
+            // body is too long
+            return Some(Err(TunnelError::InvalidPacket("body too long".to_string())));
+        }
+
         if buf.len() < TCP_TUNNEL_HEADER_SIZE + body_len {
             // body is not complete
             return None;
@@ -122,7 +130,7 @@ impl<R> FramedReader<R> {
 
         // extract one packet
         let packet_buf = buf.split_to(TCP_TUNNEL_HEADER_SIZE + body_len);
-        Some(ZCPacket::new_from_buf(packet_buf, ZCPacketType::TCP))
+        Some(Ok(ZCPacket::new_from_buf(packet_buf, ZCPacketType::TCP)))
     }
 }
 
@@ -139,8 +147,10 @@ where
         let mut self_mut = self.project();
 
         loop {
-            while let Some(packet) = Self::extract_one_packet(self_mut.buf) {
-                return Poll::Ready(Some(Ok(packet)));
+            while let Some(packet) =
+                Self::extract_one_packet(self_mut.buf, *self_mut.max_packet_size)
+            {
+                return Poll::Ready(Some(packet));
             }
 
             reserve_buf(
@@ -465,7 +475,14 @@ pub mod tests {
         L: TunnelListener + Send + Sync + 'static,
         C: TunnelConnector + Send + Sync + 'static,
     {
-        _tunnel_pingpong_netns(listener, connector, NetNS::new(None), NetNS::new(None)).await
+        _tunnel_pingpong_netns(
+            listener,
+            connector,
+            NetNS::new(None),
+            NetNS::new(None),
+            "12345678abcdefg".as_bytes().to_vec(),
+        )
+        .await;
     }
 
     pub(crate) async fn _tunnel_pingpong_netns<L, C>(
@@ -473,6 +490,7 @@ pub mod tests {
         mut connector: C,
         l_netns: NetNS,
         c_netns: NetNS,
+        buf: Vec<u8>,
     ) where
         L: TunnelListener + Send + Sync + 'static,
         C: TunnelConnector + Send + Sync + 'static,
@@ -503,7 +521,7 @@ pub mod tests {
 
         let (mut recv, mut send) = tunnel.split();
 
-        send.send(ZCPacket::new_with_payload("12345678abcdefg".as_bytes()))
+        send.send(ZCPacket::new_with_payload(buf.as_slice()))
             .await
             .unwrap();
 
@@ -513,7 +531,7 @@ pub mod tests {
             .unwrap()
             .unwrap();
         println!("echo back: {:?}", ret);
-        assert_eq!(ret.payload(), Bytes::from("12345678abcdefg"));
+        assert_eq!(ret.payload(), Bytes::from(buf));
 
         send.close().await.unwrap();
 

@@ -292,7 +292,10 @@ impl VirtualNic {
             config.platform(|config| {
                 config.skip_config(true);
                 config.guid(None);
-                config.ring_cap(Some(config.min_ring_cap() * 2));
+                config.ring_cap(Some(std::cmp::min(
+                    config.min_ring_cap() * 32,
+                    config.max_ring_cap(),
+                )));
             });
         }
 
