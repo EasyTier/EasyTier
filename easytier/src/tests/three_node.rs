@@ -136,7 +136,7 @@ pub async fn init_three_node(proto: &str) -> Vec<Instance> {
     vec![inst1, inst2, inst3]
 }
 
-async fn ping_test(from_netns: &str, target_ip: &str) -> bool {
+async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
         .args(&[
@@ -146,6 +146,8 @@ async fn ping_test(from_netns: &str, target_ip: &str) -> bool {
             "ping",
             "-c",
             "1",
+            "-s",
+            payload_size.unwrap_or(56).to_string().as_str(),
             "-W",
             "1",
             target_ip.to_string().as_str(),
@@ -175,7 +177,7 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
     );
 
     wait_for_condition(
-        || async { ping_test("net_c", "10.144.144.1").await },
+        || async { ping_test("net_c", "10.144.144.1", None).await },
         Duration::from_secs(5000),
     )
     .await;
@@ -185,6 +187,8 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
 #[tokio::test]
 #[serial_test::serial]
 pub async fn tcp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    use rand::Rng;
+
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
 
     let mut insts = init_three_node(proto).await;
@@ -210,11 +214,15 @@ pub async fn tcp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str
     let tcp_listener = TcpTunnelListener::new("tcp://10.1.2.4:22223".parse().unwrap());
     let tcp_connector = TcpTunnelConnector::new("tcp://10.1.2.4:22223".parse().unwrap());
 
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
     _tunnel_pingpong_netns(
         tcp_listener,
         tcp_connector,
         NetNS::new(Some("net_d".into())),
         NetNS::new(Some("net_a".into())),
+        buf,
     )
     .await;
 }
@@ -241,7 +249,13 @@ pub async fn icmp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &st
     .await;
 
     wait_for_condition(
-        || async { ping_test("net_a", "10.1.2.4").await },
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", Some(5 * 1024)).await },
         Duration::from_secs(5),
     )
     .await;
@@ -318,6 +332,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
 #[tokio::test]
 #[serial_test::serial]
 pub async fn udp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str) {
+    use rand::Rng;
+
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, udp::UdpTunnelListener};
 
     let mut insts = init_three_node(proto).await;
@@ -343,11 +359,32 @@ pub async fn udp_proxy_three_node_test(#[values("tcp", "udp", "wg")] proto: &str
     let tcp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
     let tcp_connector = UdpTunnelConnector::new("udp://10.1.2.4:22233".parse().unwrap());
 
+    // NOTE: this should not excced udp tunnel max buffer size
+    let mut buf = vec![0; 20 * 1024];
+    rand::thread_rng().fill(&mut buf[..]);
+
     _tunnel_pingpong_netns(
         tcp_listener,
         tcp_connector,
         NetNS::new(Some("net_d".into())),
         NetNS::new(Some("net_a".into())),
+        buf,
+    )
+    .await;
+
+    // no fragment
+    let tcp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
+    let tcp_connector = UdpTunnelConnector::new("udp://10.1.2.4:22233".parse().unwrap());
+
+    let mut buf = vec![0; 1 * 1024];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    _tunnel_pingpong_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_d".into())),
+        NetNS::new(Some("net_a".into())),
+        buf,
     )
     .await;
 }
@@ -443,7 +480,7 @@ pub async fn foreign_network_forward_nic_data() {
     .await;
 
     wait_for_condition(
-        || async { ping_test("net_b", "10.144.145.2").await },
+        || async { ping_test("net_b", "10.144.145.2", None).await },
         Duration::from_secs(5),
     )
     .await;
@@ -531,19 +568,19 @@ pub async fn wireguard_vpn_portal() {
 
     // ping other node in network
     wait_for_condition(
-        || async { ping_test("net_d", "10.144.144.1").await },
+        || async { ping_test("net_d", "10.144.144.1", None).await },
         Duration::from_secs(5),
     )
     .await;
     wait_for_condition(
-        || async { ping_test("net_d", "10.144.144.2").await },
+        || async { ping_test("net_d", "10.144.144.2", None).await },
         Duration::from_secs(5),
     )
     .await;
 
     // ping portal node
     wait_for_condition(
-        || async { ping_test("net_d", "10.144.144.3").await },
+        || async { ping_test("net_d", "10.144.144.3", None).await },
         Duration::from_secs(5),
     )
     .await;

@@ -7,7 +7,7 @@ use std::{
 use dashmap::DashMap;
 use pnet::packet::{
     ip::IpNextHeaderProtocols,
-    ipv4::{self, Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
+    ipv4::Ipv4Packet,
     udp::{self, MutableUdpPacket},
     Packet,
 };
@@ -25,6 +25,7 @@ use tracing::Level;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    gateway::ip_reassembler::compose_ipv4_packet,
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::{
         common::setup_sokcet2,
@@ -32,7 +33,7 @@ use crate::{
     },
 };
 
-use super::CidrSet;
+use super::{ip_reassembler::IpReassembler, CidrSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct UdpNatKey {
@@ -105,60 +106,31 @@ impl UdpNatEntry {
             nat_src_v4.ip(),
         ));
 
-        let payload_len = payload_len + 8; // include udp header
-        let total_pieces = (payload_len + payload_mtu - 1) / payload_mtu;
-        let mut buf_offset = 0;
-        let mut fragment_offset = 0;
-        let mut cur_piece = 0;
-        while fragment_offset < payload_len {
-            let next_fragment_offset = std::cmp::min(fragment_offset + payload_mtu, payload_len);
-            let fragment_len = next_fragment_offset - fragment_offset;
-            let mut ipv4_packet =
-                MutableIpv4Packet::new(&mut buf[buf_offset..buf_offset + fragment_len + 20])
-                    .unwrap();
-            ipv4_packet.set_version(4);
-            ipv4_packet.set_header_length(5);
-            ipv4_packet.set_total_length((fragment_len + 20) as u16);
-            ipv4_packet.set_identification(ip_id);
-            if total_pieces > 1 {
-                if cur_piece != total_pieces - 1 {
-                    ipv4_packet.set_flags(Ipv4Flags::MoreFragments);
-                } else {
-                    ipv4_packet.set_flags(0);
+        compose_ipv4_packet(
+            &mut buf[..],
+            src_v4.ip(),
+            nat_src_v4.ip(),
+            IpNextHeaderProtocols::Udp,
+            payload_len + 8, // include udp header
+            payload_mtu,
+            ip_id,
+            |buf| {
+                let mut p = ZCPacket::new_with_payload(buf);
+                p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
+
+                if let Err(e) = packet_sender.send(p) {
+                    tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
+                    return Err(Error::AnyhowError(e.into()));
                 }
-                assert_eq!(0, fragment_offset % 8);
-                ipv4_packet.set_fragment_offset(fragment_offset as u16 / 8);
-            } else {
-                ipv4_packet.set_flags(Ipv4Flags::DontFragment);
-                ipv4_packet.set_fragment_offset(0);
-            }
-            ipv4_packet.set_ecn(0);
-            ipv4_packet.set_dscp(0);
-            ipv4_packet.set_ttl(32);
-            ipv4_packet.set_source(src_v4.ip().clone());
-            ipv4_packet.set_destination(nat_src_v4.ip().clone());
-            ipv4_packet.set_next_level_protocol(IpNextHeaderProtocols::Udp);
-            ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
+                Ok(())
+            },
+        )?;
 
-            tracing::trace!(?ipv4_packet, "udp nat packet response send");
-
-            let mut p = ZCPacket::new_with_payload(ipv4_packet.packet());
-            p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
-
-            if let Err(e) = packet_sender.send(p) {
-                tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
-                return Err(Error::AnyhowError(e.into()));
-            }
-
-            buf_offset += next_fragment_offset - fragment_offset;
-            fragment_offset = next_fragment_offset;
-            cur_piece += 1;
-        }
         Ok(())
     }
 
     async fn forward_task(self: Arc<Self>, mut packet_sender: UnboundedSender<ZCPacket>) {
-        let mut buf = [0u8; 8192];
+        let mut buf = [0u8; 65536];
         let mut udp_body: &mut [u8] = unsafe { std::mem::transmute(&mut buf[20 + 8..]) };
         let mut ip_id = 1;
 
@@ -223,6 +195,8 @@ pub struct UdpProxy {
     receiver: Mutex<Option<UnboundedReceiver<ZCPacket>>>,
 
     tasks: Mutex<JoinSet<()>>,
+
+    ip_resemmbler: Arc<IpReassembler>,
 }
 
 impl UdpProxy {
@@ -247,7 +221,18 @@ impl UdpProxy {
             return None;
         }
 
-        let udp_packet = udp::UdpPacket::new(ipv4.payload())?;
+        let resembled_buf: Option<Vec<u8>>;
+        let udp_packet = if IpReassembler::is_packet_fragmented(&ipv4) {
+            resembled_buf =
+                self.ip_resemmbler
+                    .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
+            if resembled_buf.is_none() {
+                return None;
+            };
+            udp::UdpPacket::new(resembled_buf.as_ref().unwrap())?
+        } else {
+            udp::UdpPacket::new(ipv4.payload())?
+        };
 
         tracing::trace!(
             ?packet,
@@ -336,6 +321,7 @@ impl UdpProxy {
             sender,
             receiver: Mutex::new(Some(receiver)),
             tasks: Mutex::new(JoinSet::new()),
+            ip_resemmbler: Arc::new(IpReassembler::new(Duration::from_secs(10))),
         };
         Ok(Arc::new(ret))
     }
@@ -359,6 +345,14 @@ impl UdpProxy {
                         true
                     }
                 });
+            }
+        });
+
+        let ip_resembler = self.ip_resemmbler.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                ip_resembler.remove_expired_packets();
             }
         });
 
