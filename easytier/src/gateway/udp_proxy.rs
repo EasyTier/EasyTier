@@ -1,5 +1,5 @@
 use std::{
-    net::{SocketAddr, SocketAddrV4},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
@@ -129,14 +129,18 @@ impl UdpNatEntry {
         Ok(())
     }
 
-    async fn forward_task(self: Arc<Self>, mut packet_sender: UnboundedSender<ZCPacket>) {
+    async fn forward_task(
+        self: Arc<Self>,
+        mut packet_sender: UnboundedSender<ZCPacket>,
+        virtual_ipv4: Ipv4Addr,
+    ) {
         let mut buf = [0u8; 65536];
         let mut udp_body: &mut [u8] = unsafe { std::mem::transmute(&mut buf[20 + 8..]) };
         let mut ip_id = 1;
 
         loop {
             let (len, src_socket) = match timeout(
-                Duration::from_secs(120),
+                Duration::from_secs(30),
                 self.socket.recv_from(&mut udp_body),
             )
             .await
@@ -158,9 +162,13 @@ impl UdpNatEntry {
                 break;
             }
 
-            let SocketAddr::V4(src_v4) = src_socket else {
+            let SocketAddr::V4(mut src_v4) = src_socket else {
                 continue;
             };
+
+            if src_v4.ip().is_loopback() {
+                src_v4.set_ip(virtual_ipv4);
+            }
 
             let Ok(_) = Self::compose_ipv4_packet(
                 &self,
@@ -201,7 +209,10 @@ pub struct UdpProxy {
 
 impl UdpProxy {
     async fn try_handle_packet(&self, packet: &ZCPacket) -> Option<()> {
-        if self.cidr_set.is_empty() && !self.global_ctx.enable_exit_node() {
+        if self.cidr_set.is_empty()
+            && !self.global_ctx.enable_exit_node()
+            && !self.global_ctx.no_tun()
+        {
             return None;
         }
 
@@ -217,7 +228,11 @@ impl UdpProxy {
             return None;
         }
 
-        if !self.cidr_set.contains_v4(ipv4.get_destination()) && !is_exit_node {
+        if !self.cidr_set.contains_v4(ipv4.get_destination())
+            && !is_exit_node
+            && !(self.global_ctx.no_tun()
+                && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4())
+        {
             return None;
         }
 
@@ -267,12 +282,19 @@ impl UdpProxy {
                 .replace(tokio::spawn(UdpNatEntry::forward_task(
                     nat_entry.clone(),
                     self.sender.clone(),
+                    self.global_ctx.get_ipv4()?,
                 )));
         }
 
         // TODO: should it be async.
-        let dst_socket =
-            SocketAddr::new(ipv4.get_destination().into(), udp_packet.get_destination());
+        let dst_socket = if Some(ipv4.get_destination()) == self.global_ctx.get_ipv4() {
+            format!("127.0.0.1:{}", udp_packet.get_destination())
+                .parse()
+                .unwrap()
+        } else {
+            SocketAddr::new(ipv4.get_destination().into(), udp_packet.get_destination())
+        };
+
         let send_ret = {
             let _g = self.global_ctx.net_ns.guard();
             nat_entry
