@@ -1271,7 +1271,6 @@ dependencies = [
  "http 1.1.0",
  "humansize",
  "indexmap 1.9.3",
- "log",
  "mimalloc-rust",
  "network-interface",
  "nix 0.27.1",

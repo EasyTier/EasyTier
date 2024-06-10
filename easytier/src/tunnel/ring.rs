@@ -288,7 +288,7 @@ impl RingTunnelListener {
 #[async_trait]
 impl TunnelListener for RingTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        log::info!("listen new conn of key: {}", self.listerner_addr);
+        tracing::info!("listen new conn of key: {}", self.listerner_addr);
         CONNECTION_MAP
             .lock()
             .await
@@ -297,11 +297,11 @@ impl TunnelListener for RingTunnelListener {
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        log::info!("waiting accept new conn of key: {}", self.listerner_addr);
+        tracing::info!("waiting accept new conn of key: {}", self.listerner_addr);
         let my_addr = self.get_addr()?;
         if let Some(conn) = self.conn_receiver.recv().await {
             if conn.server.id == my_addr {
-                log::info!("accept new conn of key: {}", self.listerner_addr);
+                tracing::info!("accept new conn of key: {}", self.listerner_addr);
                 return Ok(Box::new(get_tunnel_for_server(conn)));
             } else {
                 tracing::error!(?conn.server.id, ?my_addr, "got new conn with wrong id");
@@ -341,7 +341,7 @@ impl TunnelConnector for RingTunnelConnector {
             .get(&remote_addr)
             .unwrap()
             .clone();
-        log::info!("connecting");
+        tracing::info!("connecting");
         let conn = Arc::new(Connection {
             client: Arc::new(RingTunnel::new(RING_TUNNEL_CAP)),
             server: Arc::new(RingTunnel::new_with_id(

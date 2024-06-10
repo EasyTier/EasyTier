@@ -36,7 +36,6 @@ tracing-subscriber = { version = "0.3", features = [
     "time",
 ] }
 tracing-appender = "0.2.3"
-log = "0.4"
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"

@@ -43,7 +43,7 @@ impl NetNSGuard {
         }
 
         let ns = std::fs::File::open(ns_path).unwrap();
-        log::info!(
+        tracing::info!(
             "[INIT NS] switching to new ns_name: {:?}, ns_file: {:?}",
             name,
             ns
@@ -59,7 +59,7 @@ impl Drop for NetNSGuard {
         if self.old_ns.is_none() {
             return;
         }
-        log::info!("[INIT NS] switching back to old ns, ns: {:?}", self.old_ns);
+        tracing::info!("[INIT NS] switching back to old ns, ns: {:?}", self.old_ns);
         setns(
             self.old_ns.as_ref().unwrap().as_fd(),
             CloneFlags::CLONE_NEWNET,

@@ -429,7 +429,7 @@ impl TunnelListener for UdpTunnelListener {
     }
 
     async fn accept(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        log::info!("start udp accept: {:?}", self.addr);
+        tracing::info!("start udp accept: {:?}", self.addr);
         while let Some(conn) = self.conn_recv.recv().await {
             return Ok(conn);
         }
@@ -619,7 +619,7 @@ impl UdpTunnelConnector {
         socket: Arc<UdpSocket>,
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        log::warn!("udp connect: {:?}", self.addr);
+        tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
         crate::arch::windows::disable_connection_reset(socket.as_ref())?;

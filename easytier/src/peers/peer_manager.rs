@@ -333,7 +333,7 @@ impl PeerManager {
         let foreign_client = self.foreign_network_client.clone();
         let encryptor = self.encryptor.clone();
         self.tasks.lock().await.spawn(async move {
-            log::trace!("start_peer_recv");
+            tracing::trace!("start_peer_recv");
             while let Some(mut ret) = recv.next().await {
                 let Some(hdr) = ret.mut_peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
@@ -572,7 +572,7 @@ impl PeerManager {
     }
 
     pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
-        log::trace!(
+        tracing::trace!(
             "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
             msg,
             ipv4_addr

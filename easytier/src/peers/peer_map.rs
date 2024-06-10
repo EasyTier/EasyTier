@@ -83,7 +83,7 @@ impl PeerMap {
                 peer.send_msg(msg).await?;
             }
             None => {
-                log::error!("no peer for dst_peer_id: {}", dst_peer_id);
+                tracing::error!("no peer for dst_peer_id: {}", dst_peer_id);
                 return Err(Error::RouteError(Some(format!(
                     "peer map sengmsg directly no connected dst_peer_id: {}",
                     dst_peer_id

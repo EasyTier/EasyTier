@@ -258,14 +258,14 @@ impl BasicRoute {
                 .clone();
 
             if ret.cost > 6 {
-                log::error!(
+                tracing::error!(
                     "cost too large: {}, may lost connection, remove it",
                     ret.cost
                 );
                 route_table.route_info.remove(&node_id);
             }
 
-            log::trace!(
+            tracing::trace!(
                 "update route info, to: {:?}, gateway: {:?}, cost: {}, peer: {:?}",
                 node_id,
                 peer_id,
@@ -292,13 +292,13 @@ impl BasicRoute {
                 continue;
             }
             update(neighbor.cost + 1, &neighbor);
-            log::trace!("route info: {:?}", neighbor);
+            tracing::trace!("route info: {:?}", neighbor);
         }
 
         // add the sender peer to route info
         update(1, &packet.myself);
 
-        log::trace!("my_id: {:?}, current route table: {:?}", my_id, route_table);
+        tracing::trace!("my_id: {:?}, current route table: {:?}", my_id, route_table);
     }
 
     async fn send_sync_peer_request(
@@ -393,13 +393,13 @@ impl BasicRoute {
 
                         match &ret {
                             Ok(_) => {
-                                log::trace!("send sync peer request to peer: {}", peer);
+                                tracing::trace!("send sync peer request to peer: {}", peer);
                             }
                             Err(Error::PeerNoConnectionError(_)) => {
-                                log::trace!("peer {} no connection", peer);
+                                tracing::trace!("peer {} no connection", peer);
                             }
                             Err(e) => {
-                                log::error!(
+                                tracing::error!(
                                     "send sync peer request to peer: {} error: {:?}",
                                     peer,
                                     e
@@ -416,10 +416,10 @@ impl BasicRoute {
 
                     tokio::select! {
                         _ = notifier.notified() => {
-                            log::trace!("sync peer request triggered by notifier");
+                            tracing::trace!("sync peer request triggered by notifier");
                         }
                         _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                            log::trace!("sync peer request triggered by timeout");
+                            tracing::trace!("sync peer request triggered by timeout");
                         }
                     }
                 }
@@ -454,7 +454,7 @@ impl BasicRoute {
                 }
 
                 for k in need_remove.iter() {
-                    log::warn!("remove expired sync peer: {:?}", k);
+                    tracing::warn!("remove expired sync peer: {:?}", k);
                     sync_peer_from_remote.remove(k);
                 }
 
@@ -565,7 +565,7 @@ impl Route for BasicRoute {
                 return Some(info.peer_id.clone().into());
             }
             None => {
-                log::error!("no route info for dst_peer_id: {}", dst_peer_id);
+                tracing::error!("no route info for dst_peer_id: {}", dst_peer_id);
                 return None;
             }
         }
@@ -612,7 +612,7 @@ impl Route for BasicRoute {
             return Some(peer_id);
         }
 
-        log::info!("no peer id for ipv4: {}", ipv4_addr);
+        tracing::info!("no peer id for ipv4: {}", ipv4_addr);
         return None;
     }
 }

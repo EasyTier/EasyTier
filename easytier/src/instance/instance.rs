@@ -150,7 +150,7 @@ impl NicCtx {
         self.tasks.spawn(async move {
             while let Some(ret) = stream.next().await {
                 if ret.is_err() {
-                    log::error!("read from nic failed: {:?}", ret);
+                    tracing::error!("read from nic failed: {:?}", ret);
                     break;
                 }
                 Self::do_forward_nic_to_peers_ipv4(ret.unwrap(), mgr.as_ref()).await;
@@ -311,7 +311,7 @@ impl Instance {
     pub fn new(config: impl ConfigLoader + Send + Sync + 'static) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
 
-        log::info!(
+        tracing::info!(
             "[INIT] instance creating. config: {}",
             global_ctx.config.dump()
         );
@@ -584,7 +584,7 @@ impl Instance {
 
     pub async fn wait(&mut self) {
         while let Some(ret) = self.tasks.join_next().await {
-            log::info!("task finished: {:?}", ret);
+            tracing::info!("task finished: {:?}", ret);
             ret.unwrap();
         }
     }
