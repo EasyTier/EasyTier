@@ -343,7 +343,7 @@ pub(crate) fn get_interface_name_by_ip(local_ip: &IpAddr) -> Option<String> {
 pub(crate) fn setup_sokcet2_ext(
     socket2_socket: &socket2::Socket,
     bind_addr: &SocketAddr,
-    bind_dev: Option<String>,
+    #[allow(unused_variables)] bind_dev: Option<String>,
 ) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {

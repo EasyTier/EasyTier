@@ -428,7 +428,7 @@ impl From<Cli> for TomlConfigLoader {
             f.mtu = mtu;
         }
         f.enable_exit_node = cli.enable_exit_node;
-        f.no_tun = cli.no_tun;
+        f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
         cfg.set_flags(f);
 
