@@ -153,8 +153,6 @@ impl Drop for Reactor {
         for (_, socket) in self.socket_allocator.sockets().lock().iter_mut() {
             match socket {
                 Socket::Tcp(tcp) => tcp.close(),
-                Socket::Raw(_) => {}
-                Socket::Udp(udp) => udp.close(),
                 #[allow(unreachable_patterns)]
                 _ => {}
             }
