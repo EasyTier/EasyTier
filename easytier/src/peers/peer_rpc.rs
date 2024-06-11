@@ -302,7 +302,7 @@ impl PeerRpcManager {
             );
         }
 
-        log::info!(
+        tracing::info!(
             "[PEER RPC MGR] register service {} succeed, my_node_id {}",
             service_id,
             self.tspt.my_peer_id()
@@ -374,7 +374,7 @@ impl PeerRpcManager {
 
                 if info.is_req {
                     if !service_registry.contains_key(&info.service_id) {
-                        log::warn!(
+                        tracing::warn!(
                             "service {} not found, my_node_id: {}",
                             info.service_id,
                             tspt.my_peer_id()
@@ -407,7 +407,7 @@ impl PeerRpcManager {
                             tracing::error!(error = ?e, "send resp to client failed");
                         }
                     } else {
-                        log::warn!("client resp receiver not found, info: {:?}", info);
+                        tracing::warn!("client resp receiver not found, info: {:?}", info);
                     }
                 }
             }

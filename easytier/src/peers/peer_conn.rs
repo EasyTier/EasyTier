@@ -169,7 +169,7 @@ impl PeerConn {
                 match self.wait_handshake(&mut need_retry).await {
                     Ok(rsp) => return Ok(rsp),
                     Err(e) => {
-                        log::warn!("wait handshake error: {:?}", e);
+                        tracing::warn!("wait handshake error: {:?}", e);
                         if !need_retry {
                             return Err(e);
                         }
@@ -313,7 +313,7 @@ impl PeerConn {
             tracing::warn!(?pingpong, "pingpong task exit");
 
             if let Err(e) = close_event_sender.send(conn_id).await {
-                log::warn!("close event sender error: {:?}", e);
+                tracing::warn!("close event sender error: {:?}", e);
             }
 
             Ok(())

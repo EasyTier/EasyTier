@@ -89,7 +89,7 @@ impl ManualConnectorManager {
     where
         T: TunnelConnector + 'static,
     {
-        log::info!("add_connector: {}", connector.remote_url());
+        tracing::info!("add_connector: {}", connector.remote_url());
         self.data.connectors.insert(
             connector.remote_url().into(),
             Arc::new(Mutex::new(Box::new(connector))),
@@ -102,7 +102,7 @@ impl ManualConnectorManager {
     }
 
     pub async fn remove_connector(&self, url: &str) -> Result<(), Error> {
-        log::info!("remove_connector: {}", url);
+        tracing::info!("remove_connector: {}", url);
         if !self.list_connectors().await.iter().any(|x| x.url == url) {
             return Err(Error::NotFound);
         }
@@ -163,7 +163,7 @@ impl ManualConnectorManager {
         data: Arc<ConnectorManagerData>,
         mut event_recv: Receiver<GlobalCtxEvent>,
     ) {
-        log::warn!("conn_mgr_routine started");
+        tracing::warn!("conn_mgr_routine started");
         let mut reconn_interval = tokio::time::interval(std::time::Duration::from_millis(
             use_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
         ));
@@ -200,11 +200,11 @@ impl ManualConnectorManager {
                             data_clone.connectors.insert(dead_url.clone(), connector);
                         });
                     }
-                    log::info!("reconn_interval tick, done");
+                    tracing::info!("reconn_interval tick, done");
                 }
 
                 ret = reconn_result_recv.recv() => {
-                    log::warn!("reconn_tasks done, reconn result: {:?}", ret);
+                    tracing::warn!("reconn_tasks done, reconn result: {:?}", ret);
                 }
             }
         }
@@ -215,13 +215,13 @@ impl ManualConnectorManager {
             GlobalCtxEvent::PeerConnAdded(conn_info) => {
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
                 data.alive_conn_urls.lock().await.insert(addr);
-                log::warn!("peer conn added: {:?}", conn_info);
+                tracing::warn!("peer conn added: {:?}", conn_info);
             }
 
             GlobalCtxEvent::PeerConnRemoved(conn_info) => {
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
                 data.alive_conn_urls.lock().await.remove(&addr);
-                log::warn!("peer conn removed: {:?}", conn_info);
+                tracing::warn!("peer conn removed: {:?}", conn_info);
             }
 
             _ => {}
@@ -233,14 +233,14 @@ impl ManualConnectorManager {
         for it in data.removed_conn_urls.iter() {
             let url = it.key();
             if let Some(_) = data.connectors.remove(url) {
-                log::warn!("connector: {}, removed", url);
+                tracing::warn!("connector: {}, removed", url);
                 continue;
             } else if data.reconnecting.contains(url) {
-                log::warn!("connector: {}, reconnecting, remove later.", url);
+                tracing::warn!("connector: {}, reconnecting, remove later.", url);
                 remove_later.insert(url.clone());
                 continue;
             } else {
-                log::warn!("connector: {}, not found", url);
+                tracing::warn!("connector: {}, not found", url);
             }
         }
         data.removed_conn_urls.clear();
@@ -284,9 +284,9 @@ impl ManualConnectorManager {
         ));
 
         let _g = net_ns.guard();
-        log::info!("reconnect try connect... conn: {:?}", connector);
+        tracing::info!("reconnect try connect... conn: {:?}", connector);
         let tunnel = connector.lock().await.connect().await?;
-        log::info!("reconnect get tunnel succ: {:?}", tunnel);
+        tracing::info!("reconnect get tunnel succ: {:?}", tunnel);
         assert_eq!(
             dead_url,
             tunnel.info().unwrap().remote_addr,
@@ -294,7 +294,7 @@ impl ManualConnectorManager {
             tunnel.info()
         );
         let (peer_id, conn_id) = data.peer_manager.add_client_tunnel(tunnel).await?;
-        log::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);
+        tracing::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);
         Ok(ReconnResult {
             dead_url,
             peer_id,
@@ -307,7 +307,7 @@ impl ManualConnectorManager {
         dead_url: String,
         connector: MutexConnector,
     ) -> Result<ReconnResult, Error> {
-        log::info!("reconnect: {}", dead_url);
+        tracing::info!("reconnect: {}", dead_url);
 
         let mut ip_versions = vec![];
         let u = url::Url::parse(&dead_url)
@@ -347,7 +347,7 @@ impl ManualConnectorManager {
                 ),
             )
             .await;
-            log::info!("reconnect: {} done, ret: {:?}", dead_url, ret);
+            tracing::info!("reconnect: {} done, ret: {:?}", dead_url, ret);
 
             if ret.is_ok() && ret.as_ref().unwrap().is_ok() {
                 reconn_ret = ret.unwrap();

@@ -220,7 +220,7 @@ impl DirectConnectorManager {
             }
             return Err(e);
         } else {
-            log::info!("try_connect_to_ip success, peer_id: {}", dst_peer_id);
+            tracing::info!("try_connect_to_ip success, peer_id: {}", dst_peer_id);
             return Ok(());
         }
     }
@@ -314,7 +314,7 @@ impl DirectConnectorManager {
         let mut has_succ = false;
         while let Some(ret) = tasks.join_next().await {
             if let Err(e) = ret {
-                log::error!("join direct connect task failed: {:?}", e);
+                tracing::error!("join direct connect task failed: {:?}", e);
             } else if let Ok(Ok(_)) = ret {
                 has_succ = true;
             }
@@ -345,7 +345,7 @@ impl DirectConnectorManager {
             }
         }
 
-        log::trace!("try direct connect to peer: {}", dst_peer_id);
+        tracing::trace!("try direct connect to peer: {}", dst_peer_id);
 
         let ip_list = peer_manager
             .get_peer_rpc_mgr()

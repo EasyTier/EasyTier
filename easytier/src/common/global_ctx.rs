@@ -128,7 +128,7 @@ impl GlobalCtx {
         if self.event_bus.receiver_count() != 0 {
             self.event_bus.send(event).unwrap();
         } else {
-            log::warn!("No subscriber for event: {:?}", event);
+            tracing::warn!("No subscriber for event: {:?}", event);
         }
     }
 

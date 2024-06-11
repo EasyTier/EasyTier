@@ -51,7 +51,7 @@ impl InterfaceFilter {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 impl InterfaceFilter {
     async fn is_interface_physical(interface_name: &str) -> bool {
         let output = tokio::process::Command::new("networksetup")

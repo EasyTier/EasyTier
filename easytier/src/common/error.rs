@@ -10,8 +10,11 @@ use super::PeerId;
 pub enum Error {
     #[error("io error")]
     IOError(#[from] io::Error),
+
+    #[cfg(feature = "tun")]
     #[error("rust tun error {0}")]
     TunError(#[from] tun::Error),
+
     #[error("tunnel error {0}")]
     TunnelError(#[from] tunnel::TunnelError),
     #[error("Peer has no conn, PeerId: {0}")]

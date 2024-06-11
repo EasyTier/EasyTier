@@ -171,7 +171,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         for listener in &self.listeners {
             let _guard = self.net_ns.guard();
             let addr = listener.inner.lock().await.local_url();
-            log::warn!("run listener: {:?}", listener);
+            tracing::warn!("run listener: {:?}", listener);
             listener
                 .inner
                 .lock()

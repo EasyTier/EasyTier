@@ -67,7 +67,6 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     proto: &str,
     cfg_cb: F,
 ) -> Vec<Instance> {
-    log::set_max_level(log::LevelFilter::Info);
     prepare_linux_namespaces();
 
     let mut inst1 = Instance::new(cfg_cb(get_inst_config(
@@ -559,7 +558,7 @@ fn run_wireguard_client(
     // Peer secret key
     let mut peer = Peer::new(peer_public_key.clone());
 
-    log::info!("endpoint");
+    tracing::info!("endpoint");
     // Peer endpoint and interval
     peer.endpoint = Some(endpoint);
     peer.persistent_keepalive_interval = Some(1);
