@@ -172,6 +172,9 @@ and the vpn client is in network of 10.14.14.0/24"
     #[arg(long, help = "do not use ipv6", default_value = "false")]
     disable_ipv6: bool,
 
+    #[arg(long, help = "interface name", default_value = "tun")]
+    dev_name: String,
+
     #[arg(
         long,
         help = "mtu of the TUN device, default is 1420 for non-encryption, 1400 for encryption"
@@ -424,6 +427,7 @@ impl From<Cli> for TomlConfigLoader {
         f.enable_encryption = !cli.disable_encryption;
         f.enable_ipv6 = !cli.disable_ipv6;
         f.latency_first = cli.latency_first;
+        f.dev_name = cli.dev_name;
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu;
         }
