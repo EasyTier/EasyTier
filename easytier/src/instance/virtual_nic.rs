@@ -273,6 +273,8 @@ impl VirtualNic {
 
         #[cfg(target_os = "linux")]
         {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+            config.name(format!("{}{}", dev_name, 0));
             config.platform(|config| {
                 // detect protocol by ourselves for cross platform
                 config.packet_information(false);
