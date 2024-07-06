@@ -32,6 +32,14 @@ retain_network_instance: Retain Network Instance
 collect_network_infos: Collect Network Infos
 settings: Settings
 exchange_language: 切换中文
+logging: Logging
+logging_level_info: Info
+logging_level_debug: Debug
+logging_level_warn: Warn
+logging_level_trace: Trace
+logging_level_off: Off
+logging_open_dir: Open Log Directory
+logging_copy_dir: Copy Log Path
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 exit: Exit

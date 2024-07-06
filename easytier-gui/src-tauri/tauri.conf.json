@@ -14,10 +14,18 @@
       "all": false,
       "shell": {
         "all": false,
-        "open": true
+        "open": ".*"
       },
       "process": {
         "exit": true
+      },
+      "path": {
+        "all": true
+      },
+      "clipboard": {
+        "all": true,
+        "writeText": true,
+        "readText": true
       }
     },
     "windows": [
