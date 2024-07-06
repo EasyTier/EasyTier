@@ -60,6 +60,7 @@ declare global {
   const runNetworkInstance: typeof import('./composables/network')['runNetworkInstance']
   const setActivePinia: typeof import('pinia')['setActivePinia']
   const setAutoLaunchStatus: typeof import('./composables/network')['setAutoLaunchStatus']
+  const setLoggingLevel: typeof import('./composables/network')['setLoggingLevel']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
   const shallowReactive: typeof import('vue')['shallowReactive']
   const shallowReadonly: typeof import('vue')['shallowReadonly']
@@ -151,6 +152,7 @@ declare module 'vue' {
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/network')['runNetworkInstance']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
     readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
+    readonly setLoggingLevel: UnwrapRef<typeof import('./composables/network')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
@@ -235,6 +237,7 @@ declare module '@vue/runtime-core' {
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/network')['runNetworkInstance']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
     readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
+    readonly setLoggingLevel: UnwrapRef<typeof import('./composables/network')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>

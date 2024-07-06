@@ -1,6 +1,5 @@
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
@@ -136,7 +135,7 @@ pub fn float_to_str(f: f64, precision: usize) -> String {
     format!("{:.1$}", f, precision)
 }
 
-pub type NewFilterSender = mpsc::UnboundedSender<tracing_subscriber::filter::LevelFilter>;
+pub type NewFilterSender = std::sync::mpsc::Sender<String>;
 
 pub fn init_logger(
     config: impl ConfigLoader,
@@ -163,14 +162,14 @@ pub fn init_logger(
             tracing_subscriber::reload::Layer::new(file_filter);
 
         if need_reload {
-            let (sender, mut recver) = mpsc::unbounded_channel();
+            let (sender, recver) = std::sync::mpsc::channel();
             ret_sender = Some(sender);
-            tokio::spawn(async move {
+            std::thread::spawn(move || {
                 println!("Start log filter reloader");
-                while let Some(lf) = recver.recv().await {
+                while let Ok(lf) = recver.recv() {
                     let e = file_filter_reloader.modify(|f| {
                         if let Ok(nf) = EnvFilter::builder()
-                            .with_default_directive(lf.into())
+                            .with_default_directive(lf.parse::<LevelFilter>().unwrap().into())
                             .from_env()
                             .with_context(|| "failed to create file filter")
                         {
@@ -240,7 +239,6 @@ pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use crate::common::config::{self};
@@ -252,7 +250,7 @@ mod tests {
         let config = config::TomlConfigLoader::default();
         let s = init_logger(&config, true).unwrap();
         tracing::debug!("test not display debug");
-        s.unwrap().send(LevelFilter::DEBUG).unwrap();
+        s.unwrap().send(LevelFilter::DEBUG.to_string()).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         tracing::debug!("test display debug");
     }

@@ -12,6 +12,11 @@ import type { NetworkConfig } from '~/types/network'
 import { loadLanguageAsync } from '~/modules/i18n'
 import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
 import { loadRunningInstanceIdsFromLocalStorage } from '~/stores/network'
+import { setLoggingLevel } from '~/composables/network'
+import TieredMenu from 'primevue/tieredmenu'
+import { open } from '@tauri-apps/api/shell'
+import { appLogDir } from '@tauri-apps/api/path'
+import { writeText } from '@tauri-apps/api/clipboard'
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -114,33 +119,66 @@ const activeStep = computed(() => {
   return networkStore.networkInstanceIds.includes(networkStore.curNetworkId) ? 1 : 0
 })
 
+let current_log_level = 'off'
+
 const setting_menu = ref()
 const setting_menu_items = ref([
   {
-    label: () => t('settings'),
-    items: [
-      {
-        label: () => t('exchange_language'),
-        icon: 'pi pi-language',
+    label: () => t('exchange_language'),
+    icon: 'pi pi-language',
+    command: async () => {
+      await loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
+    },
+  },
+  {
+    label: () => getAutoLaunchStatus() ? t('disable_auto_launch') : t('enable_auto_launch'),
+    icon: 'pi pi-desktop',
+    command: async () => {
+      await loadAutoLaunchStatusAsync(!getAutoLaunchStatus())
+    },
+  },
+  {
+    label: () => t('logging'),
+    icon: 'pi pi-file',
+    items: (function () {
+      const levels = ['off', 'warn', 'info', 'debug', 'trace']
+      let items = []
+      for (let level of levels) {
+        items.push({
+          label: () => t("logging_level_" + level) + (current_log_level === level ? ' ✓' : ''),
+          command: async () => {
+            current_log_level = level
+            await setLoggingLevel(level)
+          },
+        })
+      }
+      items.push({
+        separator: true,
+      })
+      items.push({
+        label: () => t('logging_open_dir'),
+        icon: 'pi pi-folder-open',
         command: async () => {
-          await loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
+          console.log("open log dir", await appLogDir())
+          await open(await appLogDir())
         },
-      },
-      {
-        label: () => getAutoLaunchStatus() ? t('disable_auto_launch') : t('enable_auto_launch'),
-        icon: 'pi pi-desktop',
+      })
+      items.push({
+        label: () => t('logging_copy_dir'),
+        icon: 'pi pi-tablet',
         command: async () => {
-          await loadAutoLaunchStatusAsync(!getAutoLaunchStatus())
+          await writeText(await appLogDir())
         },
-      },
-      {
-        label: () => t('exit'),
-        icon: 'pi pi-power-off',
-        command: async () => {
-          await exit(1)
-        },
-      },
-    ],
+      })
+      return items
+    })()
+  },
+  {
+    label: () => t('exit'),
+    icon: 'pi pi-power-off',
+    command: async () => {
+      await exit(1)
+    },
   },
 ])
 
@@ -231,7 +269,7 @@ function isRunning(id: string) {
         <template #end>
           <Button icon="pi pi-cog" class="mr-2" severity="secondary" aria-haspopup="true" :label="t('settings')"
             aria-controls="overlay_setting_menu" @click="toggle_setting_menu" />
-          <Menu id="overlay_setting_menu" ref="setting_menu" :model="setting_menu_items" :popup="true" />
+          <TieredMenu id="overlay_setting_menu" ref="setting_menu" :model="setting_menu_items" :popup="true" />
         </template>
       </Toolbar>
     </div>

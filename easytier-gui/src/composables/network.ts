@@ -24,3 +24,7 @@ export async function getOsHostname() {
 export async function setAutoLaunchStatus(enable: boolean) {
   return await invoke<boolean>('set_auto_launch_status', { enable })
 }
+
+export async function setLoggingLevel(level: string) {
+  return await invoke('set_logging_level', { level })
+}
