@@ -199,11 +199,13 @@ impl Instance {
 
     async fn clear_nic_ctx(arc_nic_ctx: ArcNicCtx) {
         let _ = arc_nic_ctx.lock().await.take();
+        tracing::debug!("nic ctx cleared.");
     }
 
     async fn use_new_nic_ctx(arc_nic_ctx: ArcNicCtx, nic_ctx: NicCtx) {
         let mut g = arc_nic_ctx.lock().await;
         *g = Some(nic_ctx);
+        tracing::debug!("nic ctx updated.");
     }
 
     // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
@@ -214,93 +216,92 @@ impl Instance {
         let nic_ctx = self.nic_ctx.clone();
         let peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
-            let default_ipv4_addr = Ipv4Addr::new(10, 0, 0, 0);
-            let mut dhcp_ip: Option<Ipv4Inet> = None;
-            let mut tries = 6;
+            let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
+            let mut current_dhcp_ip: Option<Ipv4Inet> = None;
+            let mut next_sleep_time = 0;
             loop {
-                let mut ipv4_addr: Option<Ipv4Inet> = None;
-                let mut unique_ipv4 = HashSet::new();
+                tokio::time::sleep(std::time::Duration::from_secs(next_sleep_time)).await;
 
-                for i in 0..tries {
-                    if dhcp_ip.is_none() {
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                // do not allocate ip if no peer connected
+                let routes = peer_manager_c.list_routes().await;
+                if routes.is_empty() {
+                    next_sleep_time = 1;
+                    continue;
+                } else {
+                    next_sleep_time = rand::thread_rng().gen_range(5..10);
+                }
+
+                let mut used_ipv4 = HashSet::new();
+                for route in peer_manager_c.list_routes().await {
+                    if route.ipv4_addr.is_empty() {
+                        continue;
                     }
 
-                    for route in peer_manager_c.list_routes().await {
-                        if !route.ipv4_addr.is_empty() {
-                            if let Ok(ip) = Ipv4Inet::new(
-                                if let Ok(ipv4) = route.ipv4_addr.parse::<Ipv4Addr>() {
-                                    ipv4
-                                } else {
-                                    default_ipv4_addr
-                                },
-                                24,
-                            ) {
-                                unique_ipv4.insert(ip);
-                            }
-                        }
-                    }
+                    let Ok(peer_ipv4_addr) = route.ipv4_addr.parse::<Ipv4Addr>() else {
+                        continue;
+                    };
 
-                    if i == tries - 1 && unique_ipv4.is_empty() {
-                        unique_ipv4.insert(Ipv4Inet::new(default_ipv4_addr, 24).unwrap());
-                    }
+                    let Ok(peer_ipv4_addr) = Ipv4Inet::new(peer_ipv4_addr, 24) else {
+                        continue;
+                    };
 
-                    if let Some(ip) = dhcp_ip {
-                        if !unique_ipv4.contains(&ip) {
-                            ipv4_addr = dhcp_ip;
-                            break;
-                        }
-                    }
+                    used_ipv4.insert(peer_ipv4_addr);
+                }
 
-                    for net in unique_ipv4.iter().map(|inet| inet.network()).take(1) {
-                        if let Some(ip) = net.iter().find(|ip| {
-                            ip.address() != net.first_address()
-                                && ip.address() != net.last_address()
-                                && !unique_ipv4.contains(ip)
-                        }) {
-                            ipv4_addr = Some(ip);
-                        }
+                let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
+                // if old ip is already in this subnet and not conflicted, use it
+                if let Some(ip) = current_dhcp_ip {
+                    if ip.network() == dhcp_inet.network() && !used_ipv4.contains(&ip) {
+                        continue;
                     }
                 }
 
-                if dhcp_ip != ipv4_addr {
-                    let last_ip = dhcp_ip.map(|p| p.address());
-                    tracing::debug!("last_ip: {:?}", last_ip);
+                // find an available ip in the subnet
+                let candidate_ipv4_addr = dhcp_inet.network().iter().find(|ip| {
+                    ip.address() != dhcp_inet.first_address()
+                        && ip.address() != dhcp_inet.last_address()
+                        && !used_ipv4.contains(ip)
+                });
 
-                    Self::clear_nic_ctx(nic_ctx.clone()).await;
+                if current_dhcp_ip == candidate_ipv4_addr {
+                    continue;
+                }
 
-                    if let Some(ip) = ipv4_addr {
-                        let mut new_nic_ctx = NicCtx::new(
-                            global_ctx_c.clone(),
-                            &peer_manager_c,
-                            peer_packet_receiver.clone(),
+                let last_ip = current_dhcp_ip.as_ref().map(Ipv4Inet::address);
+                tracing::debug!(
+                    ?current_dhcp_ip,
+                    ?candidate_ipv4_addr,
+                    "dhcp start changing ip"
+                );
+
+                Self::clear_nic_ctx(nic_ctx.clone()).await;
+
+                if let Some(ip) = candidate_ipv4_addr {
+                    let mut new_nic_ctx = NicCtx::new(
+                        global_ctx_c.clone(),
+                        &peer_manager_c,
+                        peer_packet_receiver.clone(),
+                    );
+                    if let Err(e) = new_nic_ctx.run(ip.address()).await {
+                        tracing::error!(
+                            ?current_dhcp_ip,
+                            ?candidate_ipv4_addr,
+                            ?e,
+                            "add ip failed"
                         );
-                        dhcp_ip = Some(ip);
-                        tries = 1;
-                        if let Err(e) = new_nic_ctx.run(ip.address()).await {
-                            tracing::error!("add ip failed: {:?}", e);
-                            global_ctx_c.set_ipv4(None);
-                            let sleep: u64 = rand::thread_rng().gen_range(200..500);
-                            tokio::time::sleep(std::time::Duration::from_millis(sleep)).await;
-                            continue;
-                        }
-                        global_ctx_c.set_ipv4(Some(ip.address()));
-                        global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(
-                            last_ip,
-                            Some(ip.address()),
-                        ));
-                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
-                    } else {
                         global_ctx_c.set_ipv4(None);
-                        global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
-                        dhcp_ip = None;
-                        tries = 6;
+                        continue;
                     }
+                    current_dhcp_ip = Some(ip);
+                    global_ctx_c.set_ipv4(Some(ip.address()));
+                    global_ctx_c
+                        .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip.address())));
+                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
+                } else {
+                    current_dhcp_ip = None;
+                    global_ctx_c.set_ipv4(None);
+                    global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Conflicted(last_ip));
                 }
-
-                let sleep: u64 = rand::thread_rng().gen_range(5..10);
-
-                tokio::time::sleep(std::time::Duration::from_secs(sleep)).await;
             }
         });
     }
