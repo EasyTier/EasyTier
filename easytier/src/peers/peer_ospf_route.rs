@@ -700,9 +700,13 @@ impl Debug for PeerRouteServiceImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerRouteServiceImpl")
             .field("my_peer_id", &self.my_peer_id)
+            .field("sessions", &self.sessions)
+            .field("route_table", &self.route_table)
+            .field("route_table_with_cost", &self.route_table_with_cost)
+            .field("synced_route_info", &self.synced_route_info)
             .field(
-                "sessions",
-                &self.sessions.iter().map(|x| *x.key()).collect::<Vec<_>>(),
+                "cached_local_conn_map",
+                &self.cached_local_conn_map.lock().unwrap(),
             )
             .finish()
     }
@@ -842,9 +846,7 @@ impl PeerRouteServiceImpl {
 
         let all_peer_ids = &conn_bitmap.peer_ids;
         for (peer_idx, (peer_id, _)) in all_peer_ids.iter().enumerate() {
-            let Some(connected) = self.synced_route_info.conn_map.get(peer_id) else {
-                continue;
-            };
+            let connected = self.synced_route_info.conn_map.get(peer_id).unwrap();
 
             for (idx, (other_peer_id, _)) in all_peer_ids.iter().enumerate() {
                 if connected.0.contains(other_peer_id) {
@@ -942,7 +944,7 @@ impl PeerRouteServiceImpl {
         let my_peer_id = self.my_peer_id;
 
         let (peer_infos, conn_bitmap) = self.build_sync_request(&session);
-        tracing::trace!("my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
+        tracing::info!("my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
                        my_peer_id, dst_peer_id, peer_infos, conn_bitmap, self.synced_route_info, session);
 
         if peer_infos.is_none()
@@ -951,6 +953,10 @@ impl PeerRouteServiceImpl {
         {
             return true;
         }
+
+        session
+            .need_sync_initiator_info
+            .store(false, Ordering::Relaxed);
 
         let ret = peer_rpc
             .do_client_rpc_scoped(SERVICE_ID, dst_peer_id, |c| async {
@@ -977,10 +983,6 @@ impl PeerRouteServiceImpl {
                 session
                     .dst_is_initiator
                     .store(ret.is_initiator, Ordering::Relaxed);
-
-                session
-                    .need_sync_initiator_info
-                    .store(false, Ordering::Relaxed);
 
                 session.update_dst_session_id(ret.session_id);
 
@@ -1012,6 +1014,22 @@ struct RouteSessionManager {
     session_tasks: Arc<DashMap<PeerId, JoinSet<()>>>,
 
     sync_now_broadcast: tokio::sync::broadcast::Sender<()>,
+}
+
+impl Debug for RouteSessionManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RouteSessionManager")
+            .field(
+                "session_tasks",
+                &self
+                    .session_tasks
+                    .iter()
+                    .map(|x| *x.key())
+                    .collect::<Vec<_>>(),
+            )
+            .field("dump_sessions", &self.dump_sessions())
+            .finish()
+    }
 }
 
 #[tarpc::server]
@@ -1052,7 +1070,7 @@ impl RouteService for RouteSessionManager {
 
         service_impl.update_route_table_and_cached_local_conn_bitmap();
 
-        tracing::debug!(
+        tracing::info!(
             "sync_route_info: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
             from_peer_id, is_initiator, peer_infos, conn_bitmap, service_impl.synced_route_info, session, service_impl.route_table);
 
@@ -1297,6 +1315,16 @@ pub struct PeerRoute {
     tasks: std::sync::Mutex<JoinSet<()>>,
 }
 
+impl Debug for PeerRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerRoute")
+            .field("my_peer_id", &self.my_peer_id)
+            .field("service_impl", &self.service_impl)
+            .field("session_mgr", &self.session_mgr)
+            .finish()
+    }
+}
+
 impl PeerRoute {
     pub fn new(
         my_peer_id: PeerId,
@@ -1322,6 +1350,8 @@ impl PeerRoute {
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
             service_impl.clear_expired_peer();
+            // TODO: use debug log level for this.
+            tracing::info!(?service_impl, "clear_expired_peer");
         }
     }
 
@@ -1448,6 +1478,10 @@ impl Route for PeerRoute {
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {
         *self.service_impl.cost_calculator.lock().unwrap() = Some(_cost_fn);
         self.service_impl.update_route_table();
+    }
+
+    async fn dump(&self) -> String {
+        format!("{:#?}", self)
     }
 }
 
