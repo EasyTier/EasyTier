@@ -212,7 +212,7 @@ and the vpn client is in network of 10.14.14.0/24"
     #[arg(
         long,
         help = "enable smoltcp stack for subnet proxy",
-        default_value = "true"
+        default_value = "false"
     )]
     use_smoltcp: bool,
 }
