@@ -22,6 +22,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
         PeerId,
     },
+    rpc::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
@@ -306,15 +307,16 @@ impl ForeignNetworkManager {
         self.register_peer_rpc_service().await;
     }
 
-    pub async fn list_foreign_networks(&self) -> DashMap<String, Vec<PeerId>> {
-        let ret = DashMap::new();
-        for item in self.data.network_peer_maps.iter() {
-            let network_name = item.key().clone();
-            ret.insert(network_name, vec![]);
-        }
+    pub async fn list_foreign_networks(&self) -> ListForeignNetworkResponse {
+        let mut ret = ListForeignNetworkResponse::default();
+        let networks = self
+            .data
+            .network_peer_maps
+            .iter()
+            .map(|v| v.key().clone())
+            .collect::<Vec<_>>();
 
-        for mut n in ret.iter_mut() {
-            let network_name = n.key().clone();
+        for network_name in networks {
             let Some(item) = self
                 .data
                 .network_peer_maps
@@ -323,7 +325,16 @@ impl ForeignNetworkManager {
             else {
                 continue;
             };
-            n.value_mut().extend(item.peer_map.list_peers().await);
+
+            let mut entry = ForeignNetworkEntryPb::default();
+            for peer in item.peer_map.list_peers().await {
+                let mut peer_info = PeerInfo::default();
+                peer_info.peer_id = peer;
+                peer_info.conns = item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]);
+                entry.peers.push(peer_info);
+            }
+
+            ret.foreign_networks.insert(network_name, entry);
         }
         ret
     }
@@ -379,6 +390,13 @@ mod tests {
             .unwrap();
         assert_eq!(1, pma_net1.list_routes().await.len());
         assert_eq!(1, pmb_net1.list_routes().await.len());
+
+        let rpc_resp = pm_center
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await;
+        assert_eq!(1, rpc_resp.foreign_networks.len());
+        assert_eq!(2, rpc_resp.foreign_networks["net1"].peers.len());
     }
 
     #[tokio::test]
@@ -483,6 +501,14 @@ mod tests {
                 .network_peer_maps
                 .len()
         );
+
+        let rpc_resp = pm_center
+            .get_foreign_network_manager()
+            .list_foreign_networks()
+            .await;
+        assert_eq!(2, rpc_resp.foreign_networks.len());
+        assert_eq!(3, rpc_resp.foreign_networks["net1"].peers.len());
+        assert_eq!(2, rpc_resp.foreign_networks["net2"].peers.len());
 
         drop(pmb_net2);
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

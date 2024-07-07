@@ -33,6 +33,9 @@ struct Cli {
     #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]
     rpc_portal: SocketAddr,
 
+    #[arg(short, long, default_value = "false", help = "verbose output")]
+    verbose: bool,
+
     #[command(subcommand)]
     sub_command: SubCommand,
 }
@@ -49,12 +52,6 @@ enum SubCommand {
 
 #[derive(Args, Debug)]
 struct PeerArgs {
-    #[arg(short, long)]
-    ipv4: Option<String>,
-
-    #[arg(short, long)]
-    peers: Vec<String>,
-
     #[command(subcommand)]
     sub_command: Option<PeerSubCommand>,
 }
@@ -70,6 +67,7 @@ enum PeerSubCommand {
     Add,
     Remove,
     List(PeerListArgs),
+    ListForeign,
 }
 
 #[derive(Args, Debug)]
@@ -113,6 +111,7 @@ enum Error {
 
 struct CommandHandler {
     addr: String,
+    verbose: bool,
 }
 
 impl CommandHandler {
@@ -204,6 +203,11 @@ impl CommandHandler {
 
         let mut items: Vec<PeerTableItem> = vec![];
         let peer_routes = self.list_peer_route_pair().await?;
+        if self.verbose {
+            println!("{:#?}", peer_routes);
+            return Ok(());
+        }
+
         for p in peer_routes {
             items.push(p.into());
         }
@@ -221,6 +225,46 @@ impl CommandHandler {
         let request = tonic::Request::new(DumpRouteRequest::default());
         let response = client.dump_route(request).await?;
         println!("response: {}", response.into_inner().result);
+        Ok(())
+    }
+
+    async fn handle_foreign_network_list(&self) -> Result<(), Error> {
+        let mut client = self.get_peer_manager_client().await?;
+        let request = tonic::Request::new(ListForeignNetworkRequest::default());
+        let response = client.list_foreign_network(request).await?;
+        let network_map = response.into_inner();
+        if self.verbose {
+            println!("{:#?}", network_map);
+            return Ok(());
+        }
+
+        for (idx, (k, v)) in network_map.foreign_networks.iter().enumerate() {
+            println!("{} Network Name: {}", idx + 1, k);
+            for peer in v.peers.iter() {
+                println!(
+                    "  peer_id: {}, peer_conn_count: {}, conns: [ {} ]",
+                    peer.peer_id,
+                    peer.conns.len(),
+                    peer.conns
+                        .iter()
+                        .map(|conn| format!(
+                            "remote_addr: {}, rx_bytes: {}, tx_bytes: {}, latency_us: {}",
+                            conn.tunnel
+                                .as_ref()
+                                .map(|t| t.remote_addr.clone())
+                                .unwrap_or_default(),
+                            conn.stats.as_ref().map(|s| s.rx_bytes).unwrap_or_default(),
+                            conn.stats.as_ref().map(|s| s.tx_bytes).unwrap_or_default(),
+                            conn.stats
+                                .as_ref()
+                                .map(|s| s.latency_us)
+                                .unwrap_or_default(),
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+        }
         Ok(())
     }
 
@@ -292,6 +336,7 @@ async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
     let handler = CommandHandler {
         addr: format!("http://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port()),
+        verbose: cli.verbose,
     };
 
     match cli.sub_command {
@@ -308,6 +353,9 @@ async fn main() -> Result<(), Error> {
                 } else {
                     handler.handle_peer_list(&peer_args).await?;
                 }
+            }
+            Some(PeerSubCommand::ListForeign) => {
+                handler.handle_foreign_network_list().await?;
             }
             None => {
                 handler.handle_peer_list(&peer_args).await?;

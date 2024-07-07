@@ -81,10 +81,20 @@ message DumpRouteRequest {}
 
 message DumpRouteResponse { string result = 1; }
 
+message ListForeignNetworkRequest {}
+
+message ForeignNetworkEntryPb { repeated PeerInfo peers = 1; }
+
+message ListForeignNetworkResponse {
+  map<string, ForeignNetworkEntryPb> foreign_networks = 1;
+}
+
 service PeerManageRpc {
   rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
+  rpc ListForeignNetwork(ListForeignNetworkRequest)
+      returns (ListForeignNetworkResponse);
 }
 
 enum ConnectorStatus {
