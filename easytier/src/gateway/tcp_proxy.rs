@@ -154,8 +154,18 @@ pub struct TcpProxy {
 impl PeerPacketFilter for TcpProxy {
     async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
         if let Some(_) = self.try_handle_peer_packet(&mut packet).await {
-            if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
-                tracing::error!("send to nic failed: {:?}", e);
+            if self
+                .enable_smoltcp
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
+                if let Err(e) = smoltcp_stack_sender.try_send(packet) {
+                    tracing::error!("send to smoltcp stack failed: {:?}", e);
+                }
+            } else {
+                if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
+                    tracing::error!("send to nic failed: {:?}", e);
+                }
             }
             return None;
         } else {
@@ -167,7 +177,7 @@ impl PeerPacketFilter for TcpProxy {
 #[async_trait::async_trait]
 impl NicPacketFilter for TcpProxy {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) {
-        let Some(my_ipv4) = self.global_ctx.get_ipv4() else {
+        let Some(my_ipv4) = self.get_local_ip() else {
             return;
         };
 
@@ -353,10 +363,10 @@ impl TcpProxy {
                 dev,
                 NetConfig::new(
                     interface_config,
-                    format!("{}/24", self.global_ctx.get_ipv4().unwrap())
+                    format!("{}/24", self.get_local_ip().unwrap())
                         .parse()
                         .unwrap(),
-                    vec![],
+                    vec![format!("{}", self.get_local_ip().unwrap()).parse().unwrap()],
                 ),
             );
             net.set_any_ip(true);
@@ -524,6 +534,17 @@ impl TcpProxy {
         self.local_port.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    pub fn get_local_ip(&self) -> Option<Ipv4Addr> {
+        if self
+            .enable_smoltcp
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            Some(Ipv4Addr::new(192, 88, 99, 254))
+        } else {
+            self.global_ctx.get_ipv4()
+        }
+    }
+
     async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> Option<()> {
         if self.cidr_set.is_empty()
             && !self.global_ctx.enable_exit_node()
@@ -532,7 +553,7 @@ impl TcpProxy {
             return None;
         }
 
-        let ipv4_addr = self.global_ctx.get_ipv4()?;
+        let ipv4_addr = self.get_local_ip()?;
         let hdr = packet.peer_manager_header().unwrap();
         let is_exit_node = hdr.is_exit_node();
 
@@ -588,17 +609,6 @@ impl TcpProxy {
         Self::update_ip_packet_checksum(&mut ip_packet);
 
         tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
-
-        if self
-            .enable_smoltcp
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
-            if let Err(e) = smoltcp_stack_sender.try_send(packet.clone()) {
-                tracing::error!("send to smoltcp stack failed: {:?}", e);
-            }
-            return None;
-        }
 
         Some(())
     }

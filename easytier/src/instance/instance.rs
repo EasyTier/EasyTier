@@ -232,7 +232,7 @@ impl Instance {
                 }
 
                 let mut used_ipv4 = HashSet::new();
-                for route in peer_manager_c.list_routes().await {
+                for route in routes {
                     if route.ipv4_addr.is_empty() {
                         continue;
                     }
@@ -277,6 +277,15 @@ impl Instance {
                 Self::clear_nic_ctx(nic_ctx.clone()).await;
 
                 if let Some(ip) = candidate_ipv4_addr {
+                    if global_ctx_c.no_tun() {
+                        current_dhcp_ip = Some(ip);
+                        global_ctx_c.set_ipv4(Some(ip.address()));
+                        global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(
+                            last_ip,
+                            Some(ip.address()),
+                        ));
+                        continue;
+                    }
                     let mut new_nic_ctx = NicCtx::new(
                         global_ctx_c.clone(),
                         &peer_manager_c,
@@ -315,20 +324,20 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        if !self.global_ctx.config.get_flags().no_tun {
-            if self.global_ctx.config.get_dhcp() {
-                self.check_dhcp_ip_conflict();
-            } else if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
-                let mut new_nic_ctx = NicCtx::new(
-                    self.global_ctx.clone(),
-                    &self.peer_manager,
-                    self.peer_packet_receiver.clone(),
-                );
-                new_nic_ctx.run(ipv4_addr).await?;
-                Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
-            }
-        } else {
+        if self.global_ctx.config.get_flags().no_tun {
             self.peer_packet_receiver.lock().await.close();
+        } else if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+            let mut new_nic_ctx = NicCtx::new(
+                self.global_ctx.clone(),
+                &self.peer_manager,
+                self.peer_packet_receiver.clone(),
+            );
+            new_nic_ctx.run(ipv4_addr).await?;
+            Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
+        }
+
+        if self.global_ctx.config.get_dhcp() {
+            self.check_dhcp_ip_conflict();
         }
 
         self.run_rpc_server()?;
