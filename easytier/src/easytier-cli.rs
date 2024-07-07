@@ -42,7 +42,7 @@ enum SubCommand {
     Peer(PeerArgs),
     Connector(ConnectorArgs),
     Stun,
-    Route,
+    Route(RouteArgs),
     PeerCenter,
     VpnPortal,
 }
@@ -70,6 +70,18 @@ enum PeerSubCommand {
     Add,
     Remove,
     List(PeerListArgs),
+}
+
+#[derive(Args, Debug)]
+struct RouteArgs {
+    #[command(subcommand)]
+    sub_command: Option<RouteSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum RouteSubCommand {
+    List,
+    Dump,
 }
 
 #[derive(Args, Debug)]
@@ -204,6 +216,14 @@ impl CommandHandler {
         Ok(())
     }
 
+    async fn handle_route_dump(&self) -> Result<(), Error> {
+        let mut client = self.get_peer_manager_client().await?;
+        let request = tonic::Request::new(DumpRouteRequest::default());
+        let response = client.dump_route(request).await?;
+        println!("response: {}", response.into_inner().result);
+        Ok(())
+    }
+
     async fn handle_route_list(&self) -> Result<(), Error> {
         #[derive(tabled::Tabled)]
         struct RouteTableItem {
@@ -307,9 +327,10 @@ async fn main() -> Result<(), Error> {
                 handler.handle_connector_list().await?;
             }
         },
-        SubCommand::Route => {
-            handler.handle_route_list().await?;
-        }
+        SubCommand::Route(route_args) => match route_args.sub_command {
+            Some(RouteSubCommand::List) | None => handler.handle_route_list().await?,
+            Some(RouteSubCommand::Dump) => handler.handle_route_dump().await?,
+        },
         SubCommand::Stun => {
             timeout(Duration::from_secs(5), async move {
                 let collector = StunInfoCollector::new_with_default_servers();

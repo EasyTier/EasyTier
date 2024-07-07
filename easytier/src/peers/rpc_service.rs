@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use crate::rpc::{
-    cli::PeerInfo,
-    peer_manage_rpc_server::PeerManageRpc,
-    {ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse},
+    cli::PeerInfo, peer_manage_rpc_server::PeerManageRpc, DumpRouteRequest, DumpRouteResponse,
+    ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -58,6 +57,15 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<Response<ListRouteResponse>, Status> {
         let mut reply = ListRouteResponse::default();
         reply.routes = self.peer_manager.list_routes().await;
+        Ok(Response::new(reply))
+    }
+
+    async fn dump_route(
+        &self,
+        _request: Request<DumpRouteRequest>, // Accept request of type HelloRequest
+    ) -> Result<Response<DumpRouteResponse>, Status> {
+        let mut reply = DumpRouteResponse::default();
+        reply.result = self.peer_manager.dump_route().await;
         Ok(Response::new(reply))
     }
 }

@@ -535,6 +535,10 @@ impl PeerManager {
         self.get_route().list_routes().await
     }
 
+    pub async fn dump_route(&self) -> String {
+        self.get_route().dump().await
+    }
+
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
             pipeline.try_process_packet_from_nic(data).await;

@@ -78,6 +78,10 @@ pub trait Route {
     }
 
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {}
+
+    async fn dump(&self) -> String {
+        "this route implementation does not support dump".to_string()
+    }
 }
 
 pub type ArcRoute = Arc<Box<dyn Route + Send + Sync>>;
