@@ -71,3 +71,7 @@ stop_network: 停止网络
 network_running: 运行中
 network_stopped: 已停止
 dhcp_experimental_warning: 实验性警告！使用DHCP时如果组网环境中发生IP冲突，将自动更改IP。
+
+tray:
+  show: 显示 / 隐藏
+  exit: 退出

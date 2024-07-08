@@ -71,3 +71,7 @@ stop_network: Stop Network
 network_running: running
 network_stopped: stopped
 dhcp_experimental_warning: Experimental warning! if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
+
+tray:
+  show: Show / Hide
+  exit: Exit

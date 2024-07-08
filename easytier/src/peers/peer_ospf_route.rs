@@ -1001,6 +1001,9 @@ impl PeerRouteServiceImpl {
 
             _ => {
                 tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
+                session
+                    .need_sync_initiator_info
+                    .store(true, Ordering::Relaxed);
             }
         }
         return false;

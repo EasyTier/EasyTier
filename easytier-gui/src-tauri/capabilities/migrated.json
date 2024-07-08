@@ -1,0 +1,41 @@
+{
+  "identifier": "migrated",
+  "description": "permissions that were migrated from v1",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "path:default",
+    "event:default",
+
+    "window:default",
+    "window:allow-is-visible",
+    "window:allow-show",
+    "window:allow-hide",
+    "window:allow-set-focus",
+
+    "app:default",
+    "resources:default",
+    "menu:default",
+    "tray:default",
+    "shell:allow-open",
+    "process:allow-exit",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    "shell:default",
+    "process:default",
+    "clipboard-manager:default",
+
+    "tray:default",
+    "tray:allow-new",
+    "tray:allow-set-menu",
+    "tray:allow-set-title",
+    "tray:allow-remove-by-id",
+    "tray:allow-get-by-id",
+    "tray:allow-set-icon",
+    "tray:allow-set-icon-as-template",
+    "tray:allow-set-show-menu-on-left-click",
+    "tray:allow-set-tooltip"
+  ]
+}

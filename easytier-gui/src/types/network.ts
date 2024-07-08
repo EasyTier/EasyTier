@@ -37,7 +37,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
   return {
     instance_id: uuidv4(),
 
-    dhcp: false,
+    dhcp: true,
     virtual_ipv4: '',
     network_name: 'easytier',
     network_secret: '',

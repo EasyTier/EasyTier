@@ -6,7 +6,7 @@ import ToastService from 'primevue/toastservice'
 import App from '~/App.vue'
 
 import '~/styles.css'
-import 'primevue/resources/themes/aura-light-green/theme.css'
+import Aura from '@primevue/themes/aura'
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 import { i18n, loadLanguageAsync } from '~/modules/i18n'
@@ -41,7 +41,15 @@ async function main() {
   app.use(router)
   app.use(createPinia())
   app.use(i18n, { useScope: 'global' })
-  app.use(PrimeVue)
+  app.use(PrimeVue, {
+    theme: {
+      preset: Aura,
+      options: {
+          prefix: 'p',
+          darkModeSelector: 'system',
+          cssLayer: false
+      }
+  }})
   app.use(ToastService)
   app.mount('#app')
 }

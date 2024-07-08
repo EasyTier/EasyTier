@@ -1,4 +1,5 @@
-import { invoke } from '@tauri-apps/api/tauri'
+import { invoke } from "@tauri-apps/api/core"
+
 import type { NetworkConfig, NetworkInstanceRunningInfo } from '~/types/network'
 
 export async function parseNetworkConfig(cfg: NetworkConfig) {
