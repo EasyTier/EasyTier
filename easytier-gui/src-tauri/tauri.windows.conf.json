@@ -1,15 +1,13 @@
 {
-    "tauri": {
-        "bundle": {
-            "externalBin": [],
-            "resources": [
-                "./wintun.dll",
-                "./Packet.dll"
-            ],
-            "windows": {
-                "webviewInstallMode": {
-                    "type": "embedBootstrapper"
-                }
+    "bundle": {
+        "externalBin": [],
+        "resources": [
+            "./wintun.dll",
+            "./Packet.dll"
+        ],
+        "windows": {
+            "webviewInstallMode": {
+                "type": "embedBootstrapper"
             }
         }
     }

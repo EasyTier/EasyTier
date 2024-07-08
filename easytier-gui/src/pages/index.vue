@@ -1,10 +1,7 @@
 <script setup lang="ts">
-import Stepper from 'primevue/stepper'
-import StepperPanel from 'primevue/stepperpanel'
-
 import { useToast } from 'primevue/usetoast'
 
-import { exit } from '@tauri-apps/api/process'
+import { exit } from '@tauri-apps/plugin-process';
 import Config from '~/components/Config.vue'
 import Status from '~/components/Status.vue'
 
@@ -14,13 +11,16 @@ import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAs
 import { loadRunningInstanceIdsFromLocalStorage } from '~/stores/network'
 import { setLoggingLevel } from '~/composables/network'
 import TieredMenu from 'primevue/tieredmenu'
-import { open } from '@tauri-apps/api/shell'
+import { open } from '@tauri-apps/plugin-shell';
 import { appLogDir } from '@tauri-apps/api/path'
-import { writeText } from '@tauri-apps/api/clipboard'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager';
+import { useTray } from '~/composables/tray';
 
 const { t, locale } = useI18n()
 const visible = ref(false)
 const tomlConfig = ref('')
+
+useTray(true)
 
 const items = ref([
   {
@@ -81,8 +81,8 @@ networkStore.$subscribe(async () => {
   }
 })
 
-async function runNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
-  cb({} as MouseEvent)
+async function runNetworkCb(cfg: NetworkConfig, cb: () => void) {
+  cb()
   networkStore.removeNetworkInstance(cfg.instance_id)
   await retainNetworkInstance(networkStore.networkInstanceIds)
   networkStore.addNetworkInstance(cfg.instance_id)
@@ -96,9 +96,9 @@ async function runNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
   }
 }
 
-async function stopNetworkCb(cfg: NetworkConfig, cb: (e: MouseEvent) => void) {
+async function stopNetworkCb(cfg: NetworkConfig, cb: () => void) {
   // console.log('stopNetworkCb', cfg, cb)
-  cb({} as MouseEvent)
+  cb()
   networkStore.removeNetworkInstance(cfg.instance_id)
   await retainNetworkInstance(networkStore.networkInstanceIds)
 }
@@ -108,15 +108,19 @@ async function updateNetworkInfos() {
 }
 
 let intervalId = 0
-onMounted(() => {
+onMounted(async () => {
   intervalId = window.setInterval(async () => {
     await updateNetworkInfos()
   }, 500)
+  await setTrayMenu([ 
+    await MenuItemExit(t('tray.exit')), 
+    await MenuItemShow(t('tray.show')) 
+  ])
 })
 onUnmounted(() => clearInterval(intervalId))
 
 const activeStep = computed(() => {
-  return networkStore.networkInstanceIds.includes(networkStore.curNetworkId) ? 1 : 0
+  return networkStore.networkInstanceIds.includes(networkStore.curNetworkId) ? '2' : '1'
 })
 
 let current_log_level = 'off'
@@ -128,6 +132,10 @@ const setting_menu_items = ref([
     icon: 'pi pi-language',
     command: async () => {
       await loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
+      await setTrayMenu([ 
+        await MenuItemExit(t('tray.exit')), 
+        await MenuItemShow(t('tray.show')) 
+      ])
     },
   },
   {
@@ -274,25 +282,29 @@ function isRunning(id: string) {
       </Toolbar>
     </div>
 
-    <Stepper class="h-full overflow-y-auto" :active-step="activeStep">
-      <StepperPanel :header="t('config_network')">
-        <template #content="{ nextCallback }">
-          <Config :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
-            @run-network="runNetworkCb($event, nextCallback)" />
-        </template>
-      </StepperPanel>
-      <StepperPanel :header="t('running')">
-        <template #content="{ prevCallback }">
-          <div class="flex flex-column">
-            <Status :instance-id="networkStore.curNetworkId" />
-          </div>
-          <div class="flex pt-4 justify-content-center">
-            <Button :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
-              @click="stopNetworkCb(networkStore.curNetwork, prevCallback)" />
-          </div>
-        </template>
-      </StepperPanel>
-    </Stepper>
+    <Panel class="h-full overflow-y-auto" >
+      <Stepper :value="activeStep">
+        <StepList value="1">
+          <Step value="1">{{ t('config_network') }}</Step>
+          <Step value="2">{{ t('running') }}</Step>
+        </StepList>
+        <StepPanels value="1">
+          <StepPanel v-slot="{ activateCallback = (s: string) => {} } = {}" value="1">
+              <Config :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
+                @run-network="runNetworkCb($event, () => activateCallback('2'))" />
+          </StepPanel>
+          <StepPanel v-slot="{ activateCallback = (s: string) => {} } = {}" value="2">
+              <div class="flex flex-column">
+                <Status :instance-id="networkStore.curNetworkId" />
+              </div>
+              <div class="flex pt-4 justify-content-center">
+                <Button :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
+                  @click="stopNetworkCb(networkStore.curNetwork, () => activateCallback('1'))" />
+              </div>
+          </StepPanel>
+        </StepPanels>
+      </Stepper>
+    </Panel>
 
     <div>
       <Menubar :model="items" breakpoint="300px" />

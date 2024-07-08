@@ -8,18 +8,18 @@
 # dependencies are only needed on ubuntu as that's the only place where
 # we make cross-compilation
 if [[ $OS =~ ^ubuntu.*$ ]]; then
-    sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools
+    sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools libappindicator3-dev
     # for easytier-gui
-    if [[ $GUI_TARGET != '' ]]; then
-        sudo apt install libwebkit2gtk-4.0-dev \
+    if [[ $GUI_TARGET != '' && $GUI_TARGET =~ ^x86_64.*$ ]]; then
+        sudo apt install -qq libwebkit2gtk-4.1-dev \
             build-essential \
             curl \
             wget \
             file \
-            libssl-dev \
             libgtk-3-dev \
-            libayatana-appindicator3-dev \
             librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
             patchelf
     fi
     #  curl -s musl.cc | grep mipsel
@@ -57,8 +57,8 @@ fi
 
 # see https://github.com/rust-lang/rustup/issues/3709
 rustup set auto-self-update disable
-rustup install 1.75
-rustup default 1.75
+rustup install 1.79
+rustup default 1.79
 
 # mips/mipsel cannot add target from rustup, need compile by ourselves
 if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then

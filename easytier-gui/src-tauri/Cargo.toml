@@ -1,6 +1,6 @@
 [package]
 name = "easytier-gui"
-version = "0.0.0"
+version = "1.2.0"
 description = "EasyTier GUI"
 authors = ["you"]
 edition = "2021"
@@ -8,14 +8,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [build-dependencies]
-tauri-build = { version = "1", features = [] }
+tauri-build = { version = "2.0.0-beta", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "clipboard-all", "path-all",
-  "process-exit",
-  "system-tray",
-  "shell-open",
-] }
+tauri = { version = "2.0.0-beta", features = [ "tray-icon", "image-png", "image-ico"] }
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -32,6 +29,11 @@ gethostname = "0.4.3"
 
 auto-launch = "0.5.0"
 dunce = "1.0.4"
+
+tauri-plugin-shell = "2.0.0-beta.8"
+tauri-plugin-process = "2.0.0-beta.7"
+tauri-plugin-clipboard-manager = "2.1.0-beta.5"
+tauri-plugin-positioner = { version = "2.0.0-beta", features = ["tray-icon"] }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

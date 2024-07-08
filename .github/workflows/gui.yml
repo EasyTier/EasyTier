@@ -136,9 +136,11 @@ jobs:
 
           sudo dpkg --add-architecture arm64
           sudo apt-get update && sudo apt-get upgrade -y
-          sudo apt install libwebkit2gtk-4.0-dev:arm64
+          sudo apt install gcc-aarch64-linux-gnu
+          sudo apt install libwebkit2gtk-4.1-dev:arm64
           sudo apt install libssl-dev:arm64
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
 
       - name: Build GUI
         if: ${{ matrix.GUI_TARGET != '' }}

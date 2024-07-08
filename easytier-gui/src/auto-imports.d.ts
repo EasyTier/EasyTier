@@ -6,6 +6,9 @@
 export {}
 declare global {
   const EffectScope: typeof import('vue')['EffectScope']
+  const MenuItemExit: typeof import('./composables/tray')['MenuItemExit']
+  const MenuItemShow: typeof import('./composables/tray')['MenuItemShow']
+  const ReinitTray: typeof import('./composables/tray')['ReinitTray']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
   const collectNetworkInfos: typeof import('./composables/network')['collectNetworkInfos']
   const computed: typeof import('vue')['computed']
@@ -17,6 +20,7 @@ declare global {
   const definePage: typeof import('unplugin-vue-router/runtime')['definePage']
   const defineStore: typeof import('pinia')['defineStore']
   const effectScope: typeof import('vue')['effectScope']
+  const generateMenuItem: typeof import('./composables/tray')['generateMenuItem']
   const getActivePinia: typeof import('pinia')['getActivePinia']
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
@@ -62,6 +66,9 @@ declare global {
   const setAutoLaunchStatus: typeof import('./composables/network')['setAutoLaunchStatus']
   const setLoggingLevel: typeof import('./composables/network')['setLoggingLevel']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
+  const setTrayMenu: typeof import('./composables/tray')['setTrayMenu']
+  const setTrayRunState: typeof import('./composables/tray')['setTrayRunState']
+  const setTrayTooltip: typeof import('./composables/tray')['setTrayTooltip']
   const shallowReactive: typeof import('vue')['shallowReactive']
   const shallowReadonly: typeof import('vue')['shallowReadonly']
   const shallowRef: typeof import('vue')['shallowRef']
@@ -81,6 +88,7 @@ declare global {
   const useRoute: typeof import('vue-router/auto')['useRoute']
   const useRouter: typeof import('vue-router/auto')['useRouter']
   const useSlots: typeof import('vue')['useSlots']
+  const useTray: typeof import('./composables/tray')['useTray']
   const watch: typeof import('vue')['watch']
   const watchEffect: typeof import('vue')['watchEffect']
   const watchPostEffect: typeof import('vue')['watchPostEffect']
@@ -98,6 +106,8 @@ declare module 'vue' {
   interface GlobalComponents {}
   interface ComponentCustomProperties {
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
+    readonly MenuItemExit: UnwrapRef<typeof import('./composables/tray')['MenuItemExit']>
+    readonly MenuItemShow: UnwrapRef<typeof import('./composables/tray')['MenuItemShow']>
     readonly acceptHMRUpdate: UnwrapRef<typeof import('pinia')['acceptHMRUpdate']>
     readonly collectNetworkInfos: UnwrapRef<typeof import('./composables/network')['collectNetworkInfos']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
@@ -109,6 +119,7 @@ declare module 'vue' {
     readonly definePage: UnwrapRef<typeof import('unplugin-vue-router/runtime')['definePage']>
     readonly defineStore: UnwrapRef<typeof import('pinia')['defineStore']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
+    readonly generateMenuItem: UnwrapRef<typeof import('./composables/tray')['generateMenuItem']>
     readonly getActivePinia: UnwrapRef<typeof import('pinia')['getActivePinia']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
@@ -154,6 +165,9 @@ declare module 'vue' {
     readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
     readonly setLoggingLevel: UnwrapRef<typeof import('./composables/network')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
+    readonly setTrayMenu: UnwrapRef<typeof import('./composables/tray')['setTrayMenu']>
+    readonly setTrayRunState: UnwrapRef<typeof import('./composables/tray')['setTrayRunState']>
+    readonly setTrayTooltip: UnwrapRef<typeof import('./composables/tray')['setTrayTooltip']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
@@ -173,6 +187,7 @@ declare module 'vue' {
     readonly useRoute: UnwrapRef<typeof import('vue-router/auto')['useRoute']>
     readonly useRouter: UnwrapRef<typeof import('vue-router/auto')['useRouter']>
     readonly useSlots: UnwrapRef<typeof import('vue')['useSlots']>
+    readonly useTray: UnwrapRef<typeof import('./composables/tray')['useTray']>
     readonly watch: UnwrapRef<typeof import('vue')['watch']>
     readonly watchEffect: UnwrapRef<typeof import('vue')['watchEffect']>
     readonly watchPostEffect: UnwrapRef<typeof import('vue')['watchPostEffect']>
@@ -183,6 +198,8 @@ declare module '@vue/runtime-core' {
   interface GlobalComponents {}
   interface ComponentCustomProperties {
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
+    readonly MenuItemExit: UnwrapRef<typeof import('./composables/tray')['MenuItemExit']>
+    readonly MenuItemShow: UnwrapRef<typeof import('./composables/tray')['MenuItemShow']>
     readonly acceptHMRUpdate: UnwrapRef<typeof import('pinia')['acceptHMRUpdate']>
     readonly collectNetworkInfos: UnwrapRef<typeof import('./composables/network')['collectNetworkInfos']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
@@ -194,6 +211,7 @@ declare module '@vue/runtime-core' {
     readonly definePage: UnwrapRef<typeof import('unplugin-vue-router/runtime')['definePage']>
     readonly defineStore: UnwrapRef<typeof import('pinia')['defineStore']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
+    readonly generateMenuItem: UnwrapRef<typeof import('./composables/tray')['generateMenuItem']>
     readonly getActivePinia: UnwrapRef<typeof import('pinia')['getActivePinia']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
@@ -239,6 +257,9 @@ declare module '@vue/runtime-core' {
     readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
     readonly setLoggingLevel: UnwrapRef<typeof import('./composables/network')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
+    readonly setTrayMenu: UnwrapRef<typeof import('./composables/tray')['setTrayMenu']>
+    readonly setTrayRunState: UnwrapRef<typeof import('./composables/tray')['setTrayRunState']>
+    readonly setTrayTooltip: UnwrapRef<typeof import('./composables/tray')['setTrayTooltip']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
@@ -258,6 +279,7 @@ declare module '@vue/runtime-core' {
     readonly useRoute: UnwrapRef<typeof import('vue-router/auto')['useRoute']>
     readonly useRouter: UnwrapRef<typeof import('vue-router/auto')['useRouter']>
     readonly useSlots: UnwrapRef<typeof import('vue')['useSlots']>
+    readonly useTray: UnwrapRef<typeof import('./composables/tray')['useTray']>
     readonly watch: UnwrapRef<typeof import('vue')['watch']>
     readonly watchEffect: UnwrapRef<typeof import('vue')['watchEffect']>
     readonly watchPostEffect: UnwrapRef<typeof import('vue')['watchPostEffect']>

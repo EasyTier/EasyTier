@@ -2,31 +2,29 @@
   "build": {
     "beforeDevCommand": "pnpm dev",
     "beforeBuildCommand": "pnpm build",
-    "devPath": "http://localhost:1420",
-    "distDir": "../dist"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
   },
-  "package": {
-    "productName": "easytier-gui",
-    "version": "0.0.0"
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.rgba",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": false
   },
-  "tauri": {
-    "allowlist": {
-      "all": false,
-      "shell": {
-        "all": false,
-        "open": ".*"
-      },
-      "process": {
-        "exit": true
-      },
-      "path": {
-        "all": true
-      },
-      "clipboard": {
-        "all": true,
-        "writeText": true,
-        "readText": true
-      }
+  "productName": "easytier-gui",
+  "version": "1.2.0",
+  "identifier": "com.kkrainbow.easyiter-client",
+  "plugins": {},
+  "app": {
+    "trayIcon": {
+      "iconPath": "icons/icon.ico",
+      "menuOnLeftClick": true,
+      "iconAsTemplate": true
     },
     "windows": [
       {
@@ -37,21 +35,6 @@
     ],
     "security": {
       "csp": null
-    },
-    "systemTray": {
-      "iconPath": "icons/icon.ico",
-      "iconAsTemplate": true
-    },
-    "bundle": {
-      "active": true,
-      "targets": "all",
-      "identifier": "com.kkrainbow.easyiter-client",
-      "icon": [
-        "icons/icon.png",
-        "icons/icon.rgba",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ]
     }
   }
 }

@@ -16,10 +16,7 @@ use easytier::{
 };
 use serde::{Deserialize, Serialize};
 
-use tauri::{
-    CustomMenuItem, Manager, SystemTray, SystemTrayEvent, SystemTrayMenu, SystemTrayMenuItem,
-    Window,
-};
+use tauri::Manager as _;
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 enum NetworkingMethod {
@@ -33,6 +30,8 @@ impl Default for NetworkingMethod {
         NetworkingMethod::PublicServer
     }
 }
+
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 #[derive(Deserialize, Serialize, Debug, Default)]
 struct NetworkConfig {
@@ -234,12 +233,14 @@ fn set_logging_level(level: String) -> Result<(), String> {
     Ok(())
 }
 
-fn toggle_window_visibility(window: &Window) {
-    if window.is_visible().unwrap() {
-        window.hide().unwrap();
-    } else {
-        window.show().unwrap();
-        window.set_focus().unwrap();
+fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(window) = app.get_webview_window("main") {
+        if window.is_visible().unwrap_or_default() {
+            let _ = window.hide();
+        } else {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
     }
 }
 
@@ -319,16 +320,13 @@ fn main() {
         process::exit(0);
     }
 
-    let quit = CustomMenuItem::new("quit".to_string(), "退出 Quit");
-    let hide = CustomMenuItem::new("hide".to_string(), "显示 Show / 隐藏 Hide");
-    let tray_menu = SystemTrayMenu::new()
-        .add_item(quit)
-        .add_native_item(SystemTrayMenuItem::Separator)
-        .add_item(hide);
-
     tauri::Builder::default()
+        .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let Some(log_dir) = app.path_resolver().app_log_dir() else {
+            // for logging config
+            let Ok(log_dir) = app.path().app_log_dir() else {
                 return Ok(());
             };
             let config = TomlConfigLoader::default();
@@ -342,6 +340,22 @@ fn main() {
             };
             unsafe { LOGGER_LEVEL_SENDER.replace(logger_reinit) };
 
+            // for tray icon, menu need to be built in js
+            let _tray_menu = TrayIconBuilder::with_id("main")
+                .menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        toggle_window_visibility(app);
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -353,31 +367,9 @@ fn main() {
             set_auto_launch_status,
             set_logging_level
         ])
-        .system_tray(SystemTray::new().with_menu(tray_menu))
-        .on_system_tray_event(|app, event| match event {
-            SystemTrayEvent::DoubleClick {
-                position: _,
-                size: _,
-                ..
-            } => {
-                let window = app.get_window("main").unwrap();
-                toggle_window_visibility(&window);
-            }
-            SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
-                "quit" => {
-                    std::process::exit(0);
-                }
-                "hide" => {
-                    let window = app.get_window("main").unwrap();
-                    toggle_window_visibility(&window);
-                }
-                _ => {}
-            },
-            _ => {}
-        })
-        .on_window_event(|event| match event.event() {
+        .on_window_event(|win, event| match event {
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                event.window().hide().unwrap();
+                let _ = win.hide();
                 api.prevent_close();
             }
             _ => {}
