@@ -1451,6 +1451,7 @@ dependencies = [
  "tauri-plugin-positioner",
  "tauri-plugin-process",
  "tauri-plugin-shell",
+ "tauri-plugin-vpnservice",
  "tokio",
 ]
 
@@ -5662,6 +5663,16 @@ dependencies = [
  "tauri-plugin",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "tauri-plugin-vpnservice"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+ "thiserror",
 ]
 
 [[package]]

@@ -36,6 +36,8 @@
     "tray:allow-set-icon",
     "tray:allow-set-icon-as-template",
     "tray:allow-set-show-menu-on-left-click",
-    "tray:allow-set-tooltip"
+    "tray:allow-set-tooltip",
+
+    "vpnservice:allow-ping"
   ]
 }

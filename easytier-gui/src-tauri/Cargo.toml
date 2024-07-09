@@ -38,6 +38,7 @@ tauri-plugin-shell = "2.0.0-beta.8"
 tauri-plugin-process = "2.0.0-beta.7"
 tauri-plugin-clipboard-manager = "2.1.0-beta.5"
 tauri-plugin-positioner = { version = "2.0.0-beta", features = ["tray-icon"] }
+tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!

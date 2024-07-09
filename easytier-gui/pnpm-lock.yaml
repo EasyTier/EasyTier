@@ -35,6 +35,9 @@ importers:
       primevue:
         specifier: ^4.0.0
         version: 4.0.0(@primeuix/utils@0.0.5)(vue@3.4.31(typescript@5.5.3))
+      tauri-plugin-vpnservice-api:
+        specifier: link:../tauri-plugin-vpnservice/
+        version: link:../tauri-plugin-vpnservice
       vue:
         specifier: ^3.4.31
         version: 3.4.31(typescript@5.5.3)

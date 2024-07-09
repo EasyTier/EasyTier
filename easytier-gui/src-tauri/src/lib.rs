@@ -335,6 +335,7 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_vpnservice::init())
         .setup(|app| {
             // for logging config
             let Ok(log_dir) = app.path().app_log_dir() else {
