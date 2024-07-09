@@ -112,9 +112,9 @@ onMounted(async () => {
   intervalId = window.setInterval(async () => {
     await updateNetworkInfos()
   }, 500)
-  await setTrayMenu([ 
-    await MenuItemExit(t('tray.exit')), 
-    await MenuItemShow(t('tray.show')) 
+  await setTrayMenu([
+    await MenuItemExit(t('tray.exit')),
+    await MenuItemShow(t('tray.show'))
   ])
 })
 onUnmounted(() => clearInterval(intervalId))
@@ -132,9 +132,9 @@ const setting_menu_items = ref([
     icon: 'pi pi-language',
     command: async () => {
       await loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
-      await setTrayMenu([ 
-        await MenuItemExit(t('tray.exit')), 
-        await MenuItemShow(t('tray.show')) 
+      await setTrayMenu([
+        await MenuItemExit(t('tray.exit')),
+        await MenuItemShow(t('tray.show'))
       ])
     },
   },
@@ -233,14 +233,13 @@ function isRunning(id: string) {
     <div>
       <Toolbar>
         <template #start>
-          <div class="flex align-items-center gap-2">
-            <Button icon="pi pi-plus" class="mr-2" severity="primary" :label="t('add_new_network')"
-              @click="addNewNetwork" />
+          <div class="flex align-items-center">
+            <Button icon="pi pi-plus" severity="primary" :label="t('add_new_network')" @click="addNewNetwork" />
           </div>
         </template>
 
         <template #center>
-          <div class="min-w-80 mr-20">
+          <div class="min-w-40">
             <Dropdown v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
               :placeholder="t('select_network')" class="w-full">
               <template #value="slotProps">
@@ -275,32 +274,32 @@ function isRunning(id: string) {
         </template>
 
         <template #end>
-          <Button icon="pi pi-cog" class="mr-2" severity="secondary" aria-haspopup="true" :label="t('settings')"
+          <Button icon="pi pi-cog" severity="secondary" aria-haspopup="true" :label="t('settings')"
             aria-controls="overlay_setting_menu" @click="toggle_setting_menu" />
           <TieredMenu id="overlay_setting_menu" ref="setting_menu" :model="setting_menu_items" :popup="true" />
         </template>
       </Toolbar>
     </div>
 
-    <Panel class="h-full overflow-y-auto" >
+    <Panel class="h-full overflow-y-auto">
       <Stepper :value="activeStep">
         <StepList value="1">
           <Step value="1">{{ t('config_network') }}</Step>
           <Step value="2">{{ t('running') }}</Step>
         </StepList>
         <StepPanels value="1">
-          <StepPanel v-slot="{ activateCallback = (s: string) => {} } = {}" value="1">
-              <Config :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
-                @run-network="runNetworkCb($event, () => activateCallback('2'))" />
+          <StepPanel v-slot="{ activateCallback = (s: string) => { } } = {}" value="1">
+            <Config :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
+              @run-network="runNetworkCb($event, () => activateCallback('2'))" />
           </StepPanel>
-          <StepPanel v-slot="{ activateCallback = (s: string) => {} } = {}" value="2">
-              <div class="flex flex-column">
-                <Status :instance-id="networkStore.curNetworkId" />
-              </div>
-              <div class="flex pt-4 justify-content-center">
-                <Button :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
-                  @click="stopNetworkCb(networkStore.curNetwork, () => activateCallback('1'))" />
-              </div>
+          <StepPanel v-slot="{ activateCallback = (s: string) => { } } = {}" value="2">
+            <div class="flex flex-column">
+              <Status :instance-id="networkStore.curNetworkId" />
+            </div>
+            <div class="flex pt-4 justify-content-center">
+              <Button :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
+                @click="stopNetworkCb(networkStore.curNetwork, () => activateCallback('1'))" />
+            </div>
           </StepPanel>
         </StepPanels>
       </Stepper>
