@@ -41,17 +41,27 @@ class VpnServicePlugin(private val activity: Activity) : Plugin(activity) {
     fun startVpn(invoke: Invoke) {
         val it = VpnService.prepare(activity)
         var fd: Int = 0
+        var ret = JSObject()
         if (it != null) {
-            var ret = activity.startActivityForResult(it, 0x0f)
-            println("OOOOOOOOO $it")
+            activity.startActivityForResult(it, 0x0f)
+            ret.put("error_msg", "again")
         } else {
             startVpn()
+            ret.put("error_msg", "ok")
         }
         invoke.resolve(JSObject())
     }
 
+    @Command
+    fun stopVpn(invoke: Invoke) {
+        println("stop vpn in plugin")
+        TauriVpnService.self?.onRevoke()
+        activity.stopService(Intent(activity, TauriVpnService::class.java))
+        println("stop vpn in plugin end")
+        invoke.resolve(JSObject())
+    }
+
     private fun startVpn() {
-        trigger("vpn-started", JSObject())
         activity.startService(
             Intent(
                 activity,

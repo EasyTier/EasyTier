@@ -15,7 +15,7 @@ import { open } from '@tauri-apps/plugin-shell';
 import { appLogDir } from '@tauri-apps/api/path'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useTray } from '~/composables/tray';
-import { start_vpn } from 'tauri-plugin-vpnservice-api';
+import { start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api';
 import { addPluginListener } from '@tauri-apps/api/core';
 
 const { t, locale } = useI18n()
@@ -197,6 +197,7 @@ function toggle_setting_menu(event: any) {
 }
 
 const vpn_start_payload = ref('')
+const vpn_start_return = ref('')
 
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', payload)
@@ -246,7 +247,12 @@ function isRunning(id: string) {
 
 async function test() {
   console.log('start vpn')
-  await start_vpn("10.144.144.1");
+  vpn_start_return.value = JSON.stringify(await start_vpn({}));
+}
+
+async function test2() {
+  console.log('stop vpn')
+  await stop_vpn()
 }
 
 </script>
@@ -270,7 +276,8 @@ async function test() {
 
     <div>
       <Button @click="test" label="start vpn"> </Button>
-      <p>{{ vpn_start_payload }}</p>
+      <p>{{ vpn_start_payload }} | {{ vpn_start_return }}</p>
+      <Button @click="test2" label="stop vpn"> </Button>
       <Toolbar>
         <template #start>
           <div class="flex align-items-center">

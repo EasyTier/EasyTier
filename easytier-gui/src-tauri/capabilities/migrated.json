@@ -36,6 +36,7 @@
     "tray:allow-set-tooltip",
     "vpnservice:allow-ping",
     "vpnservice:allow-start-vpn",
+    "vpnservice:allow-stop-vpn",
     "vpnservice:allow-register-listener"
   ]
 }

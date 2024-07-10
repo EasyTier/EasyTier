@@ -16,10 +16,21 @@ pub struct PingResponse {
 #[serde(rename_all = "camelCase")]
 pub struct StartVpnRequest {
     pub ipv4_addr: Option<String>,
+    pub disallowed_applications: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartVpnResponse {
+    pub error_msg: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopVpnRequest {}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StopVpnResponse {
     pub error_msg: Option<String>,
 }

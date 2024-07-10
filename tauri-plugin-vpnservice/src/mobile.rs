@@ -39,4 +39,10 @@ impl<R: Runtime> Vpnservice<R> {
             .run_mobile_plugin("start_vpn", payload)
             .map_err(Into::into)
     }
+
+    pub fn stop_vpn(&self, payload: StopVpnRequest) -> crate::Result<StopVpnResponse> {
+        self.0
+            .run_mobile_plugin("stop_vpn", payload)
+            .map_err(Into::into)
+    }
 }

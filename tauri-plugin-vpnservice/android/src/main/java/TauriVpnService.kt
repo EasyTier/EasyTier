@@ -10,6 +10,7 @@ import app.tauri.plugin.JSObject
 class TauriVpnService : VpnService() {
     companion object {
         @JvmField var triggerCallback: (String, JSObject) -> Unit = { _, _ -> }
+        @JvmField var self: TauriVpnService? = null
     }
 
     private lateinit var vpnInterface: ParcelFileDescriptor
@@ -21,12 +22,22 @@ class TauriVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        println("xxxx create")
+        self = this
+        println("vpn on create")
         connect()
     }
 
     override fun onDestroy() {
+        println("vpn on destroy")
+        self = null
         super.onDestroy()
+        disconnect()
+    }
+
+    override fun onRevoke() {
+        println("vpn on revoke")
+        self = null
+        super.onRevoke()
         disconnect()
     }
 
@@ -42,6 +53,7 @@ class TauriVpnService : VpnService() {
     }
 
     private fun disconnect() {
+        triggerCallback("vpn_service_stop", JSObject())
         vpnInterface.close()
     }
 

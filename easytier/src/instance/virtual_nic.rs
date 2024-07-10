@@ -327,6 +327,9 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
         config.raw_fd(tun_fd);
+        config.platform(|config| {
+            config.no_close_fd_on_drop(true);
+        });
         config.up();
 
         let dev = create_as_async(&config)?;

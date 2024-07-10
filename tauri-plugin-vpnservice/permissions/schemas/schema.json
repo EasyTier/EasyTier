@@ -337,6 +337,20 @@
           ]
         },
         {
+          "description": "allow-stop-vpn -> Enables the stop_vpn command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "allow-stop-vpn"
+          ]
+        },
+        {
+          "description": "deny-stop-vpn -> Denies the stop_vpn command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "deny-stop-vpn"
+          ]
+        },
+        {
           "description": "default -> Default permissions for the plugin",
           "type": "string",
           "enum": [

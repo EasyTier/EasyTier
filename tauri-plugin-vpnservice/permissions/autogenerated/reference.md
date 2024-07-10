@@ -91,4 +91,30 @@ Denies the start_vpn command without any pre-configured scope.
 
 </td>
 </tr>
+
+<tr>
+<td>
+
+`vpnservice:allow-stop-vpn`
+
+</td>
+<td>
+
+Enables the stop_vpn command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-stop-vpn`
+
+</td>
+<td>
+
+Denies the stop_vpn command without any pre-configured scope.
+
+</td>
+</tr>
 </table>
