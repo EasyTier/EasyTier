@@ -14,7 +14,7 @@ class PingArgs {
 }
 
 @TauriPlugin
-class ExamplePlugin(private val activity: Activity): Plugin(activity) {
+class VpnServicePlugin(private val activity: Activity): Plugin(activity) {
     private val implementation = Example()
 
     @Command
@@ -25,4 +25,23 @@ class ExamplePlugin(private val activity: Activity): Plugin(activity) {
         ret.put("value", implementation.pong(args.value ?: "default value :("))
         invoke.resolve(ret)
     }
+
+    @Command
+    fun startVpn(invoke: Invoke) {
+        val it = VpnService.prepare(activity);
+        var fd: Int = 0
+        if (it != null) {
+            var ret = activity.startActivityForResult(it, 0x0f)
+            println("OOOOOOOOO $it")
+        } else {
+            startVpn()
+        }
+        trigger("vpn-started", JSObject())
+        invoke.resolve(JSObject())
+    }
+
+    private fun startVpn() {
+        activity.startService(Intent(activity, TauriVpnService::class.java, ))
+    }
+
 }
