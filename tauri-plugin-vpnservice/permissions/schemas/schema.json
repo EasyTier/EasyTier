@@ -295,20 +295,6 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "allow-abc -> Enables the abc command without any pre-configured scope.",
-          "type": "string",
-          "enum": [
-            "allow-abc"
-          ]
-        },
-        {
-          "description": "deny-abc -> Denies the abc command without any pre-configured scope.",
-          "type": "string",
-          "enum": [
-            "deny-abc"
-          ]
-        },
-        {
           "description": "allow-ping -> Enables the ping command without any pre-configured scope.",
           "type": "string",
           "enum": [

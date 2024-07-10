@@ -17,32 +17,6 @@ Default permissions for the plugin
 <tr>
 <td>
 
-`vpnservice:allow-abc`
-
-</td>
-<td>
-
-Enables the abc command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`vpnservice:deny-abc`
-
-</td>
-<td>
-
-Denies the abc command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
 `vpnservice:allow-ping`
 
 </td>

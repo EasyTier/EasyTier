@@ -19,6 +19,7 @@ use crate::{
 };
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinSet;
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct MyNodeInfo {
@@ -71,14 +72,18 @@ impl EasyTierLauncher {
     }
 
     #[cfg(target_os = "android")]
-    async fn run_routine_for_android(instance: &Instance, data: &EasyTierData) {
+    async fn run_routine_for_android(
+        instance: &Instance,
+        data: &EasyTierData,
+        tasks: &mut JoinSet<()>,
+    ) {
         let global_ctx = instance.get_global_ctx();
         let peer_mgr = instance.get_peer_manager();
         let nic_ctx = instance.get_nic_ctx();
         let peer_packet_receiver = instance.get_peer_packet_receiver();
         let arc_tun_fd = data.tun_fd.clone();
 
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let mut old_tun_fd = arc_tun_fd.read().unwrap().clone();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -108,10 +113,12 @@ impl EasyTierLauncher {
         let mut instance = Instance::new(cfg);
         let peer_mgr = instance.get_peer_manager();
 
+        let mut tasks = JoinSet::new();
+
         // Subscribe to global context events
         let global_ctx = instance.get_global_ctx();
         let data_c = data.clone();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             let mut receiver = global_ctx.subscribe();
             while let Ok(event) = receiver.recv().await {
                 Self::handle_easytier_event(event, data_c.clone()).await;
@@ -123,7 +130,7 @@ impl EasyTierLauncher {
         let global_ctx_c = instance.get_global_ctx();
         let peer_mgr_c = peer_mgr.clone();
         let vpn_portal = instance.get_vpn_portal_inst();
-        tokio::spawn(async move {
+        tasks.spawn(async move {
             loop {
                 let node_info = MyNodeInfo {
                     virtual_ipv4: global_ctx_c
@@ -155,10 +162,14 @@ impl EasyTierLauncher {
         });
 
         #[cfg(target_os = "android")]
-        Self::run_routine_for_android(&instance, &data).await;
+        Self::run_routine_for_android(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
         stop_signal.notified().await;
+
+        tasks.abort_all();
+        drop(tasks);
+
         Ok(())
     }
 

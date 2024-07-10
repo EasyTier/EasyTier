@@ -235,6 +235,15 @@ fn set_logging_level(level: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_tun_fd(instance_id: String, fd: i32) -> Result<(), String> {
+    let mut instance = INSTANCE_MAP
+        .get_mut(&instance_id)
+        .ok_or("instance not found")?;
+    instance.set_tun_fd(fd);
+    Ok(())
+}
+
 #[cfg(not(target_os = "android"))]
 fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
@@ -378,7 +387,8 @@ pub fn run() {
             collect_network_infos,
             get_os_hostname,
             set_auto_launch_status,
-            set_logging_level
+            set_logging_level,
+            set_tun_fd
         ])
         .on_window_event(|win, event| match event {
             #[cfg(not(target_os = "android"))]

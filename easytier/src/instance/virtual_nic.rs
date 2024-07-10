@@ -323,6 +323,7 @@ impl VirtualNic {
         &mut self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<Box<dyn Tunnel>, Error> {
+        println!("tun_fd: {}", tun_fd);
         let mut config = Configuration::default();
         config.layer(Layer::L3);
         config.raw_fd(tun_fd);
@@ -338,6 +339,8 @@ impl VirtualNic {
             ),
             None,
         );
+
+        self.ifname = Some(format!("tunfd_{}", tun_fd));
 
         Ok(Box::new(ft))
     }

@@ -200,6 +200,9 @@ const vpn_start_payload = ref('')
 
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', payload)
+  if (payload.fd) {
+    setTunFd(networkStore.networkInstanceIds[0], payload.fd)
+  }
   vpn_start_payload.value = JSON.stringify(payload)
 }
 

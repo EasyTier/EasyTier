@@ -47,7 +47,7 @@ class TauriVpnService : VpnService() {
 
     private fun createVpnInterface(): ParcelFileDescriptor {
         return Builder()
-                .addAddress("10.0.0.2", 32)
+                .addAddress("10.126.126.1", 32)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("114.114.114.114")
                 .setMtu(1500)
