@@ -295,6 +295,20 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "allow-abc -> Enables the abc command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "allow-abc"
+          ]
+        },
+        {
+          "description": "deny-abc -> Denies the abc command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "deny-abc"
+          ]
+        },
+        {
           "description": "allow-ping -> Enables the ping command without any pre-configured scope.",
           "type": "string",
           "enum": [
@@ -306,6 +320,34 @@
           "type": "string",
           "enum": [
             "deny-ping"
+          ]
+        },
+        {
+          "description": "allow-register-listener -> Enables the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "allow-register-listener"
+          ]
+        },
+        {
+          "description": "deny-register-listener -> Denies the register_listener command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "deny-register-listener"
+          ]
+        },
+        {
+          "description": "allow-start-vpn -> Enables the start_vpn command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "allow-start-vpn"
+          ]
+        },
+        {
+          "description": "deny-start-vpn -> Denies the start_vpn command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "deny-start-vpn"
           ]
         },
         {

@@ -87,14 +87,14 @@ export default defineConfig(async () => ({
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
-    host: '10.147.223.126',
+    host: '10.147.223.128',
     strictPort: true,
     watch: {
       // 3. tell vite to ignore watching `src-tauri`
       ignored: ['**/src-tauri/**'],
     },
     hmr: {
-      host: "10.147.223.126",
+      host: "10.147.223.128",
       protocol: "ws",
     },
   },

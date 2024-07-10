@@ -34,9 +34,9 @@ impl<R: Runtime> Vpnservice<R> {
             .map_err(Into::into)
     }
 
-    pub fn startVpn(&self, payload: StartVpnRequest) -> crate::Result<StartVpnResponse> {
+    pub fn start_vpn(&self, payload: StartVpnRequest) -> crate::Result<StartVpnResponse> {
         self.0
-            .run_mobile_plugin("startVpn", payload)
+            .run_mobile_plugin("start_vpn", payload)
             .map_err(Into::into)
     }
 }

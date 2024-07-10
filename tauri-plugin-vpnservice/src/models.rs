@@ -21,5 +21,5 @@ pub struct StartVpnRequest {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartVpnResponse {
-    pub value: Option<String>,
+    pub error_msg: Option<String>,
 }

@@ -15,6 +15,8 @@ import { open } from '@tauri-apps/plugin-shell';
 import { appLogDir } from '@tauri-apps/api/path'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useTray } from '~/composables/tray';
+import { start_vpn } from 'tauri-plugin-vpnservice-api';
+import { addPluginListener } from '@tauri-apps/api/core';
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -194,6 +196,32 @@ function toggle_setting_menu(event: any) {
   setting_menu.value.toggle(event)
 }
 
+const vpn_start_payload = ref('')
+
+async function onVpnServiceStart(payload: any) {
+  console.log('vpn service start', payload)
+  vpn_start_payload.value = JSON.stringify(payload)
+}
+
+async function onVpnServiceStop(payload: any) {
+  console.log('vpn service stop', payload)
+}
+
+async function registerVpnServiceListener() {
+  console.log('register vpn service listener')
+  await addPluginListener(
+    'vpnservice',
+    'vpn_service_start',
+    onVpnServiceStart
+  )
+
+  await addPluginListener(
+    'vpnservice',
+    'vpn_service_stop',
+    onVpnServiceStop
+  )
+}
+
 onMounted(async () => {
   networkStore.loadFromLocalStorage()
   if (getAutoLaunchStatus()) {
@@ -206,11 +234,18 @@ onMounted(async () => {
       }
     }
   }
+  await registerVpnServiceListener()
 })
 
 function isRunning(id: string) {
   return networkStore.networkInstanceIds.includes(id)
 }
+
+async function test() {
+  console.log('start vpn')
+  await start_vpn("10.144.144.1");
+}
+
 </script>
 
 <script lang="ts">
@@ -231,6 +266,8 @@ function isRunning(id: string) {
     </Dialog>
 
     <div>
+      <Button @click="test" label="start vpn"> </Button>
+      <p>{{ vpn_start_payload }}</p>
       <Toolbar>
         <template #start>
           <div class="flex align-items-center">

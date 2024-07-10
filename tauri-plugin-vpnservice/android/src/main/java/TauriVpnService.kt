@@ -5,7 +5,12 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 
+import app.tauri.plugin.JSObject
+
 class TauriVpnService : VpnService() {
+    companion object {
+        @JvmField var triggerCallback: (String, JSObject) -> Unit = { _, _ -> }
+    }
 
     private lateinit var vpnInterface: ParcelFileDescriptor
 
@@ -28,6 +33,10 @@ class TauriVpnService : VpnService() {
     private fun connect(): Int {
         vpnInterface = createVpnInterface()
         println("vpn created ${vpnInterface.fd}")
+
+        var event_data = JSObject()
+        event_data.put("fd", vpnInterface.fd)
+        triggerCallback("vpn_service_start", event_data)
 
         return vpnInterface.fd
     }
