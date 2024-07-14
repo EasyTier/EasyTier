@@ -214,7 +214,7 @@ impl Instance {
         let peer_manager_c = self.peer_manager.clone();
         let global_ctx_c = self.get_global_ctx();
         let nic_ctx = self.nic_ctx.clone();
-        let peer_packet_receiver = self.peer_packet_receiver.clone();
+        let _peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
             let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
             let mut current_dhcp_ip: Option<Ipv4Inet> = None;
@@ -292,7 +292,7 @@ impl Instance {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
                             &peer_manager_c,
-                            peer_packet_receiver.clone(),
+                            _peer_packet_receiver.clone(),
                         );
                         if let Err(e) = new_nic_ctx.run(ip.address()).await {
                             tracing::error!(
@@ -531,7 +531,11 @@ impl Instance {
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
+        println!("setup_nic_ctx_for_android, fd: {}", fd);
         Self::clear_nic_ctx(nic_ctx.clone()).await;
+        if fd <= 0 {
+            return Ok(());
+        }
         let mut new_nic_ctx = NicCtx::new(
             global_ctx.clone(),
             &peer_manager,

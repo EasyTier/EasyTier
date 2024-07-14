@@ -9,22 +9,27 @@ export async function ping(value: string): Promise<string | null> {
 }
 
 export interface InvokeResponse {
-  error_msg?: string;
+  errorMsg?: string;
 }
 
 export interface StartVpnRequest {
-  ipv4_addr?: string;
-  disallowed_applications?: string[];
+  ipv4Addr?: string;
+  routes?: string[];
+  dns?: string;
+  disallowedApplications?: string[];
+  mtu?: number;
+}
+
+export async function prepare_vpn(): Promise<InvokeResponse | null> {
+  return await invoke<InvokeResponse>('plugin:vpnservice|prepare_vpn', {})
 }
 
 export async function start_vpn(request: StartVpnRequest): Promise<InvokeResponse | null> {
   return await invoke<InvokeResponse>('plugin:vpnservice|start_vpn', {
-    payload: request,
+    ...request,
   })
 }
 
 export async function stop_vpn(): Promise<InvokeResponse | null> {
-  return await invoke<InvokeResponse>('plugin:vpnservice|stop_vpn', {
-    payload: {},
-  })
+  return await invoke<InvokeResponse>('plugin:vpnservice|stop_vpn', {})
 }

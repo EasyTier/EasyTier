@@ -15,8 +15,8 @@ import { open } from '@tauri-apps/plugin-shell';
 import { appLogDir } from '@tauri-apps/api/path'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useTray } from '~/composables/tray';
-import { start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api';
-import { addPluginListener } from '@tauri-apps/api/core';
+import { type } from '@tauri-apps/plugin-os';
+import { initMobileVpnService } from '~/composables/mobile_vpn';
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -84,8 +84,14 @@ networkStore.$subscribe(async () => {
 })
 
 async function runNetworkCb(cfg: NetworkConfig, cb: () => void) {
-  cb()
-  networkStore.removeNetworkInstance(cfg.instance_id)
+  await prepareVpnService()
+
+  if (type() === 'android') {
+    networkStore.clearNetworkInstances()
+  } else {
+    networkStore.removeNetworkInstance(cfg.instance_id)
+  }
+
   await retainNetworkInstance(networkStore.networkInstanceIds)
   networkStore.addNetworkInstance(cfg.instance_id)
 
@@ -96,6 +102,8 @@ async function runNetworkCb(cfg: NetworkConfig, cb: () => void) {
     // console.error(e)
     toast.add({ severity: 'info', detail: e })
   }
+
+  cb()
 }
 
 async function stopNetworkCb(cfg: NetworkConfig, cb: () => void) {
@@ -196,36 +204,6 @@ function toggle_setting_menu(event: any) {
   setting_menu.value.toggle(event)
 }
 
-const vpn_start_payload = ref('')
-const vpn_start_return = ref('')
-
-async function onVpnServiceStart(payload: any) {
-  console.log('vpn service start', payload)
-  if (payload.fd) {
-    setTunFd(networkStore.networkInstanceIds[0], payload.fd)
-  }
-  vpn_start_payload.value = JSON.stringify(payload)
-}
-
-async function onVpnServiceStop(payload: any) {
-  console.log('vpn service stop', payload)
-}
-
-async function registerVpnServiceListener() {
-  console.log('register vpn service listener')
-  await addPluginListener(
-    'vpnservice',
-    'vpn_service_start',
-    onVpnServiceStart
-  )
-
-  await addPluginListener(
-    'vpnservice',
-    'vpn_service_stop',
-    onVpnServiceStop
-  )
-}
-
 onMounted(async () => {
   networkStore.loadFromLocalStorage()
   if (getAutoLaunchStatus()) {
@@ -238,21 +216,11 @@ onMounted(async () => {
       }
     }
   }
-  await registerVpnServiceListener()
+  await initMobileVpnService()
 })
 
 function isRunning(id: string) {
   return networkStore.networkInstanceIds.includes(id)
-}
-
-async function test() {
-  console.log('start vpn')
-  vpn_start_return.value = JSON.stringify(await start_vpn({}));
-}
-
-async function test2() {
-  console.log('stop vpn')
-  await stop_vpn()
 }
 
 </script>
@@ -275,9 +243,6 @@ async function test2() {
     </Dialog>
 
     <div>
-      <Button @click="test" label="start vpn"> </Button>
-      <p>{{ vpn_start_payload }} | {{ vpn_start_return }}</p>
-      <Button @click="test2" label="stop vpn"> </Button>
       <Toolbar>
         <template #start>
           <div class="flex align-items-center">

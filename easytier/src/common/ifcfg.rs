@@ -9,32 +9,32 @@ use super::error::Error;
 pub trait IfConfiguerTrait: Send + Sync {
     async fn add_ipv4_route(
         &self,
-        name: &str,
-        address: Ipv4Addr,
-        cidr_prefix: u8,
+        _name: &str,
+        _address: Ipv4Addr,
+        _cidr_prefix: u8,
     ) -> Result<(), Error> {
         Ok(())
     }
     async fn remove_ipv4_route(
         &self,
-        name: &str,
-        address: Ipv4Addr,
-        cidr_prefix: u8,
+        _name: &str,
+        _address: Ipv4Addr,
+        _cidr_prefix: u8,
     ) -> Result<(), Error> {
         Ok(())
     }
     async fn add_ipv4_ip(
         &self,
-        name: &str,
-        address: Ipv4Addr,
-        cidr_prefix: u8,
+        _name: &str,
+        _address: Ipv4Addr,
+        _cidr_prefix: u8,
     ) -> Result<(), Error> {
         Ok(())
     }
-    async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
+    async fn set_link_status(&self, _name: &str, _up: bool) -> Result<(), Error> {
         Ok(())
     }
-    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Addr>) -> Result<(), Error> {
+    async fn remove_ip(&self, _name: &str, _ip: Option<Ipv4Addr>) -> Result<(), Error> {
         Ok(())
     }
     async fn wait_interface_show(&self, _name: &str) -> Result<(), Error> {

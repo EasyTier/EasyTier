@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{collections::BTreeMap, env::current_exe, process};
+use std::collections::BTreeMap;
 
 use anyhow::Context;
 #[cfg(not(target_os = "android"))]
@@ -256,7 +256,9 @@ fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn check_sudo() -> bool {
+    use std::env::current_exe;
     let is_elevated = privilege::user::privileged();
     if !is_elevated {
         let Ok(my_exe) = current_exe() else {
@@ -269,7 +271,7 @@ fn check_sudo() -> bool {
 }
 
 #[cfg(target_os = "android")]
-pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, anyhow::Error> {
+pub fn init_launch(_app_handle: &tauri::AppHandle, _enable: bool) -> Result<bool, anyhow::Error> {
     Ok(false)
 }
 
@@ -337,10 +339,12 @@ pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool,
 pub fn run() {
     #[cfg(not(target_os = "android"))]
     if !check_sudo() {
+        use std::process;
         process::exit(0);
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
@@ -390,10 +394,10 @@ pub fn run() {
             set_logging_level,
             set_tun_fd
         ])
-        .on_window_event(|win, event| match event {
+        .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                let _ = win.hide();
+                let _ = _win.hide();
                 api.prevent_close();
             }
             _ => {}

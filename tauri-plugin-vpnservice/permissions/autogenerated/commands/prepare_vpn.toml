@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-prepare-vpn"
+description = "Enables the prepare_vpn command without any pre-configured scope."
+commands.allow = ["prepare_vpn"]
+
+[[permission]]
+identifier = "deny-prepare-vpn"
+description = "Denies the prepare_vpn command without any pre-configured scope."
+commands.deny = ["prepare_vpn"]

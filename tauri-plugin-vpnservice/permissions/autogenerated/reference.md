@@ -43,6 +43,32 @@ Denies the ping command without any pre-configured scope.
 <tr>
 <td>
 
+`vpnservice:allow-prepare-vpn`
+
+</td>
+<td>
+
+Enables the prepare_vpn command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-prepare-vpn`
+
+</td>
+<td>
+
+Denies the prepare_vpn command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpnservice:allow-register-listener`
 
 </td>

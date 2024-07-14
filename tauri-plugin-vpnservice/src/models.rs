@@ -14,23 +14,20 @@ pub struct PingResponse {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StartVpnRequest {
-    pub ipv4_addr: Option<String>,
-    pub disallowed_applications: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct StartVpnResponse {
-    pub error_msg: Option<String>,
-}
+pub struct VoidRequest {}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StopVpnRequest {}
+pub struct StartVpnRequest {
+    pub ipv4_addr: Option<String>,
+    pub routes: Option<Vec<String>>,
+    pub dns: Option<String>,
+    pub disallowed_applications: Option<Vec<String>>,
+    pub mtu: Option<u32>,
+}
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StopVpnResponse {
+pub struct Status {
     pub error_msg: Option<String>,
 }

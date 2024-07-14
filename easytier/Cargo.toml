@@ -189,6 +189,8 @@ zip = "0.6.6"
 [dev-dependencies]
 serial_test = "3.0.0"
 rstest = "0.18.2"
+
+[target.'cfg(linux)'.build-dependencies]
 defguard_wireguard_rs = "0.4.2"
 
 

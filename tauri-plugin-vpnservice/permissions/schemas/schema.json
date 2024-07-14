@@ -309,6 +309,20 @@
           ]
         },
         {
+          "description": "allow-prepare-vpn -> Enables the prepare_vpn command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "allow-prepare-vpn"
+          ]
+        },
+        {
+          "description": "deny-prepare-vpn -> Denies the prepare_vpn command without any pre-configured scope.",
+          "type": "string",
+          "enum": [
+            "deny-prepare-vpn"
+          ]
+        },
+        {
           "description": "allow-register-listener -> Enables the register_listener command without any pre-configured scope.",
           "type": "string",
           "enum": [

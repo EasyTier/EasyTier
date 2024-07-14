@@ -34,13 +34,19 @@ impl<R: Runtime> Vpnservice<R> {
             .map_err(Into::into)
     }
 
-    pub fn start_vpn(&self, payload: StartVpnRequest) -> crate::Result<StartVpnResponse> {
+    pub fn prepare_vpn(&self, payload: VoidRequest) -> crate::Result<Status> {
+        self.0
+            .run_mobile_plugin("prepare_vpn", payload)
+            .map_err(Into::into)
+    }
+
+    pub fn start_vpn(&self, payload: StartVpnRequest) -> crate::Result<Status> {
         self.0
             .run_mobile_plugin("start_vpn", payload)
             .map_err(Into::into)
     }
 
-    pub fn stop_vpn(&self, payload: StopVpnRequest) -> crate::Result<StopVpnResponse> {
+    pub fn stop_vpn(&self, payload: VoidRequest) -> crate::Result<Status> {
         self.0
             .run_mobile_plugin("stop_vpn", payload)
             .map_err(Into::into)
