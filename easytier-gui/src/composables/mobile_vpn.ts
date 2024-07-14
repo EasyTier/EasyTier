@@ -1,5 +1,6 @@
 import { addPluginListener } from '@tauri-apps/api/core';
 import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api';
+import { Route } from '~/types/network';
 
 const networkStore = useNetworkStore()
 
@@ -7,12 +8,14 @@ interface vpnStatus {
     running: boolean
     ipv4Addr: string | null | undefined
     ipv4Cidr: number | null | undefined
+    routes: string[]
 }
 
 var curVpnStatus: vpnStatus = {
     running: false,
     ipv4Addr: undefined,
     ipv4Cidr: undefined,
+    routes: []
 }
 
 async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
@@ -38,7 +41,7 @@ async function doStopVpn() {
     curVpnStatus.ipv4Addr = undefined
 }
 
-async function doStartVpn(ipv4Addr: string, cidr: number) {
+async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
     if (curVpnStatus.running) {
         return
     }
@@ -46,7 +49,7 @@ async function doStartVpn(ipv4Addr: string, cidr: number) {
     console.log('start vpn')
     let start_ret = await start_vpn({
         "ipv4Addr": ipv4Addr + '/' + cidr,
-        "routes": ["0.0.0.0/0"],
+        "routes": routes,
         "disallowedApplications": ["com.kkrainbow.easytier"],
         "mtu": 1300,
     });
@@ -56,6 +59,7 @@ async function doStartVpn(ipv4Addr: string, cidr: number) {
     await waitVpnStatus(true, 3)
 
     curVpnStatus.ipv4Addr = ipv4Addr
+    curVpnStatus.routes = routes
 }
 
 async function onVpnServiceStart(payload: any) {
@@ -88,6 +92,25 @@ async function registerVpnServiceListener() {
     )
 }
 
+function getRoutesForVpn(routes: Route[]): string[] {
+    if (!routes) {
+        return []
+    }
+
+    let ret = []
+    for (let r of routes) {
+        for (let cidr of r.proxy_cidrs) {
+            if (cidr.indexOf('/') === -1) {
+                cidr += '/32'
+            }
+            ret.push(cidr)
+        }
+    }
+
+    // sort and dedup
+    return Array.from(new Set(ret)).sort()
+}
+
 async function watchNetworkInstance() {
     networkStore.$subscribe(async () => {
         let insts = networkStore.networkInstanceIds
@@ -103,12 +126,20 @@ async function watchNetworkInstance() {
         }
 
         const virtual_ip = curNetworkInfo?.node_info?.virtual_ipv4
-        if (virtual_ip !== curVpnStatus.ipv4Addr) {
+        if (!virtual_ip || !virtual_ip.length) {
+            await doStopVpn()
+            return
+        }
+
+        const routes = getRoutesForVpn(curNetworkInfo?.routes)
+
+        var ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
+        var routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
+
+        if (ipChanged || routesChanged) {
             console.log('virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
             await doStopVpn()
-            if (virtual_ip.length > 0) {
-                await doStartVpn(virtual_ip, 24)
-            }
+            await doStartVpn(virtual_ip, 24, routes)
             return
         }
     })
