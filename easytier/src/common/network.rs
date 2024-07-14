@@ -15,6 +15,13 @@ struct InterfaceFilter {
     iface: NetworkInterface,
 }
 
+#[cfg(target_os = "android")]
+impl InterfaceFilter {
+    async fn filter_iface(&self) -> bool {
+        true
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl InterfaceFilter {
     async fn is_tun_tap_device(&self) -> bool {

@@ -214,7 +214,7 @@ impl Instance {
         let peer_manager_c = self.peer_manager.clone();
         let global_ctx_c = self.get_global_ctx();
         let nic_ctx = self.nic_ctx.clone();
-        let peer_packet_receiver = self.peer_packet_receiver.clone();
+        let _peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
             let default_ipv4_addr = Ipv4Inet::new(Ipv4Addr::new(10, 126, 126, 0), 24).unwrap();
             let mut current_dhcp_ip: Option<Ipv4Inet> = None;
@@ -286,26 +286,31 @@ impl Instance {
                         ));
                         continue;
                     }
-                    let mut new_nic_ctx = NicCtx::new(
-                        global_ctx_c.clone(),
-                        &peer_manager_c,
-                        peer_packet_receiver.clone(),
-                    );
-                    if let Err(e) = new_nic_ctx.run(ip.address()).await {
-                        tracing::error!(
-                            ?current_dhcp_ip,
-                            ?candidate_ipv4_addr,
-                            ?e,
-                            "add ip failed"
+
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        let mut new_nic_ctx = NicCtx::new(
+                            global_ctx_c.clone(),
+                            &peer_manager_c,
+                            _peer_packet_receiver.clone(),
                         );
-                        global_ctx_c.set_ipv4(None);
-                        continue;
+                        if let Err(e) = new_nic_ctx.run(ip.address()).await {
+                            tracing::error!(
+                                ?current_dhcp_ip,
+                                ?candidate_ipv4_addr,
+                                ?e,
+                                "add ip failed"
+                            );
+                            global_ctx_c.set_ipv4(None);
+                            continue;
+                        }
+                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                     }
+
                     current_dhcp_ip = Some(ip);
                     global_ctx_c.set_ipv4(Some(ip.address()));
                     global_ctx_c
                         .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip.address())));
-                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
                 } else {
                     current_dhcp_ip = None;
                     global_ctx_c.set_ipv4(None);
@@ -326,14 +331,17 @@ impl Instance {
 
         if self.global_ctx.config.get_flags().no_tun {
             self.peer_packet_receiver.lock().await.close();
-        } else if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
-            let mut new_nic_ctx = NicCtx::new(
-                self.global_ctx.clone(),
-                &self.peer_manager,
-                self.peer_packet_receiver.clone(),
-            );
-            new_nic_ctx.run(ipv4_addr).await?;
-            Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
+        } else {
+            #[cfg(not(target_os = "android"))]
+            if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
+                let mut new_nic_ctx = NicCtx::new(
+                    self.global_ctx.clone(),
+                    &self.peer_manager,
+                    self.peer_packet_receiver.clone(),
+                );
+                new_nic_ctx.run(ipv4_addr).await?;
+                Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
+            }
         }
 
         if self.global_ctx.config.get_dhcp() {
@@ -505,5 +513,39 @@ impl Instance {
 
     pub fn get_vpn_portal_inst(&self) -> Arc<Mutex<Box<dyn VpnPortal>>> {
         self.vpn_portal.clone()
+    }
+
+    pub fn get_nic_ctx(&self) -> ArcNicCtx {
+        self.nic_ctx.clone()
+    }
+
+    pub fn get_peer_packet_receiver(&self) -> Arc<Mutex<PacketRecvChanReceiver>> {
+        self.peer_packet_receiver.clone()
+    }
+
+    #[cfg(target_os = "android")]
+    pub async fn setup_nic_ctx_for_android(
+        nic_ctx: ArcNicCtx,
+        global_ctx: ArcGlobalCtx,
+        peer_manager: Arc<PeerManager>,
+        peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        fd: i32,
+    ) -> Result<(), anyhow::Error> {
+        println!("setup_nic_ctx_for_android, fd: {}", fd);
+        Self::clear_nic_ctx(nic_ctx.clone()).await;
+        if fd <= 0 {
+            return Ok(());
+        }
+        let mut new_nic_ctx = NicCtx::new(
+            global_ctx.clone(),
+            &peer_manager,
+            peer_packet_receiver.clone(),
+        );
+        new_nic_ctx
+            .run_for_android(fd)
+            .await
+            .with_context(|| "add ip failed")?;
+        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
+        Ok(())
     }
 }

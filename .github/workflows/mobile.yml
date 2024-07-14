@@ -1,0 +1,164 @@
+name: EasyTier Mobile
+
+on:
+  push:
+    branches: ["develop", "main"]
+  pull_request:
+    branches: ["develop", "main"]
+      
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # necessary for windows
+    shell: bash
+
+jobs:
+  pre_job:
+    # continue-on-error: true # Uncomment once integration is finished
+    runs-on: ubuntu-latest
+    # Map a step output to a job output
+    outputs:
+      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          # All of these options are optional, so you can remove them if you are happy with the defaults
+          concurrent_skipping: 'never'
+          skip_after_successful_duplicate: 'true'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", "tauri-plugin-vpnservice/**", ".github/workflows/mobile.yml"]'
+  build-mobile:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - TARGET: android
+            OS: ubuntu-latest
+    runs-on: ${{ matrix.OS }}
+    env:
+      NAME: easytier
+      TARGET: ${{ matrix.TARGET }}
+      OS: ${{ matrix.OS }}
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'    
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'oracle'
+          java-version: '20'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          packages: 'build-tools;34.0.0 ndk;26.0.10792818 tools platform-tools platforms;android-34 '
+
+      - name: Setup Android Environment
+        run: |
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/ndk/26.0.10792818/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
+          echo "NDK_HOME=$ANDROID_HOME/ndk/26.0.10792818/" > $GITHUB_ENV
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 21
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install frontend dependencies
+        run: |
+          (cd easytier-gui; pnpm install)
+          (cd tauri-plugin-vpnservice; pnpm install; pnpm build)
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            ./target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install rust target
+        run: |
+          bash ./.github/workflows/install_rust.sh
+          rustup target add aarch64-linux-android
+          rustup target add armv7-linux-androideabi
+          rustup target add i686-linux-android
+          rustup target add x86_64-linux-android
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          # GitHub repo token to use to avoid rate limiter
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Android
+        run: |
+          cd easytier-gui
+          pnpm tauri android build
+
+      - name: Compress
+        run: |
+          mkdir -p ./artifacts/objects/
+          mv easytier-gui/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk ./artifacts/objects/
+          
+          if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
+            TAG=$GITHUB_REF_NAME
+          else
+            TAG=$GITHUB_SHA
+          fi
+
+          tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
+          rm -rf ./artifacts/objects/
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-gui-${{ matrix.TARGET }}
+          path: |
+            ./artifacts/*
+
+      - name: Upload OSS
+        if: ${{ env.OSS_BUCKET != '' }}
+        uses: Menci/upload-to-oss@main
+        with:
+          access-key-id: ${{ secrets.ALIYUN_OSS_ACCESS_ID }}
+          access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
+          endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
+          bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
+          local-path: ./artifacts/
+          remote-path: /easytier-releases/${{ github.sha }}/mobile
+          no-delete-remote-files: true
+          retry: 5
+  mobile-result:
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    runs-on: ubuntu-latest
+    needs:
+      - pre_job
+      - build-mobile
+    steps:
+      - name: Mark result as failed
+        if: needs.build-mobile.result != 'success'
+        run: exit 1

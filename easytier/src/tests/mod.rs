@@ -1,5 +1,6 @@
 use crate::common::PeerId;
 
+#[cfg(target_os = "linux")]
 mod three_node;
 
 pub fn get_guest_veth_name(net_ns: &str) -> &str {

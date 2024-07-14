@@ -60,6 +60,10 @@ export const useNetworkStore = defineStore('networkStore', {
       }
     },
 
+    clearNetworkInstances() {
+      this.instances = {}
+    },
+
     updateWithNetworkInfos(networkInfos: Record<string, NetworkInstanceRunningInfo>) {
       this.networkInfos = networkInfos
       for (const [instanceId, info] of Object.entries(networkInfos)) {

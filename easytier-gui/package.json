@@ -14,6 +14,7 @@
   "dependencies": {
     "@primevue/themes": "^4.0.0",
     "@tauri-apps/plugin-clipboard-manager": "2.1.0-beta.4",
+    "@tauri-apps/plugin-os": "2.0.0-beta.6",
     "@tauri-apps/plugin-process": "2.0.0-beta.6",
     "@tauri-apps/plugin-shell": "2.0.0-beta.7",
     "aura": "link:@primevue/themes/aura",
@@ -21,6 +22,7 @@
     "primeflex": "^3.3.1",
     "primeicons": "^7.0.0",
     "primevue": "^4.0.0",
+    "tauri-plugin-vpnservice-api": "link:../tauri-plugin-vpnservice/",
     "vue": "^3.4.31",
     "vue-i18n": "^9.13.1",
     "vue-router": "^4.4.0"

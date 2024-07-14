@@ -1,16 +1,46 @@
-# Tauri + Vue 3 + TypeScript
+# GUI for EasyTier
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+this is a GUI implementation for EasyTier, based on Tauri2.
 
-## Recommended IDE Setup
+## Compile
 
-- [VS Code](https://code.visualstudio.com/) + [Volar](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+### Install prerequisites
 
-## Type Support For `.vue` Imports in TS
+```
+apt install npm
+npm install -g pnpm
+```
 
-Since TypeScript cannot handle type information for `.vue` imports, they are shimmed to be a generic Vue component type by default. In most cases this is fine if you don't really care about component prop types outside of templates. However, if you wish to get actual prop types in `.vue` imports (for example to get props validation when using manual `h(...)` calls), you can enable Volar's Take Over mode by following these steps:
+### For Desktop (Win/Mac/Linux)
 
-1. Run `Extensions: Show Built-in Extensions` from VS Code's command palette, look for `TypeScript and JavaScript Language Features`, then right click and select `Disable (Workspace)`. By default, Take Over mode will enable itself if the default TypeScript extension is disabled.
-2. Reload the VS Code window by running `Developer: Reload Window` from the command palette.
+```
+pnpm install
+pnpm tauri build
+```
 
-You can learn more about Take Over mode [here](https://github.com/johnsoncodehk/volar/discussions/471).
+### For Android
+
+Need to install android SDK / emulator / NDK / Java (easy with android studio)
+
+```
+# For ArchLinux
+sudo pacman -Sy sdkmanager
+sudo sdkmanager --install platform-tools platforms\;android-34 ndk\;r26 build-tools
+export PATH=/opt/android-sdk/platform-tools:$PATH
+export ANDROID_HOME=/opt/android-sdk/
+export NDK_HOME=/opt/android-sdk/ndk/26.0.10792818/
+rustup target add aarch64-linux-android
+
+install java 20
+```
+
+
+Java version depend on gradle version specified in (easytier-gui\src-tauri\gen\android\build.gradle.kts)
+
+See [Gradle compatibility matrix](https://docs.gradle.org/current/userguide/compatibility.html) for detail .
+
+```
+pnpm install
+pnpm tauri android init
+pnpm tauri android build
+```

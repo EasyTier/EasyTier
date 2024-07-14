@@ -15,20 +15,26 @@ async function toggleVisibility() {
 }
 
 export async function useTray(init: boolean = false) {
-  let tray = await TrayIcon.getById(DEFAULT_TRAY_NAME)
-  if (!tray) {
-    tray = await TrayIcon.new({
-      tooltip: `EasyTier\n${pkg.version}`,
-      title: `EasyTier\n${pkg.version}`,
-      id: DEFAULT_TRAY_NAME,
-      menu: await Menu.new({
-        id: 'main',
-        items: await generateMenuItem(),
-      }),
-      action: async () => {
-        toggleVisibility()
-      }
-    })
+  let tray;
+  try {
+    tray = await TrayIcon.getById(DEFAULT_TRAY_NAME)
+    if (!tray) {
+      tray = await TrayIcon.new({
+        tooltip: `EasyTier\n${pkg.version}`,
+        title: `EasyTier\n${pkg.version}`,
+        id: DEFAULT_TRAY_NAME,
+        menu: await Menu.new({
+          id: 'main',
+          items: await generateMenuItem(),
+        }),
+        action: async () => {
+          toggleVisibility()
+        }
+      })
+    }
+  } catch (error) {
+    console.warn('Error while creating tray icon:', error)
+    return null
   }
 
   if (init) {
@@ -63,13 +69,14 @@ export async function MenuItemShow(text: string) {
     id: 'show',
     text,
     action: async () => {
-        await toggleVisibility();
+      await toggleVisibility();
     },
   })
 }
 
 export async function setTrayMenu(items: (MenuItem | PredefinedMenuItem)[] | undefined = undefined) {
   const tray = await useTray()
+  if (!tray) return
   const menu = await Menu.new({
     id: 'main',
     items: items || await generateMenuItem(),
@@ -79,12 +86,14 @@ export async function setTrayMenu(items: (MenuItem | PredefinedMenuItem)[] | und
 
 export async function setTrayRunState(isRunning: boolean = false) {
   const tray = await useTray()
+  if (!tray) return
   tray.setIcon(isRunning ? 'icons/icon-inactive.ico' : 'icons/icon.ico')
 }
 
 export async function setTrayTooltip(tooltip: string) {
   if (tooltip) {
     const tray = await useTray()
+    if (!tray) return
     tray.setTooltip(`EasyTier\n${pkg.version}\n${tooltip}`)
     tray.setTitle(`EasyTier\n${pkg.version}\n${tooltip}`)
   }

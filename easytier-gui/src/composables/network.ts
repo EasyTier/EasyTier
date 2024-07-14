@@ -29,3 +29,7 @@ export async function setAutoLaunchStatus(enable: boolean) {
 export async function setLoggingLevel(level: string) {
   return await invoke('set_logging_level', { level })
 }
+
+export async function setTunFd(instanceId: string, fd: number) {
+  return await invoke('set_tun_fd', { instanceId, fd })
+}

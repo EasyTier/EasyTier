@@ -274,7 +274,9 @@ impl VirtualNic {
         #[cfg(target_os = "linux")]
         {
             let dev_name = self.global_ctx.get_flags().dev_name;
-            config.name(format!("{}{}", dev_name, 0));
+            if !dev_name.is_empty() {
+                config.name(format!("{}", dev_name));
+            }
             config.platform(|config| {
                 // detect protocol by ourselves for cross platform
                 config.packet_information(false);
@@ -318,7 +320,37 @@ impl VirtualNic {
         Ok(create_as_async(&config)?)
     }
 
-    async fn create_dev_ret_err(&mut self) -> Result<Box<dyn Tunnel>, Error> {
+    #[cfg(target_os = "android")]
+    pub async fn create_dev_for_android(
+        &mut self,
+        tun_fd: std::os::fd::RawFd,
+    ) -> Result<Box<dyn Tunnel>, Error> {
+        println!("tun_fd: {}", tun_fd);
+        let mut config = Configuration::default();
+        config.layer(Layer::L3);
+        config.raw_fd(tun_fd);
+        config.platform(|config| {
+            config.no_close_fd_on_drop(true);
+        });
+        config.up();
+
+        let dev = create_as_async(&config)?;
+        let (a, b) = BiLock::new(dev);
+        let ft = TunnelWrapper::new(
+            TunStream::new(a, false),
+            FramedWriter::new_with_converter(
+                TunAsyncWrite { l: b },
+                TunZCPacketToBytes::new(false),
+            ),
+            None,
+        );
+
+        self.ifname = Some(format!("tunfd_{}", tun_fd));
+
+        Ok(Box::new(ft))
+    }
+
+    pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
         let ifname = dev.get_ref().name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
@@ -349,10 +381,6 @@ impl VirtualNic {
 
         self.ifname = Some(ifname.to_owned());
         Ok(Box::new(ft))
-    }
-
-    pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
-        self.create_dev_ret_err().await
     }
 
     pub fn ifname(&self) -> &str {
@@ -586,6 +614,24 @@ impl NicCtx {
 
         self.assign_ipv4_to_tun_device(ipv4_addr).await?;
         self.run_proxy_cidrs_route_updater().await?;
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "android")]
+    pub async fn run_for_android(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
+        let tunnel = {
+            let mut nic = self.nic.lock().await;
+            let ret = nic.create_dev_for_android(tun_fd).await?;
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
+            ret
+        };
+
+        let (stream, sink) = tunnel.split();
+
+        self.do_forward_nic_to_peers(stream)?;
+        self.do_forward_peers_to_nic(sink);
 
         Ok(())
     }

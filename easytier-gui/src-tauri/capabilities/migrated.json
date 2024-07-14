@@ -8,13 +8,11 @@
   "permissions": [
     "path:default",
     "event:default",
-
     "window:default",
     "window:allow-is-visible",
     "window:allow-show",
     "window:allow-hide",
     "window:allow-set-focus",
-
     "app:default",
     "resources:default",
     "menu:default",
@@ -26,7 +24,6 @@
     "shell:default",
     "process:default",
     "clipboard-manager:default",
-
     "tray:default",
     "tray:allow-new",
     "tray:allow-set-menu",
@@ -36,6 +33,17 @@
     "tray:allow-set-icon",
     "tray:allow-set-icon-as-template",
     "tray:allow-set-show-menu-on-left-click",
-    "tray:allow-set-tooltip"
+    "tray:allow-set-tooltip",
+    "vpnservice:allow-ping",
+    "vpnservice:allow-prepare-vpn",
+    "vpnservice:allow-start-vpn",
+    "vpnservice:allow-stop-vpn",
+    "vpnservice:allow-register-listener",
+    "os:default",
+    "os:allow-os-type",
+    "os:allow-arch",
+    "os:allow-hostname",
+    "os:allow-platform",
+    "os:allow-locale"
   ]
 }

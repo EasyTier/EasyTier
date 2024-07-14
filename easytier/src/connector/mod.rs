@@ -24,6 +24,10 @@ async fn set_bind_addr_for_peer_connector(
     is_ipv4: bool,
     ip_collector: &Arc<IPCollector>,
 ) {
+    if cfg!(target_os = "android") {
+        return;
+    }
+
     let ips = ip_collector.collect_ip_addrs().await;
     if is_ipv4 {
         let mut bind_addrs = vec![];
