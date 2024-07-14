@@ -16,7 +16,6 @@ import { appLogDir } from '@tauri-apps/api/path'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager';
 import { useTray } from '~/composables/tray';
 import { type } from '@tauri-apps/plugin-os';
-import { initMobileVpnService } from '~/composables/mobile_vpn';
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -84,9 +83,8 @@ networkStore.$subscribe(async () => {
 })
 
 async function runNetworkCb(cfg: NetworkConfig, cb: () => void) {
-  await prepareVpnService()
-
   if (type() === 'android') {
+    await prepareVpnService()
     networkStore.clearNetworkInstances()
   } else {
     networkStore.removeNetworkInstance(cfg.instance_id)
@@ -216,7 +214,9 @@ onMounted(async () => {
       }
     }
   }
-  await initMobileVpnService()
+  if (type() === 'android') {
+    await initMobileVpnService()
+  }
 })
 
 function isRunning(id: string) {

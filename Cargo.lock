@@ -6330,7 +6330,9 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
 name = "tun-easytier"
-version = "0.6.1"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "060078376b7da6986f3050f23cdb123b05371f11802c1bdc5c0af919db9292bc"
 dependencies = [
  "byteorder",
  "bytes",

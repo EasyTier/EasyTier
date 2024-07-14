@@ -278,6 +278,7 @@ pub fn init_launch(_app_handle: &tauri::AppHandle, _enable: bool) -> Result<bool
 /// init the auto launch
 #[cfg(not(target_os = "android"))]
 pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, anyhow::Error> {
+    use std::env::current_exe;
     let app_exe = current_exe()?;
     let app_exe = dunce::canonicalize(app_exe)?;
     let app_name = app_exe

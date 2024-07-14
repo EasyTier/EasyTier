@@ -33,11 +33,11 @@ impl<R: Runtime, T: Manager<R>> crate::VpnserviceExt<R> for T {
 /// Initializes the plugin.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("vpnservice")
-        .setup(|app, api| {
+        .setup(|_app, _api| {
             #[cfg(mobile)]
             {
-                let vpnservice = mobile::init(app, api)?;
-                app.manage(vpnservice);
+                let vpnservice = mobile::init(_app, _api)?;
+                _app.manage(vpnservice);
             }
             Ok(())
         })
