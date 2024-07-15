@@ -343,10 +343,10 @@ function showEventLogs() {
               </div>
             </div>
 
-            <div class="flex flex-row align-items-center flex-wrap w-full">
+            <div class="flex flex-row align-items-center flex-wrap w-full max-h-40 overflow-scroll">
               <Chip
                 v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
-                class="mr-2 mt-2"
+                class="mr-2 mt-2 text-sm"
               />
             </div>
 
