@@ -15,9 +15,9 @@ const props = defineProps<{
 defineEmits(['runNetwork'])
 
 const networking_methods = ref([
-  { value: NetworkingMethod.PublicServer, label: t('public_server') },
-  { value: NetworkingMethod.Manual, label: t('manual') },
-  { value: NetworkingMethod.Standalone, label: t('standalone') },
+  { value: NetworkingMethod.PublicServer, label: () => t('public_server') },
+  { value: NetworkingMethod.Manual, label: () => t('manual') },
+  { value: NetworkingMethod.Standalone, label: () => t('standalone') },
 ])
 
 const networkStore = useNetworkStore()
@@ -32,9 +32,78 @@ const curNetwork = computed(() => {
   return networkStore.curNetwork
 })
 
-const presetPublicServers = [
-  'tcp://easytier.public.kkrainbow.top:11010',
-]
+const protos:{ [proto: string] : number; } = {'tcp': 11010, 'udp': 11010, 'wg':11011, 'ws': 11011, 'wss': 11012}
+
+function searchUrlSuggestions(e: { query: string }): string[] {
+  const query = e.query
+  let ret = []
+  // if query match "^\w+:.*", then no proto prefix
+  if (query.match(/^\w+:.*/)) {
+    // if query is a valid url, then add to suggestions
+    try {
+      new URL(query)
+      ret.push(query)
+    } catch (e) {}
+  } else {
+    for (let proto in protos) {
+      let item = proto + '://' + query
+      // if query match ":\d+$", then no port suffix
+      if (!query.match(/:\d+$/)) {
+        item += ':' + protos[proto]
+      }
+      ret.push(item)
+    }
+  }
+
+  return ret
+}
+
+
+const publicServerSuggestions = ref([''])
+
+const searchPresetPublicServers = (e: { query: string }) => {
+    const presetPublicServers = [
+      'tcp://easytier.public.kkrainbow.top:11010',
+    ]
+
+    let query = e.query
+    // if query is sub string of presetPublicServers, add to suggestions
+    let ret = presetPublicServers.filter((item) => item.includes(query))
+    // add additional suggestions
+    if (query.length > 0) {
+      ret = ret.concat(searchUrlSuggestions(e))
+    }
+
+    publicServerSuggestions.value = ret
+}
+
+const peerSuggestions = ref([''])
+
+const searchPeerSuggestions = (e: { query: string }) => {
+  peerSuggestions.value = searchUrlSuggestions(e)
+}
+
+const listenerSuggestions = ref([''])
+
+const searchListenerSuggestiong = (e: { query: string }) => {
+  let ret = []
+
+  for (let proto in protos) {
+    let item = proto + '://0.0.0.0:';
+    // if query is a number, use it as port
+    if (e.query.match(/^\d+$/)) {
+      item += e.query
+    } else {
+      item += protos[proto]
+    }
+    
+    if (item.includes(e.query)) {
+      ret.push(item)
+    }
+  }
+
+  listenerSuggestions.value = ret
+}
 
 function validateHostname() {
   if (curNetwork.value.hostname) {
@@ -102,16 +171,15 @@ onMounted(async () => {
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
                 <label for="nm">{{ t('networking_method') }}</label>
+                <SelectButton v-model="curNetwork.networking_method" :options="networking_methods" :option-label="(v) => v.label()" option-value="value"></SelectButton>
                 <div class="items-center flex flex-row p-fluid gap-x-1">
-                  <Dropdown v-model="curNetwork.networking_method" :options="networking_methods" option-label="label"
-                    option-value="value" placeholder="Select Method" class="" />
-                  <Chips v-if="curNetwork.networking_method === NetworkingMethod.Manual" id="chips"
+                  <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.Manual" id="chips"
                     v-model="curNetwork.peer_urls" :placeholder="t('chips_placeholder', ['tcp://8.8.8.8:11010'])"
-                    separator=" " class="grow" />
+                    class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions"/>
 
-                  <Dropdown v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                    v-model="curNetwork.public_server_url" :editable="true" class="grow"
-                    :options="presetPublicServers" />
+                  <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer" :suggestions="publicServerSuggestions"
+                    :virtualScrollerOptions="{ itemSize: 38 }" class="grow" dropdown @complete="searchPresetPublicServers" :completeOnFocus="true"
+                    v-model="curNetwork.public_server_url"/>
                 </div>
               </div>
             </div>
@@ -141,29 +209,32 @@ onMounted(async () => {
             <div class="flex flex-row gap-x-9 flex-wrap ">
               <div class="flex flex-column gap-2 grow">
                 <label for="username">VPN Portal</label>
-                <div class="items-center flex flex-row gap-x-4">
                   <ToggleButton v-model="curNetwork.enable_vpn_portal" on-icon="pi pi-check" off-icon="pi pi-times"
-                    :on-label="t('off_text')" :off-label="t('on_text')" />
-                  <div v-if="curNetwork.enable_vpn_portal" class="grow">
-                    <InputGroup>
-                      <InputText v-model="curNetwork.vpn_portal_client_network_addr"
-                        :placeholder="t('vpn_portal_client_network')" />
-                      <InputGroupAddon>
-                        <span>/{{ curNetwork.vpn_portal_client_network_len }}</span>
-                      </InputGroupAddon>
-                    </InputGroup>
+                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48"/>
+                  <div class="items-center flex flex-row gap-x-4" v-if="curNetwork.enable_vpn_portal">
+                    <div class="min-w-64">
+                      <InputGroup>
+                        <InputText v-model="curNetwork.vpn_portal_client_network_addr"
+                          :placeholder="t('vpn_portal_client_network')" />
+                        <InputGroupAddon>
+                          <span>/{{ curNetwork.vpn_portal_client_network_len }}</span>
+                        </InputGroupAddon>
+                      </InputGroup>
+
+                      <InputNumber v-model="curNetwork.vpn_portal_listen_port" :allow-empty="false"
+                        :format="false" :min="0" :max="65535" class="w-8" fluid/>
+                    </div>
                   </div>
-                  <InputNumber v-if="curNetwork.enable_vpn_portal" v-model="curNetwork.vpn_portal_listen_port"
-                    :placeholder="t('vpn_portal_listen_port')" class="" :format="false" :min="0" :max="65535" />
-                </div>
               </div>
             </div>
 
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 grow p-fluid">
                 <label for="listener_urls">{{ t('listener_urls') }}</label>
-                <Chips id="listener_urls" v-model="curNetwork.listener_urls"
-                  :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" separator=" " class="w-full" />
+                <AutoComplete id="listener_urls" :suggestions="listenerSuggestions"
+                  class="w-full" dropdown @complete="searchListenerSuggestiong" :completeOnFocus="true"
+                  :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" 
+                  v-model="curNetwork.listener_urls" multiple/>
               </div>
             </div>
 

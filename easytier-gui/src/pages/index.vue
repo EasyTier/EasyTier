@@ -256,14 +256,8 @@ function isRunning(id: string) {
               :placeholder="t('select_network')" class="w-full">
               <template #value="slotProps">
                 <div class="flex items-start content-center">
-                  <div class="mr-3">
+                  <div class="mr-3 flex-column">
                     <span>{{ slotProps.value.network_name }}</span>
-                    <span
-                      v-if="isRunning(slotProps.value.instance_id) && networkStore.instances[slotProps.value.instance_id].detail && (networkStore.instances[slotProps.value.instance_id].detail?.my_node_info.virtual_ipv4 !== '')"
-                      class="ml-3">
-                      {{ networkStore.instances[slotProps.value.instance_id].detail
-                        ? networkStore.instances[slotProps.value.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
-                    </span>
                   </div>
                   <Tag class="my-auto" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
                     :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')" />
@@ -279,6 +273,11 @@ function isRunning(id: string) {
                       :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')" />
                   </div>
                   <div>{{ slotProps.option.public_server_url }}</div>
+                  <div
+                    v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 !== '')">
+                      {{ networkStore.instances[slotProps.option.instance_id].detail
+                      ? networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
+                  </div>
                 </div>
               </template>
             </Dropdown>
