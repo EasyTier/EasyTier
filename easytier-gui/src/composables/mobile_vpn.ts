@@ -39,6 +39,7 @@ async function doStopVpn() {
     await waitVpnStatus(false, 3)
 
     curVpnStatus.ipv4Addr = undefined
+    curVpnStatus.routes = []
 }
 
 async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
@@ -73,8 +74,6 @@ async function onVpnServiceStart(payload: any) {
 async function onVpnServiceStop(payload: any) {
     console.log('vpn service stop', JSON.stringify(payload))
     curVpnStatus.running = false
-    networkStore.clearNetworkInstances()
-    await retainNetworkInstance(networkStore.networkInstanceIds)
 }
 
 async function registerVpnServiceListener() {
@@ -111,37 +110,64 @@ function getRoutesForVpn(routes: Route[]): string[] {
     return Array.from(new Set(ret)).sort()
 }
 
-async function watchNetworkInstance() {
-    networkStore.$subscribe(async () => {
-        let insts = networkStore.networkInstanceIds
-        if (!insts) {
+async function onNetworkInstanceChange() {
+    let insts = networkStore.networkInstanceIds
+    if (!insts) {
+        await doStopVpn()
+        return
+    }
+
+    const curNetworkInfo = networkStore.networkInfos[insts[0]]
+    if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
+        await doStopVpn()
+        return
+    }
+
+    const virtual_ip = curNetworkInfo?.node_info?.virtual_ipv4
+    if (!virtual_ip || !virtual_ip.length) {
+        await doStopVpn()
+        return
+    }
+
+    const routes = getRoutesForVpn(curNetworkInfo?.routes)
+
+    var ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
+    var routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
+
+    if (ipChanged || routesChanged) {
+        console.log('virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
+        try {
             await doStopVpn()
-            return
+        } catch (e) {
+            console.error(e)
         }
 
-        const curNetworkInfo = networkStore.networkInfos[insts[0]]
-        if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
-            await doStopVpn()
-            return
-        }
-
-        const virtual_ip = curNetworkInfo?.node_info?.virtual_ipv4
-        if (!virtual_ip || !virtual_ip.length) {
-            await doStopVpn()
-            return
-        }
-
-        const routes = getRoutesForVpn(curNetworkInfo?.routes)
-
-        var ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
-        var routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
-
-        if (ipChanged || routesChanged) {
-            console.log('virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
-            await doStopVpn()
+        try {
             await doStartVpn(virtual_ip, 24, routes)
+        } catch (e) {
+            console.error("start vpn failed, clear all network insts.", e)
+            networkStore.clearNetworkInstances()
+            await retainNetworkInstance(networkStore.networkInstanceIds)
+        }
+        return
+    }
+}
+
+async function watchNetworkInstance() {
+    var subscribe_running = false
+    networkStore.$subscribe(async () => {
+        if (subscribe_running) {
             return
         }
+        console.log('network instance change')
+
+        subscribe_running = true
+        try {
+            await onNetworkInstanceChange()
+        } catch (_) {
+        }
+        console.log('network instance change done')
+        subscribe_running = false
     })
 }
 

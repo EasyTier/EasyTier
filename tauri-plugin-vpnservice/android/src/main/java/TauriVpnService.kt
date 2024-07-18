@@ -57,21 +57,23 @@ class TauriVpnService : VpnService() {
 
     override fun onDestroy() {
         println("vpn on destroy")
-        self = null
         super.onDestroy()
         disconnect()
+        self = null
     }
 
     override fun onRevoke() {
         println("vpn on revoke")
-        self = null
         super.onRevoke()
         disconnect()
+        self = null
     }
 
     private fun disconnect() {
-        triggerCallback("vpn_service_stop", JSObject())
-        vpnInterface.close()
+        if (self == this && this::vpnInterface.isInitialized) {
+            triggerCallback("vpn_service_stop", JSObject())
+            vpnInterface.close()
+        }
     }
 
     private fun createVpnInterface(args: Bundle?): ParcelFileDescriptor {
