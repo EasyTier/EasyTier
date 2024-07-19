@@ -2,7 +2,6 @@ package com.plugin.vpnservice
 
 import android.content.Intent
 import android.net.VpnService
-import android.net.IpPrefix
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.Bundle
@@ -10,16 +9,6 @@ import java.net.InetAddress
 import java.util.Arrays
 
 import app.tauri.plugin.JSObject
-
-fun stringToIpPrefix(ipPrefixString: String): IpPrefix {
-    val parts = ipPrefixString.split("/")
-    if (parts.size != 2) throw IllegalArgumentException("Invalid IP prefix string")
-    
-    val address = InetAddress.getByName(parts[0])
-    val prefixLength = parts[1].toInt()
-    
-    return IpPrefix(address, prefixLength)
-}
 
 class TauriVpnService : VpnService() {
     companion object {
@@ -99,7 +88,9 @@ class TauriVpnService : VpnService() {
         builder.addDnsServer(dns)
 
         for (route in routes) {
-            builder.addRoute(stringToIpPrefix(route))
+            val ipParts = ipv4Addr.split("/")
+            if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
+            builder.addAddress(ipParts[0], ipParts[1].toInt())
         }
         
         for (app in disallowedApplications) {
