@@ -102,6 +102,10 @@ const searchListenerSuggestiong = (e: { query: string }) => {
     }
   }
 
+  if (ret.length === 0) {
+    ret.push(e.query)
+  }
+
   listenerSuggestions.value = ret
 }
 
