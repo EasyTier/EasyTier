@@ -285,6 +285,17 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
+            use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+            let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+            let network_path = String::from(
+                "SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE1031",
+            );
+
+            hklm.delete_subkey_all(format!("{network_path}\\Profiles"))
+                .unwrap();
+            hklm.delete_subkey_all(format!("{network_path}\\Signatures\\Unmanaged"))
+                .unwrap();
+
             use rand::distributions::Distribution as _;
             use std::net::IpAddr;
             let c = crate::arch::windows::interface_count()?;
