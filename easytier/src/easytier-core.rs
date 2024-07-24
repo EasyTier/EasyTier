@@ -215,6 +215,14 @@ and the vpn client is in network of 10.14.14.0/24"
         default_value = "false"
     )]
     use_smoltcp: bool,
+
+    #[arg(
+        long,
+        help = "assign routes cidr manually, will disable subnet proxy and
+        wireguard routes propogated from peers. e.g.: 192.168.0.0/16",
+        num_args = 0..
+    )]
+    manual_routes: Option<Vec<String>>,
 }
 
 impl Cli {
@@ -420,6 +428,21 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
+        if cli.manual_routes.is_some() {
+            cfg.set_routes(Some(
+                cli.manual_routes
+                    .clone()
+                    .unwrap()
+                    .iter()
+                    .map(|s| {
+                        s.parse()
+                            .with_context(|| format!("failed to parse route: {}", s))
+                            .unwrap()
+                    })
+                    .collect(),
+            ));
+        }
+
         let mut f = cfg.get_flags();
         if cli.default_protocol.is_some() {
             f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
@@ -530,6 +553,10 @@ pub async fn async_main(cli: Cli) {
 
                 GlobalCtxEvent::TunDeviceReady(dev) => {
                     print_event(format!("tun device ready. dev: {}", dev));
+                }
+
+                GlobalCtxEvent::TunDeviceError(err) => {
+                    print_event(format!("tun device error. err: {}", err));
                 }
 
                 GlobalCtxEvent::Connecting(dst) => {
