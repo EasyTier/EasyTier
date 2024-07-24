@@ -544,6 +544,13 @@ impl NicCtx {
                     proxy_cidrs.push(vpn_cfg.client_cidr);
                 }
 
+                if let Some(routes) = global_ctx.config.get_routes() {
+                    // if has manual routes, just override entire proxy_cidrs
+                    proxy_cidrs = routes;
+                }
+
+                println!("proxy_cidrs: {:?}", proxy_cidrs);
+
                 // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
                 for cidr in cur_proxy_cidrs.iter() {
                     if proxy_cidrs.contains(cidr) {
@@ -601,10 +608,18 @@ impl NicCtx {
     pub async fn run(&mut self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
-            let ret = nic.create_dev().await?;
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
-            ret
+            match nic.create_dev().await {
+                Ok(ret) => {
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
+                    ret
+                }
+                Err(err) => {
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                    return Err(err);
+                }
+            }
         };
 
         let (stream, sink) = tunnel.split();
@@ -622,10 +637,18 @@ impl NicCtx {
     pub async fn run_for_android(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
-            let ret = nic.create_dev_for_android(tun_fd).await?;
-            self.global_ctx
-                .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
-            ret
+            match nic.create_dev_for_android(tun_fd).await {
+                Ok(ret) => {
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
+                    ret
+                }
+                Err(err) => {
+                    self.global_ctx
+                        .issue_event(GlobalCtxEvent::TunDeviceError(err.to_string()));
+                    return Err(err);
+                }
+            }
         };
 
         let (stream, sink) = tunnel.split();
