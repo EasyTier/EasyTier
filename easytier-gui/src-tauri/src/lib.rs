@@ -381,6 +381,10 @@ pub fn run() {
                         toggle_window_visibility(app);
                     }
                 })
+				.icon(tauri::image::Image::from_bytes(include_bytes!(
+                    "../icons/icon.png"
+                ))?)
+                .icon_as_template(false)
                 .build(app)?;
 
             Ok(())
