@@ -49,6 +49,12 @@
    cargo install --git https://github.com/KKRainbow/EasyTier.git
    ```
 
+4. **使用一键脚本安装**
+   ```curl -fsSL "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" | bash -s install
+   ```
+   
+   使用本脚本安装的 Easytier 可以使用脚本的 uninstall 对其卸载
+
 ## 快速开始
 
 > 下文仅描述命令行工具的使用，图形界面程序可参考下述概念自行配置。
