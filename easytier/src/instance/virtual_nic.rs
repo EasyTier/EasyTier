@@ -287,14 +287,18 @@ impl VirtualNic {
         {
             use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
             let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-            let network_path = String::from(
-                "SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE1031",
-            );
-
-            hklm.delete_subkey_all(format!("{network_path}\\Profiles"))
-                .unwrap();
-            hklm.delete_subkey_all(format!("{network_path}\\Signatures\\Unmanaged"))
-                .unwrap();
+            let network_path = vec![
+                "SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE1031}",
+                "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList"];
+            for path in network_path {
+                // HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\Network\{4D36E972-E325-11CE-BFC1-08002BE10318}\{??}\Connection
+                // HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Enum\SWD\Wintun\{??}
+                // TODO: only delete et_*_*_* 
+                let _ = hklm.delete_subkey_all(format!("{path}\\Profiles"));
+                let _ = hklm.create_subkey(format!("{path}\\Profiles"));
+                let _ = hklm.delete_subkey_all(format!("{path}\\Signatures\\Unmanaged"));
+                let _ = hklm.create_subkey(format!("{path}\\Signatures\\Unmanaged"));
+            }
 
             use rand::distributions::Distribution as _;
             use std::net::IpAddr;
@@ -307,7 +311,8 @@ impl VirtualNic {
                 .collect::<String>()
                 .to_lowercase();
 
-            config.name(format!("et{}_{}_{}", self.dev_name, c, s));
+            config.name(format!("et_{}_{}_{}", self.dev_name, c, s));
+
             // set a temporary address
             config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
 
