@@ -5,18 +5,43 @@
 # INSTALL_PATH='/opt/easytier'
 VERSION='latest'
 
-if [ ! -n "$2" ]; then
-  INSTALL_PATH='/opt/easytier'
-else
-  if [[ $2 == */ ]]; then
-    INSTALL_PATH=${2%?}
-  else
-    INSTALL_PATH=$2
-  fi
-  if ! [[ $INSTALL_PATH == */easytier ]]; then
-    INSTALL_PATH="$INSTALL_PATH/easytier"
-  fi
+SKIP_FOLDER_VERIFY=false
+SKIP_FOLDER_FIX=false
+
+COMMEND=$1
+shift
+
+# Check path
+if [[ "$#" -ge 1 && ! "$1" == --* ]]; then
+    INSTALL_PATH=$1
+    shift
 fi
+
+# Check other option
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --skip-folder-verify) SKIP_FOLDER_VERIFY=true ;;
+        --skip-folder-fix) SKIP_FOLDER_FIX=true ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
+    esac
+    shift
+done
+
+if [ -z "$INSTALL_PATH" ]; then
+    INSTALL_PATH='/opt/easytier'
+fi
+
+if [[ "$INSTALL_PATH" == */ ]]; then
+    INSTALL_PATH=${INSTALL_PATH%?}
+fi
+
+if ! $SKIP_FOLDER_FIX && ! [[ "$INSTALL_PATH" == */easytier ]]; then
+    INSTALL_PATH="$INSTALL_PATH/easytier"
+fi
+
+echo INSTALL PATH : $INSTALL_PATH
+echo SKIP FOLDER FIX : $SKIP_FOLDER_FIX
+echo SKIP FOLDER VERIFY : $SKIP_FOLDER_VERIFY
 
 RED_COLOR='\e[1;31m'
 GREEN_COLOR='\e[1;32m'
@@ -25,13 +50,14 @@ BLUE_COLOR='\e[1;34m'
 PINK_COLOR='\e[1;35m'
 SHAN='\e[1;33;5m'
 RES='\e[0m'
-clear
+# clear
 
 echo -e "\r\n${RED_COLOR}----------------------NOTICE----------------------${RES}\r\n"
-echo " This is a temporary script to install Easytier "
-echo " Easytier is a developing product and may have some issues "
-echo " Using Easytier requires some basic skills "
-echo " You need to face the risks brought by using Easytier at your own risk "
+echo " This is a temporary script to install EasyTier "
+echo " EasyTier requires a dedicated empty folder to install"
+echo " EasyTier is a developing product and may have some issues "
+echo " Using EasyTier requires some basic skills "
+echo " You need to face the risks brought by using EasyTier at your own risk "
 echo -e "\r\n${RED_COLOR}-------------------------------------------------${RES}\r\n"
 
 read -p "Enter \"yes\" to accept our policy and continue: " -r agreement
@@ -92,9 +118,12 @@ else
 fi
 
 CHECK() {
-  if [ -f "$INSTALL_PATH/easytier-core" ]; then
-    echo "There is easytier in $INSTALL_PATH. Please choose other path or use \"update\""
-    exit 0
+  if ! $SKIP_FOLDER_VERIFY; then
+	if [ -f "$INSTALL_PATH/easytier-core" ]; then
+		echo "There is EasyTier in $INSTALL_PATH. Please choose other path or use \"update\""
+	    echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
+		exit 0
+	fi
   fi
   if [ $check_port ]; then
     kill -9 $check_port
@@ -102,7 +131,15 @@ CHECK() {
   if [ ! -d "$INSTALL_PATH/" ]; then
     mkdir -p $INSTALL_PATH
   else
-    rm -rf $INSTALL_PATH && mkdir -p $INSTALL_PATH
+    # Check weather path is empty
+    if ! $SKIP_FOLDER_VERIFY; then
+      if [ -n "$(ls -A $INSTALL_PATH)" ]; then
+        echo "EasyTier requires to be installed in an empty directory. Please choose a empty path"
+        echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
+        echo -e "Current path: $INSTALL_PATH ( use ${GREEN_COLOR}--skip-folder-fix${RES} to disable folder fix )"
+        exit 1
+      fi
+    fi
   fi
 }
 
@@ -118,12 +155,12 @@ INSTALL() {
   fi
 
   # Download
-  echo -e "\r\n${GREEN_COLOR}下载 Easytier $LATEST_VERSION ...${RES}"
+  echo -e "\r\n${GREEN_COLOR}Downloading EasyTier $LATEST_VERSION ...${RES}"
   rm -rf /tmp/easytier_tmp_install.zip
   curl -L ${GH_PROXY}https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-$ARCH-unknown-linux-${SUFFIX}${LATEST_VERSION}.zip -o /tmp/easytier_tmp_install.zip $CURL_BAR
   # Unzip resource
   echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
-  unzip /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
+  unzip -o /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
 
   if [ -f $INSTALL_PATH/easytier-core ] || [ -f $INSTALL_PATH/easytier-cli ]; then
     echo -e "${GREEN_COLOR} Download successfully! ${RES}"
@@ -135,7 +172,7 @@ INSTALL() {
 
 INIT() {
   if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find Easytier\r\n"
+    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find EasyTier\r\n"
     exit 1
   fi
 
@@ -165,14 +202,18 @@ EOF
   systemctl enable easytier >/dev/null 2>&1
   systemctl start easytier
 
+  # For issues from the previous version
+  rm -rf /usr/bin/easytier-core
+  rm -rf /usr/bin/easytier-cli
+
   # Add link
-  ln -s $INSTALL_PATH/easytier-core /usr/bin/easytier-core
-  ln -s $INSTALL_PATH/easytier-cli /usr/bin/easytier-cli
+  ln -s $INSTALL_PATH/easytier-core /usr/sbin/easytier-core
+  ln -s $INSTALL_PATH/easytier-cli /usr/sbin/easytier-cli
 }
 
 SUCCESS() {
   clear
-  echo " Install Easytier successfully！"
+  echo " Install EasyTier successfully!"
   echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firwall!\r\n"
 
   echo -e "Staartup script path: ${GREEN_COLOR}$INSTALL_PATH/run.sh${RES}\n\r\n\rFor more advanced opinions, please modify the startup script"
@@ -186,23 +227,23 @@ SUCCESS() {
 }
 
 UNINSTALL() {
-  echo -e "\r\n${GREEN_COLOR}Uninstall Easytier ...${RES}\r\n"
+  echo -e "\r\n${GREEN_COLOR}Uninstall EasyTier ...${RES}\r\n"
   echo -e "${GREEN_COLOR}Stop process ...${RES}"
   systemctl disable easytier >/dev/null 2>&1
   systemctl stop easytier >/dev/null 2>&1
   echo -e "${GREEN_COLOR}Delete files ...${RES}"
   rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli
   systemctl daemon-reload
-  echo -e "\r\n${GREEN_COLOR}Easytier was removed successfully! ${RES}\r\n"
+  echo -e "\r\n${GREEN_COLOR}EasyTier was removed successfully! ${RES}\r\n"
 }
 
 UPDATE() {
   if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find Easytier\r\n"
+    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find EasyTier\r\n"
     exit 1
   else
     echo
-    echo -e "${GREEN_COLOR}Stopping Easytier process${RES}\r\n"
+    echo -e "${GREEN_COLOR}Stopping EasyTier process${RES}\r\n"
     systemctl stop easytier
     # Backup
     rm -rf /tmp/easytier_tmp_update
@@ -219,9 +260,9 @@ UPDATE() {
       systemctl start easytier
       exit 1
     fi
-    echo -e "\r\n${GREEN_COLOR} Starting easytier process${RES}"
+    echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
     systemctl start easytier
-    echo -e "\r\n${GREEN_COLOR} Easytier was the latest stable version! ${RES}\r\n"
+    echo -e "\r\n${GREEN_COLOR} EasyTier was the latest stable version! ${RES}\r\n"
   fi
 }
 
@@ -235,11 +276,13 @@ if [ ! -d "/tmp" ]; then
   mkdir -p /tmp
 fi
 
-if [ "$1" = "uninstall" ]; then
+echo $1
+
+if [ $COMMEND = "uninstall" ]; then
   UNINSTALL
-elif [ "$1" = "update" ]; then
+elif [ $COMMEND = "update" ]; then
   UPDATE
-elif [ "$1" = "install" ]; then
+elif [ $COMMEND = "install" ]; then
   CHECK
   INSTALL
   INIT
