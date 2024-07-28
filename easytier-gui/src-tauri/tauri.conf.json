@@ -21,11 +21,6 @@
   "identifier": "com.kkrainbow.easytier",
   "plugins": {},
   "app": {
-    "trayIcon": {
-      "iconPath": "icons/icon.ico",
-      "menuOnLeftClick": true,
-      "iconAsTemplate": true
-    },
     "windows": [
       {
         "title": "easytier-gui",
