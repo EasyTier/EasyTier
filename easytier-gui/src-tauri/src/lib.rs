@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use tauri::Manager as _;
 
+
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 enum NetworkingMethod {
     PublicServer,
@@ -336,6 +337,7 @@ pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool,
     Ok(enabled)
 }
 
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(not(target_os = "android"))]
@@ -343,7 +345,6 @@ pub fn run() {
         use std::process;
         process::exit(0);
     }
-
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
