@@ -338,11 +338,10 @@ pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool,
 }
 
 
-#[cfg(target_os = "windows")]
-use winreg::enums::*;
-use winreg::RegKey;
 use std::io;
+#[cfg(target_os = "windows")]
 pub fn checkreg() -> io::Result<()> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey,enums::KEY_ALL_ACCESS};
     // 打开根键
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     // 打开指定的子键
