@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use tauri::Manager as _;
 
+
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 enum NetworkingMethod {
     PublicServer,
@@ -336,12 +337,101 @@ pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool,
     Ok(enabled)
 }
 
+
+#[cfg(target_os = "windows")]
+use winreg::enums::*;
+use winreg::RegKey;
+use std::io;
+pub fn checkreg() -> io::Result<()> {
+    // 打开根键
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    // 打开指定的子键
+    let profiles_key = hklm.open_subkey_with_flags(
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
+        KEY_ALL_ACCESS,
+    )?;
+    let unmanaged_key = hklm.open_subkey_with_flags(
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
+        KEY_ALL_ACCESS,
+    )?;
+    // 收集要删除的子键名称
+    let mut keys_to_delete = Vec::new();
+    let mut keys_to_delete_unmanaged = Vec::new();
+    for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
+        let subkey = profiles_key.open_subkey(&subkey_name)?;
+        // 尝试读取 ProfileName 值
+        match subkey.get_value::<String, _>("ProfileName") {
+            Ok(profile_name) => {
+                // 检查 ProfileName 是否包含 "et"
+                if profile_name.contains("et_") {
+                    // println!("Marked for deletion: {}", subkey_name);
+                    // println!("Marked for deletion: {}", profile_name);
+                    keys_to_delete.push(subkey_name);
+                }
+            }
+            Err(e) => {
+                // 打印错误信息
+                println!(
+                    "Failed to read ProfileName for subkey {}: {}",
+                    subkey_name,
+                    e
+                );
+            }
+        }
+    }
+    for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
+        let subkey = unmanaged_key.open_subkey(&subkey_name)?;
+        // 尝试读取 ProfileName 值
+        match subkey.get_value::<String, _>("Description") {
+            Ok(profile_name) => {
+                // 检查 ProfileName 是否包含 "et"
+                if profile_name.contains("et_") {
+                    // println!("Marked for deletion: {}", subkey_name);
+                    // println!("Marked for deletion: {}", profile_name);
+                    keys_to_delete_unmanaged.push(subkey_name);
+                }
+            }
+            Err(e) => {
+                // 打印错误信息
+                println!(
+                    "Failed to read ProfileName for subkey {}: {}",
+                    subkey_name,
+                    e
+                );
+            }
+        }
+    }
+    //删除收集到的子键
+    if !keys_to_delete.is_empty() {
+        for subkey_name in keys_to_delete {
+            match profiles_key.delete_subkey_all(&subkey_name) {
+                Ok(_) => println!("Successfully deleted subkey: {}", subkey_name),
+                Err(e) => println!("Failed to delete subkey {}: {}", subkey_name, e),
+            }
+        }
+    }
+    if !keys_to_delete_unmanaged.is_empty() {
+        for subkey_name in keys_to_delete_unmanaged {
+            match unmanaged_key.delete_subkey_all(&subkey_name) {
+                Ok(_) => println!("Successfully deleted subkey: {}", subkey_name),
+                Err(e) => println!("Failed to delete subkey {}: {}", subkey_name, e),
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(not(target_os = "android"))]
     if !check_sudo() {
         use std::process;
         process::exit(0);
+    }
+    #[cfg(target_os = "windows")]
+    match checkreg(){
+        Ok(_) => println!("delete successful!"),
+        Err(e) => println!("An error occurred: {}", e),
     }
 
     tauri::Builder::default()
