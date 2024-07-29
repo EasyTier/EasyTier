@@ -245,6 +245,82 @@ pub struct VirtualNic {
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
+#[cfg(target_os = "windows")]
+pub fn checkreg() -> io::Result<()> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey,enums::KEY_ALL_ACCESS};
+    // 打开根键
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    // 打开指定的子键
+    let profiles_key = hklm.open_subkey_with_flags(
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
+        KEY_ALL_ACCESS,
+    )?;
+    let unmanaged_key = hklm.open_subkey_with_flags(
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
+        KEY_ALL_ACCESS,
+    )?;
+    // 收集要删除的子键名称
+    let mut keys_to_delete = Vec::new();
+    let mut keys_to_delete_unmanaged = Vec::new();
+    for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
+        let subkey = profiles_key.open_subkey(&subkey_name)?;
+        // 尝试读取 ProfileName 值
+        match subkey.get_value::<String, _>("ProfileName") {
+            Ok(profile_name) => {
+                // 检查 ProfileName 是否包含 "et"
+                if profile_name.contains("et_") {
+                    keys_to_delete.push(subkey_name);
+                }
+            }
+            Err(e) => {
+                // 打印错误信息
+                tracing::error!(
+                    "Failed to read ProfileName for subkey {}: {}",
+                    subkey_name,
+                    e
+                );
+            }
+        }
+    }
+    for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
+        let subkey = unmanaged_key.open_subkey(&subkey_name)?;
+        // 尝试读取 ProfileName 值
+        match subkey.get_value::<String, _>("Description") {
+            Ok(profile_name) => {
+                // 检查 ProfileName 是否包含 "et"
+                if profile_name.contains("et_") {
+                    keys_to_delete_unmanaged.push(subkey_name);
+                }
+            }
+            Err(e) => {
+                // 打印错误信息
+                tracing::error!(
+                    "Failed to read ProfileName for subkey {}: {}",
+                    subkey_name,
+                    e
+                );
+            }
+        }
+    }
+    //删除收集到的子键
+    if !keys_to_delete.is_empty() {
+        for subkey_name in keys_to_delete {
+            match profiles_key.delete_subkey_all(&subkey_name) {
+                Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
+                Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
+            }
+        }
+    }
+    if !keys_to_delete_unmanaged.is_empty() {
+        for subkey_name in keys_to_delete_unmanaged {
+            match unmanaged_key.delete_subkey_all(&subkey_name) {
+                Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
+                Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
+            }
+        }
+    }
+    Ok(())
+}
 
 impl VirtualNic {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
@@ -267,83 +343,6 @@ impl VirtualNic {
         Ok(self)
     }
 
-    #[cfg(target_os = "windows")]
-    pub fn checkreg() -> io::Result<()> {
-        use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey,enums::KEY_ALL_ACCESS};
-        // 打开根键
-        let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-        // 打开指定的子键
-        let profiles_key = hklm.open_subkey_with_flags(
-            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
-            KEY_ALL_ACCESS,
-        )?;
-        let unmanaged_key = hklm.open_subkey_with_flags(
-            "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
-            KEY_ALL_ACCESS,
-        )?;
-        // 收集要删除的子键名称
-        let mut keys_to_delete = Vec::new();
-        let mut keys_to_delete_unmanaged = Vec::new();
-        for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
-            let subkey = profiles_key.open_subkey(&subkey_name)?;
-            // 尝试读取 ProfileName 值
-            match subkey.get_value::<String, _>("ProfileName") {
-                Ok(profile_name) => {
-                    // 检查 ProfileName 是否包含 "et"
-                    if profile_name.contains("et_") {
-                        keys_to_delete.push(subkey_name);
-                    }
-                }
-                Err(e) => {
-                    // 打印错误信息
-                    tracing::error!(
-                        "Failed to read ProfileName for subkey {}: {}",
-                        subkey_name,
-                        e
-                    );
-                }
-            }
-        }
-        for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
-            let subkey = unmanaged_key.open_subkey(&subkey_name)?;
-            // 尝试读取 ProfileName 值
-            match subkey.get_value::<String, _>("Description") {
-                Ok(profile_name) => {
-                    // 检查 ProfileName 是否包含 "et"
-                    if profile_name.contains("et_") {
-                        keys_to_delete_unmanaged.push(subkey_name);
-                    }
-                }
-                Err(e) => {
-                    // 打印错误信息
-                    tracing::error!(
-                        "Failed to read ProfileName for subkey {}: {}",
-                        subkey_name,
-                        e
-                    );
-                }
-            }
-        }
-        //删除收集到的子键
-        if !keys_to_delete.is_empty() {
-            for subkey_name in keys_to_delete {
-                match profiles_key.delete_subkey_all(&subkey_name) {
-                    Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
-                    Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
-                }
-            }
-        }
-        if !keys_to_delete_unmanaged.is_empty() {
-            for subkey_name in keys_to_delete_unmanaged {
-                match unmanaged_key.delete_subkey_all(&subkey_name) {
-                    Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
-                    Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
-                }
-            }
-        }
-        Ok(())
-    }
-
     async fn create_tun(&mut self) -> Result<AsyncDevice, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
@@ -362,7 +361,7 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
-            match Self::checkreg(){
+            match checkreg(){
                 Ok(_) => tracing::trace!("delete successful!"),
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
