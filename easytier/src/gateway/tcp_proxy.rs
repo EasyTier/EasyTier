@@ -217,6 +217,11 @@ impl NicPacketFilter for TcpProxy {
             panic!("v4 nat entry src ip is not v4");
         };
 
+        zc_packet
+            .mut_peer_manager_header()
+            .unwrap()
+            .set_no_proxy(true);
+
         let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload()).unwrap();
         ip_packet.set_source(ip);
         let dst = ip_packet.get_destination();
@@ -557,7 +562,7 @@ impl TcpProxy {
         let hdr = packet.peer_manager_header().unwrap();
         let is_exit_node = hdr.is_exit_node();
 
-        if hdr.packet_type != PacketType::Data as u8 {
+        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
             return None;
         };
 
@@ -581,12 +586,13 @@ impl TcpProxy {
         let ip_packet = Ipv4Packet::new(payload_bytes).unwrap();
         let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
 
-        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
-        if is_tcp_syn {
-            let source_ip = ip_packet.get_source();
-            let source_port = tcp_packet.get_source();
-            let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
+        let source_ip = ip_packet.get_source();
+        let source_port = tcp_packet.get_source();
+        let src = SocketAddr::V4(SocketAddrV4::new(source_ip, source_port));
 
+        let is_tcp_syn = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::SYN != 0;
+        let is_tcp_ack = tcp_packet.get_flags() & pnet::packet::tcp::TcpFlags::ACK != 0;
+        if is_tcp_syn && !is_tcp_ack {
             let dest_ip = ip_packet.get_destination();
             let dest_port = tcp_packet.get_destination();
             let dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
@@ -595,6 +601,9 @@ impl TcpProxy {
                 .syn_map
                 .insert(src, Arc::new(NatDstEntry::new(src, dst)));
             tracing::info!(src = ?src, dst = ?dst, old_entry = ?old_val, "tcp syn received");
+        } else if !self.addr_conn_map.contains_key(&src) && !self.syn_map.contains_key(&src) {
+            // if not in syn map and addr conn map, may forwarding n2n packet
+            return None;
         }
 
         let mut ip_packet = MutableIpv4Packet::new(payload_bytes).unwrap();

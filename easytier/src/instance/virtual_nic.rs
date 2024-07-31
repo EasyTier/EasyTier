@@ -629,8 +629,6 @@ impl NicCtx {
                     proxy_cidrs = routes;
                 }
 
-                println!("proxy_cidrs: {:?}", proxy_cidrs);
-
                 // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
                 for cidr in cur_proxy_cidrs.iter() {
                     if proxy_cidrs.contains(cidr) {

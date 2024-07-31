@@ -145,6 +145,7 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
                     v.src_peer_id.into(),
                     PacketType::Data as u8,
                 );
+                p.mut_peer_manager_header().unwrap().set_no_proxy(true);
 
                 if let Err(e) = sender.send(p) {
                     tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
@@ -343,7 +344,7 @@ impl IcmpProxy {
         let hdr = packet.peer_manager_header().unwrap();
         let is_exit_node = hdr.is_exit_node();
 
-        if hdr.packet_type != PacketType::Data as u8 {
+        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
             return None;
         };
 
@@ -376,9 +377,9 @@ impl IcmpProxy {
         };
 
         if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
-            // drop it because we do not support other icmp types
+            // if it's other icmp type, just ignore it. may forwarding network to network replay packet.
             tracing::trace!("unsupported icmp type: {:?}", icmp_packet.get_icmp_type());
-            return Some(());
+            return None;
         }
 
         if self.global_ctx.no_tun() && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4() {
