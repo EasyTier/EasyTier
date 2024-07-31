@@ -271,8 +271,6 @@ impl Cli {
             }
         }
 
-        println!("parsed listeners: {:?}", listeners);
-
         listeners
     }
 
