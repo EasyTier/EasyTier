@@ -291,7 +291,11 @@ impl SyncedRouteInfo {
         peer_infos: &Vec<RoutePeerInfo>,
     ) -> Result<(), Error> {
         self.check_duplicate_peer_id(my_peer_id, dst_peer_id, peer_infos)?;
-        for route_info in peer_infos.iter() {
+        for mut route_info in peer_infos.iter().map(Clone::clone) {
+            // time between peers may not be synchronized, so update last_update to local now.
+            // note only last_update with larger version will be updated to local saved peer info.
+            route_info.last_update = SystemTime::now();
+
             self.peer_infos
                 .entry(route_info.peer_id)
                 .and_modify(|old_entry| {
