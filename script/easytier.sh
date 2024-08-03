@@ -74,21 +74,38 @@ else
   platform=$(uname -m)
 fi
 
-echo -e "\r\n${GREEN_COLOR}Your platform: ${platform} ${RES}\r\n" 1>&2
+case "$platform" in
+  amd64 | x86_64)
+    ARCH="x86_64"
+    ;;
+  arm64 | aarch64 | *armv8*)
+    ARCH="aarch64"
+    ;;
+  *armv7*)
+    ARCH="armv7"
+    ;;
+  *arm*)
+    ARCH="arm"
+    ;;
+  mips)
+    ARCH="mips"
+    ;;
+  mipsel)
+    ARCH="mipsel"
+    ;;
+  *)
+    ARCH="UNKNOWN"
+    ;;
+esac
 
-ARCH="UNKNOWN"
-
-if [ "$platform" = "amd64" ] || [ "$platform" = "x86_64" ]; then
-  ARCH="x86_64"
-  SUFFIX="musl-"
-elif [ "$platform" = "arm64" ] || [ "$platform" = "aarch64" ] || [ "$platform" = "armv8" ]; then
-  ARCH="aarch64"
-  SUFFIX="musleabihf-"
-elif [ "$platform" = "armv7l" ] || [ "$platform" = "armv7" ]; then
-  ARCH="armv7"
-  SUFFIX="musleabihf-"
+# support hf
+if [[ "$ARCH" == "armv7" || "$ARCH" == "arm" ]]; then
+  if cat /proc/cpuinfo | grep Features | grep -i 'half' >/dev/null 2>&1; then
+    ARCH=${ARCH}hf
+  fi
 fi
 
+echo -e "\r\n${GREEN_COLOR}Your platform: ${ARCH} (${platform}) ${RES}\r\n" 1>&2
 
 GH_PROXY='https://mirror.ghproxy.com/'
 
@@ -157,11 +174,12 @@ INSTALL() {
   # Download
   echo -e "\r\n${GREEN_COLOR}Downloading EasyTier $LATEST_VERSION ...${RES}"
   rm -rf /tmp/easytier_tmp_install.zip
-  curl -L ${GH_PROXY}https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-$ARCH-unknown-linux-${SUFFIX}${LATEST_VERSION}.zip -o /tmp/easytier_tmp_install.zip $CURL_BAR
+  curl -L ${GH_PROXY}https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip -o /tmp/easytier_tmp_install.zip $CURL_BAR
   # Unzip resource
   echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
   unzip -o /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
-
+  mv $INSTALL_PATH/easytier-linux-${ARCH}/* $INSTALL_PATH/
+  rm -rf $INSTALL_PATH/easytier-linux-${ARCH}/
   if [ -f $INSTALL_PATH/easytier-core ] || [ -f $INSTALL_PATH/easytier-cli ]; then
     echo -e "${GREEN_COLOR} Download successfully! ${RES}"
   else
@@ -214,7 +232,7 @@ EOF
 SUCCESS() {
   clear
   echo " Install EasyTier successfully!"
-  echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firwall!\r\n"
+  echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firewall!\r\n"
 
   echo -e "Staartup script path: ${GREEN_COLOR}$INSTALL_PATH/run.sh${RES}\n\r\n\rFor more advanced opinions, please modify the startup script"
 
@@ -251,7 +269,7 @@ UPDATE() {
     cp -a $INSTALL_PATH/* /tmp/easytier_tmp_update/
     INSTALL
     if [ -f $INSTALL_PATH/easytier-core ]; then
-      echo -e "${GREEN_COLOR} Download successfully ${RES}"
+      echo -e "${GREEN_COLOR} Vrify successfully ${RES}"
     else
       echo -e "${RED_COLOR} Download failed, unable to update${RES}"
       echo "Rollback all ..."
@@ -276,7 +294,7 @@ if [ ! -d "/tmp" ]; then
   mkdir -p /tmp
 fi
 
-echo $1
+echo $COMMEND
 
 if [ $COMMEND = "uninstall" ]; then
   UNINSTALL
@@ -297,4 +315,4 @@ else
   echo -e "\n\r${GREEN_COLOR} install, uninstall, update ${RES}"
 fi
 
-rm -f /tmp/easytier_tmp_*
+rm -rf /tmp/easytier_tmp_*
