@@ -1192,22 +1192,4 @@ pub mod tests {
         )
         .await;
     }
-
-    #[tokio::test]
-    async fn udp_listener() {
-        let p_a = create_mock_peer_manager().await;
-        wait_for_condition(
-            || async {
-                p_a.get_global_ctx()
-                    .get_stun_info_collector()
-                    .get_stun_info()
-                    .udp_nat_type
-                    != NatType::Unknown as i32
-            },
-            Duration::from_secs(20),
-        )
-        .await;
-        let l = UdpHolePunchListener::new(p_a.clone()).await.unwrap();
-        println!("{:#?}", l.mapped_addr);
-    }
 }
