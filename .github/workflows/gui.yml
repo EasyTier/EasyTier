@@ -37,20 +37,26 @@ jobs:
           - TARGET: aarch64-unknown-linux-musl
             OS: ubuntu-latest
             GUI_TARGET: aarch64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
             GUI_TARGET: x86_64-unknown-linux-gnu
+            ARTIFACT_NAME: linux-x86_64
 
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
             GUI_TARGET: x86_64-apple-darwin
+            ARTIFACT_NAME: macos-x86_64
           - TARGET: aarch64-apple-darwin
             OS: macos-latest
             GUI_TARGET: aarch64-apple-darwin
+            ARTIFACT_NAME: macos-aarch64
 
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             GUI_TARGET: x86_64-pc-windows-msvc
+            ARTIFACT_NAME: windows-x86_64
+
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
@@ -172,13 +178,13 @@ jobs:
               fi
           fi
 
-          tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
+          mv ./artifacts/objects/* ./artifacts/
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: easytier-gui-${{ matrix.OS }}-${{ matrix.TARGET }}
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
 

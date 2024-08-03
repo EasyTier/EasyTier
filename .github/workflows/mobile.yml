@@ -36,6 +36,7 @@ jobs:
         include:
           - TARGET: android
             OS: ubuntu-latest
+            ARTIFACT_NAME: android
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
@@ -130,13 +131,13 @@ jobs:
             TAG=$GITHUB_SHA
           fi
 
-          tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
+          mv ./artifacts/objects/* ./artifacts
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: easytier-gui-${{ matrix.TARGET }}
+          name: easytier-gui-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
 
