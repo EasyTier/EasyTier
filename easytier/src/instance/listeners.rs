@@ -143,7 +143,20 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         let mut l = listener.lock().await;
         global_ctx.add_running_listener(l.local_url());
         global_ctx.issue_event(GlobalCtxEvent::ListenerAdded(l.local_url()));
-        while let Ok(ret) = l.accept().await {
+        loop {
+            let ret = match l.accept().await {
+                Ok(ret) => ret,
+                Err(e) => {
+                    global_ctx.issue_event(GlobalCtxEvent::ListenerAcceptFailed(
+                        l.local_url(),
+                        e.to_string(),
+                    ));
+                    tracing::error!(?e, ?l, "listener accept error");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
+            };
+
             let tunnel_info = ret.info().unwrap();
             global_ctx.issue_event(GlobalCtxEvent::ConnectionAccepted(
                 tunnel_info.local_addr.clone(),
@@ -164,7 +177,6 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 }
             });
         }
-        tracing::warn!("listener exit");
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
