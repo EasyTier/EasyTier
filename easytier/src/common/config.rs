@@ -169,6 +169,8 @@ pub struct Flags {
     pub no_tun: bool,
     #[derivative(Default(value = "false"))]
     pub use_smoltcp: bool,
+    #[derivative(Default(value = "\"*\".to_string()"))]
+    pub foreign_network_whitelist: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
