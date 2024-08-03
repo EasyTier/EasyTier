@@ -36,29 +36,40 @@ jobs:
         include:
           - TARGET: aarch64-unknown-linux-musl
             OS: ubuntu-latest
+            ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
+            ARTIFACT_NAME: linux-x86_64
           - TARGET: mips-unknown-linux-musl
             OS: ubuntu-latest
+            ARTIFACT_NAME: linux-mips
           - TARGET: mipsel-unknown-linux-musl
             OS: ubuntu-latest
+            ARTIFACT_NAME: linux-mipsel
+          - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
+            OS: ubuntu-latest
+            ARTIFACT_NAME: linux-armv7hf
+          - TARGET: armv7-unknown-linux-musleabi # raspberry pi 2-3-4, not tested
+            OS: ubuntu-latest
+            ARTIFACT_NAME: linux-armv7
+          - TARGET: arm-unknown-linux-musleabihf # raspberry pi 0-1, not tested
+            OS: ubuntu-latest
+            ARTIFACT_NAME: linux-armhf
+          - TARGET: arm-unknown-linux-musleabi # raspberry pi 0-1, not tested
+            OS: ubuntu-latest
+            ARTIFACT_NAME: linux-arm
 
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
+            ARTIFACT_NAME: macos-x86_64
           - TARGET: aarch64-apple-darwin
             OS: macos-latest
+            ARTIFACT_NAME: macos-aarch64
 
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
+            ARTIFACT_NAME: windows-x86_64
 
-          - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
-            OS: ubuntu-latest
-          - TARGET: armv7-unknown-linux-musleabi # raspberry pi 2-3-4, not tested
-            OS: ubuntu-latest
-          - TARGET: arm-unknown-linux-musleabihf # raspberry pi 0-1, not tested
-            OS: ubuntu-latest
-          - TARGET: arm-unknown-linux-musleabi # raspberry pi 0-1, not tested
-            OS: ubuntu-latest
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
@@ -129,13 +140,13 @@ jobs:
           mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
           mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
 
-          tar -cvf ./artifacts/$NAME-$TARGET-$TAG.tar -C ./artifacts/objects/ .
+          mv ./artifacts/objects/* ./artifacts/
           rm -rf ./artifacts/objects/
 
       - name: Archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: easytier-${{ matrix.OS }}-${{ matrix.TARGET }}
+          name: easytier-${{ matrix.ARTIFACT_NAME }}
           path: |
             ./artifacts/*
 
