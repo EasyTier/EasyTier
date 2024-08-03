@@ -399,6 +399,37 @@ mod tests {
         assert_eq!(2, rpc_resp.foreign_networks["net1"].peers.len());
     }
 
+    async fn foreign_network_whitelist_helper(name: String) {
+        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
+        let mut flag = pm_center.get_global_ctx().get_flags();
+        flag.foreign_network_whitelist = vec!["net1".to_string(), "net2*".to_string()].join(" ");
+        pm_center.get_global_ctx().config.set_flags(flag);
+
+        let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
+
+        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let b_mgr_copy = pm_center.clone();
+        let s_ret = tokio::spawn(async move { b_mgr_copy.add_tunnel_as_server(b_ring).await });
+
+        pma_net1.add_client_tunnel(a_ring).await.unwrap();
+
+        s_ret.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn foreign_network_whitelist() {
+        foreign_network_whitelist_helper("net1".to_string()).await;
+        foreign_network_whitelist_helper("net2".to_string()).await;
+        foreign_network_whitelist_helper("net2abc".to_string()).await;
+    }
+
+    #[tokio::test]
+    #[should_panic]
+    async fn foreign_network_whitelist_fail() {
+        foreign_network_whitelist_helper("net3".to_string()).await;
+    }
+
     #[tokio::test]
     async fn test_foreign_network_manager() {
         let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;

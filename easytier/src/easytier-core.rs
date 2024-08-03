@@ -79,7 +79,10 @@ struct Cli {
     #[arg(
         short,
         long,
-        help = "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
+        help = "automatically determine and set IP address by Easytier, and the
+IP address starts from 10.0.0.1 by default. Warning, if there is an IP
+conflict in the network when using DHCP, the IP will be automatically
+changed."
     )]
     dhcp: bool,
 
@@ -183,7 +186,7 @@ and the vpn client is in network of 10.14.14.0/24"
 
     #[arg(
         long,
-        help = "path to the log file, if not set, will print to stdout",
+        help = "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path",
         default_value = "false"
     )]
     latency_first: bool,
@@ -219,10 +222,19 @@ and the vpn client is in network of 10.14.14.0/24"
     #[arg(
         long,
         help = "assign routes cidr manually, will disable subnet proxy and
-        wireguard routes propogated from peers. e.g.: 192.168.0.0/16",
+wireguard routes propogated from peers. e.g.: 192.168.0.0/16",
         num_args = 0..
     )]
     manual_routes: Option<Vec<String>>,
+
+    #[arg(
+        long,
+        help = "only relay traffic of whitelisted networks, input is a wildcard
+string, e.g.: '*' (all networks), 'def*' (network prefixed with def), can specify multiple networks
+disable relay if arg is empty. default is allowing all networks",
+        num_args = 0..,
+    )]
+    relay_network_whitelist: Option<Vec<String>>,
 }
 
 impl Cli {
@@ -270,8 +282,6 @@ impl Cli {
                 listeners.push(format!("{}://0.0.0.0:{}", proto, port));
             }
         }
-
-        println!("parsed listeners: {:?}", listeners);
 
         listeners
     }
@@ -457,6 +467,9 @@ impl From<Cli> for TomlConfigLoader {
         f.enable_exit_node = cli.enable_exit_node;
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
+        if let Some(wl) = cli.relay_network_whitelist {
+            f.foreign_network_whitelist = wl.join(" ");
+        }
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());
@@ -526,6 +539,13 @@ pub async fn async_main(cli: Cli) {
                 GlobalCtxEvent::ListenerAddFailed(p, msg) => {
                     print_event(format!(
                         "listener add failed. listener: {}, msg: {}",
+                        p, msg
+                    ));
+                }
+
+                GlobalCtxEvent::ListenerAcceptFailed(p, msg) => {
+                    print_event(format!(
+                        "listener accept failed. listener: {}, msg: {}",
                         p, msg
                     ));
                 }

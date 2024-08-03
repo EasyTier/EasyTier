@@ -117,6 +117,7 @@ impl UdpNatEntry {
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);
                 p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
+                p.mut_peer_manager_header().unwrap().set_no_proxy(true);
 
                 if let Err(e) = packet_sender.send(p) {
                     tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
@@ -219,7 +220,7 @@ impl UdpProxy {
         let _ = self.global_ctx.get_ipv4()?;
         let hdr = packet.peer_manager_header().unwrap();
         let is_exit_node = hdr.is_exit_node();
-        if hdr.packet_type != PacketType::Data as u8 {
+        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
             return None;
         };
 

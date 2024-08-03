@@ -61,6 +61,7 @@ bitflags::bitflags! {
         const ENCRYPTED = 0b0000_0001;
         const LATENCY_FIRST = 0b0000_0010;
         const EXIT_NODE = 0b0000_0100;
+        const NO_PROXY = 0b0000_1000;
 
         const _ = !0;
     }
@@ -108,6 +109,12 @@ impl PeerManagerHeader {
             .contains(PeerManagerHeaderFlags::EXIT_NODE)
     }
 
+    pub fn is_no_proxy(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::NO_PROXY)
+    }
+
     pub fn set_latency_first(&mut self, latency_first: bool) -> &mut Self {
         let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
         if latency_first {
@@ -125,6 +132,17 @@ impl PeerManagerHeader {
             flags.insert(PeerManagerHeaderFlags::EXIT_NODE);
         } else {
             flags.remove(PeerManagerHeaderFlags::EXIT_NODE);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn set_no_proxy(&mut self, no_proxy: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if no_proxy {
+            flags.insert(PeerManagerHeaderFlags::NO_PROXY);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::NO_PROXY);
         }
         self.flags = flags.bits();
         self
