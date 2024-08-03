@@ -1425,6 +1425,7 @@ dependencies = [
  "tun-easytier",
  "url",
  "uuid",
+ "wildmatch",
  "windows-sys 0.52.0",
  "winreg 0.11.0",
  "zerocopy",
@@ -6800,6 +6801,12 @@ dependencies = [
  "once_cell",
  "rustix",
 ]
+
+[[package]]
+name = "wildmatch"
+version = "2.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3928939971918220fed093266b809d1ee4ec6c1a2d72692ff6876898f3b16c19"
 
 [[package]]
 name = "winapi"
