@@ -183,7 +183,7 @@ and the vpn client is in network of 10.14.14.0/24"
 
     #[arg(
         long,
-        help = "path to the log file, if not set, will print to stdout",
+        help = "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path",
         default_value = "false"
     )]
     latency_first: bool,
@@ -524,6 +524,13 @@ pub async fn async_main(cli: Cli) {
                 GlobalCtxEvent::ListenerAddFailed(p, msg) => {
                     print_event(format!(
                         "listener add failed. listener: {}, msg: {}",
+                        p, msg
+                    ));
+                }
+
+                GlobalCtxEvent::ListenerAcceptFailed(p, msg) => {
+                    print_event(format!(
+                        "listener accept failed. listener: {}, msg: {}",
                         p, msg
                     ));
                 }
