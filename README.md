@@ -1,10 +1,10 @@
  # EasyTier
  
- [![GitHub](https://img.shields.io/github/license/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE)
- [![GitHub last commit](https://img.shields.io/github/last-commit/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/commits/main)
- [![GitHub issues](https://img.shields.io/github/issues/KKRainbow/EasyTier)](https://github.com/KKRainbow/EasyTier/issues)
- [![GitHub Core Actions](https://github.com/KKRainbow/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
- [![GitHub GUI Actions](https://github.com/KKRainbow/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
+ [![GitHub](https://img.shields.io/github/license/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/blob/main/LICENSE)
+ [![GitHub last commit](https://img.shields.io/github/last-commit/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/commits/main)
+ [![GitHub issues](https://img.shields.io/github/issues/EasyTier/EasyTier)](https://github.com/EasyTier/EasyTier/issues)
+ [![GitHub Core Actions](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/core.yml)
+ [![GitHub GUI Actions](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml/badge.svg)](https://github.com/EasyTier/EasyTier/actions/workflows/gui.yml)
  
 [简体中文](/README_CN.md) | [English](/README.md)
 
@@ -37,7 +37,7 @@
  
  1. **Download the precompiled binary file**
  
-     Visit the [GitHub Release page](https://github.com/KKRainbow/EasyTier/releases) to download the binary file suitable for your operating system. Release includes both command-line programs and GUI programs in the compressed package.
+     Visit the [GitHub Release page](https://github.com/EasyTier/EasyTier/releases) to download the binary file suitable for your operating system. Release includes both command-line programs and GUI programs in the compressed package.
  
  2. **Install via crates.io**
     ```sh
@@ -46,7 +46,7 @@
  
  3. **Install from source code**
     ```sh
-    cargo install --git https://github.com/KKRainbow/EasyTier.git
+    cargo install --git https://github.com/EasyTier/EasyTier.git
     ```
  
  ## Quick Start
@@ -240,6 +240,10 @@ connected_clients:
 ```
 
 Before using the Client Config, you need to modify the Interface Address and Peer Endpoint to the client's IP and the IP of the EasyTier node, respectively. Import the configuration file into the WireGuard client to access the EasyTier network.
+
+# Self-Hosted Public Server
+
+Each node can act as a relay node for other users' networks. Simply start EasyTier without any parameters.
  
  ### Configurations
  
@@ -255,7 +259,7 @@ Before using the Client Config, you need to modify the Interface Address and Pee
  
  # Community and Contribution
  
- We welcome and encourage community contributions! If you want to get involved, please submit a [GitHub PR](https://github.com/KKRainbow/EasyTier/pulls). Detailed contribution guidelines can be found in [CONTRIBUTING.md](https://github.com/KKRainbow/EasyTier/blob/main/CONTRIBUTING.md).
+ We welcome and encourage community contributions! If you want to get involved, please submit a [GitHub PR](https://github.com/EasyTier/EasyTier/pulls). Detailed contribution guidelines can be found in [CONTRIBUTING.md](https://github.com/EasyTier/EasyTier/blob/main/CONTRIBUTING.md).
  
  # Related Projects and Resources
  
@@ -266,11 +270,16 @@ Before using the Client Config, you need to modify the Interface Address and Pee
  
  # License
  
- EasyTier is released under the [Apache License 2.0](https://github.com/KKRainbow/EasyTier/blob/main/LICENSE).
+ EasyTier is released under the [Apache License 2.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE).
  
  # Contact
  
- - Ask questions or report problems: [GitHub Issues](https://github.com/KKRainbow/EasyTier/issues)
- - Discussion and exchange: [GitHub Discussions](https://github.com/KKRainbow/EasyTier/discussions)
+ - Ask questions or report problems: [GitHub Issues](https://github.com/EasyTier/EasyTier/issues)
+ - Discussion and exchange: [GitHub Discussions](https://github.com/EasyTier/EasyTier/discussions)
  - Telegram：https://t.me/easytier
  - QQ Group: 949700262
+
+# Sponsor
+
+<img src="assets/image-8.png" width="300">
+<img src="assets/image-9.png" width="300">
