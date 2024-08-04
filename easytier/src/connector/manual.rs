@@ -316,6 +316,7 @@ impl ManualConnectorManager {
             ip_versions.push(IpVersion::Both);
         } else {
             let addrs = u.socket_addrs(|| Some(1000))?;
+            tracing::info!(?addrs, ?dead_url, "get ip from url done");
             let mut has_ipv4 = false;
             let mut has_ipv6 = false;
             for addr in addrs {
