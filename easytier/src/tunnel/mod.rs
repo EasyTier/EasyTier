@@ -205,7 +205,7 @@ impl FromUrl for SocketAddr {
     fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
         let addrs = url.socket_addrs(|| None)?;
         tracing::debug!(?addrs, ?ip_version, ?url, "convert url to socket addrs");
-        let mut addrs = addrs
+        let addrs = addrs
             .into_iter()
             .filter(|addr| match ip_version {
                 IpVersion::V4 => addr.is_ipv4(),
@@ -213,7 +213,13 @@ impl FromUrl for SocketAddr {
                 IpVersion::Both => true,
             })
             .collect::<Vec<_>>();
-        addrs.pop().ok_or(TunnelError::NoDnsRecordFound(ip_version))
+
+        use rand::seq::SliceRandom;
+        // randomly select one address
+        addrs
+            .choose(&mut rand::thread_rng())
+            .copied()
+            .ok_or(TunnelError::NoDnsRecordFound(ip_version))
     }
 }
 
