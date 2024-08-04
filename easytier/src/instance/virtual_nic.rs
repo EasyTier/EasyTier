@@ -237,7 +237,6 @@ impl AsyncWrite for TunAsyncWrite {
 }
 
 pub struct VirtualNic {
-    dev_name: String,
     queue_num: usize,
 
     global_ctx: ArcGlobalCtx,
@@ -247,10 +246,8 @@ pub struct VirtualNic {
 }
 #[cfg(target_os = "windows")]
 pub fn checkreg() -> io::Result<()> {
-    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey,enums::KEY_ALL_ACCESS};
-    // 打开根键
+    use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    // 打开指定的子键
     let profiles_key = hklm.open_subkey_with_flags(
         "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
         KEY_ALL_ACCESS,
@@ -259,21 +256,19 @@ pub fn checkreg() -> io::Result<()> {
         "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
         KEY_ALL_ACCESS,
     )?;
-    // 收集要删除的子键名称
+    // collect subkeys to delete
     let mut keys_to_delete = Vec::new();
     let mut keys_to_delete_unmanaged = Vec::new();
     for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
         let subkey = profiles_key.open_subkey(&subkey_name)?;
-        // 尝试读取 ProfileName 值
+        // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("ProfileName") {
             Ok(profile_name) => {
-                // 检查 ProfileName 是否包含 "et"
                 if profile_name.contains("et_") {
                     keys_to_delete.push(subkey_name);
                 }
             }
             Err(e) => {
-                // 打印错误信息
                 tracing::error!(
                     "Failed to read ProfileName for subkey {}: {}",
                     subkey_name,
@@ -284,16 +279,14 @@ pub fn checkreg() -> io::Result<()> {
     }
     for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
         let subkey = unmanaged_key.open_subkey(&subkey_name)?;
-        // 尝试读取 ProfileName 值
+        // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("Description") {
             Ok(profile_name) => {
-                // 检查 ProfileName 是否包含 "et"
                 if profile_name.contains("et_") {
                     keys_to_delete_unmanaged.push(subkey_name);
                 }
             }
             Err(e) => {
-                // 打印错误信息
                 tracing::error!(
                     "Failed to read ProfileName for subkey {}: {}",
                     subkey_name,
@@ -302,7 +295,7 @@ pub fn checkreg() -> io::Result<()> {
             }
         }
     }
-    //删除收集到的子键
+    // delete collected subkeys
     if !keys_to_delete.is_empty() {
         for subkey_name in keys_to_delete {
             match profiles_key.delete_subkey_all(&subkey_name) {
@@ -325,17 +318,11 @@ pub fn checkreg() -> io::Result<()> {
 impl VirtualNic {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
-            dev_name: "".to_owned(),
             queue_num: 1,
             global_ctx,
             ifname: None,
             ifcfg: Box::new(IfConfiger {}),
         }
-    }
-
-    pub fn set_dev_name(mut self, dev_name: &str) -> Result<Self, Error> {
-        self.dev_name = dev_name.to_owned();
-        Ok(self)
     }
 
     pub fn set_queue_num(mut self, queue_num: usize) -> Result<Self, Error> {
@@ -361,7 +348,7 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
-            match checkreg(){
+            match checkreg() {
                 Ok(_) => tracing::trace!("delete successful!"),
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
@@ -376,7 +363,12 @@ impl VirtualNic {
                 .collect::<String>()
                 .to_lowercase();
 
-            config.name(format!("et{}_{}_{}", self.dev_name, c, s));
+            let dev_name = self.global_ctx.get_flags().dev_name;
+            if !dev_name.is_empty() {
+                config.name(format!("{}", dev_name));
+            } else {
+                config.name(format!("et{}_{}", c, s));
+            }
             // set a temporary address
             config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
 
