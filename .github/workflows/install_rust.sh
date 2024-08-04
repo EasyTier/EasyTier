@@ -57,8 +57,8 @@ fi
 
 # see https://github.com/rust-lang/rustup/issues/3709
 rustup set auto-self-update disable
-rustup install 1.79
-rustup default 1.79
+rustup install 1.77
+rustup default 1.77
 
 # mips/mipsel cannot add target from rustup, need compile by ourselves
 if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
@@ -72,7 +72,6 @@ if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
 
     rustup toolchain install nightly-x86_64-unknown-linux-gnu
     rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
-    cd -
 else
     rustup target add $TARGET
     if [[ $GUI_TARGET != '' ]]; then
