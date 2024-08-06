@@ -84,9 +84,7 @@ http = { version = "1", default-features = false, features = [
 tokio-rustls = { version = "0.26", default-features = false, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", version = "0.7.1", features = [
-    "async",
-], optional = true }
+tun = { package = "tun-easytier", version = "1.0.0", features = [ "async" ], optional = true }
 # for net ns
 nix = { version = "0.27", features = ["sched", "socket", "ioctl"] }
 

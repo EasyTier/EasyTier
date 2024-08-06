@@ -31,7 +31,7 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_util::bytes::Bytes;
-use tun::{create_as_async, AsyncDevice, Configuration, Device as _, Layer};
+use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
 
 pin_project! {
@@ -237,8 +237,6 @@ impl AsyncWrite for TunAsyncWrite {
 }
 
 pub struct VirtualNic {
-    queue_num: usize,
-
     global_ctx: ArcGlobalCtx,
 
     ifname: Option<String>,
@@ -318,19 +316,13 @@ pub fn checkreg() -> io::Result<()> {
 impl VirtualNic {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
-            queue_num: 1,
             global_ctx,
             ifname: None,
             ifcfg: Box::new(IfConfiger {}),
         }
     }
 
-    pub fn set_queue_num(mut self, queue_num: usize) -> Result<Self, Error> {
-        self.queue_num = queue_num;
-        Ok(self)
-    }
-
-    async fn create_tun(&mut self) -> Result<AsyncDevice, Error> {
+    async fn create_tun(&mut self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
@@ -338,13 +330,15 @@ impl VirtualNic {
         {
             let dev_name = self.global_ctx.get_flags().dev_name;
             if !dev_name.is_empty() {
-                config.name(format!("{}", dev_name));
+                config.tun_name(format!("{}", dev_name));
             }
-            config.platform(|config| {
-                // detect protocol by ourselves for cross platform
-                config.packet_information(false);
-            });
         }
+
+        #[cfg(target_os = "macos")]
+        config.platform_config(|config| {
+            // disable packet information so we can process the header by ourselves, see tun2 impl for more details
+            config.packet_information(false);
+        });
 
         #[cfg(target_os = "windows")]
         {
@@ -353,7 +347,6 @@ impl VirtualNic {
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
             use rand::distributions::Distribution as _;
-            use std::net::IpAddr;
             let c = crate::arch::windows::interface_count()?;
             let mut rng = rand::thread_rng();
             let s: String = rand::distributions::Alphanumeric
@@ -365,16 +358,12 @@ impl VirtualNic {
 
             let dev_name = self.global_ctx.get_flags().dev_name;
             if !dev_name.is_empty() {
-                config.name(format!("{}", dev_name));
+                config.tun_name(format!("{}", dev_name));
             } else {
-                config.name(format!("et{}_{}", c, s));
+                config.tun_name(format!("et{}_{}", c, s));
             }
-            // set a temporary address
-            config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
 
-            config.platform(|config| {
-                config.skip_config(true);
-                config.guid(None);
+            config.platform_config(|config| {
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,
                     config.max_ring_cap(),
@@ -382,14 +371,10 @@ impl VirtualNic {
             });
         }
 
-        if self.queue_num != 1 {
-            todo!("queue_num != 1")
-        }
-        config.queues(self.queue_num);
         config.up();
 
         let _g = self.global_ctx.net_ns.guard();
-        Ok(create_as_async(&config)?)
+        Ok(tun::create(&config)?)
     }
 
     #[cfg(target_os = "android")]
@@ -401,12 +386,11 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
         config.raw_fd(tun_fd);
-        config.platform(|config| {
-            config.no_close_fd_on_drop(true);
-        });
+        config.close_fd_on_drop(false);
         config.up();
 
-        let dev = create_as_async(&config)?;
+        let dev = tun::create(&config)?;
+        let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, false),
@@ -424,8 +408,10 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
-        let ifname = dev.get_ref().name()?;
+        let ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        let dev = AsyncDevice::new(dev)?;
 
         let flags = self.global_ctx.config.get_flags();
         let mut mtu_in_config = flags.mtu;
