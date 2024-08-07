@@ -128,7 +128,12 @@ rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 pnet = { version = "0.35.0", features = ["serde"] }
 
-clap = { version = "4.4.8", features = ["unicode", "derive", "wrap_help"] }
+clap = { version = "4.4.8", features = [
+    "string",
+    "unicode",
+    "derive",
+    "wrap_help",
+] }
 
 async-recursion = "1.0.5"
 
@@ -169,6 +174,9 @@ parking_lot = { version = "0.12.0", optional = true }
 
 wildmatch = "2.3.4"
 
+rust-i18n = "3"
+sys-locale = "0.3"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_Networking_WinSock",
@@ -181,6 +189,8 @@ winreg = "0.52"
 
 [build-dependencies]
 tonic-build = "0.12"
+globwalk = "0.8.1"
+regex = "1"
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.11", features = ["blocking"] }

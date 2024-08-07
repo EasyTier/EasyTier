@@ -10,6 +10,9 @@ use std::{
     path::PathBuf,
 };
 
+#[macro_use]
+extern crate rust_i18n;
+
 use anyhow::Context;
 use clap::Parser;
 
@@ -52,19 +55,20 @@ struct Cli {
     #[arg(
         short,
         long,
-        help = "path to the config file, NOTE: if this is set, all other options will be ignored"
+        help = t!("core_clap.config_file").to_string()
     )]
     config_file: Option<PathBuf>,
 
     #[arg(
         long,
-        help = "network name to identify this vpn network",
+        help = t!("core_clap.network_name").to_string(),
         default_value = "default"
     )]
     network_name: String,
+
     #[arg(
         long,
-        help = "network secret to verify this node belongs to the vpn network",
+        help = t!("core_clap.network_secret").to_string(),
         default_value = ""
     )]
     network_secret: String,
@@ -72,170 +76,192 @@ struct Cli {
     #[arg(
         short,
         long,
-        help = "ipv4 address of this vpn node, if empty, this node will only forward packets and no TUN device will be created"
+        help = t!("core_clap.ipv4").to_string()
     )]
     ipv4: Option<String>,
 
     #[arg(
         short,
         long,
-        help = "automatically determine and set IP address by Easytier, and the
-IP address starts from 10.0.0.1 by default. Warning, if there is an IP
-conflict in the network when using DHCP, the IP will be automatically
-changed."
+        help = t!("core_clap.dhcp").to_string()
     )]
     dhcp: bool,
 
-    #[arg(short, long, help = "peers to connect initially", num_args = 0..)]
+    #[arg(
+        short,
+        long,
+        help = t!("core_clap.peers").to_string(),
+        num_args = 0..
+    )]
     peers: Vec<String>,
 
-    #[arg(short, long, help = "use a public shared node to discover peers")]
+    #[arg(
+        short,
+        long,
+        help = t!("core_clap.external_node").to_string()
+    )]
     external_node: Option<String>,
 
     #[arg(
         short = 'n',
         long,
-        help = "export local networks to other peers in the vpn"
+        help = t!("core_clap.proxy_networks").to_string()
     )]
     proxy_networks: Vec<String>,
 
     #[arg(
         short,
         long,
-        default_value = "0",
-        help = "rpc portal address to listen for management. 0 means random
-port, 12345 means listen on 12345 of localhost, 0.0.0.0:12345 means
-listen on 12345 of all interfaces. default is 0 and will try 15888 first"
+        help = t!("core_clap.rpc_portal").to_string(),
+        default_value = "0"
     )]
     rpc_portal: String,
 
-    #[arg(short, long, help = "listeners to accept connections, allow format:
-a port number: 11010, means tcp/udp will listen on 11010, ws/wss will listen on 11010 and 11011, wg will listen on 11011
-url: tcp://0.0.0.0:11010, tcp can be tcp, udp, ring, wg, ws, wss,
-proto:port: wg:11011, means listen on 11011 with wireguard protocol
-url and proto:port can occur multiple times.
-            ", default_values_t = ["11010".to_string()],
-        num_args = 0..)]
+    #[arg(
+        short,
+        long,
+        help = t!("core_clap.listeners").to_string(),
+        default_values_t = ["11010".to_string()],
+        num_args = 0..
+    )]
     listeners: Vec<String>,
 
     #[arg(
         long,
-        help = "do not listen on any port, only connect to peers",
+        help = t!("core_clap.no_listener").to_string(),
         default_value = "false"
     )]
     no_listener: bool,
 
-    #[arg(long, help = "console log level", 
-        value_parser = clap::builder::PossibleValuesParser::new(["trace", "debug", "info", "warn", "error", "off"]))]
+    #[arg(
+        long,
+        help = t!("core_clap.console_log_level").to_string()
+    )]
     console_log_level: Option<String>,
 
-    #[arg(long, help = "file log level", 
-        value_parser = clap::builder::PossibleValuesParser::new(["trace", "debug", "info", "warn", "error", "off"]))]
+    #[arg(
+        long,
+        help = t!("core_clap.file_log_level").to_string()
+    )]
     file_log_level: Option<String>,
-    #[arg(long, help = "directory to store log files")]
+
+    #[arg(
+        long,
+        help = t!("core_clap.file_log_dir").to_string()
+    )]
     file_log_dir: Option<String>,
 
-    #[arg(long, help = "host name to identify this device")]
+    #[arg(
+        long,
+        help = t!("core_clap.hostname").to_string()
+    )]
     hostname: Option<String>,
 
     #[arg(
         short = 'm',
         long,
-        default_value = "default",
-        help = "instance name to identify this vpn node in same machine"
+        help = t!("core_clap.instance_name").to_string(),
+        default_value = "default"
     )]
     instance_name: String,
 
     #[arg(
         long,
-        help = "url that defines the vpn portal, allow other vpn clients to connect.
-example: wg://0.0.0.0:11010/10.14.14.0/24, means the vpn portal is a wireguard server listening on vpn.example.com:11010,
-and the vpn client is in network of 10.14.14.0/24"
+        help = t!("core_clap.vpn_portal").to_string()
     )]
     vpn_portal: Option<String>,
 
-    #[arg(long, help = "default protocol to use when connecting to peers")]
+    #[arg(
+        long,
+        help = t!("core_clap.default_protocol").to_string()
+    )]
     default_protocol: Option<String>,
 
     #[arg(
         short = 'u',
         long,
-        help = "disable encryption for peers communication, default is false, must be same with peers",
+        help = t!("core_clap.disable_encryption").to_string(),
         default_value = "false"
     )]
     disable_encryption: bool,
 
     #[arg(
         long,
-        help = "use multi-thread runtime, default is single-thread",
+        help = t!("core_clap.multi_thread").to_string(),
         default_value = "false"
     )]
     multi_thread: bool,
 
-    #[arg(long, help = "do not use ipv6", default_value = "false")]
+    #[arg(
+        long,
+        help = t!("core_clap.disable_ipv6").to_string(),
+        default_value = "false"
+    )]
     disable_ipv6: bool,
 
-    #[arg(long, help = "optional tun interface name")]
+    #[arg(
+        long,
+        help = t!("core_clap.dev_name").to_string()
+    )]
     dev_name: Option<String>,
 
     #[arg(
         long,
-        help = "mtu of the TUN device, default is 1420 for non-encryption, 1400 for encryption"
+        help = t!("core_clap.mtu").to_string()
     )]
     mtu: Option<u16>,
 
     #[arg(
         long,
-        help = "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path",
+        help = t!("core_clap.latency_first").to_string(),
         default_value = "false"
     )]
     latency_first: bool,
 
     #[arg(
         long,
-        help = "exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list",
+        help = t!("core_clap.exit_nodes").to_string(),
         num_args = 0..
     )]
     exit_nodes: Vec<Ipv4Addr>,
 
     #[arg(
         long,
-        help = "allow this node to be an exit node, default is false",
+        help = t!("core_clap.enable_exit_node").to_string(),
         default_value = "false"
     )]
     enable_exit_node: bool,
 
     #[arg(
         long,
-        help = "do not create TUN device, can use subnet proxy to access node",
+        help = t!("core_clap.no_tun").to_string(),
         default_value = "false"
     )]
     no_tun: bool,
 
     #[arg(
         long,
-        help = "enable smoltcp stack for subnet proxy",
+        help = t!("core_clap.use_smoltcp").to_string(),
         default_value = "false"
     )]
     use_smoltcp: bool,
 
     #[arg(
         long,
-        help = "assign routes cidr manually, will disable subnet proxy and
-wireguard routes propogated from peers. e.g.: 192.168.0.0/16",
+        help = t!("core_clap.manual_routes").to_string(),
         num_args = 0..
     )]
     manual_routes: Option<Vec<String>>,
 
     #[arg(
         long,
-        help = "only relay traffic of whitelisted networks, input is a wildcard
-string, e.g.: '*' (all networks), 'def*' (network prefixed with def), can specify multiple networks
-disable relay if arg is empty. default is allowing all networks",
-        num_args = 0..,
+        help = t!("core_clap.relay_network_whitelist").to_string(),
+        num_args = 0..
     )]
     relay_network_whitelist: Option<Vec<String>>,
 }
+
+rust_i18n::i18n!("locales");
 
 impl Cli {
     fn parse_listeners(&self) -> Vec<String> {
@@ -627,6 +653,9 @@ pub async fn async_main(cli: Cli) {
 
 fn main() {
     setup_panic_handler();
+
+    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+    rust_i18n::set_locale(&locale);
 
     let cli = Cli::parse();
     tracing::info!(cli = ?cli, "cli args parsed");
