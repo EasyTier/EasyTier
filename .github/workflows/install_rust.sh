@@ -75,7 +75,7 @@ if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
 
     # https://github.com/rust-lang/rust/issues/128808
     # remove it after Cargo or rustc fix this.
-    RUST_LIB_SRC=/usr/local/rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
+    RUST_LIB_SRC=$HOME/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/
     if [[ -f $RUST_LIB_SRC/library/Cargo.lock && ! -f $RUST_LIB_SRC/Cargo.lock ]]; then 
         cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
     fi
