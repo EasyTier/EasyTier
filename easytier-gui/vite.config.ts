@@ -10,6 +10,10 @@ import VueDevTools from 'vite-plugin-vue-devtools'
 import VueRouter from 'unplugin-vue-router/vite'
 import { VueRouterAutoImports } from 'unplugin-vue-router'
 import { PrimeVueResolver } from '@primevue/auto-import-resolver';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+import { internalIpV4Sync } from 'internal-ip';
+
+const host = process.env.TAURI_DEV_HOST;
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
@@ -19,6 +23,7 @@ export default defineConfig(async () => ({
     },
   },
   plugins: [
+    svelte(),
     VueMacros({
       plugins: {
         vue: Vue({
@@ -87,15 +92,18 @@ export default defineConfig(async () => ({
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
-    host: '10.147.223.128',
+    host: host || false,
     strictPort: true,
     watch: {
       // 3. tell vite to ignore watching `src-tauri`
       ignored: ['**/src-tauri/**'],
     },
-    hmr: {
-      host: "10.147.223.128",
-      protocol: "ws",
-    },
+    hmr: host
+      ? {
+        protocol: 'ws',
+        host: internalIpV4Sync(),
+        port: 1430,
+      }
+      : undefined,
   },
 }))
