@@ -360,14 +360,12 @@ impl From<Cli> for TomlConfigLoader {
 
         cfg.set_dhcp(cli.dhcp);
 
-        if !cli.dhcp {
-            if let Some(ipv4) = &cli.ipv4 {
-                cfg.set_ipv4(Some(
-                    ipv4.parse()
-                        .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
-                        .unwrap(),
-                ))
-            }
+        if let Some(ipv4) = &cli.ipv4 {
+            cfg.set_ipv4(Some(
+                ipv4.parse()
+                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
+                    .unwrap(),
+            ))
         }
 
         cfg.set_peers(
