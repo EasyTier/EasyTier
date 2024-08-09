@@ -48,6 +48,13 @@
     ```sh
     cargo install --git https://github.com/EasyTier/EasyTier.git
     ```
+
+ 4. **Install by script (For Linux Only)**
+    ```sh
+    curl -fsSL "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" | bash -s install
+    ```
+   
+    You can aslo uninstall Easytier by the commend "uninstall" of this script
  
  ## Quick Start
 
