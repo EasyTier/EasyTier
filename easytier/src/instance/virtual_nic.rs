@@ -243,7 +243,7 @@ pub struct VirtualNic {
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
 #[cfg(target_os = "windows")]
-pub fn checkreg() -> io::Result<()> {
+pub fn checkreg(dev_name:&str) -> io::Result<()> {
     use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let profiles_key = hklm.open_subkey_with_flags(
@@ -262,7 +262,7 @@ pub fn checkreg() -> io::Result<()> {
         // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("ProfileName") {
             Ok(profile_name) => {
-                if profile_name.contains("et_") {
+                if profile_name.contains("et_") || (!dev_name.is_empty() && dev_name == profile_name) {
                     keys_to_delete.push(subkey_name);
                 }
             }
@@ -280,7 +280,7 @@ pub fn checkreg() -> io::Result<()> {
         // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("Description") {
             Ok(profile_name) => {
-                if profile_name.contains("et_") {
+                if profile_name.contains("et_") || (!dev_name.is_empty() && dev_name == profile_name) {
                     keys_to_delete_unmanaged.push(subkey_name);
                 }
             }
@@ -342,7 +342,9 @@ impl VirtualNic {
 
         #[cfg(target_os = "windows")]
         {
-            match checkreg() {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            match checkreg(&dev_name) {
                 Ok(_) => tracing::trace!("delete successful!"),
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
@@ -355,12 +357,11 @@ impl VirtualNic {
                 .map(char::from)
                 .collect::<String>()
                 .to_lowercase();
-
-            let dev_name = self.global_ctx.get_flags().dev_name;
+            
             if !dev_name.is_empty() {
                 config.tun_name(format!("{}", dev_name));
             } else {
-                config.tun_name(format!("et{}_{}", c, s));
+                config.tun_name(format!("et_{}_{}", c, s));
             }
 
             config.platform_config(|config| {

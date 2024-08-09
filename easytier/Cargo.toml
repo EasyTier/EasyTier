@@ -216,7 +216,7 @@ full = [
     "smoltcp",
     "tun",
 ]
-mips = ["aes-gcm", "mimalloc", "wireguard"]
+mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp"]
 bsd = ["aes-gcm", "mimalloc", "smoltcp"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
