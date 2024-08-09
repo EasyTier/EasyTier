@@ -171,6 +171,10 @@ pub struct Flags {
     pub use_smoltcp: bool,
     #[derivative(Default(value = "\"*\".to_string()"))]
     pub foreign_network_whitelist: String,
+    #[derivative(Default(value = "false"))]
+    pub disable_p2p: bool,
+    #[derivative(Default(value = "false"))]
+    pub relay_all_peer_rpc: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

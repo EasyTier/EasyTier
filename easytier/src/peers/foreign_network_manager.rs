@@ -37,6 +37,7 @@ use super::{
 struct ForeignNetworkEntry {
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
+    relay_data: bool,
 }
 
 impl ForeignNetworkEntry {
@@ -45,9 +46,14 @@ impl ForeignNetworkEntry {
         packet_sender: PacketRecvChan,
         global_ctx: ArcGlobalCtx,
         my_peer_id: PeerId,
+        relay_data: bool,
     ) -> Self {
         let peer_map = Arc::new(PeerMap::new(packet_sender, global_ctx, my_peer_id));
-        Self { network, peer_map }
+        Self {
+            network,
+            peer_map,
+            relay_data,
+        }
     }
 }
 
@@ -195,8 +201,29 @@ impl ForeignNetworkManager {
         }
     }
 
+    fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), Error> {
+        if self
+            .global_ctx
+            .get_flags()
+            .foreign_network_whitelist
+            .split(" ")
+            .map(wildmatch::WildMatch::new)
+            .any(|wl| wl.matches(network_name))
+        {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
+        }
+    }
+
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         tracing::info!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
+
+        let relay_peer_rpc = self.global_ctx.get_flags().relay_all_peer_rpc;
+        let ret = self.check_network_in_whitelist(&peer_conn.get_network_identity().network_name);
+        if ret.is_err() && !relay_peer_rpc {
+            return ret;
+        }
 
         let entry = self
             .data
@@ -208,6 +235,7 @@ impl ForeignNetworkManager {
                     self.packet_sender.clone(),
                     self.global_ctx.clone(),
                     self.my_peer_id,
+                    !ret.is_err(),
                 ))
             })
             .clone();
@@ -280,6 +308,10 @@ impl ForeignNetworkManager {
                     }
 
                     if let Some(entry) = data.get_network_entry(&from_network) {
+                        if !entry.relay_data && hdr.packet_type == PacketType::Data as u8 {
+                            continue;
+                        }
+
                         let ret = entry
                             .peer_map
                             .send_msg(packet_bytes, to_peer_id, NextHopPolicy::LeastHop)
@@ -422,6 +454,31 @@ mod tests {
         foreign_network_whitelist_helper("net1".to_string()).await;
         foreign_network_whitelist_helper("net2".to_string()).await;
         foreign_network_whitelist_helper("net2abc".to_string()).await;
+    }
+
+    #[tokio::test]
+    async fn only_relay_peer_rpc() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let mut flag = pm_center.get_global_ctx().get_flags();
+        flag.foreign_network_whitelist = "".to_string();
+        flag.relay_all_peer_rpc = true;
+        pm_center.get_global_ctx().config.set_flags(flag);
+        tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
+
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        tracing::debug!(
+            "pma_net1: {:?}, pmb_net1: {:?}",
+            pma_net1.my_peer_id(),
+            pmb_net1.my_peer_id()
+        );
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+        assert_eq!(1, pma_net1.list_routes().await.len());
+        assert_eq!(1, pmb_net1.list_routes().await.len());
     }
 
     #[tokio::test]

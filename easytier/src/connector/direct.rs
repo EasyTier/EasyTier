@@ -121,6 +121,10 @@ impl DirectConnectorManager {
     }
 
     pub fn run(&mut self) {
+        if self.global_ctx.get_flags().disable_p2p {
+            return;
+        }
+
         self.run_as_server();
         self.run_as_client();
     }
