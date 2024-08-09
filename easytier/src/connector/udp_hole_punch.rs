@@ -602,6 +602,10 @@ impl UdpHolePunchConnector {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
+        if self.data.global_ctx.get_flags().disable_p2p {
+            return Ok(());
+        }
+
         self.run_as_client().await?;
         self.run_as_server().await?;
 

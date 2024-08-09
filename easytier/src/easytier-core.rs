@@ -259,6 +259,20 @@ struct Cli {
         num_args = 0..
     )]
     relay_network_whitelist: Option<Vec<String>>,
+
+    #[arg(
+        long,
+        help = t!("core_clap.disable_p2p").to_string(),
+        default_value = "false"
+    )]
+    disable_p2p: bool,
+
+    #[arg(
+        long,
+        help = t!("core_clap.relay_all_peer_rpc").to_string(),
+        default_value = "false"
+    )]
+    relay_all_peer_rpc: bool,
 }
 
 rust_i18n::i18n!("locales");
@@ -494,6 +508,8 @@ impl From<Cli> for TomlConfigLoader {
         if let Some(wl) = cli.relay_network_whitelist {
             f.foreign_network_whitelist = wl.join(" ");
         }
+        f.disable_p2p = cli.disable_p2p;
+        f.relay_all_peer_rpc = cli.relay_all_peer_rpc;
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());

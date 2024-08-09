@@ -97,5 +97,17 @@ core_clap:
     en: "assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.: 192.168.0.0/16"
     zh-CN: "手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16"
   relay_network_whitelist:
-    en: "only forward traffic from the whitelist networks, supporting wildcard strings, prefixes, and multiple network names can be separated by spaces. if this parameter is empty, forwarding is disabled. by default, all networks are allowed. e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)"
-    zh-CN: "仅转发白名单网络的流量，支持通配符字符串、前缀、多个网络名称间可以使用英文空格间隔。如果该参数为空，则禁用转发。默认允许所有网络。例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）"
+    en: |+
+        only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
+        if this parameter is empty, forwarding is disabled. by default, all networks are allowed. 
+        e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)"
+    zh-CN: |+
+        仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
+        如果该参数为空，则禁用转发。默认允许所有网络。
+        例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）"
+  disable_p2p:
+    en: "disable p2p communication, will only relay packets with peers specified by --peers"
+    zh-CN: "禁用P2P通信，只通过--peers指定的节点转发数据包"
+  relay_all_peer_rpc:
+    en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
+    zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"

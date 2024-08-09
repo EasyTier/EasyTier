@@ -309,21 +309,6 @@ impl PeerManager {
         self.add_client_tunnel(t).await
     }
 
-    fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), Error> {
-        if self
-            .global_ctx
-            .get_flags()
-            .foreign_network_whitelist
-            .split(" ")
-            .map(wildmatch::WildMatch::new)
-            .any(|wl| wl.matches(network_name))
-        {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
-        }
-    }
-
     #[tracing::instrument]
     pub async fn add_tunnel_as_server(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
@@ -334,7 +319,6 @@ impl PeerManager {
         {
             self.add_new_peer_conn(peer).await?;
         } else {
-            self.check_network_in_whitelist(&peer.get_network_identity().network_name)?;
             self.foreign_network_manager.add_peer_conn(peer).await?;
         }
         tracing::info!("add tunnel as server done");
