@@ -31,7 +31,7 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_util::bytes::Bytes;
-use tun::{create_as_async, AsyncDevice, Configuration, Device as _, Layer};
+use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
 
 pin_project! {
@@ -237,20 +237,15 @@ impl AsyncWrite for TunAsyncWrite {
 }
 
 pub struct VirtualNic {
-    dev_name: String,
-    queue_num: usize,
-
     global_ctx: ArcGlobalCtx,
 
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
 #[cfg(target_os = "windows")]
-pub fn checkreg() -> io::Result<()> {
-    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey,enums::KEY_ALL_ACCESS};
-    // 打开根键
+pub fn checkreg(dev_name:&str) -> io::Result<()> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    // 打开指定的子键
     let profiles_key = hklm.open_subkey_with_flags(
         "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
         KEY_ALL_ACCESS,
@@ -259,21 +254,19 @@ pub fn checkreg() -> io::Result<()> {
         "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
         KEY_ALL_ACCESS,
     )?;
-    // 收集要删除的子键名称
+    // collect subkeys to delete
     let mut keys_to_delete = Vec::new();
     let mut keys_to_delete_unmanaged = Vec::new();
     for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
         let subkey = profiles_key.open_subkey(&subkey_name)?;
-        // 尝试读取 ProfileName 值
+        // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("ProfileName") {
             Ok(profile_name) => {
-                // 检查 ProfileName 是否包含 "et"
-                if profile_name.contains("et_") {
+                if profile_name.contains("et_") || (!dev_name.is_empty() && dev_name == profile_name) {
                     keys_to_delete.push(subkey_name);
                 }
             }
             Err(e) => {
-                // 打印错误信息
                 tracing::error!(
                     "Failed to read ProfileName for subkey {}: {}",
                     subkey_name,
@@ -284,16 +277,14 @@ pub fn checkreg() -> io::Result<()> {
     }
     for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
         let subkey = unmanaged_key.open_subkey(&subkey_name)?;
-        // 尝试读取 ProfileName 值
+        // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("Description") {
             Ok(profile_name) => {
-                // 检查 ProfileName 是否包含 "et"
-                if profile_name.contains("et_") {
+                if profile_name.contains("et_") || (!dev_name.is_empty() && dev_name == profile_name) {
                     keys_to_delete_unmanaged.push(subkey_name);
                 }
             }
             Err(e) => {
-                // 打印错误信息
                 tracing::error!(
                     "Failed to read ProfileName for subkey {}: {}",
                     subkey_name,
@@ -302,7 +293,7 @@ pub fn checkreg() -> io::Result<()> {
             }
         }
     }
-    //删除收集到的子键
+    // delete collected subkeys
     if !keys_to_delete.is_empty() {
         for subkey_name in keys_to_delete {
             match profiles_key.delete_subkey_all(&subkey_name) {
@@ -325,25 +316,13 @@ pub fn checkreg() -> io::Result<()> {
 impl VirtualNic {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
-            dev_name: "".to_owned(),
-            queue_num: 1,
             global_ctx,
             ifname: None,
             ifcfg: Box::new(IfConfiger {}),
         }
     }
 
-    pub fn set_dev_name(mut self, dev_name: &str) -> Result<Self, Error> {
-        self.dev_name = dev_name.to_owned();
-        Ok(self)
-    }
-
-    pub fn set_queue_num(mut self, queue_num: usize) -> Result<Self, Error> {
-        self.queue_num = queue_num;
-        Ok(self)
-    }
-
-    async fn create_tun(&mut self) -> Result<AsyncDevice, Error> {
+    async fn create_tun(&mut self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
@@ -351,22 +330,25 @@ impl VirtualNic {
         {
             let dev_name = self.global_ctx.get_flags().dev_name;
             if !dev_name.is_empty() {
-                config.name(format!("{}", dev_name));
+                config.tun_name(format!("{}", dev_name));
             }
-            config.platform(|config| {
-                // detect protocol by ourselves for cross platform
-                config.packet_information(false);
-            });
         }
+
+        #[cfg(target_os = "macos")]
+        config.platform_config(|config| {
+            // disable packet information so we can process the header by ourselves, see tun2 impl for more details
+            config.packet_information(false);
+        });
 
         #[cfg(target_os = "windows")]
         {
-            match checkreg(){
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            match checkreg(&dev_name) {
                 Ok(_) => tracing::trace!("delete successful!"),
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
             use rand::distributions::Distribution as _;
-            use std::net::IpAddr;
             let c = crate::arch::windows::interface_count()?;
             let mut rng = rand::thread_rng();
             let s: String = rand::distributions::Alphanumeric
@@ -375,14 +357,15 @@ impl VirtualNic {
                 .map(char::from)
                 .collect::<String>()
                 .to_lowercase();
+            
+            if !dev_name.is_empty() {
+                config.tun_name(format!("{}", dev_name));
+            } else {
+                config.tun_name(format!("et_{}_{}", c, s));
+            }
 
-            config.name(format!("et{}_{}_{}", self.dev_name, c, s));
-            // set a temporary address
-            config.address(format!("172.0.{}.3", c).parse::<IpAddr>().unwrap());
-
-            config.platform(|config| {
+            config.platform_config(|config| {
                 config.skip_config(true);
-                config.guid(None);
                 config.ring_cap(Some(std::cmp::min(
                     config.min_ring_cap() * 32,
                     config.max_ring_cap(),
@@ -390,14 +373,10 @@ impl VirtualNic {
             });
         }
 
-        if self.queue_num != 1 {
-            todo!("queue_num != 1")
-        }
-        config.queues(self.queue_num);
         config.up();
 
         let _g = self.global_ctx.net_ns.guard();
-        Ok(create_as_async(&config)?)
+        Ok(tun::create(&config)?)
     }
 
     #[cfg(target_os = "android")]
@@ -409,12 +388,11 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
         config.raw_fd(tun_fd);
-        config.platform(|config| {
-            config.no_close_fd_on_drop(true);
-        });
+        config.close_fd_on_drop(false);
         config.up();
 
-        let dev = create_as_async(&config)?;
+        let dev = tun::create(&config)?;
+        let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, false),
@@ -432,8 +410,10 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
-        let ifname = dev.get_ref().name()?;
+        let ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        let dev = AsyncDevice::new(dev)?;
 
         let flags = self.global_ctx.config.get_flags();
         let mut mtu_in_config = flags.mtu;

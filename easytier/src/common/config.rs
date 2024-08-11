@@ -171,6 +171,10 @@ pub struct Flags {
     pub use_smoltcp: bool,
     #[derivative(Default(value = "\"*\".to_string()"))]
     pub foreign_network_whitelist: String,
+    #[derivative(Default(value = "false"))]
+    pub disable_p2p: bool,
+    #[derivative(Default(value = "false"))]
+    pub relay_all_peer_rpc: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -258,21 +262,15 @@ impl ConfigLoader for TomlConfigLoader {
 
         match hostname {
             Some(hostname) => {
+                let hostname = hostname
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(32)
+                    .collect::<String>();
+
                 if !hostname.is_empty() {
-                    let mut name = hostname
-                        .chars()
-                        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                        .take(32)
-                        .collect::<String>();
-
-                    if name.len() > 32 {
-                        name = name.chars().take(32).collect::<String>();
-                    }
-
-                    if hostname != name {
-                        self.set_hostname(Some(name.clone()));
-                    }
-                    name
+                    self.set_hostname(Some(hostname.clone()));
+                    hostname
                 } else {
                     self.set_hostname(None);
                     gethostname::gethostname().to_string_lossy().to_string()

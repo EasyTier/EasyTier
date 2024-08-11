@@ -88,9 +88,9 @@ class TauriVpnService : VpnService() {
         builder.addDnsServer(dns)
 
         for (route in routes) {
-            val ipParts = ipv4Addr.split("/")
+            val ipParts = route.split("/")
             if (ipParts.size != 2) throw IllegalArgumentException("Invalid IP addr string")
-            builder.addAddress(ipParts[0], ipParts[1].toInt())
+            builder.addRoute(ipParts[0], ipParts[1].toInt())
         }
         
         for (app in disallowedApplications) {

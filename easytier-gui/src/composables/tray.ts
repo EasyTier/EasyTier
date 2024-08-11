@@ -1,4 +1,4 @@
-import { getCurrent } from '@tauri-apps/api/window'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Menu, MenuItem, PredefinedMenuItem } from '@tauri-apps/api/menu'
 import { TrayIcon } from '@tauri-apps/api/tray'
 import pkg from '~/../package.json'
@@ -6,11 +6,11 @@ import pkg from '~/../package.json'
 const DEFAULT_TRAY_NAME = 'main'
 
 async function toggleVisibility() {
-  if (await getCurrent().isVisible()) {
-    await getCurrent().hide()
+  if (await getCurrentWindow().isVisible()) {
+    await getCurrentWindow().hide()
   } else {
-    await getCurrent().show()
-    await getCurrent().setFocus()
+    await getCurrentWindow().show()
+    await getCurrentWindow().setFocus()
   }
 }
 
@@ -54,7 +54,7 @@ export async function generateMenuItem() {
     await MenuItemExit('Exit'),
     await PredefinedMenuItem.new({ item: 'Separator' }),
     await MenuItemShow('Show / Hide'),
-  ] || []
+  ]
 }
 
 export async function MenuItemExit(text: string) {

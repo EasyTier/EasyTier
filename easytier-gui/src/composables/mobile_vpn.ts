@@ -159,14 +159,11 @@ async function watchNetworkInstance() {
         if (subscribe_running) {
             return
         }
-        console.log('network instance change')
-
         subscribe_running = true
         try {
             await onNetworkInstanceChange()
         } catch (_) {
         }
-        console.log('network instance change done')
         subscribe_running = false
     })
 }

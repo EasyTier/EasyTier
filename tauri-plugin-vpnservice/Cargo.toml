@@ -1,7 +1,7 @@
 [package]
 name = "tauri-plugin-vpnservice"
 version = "0.0.0"
-authors = [ "You" ]
+authors = ["You"]
 description = ""
 edition = "2021"
 rust-version = "1.70"
@@ -9,9 +9,9 @@ exclude = ["/examples", "/webview-dist", "/webview-src", "/node_modules"]
 links = "tauri-plugin-vpnservice"
 
 [dependencies]
-tauri = { version = "2.0.0-beta.23" }
+tauri = { version = "2.0.0-rc" }
 serde = "1.0"
 thiserror = "1.0"
 
 [build-dependencies]
-tauri-plugin = { version = "2.0.0-beta.18", features = ["build"] }
+tauri-plugin = { version = "2.0.0-rc", features = ["build"] }

@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,7 +92,7 @@ impl NicCtx {
     }
 }
 
-type ArcNicCtx = Arc<Mutex<Option<NicCtx>>>;
+type ArcNicCtx = Arc<Mutex<Option<Box<dyn Any + 'static + Send>>>>;
 
 pub struct Instance {
     inst_name: String,
@@ -197,14 +198,28 @@ impl Instance {
         Ok(())
     }
 
-    async fn clear_nic_ctx(arc_nic_ctx: ArcNicCtx) {
+    // use a mock nic ctx to consume packets.
+    async fn clear_nic_ctx(
+        arc_nic_ctx: ArcNicCtx,
+        packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
+    ) {
         let _ = arc_nic_ctx.lock().await.take();
+
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async move {
+            let mut packet_recv = packet_recv.lock().await;
+            while let Some(packet) = packet_recv.recv().await {
+                tracing::trace!("packet consumed by mock nic ctx: {:?}", packet);
+            }
+        });
+        arc_nic_ctx.lock().await.replace(Box::new(tasks));
+
         tracing::debug!("nic ctx cleared.");
     }
 
     async fn use_new_nic_ctx(arc_nic_ctx: ArcNicCtx, nic_ctx: NicCtx) {
         let mut g = arc_nic_ctx.lock().await;
-        *g = Some(nic_ctx);
+        *g = Some(Box::new(nic_ctx));
         tracing::debug!("nic ctx updated.");
     }
 
@@ -274,7 +289,7 @@ impl Instance {
                     "dhcp start changing ip"
                 );
 
-                Self::clear_nic_ctx(nic_ctx.clone()).await;
+                Self::clear_nic_ctx(nic_ctx.clone(), _peer_packet_receiver.clone()).await;
 
                 if let Some(ip) = candidate_ipv4_addr {
                     if global_ctx_c.no_tun() {
@@ -329,9 +344,9 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        if self.global_ctx.config.get_flags().no_tun {
-            self.peer_packet_receiver.lock().await.close();
-        } else {
+        Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
+
+        if !self.global_ctx.config.get_flags().no_tun {
             #[cfg(not(target_os = "android"))]
             if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
                 let mut new_nic_ctx = NicCtx::new(
@@ -532,7 +547,7 @@ impl Instance {
         fd: i32,
     ) -> Result<(), anyhow::Error> {
         println!("setup_nic_ctx_for_android, fd: {}", fd);
-        Self::clear_nic_ctx(nic_ctx.clone()).await;
+        Self::clear_nic_ctx(nic_ctx.clone(), peer_packet_receiver.clone()).await;
         if fd <= 0 {
             return Ok(());
         }
