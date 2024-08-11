@@ -49,13 +49,17 @@
     cargo install --git https://github.com/EasyTier/EasyTier.git
     ```
 
+ 4. **Install by Docker Compose**
+
+     Please visit the [EasyTier Official Website](https://www.easytier.top/en/) to view the full documentation.
+
  4. **Install by script (For Linux Only)**
     ```sh
-    curl -fsSL "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" | bash -s install
+    wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" && bash /tmp/easytier.sh install
     ```
    
-    You can aslo uninstall Easytier by the commend "uninstall" of this script
- 
+    You can aslo uninstall/update Easytier by the commend "uninstall" or "update" of this script
+
  ## Quick Start
 
  > The following text only describes the use of the command-line tool; the GUI program can be configured by referring to the following concepts.
