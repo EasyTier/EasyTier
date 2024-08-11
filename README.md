@@ -53,12 +53,12 @@
 
      Please visit the [EasyTier Official Website](https://www.easytier.top/en/) to view the full documentation.
 
- 4. **Install by script (For Linux Only)**
+ 5. **Install by script (For Linux Only)**
     ```sh
     wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" && bash /tmp/easytier.sh install
     ```
    
-    You can aslo uninstall/update Easytier by the commend "uninstall" or "update" of this script
+    You can also uninstall/update Easytier by the command "uninstall" or "update" of this script
 
  ## Quick Start
 
