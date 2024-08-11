@@ -49,12 +49,17 @@
    cargo install --git https://github.com/EasyTier/EasyTier.git
    ```
 
-4. **使用一键脚本安装 (仅适用于 Linux)**
+4. **通过Docker Compose安装**
+
+   请访问 [EasyTier 官网](https://www.easytier.top/) 以查看完整的文档。
+
+
+5. **使用一键脚本安装 (仅适用于 Linux)**
    ```sh
-   curl -fsSL "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" | bash -s install
+   wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" && bash /tmp/easytier.sh install
    ```
    
-   使用本脚本安装的 Easytier 可以使用脚本的 uninstall 对其卸载
+   使用本脚本安装的 Easytier 可以使用脚本的 uninstall/update 对其卸载/升级
 
 ## 快速开始
 
