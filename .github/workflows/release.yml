@@ -1,0 +1,86 @@
+name: EasyTier Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      core_run_id:
+        description: 'The run id of EasyTier-Core Action in EasyTier repo'
+        type: number
+        default: 10322498549
+        required: true
+      gui_run_id:
+        description: 'The run id of EasyTier-GUI Action in EasyTier repo'
+        type: number
+        default: 10322498557
+        required: true
+      mobile_run_id:
+        description: 'The run id of EasyTier-Mobile Action in EasyTier repo'
+        type: number
+        default: 10322498555
+        required: true
+      version:
+        description: 'version for this release'
+        type: string
+        default: 'v1.2.2'
+        required: true
+      make_latest:
+        description: 'Mark this release as latest'
+        type: boolean
+        default: true
+        required: true
+
+jobs:
+  docker:
+    if: contains('["KKRainbow"]', github.actor)
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Core Artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          run_id: ${{ inputs.core_run_id }}
+          repo: EasyTier/EasyTier
+          path: release_assets
+
+      - name: Download GUI Artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          run_id: ${{ inputs.gui_run_id }}
+          repo: EasyTier/EasyTier
+          path: release_assets
+
+      - name: Download GUI Artifact
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          github_token: ${{secrets.GITHUB_TOKEN}}
+          run_id: ${{ inputs.mobile_run_id }}
+          repo: EasyTier/EasyTier
+          path: release_assets
+
+      - name: Zip release assets
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          cd release_assets
+          ls -l -R ./
+          chmod -R 755 .
+
+          mkdir ./zipped
+          for x in `ls`; do
+            zip ./zipped/$x-${VERSION}.zip $x/*;
+          done
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ inputs.version }}
+          draft: true
+          files: |
+            ./release_assets/zipped/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ inputs.version }}
