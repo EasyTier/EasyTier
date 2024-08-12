@@ -29,8 +29,11 @@ on:
         default: true
         required: true
 
+permissions:
+  contents: write
+
 jobs:
-  docker:
+  release:
     if: contains('["KKRainbow"]', github.actor)
     runs-on: ubuntu-latest
     steps:
@@ -70,9 +73,9 @@ jobs:
           ls -l -R ./
           chmod -R 755 .
 
-          mkdir ./zipped
+          mkdir ../zipped_assets
           for x in `ls`; do
-            zip ./zipped/$x-${VERSION}.zip $x/*;
+            zip ../zipped_assets/$x-${VERSION}.zip $x/*;
           done
 
       - name: Release
@@ -81,6 +84,6 @@ jobs:
           name: ${{ inputs.version }}
           draft: true
           files: |
-            ./release_assets/zipped/*
+            ./zipped_assets/*
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ inputs.version }}
