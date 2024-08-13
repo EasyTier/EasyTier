@@ -118,20 +118,6 @@ elif [ "$ARCH" == "UNKNOWN" ]; then
 elif ! command -v systemctl >/dev/null 2>&1; then
   echo -e "\r\n${RED_COLOR}Opus${RES}, your Linux do not support systemctl\r\nnTry ${GREEN_COLOR}install by band${RES}\r\n"
   exit 1
-else
-  if command -v netstat >/dev/null 2>&1; then
-    check_port=$(netstat -lnp | grep 11010 | awk '{print $7}' | awk -F/ '{print $1}')
-  else
-    echo -e "${GREEN_COLOR}Check port ...${RES}"
-    if command -v yum >/dev/null 2>&1; then
-      yum install net-tools -y >/dev/null 2>&1
-      check_port=$(netstat -lnp | grep 11010 | awk '{print $7}' | awk -F/ '{print $1}')
-    else
-      apt-get update >/dev/null 2>&1
-      apt-get install net-tools -y >/dev/null 2>&1
-      check_port=$(netstat -lnp | grep 11010 | awk '{print $7}' | awk -F/ '{print $1}')
-    fi
-  fi
 fi
 
 CHECK() {
@@ -178,8 +164,10 @@ INSTALL() {
   # Unzip resource
   echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
   unzip -o /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
+  mkdir $INSTALL_PATH/config
   mv $INSTALL_PATH/easytier-linux-${ARCH}/* $INSTALL_PATH/
   rm -rf $INSTALL_PATH/easytier-linux-${ARCH}/
+  chmod +x $INSTALL_PATH/easytier-core $INSTALL_PATH/easytier-cli
   if [ -f $INSTALL_PATH/easytier-core ] || [ -f $INSTALL_PATH/easytier-cli ]; then
     echo -e "${GREEN_COLOR} Download successfully! ${RES}"
   else
@@ -194,8 +182,11 @@ INIT() {
     exit 1
   fi
 
+  # Create default blank file config
+  touch $INSTALL_PATH/config/default.conf
+
   # Create systemd
-  cat >/etc/systemd/system/easytier.service <<EOF
+  cat >/etc/systemd/system/easytier@.service <<EOF
 [Unit]
 Description=EasyTier Service
 Wants=network.target
@@ -204,23 +195,24 @@ After=network.target network.service
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_PATH
-ExecStart=/bin/bash $INSTALL_PATH/run.sh
+ExecStart=$INSTALL_PATH/easytier-core -c $INSTALL_PATH/config/%i.conf
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  # Create run script
-  cat >$INSTALL_PATH/run.sh <<EOF
-$INSTALL_PATH/easytier-core
-EOF
+#   # Create run script
+#   cat >$INSTALL_PATH/run.sh <<EOF
+# $INSTALL_PATH/easytier-core
+# EOF
 
   # Startup
   systemctl daemon-reload
-  systemctl enable easytier >/dev/null 2>&1
-  systemctl start easytier
+  systemctl enable easytier@default >/dev/null 2>&1
+  systemctl start easytier@default
 
   # For issues from the previous version
+  rm -rf /etc/systemd/system/easytier.service
   rm -rf /usr/bin/easytier-core
   rm -rf /usr/bin/easytier-cli
 
@@ -234,23 +226,25 @@ SUCCESS() {
   echo " Install EasyTier successfully!"
   echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firewall!\r\n"
 
-  echo -e "Staartup script path: ${GREEN_COLOR}$INSTALL_PATH/run.sh${RES}\n\r\n\rFor more advanced opinions, please modify the startup script"
+  echo -e "Now EasyTier supports multiple config files. You can create config files in the ${GREEN_COLOR}${INSTALL_PATH}/config/${RES} folder"
+  echo -e "For more information, please check the documents in offical site"
+  echo -e "The management example of a single configuration file is as follows"
 
   echo
-  echo -e "Status: ${GREEN_COLOR}systemctl status easytier${RES}"
-  echo -e "Start: ${GREEN_COLOR}systemctl start easytier${RES}"
-  echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier${RES}"
-  echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier${RES}"
+  echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
+  echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
+  echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
+  echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
   echo
 }
 
 UNINSTALL() {
   echo -e "\r\n${GREEN_COLOR}Uninstall EasyTier ...${RES}\r\n"
   echo -e "${GREEN_COLOR}Stop process ...${RES}"
-  systemctl disable easytier >/dev/null 2>&1
-  systemctl stop easytier >/dev/null 2>&1
+  systemctl disable "easytier@*" >/dev/null 2>&1
+  systemctl stop "easytier@*" >/dev/null 2>&1
   echo -e "${GREEN_COLOR}Delete files ...${RES}"
-  rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli
+  rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli /etc/systemd/system/easytier@.service /usr/sbin/easytier-cli /usr/sbin/easytier-cli
   systemctl daemon-reload
   echo -e "\r\n${GREEN_COLOR}EasyTier was removed successfully! ${RES}\r\n"
 }
@@ -262,7 +256,7 @@ UPDATE() {
   else
     echo
     echo -e "${GREEN_COLOR}Stopping EasyTier process${RES}\r\n"
-    systemctl stop easytier
+    systemctl stop "easytier@*"
     # Backup
     rm -rf /tmp/easytier_tmp_update
     mkdir -p  /tmp/easytier_tmp_update
@@ -275,11 +269,11 @@ UPDATE() {
       echo "Rollback all ..."
       rm -rf $INSTALL_PATH/*
       mv /tmp/easytier_tmp_update/* $INSTALL_PATH/
-      systemctl start easytier
+      systemctl start "easytier@*"
       exit 1
     fi
     echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
-    systemctl start easytier
+    systemctl start "easytier@*"
     echo -e "\r\n${GREEN_COLOR} EasyTier was the latest stable version! ${RES}\r\n"
   fi
 }
