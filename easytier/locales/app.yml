@@ -111,3 +111,6 @@ core_clap:
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"
+  socks5:
+    en: "enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080"
+    zh-CN: "启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080"

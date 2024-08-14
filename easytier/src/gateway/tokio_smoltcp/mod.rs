@@ -4,7 +4,7 @@
 
 use std::{
     io,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         atomic::{AtomicU16, Ordering},
         Arc,
@@ -134,7 +134,10 @@ impl Net {
             fut,
         )
     }
-    fn get_port(&self) -> u16 {
+    pub fn get_address(&self) -> IpAddr {
+        self.ip_addr.address().into()
+    }
+    pub fn get_port(&self) -> u16 {
         self.from_port
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |x| {
                 Some(if x > 60000 { 10000 } else { x + 1 })
@@ -147,10 +150,10 @@ impl Net {
         TcpListener::new(self.reactor.clone(), addr.into()).await
     }
     /// Opens a TCP connection to a remote host.
-    pub async fn tcp_connect(&self, addr: SocketAddr) -> io::Result<TcpStream> {
+    pub async fn tcp_connect(&self, addr: SocketAddr, local_port: u16) -> io::Result<TcpStream> {
         TcpStream::connect(
             self.reactor.clone(),
-            (self.ip_addr.address(), self.get_port()).into(),
+            (self.ip_addr.address(), local_port).into(),
             addr.into(),
         )
         .await

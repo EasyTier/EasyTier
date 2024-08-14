@@ -4,8 +4,6 @@
 mod tests;
 
 use std::{
-    backtrace,
-    io::Write as _,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
@@ -274,6 +272,13 @@ struct Cli {
         default_value = "false"
     )]
     relay_all_peer_rpc: bool,
+
+    #[cfg(feature = "socks5")]
+    #[arg(
+        long,
+        help = t!("core_clap.socks5").to_string()
+    )]
+    socks5: Option<u16>,
 }
 
 rust_i18n::i18n!("locales");
@@ -489,6 +494,15 @@ impl From<Cli> for TomlConfigLoader {
                             .unwrap()
                     })
                     .collect(),
+            ));
+        }
+
+        #[cfg(feature = "socks5")]
+        if let Some(socks5_proxy) = cli.socks5 {
+            cfg.set_socks5_portal(Some(
+                format!("socks5://0.0.0.0:{}", socks5_proxy)
+                    .parse()
+                    .unwrap(),
             ));
         }
 
