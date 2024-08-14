@@ -64,6 +64,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
 
+    fn get_socks5_portal(&self) -> Option<url::Url>;
+    fn set_socks5_portal(&self, addr: Option<url::Url>);
+
     fn dump(&self) -> String;
 }
 
@@ -200,6 +203,8 @@ struct Config {
     vpn_portal_config: Option<VpnPortalConfig>,
 
     routes: Option<Vec<cidr::Ipv4Cidr>>,
+
+    socks5_proxy: Option<url::Url>,
 
     flags: Option<Flags>,
 }
@@ -499,6 +504,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>) {
         self.config.lock().unwrap().routes = routes;
+    }
+
+    fn get_socks5_portal(&self) -> Option<url::Url> {
+        self.config.lock().unwrap().socks5_proxy.clone()
+    }
+
+    fn set_socks5_portal(&self, addr: Option<url::Url>) {
+        self.config.lock().unwrap().socks5_proxy = addr;
     }
 }
 

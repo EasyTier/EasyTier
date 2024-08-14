@@ -206,7 +206,7 @@ defguard_wireguard_rs = "0.4.2"
 
 
 [features]
-default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun"]
+default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun", "socks5"]
 full = [
     "quic",
     "websocket",
@@ -215,9 +215,10 @@ full = [
     "aes-gcm",
     "smoltcp",
     "tun",
+    "socks5",
 ]
-mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp"]
-bsd = ["aes-gcm", "mimalloc", "smoltcp"]
+mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
+bsd = ["aes-gcm", "mimalloc", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc-rust"]
@@ -231,3 +232,4 @@ websocket = [
     "dep:rcgen",
 ]
 smoltcp = ["dep:smoltcp", "dep:parking_lot"]
+socks5 = ["dep:smoltcp"]

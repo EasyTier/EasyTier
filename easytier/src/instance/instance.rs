@@ -32,6 +32,9 @@ use crate::vpn_portal::{self, VpnPortal};
 
 use super::listeners::ListenerManager;
 
+#[cfg(feature = "socks5")]
+use crate::gateway::socks5::Socks5Server;
+
 #[derive(Clone)]
 struct IpProxy {
     tcp_proxy: Arc<TcpProxy>,
@@ -116,6 +119,9 @@ pub struct Instance {
 
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
+    #[cfg(feature = "socks5")]
+    socks5_server: Arc<Socks5Server>,
+
     global_ctx: ArcGlobalCtx,
 }
 
@@ -161,6 +167,9 @@ impl Instance {
         #[cfg(not(feature = "wireguard"))]
         let vpn_portal_inst = vpn_portal::NullVpnPortal;
 
+        #[cfg(feature = "socks5")]
+        let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -180,6 +189,9 @@ impl Instance {
             peer_center,
 
             vpn_portal: Arc::new(Mutex::new(Box::new(vpn_portal_inst))),
+
+            #[cfg(feature = "socks5")]
+            socks5_server,
 
             global_ctx,
         }
@@ -386,6 +398,9 @@ impl Instance {
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;
         }
+
+        #[cfg(feature = "socks5")]
+        self.socks5_server.run().await?;
 
         Ok(())
     }
