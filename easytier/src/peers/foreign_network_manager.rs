@@ -10,7 +10,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tokio::{
     sync::{
-        mpsc::{self, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
         Mutex,
     },
     task::JoinSet,
@@ -260,8 +260,16 @@ impl ForeignNetworkManager {
     async fn start_global_event_handler(&self) {
         let data = self.data.clone();
         let mut s = self.global_ctx.subscribe();
+        let (ev_tx, mut ev_rx) = unbounded_channel();
         self.tasks.lock().await.spawn(async move {
             while let Ok(e) = s.recv().await {
+                ev_tx.send(e).unwrap();
+            }
+            panic!("global event handler at foreign network manager exit");
+        });
+
+        self.tasks.lock().await.spawn(async move {
+            while let Some(e) = ev_rx.recv().await {
                 if let GlobalCtxEvent::PeerRemoved(peer_id) = &e {
                     tracing::info!(?e, "remove peer from foreign network manager");
                     data.remove_peer(*peer_id);
