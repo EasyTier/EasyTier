@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@primevue/themes": "^4.0.4",
+    "@tauri-apps/plugin-autostart": "2.0.0-rc.0",
     "@tauri-apps/plugin-clipboard-manager": "2.0.0-rc.0",
     "@tauri-apps/plugin-os": "2.0.0-rc.0",
     "@tauri-apps/plugin-process": "2.0.0-rc.0",

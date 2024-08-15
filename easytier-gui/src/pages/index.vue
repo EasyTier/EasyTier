@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import { useToast } from 'primevue/usetoast'
 
-import { exit } from '@tauri-apps/plugin-process';
+import { exit } from '@tauri-apps/plugin-process'
+import TieredMenu from 'primevue/tieredmenu'
+import { open } from '@tauri-apps/plugin-shell'
+import { appLogDir } from '@tauri-apps/api/path'
+import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { type } from '@tauri-apps/plugin-os'
 import Config from '~/components/Config.vue'
 import Status from '~/components/Status.vue'
 
 import type { NetworkConfig } from '~/types/network'
 import { loadLanguageAsync } from '~/modules/i18n'
 import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
-import { loadRunningInstanceIdsFromLocalStorage } from '~/stores/network'
-import { setLoggingLevel } from '~/composables/network'
-import TieredMenu from 'primevue/tieredmenu'
-import { open } from '@tauri-apps/plugin-shell';
-import { appLogDir } from '@tauri-apps/api/path'
-import { writeText } from '@tauri-apps/plugin-clipboard-manager';
-import { useTray } from '~/composables/tray';
-import { type } from '@tauri-apps/plugin-os';
+import { isAutostart, setLoggingLevel } from '~/composables/network'
+import { useTray } from '~/composables/tray'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -71,7 +71,6 @@ function addNewNetwork() {
 
 networkStore.$subscribe(async () => {
   networkStore.saveToLocalStorage()
-  networkStore.saveRunningInstanceIdsToLocalStorage()
   try {
     await parseNetworkConfig(networkStore.curNetwork)
     messageBarSeverity.value = Severity.None
@@ -95,6 +94,7 @@ async function runNetworkCb(cfg: NetworkConfig, cb: () => void) {
 
   try {
     await runNetworkInstance(cfg)
+    networkStore.addAutoStartInstId(cfg.instance_id)
   }
   catch (e: any) {
     // console.error(e)
@@ -109,6 +109,7 @@ async function stopNetworkCb(cfg: NetworkConfig, cb: () => void) {
   cb()
   networkStore.removeNetworkInstance(cfg.instance_id)
   await retainNetworkInstance(networkStore.networkInstanceIds)
+  networkStore.removeAutoStartInstId(cfg.instance_id)
 }
 
 async function updateNetworkInfos() {
@@ -120,10 +121,13 @@ onMounted(async () => {
   intervalId = window.setInterval(async () => {
     await updateNetworkInfos()
   }, 500)
-  await setTrayMenu([
-    await MenuItemExit(t('tray.exit')),
-    await MenuItemShow(t('tray.show'))
-  ])
+
+  window.setTimeout(async () => {
+    await setTrayMenu([
+      await MenuItemExit(t('tray.exit')),
+      await MenuItemShow(t('tray.show')),
+    ])
+  }, 1000)
 })
 onUnmounted(() => clearInterval(intervalId))
 
@@ -158,10 +162,10 @@ const setting_menu_items = ref([
     icon: 'pi pi-file',
     items: (function () {
       const levels = ['off', 'warn', 'info', 'debug', 'trace']
-      let items = []
-      for (let level of levels) {
+      const items = []
+      for (const level of levels) {
         items.push({
-          label: () => t("logging_level_" + level) + (current_log_level === level ? ' ✓' : ''),
+          label: () => t(`logging_level_${level}`) + (current_log_level === level ? ' ✓' : ''),
           command: async () => {
             current_log_level = level
             await setLoggingLevel(level)
@@ -175,7 +179,7 @@ const setting_menu_items = ref([
         label: () => t('logging_open_dir'),
         icon: 'pi pi-folder-open',
         command: async () => {
-          console.log("open log dir", await appLogDir())
+          console.log('open log dir', await appLogDir())
           await open(await appLogDir())
         },
       })
@@ -187,7 +191,7 @@ const setting_menu_items = ref([
         },
       })
       return items
-    })()
+    })(),
   },
   {
     label: () => t('exit'),
@@ -202,18 +206,22 @@ function toggle_setting_menu(event: any) {
   setting_menu.value.toggle(event)
 }
 
-onMounted(async () => {
+onBeforeMount(async () => {
   networkStore.loadFromLocalStorage()
-  if (getAutoLaunchStatus()) {
-    let prev_running_ids = loadRunningInstanceIdsFromLocalStorage()
-    for (let id of prev_running_ids) {
-      let cfg = networkStore.networkList.find((item) => item.instance_id === id)
+  if (type() !== 'android' && getAutoLaunchStatus() && await isAutostart()) {
+    getCurrentWindow().hide()
+    const autoStartIds = networkStore.autoStartInstIds
+    for (const id of autoStartIds) {
+      const cfg = networkStore.networkList.find(item => item.instance_id === id)
       if (cfg) {
         networkStore.addNetworkInstance(cfg.instance_id)
         await runNetworkInstance(cfg)
       }
     }
   }
+})
+
+onMounted(async () => {
   if (type() === 'android') {
     await initMobileVpnService()
   }
@@ -222,7 +230,6 @@ onMounted(async () => {
 function isRunning(id: string) {
   return networkStore.networkInstanceIds.includes(id)
 }
-
 </script>
 
 <script lang="ts">
@@ -275,7 +282,7 @@ function isRunning(id: string) {
                   <div>{{ slotProps.option.public_server_url }}</div>
                   <div
                     v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 !== '')">
-                      {{ networkStore.instances[slotProps.option.instance_id].detail
+                    {{ networkStore.instances[slotProps.option.instance_id].detail
                       ? networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
                   </div>
                 </div>
@@ -295,8 +302,12 @@ function isRunning(id: string) {
     <Panel class="h-full overflow-y-auto">
       <Stepper :value="activeStep">
         <StepList value="1">
-          <Step value="1">{{ t('config_network') }}</Step>
-          <Step value="2">{{ t('running') }}</Step>
+          <Step value="1">
+            {{ t('config_network') }}
+          </Step>
+          <Step value="2">
+            {{ t('running') }}
+          </Step>
         </StepList>
         <StepPanels value="1">
           <StepPanel v-slot="{ activateCallback = (s: string) => { } } = {}" value="1">
