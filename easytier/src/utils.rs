@@ -239,6 +239,18 @@ pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
     }
 }
 
+pub fn setup_panic_handler() {
+    use std::backtrace;
+    use std::io::Write;
+    std::panic::set_hook(Box::new(|info| {
+        let backtrace = backtrace::Backtrace::force_capture();
+        println!("panic occurred: {:?}", info);
+        let _ = std::fs::File::create("easytier-panic.log")
+            .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
+        std::process::exit(1);
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::config::{self};
