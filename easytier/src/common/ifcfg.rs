@@ -384,6 +384,10 @@ impl IfConfiguerTrait for WindowsIfConfiger {
     }
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        let _ = run_shell_cmd(
+            format!("netsh interface ipv6 set subinterface {} mtu={}", name, mtu).as_str(),
+        )
+        .await;
         run_shell_cmd(
             format!("netsh interface ipv4 set subinterface {} mtu={}", name, mtu).as_str(),
         )

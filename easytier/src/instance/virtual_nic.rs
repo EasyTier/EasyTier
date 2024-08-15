@@ -243,7 +243,7 @@ pub struct VirtualNic {
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
 #[cfg(target_os = "windows")]
-pub fn checkreg(dev_name:&str) -> io::Result<()> {
+pub fn checkreg(dev_name: &str) -> io::Result<()> {
     use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let profiles_key = hklm.open_subkey_with_flags(
@@ -262,7 +262,9 @@ pub fn checkreg(dev_name:&str) -> io::Result<()> {
         // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("ProfileName") {
             Ok(profile_name) => {
-                if profile_name.contains("et_") || (!dev_name.is_empty() && dev_name == profile_name) {
+                if profile_name.contains("et_")
+                    || (!dev_name.is_empty() && dev_name == profile_name)
+                {
                     keys_to_delete.push(subkey_name);
                 }
             }
@@ -280,7 +282,9 @@ pub fn checkreg(dev_name:&str) -> io::Result<()> {
         // check if ProfileName contains "et"
         match subkey.get_value::<String, _>("Description") {
             Ok(profile_name) => {
-                if profile_name.contains("et_") || (!dev_name.is_empty() && dev_name == profile_name) {
+                if profile_name.contains("et_")
+                    || (!dev_name.is_empty() && dev_name == profile_name)
+                {
                     keys_to_delete_unmanaged.push(subkey_name);
                 }
             }
@@ -357,7 +361,7 @@ impl VirtualNic {
                 .map(char::from)
                 .collect::<String>()
                 .to_lowercase();
-            
+
             if !dev_name.is_empty() {
                 config.tun_name(format!("{}", dev_name));
             } else {
