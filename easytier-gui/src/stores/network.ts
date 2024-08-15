@@ -14,6 +14,8 @@ export const useNetworkStore = defineStore('networkStore', {
       instances: {} as Record<string, NetworkInstance>,
 
       networkInfos: {} as Record<string, NetworkInstanceRunningInfo>,
+
+      autoStartInstIds: [] as string[],
     }
   },
 
@@ -74,7 +76,6 @@ export const useNetworkStore = defineStore('networkStore', {
         this.instances[instanceId].error_msg = info.error_msg || ''
         this.instances[instanceId].detail = info
       }
-      this.saveRunningInstanceIdsToLocalStorage()
     },
 
     loadFromLocalStorage() {
@@ -92,27 +93,43 @@ export const useNetworkStore = defineStore('networkStore', {
 
       this.networkList = networkList
       this.curNetwork = this.networkList[0]
+
+      this.loadAutoStartInstIdsFromLocalStorage()
     },
 
     saveToLocalStorage() {
       localStorage.setItem('networkList', JSON.stringify(this.networkList))
     },
 
-    saveRunningInstanceIdsToLocalStorage() {
-      let instance_ids = Object.keys(this.instances).filter((instanceId) => this.instances[instanceId].running)
-      localStorage.setItem('runningInstanceIds', JSON.stringify(instance_ids))
-    }
+    saveAutoStartInstIdsToLocalStorage() {
+      localStorage.setItem('autoStartInstIds', JSON.stringify(this.autoStartInstIds))
+    },
+
+    loadAutoStartInstIdsFromLocalStorage() {
+      try {
+        this.autoStartInstIds = JSON.parse(localStorage.getItem('autoStartInstIds') || '[]')
+      } catch (e) {
+        console.error(e)
+        this.autoStartInstIds = []
+      }
+    },
+
+    addAutoStartInstId(instanceId: string) {
+      if (!this.autoStartInstIds.includes(instanceId)) {
+        this.autoStartInstIds.push(instanceId)
+      }
+      this.saveAutoStartInstIdsToLocalStorage()
+    },
+
+    removeAutoStartInstId(instanceId: string) {
+      const idx = this.autoStartInstIds.indexOf(instanceId)
+      if (idx !== -1) {
+        this.autoStartInstIds.splice(idx, 1)
+      }
+      this.saveAutoStartInstIdsToLocalStorage()
+    },
   },
 })
 
 if (import.meta.hot)
   import.meta.hot.accept(acceptHMRUpdate(useNetworkStore as any, import.meta.hot))
-
-export function loadRunningInstanceIdsFromLocalStorage(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem('runningInstanceIds') || '[]')
-  } catch (e) {
-    console.error(e)
-    return []
-  }
-}

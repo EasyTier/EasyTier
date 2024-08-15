@@ -4,8 +4,6 @@
 use std::collections::BTreeMap;
 
 use anyhow::Context;
-#[cfg(not(target_os = "android"))]
-use auto_launch::AutoLaunchBuilder;
 use dashmap::DashMap;
 use easytier::{
     common::config::{
@@ -18,6 +16,8 @@ use easytier::{
 use serde::{Deserialize, Serialize};
 
 use tauri::Manager as _;
+
+pub const AUTOSTART_ARG: &str = "--autostart";
 
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 enum NetworkingMethod {
@@ -171,6 +171,13 @@ static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
 static mut LOGGER_LEVEL_SENDER: once_cell::sync::Lazy<Option<NewFilterSender>> =
     once_cell::sync::Lazy::new(Default::default);
 
+#[tauri::command]
+fn is_autostart() -> Result<bool, String> {
+    let args: Vec<String> = std::env::args().collect();
+    println!("{:?}", args);
+    Ok(args.contains(&AUTOSTART_ARG.to_owned()))
+}
+
 // Learn more about Tauri commands at https://tauri.app/v1/guides/features/command
 #[tauri::command]
 fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
@@ -224,11 +231,6 @@ fn get_os_hostname() -> Result<String, String> {
 }
 
 #[tauri::command]
-fn set_auto_launch_status(app_handle: tauri::AppHandle, enable: bool) -> Result<bool, String> {
-    Ok(init_launch(&app_handle, enable).map_err(|e| e.to_string())?)
-}
-
-#[tauri::command]
 fn set_logging_level(level: String) -> Result<(), String> {
     let sender = unsafe { LOGGER_LEVEL_SENDER.as_ref().unwrap() };
     sender.send(level).map_err(|e| e.to_string())?;
@@ -261,79 +263,17 @@ fn check_sudo() -> bool {
     use std::env::current_exe;
     let is_elevated = privilege::user::privileged();
     if !is_elevated {
-        let Ok(my_exe) = current_exe() else {
+        let Ok(exe) = current_exe() else {
             return true;
         };
-        let mut elevated_cmd = privilege::runas::Command::new(my_exe);
-        let _ = elevated_cmd.force_prompt(true).gui(true).run();
+        let args: Vec<String> = std::env::args().collect();
+        let mut elevated_cmd = privilege::runas::Command::new(exe);
+        if args.contains(&AUTOSTART_ARG.to_owned()) {
+            elevated_cmd.arg(AUTOSTART_ARG);
+        }
+        let _ = elevated_cmd.force_prompt(true).hide(true).gui(true).run();
     }
     is_elevated
-}
-
-#[cfg(target_os = "android")]
-pub fn init_launch(_app_handle: &tauri::AppHandle, _enable: bool) -> Result<bool, anyhow::Error> {
-    Ok(false)
-}
-
-/// init the auto launch
-#[cfg(not(target_os = "android"))]
-pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool, anyhow::Error> {
-    use std::env::current_exe;
-    let app_exe = current_exe()?;
-    let app_exe = dunce::canonicalize(app_exe)?;
-    let app_name = app_exe
-        .file_stem()
-        .and_then(|f| f.to_str())
-        .ok_or(anyhow::anyhow!("failed to get file stem"))?;
-
-    let app_path = app_exe
-        .as_os_str()
-        .to_str()
-        .ok_or(anyhow::anyhow!("failed to get app_path"))?
-        .to_string();
-
-    #[cfg(target_os = "windows")]
-    let app_path = format!("\"{app_path}\"");
-
-    // use the /Applications/easytier-gui.app
-    #[cfg(target_os = "macos")]
-    let app_path = (|| -> Option<String> {
-        let path = std::path::PathBuf::from(&app_path);
-        let path = path.parent()?.parent()?.parent()?;
-        let extension = path.extension()?.to_str()?;
-        match extension == "app" {
-            true => Some(path.as_os_str().to_str()?.to_string()),
-            false => None,
-        }
-    })()
-    .unwrap_or(app_path);
-
-    #[cfg(target_os = "linux")]
-    let app_path = {
-        let appimage = _app_handle.env().appimage;
-        appimage
-            .and_then(|p| p.to_str().map(|s| s.to_string()))
-            .unwrap_or(app_path)
-    };
-
-    let auto = AutoLaunchBuilder::new()
-        .set_app_name(app_name)
-        .set_app_path(&app_path)
-        .build()
-        .with_context(|| "failed to build auto launch")?;
-
-    if enable && !auto.is_enabled().unwrap_or(false) {
-        // 避免重复设置登录项
-        let _ = auto.disable();
-        auto.enable()
-            .with_context(|| "failed to enable auto launch")?
-    } else if !enable {
-        let _ = auto.disable();
-    }
-
-    let enabled = auto.is_enabled()?;
-
-    Ok(enabled)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -347,7 +287,18 @@ pub fn run() {
     #[cfg(not(target_os = "android"))]
     utils::setup_panic_handler();
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_autostart::MacosLauncher;
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            Some(vec![AUTOSTART_ARG]),
+        ));
+    }
+
+    builder
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
@@ -398,9 +349,9 @@ pub fn run() {
             retain_network_instance,
             collect_network_infos,
             get_os_hostname,
-            set_auto_launch_status,
             set_logging_level,
-            set_tun_fd
+            set_tun_fd,
+            is_autostart
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]

@@ -29,6 +29,7 @@ declare global {
   const initMobileService: typeof import('./composables/mobile_vpn')['initMobileService']
   const initMobileVpnService: typeof import('./composables/mobile_vpn')['initMobileVpnService']
   const inject: typeof import('vue')['inject']
+  const isAutostart: typeof import('./composables/network')['isAutostart']
   const isProxy: typeof import('vue')['isProxy']
   const isReactive: typeof import('vue')['isReactive']
   const isReadonly: typeof import('vue')['isReadonly']
@@ -131,11 +132,11 @@ declare module 'vue' {
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly initMobileVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['initMobileVpnService']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
+    readonly isAutostart: UnwrapRef<typeof import('./composables/network')['isAutostart']>
     readonly isProxy: UnwrapRef<typeof import('vue')['isProxy']>
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
     readonly isRef: UnwrapRef<typeof import('vue')['isRef']>
-    readonly loadRunningInstanceIdsFromLocalStorage: UnwrapRef<typeof import('./stores/network')['loadRunningInstanceIdsFromLocalStorage']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
     readonly mapState: UnwrapRef<typeof import('pinia')['mapState']>
@@ -168,7 +169,6 @@ declare module 'vue' {
     readonly retainNetworkInstance: UnwrapRef<typeof import('./composables/network')['retainNetworkInstance']>
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/network')['runNetworkInstance']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
-    readonly setAutoLaunchStatus: UnwrapRef<typeof import('./composables/network')['setAutoLaunchStatus']>
     readonly setLoggingLevel: UnwrapRef<typeof import('./composables/network')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
     readonly setTrayMenu: UnwrapRef<typeof import('./composables/tray')['setTrayMenu']>
