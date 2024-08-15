@@ -33,6 +33,7 @@ use common::config::{
 };
 use instance::instance::Instance;
 use tokio::net::TcpSocket;
+use utils::setup_panic_handler;
 
 use crate::{
     common::{
@@ -531,16 +532,6 @@ fn peer_conn_info_to_string(p: crate::rpc::PeerConnInfo) -> String {
         "my_peer_id: {}, dst_peer_id: {}, tunnel_info: {:?}",
         p.my_peer_id, p.peer_id, p.tunnel
     )
-}
-
-fn setup_panic_handler() {
-    std::panic::set_hook(Box::new(|info| {
-        let backtrace = backtrace::Backtrace::force_capture();
-        println!("panic occurred: {:?}", info);
-        let _ = std::fs::File::create("easytier-panic.log")
-            .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
-        std::process::exit(1);
-    }));
 }
 
 #[tracing::instrument]

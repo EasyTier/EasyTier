@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize};
 
 use tauri::Manager as _;
 
-
 #[derive(Deserialize, Serialize, PartialEq, Debug)]
 enum NetworkingMethod {
     PublicServer,
@@ -337,7 +336,6 @@ pub fn init_launch(_app_handle: &tauri::AppHandle, enable: bool) -> Result<bool,
     Ok(enabled)
 }
 
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(not(target_os = "android"))]
@@ -345,6 +343,10 @@ pub fn run() {
         use std::process;
         process::exit(0);
     }
+
+    #[cfg(not(target_os = "android"))]
+    utils::setup_panic_handler();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -382,7 +384,7 @@ pub fn run() {
                         toggle_window_visibility(app);
                     }
                 })
-				.icon(tauri::image::Image::from_bytes(include_bytes!(
+                .icon(tauri::image::Image::from_bytes(include_bytes!(
                     "../icons/icon.png"
                 ))?)
                 .icon_as_template(false)
