@@ -18,8 +18,12 @@ RUN mkdir -p /tmp/output; \
 
 FROM alpine:latest
 
+RUN apk add --no-cache tzdata
 WORKDIR /app
 COPY --from=builder --chmod=755 /tmp/output/* /usr/local/bin
+
+# users can use "-e TZ=xxx" to adjust it
+ENV TZ Asia/Shanghai
 
 # tcp
 EXPOSE 11010/tcp
