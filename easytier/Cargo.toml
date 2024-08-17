@@ -203,6 +203,7 @@ rstest = "0.18.2"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
+tokio-socks = "0.5.2"
 
 
 [features]
