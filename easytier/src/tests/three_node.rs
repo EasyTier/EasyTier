@@ -56,6 +56,7 @@ pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str) -> TomlCon
         "ws://0.0.0.0:11011".parse().unwrap(),
         "wss://0.0.0.0:11012".parse().unwrap(),
     ]);
+    config.set_socks5_portal(Some("socks5://0.0.0.0:12345".parse().unwrap()));
     config
 }
 
@@ -629,4 +630,52 @@ pub async fn wireguard_vpn_portal() {
         Duration::from_secs(5),
     )
     .await;
+}
+
+#[cfg(feature = "wireguard")]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn socks5_vpn_portal() {
+    use rand::Rng as _;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
+    };
+    use tokio_socks::tcp::socks5::Socks5Stream;
+
+    let _insts = init_three_node("tcp").await;
+
+    let mut buf = vec![0u8; 1024];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    let buf_clone = buf.clone();
+    let task = tokio::spawn(async move {
+        let net_ns = NetNS::new(Some("net_c".into()));
+        let _g = net_ns.guard();
+
+        let socket = TcpListener::bind("10.144.144.3:22222").await.unwrap();
+        let (mut st, addr) = socket.accept().await.unwrap();
+        assert_eq!(addr.ip().to_string(), "10.144.144.1".to_string());
+
+        let rbuf = &mut [0u8; 1024];
+        st.read_exact(rbuf).await.unwrap();
+        assert_eq!(rbuf, buf_clone.as_slice());
+    });
+
+    let net_ns = NetNS::new(Some("net_a".into()));
+    let _g = net_ns.guard();
+
+    println!("connect to socks5 portal");
+    let stream = TcpStream::connect("127.0.0.1:12345").await.unwrap();
+    println!("connect to socks5 portal done");
+
+    stream.set_nodelay(true).unwrap();
+    let mut conn = Socks5Stream::connect_with_socket(stream, "10.144.144.3:22222")
+        .await
+        .unwrap();
+
+    conn.write_all(&buf).await.unwrap();
+    drop(conn);
+
+    tokio::join!(task).0.unwrap();
 }

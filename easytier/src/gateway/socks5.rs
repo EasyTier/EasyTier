@@ -302,7 +302,10 @@ impl Socks5Server {
             proxy_url.port().unwrap()
         );
 
-        let listener = TcpListener::bind(bind_addr.parse::<SocketAddr>().unwrap()).await?;
+        let listener = {
+            let _g = self.global_ctx.net_ns.guard();
+            TcpListener::bind(bind_addr.parse::<SocketAddr>().unwrap()).await?
+        };
 
         self.peer_manager
             .add_packet_process_pipeline(Box::new(self.clone()))
