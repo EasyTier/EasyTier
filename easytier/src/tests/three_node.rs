@@ -633,9 +633,10 @@ pub async fn wireguard_vpn_portal() {
 }
 
 #[cfg(feature = "wireguard")]
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn socks5_vpn_portal() {
+pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_addr: &str) {
     use rand::Rng as _;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -649,13 +650,23 @@ pub async fn socks5_vpn_portal() {
     rand::thread_rng().fill(&mut buf[..]);
 
     let buf_clone = buf.clone();
+    let dst_addr_clone = dst_addr.to_owned();
     let task = tokio::spawn(async move {
-        let net_ns = NetNS::new(Some("net_c".into()));
+        let net_ns = if dst_addr_clone == "10.144.144.1" {
+            NetNS::new(Some("net_a".into()))
+        } else {
+            NetNS::new(Some("net_c".into()))
+        };
         let _g = net_ns.guard();
 
-        let socket = TcpListener::bind("10.144.144.3:22222").await.unwrap();
+        let socket = TcpListener::bind("0.0.0.0:22222").await.unwrap();
         let (mut st, addr) = socket.accept().await.unwrap();
-        assert_eq!(addr.ip().to_string(), "10.144.144.1".to_string());
+
+        if dst_addr_clone == "10.144.144.3" {
+            assert_eq!(addr.ip().to_string(), "10.144.144.1".to_string());
+        } else {
+            assert_eq!(addr.ip().to_string(), "127.0.0.1".to_string());
+        }
 
         let rbuf = &mut [0u8; 1024];
         st.read_exact(rbuf).await.unwrap();
@@ -670,7 +681,7 @@ pub async fn socks5_vpn_portal() {
     println!("connect to socks5 portal done");
 
     stream.set_nodelay(true).unwrap();
-    let mut conn = Socks5Stream::connect_with_socket(stream, "10.144.144.3:22222")
+    let mut conn = Socks5Stream::connect_with_socket(stream, format!("{}:22222", dst_addr))
         .await
         .unwrap();
 

@@ -1,13 +1,16 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
 
 use crate::{
     gateway::{
-        fast_socks5::server::{
-            AcceptAuthentication, AsyncTcpConnector, Config, SimpleUserPassword, Socks5Socket,
+        fast_socks5::{
+            server::{
+                AcceptAuthentication, AsyncTcpConnector, Config, SimpleUserPassword, Socks5Socket,
+            },
+            util::stream::tcp_connect_with_timeout,
         },
         tokio_smoltcp::TcpStream,
     },
@@ -16,7 +19,10 @@ use crate::{
 use anyhow::Context;
 use dashmap::DashSet;
 use pnet::packet::{ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, Packet};
-use tokio::select;
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    select,
+};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, Mutex},
@@ -30,6 +36,71 @@ use crate::{
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::packet_def::ZCPacket,
 };
+
+enum SocksTcpStream {
+    TcpStream(tokio::net::TcpStream),
+    SmolTcpStream(TcpStream),
+}
+
+impl AsyncRead for SocksTcpStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            SocksTcpStream::TcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_read(cx, buf)
+            }
+            SocksTcpStream::SmolTcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_read(cx, buf)
+            }
+        }
+    }
+}
+
+impl AsyncWrite for SocksTcpStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        match self.get_mut() {
+            SocksTcpStream::TcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_write(cx, buf)
+            }
+            SocksTcpStream::SmolTcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_write(cx, buf)
+            }
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        match self.get_mut() {
+            SocksTcpStream::TcpStream(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::SmolTcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_flush(cx)
+            }
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        match self.get_mut() {
+            SocksTcpStream::TcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_shutdown(cx)
+            }
+            SocksTcpStream::SmolTcpStream(ref mut stream) => {
+                std::pin::Pin::new(stream).poll_shutdown(cx)
+            }
+        }
+    }
+}
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 struct Socks5Entry {
@@ -132,30 +203,42 @@ impl Socks5ServerNet {
 
         #[async_trait::async_trait]
         impl AsyncTcpConnector for SmolTcpConnector {
-            type S = TcpStream;
+            type S = SocksTcpStream;
 
             async fn tcp_connect(
                 &self,
                 addr: SocketAddr,
                 timeout_s: u64,
-            ) -> crate::gateway::fast_socks5::Result<TcpStream> {
+            ) -> crate::gateway::fast_socks5::Result<SocksTcpStream> {
+                let local_addr = self.0.get_address();
                 let port = self.0.get_port();
 
                 let entry = Socks5Entry {
-                    src: SocketAddr::new(self.0.get_address(), port),
+                    src: SocketAddr::new(local_addr, port),
                     dst: addr,
                 };
                 *self.2.lock().unwrap() = Some(entry.clone());
                 self.1.insert(entry);
 
-                let remote_socket = timeout(
-                    Duration::from_secs(timeout_s),
-                    self.0.tcp_connect(addr, port),
-                )
-                .await
-                .with_context(|| "connect to remote timeout")?;
+                if addr.ip() == local_addr {
+                    let modified_addr =
+                        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
 
-                remote_socket.map_err(|e| super::fast_socks5::SocksError::Other(e.into()))
+                    Ok(SocksTcpStream::TcpStream(
+                        tcp_connect_with_timeout(modified_addr, timeout_s).await?,
+                    ))
+                } else {
+                    let remote_socket = timeout(
+                        Duration::from_secs(timeout_s),
+                        self.0.tcp_connect(addr, port),
+                    )
+                    .await
+                    .with_context(|| "connect to remote timeout")?;
+
+                    Ok(SocksTcpStream::SmolTcpStream(remote_socket.map_err(
+                        |e| super::fast_socks5::SocksError::Other(e.into()),
+                    )?))
+                }
             }
         }
 
