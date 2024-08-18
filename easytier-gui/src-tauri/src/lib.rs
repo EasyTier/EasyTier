@@ -298,20 +298,25 @@ pub fn run() {
         ));
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder
+            .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+                app.webview_windows()
+                    .values()
+                    .next()
+                    .expect("Sorry, no window found")
+                    .set_focus()
+                    .expect("Can't Bring Window to Focus");
+            }));
+    }
+
     builder
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_vpnservice::init())
-        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
-            app.webview_windows()
-                .values()
-                .next()
-                .expect("Sorry, no window found")
-                .set_focus()
-                .expect("Can't Bring Window to Focus");
-        }))
         .setup(|app| {
             // for logging config
             let Ok(log_dir) = app.path().app_log_dir() else {
