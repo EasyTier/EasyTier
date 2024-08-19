@@ -298,6 +298,19 @@ pub fn run() {
         ));
     }
 
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        builder = builder
+            .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+                app.webview_windows()
+                    .values()
+                    .next()
+                    .expect("Sorry, no window found")
+                    .set_focus()
+                    .expect("Can't Bring Window to Focus");
+            }));
+    }
+
     builder
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_clipboard_manager::init())
