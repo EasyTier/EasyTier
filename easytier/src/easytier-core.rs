@@ -281,7 +281,7 @@ struct Cli {
     socks5: Option<u16>,
 }
 
-rust_i18n::i18n!("locales");
+rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
     fn parse_listeners(&self) -> Vec<String> {
