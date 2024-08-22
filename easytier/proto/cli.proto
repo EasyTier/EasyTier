@@ -39,7 +39,10 @@ message PeerInfo {
 
 message ListPeerRequest {}
 
-message ListPeerResponse { repeated PeerInfo peer_infos = 1; }
+message ListPeerResponse {
+  repeated PeerInfo peer_infos = 1;
+  NodeInfo my_info = 2;
+}
 
 enum NatType {
   // has NAT; but own a single public IP, port is not changed
@@ -73,6 +76,21 @@ message Route {
   string inst_id = 8;
 }
 
+message NodeInfo {
+  uint32 peer_id = 1;
+  string ipv4_addr = 2;
+  repeated string proxy_cidrs = 3;
+  string hostname = 4;
+  StunInfo stun_info = 5;
+  string inst_id = 6;
+  repeated string listeners = 7;
+  string config = 8;
+}
+
+message ShowNodeInfoRequest {}
+
+message ShowNodeInfoResponse { NodeInfo node_info = 1; }
+
 message ListRouteRequest {}
 
 message ListRouteResponse { repeated Route routes = 1; }
@@ -95,6 +113,7 @@ service PeerManageRpc {
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
   rpc ListForeignNetwork(ListForeignNetworkRequest)
       returns (ListForeignNetworkResponse);
+  rpc ShowNodeInfo(ShowNodeInfoRequest) returns (ShowNodeInfoResponse);
 }
 
 enum ConnectorStatus {
