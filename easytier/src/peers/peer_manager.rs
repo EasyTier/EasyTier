@@ -20,7 +20,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::bytes::Bytes;
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
@@ -745,6 +745,33 @@ impl PeerManager {
 
     pub fn get_foreign_network_client(&self) -> Arc<ForeignNetworkClient> {
         self.foreign_network_client.clone()
+    }
+
+    pub fn get_my_info(&self) -> crate::rpc::NodeInfo {
+        crate::rpc::NodeInfo {
+            peer_id: self.my_peer_id,
+            ipv4_addr: self
+                .global_ctx
+                .get_ipv4()
+                .map(|x| x.to_string())
+                .unwrap_or_default(),
+            proxy_cidrs: self
+                .global_ctx
+                .get_proxy_cidrs()
+                .into_iter()
+                .map(|x| x.to_string())
+                .collect(),
+            hostname: self.global_ctx.get_hostname(),
+            stun_info: Some(self.global_ctx.get_stun_info_collector().get_stun_info()),
+            inst_id: self.global_ctx.get_id().to_string(),
+            listeners: self
+                .global_ctx
+                .get_running_listeners()
+                .iter()
+                .map(|x| x.to_string())
+                .collect(),
+            config: self.global_ctx.config.dump(),
+        }
     }
 }
 

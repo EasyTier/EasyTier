@@ -24,7 +24,7 @@ use crate::{
     utils::{cost_to_str, float_to_str},
 };
 use humansize::format_size;
-use tabled::settings::Style;
+use tabled::{col, row, settings::Style};
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version, about, long_about = None)]
@@ -48,6 +48,7 @@ enum SubCommand {
     Route(RouteArgs),
     PeerCenter,
     VpnPortal,
+    Node(NodeArgs),
 }
 
 #[derive(Args, Debug)]
@@ -101,12 +102,26 @@ enum ConnectorSubCommand {
     List,
 }
 
+#[derive(Subcommand, Debug)]
+enum NodeSubCommand {
+    Info,
+    Config,
+}
+
+#[derive(Args, Debug)]
+struct NodeArgs {
+    #[command(subcommand)]
+    sub_command: Option<NodeSubCommand>,
+}
+
 #[derive(thiserror::Error, Debug)]
 enum Error {
     #[error("tonic transport error")]
     TonicTransportError(#[from] tonic::transport::Error),
     #[error("tonic rpc error")]
     TonicRpcError(#[from] tonic::Status),
+    #[error("anyhow error")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 struct CommandHandler {
@@ -446,6 +461,45 @@ async fn main() -> Result<(), Error> {
                 resp.client_config
             );
             println!("connected_clients:\n{:#?}", resp.connected_clients);
+        }
+        SubCommand::Node(sub_cmd) => {
+            let mut client = handler.get_peer_manager_client().await?;
+            let node_info = client
+                .show_node_info(ShowNodeInfoRequest::default())
+                .await?
+                .into_inner()
+                .node_info
+                .ok_or(anyhow::anyhow!("node info not found"))?;
+            match sub_cmd.sub_command {
+                Some(NodeSubCommand::Info) | None => {
+                    let stun_info = node_info.stun_info.clone().unwrap_or_default();
+
+                    let mut builder = tabled::builder::Builder::default();
+                    builder.push_record(vec!["Virtual IP", node_info.ipv4_addr.as_str()]);
+                    builder.push_record(vec!["Hostname", node_info.hostname.as_str()]);
+                    builder.push_record(vec![
+                        "Proxy CIDRs",
+                        node_info.proxy_cidrs.join(", ").as_str(),
+                    ]);
+                    builder.push_record(vec!["Peer ID", node_info.peer_id.to_string().as_str()]);
+                    builder.push_record(vec!["Public IP", stun_info.public_ip.join(", ").as_str()]);
+                    builder.push_record(vec![
+                        "UDP Stun Type",
+                        format!("{:?}", stun_info.udp_nat_type()).as_str(),
+                    ]);
+                    for (idx, l) in node_info.listeners.iter().enumerate() {
+                        if l.starts_with("ring") {
+                            continue;
+                        }
+                        builder.push_record(vec![format!("Listener {}", idx).as_str(), l]);
+                    }
+
+                    println!("{}", builder.build().with(Style::modern()).to_string());
+                }
+                Some(NodeSubCommand::Config) => {
+                    println!("{}", node_info.config);
+                }
+            }
         }
     }
 

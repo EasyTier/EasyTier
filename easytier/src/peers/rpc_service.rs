@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::rpc::{
     cli::PeerInfo, peer_manage_rpc_server::PeerManageRpc, DumpRouteRequest, DumpRouteResponse,
     ListForeignNetworkRequest, ListForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
-    ListRouteRequest, ListRouteResponse,
+    ListRouteRequest, ListRouteResponse, ShowNodeInfoRequest, ShowNodeInfoResponse,
 };
 use tonic::{Request, Response, Status};
 
@@ -80,5 +80,14 @@ impl PeerManageRpc for PeerManagerRpcService {
             .list_foreign_networks()
             .await;
         Ok(Response::new(reply))
+    }
+
+    async fn show_node_info(
+        &self,
+        _request: Request<ShowNodeInfoRequest>, // Accept request of type HelloRequest
+    ) -> Result<Response<ShowNodeInfoResponse>, Status> {
+        Ok(Response::new(ShowNodeInfoResponse {
+            node_info: Some(self.peer_manager.get_my_info()),
+        }))
     }
 }
