@@ -37,7 +37,8 @@ jobs:
     if: contains('["KKRainbow"]', github.actor)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      -
+        name: Checkout
         uses: actions/checkout@v4
 
       - name: Download Core Artifact
@@ -46,7 +47,7 @@ jobs:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
           repo: EasyTier/EasyTier
-          path: release_assets_origin
+          path: release_assets
 
       - name: Download GUI Artifact
         uses: dawidd6/action-download-artifact@v6
@@ -54,39 +55,38 @@ jobs:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.gui_run_id }}
           repo: EasyTier/EasyTier
-          path: release_assets_origin
+          path: release_assets_nozip
 
-      - name: Download Mobile Artifact
+      - name: Download GUI Artifact
         uses: dawidd6/action-download-artifact@v6
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.mobile_run_id }}
           repo: EasyTier/EasyTier
-          path: release_assets_origin
+          path: release_assets_nozip
 
-      - name: Prepare release assets
+      - name: Zip release assets
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          mkdir -p release_assets
-          
-          # Copy files that don't need compression
-          find release_assets_origin -type f \( -name "*.dmg" -o -name "*.deb" -o -name "*.exe" -o -name "*.apk" \) -exec cp {} release_assets/ \;
-          
-          # Compress other files
-          zip -r release_assets/EasyTier-${VERSION}.zip release_assets_origin -x "*.dmg" -x "*.deb" -x "*.exe" -x "*.apk"
-          
-          echo "Contents of release_assets_origin:"
-          ls -R release_assets_origin
-          
-          echo "Contents of release_assets:"
-          ls -l release_assets
+          mkdir zipped_assets
+
+          find release_assets_nozip -type f -exec mv {} zipped_assets \;
+          ls -l -R ./zipped_assets
+
+          cd release_assets
+          ls -l -R ./
+          chmod -R 755 .
+          for x in `ls`; do
+            zip ../zipped_assets/$x-${VERSION}.zip $x/*;
+          done
 
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
           name: ${{ inputs.version }}
           draft: true
-          files: ./release_assets/*
+          files: |
+            ./zipped_assets/*
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ inputs.version }}
