@@ -61,7 +61,8 @@ impl InterfaceFilter {
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 impl InterfaceFilter {
     #[cfg(target_os = "macos")]
-    async fn is_interface_physical(interface_name: &str) -> bool {
+    async fn is_interface_physical(&self) -> bool {
+        let interface_name = &self.iface.name;
         let output = tokio::process::Command::new("networksetup")
             .args(&["-listallhardwareports"])
             .output()
@@ -89,7 +90,7 @@ impl InterfaceFilter {
     }
 
     #[cfg(target_os = "freebsd")]
-    async fn is_interface_physical(interface_name: &str) -> bool {
+    async fn is_interface_physical(&self) -> bool {
         // if mac addr is not zero, then it's physical interface
         self.iface.mac.map(|mac| !mac.is_zero()).unwrap_or(false)
     }
@@ -98,7 +99,7 @@ impl InterfaceFilter {
         !self.iface.is_point_to_point()
             && !self.iface.is_loopback()
             && self.iface.is_up()
-            && Self::is_interface_physical(&self.iface.name).await
+            && self.is_interface_physical().await
     }
 }
 

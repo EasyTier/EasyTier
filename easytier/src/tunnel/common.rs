@@ -368,7 +368,7 @@ pub(crate) fn setup_sokcet2_ext(
 
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
     // win can handle this with bind correctly
-    #[cfg(any(target_os = "ios", target_os = "macos", target_os = "freebsd"))]
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     if let Some(dev_name) = bind_dev {
         // use IP_BOUND_IF to bind device
         unsafe {

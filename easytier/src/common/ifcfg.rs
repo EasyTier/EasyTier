@@ -408,5 +408,10 @@ pub type IfConfiger = LinuxIfConfiger;
 #[cfg(target_os = "windows")]
 pub type IfConfiger = WindowsIfConfiger;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows",
+    target_os = "freebsd"
+)))]
 pub type IfConfiger = DummyIfConfiger;
