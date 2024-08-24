@@ -61,6 +61,7 @@ pub struct PeerConn {
     tasks: JoinSet<Result<(), TunnelError>>,
 
     info: Option<HandshakeRequest>,
+    is_client: Option<bool>,
 
     close_event_sender: Option<mpsc::Sender<PeerConnId>>,
 
@@ -107,6 +108,7 @@ impl PeerConn {
             tasks: JoinSet::new(),
 
             info: None,
+            is_client: None,
             close_event_sender: None,
 
             ctrl_resp_sender: ctrl_sender,
@@ -215,6 +217,7 @@ impl PeerConn {
         let rsp = self.wait_handshake_loop().await?;
         tracing::info!("handshake request: {:?}", rsp);
         self.info = Some(rsp);
+        self.is_client = Some(false);
         self.send_handshake().await?;
         Ok(())
     }
@@ -226,6 +229,7 @@ impl PeerConn {
         let rsp = self.wait_handshake_loop().await?;
         tracing::info!("handshake response: {:?}", rsp);
         self.info = Some(rsp);
+        self.is_client = Some(true);
         Ok(())
     }
 
@@ -359,14 +363,17 @@ impl PeerConn {
     }
 
     pub fn get_conn_info(&self) -> PeerConnInfo {
+        let info = self.info.as_ref().unwrap();
         PeerConnInfo {
             conn_id: self.conn_id.to_string(),
             my_peer_id: self.my_peer_id,
             peer_id: self.get_peer_id(),
-            features: self.info.as_ref().unwrap().features.clone(),
+            features: info.features.clone(),
             tunnel: self.tunnel_info.clone(),
             stats: Some(self.get_stats()),
             loss_rate: (f64::from(self.loss_rate_stats.load(Ordering::Relaxed)) / 100.0) as f32,
+            is_client: self.is_client.unwrap_or_default(),
+            network_name: info.network_name.clone(),
         }
     }
 }
