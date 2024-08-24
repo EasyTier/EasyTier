@@ -70,6 +70,11 @@ jobs:
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
 
+          - TARGET: x86_64-unknown-freebsd
+            OS: ubuntu-latest
+            ARTIFACT_NAME: freebsd-13.2-x86_64
+            BSD_VERSION: 13.2
+
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
@@ -81,10 +86,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 21
-
       - name: Cargo cache
         uses: actions/cache@v4
         with:
@@ -93,9 +94,6 @@ jobs:
             ./target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install rust target
-        run: bash ./.github/workflows/install_rust.sh
-
       - name: Setup protoc
         uses: arduino/setup-protoc@v2
         with:
@@ -103,12 +101,51 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Core & Cli
+        if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
         run: |
+          bash ./.github/workflows/install_rust.sh
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
             cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips
           else
             cargo build --release --verbose --target $TARGET
           fi
+
+      # Copied and slightly modified from @lmq8267 (https://github.com/lmq8267)
+      - name: Build Core & Cli (X86_64 FreeBSD)
+        uses: cross-platform-actions/action@v0.23.0
+        if: ${{ endsWith(matrix.TARGET, 'freebsd') }}
+        env:
+          TARGET: ${{ matrix.TARGET }}
+        with:
+          operating_system: freebsd
+          environment_variables: TARGET
+          architecture: x86-64
+          version: ${{ matrix.BSD_VERSION }}
+          shell: bash
+          memory: 5G
+          cpu_count: 4
+          run: |
+            uname -a
+            echo $SHELL
+            pwd
+            ls -lah
+            whoami
+            env | sort
+
+            sudo pkg install -y git protobuf
+            curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            source $HOME/.cargo/env
+
+            rustup set auto-self-update disable
+
+            rustup install 1.77
+            rustup default 1.77
+
+            export CC=clang
+            export CXX=clang++
+            export CARGO_TERM_COLOR=always
+
+            cargo build --release --verbose --target $TARGET
 
       - name: Install UPX
         if: ${{ matrix.OS != 'macos-latest' }}
@@ -132,7 +169,7 @@ jobs:
             TAG=$GITHUB_SHA
           fi
 
-          if [[ $OS =~ ^ubuntu.*$ ]]; then
+          if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ ]]; then
             upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"
             upx --lzma --best ./target/$TARGET/release/easytier-cli"$SUFFIX"
           fi

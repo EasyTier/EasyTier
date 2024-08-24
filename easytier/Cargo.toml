@@ -142,7 +142,10 @@ network-interface = "2.0"
 # for ospf route
 petgraph = "0.6.5"
 
-boringtun = { package = "boringtun-easytier", version = "0.6.0", optional = true } # for encryption
+# for wireguard
+boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
+
+# for encryption
 ring = { version = "0.17", optional = true }
 bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
@@ -219,7 +222,6 @@ full = [
     "socks5",
 ]
 mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
-bsd = ["aes-gcm", "mimalloc", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc-rust"]

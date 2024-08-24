@@ -119,7 +119,7 @@ impl PacketProtocol {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
     fn into_pi_field(self) -> Result<u16, io::Error> {
         use nix::libc;
         match self {
@@ -338,7 +338,7 @@ impl VirtualNic {
             }
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos"))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -513,7 +513,8 @@ impl NicCtx {
         nic.link_up().await?;
         nic.remove_ip(None).await?;
         nic.add_ip(ipv4_addr, 24).await?;
-        if cfg!(target_os = "macos") {
+        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        {
             nic.add_route(ipv4_addr, 24).await?;
         }
         Ok(())
