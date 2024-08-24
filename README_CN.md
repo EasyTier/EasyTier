@@ -39,27 +39,35 @@
     访问 [GitHub Release 页面](https://github.com/EasyTier/EasyTier/releases) 下载适用于您操作系统的二进制文件。Release 压缩包中同时包含命令行程序和图形界面程序。
 
 2. **通过 crates.io 安装**
-   ```sh
-   cargo install easytier
-   ```
 
+    ```sh
+    cargo install easytier
+    ```
 
 3. **通过源码安装**
-   ```sh
-   cargo install --git https://github.com/EasyTier/EasyTier.git
-   ```
+
+    ```sh
+    cargo install --git https://github.com/EasyTier/EasyTier.git
+    ```
 
 4. **通过Docker Compose安装**
 
-   请访问 [EasyTier 官网](https://www.easytier.top/) 以查看完整的文档。
-
+    请访问 [EasyTier 官网](https://www.easytier.top/) 以查看完整的文档。
 
 5. **使用一键脚本安装 (仅适用于 Linux)**
-   ```sh
-   wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" && bash /tmp/easytier.sh install
-   ```
-   
-   使用本脚本安装的 Easytier 可以使用脚本的 uninstall/update 对其卸载/升级
+
+    ```sh
+    wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" && bash /tmp/easytier.sh install
+    ```
+
+    使用本脚本安装的 Easytier 可以使用脚本的 uninstall/update 对其卸载/升级
+
+6. **使用 Homebrew 安装 (仅适用于 MacOS)**
+
+    ```sh
+    brew tap brewforge/chinese
+    brew install --cask easytier
+    ```
 
 ## 快速开始
 
@@ -87,34 +95,42 @@ nodea <-----> nodeb
 ```
 
 1. 在节点 A 上执行：
-   ```sh
-   sudo easytier-core --ipv4 10.144.144.1
-   ```
-   命令执行成功会有如下打印。
 
-   ![alt text](/assets/image-2.png)
+    ```sh
+    sudo easytier-core --ipv4 10.144.144.1
+    ```
+
+    命令执行成功会有如下打印。
+
+    ![alt text](/assets/image-2.png)
 
 2. 在节点 B 执行
-   ```sh
-   sudo easytier-core --ipv4 10.144.144.2 --peers udp://22.1.1.1:11010
-   ```
+
+    ```sh
+    sudo easytier-core --ipv4 10.144.144.2 --peers udp://22.1.1.1:11010
+    ```
 
 3. 测试联通性
 
-   两个节点应成功连接并能够在虚拟子网内通信
-   ```sh
-   ping 10.144.144.2
-   ```
+    两个节点应成功连接并能够在虚拟子网内通信
 
-   使用 easytier-cli 查看子网中的节点信息
-   ```sh
-   easytier-cli peer
-   ```
-   ![alt text](/assets/image.png)
-   ```sh
-   easytier-cli route
-   ```
-   ![alt text](/assets/image-1.png)
+    ```sh
+    ping 10.144.144.2
+    ```
+
+    使用 easytier-cli 查看子网中的节点信息
+
+    ```sh
+    easytier-cli peer
+    ```
+
+    ![alt text](/assets/image.png)
+
+    ```sh
+    easytier-cli route
+    ```
+
+    ![alt text](/assets/image-1.png)
 
 ---
 
@@ -122,11 +138,11 @@ nodea <-----> nodeb
 
 基于刚才的双节点组网例子，如果有更多的节点需要加入虚拟网络，可以使用如下命令。
 
-```
+```sh
 sudo easytier-core --ipv4 10.144.144.2 --peers udp://22.1.1.1:11010
 ```
 
-其中 `--peers ` 参数可以填写任意一个已经在虚拟网络中的节点的监听地址。
+其中 `--peers` 参数可以填写任意一个已经在虚拟网络中的节点的监听地址。
 
 ---
 
@@ -161,16 +177,17 @@ sudo easytier-core --ipv4 10.144.144.2 -n 10.1.1.0/24
 
 1. 检查路由信息是否已经同步，proxy_cidrs 列展示了被代理的子网。
 
-   ```sh
-   easytier-cli route
-   ```
-   ![alt text](/assets/image-3.png)
+    ```sh
+    easytier-cli route
+    ```
+
+    ![alt text](/assets/image-3.png)
 
 2. 测试节点 A 是否可访问被代理子网下的节点
 
-   ```sh
-   ping 10.1.1.2
-   ```
+    ```sh
+    ping 10.1.1.2
+    ```
 
 ---
 
@@ -224,14 +241,14 @@ ios <-.-> nodea <--> nodeb <-.-> id1
 
 在节点 A 的 easytier-core 命令中，加入 --vpn-portal 参数，指定 WireGuard 服务监听的端口，以及 WireGuard 网络使用的网段。
 
-```
+```sh
 # 以下参数的含义为： 监听 0.0.0.0:11013 端口，WireGuard 使用 10.14.14.0/24 网段
 sudo easytier-core --ipv4 10.144.144.1 --vpn-portal wg://0.0.0.0:11013/10.14.14.0/24
 ```
 
 easytier-core 启动成功后，使用 easytier-cli 获取 WireGuard Client 的配置。
 
-```
+```sh
 $> easytier-cli vpn-portal
 portal_name: wireguard
 
@@ -265,37 +282,36 @@ connected_clients:
 
 可使用 ``easytier-core --help`` 查看全部配置项
 
-
-# 路线图
+## 路线图
 
 - [ ] 完善文档和用户指南。
 - [ ] 支持 TCP 打洞等特性。
 - [ ] 支持 Android、IOS 等移动平台。
 - [ ] 支持 Web 配置管理。
 
-# 社区和贡献
+## 社区和贡献
 
 我们欢迎并鼓励社区贡献！如果你想参与进来，请提交 [GitHub PR](https://github.com/EasyTier/EasyTier/pulls)。详细的贡献指南可以在 [CONTRIBUTING.md](https://github.com/EasyTier/EasyTier/blob/main/CONTRIBUTING.md) 中找到。
 
-# 相关项目和资源
+## 相关项目和资源
 
 - [ZeroTier](https://www.zerotier.com/): 一个全球虚拟网络，用于连接设备。
 - [TailScale](https://tailscale.com/): 一个旨在简化网络配置的 VPN 解决方案。
 - [vpncloud](https://github.com/dswd/vpncloud): 一个 P2P Mesh VPN
 - [Candy](https://github.com/lanthora/candy): 可靠、低延迟、抗审查的虚拟专用网络
 
-# 许可证
+## 许可证
 
 EasyTier 根据 [Apache License 2.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE) 许可证发布。
 
-# 联系方式
+## 联系方式
 
 - 提问或报告问题：[GitHub Issues](https://github.com/EasyTier/EasyTier/issues)
 - 讨论和交流：[GitHub Discussions](https://github.com/EasyTier/EasyTier/discussions)
 - QQ 群： 949700262
 - Telegram：https://t.me/easytier
 
-# 赞助
+## 赞助
 
 <img src="assets/image-8.png" width="300">
 <img src="assets/image-9.png" width="300">
