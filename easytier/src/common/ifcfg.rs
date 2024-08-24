@@ -399,7 +399,7 @@ pub struct DummyIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 pub type IfConfiger = MacIfConfiger;
 
 #[cfg(target_os = "linux")]
@@ -408,5 +408,5 @@ pub type IfConfiger = LinuxIfConfiger;
 #[cfg(target_os = "windows")]
 pub type IfConfiger = WindowsIfConfiger;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows", target_os = "freebsd")))]
 pub type IfConfiger = DummyIfConfiger;

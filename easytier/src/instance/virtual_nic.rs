@@ -132,7 +132,7 @@ impl PacketProtocol {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "freebsd"))]
     fn into_pi_field(self) -> Result<u16, io::Error> {
         unimplemented!()
     }

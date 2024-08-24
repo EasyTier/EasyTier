@@ -588,9 +588,9 @@ dependencies = [
 
 [[package]]
 name = "boringtun-easytier"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a62bfb866a2a03e8aea22e83a0c1e385304563ee77c89ebd2043c67d0a73065"
+checksum = "2f09b4d1ada8affba260cb185bbdf6d5acff42f924dea1a17f938cf3e8fbe475"
 dependencies = [
  "aead",
  "atomic-shim",
