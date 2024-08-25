@@ -690,3 +690,63 @@ pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_add
 
     tokio::join!(task).0.unwrap();
 }
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
+    prepare_linux_namespaces();
+
+    let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
+    if is_foreign {
+        center_node_config
+            .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    }
+    let mut center_inst = Instance::new(center_node_config);
+
+    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1"));
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2"));
+
+    center_inst.run().await.unwrap();
+    inst1.run().await.unwrap();
+    inst2.run().await.unwrap();
+
+    assert_ne!(inst1.id(), center_inst.id());
+    assert_ne!(inst2.id(), center_inst.id());
+
+    inst1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst.id()).parse().unwrap(),
+        ));
+
+    inst2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst.id()).parse().unwrap(),
+        ));
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+
+    let peer_map = if !is_foreign {
+        inst1.get_peer_manager().get_peer_map()
+    } else {
+        inst1
+            .get_peer_manager()
+            .get_foreign_network_client()
+            .get_peer_map()
+    };
+
+    let conns = peer_map
+        .list_peer_conns(center_inst.peer_id())
+        .await
+        .unwrap();
+
+    assert_eq!(1, conns.len());
+
+    wait_for_condition(
+        || async { ping_test("net_b", "10.144.145.2", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+}

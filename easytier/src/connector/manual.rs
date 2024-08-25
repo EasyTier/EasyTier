@@ -46,7 +46,7 @@ struct ConnectorManagerData {
     connectors: ConnectorMap,
     reconnecting: DashSet<String>,
     peer_manager: Arc<PeerManager>,
-    alive_conn_urls: Arc<Mutex<BTreeSet<String>>>,
+    alive_conn_urls: Arc<DashSet<String>>,
     // user removed connector urls
     removed_conn_urls: Arc<DashSet<String>>,
     net_ns: NetNS,
@@ -71,7 +71,7 @@ impl ManualConnectorManager {
                 connectors,
                 reconnecting: DashSet::new(),
                 peer_manager,
-                alive_conn_urls: Arc::new(Mutex::new(BTreeSet::new())),
+                alive_conn_urls: Arc::new(DashSet::new()),
                 removed_conn_urls: Arc::new(DashSet::new()),
                 net_ns: global_ctx.net_ns.clone(),
                 global_ctx,
@@ -80,7 +80,11 @@ impl ManualConnectorManager {
         };
 
         ret.tasks
-            .spawn(Self::conn_mgr_routine(ret.data.clone(), event_subscriber));
+            .spawn(Self::conn_mgr_reconn_routine(ret.data.clone()));
+        ret.tasks.spawn(Self::conn_mgr_handle_event_routine(
+            ret.data.clone(),
+            event_subscriber,
+        ));
 
         ret
     }
@@ -159,10 +163,17 @@ impl ManualConnectorManager {
         ret
     }
 
-    async fn conn_mgr_routine(
+    async fn conn_mgr_handle_event_routine(
         data: Arc<ConnectorManagerData>,
         mut event_recv: Receiver<GlobalCtxEvent>,
     ) {
+        loop {
+            let event = event_recv.recv().await.expect("event_recv got error");
+            Self::handle_event(&event, &data).await;
+        }
+    }
+
+    async fn conn_mgr_reconn_routine(data: Arc<ConnectorManagerData>) {
         tracing::warn!("conn_mgr_routine started");
         let mut reconn_interval = tokio::time::interval(std::time::Duration::from_millis(
             use_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
@@ -171,15 +182,6 @@ impl ManualConnectorManager {
 
         loop {
             tokio::select! {
-                event = event_recv.recv() => {
-                    if let Ok(event) = event {
-                        Self::handle_event(&event, data.clone()).await;
-                    } else {
-                        tracing::warn!(?event, "event_recv got error");
-                        panic!("event_recv got error, err: {:?}", event);
-                    }
-                }
-
                 _ = reconn_interval.tick() => {
                     let dead_urls = Self::collect_dead_conns(data.clone()).await;
                     if dead_urls.is_empty() {
@@ -210,17 +212,24 @@ impl ManualConnectorManager {
         }
     }
 
-    async fn handle_event(event: &GlobalCtxEvent, data: Arc<ConnectorManagerData>) {
+    async fn handle_event(event: &GlobalCtxEvent, data: &ConnectorManagerData) {
+        let need_add_alive = |conn_info: &easytier_rpc::PeerConnInfo| conn_info.is_client;
         match event {
             GlobalCtxEvent::PeerConnAdded(conn_info) => {
+                if !need_add_alive(conn_info) {
+                    return;
+                }
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
-                data.alive_conn_urls.lock().await.insert(addr);
+                data.alive_conn_urls.insert(addr);
                 tracing::warn!("peer conn added: {:?}", conn_info);
             }
 
             GlobalCtxEvent::PeerConnRemoved(conn_info) => {
+                if !need_add_alive(conn_info) {
+                    return;
+                }
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
-                data.alive_conn_urls.lock().await.remove(&addr);
+                data.alive_conn_urls.remove(&addr);
                 tracing::warn!("peer conn removed: {:?}", conn_info);
             }
 
@@ -252,13 +261,18 @@ impl ManualConnectorManager {
     async fn collect_dead_conns(data: Arc<ConnectorManagerData>) -> BTreeSet<String> {
         Self::handle_remove_connector(data.clone());
 
-        let curr_alive = data.alive_conn_urls.lock().await.clone();
         let all_urls: BTreeSet<String> = data
             .connectors
             .iter()
             .map(|x| x.key().clone().into())
             .collect();
-        &all_urls - &curr_alive
+        let mut ret = BTreeSet::new();
+        for url in all_urls.iter() {
+            if !data.alive_conn_urls.contains(url) {
+                ret.insert(url.clone());
+            }
+        }
+        ret
     }
 
     async fn conn_reconnect_with_ip_version(

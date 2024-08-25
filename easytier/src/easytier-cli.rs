@@ -24,7 +24,7 @@ use crate::{
     utils::{cost_to_str, float_to_str},
 };
 use humansize::format_size;
-use tabled::{col, row, settings::Style};
+use tabled::settings::Style;
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version, about, long_about = None)]
