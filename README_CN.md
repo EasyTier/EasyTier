@@ -22,7 +22,7 @@
 - **去中心化**：无需依赖中心化服务，节点平等且独立。
 - **安全**：支持利用 WireGuard 加密通信，也支持 AES-GCM 加密保护中转流量。
 - **高性能**：全链路零拷贝，性能与主流组网软件相当。
-- **跨平台**：支持 MacOS/Linux/Windows，未来将支持 IOS 和 Android。可执行文件静态链接，部署简单。
+- **跨平台**：支持 MacOS/Linux/Windows/Android，未来将支持 IOS。可执行文件静态链接，部署简单。
 - **无公网 IP 组网**：支持利用共享的公网节点组网，可参考 [配置指南](#无公网IP组网)
 - **NAT 穿透**：支持基于 UDP 的 NAT 穿透，即使在复杂的网络环境下也能建立稳定的连接。
 - **子网代理（点对网）**：节点可以将可访问的网段作为代理暴露给 VPN 子网，允许其他节点通过该节点访问这些子网。
@@ -57,7 +57,7 @@
 5. **使用一键脚本安装 (仅适用于 Linux)**
 
     ```sh
-    wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/easytier.sh" && bash /tmp/easytier.sh install
+    wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh" && bash /tmp/easytier.sh install
     ```
 
     使用本脚本安装的 Easytier 可以使用脚本的 uninstall/update 对其卸载/升级
@@ -131,6 +131,12 @@ nodea <-----> nodeb
     ```
 
     ![alt text](/assets/image-1.png)
+
+    ```sh
+    easytier-cli node
+    ```
+
+    ![alt text](assets/image-10.png)
 
 ---
 
@@ -286,7 +292,7 @@ connected_clients:
 
 - [ ] 完善文档和用户指南。
 - [ ] 支持 TCP 打洞等特性。
-- [ ] 支持 Android、IOS 等移动平台。
+- [ ] 支持 iOS。
 - [ ] 支持 Web 配置管理。
 
 ## 社区和贡献
