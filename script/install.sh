@@ -2,9 +2,6 @@
 
 # This script copy from alist , Thank for it!
 
-# INSTALL_PATH='/opt/easytier'
-VERSION='latest'
-
 SKIP_FOLDER_VERIFY=false
 SKIP_FOLDER_FIX=false
 
@@ -52,6 +49,12 @@ SHAN='\e[1;33;5m'
 RES='\e[0m'
 # clear
 
+# check if unzip is installed
+if ! command -v unzip >/dev/null 2>&1; then
+  echo -e "\r\n${RED_COLOR}Error: unzip is not installed${RES}\r\n"
+  exit 1
+fi
+
 echo -e "\r\n${RED_COLOR}----------------------NOTICE----------------------${RES}\r\n"
 echo " This is a temporary script to install EasyTier "
 echo " EasyTier requires a dedicated empty folder to install"
@@ -59,13 +62,6 @@ echo " EasyTier is a developing product and may have some issues "
 echo " Using EasyTier requires some basic skills "
 echo " You need to face the risks brought by using EasyTier at your own risk "
 echo -e "\r\n${RED_COLOR}-------------------------------------------------${RES}\r\n"
-
-read -p "Enter \"yes\" to accept our policy and continue: " -r agreement
-if [[ ! "$agreement" =~ ^[Yy]es$ ]]
-then
-    echo "You do not accept your policy, the script will exit ..."
-    exit 1
-fi
 
 # Get platform
 if command -v arch >/dev/null 2>&1; then
@@ -128,9 +124,6 @@ CHECK() {
 		exit 0
 	fi
   fi
-  if [ $check_port ]; then
-    kill -9 $check_port
-  fi
   if [ ! -d "$INSTALL_PATH/" ]; then
     mkdir -p $INSTALL_PATH
   else
@@ -183,7 +176,38 @@ INIT() {
   fi
 
   # Create default blank file config
-  touch $INSTALL_PATH/config/default.conf
+  cat >$INSTALL_PATH/config/default.conf <<EOF
+instance_name = "default"
+dhcp = true
+listeners = [
+    "tcp://0.0.0.0:11010",
+    "udp://0.0.0.0:11010",
+    "wg://0.0.0.0:11011",
+    "ws://0.0.0.0:11011/",
+    "wss://0.0.0.0:11012/",
+]
+exit_nodes = []
+peer = []
+rpc_portal = "127.0.0.1:15888"
+
+[network_identity]
+network_name = "default"
+network_secret = ""
+
+[flags]
+default_protocol = "udp"
+dev_name = ""
+enable_encryption = true
+enable_ipv6 = true
+mtu = 1380
+latency_first = false
+enable_exit_node = false
+no_tun = false
+use_smoltcp = false
+foreign_network_whitelist = "*"
+disable_p2p = false
+relay_all_peer_rpc = false
+EOF
 
   # Create systemd
   cat >/etc/systemd/system/easytier@.service <<EOF
@@ -225,6 +249,7 @@ SUCCESS() {
   clear
   echo " Install EasyTier successfully!"
   echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firewall!\r\n"
+  echo -e "Default Network Name: ${GREEN_COLOR}default${RES}, Please change it to your own network name!\r\n"
 
   echo -e "Now EasyTier supports multiple config files. You can create config files in the ${GREEN_COLOR}${INSTALL_PATH}/config/${RES} folder"
   echo -e "For more information, please check the documents in offical site"
@@ -290,11 +315,11 @@ fi
 
 echo $COMMEND
 
-if [ $COMMEND = "uninstall" ]; then
+if [ "$COMMEND" = "uninstall" ]; then
   UNINSTALL
-elif [ $COMMEND = "update" ]; then
+elif [ "$COMMEND" = "update" ]; then
   UPDATE
-elif [ $COMMEND = "install" ]; then
+elif [ "$COMMEND" = "install" ]; then
   CHECK
   INSTALL
   INIT
