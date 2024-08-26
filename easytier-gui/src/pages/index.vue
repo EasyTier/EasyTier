@@ -10,7 +10,7 @@ import { type } from '@tauri-apps/plugin-os'
 import Config from '~/components/Config.vue'
 import Status from '~/components/Status.vue'
 
-import type { NetworkConfig } from '~/types/network'
+import { type NetworkConfig, NetworkingMethod } from '~/types/network'
 import { loadLanguageAsync } from '~/modules/i18n'
 import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
 import { isAutostart, setLoggingLevel } from '~/composables/network'
@@ -244,7 +244,7 @@ function isRunning(id: string) {
         </ScrollPanel>
       </Panel>
       <Divider />
-      <div class="flex justify-content-end gap-2">
+      <div class="flex gap-2 justify-content-end">
         <Button type="button" :label="t('close')" @click="visible = false" />
       </div>
     </Dialog>
@@ -271,7 +271,7 @@ function isRunning(id: string) {
                 </div>
               </template>
               <template #option="slotProps">
-                <div class="flex flex-col items-start content-center">
+                <div class="flex flex-col items-start content-center max-w-full">
                   <div class="flex">
                     <div class="mr-3">
                       {{ t('network_name') }}: {{ slotProps.option.network_name }}
@@ -279,7 +279,12 @@ function isRunning(id: string) {
                     <Tag class="my-auto" :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
                       :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')" />
                   </div>
-                  <div>{{ slotProps.option.public_server_url }}</div>
+                  <div v-if="slotProps.option.networking_method !== NetworkingMethod.Standalone"
+                    class="max-w-full overflow-hidden text-ellipsis">
+                    {{ slotProps.option.networking_method === NetworkingMethod.Manual
+                      ? slotProps.option.peer_urls.join(', ')
+                      : slotProps.option.public_server_url }}
+                  </div>
                   <div
                     v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 !== '')">
                     {{ networkStore.instances[slotProps.option.instance_id].detail
@@ -358,6 +363,10 @@ body {
 
 .p-menubar .p-menuitem {
   margin: 0;
+}
+
+.p-select-overlay {
+  max-width: calc(100% - 2rem);
 }
 
 /*
