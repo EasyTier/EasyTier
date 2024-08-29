@@ -268,6 +268,13 @@ struct Cli {
 
     #[arg(
         long,
+        help = t!("core_clap.disable_udp_hole_punching").to_string(),
+        default_value = "false"
+    )]
+    disable_udp_hole_punching: bool,
+
+    #[arg(
+        long,
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         default_value = "false"
     )]

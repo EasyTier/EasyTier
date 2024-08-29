@@ -108,6 +108,9 @@ core_clap:
   disable_p2p:
     en: "disable p2p communication, will only relay packets with peers specified by --peers"
     zh-CN: "禁用P2P通信，只通过--peers指定的节点转发数据包"
+  disable_udp_hole_punching:
+    en: "disable udp hole punching"
+    zh-CN: "禁用UDP打洞功能"
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"
