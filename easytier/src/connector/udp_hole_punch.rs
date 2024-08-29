@@ -605,6 +605,9 @@ impl UdpHolePunchConnector {
         if self.data.global_ctx.get_flags().disable_p2p {
             return Ok(());
         }
+        if self.data.global_ctx.get_flags().disable_udp_hole_punching {
+            return Ok(());
+        }
 
         self.run_as_client().await?;
         self.run_as_server().await?;

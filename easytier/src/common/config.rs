@@ -178,6 +178,8 @@ pub struct Flags {
     pub disable_p2p: bool,
     #[derivative(Default(value = "false"))]
     pub relay_all_peer_rpc: bool,
+    #[derivative(Default(value = "false"))]
+    pub disable_udp_hole_punching: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
