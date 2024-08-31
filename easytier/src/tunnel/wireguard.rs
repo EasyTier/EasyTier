@@ -634,7 +634,14 @@ impl WgTunnelConnector {
         let handshake = wg_peer.create_handshake_init().await;
         udp.send_to(&handshake, addr).await?;
         let mut buf = [0u8; MAX_PACKET];
-        let (n, recv_addr) = udp.recv_from(&mut buf).await.unwrap();
+        let (n, recv_addr) = match udp.recv_from(&mut buf).await {
+            Ok(ret) => ret,
+            Err(e) => {
+                tracing::error!("Failed to receive handshake response: {}", e);
+                return Err(TunnelError::IOError(e));
+            }
+        };
+
         if recv_addr != addr {
             tracing::warn!(?recv_addr, "Received packet from changed address");
         }
@@ -646,7 +653,13 @@ impl WgTunnelConnector {
             data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             loop {
                 let mut buf = vec![0u8; MAX_PACKET];
-                let (n, _) = data.udp.recv_from(&mut buf).await.unwrap();
+                let (n, _) = match udp.recv_from(&mut buf).await {
+                    Ok(ret) => ret,
+                    Err(e) => {
+                        tracing::error!("Failed to receive wg packet: {}", e);
+                        break;
+                    }
+                };
                 data.handle_one_packet_from_peer(&mut sink, &buf[..n]).await;
             }
         });

@@ -91,7 +91,7 @@ impl GlobalCtx {
         let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = config_fs.get_hostname();
 
-        let (event_bus, _) = tokio::sync::broadcast::channel(100);
+        let (event_bus, _) = tokio::sync::broadcast::channel(1024);
 
         let stun_info_collection = Arc::new(StunInfoCollector::new_with_default_servers());
 
