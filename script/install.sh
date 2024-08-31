@@ -188,7 +188,7 @@ listeners = [
 ]
 exit_nodes = []
 peer = []
-rpc_portal = "127.0.0.1:15888"
+rpc_portal = "0.0.0.0:15888"
 
 [network_identity]
 network_name = "default"

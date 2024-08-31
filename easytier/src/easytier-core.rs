@@ -340,7 +340,7 @@ impl Cli {
     }
 
     fn check_tcp_available(port: u16) -> Option<SocketAddr> {
-        let s = format!("127.0.0.1:{}", port).parse::<SocketAddr>().unwrap();
+        let s = format!("0.0.0.0:{}", port).parse::<SocketAddr>().unwrap();
         TcpSocket::new_v4().unwrap().bind(s).map(|_| s).ok()
     }
 
@@ -353,9 +353,9 @@ impl Cli {
                         return s;
                     }
                 }
-                return "127.0.0.1:0".parse().unwrap();
+                return "0.0.0.0:0".parse().unwrap();
             }
-            return format!("127.0.0.1:{}", port).parse().unwrap();
+            return format!("0.0.0.0:{}", port).parse().unwrap();
         }
 
         self.rpc_portal.parse().unwrap()

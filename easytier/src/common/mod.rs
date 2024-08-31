@@ -14,6 +14,7 @@ pub mod global_ctx;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;
+pub mod scoped_task;
 pub mod stun;
 pub mod stun_codec_ext;
 

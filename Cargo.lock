@@ -1623,6 +1623,7 @@ dependencies = [
  "derivative",
  "encoding",
  "futures",
+ "futures-util",
  "gethostname 0.5.0",
  "globwalk",
  "http 1.1.0",
