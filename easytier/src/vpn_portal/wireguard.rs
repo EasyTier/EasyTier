@@ -24,7 +24,7 @@ use crate::{
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{PacketType, ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},
-        Tunnel, TunnelError, TunnelListener,
+        Tunnel, TunnelListener,
     },
 };
 

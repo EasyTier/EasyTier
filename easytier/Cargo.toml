@@ -203,6 +203,7 @@ zip = "0.6.6"
 [dev-dependencies]
 serial_test = "3.0.0"
 rstest = "0.18.2"
+futures-util = "0.3.30"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"

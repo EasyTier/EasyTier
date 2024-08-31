@@ -22,7 +22,7 @@ use zerocopy::FromBytes;
 use crate::{
     common::{
         constants, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
-        stun::StunInfoCollectorTrait, PeerId,
+        scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId,
     },
     defer,
     peers::peer_manager::PeerManager,
@@ -417,12 +417,12 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
         }
 
         // send max k1 packets if we are predicting the dst port
-        let max_k1 = 180;
+        let max_k1 = 60;
         // send max k2 packets if we are sending to random port
         let max_k2 = rand::thread_rng().gen_range(600..800);
 
         // this means the NAT is allocating port in a predictable way
-        if max_port.abs_diff(min_port) <= max_k1 && round <= 6 && punch_predictablely {
+        if max_port.abs_diff(min_port) <= 3 * max_k1 && round <= 6 && punch_predictablely {
             let (min_port, max_port) = {
                 // round begin from 0. if round is even, we guess port in increasing order
                 let port_delta = (max_k1 as u32) / ip_count as u32;
@@ -849,10 +849,10 @@ impl UdpHolePunchConnector {
             return Err(anyhow::anyhow!("failed to get public ips"));
         }
 
-        let mut last_port_idx = 0;
+        let mut last_port_idx = rand::thread_rng().gen_range(0..data.shuffled_port_vec.len());
 
-        for round in 0..30 {
-            let Some(next_last_port_idx) = data
+        for round in 0..5 {
+            let ret = data
                 .peer_mgr
                 .get_peer_rpc_mgr()
                 .do_client_rpc_scoped(
@@ -879,11 +879,20 @@ impl UdpHolePunchConnector {
                         last_port_idx
                     },
                 )
-                .await?
-            else {
-                return Err(anyhow::anyhow!("failed to get remote mapped addr"));
+                .await;
+
+            let next_last_port_idx = match ret {
+                Ok(Some(idx)) => idx,
+                err => {
+                    tracing::error!(?err, "failed to get remote mapped addr");
+                    rand::thread_rng().gen_range(0..data.shuffled_port_vec.len())
+                }
             };
 
+            // wait for some time to increase the chance of receiving hole punching packet
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            // no matter what the result is, we should check if we received any hole punching packet
             while let Some(socket) = udp_array.try_fetch_punched_socket(tid) {
                 if let Ok(tunnel) = Self::try_connect_with_socket(socket, remote_mapped_addr).await
                 {
@@ -901,8 +910,8 @@ impl UdpHolePunchConnector {
         data: Arc<UdpHolePunchConnectorData>,
         peer_id: PeerId,
     ) -> Result<(), anyhow::Error> {
-        const MAX_BACKOFF_TIME: u64 = 600;
-        let mut backoff_time = vec![15, 15, 30, 30, 60, 120, 300, MAX_BACKOFF_TIME];
+        const MAX_BACKOFF_TIME: u64 = 300;
+        let mut backoff_time = vec![15, 15, 30, 30, 60, 120, 180, MAX_BACKOFF_TIME];
         let my_nat_type = data.my_nat_type();
 
         loop {
@@ -942,7 +951,7 @@ impl UdpHolePunchConnector {
 
     async fn main_loop(data: Arc<UdpHolePunchConnectorData>) {
         type JoinTaskRet = Result<(), anyhow::Error>;
-        type JoinTask = tokio::task::JoinHandle<JoinTaskRet>;
+        type JoinTask = ScopedTask<JoinTaskRet>;
         let punching_task = Arc::new(DashMap::<(PeerId, NatType), JoinTask>::new());
         let mut last_my_nat_type = NatType::Unknown;
 
@@ -978,23 +987,27 @@ impl UdpHolePunchConnector {
             last_my_nat_type = my_nat_type;
 
             if !peers_to_connect.is_empty() {
-                let my_nat_type = data.my_nat_type();
-                if my_nat_type == NatType::Symmetric || my_nat_type == NatType::SymUdpFirewall {
-                    let mut udp_array = data.udp_array.lock().await;
-                    if udp_array.is_none() {
-                        *udp_array = Some(Arc::new(UdpSocketArray::new(
-                            data.udp_array_size.load(Ordering::Relaxed),
-                            data.global_ctx.net_ns.clone(),
-                        )));
-                    }
-                    let udp_array = udp_array.as_ref().unwrap();
-                    udp_array.start().await.unwrap();
-                }
-
                 for item in peers_to_connect {
+                    if punching_task.contains_key(&item) {
+                        continue;
+                    }
+
+                    let my_nat_type = data.my_nat_type();
+                    if my_nat_type == NatType::Symmetric || my_nat_type == NatType::SymUdpFirewall {
+                        let mut udp_array = data.udp_array.lock().await;
+                        if udp_array.is_none() {
+                            *udp_array = Some(Arc::new(UdpSocketArray::new(
+                                data.udp_array_size.load(Ordering::Relaxed),
+                                data.global_ctx.net_ns.clone(),
+                            )));
+                        }
+                        let udp_array = udp_array.as_ref().unwrap();
+                        udp_array.start().await.unwrap();
+                    }
+
                     punching_task.insert(
                         item,
-                        tokio::spawn(Self::peer_punching_task(data.clone(), item.0)),
+                        tokio::spawn(Self::peer_punching_task(data.clone(), item.0)).into(),
                     );
                 }
             } else if punching_task.is_empty() {
@@ -1173,9 +1186,9 @@ pub mod tests {
 
         let udp_self = Arc::new(UdpSocket::bind("0.0.0.0:40144").await.unwrap());
         let udp_inc = Arc::new(UdpSocket::bind("0.0.0.0:40147").await.unwrap());
-        let udp_inc2 = Arc::new(UdpSocket::bind("0.0.0.0:40400").await.unwrap());
+        let udp_inc2 = Arc::new(UdpSocket::bind("0.0.0.0:40200").await.unwrap());
         let udp_dec = Arc::new(UdpSocket::bind("0.0.0.0:40140").await.unwrap());
-        let udp_dec2 = Arc::new(UdpSocket::bind("0.0.0.0:40350").await.unwrap());
+        let udp_dec2 = Arc::new(UdpSocket::bind("0.0.0.0:40050").await.unwrap());
         let udps = vec![udp_self, udp_inc, udp_inc2, udp_dec, udp_dec2];
 
         let counter = Arc::new(AtomicU32::new(0));
@@ -1186,7 +1199,7 @@ pub mod tests {
             tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let (len, addr) = udp.recv_from(&mut buf).await.unwrap();
-                println!("{:?} {:?}", len, addr);
+                println!("{:?} {:?} {:?}", len, addr, udp.local_addr());
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             });
         }
