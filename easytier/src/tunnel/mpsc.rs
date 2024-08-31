@@ -19,6 +19,13 @@ impl MpscTunnelSender {
         self.0.send(item).await.with_context(|| "send error")?;
         Ok(())
     }
+
+    pub fn try_send(&self, item: ZCPacket) -> Result<(), TunnelError> {
+        self.0.try_send(item).map_err(|e| match e {
+            tachyonix::TrySendError::Full(_) => TunnelError::BufferFull,
+            tachyonix::TrySendError::Closed(_) => TunnelError::Shutdown,
+        })
+    }
 }
 
 pub struct MpscTunnel<T> {
