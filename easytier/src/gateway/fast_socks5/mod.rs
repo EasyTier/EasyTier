@@ -187,10 +187,6 @@ pub enum SocksError {
     #[error("Error with reply: {0}.")]
     ReplyError(#[from] ReplyError),
 
-    #[cfg(feature = "socks4")]
-    #[error("Error with reply: {0}.")]
-    ReplySocks4Error(#[from] socks4::ReplyError),
-
     #[error("Argument input error: `{0}`.")]
     ArgumentInputError(&'static str),
 

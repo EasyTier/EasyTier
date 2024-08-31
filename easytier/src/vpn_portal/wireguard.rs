@@ -1,6 +1,7 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use anyhow::Context;
@@ -9,7 +10,7 @@ use cidr::Ipv4Inet;
 use dashmap::DashMap;
 use futures::StreamExt;
 use pnet::packet::ipv4::Ipv4Packet;
-use tokio::task::JoinSet;
+use tokio::{task::JoinSet, time::timeout};
 use tracing::Level;
 
 use crate::{
@@ -23,7 +24,7 @@ use crate::{
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{PacketType, ZCPacket, ZCPacketType},
         wireguard::{WgConfig, WgTunnelListener},
-        Tunnel, TunnelListener,
+        Tunnel, TunnelError, TunnelListener,
     },
 };
 
@@ -92,7 +93,25 @@ impl WireGuardImpl {
                 info.remote_addr.clone(),
             ));
 
-        while let Some(Ok(msg)) = stream.next().await {
+        let mut map_key = None;
+
+        loop {
+            let msg = match timeout(Duration::from_secs(120), stream.next()).await {
+                Ok(Some(Ok(msg))) => msg,
+                Ok(Some(Err(err))) => {
+                    tracing::error!(?err, "Failed to receive from wg client");
+                    break;
+                }
+                Ok(None) => {
+                    tracing::info!("Wireguard client disconnected");
+                    break;
+                }
+                Err(err) => {
+                    tracing::error!(?err, "Timeout while receiving from wg client");
+                    break;
+                }
+            };
+
             assert_eq!(msg.packet_type(), ZCPacketType::WG);
             let inner = msg.inner();
             let Some(i) = Ipv4Packet::new(&inner) else {
@@ -104,6 +123,7 @@ impl WireGuardImpl {
                     endpoint_addr: remote_addr.parse().ok(),
                     sink: mpsc_tunnel.get_sink(),
                 });
+                map_key = Some(i.get_source());
                 wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
                 ip_registered = true;
             }
@@ -112,6 +132,11 @@ impl WireGuardImpl {
             let _ = peer_mgr
                 .send_msg_ipv4(ZCPacket::new_with_payload(inner.as_ref()), dst)
                 .await;
+        }
+
+        if map_key.is_some() {
+            tracing::info!(?map_key, "Removing wg client from table");
+            wg_peer_ip_table.remove(&map_key.unwrap());
         }
 
         peer_mgr
@@ -157,9 +182,15 @@ impl WireGuardImpl {
                     ZCPacketType::WG,
                 );
 
-                if let Err(ret) = entry.sink.send(packet).await {
-                    tracing::debug!(?ret, "Failed to send packet to wg client");
+                match entry.sink.try_send(packet) {
+                    Ok(_) => {
+                        tracing::trace!("Sent packet to wg client");
+                    }
+                    Err(e) => {
+                        tracing::debug!(?e, "Failed to send packet to wg client");
+                    }
                 }
+
                 None
             }
         }
