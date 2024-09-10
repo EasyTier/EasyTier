@@ -266,7 +266,7 @@ function isRunning(id: string) {
                   <div class="mr-3 flex-column">
                     <span>{{ slotProps.value.network_name }}</span>
                   </div>
-                  <Tag class="my-auto" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
+                  <Tag class="my-auto leading-3" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
                     :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')" />
                 </div>
               </template>
@@ -276,19 +276,20 @@ function isRunning(id: string) {
                     <div class="mr-3">
                       {{ t('network_name') }}: {{ slotProps.option.network_name }}
                     </div>
-                    <Tag class="my-auto" :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
+                    <Tag class="my-auto leading-3"
+                      :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
                       :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')" />
                   </div>
                   <div v-if="slotProps.option.networking_method !== NetworkingMethod.Standalone"
                     class="max-w-full overflow-hidden text-ellipsis">
                     {{ slotProps.option.networking_method === NetworkingMethod.Manual
-                      ? slotProps.option.peer_urls.join(', ')
-                      : slotProps.option.public_server_url }}
+                    ? slotProps.option.peer_urls.join(', ')
+                    : slotProps.option.public_server_url }}
                   </div>
                   <div
                     v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 !== '')">
                     {{ networkStore.instances[slotProps.option.instance_id].detail
-                      ? networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
+                    ? networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
                   </div>
                 </div>
               </template>
