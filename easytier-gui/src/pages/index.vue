@@ -19,6 +19,7 @@ import { type NetworkConfig, NetworkingMethod } from '~/types/network'
 
 const { t, locale } = useI18n()
 const visible = ref(false)
+const aboutVisible = ref(false)
 const tomlConfig = ref('')
 
 useTray(true)
@@ -195,6 +196,13 @@ const setting_menu_items = ref([
     })(),
   },
   {
+    label: () => t('about.title'),
+    icon: 'pi pi-at',
+    command: async () => {
+      aboutVisible.value = true
+    },
+  },
+  {
     label: () => t('exit'),
     icon: 'pi pi-power-off',
     command: async () => {
@@ -248,6 +256,10 @@ function isRunning(id: string) {
       <div class="flex gap-2 justify-content-end">
         <Button type="button" :label="t('close')" @click="visible = false" />
       </div>
+    </Dialog>
+
+    <Dialog v-model:visible="aboutVisible" modal :header="t('about.title')" :style="{ width: '70%' }">
+      <About />
     </Dialog>
 
     <div>

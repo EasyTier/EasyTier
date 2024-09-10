@@ -33,3 +33,7 @@ export async function setLoggingLevel(level: string) {
 export async function setTunFd(instanceId: string, fd: number) {
   return await invoke('set_tun_fd', { instanceId, fd })
 }
+
+export async function getEasytierVersion() {
+  return await invoke<string>('easytier_version')
+}

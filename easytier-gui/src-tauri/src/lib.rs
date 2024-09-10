@@ -172,6 +172,11 @@ static mut LOGGER_LEVEL_SENDER: once_cell::sync::Lazy<Option<NewFilterSender>> =
     once_cell::sync::Lazy::new(Default::default);
 
 #[tauri::command]
+fn easytier_version() -> Result<String, String> {
+    Ok(easytier::VERSION.to_string())
+}
+
+#[tauri::command]
 fn is_autostart() -> Result<bool, String> {
     let args: Vec<String> = std::env::args().collect();
     println!("{:?}", args);
@@ -365,7 +370,8 @@ pub fn run() {
             get_os_hostname,
             set_logging_level,
             set_tun_fd,
-            is_autostart
+            is_autostart,
+            easytier_version
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]
