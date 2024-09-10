@@ -1,4 +1,5 @@
 import path from 'node:path'
+import process from 'node:process'
 import { defineConfig } from 'vite'
 import Vue from '@vitejs/plugin-vue'
 import Layouts from 'vite-plugin-vue-layouts'
@@ -9,11 +10,10 @@ import VueI18n from '@intlify/unplugin-vue-i18n/vite'
 import VueDevTools from 'vite-plugin-vue-devtools'
 import VueRouter from 'unplugin-vue-router/vite'
 import { VueRouterAutoImports } from 'unplugin-vue-router'
-import { PrimeVueResolver } from '@primevue/auto-import-resolver';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { internalIpV4Sync } from 'internal-ip';
+import { PrimeVueResolver } from '@primevue/auto-import-resolver'
+import { internalIpV4Sync } from 'internal-ip'
 
-const host = process.env.TAURI_DEV_HOST;
+const host = process.env.TAURI_DEV_HOST
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
@@ -23,7 +23,6 @@ export default defineConfig(async () => ({
     },
   },
   plugins: [
-    svelte(),
     VueMacros({
       plugins: {
         vue: Vue({
