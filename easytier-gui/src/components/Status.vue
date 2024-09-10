@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { NodeInfo } from '~/types/network'
-const { t } = useI18n()
 
 const props = defineProps<{
   instanceId?: string
 }>()
+
+const { t } = useI18n()
 
 const networkStore = useNetworkStore()
 

@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import { useToast } from 'primevue/usetoast'
-
-import { exit } from '@tauri-apps/plugin-process'
-import TieredMenu from 'primevue/tieredmenu'
-import { open } from '@tauri-apps/plugin-shell'
 import { appLogDir } from '@tauri-apps/api/path'
+
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { type } from '@tauri-apps/plugin-os'
+import { exit } from '@tauri-apps/plugin-process'
+import { open } from '@tauri-apps/plugin-shell'
+import TieredMenu from 'primevue/tieredmenu'
+import { useToast } from 'primevue/usetoast'
 import Config from '~/components/Config.vue'
-import Status from '~/components/Status.vue'
 
-import { type NetworkConfig, NetworkingMethod } from '~/types/network'
-import { loadLanguageAsync } from '~/modules/i18n'
-import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
+import Status from '~/components/Status.vue'
 import { isAutostart, setLoggingLevel } from '~/composables/network'
 import { useTray } from '~/composables/tray'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
+import { loadLanguageAsync } from '~/modules/i18n'
+import { type NetworkConfig, NetworkingMethod } from '~/types/network'
 
 const { t, locale } = useI18n()
 const visible = ref(false)
@@ -85,7 +85,8 @@ async function runNetworkCb(cfg: NetworkConfig, cb: () => void) {
   if (type() === 'android') {
     await prepareVpnService()
     networkStore.clearNetworkInstances()
-  } else {
+  }
+  else {
     networkStore.removeNetworkInstance(cfg.instance_id)
   }
 
@@ -146,7 +147,7 @@ const setting_menu_items = ref([
       await loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
       await setTrayMenu([
         await MenuItemExit(t('tray.exit')),
-        await MenuItemShow(t('tray.show'))
+        await MenuItemShow(t('tray.show')),
       ])
     },
   },
@@ -259,15 +260,19 @@ function isRunning(id: string) {
 
         <template #center>
           <div class="min-w-40">
-            <Dropdown v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
-              :placeholder="t('select_network')" class="w-full">
+            <Dropdown
+              v-model="networkStore.curNetwork" :options="networkStore.networkList" :highlight-on-select="false"
+              :placeholder="t('select_network')" class="w-full"
+            >
               <template #value="slotProps">
                 <div class="flex items-start content-center">
                   <div class="mr-3 flex-column">
                     <span>{{ slotProps.value.network_name }}</span>
                   </div>
-                  <Tag class="my-auto leading-3" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
-                    :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')" />
+                  <Tag
+                    class="my-auto leading-3" :severity="isRunning(slotProps.value.instance_id) ? 'success' : 'info'"
+                    :value="t(isRunning(slotProps.value.instance_id) ? 'network_running' : 'network_stopped')"
+                  />
                 </div>
               </template>
               <template #option="slotProps">
@@ -276,20 +281,25 @@ function isRunning(id: string) {
                     <div class="mr-3">
                       {{ t('network_name') }}: {{ slotProps.option.network_name }}
                     </div>
-                    <Tag class="my-auto leading-3"
+                    <Tag
+                      class="my-auto leading-3"
                       :severity="isRunning(slotProps.option.instance_id) ? 'success' : 'info'"
-                      :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')" />
-                  </div>
-                  <div v-if="slotProps.option.networking_method !== NetworkingMethod.Standalone"
-                    class="max-w-full overflow-hidden text-ellipsis">
-                    {{ slotProps.option.networking_method === NetworkingMethod.Manual
-                    ? slotProps.option.peer_urls.join(', ')
-                    : slotProps.option.public_server_url }}
+                      :value="t(isRunning(slotProps.option.instance_id) ? 'network_running' : 'network_stopped')"
+                    />
                   </div>
                   <div
-                    v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 !== '')">
+                    v-if="slotProps.option.networking_method !== NetworkingMethod.Standalone"
+                    class="max-w-full overflow-hidden text-ellipsis"
+                  >
+                    {{ slotProps.option.networking_method === NetworkingMethod.Manual
+                      ? slotProps.option.peer_urls.join(', ')
+                      : slotProps.option.public_server_url }}
+                  </div>
+                  <div
+                    v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 !== '')"
+                  >
                     {{ networkStore.instances[slotProps.option.instance_id].detail
-                    ? networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
+                      ? networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4 : '' }}
                   </div>
                 </div>
               </template>
@@ -298,8 +308,10 @@ function isRunning(id: string) {
         </template>
 
         <template #end>
-          <Button icon="pi pi-cog" severity="secondary" aria-haspopup="true" :label="t('settings')"
-            aria-controls="overlay_setting_menu" @click="toggle_setting_menu" />
+          <Button
+            icon="pi pi-cog" severity="secondary" aria-haspopup="true" :label="t('settings')"
+            aria-controls="overlay_setting_menu" @click="toggle_setting_menu"
+          />
           <TieredMenu id="overlay_setting_menu" ref="setting_menu" :model="setting_menu_items" :popup="true" />
         </template>
       </Toolbar>
@@ -317,16 +329,20 @@ function isRunning(id: string) {
         </StepList>
         <StepPanels value="1">
           <StepPanel v-slot="{ activateCallback = (s: string) => { } } = {}" value="1">
-            <Config :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
-              @run-network="runNetworkCb($event, () => activateCallback('2'))" />
+            <Config
+              :instance-id="networkStore.curNetworkId" :config-invalid="messageBarSeverity !== Severity.None"
+              @run-network="runNetworkCb($event, () => activateCallback('2'))"
+            />
           </StepPanel>
           <StepPanel v-slot="{ activateCallback = (s: string) => { } } = {}" value="2">
             <div class="flex flex-column">
               <Status :instance-id="networkStore.curNetworkId" />
             </div>
             <div class="flex pt-4 justify-content-center">
-              <Button :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
-                @click="stopNetworkCb(networkStore.curNetwork, () => activateCallback('1'))" />
+              <Button
+                :label="t('stop_network')" severity="danger" icon="pi pi-arrow-left"
+                @click="stopNetworkCb(networkStore.curNetwork, () => activateCallback('1'))"
+              />
             </div>
           </StepPanel>
         </StepPanels>
