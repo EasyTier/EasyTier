@@ -189,7 +189,6 @@ message HandshakeRequest {
   repeated string features = 4;
   string network_name = 5;
   bytes network_secret_digrest = 6;
-  string et_version = 7;
 }
 
 message TaRpcPacket {
