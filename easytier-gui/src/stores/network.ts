@@ -108,7 +108,8 @@ export const useNetworkStore = defineStore('networkStore', {
     loadAutoStartInstIdsFromLocalStorage() {
       try {
         this.autoStartInstIds = JSON.parse(localStorage.getItem('autoStartInstIds') || '[]')
-      } catch (e) {
+      }
+      catch (e) {
         console.error(e)
         this.autoStartInstIds = []
       }

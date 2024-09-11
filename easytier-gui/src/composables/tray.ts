@@ -1,6 +1,6 @@
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Menu, MenuItem, PredefinedMenuItem } from '@tauri-apps/api/menu'
 import { TrayIcon } from '@tauri-apps/api/tray'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import pkg from '~/../package.json'
 
 const DEFAULT_TRAY_NAME = 'main'
@@ -8,14 +8,15 @@ const DEFAULT_TRAY_NAME = 'main'
 async function toggleVisibility() {
   if (await getCurrentWindow().isVisible()) {
     await getCurrentWindow().hide()
-  } else {
+  }
+  else {
     await getCurrentWindow().show()
     await getCurrentWindow().setFocus()
   }
 }
 
 export async function useTray(init: boolean = false) {
-  let tray;
+  let tray
   try {
     tray = await TrayIcon.getById(DEFAULT_TRAY_NAME)
     if (!tray) {
@@ -29,17 +30,18 @@ export async function useTray(init: boolean = false) {
         }),
         action: async () => {
           toggleVisibility()
-        }
+        },
       })
     }
-  } catch (error) {
+  }
+  catch (error) {
     console.warn('Error while creating tray icon:', error)
     return null
   }
 
   if (init) {
     tray.setTooltip(`EasyTier\n${pkg.version}`)
-    tray.setMenuOnLeftClick(false);
+    tray.setMenuOnLeftClick(false)
     tray.setMenu(await Menu.new({
       id: 'main',
       items: await generateMenuItem(),
@@ -59,7 +61,7 @@ export async function generateMenuItem() {
 
 export async function MenuItemExit(text: string) {
   return await PredefinedMenuItem.new({
-    text: text,
+    text,
     item: 'Quit',
   })
 }
@@ -69,14 +71,15 @@ export async function MenuItemShow(text: string) {
     id: 'show',
     text,
     action: async () => {
-      await toggleVisibility();
+      await toggleVisibility()
     },
   })
 }
 
 export async function setTrayMenu(items: (MenuItem | PredefinedMenuItem)[] | undefined = undefined) {
   const tray = await useTray()
-  if (!tray) return
+  if (!tray)
+    return
   const menu = await Menu.new({
     id: 'main',
     items: items || await generateMenuItem(),
@@ -86,14 +89,16 @@ export async function setTrayMenu(items: (MenuItem | PredefinedMenuItem)[] | und
 
 export async function setTrayRunState(isRunning: boolean = false) {
   const tray = await useTray()
-  if (!tray) return
+  if (!tray)
+    return
   tray.setIcon(isRunning ? 'icons/icon-inactive.ico' : 'icons/icon.ico')
 }
 
 export async function setTrayTooltip(tooltip: string) {
   if (tooltip) {
     const tray = await useTray()
-    if (!tray) return
+    if (!tray)
+      return
     tray.setTooltip(`EasyTier\n${pkg.version}\n${tooltip}`)
     tray.setTitle(`EasyTier\n${pkg.version}\n${tooltip}`)
   }

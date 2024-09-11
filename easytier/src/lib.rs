@@ -13,3 +13,5 @@ pub mod launcher;
 pub mod rpc;
 pub mod tunnel;
 pub mod utils;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

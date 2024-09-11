@@ -75,3 +75,12 @@ dhcp_experimental_warning: Experimental warning! if there is an IP conflict in t
 tray:
   show: Show / Hide
   exit: Exit
+
+about:
+  title: About
+  version: Version
+  author: Author
+  homepage: Homepage
+  license: License
+  description: 'EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.'
+  check_update: Check Update

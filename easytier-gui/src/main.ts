@@ -1,16 +1,16 @@
-import { setupLayouts } from 'virtual:generated-layouts'
-import { createRouter, createWebHistory } from 'vue-router/auto'
-
+import Aura from '@primevue/themes/aura'
 import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
-import App from '~/App.vue'
 
+import { createRouter, createWebHistory } from 'vue-router/auto'
+import { routes } from 'vue-router/auto-routes'
+import App from '~/App.vue'
+import { i18n, loadLanguageAsync } from '~/modules/i18n'
+
+import { getAutoLaunchStatusAsync, loadAutoLaunchStatusAsync } from './modules/auto_launch'
 import '~/styles.css'
-import Aura from '@primevue/themes/aura'
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
-import { i18n, loadLanguageAsync } from '~/modules/i18n'
-import { loadAutoLaunchStatusAsync, getAutoLaunchStatusAsync } from './modules/auto_launch'
 
 if (import.meta.env.PROD) {
   document.addEventListener('keydown', (event) => {
@@ -18,8 +18,9 @@ if (import.meta.env.PROD) {
       event.key === 'F5'
       || (event.ctrlKey && event.key === 'r')
       || (event.metaKey && event.key === 'r')
-    )
+    ) {
       event.preventDefault()
+    }
   })
 
   document.addEventListener('contextmenu', (event) => {
@@ -35,7 +36,7 @@ async function main() {
 
   const router = createRouter({
     history: createWebHistory(),
-    extendRoutes: routes => setupLayouts(routes),
+    routes,
   })
 
   app.use(router)
@@ -45,11 +46,12 @@ async function main() {
     theme: {
       preset: Aura,
       options: {
-          prefix: 'p',
-          darkModeSelector: 'system',
-          cssLayer: false
-      }
-  }})
+        prefix: 'p',
+        darkModeSelector: 'system',
+        cssLayer: false,
+      },
+    },
+  })
   app.use(ToastService)
   app.mount('#app')
 }

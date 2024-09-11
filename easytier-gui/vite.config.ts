@@ -1,19 +1,19 @@
 import path from 'node:path'
-import { defineConfig } from 'vite'
-import Vue from '@vitejs/plugin-vue'
-import Layouts from 'vite-plugin-vue-layouts'
-import Components from 'unplugin-vue-components/vite'
-import AutoImport from 'unplugin-auto-import/vite'
-import VueMacros from 'unplugin-vue-macros/vite'
+import process from 'node:process'
 import VueI18n from '@intlify/unplugin-vue-i18n/vite'
-import VueDevTools from 'vite-plugin-vue-devtools'
-import VueRouter from 'unplugin-vue-router/vite'
+import { PrimeVueResolver } from '@primevue/auto-import-resolver'
+import Vue from '@vitejs/plugin-vue'
+import { internalIpV4Sync } from 'internal-ip'
+import AutoImport from 'unplugin-auto-import/vite'
+import Components from 'unplugin-vue-components/vite'
+import VueMacros from 'unplugin-vue-macros/vite'
 import { VueRouterAutoImports } from 'unplugin-vue-router'
-import { PrimeVueResolver } from '@primevue/auto-import-resolver';
-import { svelte } from '@sveltejs/vite-plugin-svelte';
-import { internalIpV4Sync } from 'internal-ip';
+import VueRouter from 'unplugin-vue-router/vite'
+import { defineConfig } from 'vite'
+import VueDevTools from 'vite-plugin-vue-devtools'
+import Layouts from 'vite-plugin-vue-layouts'
 
-const host = process.env.TAURI_DEV_HOST;
+const host = process.env.TAURI_DEV_HOST
 
 // https://vitejs.dev/config/
 export default defineConfig(async () => ({
@@ -23,7 +23,6 @@ export default defineConfig(async () => ({
     },
   },
   plugins: [
-    svelte(),
     VueMacros({
       plugins: {
         vue: Vue({
@@ -100,10 +99,10 @@ export default defineConfig(async () => ({
     },
     hmr: host
       ? {
-        protocol: 'ws',
-        host: internalIpV4Sync(),
-        port: 1430,
-      }
+          protocol: 'ws',
+          host: internalIpV4Sync(),
+          port: 1430,
+        }
       : undefined,
   },
 }))

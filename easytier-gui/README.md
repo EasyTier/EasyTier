@@ -34,7 +34,6 @@ rustup target add aarch64-linux-android
 install java 20
 ```
 
-
 Java version depend on gradle version specified in (easytier-gui\src-tauri\gen\android\build.gradle.kts)
 
 See [Gradle compatibility matrix](https://docs.gradle.org/current/userguide/compatibility.html) for detail .
