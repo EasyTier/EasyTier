@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { NodeInfo } from '~/types/network'
+import type { NodeInfo, PeerRoutePair } from '~/types/network'
 
 const props = defineProps<{
   instanceId?: string
@@ -25,13 +25,24 @@ const curNetworkInst = computed(() => {
 })
 
 const peerRouteInfos = computed(() => {
-  if (curNetworkInst.value)
-    return curNetworkInst.value.detail?.peer_route_pairs || []
+  if (curNetworkInst.value) {
+    const my_node_info = curNetworkInst.value.detail?.my_node_info
+    return [{
+      route: {
+        ipv4_addr: my_node_info?.virtual_ipv4,
+        hostname: my_node_info?.hostname,
+        version: my_node_info?.version,
+      },
+    }, ...(curNetworkInst.value.detail?.peer_route_pairs || [])]
+  }
 
   return []
 })
 
 function routeCost(info: any) {
+  if (!info.peer)
+    return t('status.local')
+
   if (info.route) {
     const cost = info.route.cost
     return cost === 1 ? 'p2p' : `relay(${cost})`
@@ -74,27 +85,31 @@ function humanFileSize(bytes: number, si = false, dp = 1) {
   return `${bytes.toFixed(dp)} ${units[u]}`
 }
 
-function latencyMs(info: any) {
+function latencyMs(info: PeerRoutePair) {
   let lat_us_sum = statsCommon(info, 'stats.latency_us')
   if (lat_us_sum === undefined)
     return ''
-  lat_us_sum = lat_us_sum / 1000 / info.peer.conns.length
+  lat_us_sum = lat_us_sum / 1000 / info.peer!.conns.length
   return `${lat_us_sum % 1 > 0 ? Math.round(lat_us_sum) + 1 : Math.round(lat_us_sum)}ms`
 }
 
-function txBytes(info: any) {
+function txBytes(info: PeerRoutePair) {
   const tx = statsCommon(info, 'stats.tx_bytes')
   return tx ? humanFileSize(tx) : ''
 }
 
-function rxBytes(info: any) {
+function rxBytes(info: PeerRoutePair) {
   const rx = statsCommon(info, 'stats.rx_bytes')
   return rx ? humanFileSize(rx) : ''
 }
 
-function lossRate(info: any) {
+function lossRate(info: PeerRoutePair) {
   const lossRate = statsCommon(info, 'loss_rate')
   return lossRate !== undefined ? `${Math.round(lossRate * 100)}%` : ''
+}
+
+function version(info: PeerRoutePair) {
+  return info.route.version === '' ? 'unknown' : info.route.version
 }
 
 const myNodeInfo = computed(() => {
@@ -374,6 +389,7 @@ function showEventLogs() {
             <Column :field="txBytes" style="width: 80px;" :header="t('upload_bytes')" />
             <Column :field="rxBytes" style="width: 80px;" :header="t('download_bytes')" />
             <Column :field="lossRate" style="width: 100px;" :header="t('loss_rate')" />
+            <Column :field="version" style="width: 100px;" :header="t('status.version')" />
           </DataTable>
         </template>
       </Card>

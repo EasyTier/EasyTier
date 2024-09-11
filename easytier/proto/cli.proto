@@ -76,6 +76,7 @@ message Route {
   string hostname = 6;
   StunInfo stun_info = 7;
   string inst_id = 8;
+  string version = 9;
 }
 
 message NodeInfo {
@@ -87,6 +88,7 @@ message NodeInfo {
   string inst_id = 6;
   repeated string listeners = 7;
   string config = 8;
+  string version = 9;
 }
 
 message ShowNodeInfoRequest {}

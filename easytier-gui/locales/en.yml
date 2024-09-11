@@ -66,6 +66,10 @@ upload_bytes: Upload
 download_bytes: Download
 loss_rate: Loss Rate
 
+status:
+  version: Version
+  local: Local
+
 run_network: Run Network
 stop_network: Stop Network
 network_running: running
