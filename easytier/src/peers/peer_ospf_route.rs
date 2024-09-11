@@ -163,6 +163,7 @@ impl Into<crate::rpc::Route> for RoutePeerInfo {
                 Some(stun_info)
             },
             inst_id: self.inst_id.to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 }

@@ -76,6 +76,7 @@ message Route {
   string hostname = 6;
   StunInfo stun_info = 7;
   string inst_id = 8;
+  string version = 9;
 }
 
 message NodeInfo {
@@ -188,6 +189,7 @@ message HandshakeRequest {
   repeated string features = 4;
   string network_name = 5;
   bytes network_secret_digrest = 6;
+  string et_version = 7;
 }
 
 message TaRpcPacket {

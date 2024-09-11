@@ -30,14 +30,7 @@ use crate::{
         PeerId,
     },
     rpc::{HandshakeRequest, PeerConnInfo, PeerConnStats, TunnelInfo},
-    tunnel::packet_def::PacketType,
-    tunnel::{
-        filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter},
-        mpsc::{MpscTunnel, MpscTunnelSender},
-        packet_def::ZCPacket,
-        stats::{Throughput, WindowLatency},
-        Tunnel, TunnelError, ZCPacketStream,
-    },
+    tunnel::{filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter}, mpsc::{MpscTunnel, MpscTunnelSender}, packet_def::{PacketType, ZCPacket}, stats::{Throughput, WindowLatency}, Tunnel, TunnelError, ZCPacketStream},
 };
 
 use super::{peer_conn_ping::PeerConnPinger, PacketRecvChan};

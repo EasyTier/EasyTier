@@ -374,6 +374,7 @@ function showEventLogs() {
             <Column :field="txBytes" style="width: 80px;" :header="t('upload_bytes')" />
             <Column :field="rxBytes" style="width: 80px;" :header="t('download_bytes')" />
             <Column :field="lossRate" style="width: 100px;" :header="t('loss_rate')" />
+            <Column field="route.version" style="width: 100px;" :header="t('status_version')" />
           </DataTable>
         </template>
       </Card>

@@ -197,6 +197,7 @@ impl CommandHandler {
             tunnel_proto: String,
             nat_type: String,
             id: String,
+            version: String,
         }
 
         impl From<PeerRoutePair> for PeerTableItem {
@@ -212,6 +213,11 @@ impl CommandHandler {
                     tunnel_proto: p.get_conn_protos().unwrap_or(vec![]).join(",").to_string(),
                     nat_type: p.get_udp_nat_type(),
                     id: p.route.peer_id.to_string(),
+                    version: if p.route.version.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        p.route.version.to_string()
+                    },
                 }
             }
         }

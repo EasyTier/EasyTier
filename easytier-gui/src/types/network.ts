@@ -125,6 +125,7 @@ export interface Route {
   hostname: string
   stun_info?: StunInfo
   inst_id: string
+  version: string
 }
 
 export interface PeerInfo {
