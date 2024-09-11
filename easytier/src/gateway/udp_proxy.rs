@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use pnet::packet::{
     ip::IpNextHeaderProtocols,
@@ -49,6 +50,7 @@ struct UdpNatEntry {
     forward_task: Mutex<Option<JoinHandle<()>>>,
     stopped: AtomicBool,
     start_time: std::time::Instant,
+    last_active_time: AtomicCell<std::time::Instant>,
 }
 
 impl UdpNatEntry {
@@ -72,6 +74,7 @@ impl UdpNatEntry {
             forward_task: Mutex::new(None),
             stopped: AtomicBool::new(false),
             start_time: std::time::Instant::now(),
+            last_active_time: AtomicCell::new(std::time::Instant::now()),
         })
     }
 
@@ -141,7 +144,7 @@ impl UdpNatEntry {
 
         loop {
             let (len, src_socket) = match timeout(
-                Duration::from_secs(30),
+                Duration::from_secs(120),
                 self.socket.recv_from(&mut udp_body),
             )
             .await
@@ -167,6 +170,8 @@ impl UdpNatEntry {
                 continue;
             };
 
+            self.mark_active();
+
             if src_v4.ip().is_loopback() {
                 src_v4.set_ip(virtual_ipv4);
             }
@@ -188,6 +193,14 @@ impl UdpNatEntry {
         }
 
         self.stop();
+    }
+
+    fn mark_active(&self) {
+        self.last_active_time.store(std::time::Instant::now());
+    }
+
+    fn is_active(&self) -> bool {
+        self.last_active_time.load().elapsed().as_secs() < 180
     }
 }
 
@@ -287,6 +300,8 @@ impl UdpProxy {
                 )));
         }
 
+        nat_entry.mark_active();
+
         // TODO: should it be async.
         let dst_socket = if Some(ipv4.get_destination()) == self.global_ctx.get_ipv4() {
             format!("127.0.0.1:{}", udp_packet.get_destination())
@@ -360,7 +375,7 @@ impl UdpProxy {
             loop {
                 tokio::time::sleep(Duration::from_secs(15)).await;
                 nat_table.retain(|_, v| {
-                    if v.start_time.elapsed().as_secs() > 120 {
+                    if !v.is_active() {
                         tracing::info!(?v, "udp nat table entry removed");
                         v.stop();
                         false
