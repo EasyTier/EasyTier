@@ -88,6 +88,7 @@ message NodeInfo {
   string inst_id = 6;
   repeated string listeners = 7;
   string config = 8;
+  string version = 9;
 }
 
 message ShowNodeInfoRequest {}

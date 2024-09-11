@@ -24,6 +24,8 @@ use tokio::task::JoinSet;
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct MyNodeInfo {
     pub virtual_ipv4: String,
+    pub hostname: String,
+    pub version: String,
     pub ips: GetIpListResponse,
     pub stun_info: StunInfo,
     pub listeners: Vec<String>,
@@ -137,6 +139,8 @@ impl EasyTierLauncher {
                         .get_ipv4()
                         .map(|x| x.to_string())
                         .unwrap_or_default(),
+                    hostname: global_ctx_c.get_hostname(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
                     ips: global_ctx_c.get_ip_collector().collect_ip_addrs().await,
                     stun_info: global_ctx_c.get_stun_info_collector().get_stun_info(),
                     listeners: global_ctx_c

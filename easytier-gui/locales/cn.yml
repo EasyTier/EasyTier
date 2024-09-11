@@ -65,7 +65,10 @@ latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载
 loss_rate: 丢包率
-status_version: 版本
+
+status:
+  version: 内核版本
+  local: 本机
 
 run_network: 运行网络
 stop_network: 停止网络

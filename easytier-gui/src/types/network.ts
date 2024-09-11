@@ -87,6 +87,8 @@ export interface NetworkInstanceRunningInfo {
 
 export interface NodeInfo {
   virtual_ipv4: string
+  hostname: string
+  version: string
   ips: {
     public_ipv4: string
     interface_ipv4s: string[]

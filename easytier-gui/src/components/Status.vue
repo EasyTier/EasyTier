@@ -25,13 +25,24 @@ const curNetworkInst = computed(() => {
 })
 
 const peerRouteInfos = computed(() => {
-  if (curNetworkInst.value)
-    return curNetworkInst.value.detail?.peer_route_pairs || []
+  if (curNetworkInst.value) {
+    const my_node_info = curNetworkInst.value.detail?.my_node_info
+    return [{
+      route: {
+        ipv4_addr: my_node_info?.virtual_ipv4,
+        hostname: my_node_info?.hostname,
+        version: my_node_info?.version,
+      },
+    }, ...(curNetworkInst.value.detail?.peer_route_pairs || [])]
+  }
 
   return []
 })
 
 function routeCost(info: any) {
+  if (!info.peer)
+    return t('status.local')
+
   if (info.route) {
     const cost = info.route.cost
     return cost === 1 ? 'p2p' : `relay(${cost})`
@@ -44,7 +55,7 @@ function resolveObjPath(path: string, obj = globalThis, separator = '.') {
   return properties.reduce((prev, curr) => prev?.[curr], obj)
 }
 
-function statsCommon(info: PeerRoutePair, field: string): number | undefined {
+function statsCommon(info: any, field: string): number | undefined {
   if (!info.peer)
     return undefined
 
@@ -378,7 +389,7 @@ function showEventLogs() {
             <Column :field="txBytes" style="width: 80px;" :header="t('upload_bytes')" />
             <Column :field="rxBytes" style="width: 80px;" :header="t('download_bytes')" />
             <Column :field="lossRate" style="width: 100px;" :header="t('loss_rate')" />
-            <Column :field="version" style="width: 100px;" :header="t('status_version')" />
+            <Column :field="version" style="width: 100px;" :header="t('status.version')" />
           </DataTable>
         </template>
       </Card>

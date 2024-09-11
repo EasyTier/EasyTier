@@ -222,12 +222,43 @@ impl CommandHandler {
             }
         }
 
+        impl From<NodeInfo> for PeerTableItem {
+            fn from(p: NodeInfo) -> Self {
+                PeerTableItem {
+                    ipv4: p.ipv4_addr.clone(),
+                    hostname: p.hostname.clone(),
+                    cost: "Local".to_string(),
+                    lat_ms: "-".to_string(),
+                    loss_rate: "-".to_string(),
+                    rx_bytes: "-".to_string(),
+                    tx_bytes: "-".to_string(),
+                    tunnel_proto: "-".to_string(),
+                    nat_type: if let Some(info) = p.stun_info {
+                        info.udp_nat_type().as_str_name().to_string()
+                    } else {
+                        "Unknown".to_string()
+                    },
+                    id: p.peer_id.to_string(),
+                    version: p.version,
+                }
+            }
+        }
+
         let mut items: Vec<PeerTableItem> = vec![];
         let peer_routes = self.list_peer_route_pair().await?;
         if self.verbose {
             println!("{:#?}", peer_routes);
             return Ok(());
         }
+
+        let mut client = self.get_peer_manager_client().await?;
+        let node_info = client
+            .show_node_info(ShowNodeInfoRequest::default())
+            .await?
+            .into_inner()
+            .node_info
+            .ok_or(anyhow::anyhow!("node info not found"))?;
+        items.push(node_info.into());
 
         for p in peer_routes {
             items.push(p.into());
@@ -299,9 +330,28 @@ impl CommandHandler {
             next_hop_hostname: String,
             next_hop_lat: f64,
             cost: i32,
+            version: String,
         }
 
         let mut items: Vec<RouteTableItem> = vec![];
+        let mut client = self.get_peer_manager_client().await?;
+        let node_info = client
+            .show_node_info(ShowNodeInfoRequest::default())
+            .await?
+            .into_inner()
+            .node_info
+            .ok_or(anyhow::anyhow!("node info not found"))?;
+
+        items.push(RouteTableItem {
+            ipv4: node_info.ipv4_addr.clone(),
+            hostname: node_info.hostname.clone(),
+            proxy_cidrs: node_info.proxy_cidrs.join(", "),
+            next_hop_ipv4: "-".to_string(),
+            next_hop_hostname: "Local".to_string(),
+            next_hop_lat: 0.0,
+            cost: 0,
+            version: node_info.version.clone(),
+        });
         let peer_routes = self.list_peer_route_pair().await?;
         for p in peer_routes.iter() {
             let Some(next_hop_pair) = peer_routes
@@ -320,6 +370,11 @@ impl CommandHandler {
                     next_hop_hostname: "".to_string(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
                     cost: p.route.cost,
+                    version: if p.route.version.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        p.route.version.to_string()
+                    },
                 });
             } else {
                 items.push(RouteTableItem {
@@ -330,6 +385,11 @@ impl CommandHandler {
                     next_hop_hostname: next_hop_pair.route.hostname.clone(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
                     cost: p.route.cost,
+                    version: if p.route.version.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        p.route.version.to_string()
+                    },
                 });
             }
         }

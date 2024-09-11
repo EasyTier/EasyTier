@@ -65,7 +65,10 @@ latency: Latency
 upload_bytes: Upload
 download_bytes: Download
 loss_rate: Loss Rate
-status_version: Version
+
+status:
+  version: Version
+  local: Local
 
 run_network: Run Network
 stop_network: Stop Network

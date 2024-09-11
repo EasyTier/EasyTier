@@ -771,6 +771,7 @@ impl PeerManager {
                 .map(|x| x.to_string())
                 .collect(),
             config: self.global_ctx.config.dump(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
 }
