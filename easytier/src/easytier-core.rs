@@ -172,41 +172,59 @@ struct Cli {
 
     #[arg(
         long,
-        help = t!("core_clap.default_protocol").to_string()
-    )]
-    default_protocol: Option<String>,
-
-    #[arg(
-        short = 'u',
-        long,
-        help = t!("core_clap.disable_encryption").to_string(),
-        default_value = "false"
-    )]
-    disable_encryption: bool,
-
-    #[arg(
-        long,
         help = t!("core_clap.multi_thread").to_string(),
         default_value = "false"
     )]
     multi_thread: bool,
 
-    #[arg(
-        long,
-        help = t!("core_clap.disable_ipv6").to_string(),
-        default_value = "false"
-    )]
-    disable_ipv6: bool,
 
     #[arg(
         long,
-        help = t!("core_clap.dev_name").to_string()
+        help = t!("core_clap.routes").to_string(),
+        num_args = 0..
     )]
-    dev_name: Option<String>,
+    routes: Option<Vec<String>>,
+
+    #[cfg(feature = "socks5")]
+    #[arg(
+        long,
+        help = t!("core_clap.socks5").to_string()
+    )]
+    socks5: Option<u16>,
+
+    // flag
+    #[arg(
+        long,
+        help = t!("core_clap.default_protocol").to_string(),
+        default_value = "tcp"
+    )]
+    default_protocol: String,
 
     #[arg(
         long,
-        help = t!("core_clap.mtu").to_string()
+        help = t!("core_clap.dev_name").to_string(),
+        default_value = ""
+    )]
+    dev_name: String,
+
+    #[arg(
+        short = 'u',
+        long,
+        help = t!("core_clap.enable_encryption").to_string(),
+        default_value = "true"
+    )]
+    enable_encryption: bool,
+
+    #[arg(
+        long,
+        help = t!("core_clap.enable_ipv6").to_string(),
+        default_value = "true"
+    )]
+    enable_ipv6: bool,
+    
+    #[arg(
+        long,
+        help = t!("core_clap.mtu").to_string(),
     )]
     mtu: Option<u16>,
 
@@ -219,17 +237,17 @@ struct Cli {
 
     #[arg(
         long,
-        help = t!("core_clap.exit_nodes").to_string(),
-        num_args = 0..
-    )]
-    exit_nodes: Vec<Ipv4Addr>,
-
-    #[arg(
-        long,
         help = t!("core_clap.enable_exit_node").to_string(),
         default_value = "false"
     )]
     enable_exit_node: bool,
+
+    #[arg(
+        long,
+        help = t!("core_clap.exit_nodes").to_string(),
+        num_args = 0..
+    )]
+    exit_nodes: Vec<Ipv4Addr>,
 
     #[arg(
         long,
@@ -247,17 +265,10 @@ struct Cli {
 
     #[arg(
         long,
-        help = t!("core_clap.manual_routes").to_string(),
+        help = t!("core_clap.foreign_network_whitelist").to_string(),
         num_args = 0..
     )]
-    manual_routes: Option<Vec<String>>,
-
-    #[arg(
-        long,
-        help = t!("core_clap.relay_network_whitelist").to_string(),
-        num_args = 0..
-    )]
-    relay_network_whitelist: Option<Vec<String>>,
+    foreign_network_whitelist: Option<Vec<String>>,
 
     #[arg(
         long,
@@ -268,24 +279,17 @@ struct Cli {
 
     #[arg(
         long,
-        help = t!("core_clap.disable_udp_hole_punching").to_string(),
-        default_value = "false"
-    )]
-    disable_udp_hole_punching: bool,
-
-    #[arg(
-        long,
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         default_value = "false"
     )]
     relay_all_peer_rpc: bool,
-
-    #[cfg(feature = "socks5")]
+    
     #[arg(
         long,
-        help = t!("core_clap.socks5").to_string()
+        help = t!("core_clap.disable_udp_hole_punching").to_string(),
+        default_value = "false"
     )]
-    socks5: Option<u16>,
+    disable_udp_hole_punching: bool,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -489,9 +493,9 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
-        if cli.manual_routes.is_some() {
+        if cli.routes.is_some() {
             cfg.set_routes(Some(
-                cli.manual_routes
+                cli.routes
                     .clone()
                     .unwrap()
                     .iter()
@@ -514,20 +518,24 @@ impl From<Cli> for TomlConfigLoader {
         }
 
         let mut f = cfg.get_flags();
-        if cli.default_protocol.is_some() {
-            f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
-        }
-        f.enable_encryption = !cli.disable_encryption;
-        f.enable_ipv6 = !cli.disable_ipv6;
+        f.default_protocol = cli.default_protocol.clone();
+        f.enable_encryption = cli.enable_encryption;
+        f.enable_ipv6 = cli.enable_ipv6;
         f.latency_first = cli.latency_first;
-        f.dev_name = cli.dev_name.unwrap_or(Default::default());
-        if let Some(mtu) = cli.mtu {
-            f.mtu = mtu;
-        }
+        f.dev_name = cli.dev_name.clone();
+        f.mtu = if let Some(mtu) = cli.mtu {
+            mtu
+        } else {
+            if cli.enable_encryption {
+                1400
+            } else {
+                1420
+            }
+        };
         f.enable_exit_node = cli.enable_exit_node;
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
-        if let Some(wl) = cli.relay_network_whitelist {
+        if let Some(wl) = cli.foreign_network_whitelist {
             f.foreign_network_whitelist = wl.join(" ");
         }
         f.disable_p2p = cli.disable_p2p;

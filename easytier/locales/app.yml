@@ -63,15 +63,15 @@ core_clap:
   default_protocol:
     en: "default protocol to use when connecting to peers"
     zh-CN: "连接到对等节点时使用的默认协议"
-  disable_encryption:
-    en: "disable encryption for peers communication, default is false, must be same with peers"
-    zh-CN: "禁用对等节点通信的加密，默认为false，必须与对等节点相同"
+  enable_encryption:
+    en: "enable encryption for peers communication, default is true, must be same with peers"
+    zh-CN: "启用对等节点通信的加密，默认为true，必须与对等节点相同"
   multi_thread:
     en: "use multi-thread runtime, default is single-thread"
     zh-CN: "使用多线程运行时，默认为单线程"
-  disable_ipv6:
-    en: "do not use ipv6"
-    zh-CN: "不使用IPv6"
+  enable_ipv6:
+    en: "use ipv6, default is true"
+    zh-CN: "使用IPv6，默认为true"
   dev_name:
     en: "optional tun interface name"
     zh-CN: "可选的TUN接口名称"
@@ -93,10 +93,10 @@ core_clap:
   use_smoltcp:
     en: "enable smoltcp stack for subnet proxy"
     zh-CN: "为子网代理启用smoltcp堆栈"
-  manual_routes:
+  routes:
     en: "assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.: 192.168.0.0/16"
     zh-CN: "手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16"
-  relay_network_whitelist:
+  foreign_network_whitelist:
     en: |+
         only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
         if this parameter is empty, forwarding is disabled. by default, all networks are allowed. 
