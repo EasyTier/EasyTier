@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package tests;
+
+/// The Greeting service. This service is used to generate greetings for various
+/// use-cases.
+service Greeting {
+  // Generates a "hello" greeting based on the supplied info.
+  rpc SayHello(SayHelloRequest) returns (SayHelloResponse);
+  // Generates a "goodbye" greeting based on the supplied info.
+  rpc SayGoodbye(SayGoodbyeRequest) returns (SayGoodbyeResponse);
+}
+
+// The request for an `Greeting.SayHello` call.
+message SayHelloRequest { string name = 1; }
+
+// The response for an `Greeting.SayHello` call.
+message SayHelloResponse { string greeting = 1; }
+
+// The request for an `Greeting.SayGoodbye` call.
+message SayGoodbyeRequest { string name = 1; }
+
+// The response for an `Greeting.SayGoodbye` call.
+message SayGoodbyeResponse { string greeting = 1; }

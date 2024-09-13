@@ -6,6 +6,7 @@ mod gateway;
 mod instance;
 mod peer_center;
 mod peers;
+mod proto;
 mod vpn_portal;
 
 pub mod common;

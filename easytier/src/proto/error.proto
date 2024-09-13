@@ -1,0 +1,34 @@
+syntax = "proto3";
+package error;
+
+message OtherError { string error_message = 1; }
+
+message InvalidMethodIndex {
+  string service_name = 1;
+  uint32 method_index = 2;
+}
+
+message InvalidService { string service_name = 1; }
+
+message ProstDecodeError {}
+
+message ProstEncodeError {}
+
+message ExecuteError { string error_message = 1; }
+
+message MalformatRpcPacket { string error_message = 1; }
+
+message Timeout { string error_message = 1; }
+
+message Error {
+  oneof error {
+    OtherError other_error = 1;
+    InvalidMethodIndex invalid_method_index = 2;
+    InvalidService invalid_service = 3;
+    ProstDecodeError prost_decode_error = 4;
+    ProstEncodeError prost_encode_error = 5;
+    ExecuteError execute_error = 6;
+    MalformatRpcPacket malformat_rpc_packet = 7;
+    Timeout timeout = 8;
+  }
+}
