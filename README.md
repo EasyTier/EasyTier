@@ -47,7 +47,8 @@ EasyTier is a simple, safe and decentralized VPN networking solution implemented
 3. **Install from source code**
 
     ```sh
-    cargo install --git https://github.com/EasyTier/EasyTier.git
+    cargo install --git https://github.com/EasyTier/EasyTier.git easytier
+    cargo install --git https://github.com/EasyTier/EasyTier.git easytier-gui
     ```
 
 4. **Install by Docker Compose**
