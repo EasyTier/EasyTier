@@ -49,8 +49,8 @@ struct InflightRequest {
 type InflightRequestTable = Arc<DashMap<InflightRequestKey, InflightRequest>>;
 
 pub struct Client {
-    mpsc: MpscTunnel<Box<dyn Tunnel>>,
-    transport: Option<Transport>,
+    mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
+    transport: Mutex<Option<Transport>>,
     inflight_requests: InflightRequestTable,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
@@ -59,21 +59,21 @@ impl Client {
     pub fn new() -> Self {
         let (ring_a, ring_b) = create_ring_tunnel_pair();
         Self {
-            mpsc: MpscTunnel::new(ring_a),
-            transport: Some(MpscTunnel::new(ring_b)),
+            mpsc: Mutex::new(MpscTunnel::new(ring_a)),
+            transport: Mutex::new(Some(MpscTunnel::new(ring_b))),
             inflight_requests: Arc::new(DashMap::new()),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
-    pub fn get_transport(&mut self) -> Option<Transport> {
-        self.transport.take()
+    pub fn get_transport(&self) -> Option<Transport> {
+        self.transport.lock().unwrap().take()
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&self) {
         let mut tasks = self.tasks.lock().unwrap();
 
-        let mut rx = self.mpsc.get_stream();
+        let mut rx = self.mpsc.lock().unwrap().get_stream();
         let inflight_requests = self.inflight_requests.clone();
         tasks.spawn(async move {
             while let Some(packet) = rx.next().await {
@@ -218,7 +218,7 @@ impl Client {
         F::new(HandlerImpl::<F> {
             from_peer_id,
             to_peer_id,
-            zc_packet_sender: self.mpsc.get_sink(),
+            zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),
             inflight_requests: self.inflight_requests.clone(),
             _phan: PhantomData,
         })

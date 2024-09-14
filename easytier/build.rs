@@ -139,7 +139,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // tonic_build::compile_protos("proto/cli.proto")?;
 
     prost_build::Config::new()
-        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
         .compile_protos(

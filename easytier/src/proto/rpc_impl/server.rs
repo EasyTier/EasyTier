@@ -35,9 +35,9 @@ struct PacketMergerKey {
 pub struct Server {
     registry: Arc<ServiceRegistry>,
 
-    mpsc: MpscTunnel<Box<dyn Tunnel>>,
+    mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
 
-    transport: Option<Transport>,
+    transport: Mutex<Option<Transport>>,
 
     tasks: Arc<Mutex<JoinSet<()>>>,
     packet_mergers: Arc<DashMap<PacketMergerKey, PacketMerger>>,
@@ -49,8 +49,8 @@ impl Server {
 
         Self {
             registry: Arc::new(ServiceRegistry::new()),
-            mpsc: MpscTunnel::new(ring_a),
-            transport: Some(MpscTunnel::new(ring_b)),
+            mpsc: Mutex::new(MpscTunnel::new(ring_a)),
+            transport: Mutex::new(Some(MpscTunnel::new(ring_b))),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             packet_mergers: Arc::new(DashMap::new()),
         }
@@ -60,16 +60,16 @@ impl Server {
         &self.registry
     }
 
-    pub fn get_transport(&mut self) -> Option<Transport> {
-        self.transport.take()
+    pub fn get_transport(&self) -> Option<Transport> {
+        self.transport.lock().unwrap().take()
     }
 
-    pub fn run(&mut self) {
+    pub fn run(&self) {
         let tasks = self.tasks.clone();
         join_joinset_background(tasks.clone(), "rpc server".to_string());
 
-        let mut rx = self.mpsc.get_stream();
-        let tx = self.mpsc.get_sink();
+        let mut rx = self.mpsc.lock().unwrap().get_stream();
+        let tx = self.mpsc.lock().unwrap().get_sink();
 
         let packet_merges = self.packet_mergers.clone();
         let reg = self.registry.clone();

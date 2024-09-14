@@ -38,3 +38,22 @@ message RpcPacket {
 
   int32 trace_id = 9;
 }
+
+message UUID {
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+enum NatType {
+  // has NAT; but own a single public IP, port is not changed
+  Unknown = 0;
+  OpenInternet = 1;
+  NoPAT = 2;
+  FullCone = 3;
+  Restricted = 4;
+  PortRestricted = 5;
+  Symmetric = 6;
+  SymUdpFirewall = 7;
+}
+
+message Ipv4Addr { uint32 addr = 1; }

@@ -1,39 +1,63 @@
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
 import "common.proto";
 
 package peer_rpc;
 
-message Test {
-  int32 code = 1;
-  string message = 2;
-  common.RpcPacket packet = 3;
+message RoutePeerInfo {
+  // means next hop in route table.
+  uint32 peer_id = 1;
+  common.UUID inst_id = 2;
+  uint32 cost = 3;
+  optional common.Ipv4Addr ipv4_addr = 4;
+  repeated string proxy_cidrs = 5;
+  optional string hostname = 6;
+  common.NatType udp_stun_info = 7;
+  google.protobuf.Timestamp last_update = 8;
+  uint32 version = 9;
 }
 
-/// The Greeting service. This service is used to generate greetings for various use-cases.
-service Greeting {
+/*
+        my_peer_id: PeerId,
+        my_session_id: SessionId,
+        is_initiator: bool,
+        peer_infos: Option<Vec<RoutePeerInfo>>,
+        conn_bitmap: Option<RouteConnBitmap>,
+*/
+
+message PeerIdVersion {
+  uint32 peer_id = 1;
+  uint32 version = 2;
+}
+
+message RouteConnBitmap {
+  repeated PeerIdVersion peer_ids = 1;
+  bytes bitmap = 2;
+}
+
+message RoutePeerInfos { repeated RoutePeerInfo items = 1; }
+
+message SyncRouteInfoRequest {
+  uint32 my_peer_id = 1;
+  uint64 my_session_id = 2;
+  bool is_initiator = 3;
+  RoutePeerInfos peer_infos = 4;
+  RouteConnBitmap conn_bitmap = 5;
+}
+
+enum SyncRouteInfoError {
+  DuplicatePeerId = 0;
+  Stopped = 1;
+}
+
+message SyncRouteInfoResponse {
+  bool is_initiator = 1;
+  uint64 session_id = 2;
+  optional SyncRouteInfoError error = 3;
+}
+
+service OspfRouteService {
   // Generates a "hello" greeting based on the supplied info.
-  rpc SayHello (SayHelloRequest) returns (SayHelloResponse);
-  // Generates a "goodbye" greeting based on the supplied info.
-  rpc SayGoodbye (SayGoodbyeRequest) returns (SayGoodbyeResponse);
-}
-
-// The request for an `Greeting.SayHello` call.
-message SayHelloRequest {
-  string name = 1;
-}
-
-// The response for an `Greeting.SayHello` call.
-message SayHelloResponse {
-  string greeting = 1;
-}
-
-// The request for an `Greeting.SayGoodbye` call.
-message SayGoodbyeRequest {
-  string name = 1;
-}
-
-// The response for an `Greeting.SayGoodbye` call.
-message SayGoodbyeResponse {
-  string greeting = 1;
+  rpc SyncRouteInfo(SyncRouteInfoRequest) returns (SyncRouteInfoResponse);
 }

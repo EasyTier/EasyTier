@@ -140,10 +140,16 @@ pub fn build_rpc_packet(
         };
         cur_offset += cur_len;
 
+        let packet_type = if is_req {
+            PacketType::RpcReq
+        } else {
+            PacketType::RpcResp
+        };
+
         let mut buf = Vec::new();
         cur_packet.encode(&mut buf).unwrap();
         let mut zc_packet = ZCPacket::new_with_payload(&buf);
-        zc_packet.fill_peer_manager_hdr(from_peer, to_peer, PacketType::Rpc as u8);
+        zc_packet.fill_peer_manager_hdr(from_peer, to_peer, packet_type as u8);
         ret.push(zc_packet);
 
         if content.len() == 0 {

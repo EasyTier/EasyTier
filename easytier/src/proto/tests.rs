@@ -51,10 +51,10 @@ struct TestContext {
 
 impl TestContext {
     fn new() -> Self {
-        let mut rpc_server = Server::new();
+        let rpc_server = Server::new();
         rpc_server.run();
 
-        let mut client = Client::new();
+        let client = Client::new();
         client.run();
 
         let mut server_t = rpc_server.get_transport().unwrap();

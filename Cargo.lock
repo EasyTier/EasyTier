@@ -1641,6 +1641,7 @@ dependencies = [
  "postcard",
  "prost",
  "prost-build",
+ "prost-types",
  "quinn",
  "rand 0.8.5",
  "rcgen",

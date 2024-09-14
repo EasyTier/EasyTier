@@ -438,7 +438,10 @@ impl PeerManager {
         impl PeerPacketFilter for PeerRpcPacketProcessor {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
                 let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type == PacketType::TaRpc as u8 {
+                if hdr.packet_type == PacketType::TaRpc as u8
+                    || hdr.packet_type == PacketType::RpcReq as u8
+                    || hdr.packet_type == PacketType::RpcResp as u8
+                {
                     self.peer_rpc_tspt_sender.send(packet).unwrap();
                     None
                 } else {

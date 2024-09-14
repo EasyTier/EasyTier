@@ -54,7 +54,8 @@ pub enum PacketType {
     Pong = 5,
     TaRpc = 6,
     Route = 7,
-    Rpc = 8,
+    RpcReq = 8,
+    RpcResp = 9,
 }
 
 bitflags::bitflags! {

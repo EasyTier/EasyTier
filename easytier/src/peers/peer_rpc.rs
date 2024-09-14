@@ -21,6 +21,7 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, PeerId},
+    proto::rpc_impl,
     rpc::TaRpcPacket,
     tunnel::packet_def::{PacketType, ZCPacket},
 };
@@ -65,6 +66,9 @@ pub struct PeerRpcManager {
     client_resp_receivers: Arc<DashMap<PeerRpcClientCtxKey, PacketSender>>,
 
     transact_id: AtomicU32,
+
+    rpc_client: rpc_impl::client::Client,
+    rpc_server: rpc_impl::server::Server,
 }
 
 impl std::fmt::Debug for PeerRpcManager {
@@ -177,6 +181,9 @@ impl PeerRpcManager {
             client_resp_receivers: Arc::new(DashMap::new()),
 
             transact_id: AtomicU32::new(0),
+
+            rpc_client: rpc_impl::client::Client::new(),
+            rpc_server: rpc_impl::server::Server::new(),
         }
     }
 
@@ -362,12 +369,54 @@ impl PeerRpcManager {
         let service_registry = self.service_registry.clone();
         let peer_rpc_endpoints = self.peer_rpc_endpoints.clone();
         let client_resp_receivers = self.client_resp_receivers.clone();
+
+        self.rpc_client.run();
+        self.rpc_server.run();
+
+        let mut server_t = self.rpc_server.get_transport().unwrap();
+        let mut client_t = self.rpc_client.get_transport().unwrap();
+
+        let (server_tx, mut server_rx) = (server_t.get_sink(), server_t.get_stream());
+        let (client_tx, mut client_rx) = (client_t.get_sink(), client_t.get_stream());
+
+        tokio::spawn(async move {
+            loop {
+                let packet = tokio::select! {
+                    Some(Ok(packet)) = server_rx.next() => {
+                        tracing::trace!(?packet, "recv rpc packet from server");
+                        packet
+                    }
+                    Some(Ok(packet)) = client_rx.next() => {
+                        tracing::trace!(?packet, "recv rpc packet from client");
+                        packet
+                    }
+                    else => {
+                        tracing::warn!("rpc transport read aborted, exiting");
+                        break;
+                    }
+                };
+
+                let dst_peer_id = packet.peer_manager_header().unwrap().to_peer_id.into();
+                tspt.send(packet, dst_peer_id).await.unwrap();
+            }
+        });
+
+        let tspt = self.tspt.clone();
         tokio::spawn(async move {
             loop {
                 let Ok(o) = tspt.recv().await else {
                     tracing::warn!("peer rpc transport read aborted, exiting");
                     break;
                 };
+
+                if o.peer_manager_header().unwrap().packet_type == PacketType::RpcReq as u8 {
+                    server_tx.send(o).await.unwrap();
+                    continue;
+                } else if o.peer_manager_header().unwrap().packet_type == PacketType::RpcResp as u8
+                {
+                    client_tx.send(o).await.unwrap();
+                    continue;
+                }
 
                 let info = Self::parse_rpc_packet(&o).unwrap();
                 tracing::debug!(?info, "recv rpc packet from peer");
@@ -423,6 +472,14 @@ impl PeerRpcManager {
                 });
             }
         });
+    }
+
+    pub fn rpc_client(&self) -> &rpc_impl::client::Client {
+        &self.rpc_client
+    }
+
+    pub fn rpc_server(&self) -> &rpc_impl::server::Server {
+        &self.rpc_server
     }
 
     #[tracing::instrument(skip(f))]

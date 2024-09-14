@@ -21,6 +21,7 @@ mod gateway;
 mod instance;
 mod peer_center;
 mod peers;
+mod proto;
 mod rpc;
 mod tunnel;
 mod utils;
