@@ -12,6 +12,7 @@ pub trait Controller: Send + Sync + 'static {
     }
 }
 
+#[derive(Debug)]
 pub struct BaseController {}
 
 impl Controller for BaseController {}
