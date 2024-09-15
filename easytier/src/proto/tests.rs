@@ -8,8 +8,9 @@ use tokio::task::JoinSet;
 use super::rpc_impl::RpcController;
 
 #[derive(Clone)]
-struct GreetingService {
-    delay_ms: u64,
+pub struct GreetingService {
+    pub delay_ms: u64,
+    pub prefix: String,
 }
 
 #[async_trait::async_trait]
@@ -21,7 +22,7 @@ impl Greeting for GreetingService {
         input: SayHelloRequest,
     ) -> crate::proto::rpc_types::error::Result<SayHelloResponse> {
         let resp = SayHelloResponse {
-            greeting: format!("Hello, {}!", input.name),
+            greeting: format!("{} {}!", self.prefix, input.name),
         };
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
         Ok(resp)
@@ -105,7 +106,10 @@ fn random_string(len: usize) -> String {
 async fn rpc_basic_test() {
     let ctx = TestContext::new();
 
-    let server = GreetingServer::new(GreetingService { delay_ms: 0 });
+    let server = GreetingServer::new(GreetingService {
+        delay_ms: 0,
+        prefix: "Hello".to_string(),
+    });
     ctx.server.registry().register(server, "");
 
     let out = ctx
@@ -119,7 +123,7 @@ async fn rpc_basic_test() {
         name: "world".to_string(),
     };
     let ret = out.say_hello(ctrl, input).await;
-    assert_eq!(ret.unwrap().greeting, "Hello, world!");
+    assert_eq!(ret.unwrap().greeting, "Hello world!");
 
     let ctrl = RpcController {};
     let input = SayGoodbyeRequest {
@@ -143,7 +147,10 @@ async fn rpc_basic_test() {
 async fn rpc_timeout_test() {
     let ctx = TestContext::new();
 
-    let server = GreetingServer::new(GreetingService { delay_ms: 10000 });
+    let server = GreetingServer::new(GreetingService {
+        delay_ms: 10000,
+        prefix: "Hello".to_string(),
+    });
     ctx.server.registry().register(server, "test");
 
     let out = ctx

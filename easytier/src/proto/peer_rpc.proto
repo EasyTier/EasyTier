@@ -91,19 +91,6 @@ service UdpHolePunchRpc {
       returns (TryPunchSymmetricResponse);
 }
 
-/*
-#[tarpc::service]
-pub trait PeerCenterService {
-    // report center server which peer is directly connected to me
-    // digest is a hash of current peer map, if digest not match, we need to
-transfer the whole map async fn report_peers(my_peer_id: PeerId, peers:
-PeerInfoForGlobalMap) -> Result<(), Error>;
-
-    async fn get_global_peer_map(digest: Digest)
-        -> Result<Option<GetGlobalPeerMapResponse>, Error>;
-}
-*/
-
 message DirectConnectedPeerInfo { int32 latency_ms = 1; }
 
 message PeerInfoForGlobalMap {

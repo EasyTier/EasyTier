@@ -202,11 +202,6 @@ impl PeerRpcManagerTransport for RpcTransport {
 
 pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
 
-#[tarpc::service]
-pub trait ForeignNetworkService {
-    async fn list_network_peers(network_identy: NetworkIdentity) -> Option<Vec<PeerId>>;
-}
-
 pub struct ForeignNetworkManager {
     my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
@@ -569,7 +564,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_foreign_network_manager() {
-        enable_log();
         let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
         let pm_center2 =
             create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;

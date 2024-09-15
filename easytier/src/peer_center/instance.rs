@@ -223,9 +223,6 @@ impl PeerCenterInstance {
 
         self.client
             .init_periodic_job(ctx, |client, ctx| async move {
-                let mut rpc_ctx = tarpc::context::current();
-                rpc_ctx.deadline = SystemTime::now() + Duration::from_secs(3);
-
                 if ctx
                     .job_ctx
                     .global_peer_map_update_time
@@ -313,9 +310,6 @@ impl PeerCenterInstance {
                 {
                     return Ok(5000);
                 }
-
-                let mut rpc_ctx = tarpc::context::current();
-                rpc_ctx.deadline = SystemTime::now() + Duration::from_secs(3);
 
                 let ret = client
                     .report_peers(

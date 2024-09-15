@@ -754,12 +754,11 @@ mod tests {
         instance::listeners::get_listener_by_url,
         peers::{
             peer_manager::RouteAlgoType,
-            peer_rpc::tests::{MockService, TestRpcService, TestRpcServiceClient},
+            peer_rpc::tests::register_service,
             tests::{connect_peer_manager, wait_route_appear},
         },
         rpc::NatType,
-        tunnel::common::tests::wait_for_condition,
-        tunnel::{TunnelConnector, TunnelListener},
+        tunnel::{common::tests::wait_for_condition, TunnelConnector, TunnelListener},
     };
 
     use super::PeerManager;
@@ -822,25 +821,18 @@ mod tests {
         #[values("tcp", "udp", "wg", "quic")] proto1: &str,
         #[values("tcp", "udp", "wg", "quic")] proto2: &str,
     ) {
+        use crate::proto::{
+            rpc_impl::RpcController,
+            tests::{GreetingClientFactory, SayHelloRequest},
+        };
+
         let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        peer_mgr_a.get_peer_rpc_mgr().run_service(
-            100,
-            MockService {
-                prefix: "hello a".to_owned(),
-            }
-            .serve(),
-        );
+        register_service(&peer_mgr_a.peer_rpc_mgr, "", 0, "hello a");
 
         let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
 
         let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        peer_mgr_c.get_peer_rpc_mgr().run_service(
-            100,
-            MockService {
-                prefix: "hello c".to_owned(),
-            }
-            .serve(),
-        );
+        register_service(&peer_mgr_c.peer_rpc_mgr, "", 0, "hello c");
 
         let mut listener1 = get_listener_by_url(
             &format!("{}://0.0.0.0:31013", proto1).parse().unwrap(),
@@ -878,16 +870,26 @@ mod tests {
             .await
             .unwrap();
 
-        let ret = peer_mgr_a
-            .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(100, peer_mgr_c.my_peer_id(), |c| async {
-                let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
-                let ret = c.hello(tarpc::context::current(), "abc".to_owned()).await;
-                ret
-            })
+        let stub = peer_mgr_a
+            .peer_rpc_mgr
+            .rpc_client()
+            .scoped_client::<GreetingClientFactory<RpcController>>(
+                peer_mgr_a.my_peer_id,
+                peer_mgr_c.my_peer_id,
+                "".to_string(),
+            );
+
+        let ret = stub
+            .say_hello(
+                RpcController {},
+                SayHelloRequest {
+                    name: "abc".to_string(),
+                },
+            )
             .await
             .unwrap();
-        assert_eq!(ret, "hello c abc");
+
+        assert_eq!(ret.greeting, "hello c abc!");
     }
 
     #[tokio::test]

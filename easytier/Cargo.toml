@@ -109,7 +109,6 @@ tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 anyhow = "1.0"
-tarpc = { version = "0.32", features = ["tokio1", "serde1"] }
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"

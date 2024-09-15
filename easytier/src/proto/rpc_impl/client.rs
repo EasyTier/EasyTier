@@ -219,7 +219,7 @@ impl Client {
         }
 
         F::new(HandlerImpl::<F> {
-            domain_name,
+            domain_name: domain_name.to_string(),
             from_peer_id,
             to_peer_id,
             zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),
