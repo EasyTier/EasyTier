@@ -41,6 +41,8 @@ const peerRouteInfos = computed(() => {
 
 function routeCost(info: any) {
   if (info.route) {
+    if (!info.peer && !info.route.peer_id)
+      return t('status.local')
     const cost = info.route.cost
     return cost ? cost === 1 ? 'p2p' : `relay(${cost})` : t('status.local')
   }
