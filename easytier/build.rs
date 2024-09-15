@@ -145,8 +145,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "peer_rpc.GetIpListResponse",
             "#[derive(serde::Serialize, serde::Deserialize)]",
         )
+        .type_attribute("peer_rpc.DirectConnectedPeerInfo", "#[derive(Hash)]")
+        .type_attribute("peer_rpc.PeerInfoForGlobalMap", "#[derive(Hash)]")
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
+        .btree_map(&["."])
         .compile_protos(
             &[
                 "src/proto/peer_rpc.proto",
