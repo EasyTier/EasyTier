@@ -27,7 +27,7 @@ use crate::{
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
         peer_rpc::{
-            OspfRouteService, OspfRouteServiceClientFactory, OspfRouteServiceServer, PeerIdVersion,
+            OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
             RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest,
             SyncRouteInfoResponse,
         },
@@ -1045,7 +1045,7 @@ impl PeerRouteServiceImpl {
 
         let rpc_stub = peer_rpc
             .rpc_client()
-            .scoped_client::<OspfRouteServiceClientFactory<BaseController>>(
+            .scoped_client::<OspfRouteRpcClientFactory<BaseController>>(
                 self.my_peer_id,
                 dst_peer_id,
             );
@@ -1127,7 +1127,7 @@ impl Debug for RouteSessionManager {
 }
 
 #[async_trait::async_trait]
-impl OspfRouteService for RouteSessionManager {
+impl OspfRouteRpc for RouteSessionManager {
     type Controller = BaseController;
     async fn sync_route_info(
         &self,
@@ -1511,7 +1511,7 @@ impl PeerRoute {
         self.peer_rpc
             .rpc_server()
             .registry()
-            .register(OspfRouteServiceServer::new(self.session_mgr.clone()));
+            .register(OspfRouteRpcServer::new(self.session_mgr.clone()));
 
         self.tasks
             .lock()

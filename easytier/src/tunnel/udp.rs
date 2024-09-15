@@ -708,7 +708,7 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{net::IpAddr, time::Duration};
 
     use futures::SinkExt;
     use tokio::time::timeout;
@@ -854,12 +854,12 @@ mod tests {
         if ips.is_empty() {
             return;
         }
-        let bind_dev = get_interface_name_by_ip(&ips[0].parse().unwrap());
+        let bind_dev = get_interface_name_by_ip(&IpAddr::V4(ips[0].into()));
 
         for ip in ips {
             println!("bind to ip: {:?}, {:?}", ip, bind_dev);
             let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
-                &format!("udp://{}:11111", ip).parse().unwrap(),
+                &format!("udp://{}:11111", ip.to_string()).parse().unwrap(),
                 "udp",
             )
             .unwrap();

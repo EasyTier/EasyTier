@@ -18,14 +18,6 @@ message RoutePeerInfo {
   uint32 version = 9;
 }
 
-/*
-        my_peer_id: PeerId,
-        my_session_id: SessionId,
-        is_initiator: bool,
-        peer_infos: Option<Vec<RoutePeerInfo>>,
-        conn_bitmap: Option<RouteConnBitmap>,
-*/
-
 message PeerIdVersion {
   uint32 peer_id = 1;
   uint32 version = 2;
@@ -57,7 +49,21 @@ message SyncRouteInfoResponse {
   optional SyncRouteInfoError error = 3;
 }
 
-service OspfRouteService {
+service OspfRouteRpc {
   // Generates a "hello" greeting based on the supplied info.
   rpc SyncRouteInfo(SyncRouteInfoRequest) returns (SyncRouteInfoResponse);
+}
+
+message GetIpListRequest {}
+
+message GetIpListResponse {
+    common.Ipv4Addr public_ipv4 = 1;
+    repeated common.Ipv4Addr interface_ipv4s = 2;
+    common.Ipv6Addr public_ipv6 = 3;
+    repeated common.Ipv6Addr interface_ipv6s = 4;
+    repeated common.Url listeners = 5;
+}
+
+service DirectConnectorRpc {
+  rpc GetIpList(GetIpListRequest) returns (GetIpListResponse);
 }

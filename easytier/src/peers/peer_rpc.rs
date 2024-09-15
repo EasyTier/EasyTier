@@ -397,7 +397,9 @@ impl PeerRpcManager {
                 };
 
                 let dst_peer_id = packet.peer_manager_header().unwrap().to_peer_id.into();
-                tspt.send(packet, dst_peer_id).await.unwrap();
+                if let Err(e) = tspt.send(packet, dst_peer_id).await {
+                    tracing::error!(error = ?e, dst_peer_id = ?dst_peer_id, "send to peer failed");
+                }
             }
         });
 

@@ -57,3 +57,20 @@ enum NatType {
 }
 
 message Ipv4Addr { uint32 addr = 1; }
+
+message Ipv6Addr {
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+message Url {
+  string url = 1;
+}
+
+message SocketAddr {
+  oneof ip {
+    Ipv4Addr ipv4 = 1;
+    Ipv6Addr ipv6 = 2;
+  };
+  uint32 port = 3;
+}
