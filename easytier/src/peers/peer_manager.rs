@@ -41,7 +41,6 @@ use super::{
     peer_conn::PeerConnId,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
-    peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver,
@@ -120,13 +119,11 @@ impl PeerRpcManagerTransport for RpcTransport {
 }
 
 pub enum RouteAlgoType {
-    Rip,
     Ospf,
     None,
 }
 
 enum RouteAlgoInst {
-    Rip(Arc<BasicRoute>),
     Ospf(Arc<PeerRoute>),
     None,
 }
@@ -217,9 +214,6 @@ impl PeerManager {
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
 
         let route_algo_inst = match route_algo {
-            RouteAlgoType::Rip => {
-                RouteAlgoInst::Rip(Arc::new(BasicRoute::new(my_peer_id, global_ctx.clone())))
-            }
             RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
                 my_peer_id,
                 global_ctx.clone(),
@@ -528,7 +522,6 @@ impl PeerManager {
 
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
         match &self.route_algo_inst {
-            RouteAlgoInst::Rip(route) => Box::new(route.clone()),
             RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
             RouteAlgoInst::None => panic!("no route"),
         }
@@ -696,7 +689,6 @@ impl PeerManager {
     pub async fn run(&self) -> Result<(), Error> {
         match &self.route_algo_inst {
             RouteAlgoInst::Ospf(route) => self.add_route(route.clone()).await,
-            RouteAlgoInst::Rip(route) => self.add_route(route.clone()).await,
             RouteAlgoInst::None => {}
         };
 
@@ -733,13 +725,6 @@ impl PeerManager {
 
     pub fn get_nic_channel(&self) -> mpsc::Sender<SinkItem> {
         self.nic_channel.clone()
-    }
-
-    pub fn get_basic_route(&self) -> Arc<BasicRoute> {
-        match &self.route_algo_inst {
-            RouteAlgoInst::Rip(route) => route.clone(),
-            _ => panic!("not rip route"),
-        }
     }
 
     pub fn get_foreign_network_manager(&self) -> Arc<ForeignNetworkManager> {
