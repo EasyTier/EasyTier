@@ -10,7 +10,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        ## 在提交问题之前之前 / First of all
+        ## 在提交问题之前 / First of all
         1. 请先搜索有关此问题的 [现有问题](https://github.com/EasyTier/EasyTier/issues?q=is%3Aissue)。
         1. Please search for [existing issues](https://github.com/EasyTier/EasyTier/issues?q=is%3Aissue) about this problem first.
         2. 请确保所使用的 Easytier 版本都是最新的。
@@ -25,7 +25,7 @@ body:
     attributes:
       label: 描述问题 / Describe the bug
       description: 对 bug 的明确描述。如果条件允许，请包括屏幕截图。 / A clear description of what the bug is. Include screenshots if applicable.
-      placeholder: Bug description
+      placeholder: 问题描述 / Bug description
     validations:
       required: true
 
@@ -35,7 +35,9 @@ body:
       label: 重现步骤 / Reproduction
       description: 能够重现行为的步骤或指向能够复现的存储库链接。 / A link to a reproduction repo or steps to reproduce the behaviour.
       placeholder: |
+        请提供一个最小化的复现示例或复现步骤，请参考这个指南 https://stackoverflow.com/help/minimal-reproducible-example
         Please provide a minimal reproduction or steps to reproduce, see this guide https://stackoverflow.com/help/minimal-reproducible-example
+        为什么需要重现（问题）？请参阅这篇文章 https://antfu.me/posts/why-reproductions-are-required
         Why reproduction is required? see this article https://antfu.me/posts/why-reproductions-are-required
 
   - type: textarea

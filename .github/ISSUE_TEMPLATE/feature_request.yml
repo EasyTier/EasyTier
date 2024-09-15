@@ -12,7 +12,7 @@ body:
     attributes:
       label: 描述问题 / Describe the problem
       description: 明确描述此功能将解决的问题 / A clear description of the problem this feature would solve
-      placeholder: "I'm always frustrated when..."
+      placeholder: "我总是在...感觉困惑 / I'm always frustrated when..."
     validations:
       required: true
 
@@ -21,7 +21,7 @@ body:
     attributes:
       label: "描述您想要的解决方案 / Describe the solution you'd like"
       description: 明确说明您希望做出的改变 / A clear description of what change you would like
-      placeholder: 'I would like to...'
+      placeholder: '我希望... / I would like to...'
     validations:
       required: true
 
