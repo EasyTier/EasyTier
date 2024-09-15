@@ -1,0 +1,38 @@
+# Copyright 2024-present Easytier Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+
+name: 💡 新功能请求 / Feature Request
+title: '[feat] '
+description: 提出一个想法 /  Suggest an idea
+labels: ['type: feature request']
+
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 描述问题 / Describe the problem
+      description: 明确描述此功能将解决的问题 / A clear description of the problem this feature would solve
+      placeholder: "I'm always frustrated when..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: "描述您想要的解决方案 / Describe the solution you'd like"
+      description: 明确说明您希望做出的改变 / A clear description of what change you would like
+      placeholder: 'I would like to...'
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案 / Alternatives considered
+      description: "您考虑过的任何替代解决方案 / Any alternative solutions you've considered"
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 额外上下文 / Additional context
+      description: 在此处添加有关问题的任何其他上下文。 / Add any other context about the problem here.

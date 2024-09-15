@@ -1,0 +1,51 @@
+# Copyright 2024-present Easytier Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+
+name: 🐞 问题报告 / Bug Report
+title: '[bug] '
+description: 报告一个问题 / Report a bug
+labels: ['type: bug', 'status: needs triage']
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 在提交问题之前之前 / First of all
+        1. 请先搜索有关此问题的 [现有问题](https://github.com/EasyTier/EasyTier/issues?q=is%3Aissue)。
+        1. Please search for [existing issues](https://github.com/EasyTier/EasyTier/issues?q=is%3Aissue) about this problem first.
+        2. 请确保所使用的 Easytier 版本都是最新的。
+        2. Make sure that all Easytier versions are up-to-date.
+        3. 请确保这是 EasyTier 的问题，而不是你正在使用的其他内容引起的问题。
+        3. Make sure it's an issue with EasyTier and not something else you are using.
+        4. 请记得遵守我们的社区准则并保持友好态度。
+        4. Remember to follow our community guidelines and be friendly.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 描述问题 / Describe the bug
+      description: 对 bug 的明确描述。如果条件允许，请包括屏幕截图。 / A clear description of what the bug is. Include screenshots if applicable.
+      placeholder: Bug description
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 重现步骤 / Reproduction
+      description: 能够重现行为的步骤或指向能够复现的存储库链接。 / A link to a reproduction repo or steps to reproduce the behaviour.
+      placeholder: |
+        Please provide a minimal reproduction or steps to reproduce, see this guide https://stackoverflow.com/help/minimal-reproducible-example
+        Why reproduction is required? see this article https://antfu.me/posts/why-reproductions-are-required
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: 预期结果 / Expected behavior
+      description: 清楚地描述您期望发生的事情。 / A clear description of what you expected to happen.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 额外上下文 / Additional context 
+      description:  在这里添加关于问题的任何其他上下文。 / Add any other context about the problem here.
