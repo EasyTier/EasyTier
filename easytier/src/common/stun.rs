@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -161,7 +162,7 @@ impl StunClient {
                 continue;
             };
 
-            tracing::debug!(b = ?&udp_buf[..len], ?tids, ?remote_addr, ?stun_host, "recv stun response, msg: {:#?}", msg);
+            tracing::trace!(b = ?&udp_buf[..len], ?tids, ?remote_addr, ?stun_host, "recv stun response, msg: {:#?}", msg);
 
             if msg.class() != MessageClass::SuccessResponse
                 || msg.method() != BINDING
@@ -216,7 +217,7 @@ impl StunClient {
         changed_addr
     }
 
-    #[tracing::instrument(ret, err, level = Level::DEBUG)]
+    #[tracing::instrument(ret, level = Level::TRACE)]
     pub async fn bind_request(
         self,
         change_ip: bool,
@@ -243,7 +244,7 @@ impl StunClient {
                 .encode_into_bytes(message.clone())
                 .with_context(|| "encode stun message")?;
             tids.push(tid as u128);
-            tracing::debug!(?message, ?msg, tid, "send stun request");
+            tracing::trace!(?message, ?msg, tid, "send stun request");
             self.socket
                 .send_to(msg.as_slice().into(), &stun_host)
                 .await?;
@@ -276,7 +277,7 @@ impl StunClient {
             latency_us: now.elapsed().as_micros() as u32,
         };
 
-        tracing::debug!(
+        tracing::trace!(
             ?stun_host,
             ?recv_addr,
             ?changed_socket_addr,
@@ -303,14 +304,14 @@ impl StunClientBuilder {
         task_set.spawn(
             async move {
                 let mut buf = [0; 1620];
-                tracing::info!("start stun packet listener");
+                tracing::trace!("start stun packet listener");
                 loop {
                     let Ok((len, addr)) = udp_clone.recv_from(&mut buf).await else {
                         tracing::error!("udp recv_from error");
                         break;
                     };
                     let data = buf[..len].to_vec();
-                    tracing::debug!(?addr, ?data, "recv udp stun packet");
+                    tracing::trace!(?addr, ?data, "recv udp stun packet");
                     let _ = stun_packet_sender_clone.send(StunPacket { data, addr });
                 }
             }
@@ -552,12 +553,15 @@ pub struct StunInfoCollector {
     udp_nat_test_result: Arc<RwLock<Option<UdpNatTypeDetectResult>>>,
     nat_test_result_time: Arc<AtomicCell<chrono::DateTime<Local>>>,
     redetect_notify: Arc<tokio::sync::Notify>,
-    tasks: JoinSet<()>,
+    tasks: std::sync::Mutex<JoinSet<()>>,
+    started: AtomicBool,
 }
 
 #[async_trait::async_trait]
 impl StunInfoCollectorTrait for StunInfoCollector {
     fn get_stun_info(&self) -> StunInfo {
+        self.start_stun_routine();
+
         let Some(result) = self.udp_nat_test_result.read().unwrap().clone() else {
             return Default::default();
         };
@@ -572,6 +576,8 @@ impl StunInfoCollectorTrait for StunInfoCollector {
     }
 
     async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
+        self.start_stun_routine();
+
         let stun_servers = self
             .udp_nat_test_result
             .read()
@@ -605,17 +611,14 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 
 impl StunInfoCollector {
     pub fn new(stun_servers: Vec<String>) -> Self {
-        let mut ret = Self {
+        Self {
             stun_servers: Arc::new(RwLock::new(stun_servers)),
             udp_nat_test_result: Arc::new(RwLock::new(None)),
             nat_test_result_time: Arc::new(AtomicCell::new(Local::now())),
             redetect_notify: Arc::new(tokio::sync::Notify::new()),
-            tasks: JoinSet::new(),
-        };
-
-        ret.start_stun_routine();
-
-        ret
+            tasks: std::sync::Mutex::new(JoinSet::new()),
+            started: AtomicBool::new(false),
+        }
     }
 
     pub fn new_with_default_servers() -> Self {
@@ -648,12 +651,18 @@ impl StunInfoCollector {
         .collect()
     }
 
-    fn start_stun_routine(&mut self) {
+    fn start_stun_routine(&self) {
+        if self.started.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        self.started
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
         let stun_servers = self.stun_servers.clone();
         let udp_nat_test_result = self.udp_nat_test_result.clone();
         let udp_test_time = self.nat_test_result_time.clone();
         let redetect_notify = self.redetect_notify.clone();
-        self.tasks.spawn(async move {
+        self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = stun_servers.read().unwrap().clone();
                 // use first three and random choose one from the rest
@@ -709,6 +718,31 @@ impl StunInfoCollector {
 
     pub fn update_stun_info(&self) {
         self.redetect_notify.notify_one();
+    }
+}
+
+pub struct MockStunInfoCollector {
+    pub udp_nat_type: NatType,
+}
+
+#[async_trait::async_trait]
+impl StunInfoCollectorTrait for MockStunInfoCollector {
+    fn get_stun_info(&self) -> StunInfo {
+        StunInfo {
+            udp_nat_type: self.udp_nat_type as i32,
+            tcp_nat_type: NatType::Unknown as i32,
+            last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
+            min_port: 100,
+            max_port: 200,
+            ..Default::default()
+        }
+    }
+
+    async fn get_udp_port_mapping(&self, mut port: u16) -> Result<std::net::SocketAddr, Error> {
+        if port == 0 {
+            port = 40144;
+        }
+        Ok(format!("127.0.0.1:{}", port).parse().unwrap())
     }
 }
 

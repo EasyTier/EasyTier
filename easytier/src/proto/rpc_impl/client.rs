@@ -123,9 +123,11 @@ impl Client {
         &self,
         from_peer_id: PeerId,
         to_peer_id: PeerId,
+        domain_name: String,
     ) -> F::ClientImpl {
         #[derive(Clone)]
         struct HandlerImpl<F> {
+            domain_name: String,
             from_peer_id: PeerId,
             to_peer_id: PeerId,
             zc_packet_sender: MpscTunnelSender,
@@ -179,6 +181,7 @@ impl Client {
                 let desc = self.service_descriptor();
 
                 let rpc_desc = RpcDescriptor {
+                    domain_name: self.domain_name.clone(),
                     proto_name: desc.proto_name().to_string(),
                     service_name: desc.name().to_string(),
                     method_index: method.index() as u32,
@@ -216,6 +219,7 @@ impl Client {
         }
 
         F::new(HandlerImpl::<F> {
+            domain_name,
             from_peer_id,
             to_peer_id,
             zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),

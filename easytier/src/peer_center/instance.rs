@@ -51,9 +51,10 @@ impl PeerCenterBase {
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()
-            .register(PeerCenterRpcServer::new(PeerCenterServer::new(
-                self.peer_mgr.my_peer_id(),
-            )));
+            .register(
+                PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
+                &self.peer_mgr.get_global_ctx().get_network_name(),
+            );
         Ok(())
     }
 
@@ -112,6 +113,7 @@ impl PeerCenterBase {
                         .scoped_client::<PeerCenterRpcClientFactory<BaseController>>(
                             my_peer_id,
                             center_peer,
+                            peer_mgr.get_global_ctx().get_network_name(),
                         );
                     let ret = job_fn(stub, ctx.clone()).await;
                     drop(_g);

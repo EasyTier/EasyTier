@@ -621,9 +621,10 @@ impl UdpHolePunchConnector {
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()
-            .register(UdpHolePunchRpcServer::new(UdpHolePunchRpcService::new(
-                self.data.clone(),
-            )));
+            .register(
+                UdpHolePunchRpcServer::new(UdpHolePunchRpcService::new(self.data.clone())),
+                &self.data.global_ctx.get_network_name(),
+            );
 
         Ok(())
     }
@@ -770,6 +771,7 @@ impl UdpHolePunchConnector {
             .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(
                 data.peer_mgr.my_peer_id(),
                 dst_peer_id,
+                data.global_ctx.get_network_name(),
             );
 
         let remote_mapped_addr = rpc_stub
@@ -818,6 +820,7 @@ impl UdpHolePunchConnector {
             .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(
                 data.peer_mgr.my_peer_id(),
                 dst_peer_id,
+                data.global_ctx.get_network_name(),
             );
 
         let local_mapped_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
@@ -1040,11 +1043,11 @@ pub mod tests {
 
     use tokio::net::UdpSocket;
 
-    use crate::rpc::{NatType, StunInfo};
+    use crate::common::stun::MockStunInfoCollector;
+    use crate::rpc::NatType;
     use crate::tunnel::common::tests::wait_for_condition;
 
     use crate::{
-        common::{error::Error, stun::StunInfoCollectorTrait},
         connector::udp_hole_punch::UdpHolePunchConnector,
         peers::{
             peer_manager::PeerManager,
@@ -1054,31 +1057,6 @@ pub mod tests {
             },
         },
     };
-
-    struct MockStunInfoCollector {
-        udp_nat_type: NatType,
-    }
-
-    #[async_trait::async_trait]
-    impl StunInfoCollectorTrait for MockStunInfoCollector {
-        fn get_stun_info(&self) -> StunInfo {
-            StunInfo {
-                udp_nat_type: self.udp_nat_type as i32,
-                tcp_nat_type: NatType::Unknown as i32,
-                last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
-                min_port: 100,
-                max_port: 200,
-                ..Default::default()
-            }
-        }
-
-        async fn get_udp_port_mapping(&self, mut port: u16) -> Result<std::net::SocketAddr, Error> {
-            if port == 0 {
-                port = 40144;
-            }
-            Ok(format!("127.0.0.1:{}", port).parse().unwrap())
-        }
-    }
 
     pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });

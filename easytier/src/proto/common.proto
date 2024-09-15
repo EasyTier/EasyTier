@@ -5,9 +5,12 @@ import "error.proto";
 package common;
 
 message RpcDescriptor {
-  string proto_name = 1;
-  string service_name = 2;
-  uint32 method_index = 3;
+  // allow same service registered multiple times in different domain
+  string domain_name = 1;
+
+  string proto_name = 2;
+  string service_name = 3;
+  uint32 method_index = 4;
 }
 
 message RpcRequest {
@@ -63,9 +66,7 @@ message Ipv6Addr {
   uint64 low = 2;
 }
 
-message Url {
-  string url = 1;
-}
+message Url { string url = 1; }
 
 message SocketAddr {
   oneof ip {

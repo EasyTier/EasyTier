@@ -1029,7 +1029,7 @@ impl PeerRouteServiceImpl {
         let my_peer_id = self.my_peer_id;
 
         let (peer_infos, conn_bitmap) = self.build_sync_request(&session);
-        tracing::info!("my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
+        tracing::info!("building sync_route request. my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
                        my_peer_id, dst_peer_id, peer_infos, conn_bitmap, self.synced_route_info, session);
 
         if peer_infos.is_none()
@@ -1048,6 +1048,7 @@ impl PeerRouteServiceImpl {
             .scoped_client::<OspfRouteRpcClientFactory<BaseController>>(
                 self.my_peer_id,
                 dst_peer_id,
+                self.global_ctx.get_network_name(),
             );
 
         let mut ctrl = BaseController {};
@@ -1404,7 +1405,7 @@ impl RouteSessionManager {
         service_impl.update_route_table_and_cached_local_conn_bitmap();
 
         tracing::info!(
-            "sync_route_info: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
+            "handling sync_route_info rpc: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
             from_peer_id, is_initiator, peer_infos, conn_bitmap, service_impl.synced_route_info, session, service_impl.route_table);
 
         session
@@ -1508,10 +1509,10 @@ impl PeerRoute {
     }
 
     async fn start(&self) {
-        self.peer_rpc
-            .rpc_server()
-            .registry()
-            .register(OspfRouteRpcServer::new(self.session_mgr.clone()));
+        self.peer_rpc.rpc_server().registry().register(
+            OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.global_ctx.get_network_name(),
+        );
 
         self.tasks
             .lock()
@@ -1533,6 +1534,15 @@ impl PeerRoute {
             .lock()
             .unwrap()
             .spawn(Self::clear_expired_peer(self.service_impl.clone()));
+    }
+}
+
+impl Drop for PeerRoute {
+    fn drop(&mut self) {
+        self.peer_rpc.rpc_server().registry().unregister(
+            OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.global_ctx.get_network_name(),
+        );
     }
 }
 

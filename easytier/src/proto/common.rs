@@ -24,7 +24,7 @@ impl ToString for Uuid {
 impl From<std::net::Ipv4Addr> for Ipv4Addr {
     fn from(value: std::net::Ipv4Addr) -> Self {
         Self {
-            addr: value.to_bits(),
+            addr: u32::from_be_bytes(value.octets()),
         }
     }
 }

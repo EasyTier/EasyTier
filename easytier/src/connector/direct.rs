@@ -149,9 +149,12 @@ impl DirectConnectorManager {
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()
-            .register(DirectConnectorRpcServer::new(
-                DirectConnectorManagerRpcServer::new(self.global_ctx.clone()),
-            ));
+            .register(
+                DirectConnectorRpcServer::new(DirectConnectorManagerRpcServer::new(
+                    self.global_ctx.clone(),
+                )),
+                &self.data.global_ctx.get_network_name(),
+            );
     }
 
     pub fn run_as_client(&mut self) {
@@ -386,6 +389,7 @@ impl DirectConnectorManager {
             .scoped_client::<DirectConnectorRpcClientFactory<BaseController>>(
                 peer_manager.my_peer_id(),
                 dst_peer_id,
+                data.global_ctx.get_network_name(),
             );
 
         let ip_list = rpc_stub

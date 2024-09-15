@@ -106,11 +106,11 @@ async fn rpc_basic_test() {
     let ctx = TestContext::new();
 
     let server = GreetingServer::new(GreetingService { delay_ms: 0 });
-    ctx.server.registry().register(server);
+    ctx.server.registry().register(server, "");
 
     let out = ctx
         .client
-        .scoped_client::<GreetingClientFactory<RpcController>>(1, 1);
+        .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "".to_string());
 
     // small size req and resp
 
@@ -144,11 +144,11 @@ async fn rpc_timeout_test() {
     let ctx = TestContext::new();
 
     let server = GreetingServer::new(GreetingService { delay_ms: 10000 });
-    ctx.server.registry().register(server);
+    ctx.server.registry().register(server, "test");
 
     let out = ctx
         .client
-        .scoped_client::<GreetingClientFactory<RpcController>>(1, 1);
+        .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
 
     let ctrl = RpcController {};
     let input = SayHelloRequest {

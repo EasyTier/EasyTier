@@ -11,6 +11,7 @@ use super::RpcController;
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash)]
 pub struct ServiceKey {
+    pub domain_name: String,
     pub service_name: String,
     pub proto_name: String,
 }
@@ -18,6 +19,7 @@ pub struct ServiceKey {
 impl From<&RpcDescriptor> for ServiceKey {
     fn from(desc: &RpcDescriptor) -> Self {
         Self {
+            domain_name: desc.domain_name.to_string(),
             service_name: desc.service_name.to_string(),
             proto_name: desc.proto_name.to_string(),
         }
@@ -57,14 +59,29 @@ impl ServiceRegistry {
         }
     }
 
-    pub fn register<H: Handler<Controller = RpcController>>(&self, h: H) {
+    pub fn register<H: Handler<Controller = RpcController>>(&self, h: H, domain_name: &str) {
         let desc = h.service_descriptor();
         let key = ServiceKey {
+            domain_name: domain_name.to_string(),
             service_name: desc.name().to_string(),
             proto_name: desc.proto_name().to_string(),
         };
         let entry = ServiceEntry::new(h);
         self.table.insert(key, entry);
+    }
+
+    pub fn unregister<H: Handler<Controller = RpcController>>(
+        &self,
+        h: H,
+        domain_name: &str,
+    ) -> Option<()> {
+        let desc = h.service_descriptor();
+        let key = ServiceKey {
+            domain_name: domain_name.to_string(),
+            service_name: desc.name().to_string(),
+            proto_name: desc.proto_name().to_string(),
+        };
+        self.table.remove(&key).map(|_| ())
     }
 
     pub async fn call_method(

@@ -179,6 +179,10 @@ impl GlobalCtx {
         self.config.get_network_identity()
     }
 
+    pub fn get_network_name(&self) -> String {
+        self.get_network_identity().network_name
+    }
+
     pub fn get_ip_collector(&self) -> Arc<IPCollector> {
         self.ip_collector.clone()
     }
@@ -191,7 +195,6 @@ impl GlobalCtx {
         self.stun_info_collection.as_ref()
     }
 
-    #[cfg(test)]
     pub fn replace_stun_info_collector(&self, collector: Box<dyn StunInfoCollectorTrait>) {
         // force replace the stun_info_collection without mut and drop the old one
         let ptr = &self.stun_info_collection as *const Box<dyn StunInfoCollectorTrait>;

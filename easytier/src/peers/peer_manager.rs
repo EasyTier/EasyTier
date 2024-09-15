@@ -17,7 +17,6 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::bytes::Bytes;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
@@ -474,33 +473,11 @@ impl PeerManager {
                     return vec![];
                 };
 
-                let mut peers = foreign_client.list_foreign_peers();
+                let mut peers = foreign_client.list_public_peers().await;
                 peers.extend(peer_map.list_peers_with_conn().await);
                 peers
             }
-            async fn send_route_packet(
-                &self,
-                msg: Bytes,
-                _route_id: u8,
-                dst_peer_id: PeerId,
-            ) -> Result<(), Error> {
-                let foreign_client = self
-                    .foreign_network_client
-                    .upgrade()
-                    .ok_or(Error::Unknown)?;
-                let peer_map = self.peers.upgrade().ok_or(Error::Unknown)?;
-                let mut zc_packet = ZCPacket::new_with_payload(&msg);
-                zc_packet.fill_peer_manager_hdr(
-                    self.my_peer_id,
-                    dst_peer_id,
-                    PacketType::Route as u8,
-                );
-                if foreign_client.has_next_hop(dst_peer_id) {
-                    foreign_client.send_msg(zc_packet, dst_peer_id).await
-                } else {
-                    peer_map.send_msg_directly(zc_packet, dst_peer_id).await
-                }
-            }
+
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
             }
