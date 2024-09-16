@@ -8,10 +8,10 @@ use crate::proto::{
     },
     rpc_types::{self, controller::BaseController},
 };
-use tonic::{Request, Response, Status};
 
 use super::peer_manager::PeerManager;
 
+#[derive(Clone)]
 pub struct PeerManagerRpcService {
     peer_manager: Arc<PeerManager>,
 }

@@ -8,8 +8,6 @@ use anyhow::Context;
 use cidr::Ipv4Inet;
 
 use tokio::{sync::Mutex, task::JoinSet};
-use tonic::transport::server::TcpIncoming;
-use tonic::transport::Server;
 
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
@@ -28,8 +26,11 @@ use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::PacketRecvChanReceiver;
 use crate::proto::cli::VpnPortalRpc;
 use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
+use crate::proto::peer_rpc::PeerCenterRpcServer;
+use crate::proto::rpc_impl::standalone::StandAloneServer;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
+use crate::tunnel::tcp::TcpTunnelListener;
 use crate::vpn_portal::{self, VpnPortal};
 
 use super::listeners::ListenerManager;
@@ -106,8 +107,6 @@ pub struct Instance {
 
     nic_ctx: ArcNicCtx,
 
-    tasks: JoinSet<()>,
-
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
     peer_manager: Arc<PeerManager>,
     listener_manager: Arc<Mutex<ListenerManager<PeerManager>>>,
@@ -123,6 +122,8 @@ pub struct Instance {
 
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
+
+    rpc_server: Option<StandAloneServer<TcpTunnelListener>>,
 
     global_ctx: ArcGlobalCtx,
 }
@@ -172,6 +173,12 @@ impl Instance {
         #[cfg(feature = "socks5")]
         let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
+        let rpc_server = global_ctx.config.get_rpc_portal().and_then(|s| {
+            Some(StandAloneServer::new(TcpTunnelListener::new(
+                format!("tcp://{}", s).parse().unwrap(),
+            )))
+        });
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -179,7 +186,6 @@ impl Instance {
             peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
             nic_ctx: Arc::new(Mutex::new(None)),
 
-            tasks: JoinSet::new(),
             peer_manager,
             listener_manager,
             conn_manager,
@@ -194,6 +200,8 @@ impl Instance {
 
             #[cfg(feature = "socks5")]
             socks5_server,
+
+            rpc_server,
 
             global_ctx,
         }
@@ -377,7 +385,7 @@ impl Instance {
             self.check_dhcp_ip_conflict();
         }
 
-        self.run_rpc_server()?;
+        self.run_rpc_server().await?;
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.ip_proxy = Some(IpProxy::new(
@@ -443,11 +451,8 @@ impl Instance {
         Ok(())
     }
 
-    pub async fn wait(&mut self) {
-        while let Some(ret) = self.tasks.join_next().await {
-            tracing::info!("task finished: {:?}", ret);
-            ret.unwrap();
-        }
+    pub async fn wait(&self) {
+        self.peer_manager.wait().await;
     }
 
     pub fn id(&self) -> uuid::Uuid {
@@ -458,7 +463,8 @@ impl Instance {
         self.peer_manager.my_peer_id()
     }
 
-    fn get_vpn_portal_rpc_service(&self) -> impl VpnPortalRpc {
+    fn get_vpn_portal_rpc_service(&self) -> impl VpnPortalRpc<Controller = BaseController> + Clone {
+        #[derive(Clone)]
         struct VpnPortalRpcService {
             peer_mgr: Weak<PeerManager>,
             vpn_portal: Weak<Mutex<Box<dyn VpnPortal>>>,
@@ -500,46 +506,36 @@ impl Instance {
         }
     }
 
-    fn run_rpc_server(&mut self) -> Result<(), Error> {
-        let Some(addr) = self.global_ctx.config.get_rpc_portal() else {
+    async fn run_rpc_server(&mut self) -> Result<(), Error> {
+        let Some(_) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
             return Ok(());
         };
+
+        use crate::proto::cli::*;
+
         let peer_mgr = self.peer_manager.clone();
         let conn_manager = self.conn_manager.clone();
-        let net_ns = self.global_ctx.net_ns.clone();
         let peer_center = self.peer_center.clone();
         let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
 
-        let incoming = TcpIncoming::new(addr, true, None)
-            .map_err(|e| anyhow::anyhow!("create rpc server failed. addr: {}, err: {}", addr, e))?;
-        // self.tasks.spawn(async move {
-        //     let _g = net_ns.guard();
-        //     Server::builder()
-        //         .add_service(
-        //             crate::proto::cli::peer_manage_rpc_server::PeerManageRpcServer::new(
-        //                 PeerManagerRpcService::new(peer_mgr),
-        //             ),
-        //         )
-        //         .add_service(
-        //             crate::rpc::connector_manage_rpc_server::ConnectorManageRpcServer::new(
-        //                 ConnectorManagerRpcService(conn_manager.clone()),
-        //             ),
-        //         )
-        //         .add_service(
-        //             crate::rpc::peer_center_rpc_server::PeerCenterRpcServer::new(
-        //                 peer_center.get_rpc_service(),
-        //             ),
-        //         )
-        //         .add_service(crate::rpc::vpn_portal_rpc_server::VpnPortalRpcServer::new(
-        //             vpn_portal_rpc,
-        //         ))
-        //         .serve_with_incoming(incoming)
-        //         .await
-        //         .with_context(|| format!("rpc server failed. addr: {}", addr))
-        //         .unwrap();
-        // });
-        Ok(())
+        let s = self.rpc_server.as_mut().unwrap();
+        s.registry().register(
+            PeerManageRpcServer::new(PeerManagerRpcService::new(peer_mgr)),
+            "",
+        );
+        s.registry().register(
+            ConnectorManageRpcServer::new(ConnectorManagerRpcService(conn_manager)),
+            "",
+        );
+
+        s.registry()
+            .register(PeerCenterRpcServer::new(peer_center.get_rpc_service()), "");
+        s.registry()
+            .register(VpnPortalRpcServer::new(vpn_portal_rpc), "");
+
+        let _g = self.global_ctx.net_ns.guard();
+        Ok(s.serve().await.with_context(|| "rpc server start failed")?)
     }
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {

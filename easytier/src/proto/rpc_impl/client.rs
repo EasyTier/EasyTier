@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
@@ -23,7 +24,7 @@ use crate::proto::rpc_types::error::Result;
 use crate::tunnel::mpsc::{MpscTunnel, MpscTunnelSender};
 use crate::tunnel::packet_def::ZCPacket;
 use crate::tunnel::ring::create_ring_tunnel_pair;
-use crate::tunnel::{Tunnel, TunnelError};
+use crate::tunnel::{Tunnel, TunnelError, ZCPacketStream};
 
 use super::packet::PacketMerger;
 use super::{RpcTransactId, Transport};
@@ -50,7 +51,7 @@ type InflightRequestTable = Arc<DashMap<InflightRequestKey, InflightRequest>>;
 
 pub struct Client {
     mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
-    transport: Mutex<Option<Transport>>,
+    transport: Mutex<Transport>,
     inflight_requests: InflightRequestTable,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
@@ -60,14 +61,18 @@ impl Client {
         let (ring_a, ring_b) = create_ring_tunnel_pair();
         Self {
             mpsc: Mutex::new(MpscTunnel::new(ring_a)),
-            transport: Mutex::new(Some(MpscTunnel::new(ring_b))),
+            transport: Mutex::new(MpscTunnel::new(ring_b)),
             inflight_requests: Arc::new(DashMap::new()),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
-    pub fn get_transport(&self) -> Option<Transport> {
-        self.transport.lock().unwrap().take()
+    pub fn get_transport_sink(&self) -> MpscTunnelSender {
+        self.transport.lock().unwrap().get_sink()
+    }
+
+    pub fn get_transport_stream(&self) -> Pin<Box<dyn ZCPacketStream>> {
+        self.transport.lock().unwrap().get_stream()
     }
 
     pub fn run(&self) {

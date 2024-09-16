@@ -1471,7 +1471,7 @@ impl PeerRoute {
             tokio::time::sleep(Duration::from_secs(60)).await;
             service_impl.clear_expired_peer();
             // TODO: use debug log level for this.
-            tracing::info!(?service_impl, "clear_expired_peer");
+            tracing::debug!(?service_impl, "clear_expired_peer");
         }
     }
 

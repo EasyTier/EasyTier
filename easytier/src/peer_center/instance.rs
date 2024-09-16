@@ -15,6 +15,7 @@ use crate::{
     common::PeerId,
     peers::{
         peer_manager::PeerManager,
+        peer_rpc::PeerRpcManagerTransport,
         route_trait::{RouteCostCalculator, RouteCostCalculatorInterface},
         rpc_service::PeerManagerRpcService,
     },
@@ -22,7 +23,7 @@ use crate::{
         peer_rpc::{
             GetGlobalPeerMapRequest, GetGlobalPeerMapResponse, GlobalPeerMap, PeerCenterRpc,
             PeerCenterRpcClientFactory, PeerCenterRpcServer, PeerInfoForGlobalMap,
-            ReportPeersRequest,
+            ReportPeersRequest, ReportPeersResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -142,9 +143,35 @@ impl PeerCenterBase {
     }
 }
 
+#[derive(Clone)]
 pub struct PeerCenterInstanceService {
     global_peer_map: Arc<RwLock<GlobalPeerMap>>,
     global_peer_map_digest: Arc<AtomicCell<Digest>>,
+}
+
+#[async_trait::async_trait]
+impl PeerCenterRpc for PeerCenterInstanceService {
+    type Controller = BaseController;
+
+    async fn get_global_peer_map(
+        &self,
+        _: BaseController,
+        _: GetGlobalPeerMapRequest,
+    ) -> Result<GetGlobalPeerMapResponse, rpc_types::error::Error> {
+        let global_peer_map = self.global_peer_map.read().unwrap();
+        Ok(GetGlobalPeerMapResponse {
+            global_peer_map: global_peer_map.map.clone(),
+            digest: Some(self.global_peer_map_digest.load()),
+        })
+    }
+
+    async fn report_peers(
+        &self,
+        _: BaseController,
+        req: ReportPeersRequest,
+    ) -> Result<ReportPeersResponse, rpc_types::error::Error> {
+        Err(anyhow::anyhow!("not implemented").into())
+    }
 }
 
 pub struct PeerCenterInstance {

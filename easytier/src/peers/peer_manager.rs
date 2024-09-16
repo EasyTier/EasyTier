@@ -740,6 +740,12 @@ impl PeerManager {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
+
+    pub async fn wait(&self) {
+        while !self.tasks.lock().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -49,11 +49,14 @@ impl PeerRpcManager {
         self.rpc_client.run();
         self.rpc_server.run();
 
-        let mut server_t = self.rpc_server.get_transport().unwrap();
-        let mut client_t = self.rpc_client.get_transport().unwrap();
-
-        let (server_tx, mut server_rx) = (server_t.get_sink(), server_t.get_stream());
-        let (client_tx, mut client_rx) = (client_t.get_sink(), client_t.get_stream());
+        let (server_tx, mut server_rx) = (
+            self.rpc_server.get_transport_sink(),
+            self.rpc_server.get_transport_stream(),
+        );
+        let (client_tx, mut client_rx) = (
+            self.rpc_client.get_transport_sink(),
+            self.rpc_client.get_transport_stream(),
+        );
 
         let tspt = self.tspt.clone();
 

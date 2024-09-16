@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{fmt::Display, str::FromStr};
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
@@ -15,9 +15,9 @@ impl From<Uuid> for uuid::Uuid {
     }
 }
 
-impl ToString for Uuid {
-    fn to_string(&self) -> String {
-        uuid::Uuid::from(self.clone()).to_string()
+impl Display for Uuid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", uuid::Uuid::from(self.clone()))
     }
 }
 
@@ -92,9 +92,9 @@ impl FromStr for Url {
     }
 }
 
-impl ToString for Url {
-    fn to_string(&self) -> String {
-        self.url.clone()
+impl Display for Url {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.url)
     }
 }
 

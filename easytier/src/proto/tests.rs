@@ -43,6 +43,8 @@ impl Greeting for GreetingService {
 
 use crate::proto::rpc_impl::client::Client;
 use crate::proto::rpc_impl::server::Server;
+use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
+use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 
 struct TestContext {
     client: Client,
@@ -58,11 +60,11 @@ impl TestContext {
         let client = Client::new();
         client.run();
 
-        let mut server_t = rpc_server.get_transport().unwrap();
-        let mut client_t = client.get_transport().unwrap();
-
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
-        let (mut rx, tx) = (server_t.get_stream(), client_t.get_sink());
+        let (mut rx, tx) = (
+            rpc_server.get_transport_stream(),
+            client.get_transport_sink(),
+        );
 
         tasks.lock().unwrap().spawn(async move {
             while let Some(Ok(packet)) = rx.next().await {
@@ -73,7 +75,10 @@ impl TestContext {
             }
         });
 
-        let (mut rx, tx) = (client_t.get_stream(), server_t.get_sink());
+        let (mut rx, tx) = (
+            client.get_transport_stream(),
+            rpc_server.get_transport_sink(),
+        );
         tasks.lock().unwrap().spawn(async move {
             while let Some(Ok(packet)) = rx.next().await {
                 if let Err(err) = tx.send(packet).await {
@@ -170,4 +175,50 @@ async fn rpc_timeout_test() {
 
     assert_eq!(0, ctx.client.inflight_count());
     assert_eq!(0, ctx.server.inflight_count());
+}
+
+#[tokio::test]
+async fn standalone_rpc_test() {
+    let mut server = StandAloneServer::new(TcpTunnelListener::new(
+        "tcp://0.0.0.0:33455".parse().unwrap(),
+    ));
+    let service = GreetingServer::new(GreetingService {
+        delay_ms: 0,
+        prefix: "Hello".to_string(),
+    });
+    server.registry().register(service, "test");
+    server.serve().await.unwrap();
+
+    let mut client = StandAloneClient::new(TcpTunnelConnector::new(
+        "tcp://127.0.0.1:33455".parse().unwrap(),
+    ));
+
+    let out = client
+        .scoped_client::<GreetingClientFactory<RpcController>>("test".to_string())
+        .await
+        .unwrap();
+
+    let ctrl = RpcController {};
+    let input = SayHelloRequest {
+        name: "world".to_string(),
+    };
+    let ret = out.say_hello(ctrl, input).await;
+    assert_eq!(ret.unwrap().greeting, "Hello world!");
+
+    let out = client
+        .scoped_client::<GreetingClientFactory<RpcController>>("test".to_string())
+        .await
+        .unwrap();
+
+    let ctrl = RpcController {};
+    let input = SayGoodbyeRequest {
+        name: "world".to_string(),
+    };
+    let ret = out.say_goodbye(ctrl, input).await;
+    assert_eq!(ret.unwrap().greeting, "Goodbye, world!");
+
+    drop(client);
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    assert_eq!(0, server.inflight_server());
 }

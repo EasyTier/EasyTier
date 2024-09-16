@@ -101,11 +101,7 @@ uuid = { version = "1.5.0", features = [
 crossbeam-queue = "0.3"
 once_cell = "1.18.0"
 
-# for packet
-postcard = { "version" = "1.0.8", features = ["alloc"] }
-
 # for rpc
-tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 anyhow = "1.0"

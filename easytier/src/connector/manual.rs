@@ -396,6 +396,7 @@ impl ManualConnectorManager {
     }
 }
 
+#[derive(Clone)]
 pub struct ConnectorManagerRpcService(pub Arc<ManualConnectorManager>);
 
 #[async_trait::async_trait]
@@ -423,9 +424,6 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
             self.0
                 .remove_connector(url.clone())
                 .await
-                .map_err(|e| {
-                    tonic::Status::invalid_argument(format!("remove connector failed: {:?}", e))
-                })
                 .with_context(|| format!("remove connector failed: {:?}", url))?;
             return Ok(ManageConnectorResponse::default());
         } else {

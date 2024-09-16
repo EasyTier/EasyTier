@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -8,6 +11,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     common::{join_joinset_background, PeerId},
+    defer,
     proto::{
         common::{self, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse},
         rpc_types::error::Result,
@@ -15,7 +19,7 @@ use crate::{
     tunnel::{
         mpsc::{MpscTunnel, MpscTunnelSender},
         ring::create_ring_tunnel_pair,
-        Tunnel,
+        Tunnel, ZCPacketStream,
     },
 };
 
@@ -35,9 +39,9 @@ struct PacketMergerKey {
 pub struct Server {
     registry: Arc<ServiceRegistry>,
 
-    mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
+    mpsc: Mutex<Option<MpscTunnel<Box<dyn Tunnel>>>>,
 
-    transport: Mutex<Option<Transport>>,
+    transport: Mutex<Transport>,
 
     tasks: Arc<Mutex<JoinSet<()>>>,
     packet_mergers: Arc<DashMap<PacketMergerKey, PacketMerger>>,
@@ -45,12 +49,16 @@ pub struct Server {
 
 impl Server {
     pub fn new() -> Self {
+        Server::new_with_registry(Arc::new(ServiceRegistry::new()))
+    }
+
+    pub fn new_with_registry(registry: Arc<ServiceRegistry>) -> Self {
         let (ring_a, ring_b) = create_ring_tunnel_pair();
 
         Self {
-            registry: Arc::new(ServiceRegistry::new()),
-            mpsc: Mutex::new(MpscTunnel::new(ring_a)),
-            transport: Mutex::new(Some(MpscTunnel::new(ring_b))),
+            registry,
+            mpsc: Mutex::new(Some(MpscTunnel::new(ring_a))),
+            transport: Mutex::new(MpscTunnel::new(ring_b)),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             packet_mergers: Arc::new(DashMap::new()),
         }
@@ -60,21 +68,27 @@ impl Server {
         &self.registry
     }
 
-    pub fn get_transport(&self) -> Option<Transport> {
-        self.transport.lock().unwrap().take()
+    pub fn get_transport_sink(&self) -> MpscTunnelSender {
+        self.transport.lock().unwrap().get_sink()
+    }
+
+    pub fn get_transport_stream(&self) -> Pin<Box<dyn ZCPacketStream>> {
+        self.transport.lock().unwrap().get_stream()
     }
 
     pub fn run(&self) {
         let tasks = self.tasks.clone();
         join_joinset_background(tasks.clone(), "rpc server".to_string());
 
-        let mut rx = self.mpsc.lock().unwrap().get_stream();
-        let tx = self.mpsc.lock().unwrap().get_sink();
+        let mpsc = self.mpsc.lock().unwrap().take().unwrap();
 
         let packet_merges = self.packet_mergers.clone();
         let reg = self.registry.clone();
         let t = tasks.clone();
         tasks.lock().unwrap().spawn(async move {
+            let mut mpsc = mpsc;
+            let mut rx = mpsc.get_stream();
+
             while let Some(packet) = rx.next().await {
                 if let Err(err) = packet {
                     tracing::error!(?err, "Failed to receive packet");
@@ -107,9 +121,11 @@ impl Server {
                 match ret {
                     Ok(Some(packet)) => {
                         packet_merges.remove(&key);
-                        t.lock()
-                            .unwrap()
-                            .spawn(Self::handle_rpc(tx.clone(), packet, reg.clone()));
+                        t.lock().unwrap().spawn(Self::handle_rpc(
+                            mpsc.get_sink(),
+                            packet,
+                            reg.clone(),
+                        ));
                     }
                     Ok(None) => {}
                     Err(err) => {
@@ -184,5 +200,9 @@ impl Server {
 
     pub fn inflight_count(&self) -> usize {
         self.packet_mergers.len()
+    }
+
+    pub fn close(&self) {
+        self.transport.lock().unwrap().close();
     }
 }
