@@ -147,41 +147,6 @@ pub struct PeerCenterInstanceService {
     global_peer_map_digest: Arc<AtomicCell<Digest>>,
 }
 
-#[tonic::async_trait]
-impl crate::rpc::cli::peer_center_rpc_server::PeerCenterRpc for PeerCenterInstanceService {
-    async fn get_global_peer_map(
-        &self,
-        _request: tonic::Request<crate::rpc::GetGlobalPeerMapRequest>,
-    ) -> Result<tonic::Response<crate::rpc::GetGlobalPeerMapResponse>, tonic::Status> {
-        let global_peer_map = self.global_peer_map.read().unwrap().clone();
-        Ok(tonic::Response::new(crate::rpc::GetGlobalPeerMapResponse {
-            global_peer_map: global_peer_map
-                .map
-                .into_iter()
-                .map(|(k, v)| {
-                    (
-                        k,
-                        crate::rpc::PeerInfoForGlobalMap {
-                            direct_peers: v
-                                .direct_peers
-                                .into_iter()
-                                .map(|x| {
-                                    (
-                                        x.0,
-                                        crate::rpc::DirectConnectedPeerInfo {
-                                            latency_ms: x.1.latency_ms,
-                                        },
-                                    )
-                                })
-                                .collect(),
-                        },
-                    )
-                })
-                .collect(),
-        }))
-    }
-}
-
 pub struct PeerCenterInstance {
     peer_mgr: Arc<PeerManager>,
 

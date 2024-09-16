@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-use crate::rpc::PeerConnInfo;
+use crate::proto::cli::PeerConnInfo;
 use anyhow::Context;
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;

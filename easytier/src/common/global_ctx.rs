@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::rpc::PeerConnInfo;
+use crate::proto::cli::PeerConnInfo;
 use crossbeam::atomic::AtomicCell;
 
 use super::{

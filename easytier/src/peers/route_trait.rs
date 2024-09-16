@@ -62,7 +62,7 @@ pub trait Route {
         self.get_next_hop(peer_id).await
     }
 
-    async fn list_routes(&self) -> Vec<crate::rpc::Route>;
+    async fn list_routes(&self) -> Vec<crate::proto::cli::Route>;
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None

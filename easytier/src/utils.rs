@@ -5,7 +5,10 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 
 use crate::{
     common::{config::ConfigLoader, get_logger_timer_rfc3339},
-    rpc::cli::{NatType, PeerInfo, Route},
+    proto::{
+        cli::{PeerInfo, Route},
+        common::NatType,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

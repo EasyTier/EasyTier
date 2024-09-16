@@ -25,6 +25,7 @@ use tokio::{
 use crate::{
     common::{global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::route_trait::{Route, RouteInterfaceBox},
+    proto::common::{NatType, StunInfo},
     proto::{
         peer_rpc::{
             OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
@@ -36,7 +37,6 @@ use crate::{
             controller::{BaseController, Controller},
         },
     },
-    rpc::{NatType, StunInfo},
 };
 
 use super::{
@@ -141,9 +141,9 @@ impl RoutePeerInfo {
     }
 }
 
-impl Into<crate::rpc::Route> for RoutePeerInfo {
-    fn into(self) -> crate::rpc::Route {
-        crate::rpc::Route {
+impl Into<crate::proto::cli::Route> for RoutePeerInfo {
+    fn into(self) -> crate::proto::cli::Route {
+        crate::proto::cli::Route {
             peer_id: self.peer_id,
             ipv4_addr: if let Some(ipv4_addr) = self.ipv4_addr {
                 ipv4_addr.to_string()
@@ -1574,7 +1574,7 @@ impl Route for PeerRoute {
         route_table.get_next_hop(dst_peer_id).map(|x| x.0)
     }
 
-    async fn list_routes(&self) -> Vec<crate::rpc::Route> {
+    async fn list_routes(&self) -> Vec<crate::proto::cli::Route> {
         let route_table = &self.service_impl.route_table;
         let mut routes = Vec::new();
         for item in route_table.peer_infos.iter() {
@@ -1584,7 +1584,7 @@ impl Route for PeerRoute {
             let Some(next_hop_peer) = route_table.get_next_hop(*item.key()) else {
                 continue;
             };
-            let mut route: crate::rpc::Route = item.value().clone().into();
+            let mut route: crate::proto::cli::Route = item.value().clone().into();
             route.next_hop_peer_id = next_hop_peer.0;
             route.cost = next_hop_peer.1;
             routes.push(route);
@@ -1634,7 +1634,7 @@ mod tests {
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface},
             tests::connect_peer_manager,
         },
-        rpc::NatType,
+        proto::common::NatType,
         tunnel::common::tests::wait_for_condition,
     };
 

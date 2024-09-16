@@ -26,8 +26,10 @@ use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::PacketRecvChanReceiver;
-use crate::rpc::vpn_portal_rpc_server::VpnPortalRpc;
-use crate::rpc::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
+use crate::proto::cli::VpnPortalRpc;
+use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
+use crate::proto::rpc_types;
+use crate::proto::rpc_types::controller::BaseController;
 use crate::vpn_portal::{self, VpnPortal};
 
 use super::listeners::ListenerManager;
@@ -462,18 +464,21 @@ impl Instance {
             vpn_portal: Weak<Mutex<Box<dyn VpnPortal>>>,
         }
 
-        #[tonic::async_trait]
+        #[async_trait::async_trait]
         impl VpnPortalRpc for VpnPortalRpcService {
+            type Controller = BaseController;
+
             async fn get_vpn_portal_info(
                 &self,
-                _request: tonic::Request<GetVpnPortalInfoRequest>,
-            ) -> Result<tonic::Response<GetVpnPortalInfoResponse>, tonic::Status> {
+                _: BaseController,
+                _request: GetVpnPortalInfoRequest,
+            ) -> Result<GetVpnPortalInfoResponse, rpc_types::error::Error> {
                 let Some(vpn_portal) = self.vpn_portal.upgrade() else {
-                    return Err(tonic::Status::unavailable("vpn portal not available"));
+                    return Err(anyhow::anyhow!("vpn portal not available").into());
                 };
 
                 let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-                    return Err(tonic::Status::unavailable("peer manager not available"));
+                    return Err(anyhow::anyhow!("peer manager not available").into());
                 };
 
                 let vpn_portal = vpn_portal.lock().await;
@@ -485,7 +490,7 @@ impl Instance {
                     }),
                 };
 
-                Ok(tonic::Response::new(ret))
+                Ok(ret)
             }
         }
 
@@ -508,32 +513,32 @@ impl Instance {
 
         let incoming = TcpIncoming::new(addr, true, None)
             .map_err(|e| anyhow::anyhow!("create rpc server failed. addr: {}, err: {}", addr, e))?;
-        self.tasks.spawn(async move {
-            let _g = net_ns.guard();
-            Server::builder()
-                .add_service(
-                    crate::rpc::peer_manage_rpc_server::PeerManageRpcServer::new(
-                        PeerManagerRpcService::new(peer_mgr),
-                    ),
-                )
-                .add_service(
-                    crate::rpc::connector_manage_rpc_server::ConnectorManageRpcServer::new(
-                        ConnectorManagerRpcService(conn_manager.clone()),
-                    ),
-                )
-                .add_service(
-                    crate::rpc::peer_center_rpc_server::PeerCenterRpcServer::new(
-                        peer_center.get_rpc_service(),
-                    ),
-                )
-                .add_service(crate::rpc::vpn_portal_rpc_server::VpnPortalRpcServer::new(
-                    vpn_portal_rpc,
-                ))
-                .serve_with_incoming(incoming)
-                .await
-                .with_context(|| format!("rpc server failed. addr: {}", addr))
-                .unwrap();
-        });
+        // self.tasks.spawn(async move {
+        //     let _g = net_ns.guard();
+        //     Server::builder()
+        //         .add_service(
+        //             crate::proto::cli::peer_manage_rpc_server::PeerManageRpcServer::new(
+        //                 PeerManagerRpcService::new(peer_mgr),
+        //             ),
+        //         )
+        //         .add_service(
+        //             crate::rpc::connector_manage_rpc_server::ConnectorManageRpcServer::new(
+        //                 ConnectorManagerRpcService(conn_manager.clone()),
+        //             ),
+        //         )
+        //         .add_service(
+        //             crate::rpc::peer_center_rpc_server::PeerCenterRpcServer::new(
+        //                 peer_center.get_rpc_service(),
+        //             ),
+        //         )
+        //         .add_service(crate::rpc::vpn_portal_rpc_server::VpnPortalRpcServer::new(
+        //             vpn_portal_rpc,
+        //         ))
+        //         .serve_with_incoming(incoming)
+        //         .await
+        //         .with_context(|| format!("rpc server failed. addr: {}", addr))
+        //         .unwrap();
+        // });
         Ok(())
     }
 

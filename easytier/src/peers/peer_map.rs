@@ -10,7 +10,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         PeerId,
     },
-    rpc::PeerConnInfo,
+    proto::cli::PeerConnInfo,
     tunnel::packet_def::ZCPacket,
     tunnel::TunnelError,
 };

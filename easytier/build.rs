@@ -129,18 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     WindowsBuild::check_for_win();
 
-    tonic_build::configure()
-        .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute("cli.DirectConnectedPeerInfo", "#[derive(Hash)]")
-        .type_attribute("cli.PeerInfoForGlobalMap", "#[derive(Hash)]")
-        .btree_map(&["."])
-        .compile(&["proto/cli.proto"], &["proto/"])
-        .unwrap();
-    // tonic_build::compile_protos("proto/cli.proto")?;
-
     prost_build::Config::new()
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".cli", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             "peer_rpc.GetIpListResponse",
             "#[derive(serde::Serialize, serde::Deserialize)]",
@@ -156,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "src/proto/common.proto",
                 "src/proto/error.proto",
                 "src/proto/tests.proto",
+                "src/proto/cli.proto",
             ],
             &["src/proto/"],
         )

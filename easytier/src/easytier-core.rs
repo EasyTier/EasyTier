@@ -22,7 +22,6 @@ mod instance;
 mod peer_center;
 mod peers;
 mod proto;
-mod rpc;
 mod tunnel;
 mod utils;
 mod vpn_portal;
@@ -549,7 +548,7 @@ fn print_event(msg: String) {
     );
 }
 
-fn peer_conn_info_to_string(p: crate::rpc::PeerConnInfo) -> String {
+fn peer_conn_info_to_string(p: crate::proto::cli::PeerConnInfo) -> String {
     format!(
         "my_peer_id: {}, dst_peer_id: {}, tunnel_info: {:?}",
         p.my_peer_id, p.peer_id, p.tunnel

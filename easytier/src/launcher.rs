@@ -11,8 +11,11 @@ use crate::{
     },
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
-    proto::peer_rpc::GetIpListResponse,
-    rpc::cli::{PeerInfo, Route, StunInfo},
+    proto::{
+        cli::{PeerInfo, Route},
+        common::StunInfo,
+        peer_rpc::GetIpListResponse,
+    },
     utils::{list_peer_route_pair, PeerRoutePair},
 };
 use chrono::{DateTime, Local};

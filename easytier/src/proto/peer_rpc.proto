@@ -118,3 +118,12 @@ service PeerCenterRpc {
   rpc GetGlobalPeerMap(GetGlobalPeerMapRequest)
       returns (GetGlobalPeerMapResponse);
 }
+
+message HandshakeRequest {
+  uint32 magic = 1;
+  uint32 my_peer_id = 2;
+  uint32 version = 3;
+  repeated string features = 4;
+  string network_name = 5;
+  bytes network_secret_digrest = 6;
+}

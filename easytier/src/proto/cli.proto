@@ -1,4 +1,7 @@
 syntax = "proto3";
+
+import "common.proto";
+
 package cli;
 
 message Status {
@@ -16,18 +19,12 @@ message PeerConnStats {
   uint64 latency_us = 5;
 }
 
-message TunnelInfo {
-  string tunnel_type = 1;
-  string local_addr = 2;
-  string remote_addr = 3;
-}
-
 message PeerConnInfo {
   string conn_id = 1;
   uint32 my_peer_id = 2;
   uint32 peer_id = 3;
   repeated string features = 4;
-  TunnelInfo tunnel = 5;
+  common.TunnelInfo tunnel = 5;
   PeerConnStats stats = 6;
   float loss_rate = 7;
   bool is_client = 8;
@@ -46,27 +43,6 @@ message ListPeerResponse {
   NodeInfo my_info = 2;
 }
 
-enum NatType {
-  // has NAT; but own a single public IP, port is not changed
-  Unknown = 0;
-  OpenInternet = 1;
-  NoPAT = 2;
-  FullCone = 3;
-  Restricted = 4;
-  PortRestricted = 5;
-  Symmetric = 6;
-  SymUdpFirewall = 7;
-}
-
-message StunInfo {
-  NatType udp_nat_type = 1;
-  NatType tcp_nat_type = 2;
-  int64 last_update_time = 3;
-  repeated string public_ip = 4;
-  uint32 min_port = 5;
-  uint32 max_port = 6;
-}
-
 message Route {
   uint32 peer_id = 1;
   string ipv4_addr = 2;
@@ -74,7 +50,7 @@ message Route {
   int32 cost = 4;
   repeated string proxy_cidrs = 5;
   string hostname = 6;
-  StunInfo stun_info = 7;
+  common.StunInfo stun_info = 7;
   string inst_id = 8;
   string version = 9;
 }
@@ -84,7 +60,7 @@ message NodeInfo {
   string ipv4_addr = 2;
   repeated string proxy_cidrs = 3;
   string hostname = 4;
-  StunInfo stun_info = 5;
+  common.StunInfo stun_info = 5;
   string inst_id = 6;
   repeated string listeners = 7;
   string config = 8;
@@ -127,7 +103,7 @@ enum ConnectorStatus {
 }
 
 message Connector {
-  string url = 1;
+  common.Url url = 1;
   ConnectorStatus status = 2;
 }
 
@@ -142,7 +118,7 @@ enum ConnectorManageAction {
 
 message ManageConnectorRequest {
   ConnectorManageAction action = 1;
-  string url = 2;
+  common.Url url = 2;
 }
 
 message ManageConnectorResponse {}
@@ -150,23 +126,6 @@ message ManageConnectorResponse {}
 service ConnectorManageRpc {
   rpc ListConnector(ListConnectorRequest) returns (ListConnectorResponse);
   rpc ManageConnector(ManageConnectorRequest) returns (ManageConnectorResponse);
-}
-
-message DirectConnectedPeerInfo { int32 latency_ms = 1; }
-
-message PeerInfoForGlobalMap {
-  map<uint32, DirectConnectedPeerInfo> direct_peers = 1;
-}
-
-message GetGlobalPeerMapRequest {}
-
-message GetGlobalPeerMapResponse {
-  map<uint32, PeerInfoForGlobalMap> global_peer_map = 1;
-}
-
-service PeerCenterRpc {
-  rpc GetGlobalPeerMap(GetGlobalPeerMapRequest)
-      returns (GetGlobalPeerMapResponse);
 }
 
 message VpnPortalInfo {
@@ -181,25 +140,4 @@ message GetVpnPortalInfoResponse { VpnPortalInfo vpn_portal_info = 1; }
 service VpnPortalRpc {
   rpc GetVpnPortalInfo(GetVpnPortalInfoRequest)
       returns (GetVpnPortalInfoResponse);
-}
-
-message HandshakeRequest {
-  uint32 magic = 1;
-  uint32 my_peer_id = 2;
-  uint32 version = 3;
-  repeated string features = 4;
-  string network_name = 5;
-  bytes network_secret_digrest = 6;
-}
-
-message TaRpcPacket {
-  uint32 from_peer = 1;
-  uint32 to_peer = 2;
-  uint32 service_id = 3;
-  uint32 transact_id = 4;
-  bool is_req = 5;
-  bytes content = 6;
-
-  uint32 total_pieces = 7;
-  uint32 piece_idx = 8;
 }

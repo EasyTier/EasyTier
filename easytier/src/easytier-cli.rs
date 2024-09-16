@@ -4,24 +4,18 @@ use std::{net::SocketAddr, time::Duration, vec};
 
 use clap::{command, Args, Parser, Subcommand};
 use common::stun::StunInfoCollectorTrait;
-use rpc::vpn_portal_rpc_client::VpnPortalRpcClient;
 use tokio::time::timeout;
 use utils::{list_peer_route_pair, PeerRoutePair};
 
 mod arch;
 mod common;
 mod proto;
-mod rpc;
 mod tunnel;
 mod utils;
 
 use crate::{
     common::stun::StunInfoCollector,
-    rpc::{
-        connector_manage_rpc_client::ConnectorManageRpcClient,
-        peer_center_rpc_client::PeerCenterRpcClient, peer_manage_rpc_client::PeerManageRpcClient,
-        *,
-    },
+    proto::cli::*,
     utils::{cost_to_str, float_to_str},
 };
 use humansize::format_size;

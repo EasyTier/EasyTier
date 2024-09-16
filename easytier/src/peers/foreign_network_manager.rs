@@ -25,7 +25,10 @@ use crate::{
         PeerId,
     },
     peers::route_trait::{Route, RouteInterface},
-    rpc::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+    proto::{
+        cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+        common::NatType,
+    },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
@@ -60,7 +63,7 @@ impl ForeignNetworkEntry {
         config.set_hostname(Some(format!("PublicServer_{}", global_ctx.get_hostname())));
         let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
         foreign_global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: crate::rpc::NatType::Unknown,
+            udp_nat_type: NatType::Unknown,
         }));
 
         let peer_map = Arc::new(PeerMap::new(
@@ -455,8 +458,7 @@ mod tests {
             peer_manager::{PeerManager, RouteAlgoType},
             tests::{connect_peer_manager, wait_route_appear},
         },
-        rpc::NatType,
-        tunnel::common::tests::enable_log,
+        proto::common::NatType,
     };
 
     use super::*;
@@ -478,7 +480,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_network_basic() {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
@@ -507,7 +509,7 @@ mod tests {
     }
 
     async fn foreign_network_whitelist_helper(name: String) {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.foreign_network_whitelist = vec!["net1".to_string(), "net2*".to_string()].join(" ");
@@ -533,7 +535,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_relay_peer_rpc() {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.foreign_network_whitelist = "".to_string();
         flag.relay_all_peer_rpc = true;
@@ -564,9 +566,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_foreign_network_manager() {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
-        let pm_center2 =
-            create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pm_center2 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         connect_peer_manager(pm_center.clone(), pm_center2.clone()).await;
 
         tracing::debug!(

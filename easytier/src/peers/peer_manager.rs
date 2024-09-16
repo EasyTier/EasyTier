@@ -26,6 +26,7 @@ use crate::{
         route_trait::{NextHopPolicy, RouteInterface},
         PeerPacketFilter,
     },
+    proto::cli,
     tunnel::{
         self,
         packet_def::{PacketType, ZCPacket},
@@ -504,7 +505,7 @@ impl PeerManager {
         }
     }
 
-    pub async fn list_routes(&self) -> Vec<crate::rpc::Route> {
+    pub async fn list_routes(&self) -> Vec<cli::Route> {
         self.get_route().list_routes().await
     }
 
@@ -712,8 +713,8 @@ impl PeerManager {
         self.foreign_network_client.clone()
     }
 
-    pub fn get_my_info(&self) -> crate::rpc::NodeInfo {
-        crate::rpc::NodeInfo {
+    pub fn get_my_info(&self) -> cli::NodeInfo {
+        cli::NodeInfo {
             peer_id: self.my_peer_id,
             ipv4_addr: self
                 .global_ctx
@@ -757,7 +758,7 @@ mod tests {
             peer_rpc::tests::register_service,
             tests::{connect_peer_manager, wait_route_appear},
         },
-        rpc::NatType,
+        proto::common::NatType,
         tunnel::{common::tests::wait_for_condition, TunnelConnector, TunnelListener},
     };
 

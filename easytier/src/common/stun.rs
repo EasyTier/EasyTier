@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use crate::rpc::{NatType, StunInfo};
+use crate::proto::common::{NatType, StunInfo};
 use anyhow::Context;
 use chrono::Local;
 use crossbeam::atomic::AtomicCell;

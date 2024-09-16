@@ -7,8 +7,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::proto::cli::PeerInfo;
 use crate::proto::peer_rpc::{DirectConnectedPeerInfo, PeerInfoForGlobalMap};
-use crate::rpc::PeerInfo;
 
 pub mod instance;
 mod server;

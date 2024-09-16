@@ -11,7 +11,6 @@ mod vpn_portal;
 
 pub mod common;
 pub mod launcher;
-pub mod rpc;
 pub mod tunnel;
 pub mod utils;
 

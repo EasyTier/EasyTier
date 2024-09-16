@@ -16,10 +16,9 @@ use tokio_stream::StreamExt;
 use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
 
-use crate::{
-    rpc::TunnelInfo,
-    tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE},
-};
+use super::TunnelInfo;
+
+use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
 use super::{
     buf::BufList,
@@ -505,8 +504,8 @@ pub mod tests {
             let ret = listener.accept().await.unwrap();
             println!("accept: {:?}", ret.info());
             assert_eq!(
-                ret.info().unwrap().local_addr,
-                listener.local_url().to_string()
+                url::Url::from(ret.info().unwrap().local_addr.unwrap()),
+                listener.local_url()
             );
             _tunnel_echo_server(ret, false).await
         });
@@ -515,8 +514,8 @@ pub mod tests {
         println!("connect: {:?}", tunnel.info());
 
         assert_eq!(
-            tunnel.info().unwrap().remote_addr,
-            connector.remote_url().to_string()
+            url::Url::from(tunnel.info().unwrap().remote_addr.unwrap()),
+            connector.remote_url(),
         );
 
         let (mut recv, mut send) = tunnel.split();

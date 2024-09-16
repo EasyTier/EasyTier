@@ -28,6 +28,7 @@ use crate::{
     defer,
     peers::peer_manager::PeerManager,
     proto::{
+        common::NatType,
         peer_rpc::{
             TryPunchHoleRequest, TryPunchHoleResponse, TryPunchSymmetricRequest,
             TryPunchSymmetricResponse, UdpHolePunchRpc, UdpHolePunchRpcClientFactory,
@@ -35,7 +36,6 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    rpc::NatType,
     tunnel::{
         common::setup_sokcet2,
         packet_def::{UDPTunnelHeader, UdpPacketType, UDP_TUNNEL_HEADER_SIZE},
@@ -1044,7 +1044,7 @@ pub mod tests {
     use tokio::net::UdpSocket;
 
     use crate::common::stun::MockStunInfoCollector;
-    use crate::rpc::NatType;
+    use crate::proto::common::NatType;
     use crate::tunnel::common::tests::wait_for_condition;
 
     use crate::{

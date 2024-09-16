@@ -29,8 +29,18 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         PeerId,
     },
-    rpc::{HandshakeRequest, PeerConnInfo, PeerConnStats, TunnelInfo},
-    tunnel::{filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter}, mpsc::{MpscTunnel, MpscTunnelSender}, packet_def::{PacketType, ZCPacket}, stats::{Throughput, WindowLatency}, Tunnel, TunnelError, ZCPacketStream},
+    proto::{
+        cli::{PeerConnInfo, PeerConnStats},
+        common::TunnelInfo,
+        peer_rpc::HandshakeRequest,
+    },
+    tunnel::{
+        filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter},
+        mpsc::{MpscTunnel, MpscTunnelSender},
+        packet_def::{PacketType, ZCPacket},
+        stats::{Throughput, WindowLatency},
+        Tunnel, TunnelError, ZCPacketStream,
+    },
 };
 
 use super::{peer_conn_ping::PeerConnPinger, PacketRecvChan};

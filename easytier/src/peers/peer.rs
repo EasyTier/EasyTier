@@ -11,7 +11,7 @@ use super::{
     peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
-use crate::rpc::PeerConnInfo;
+use crate::proto::cli::PeerConnInfo;
 use crate::{
     common::{
         error::Error,

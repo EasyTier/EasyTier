@@ -11,7 +11,12 @@ use tokio::{
 use crate::{
     common::PeerId,
     peers::peer_conn::PeerConnId,
-    rpc as easytier_rpc,
+    proto::{
+        cli::{
+            ConnectorManageAction, ListConnectorResponse, ManageConnectorResponse, PeerConnInfo,
+        },
+        rpc_types::{self, controller::BaseController},
+    },
     tunnel::{IpVersion, TunnelConnector},
 };
 
@@ -23,9 +28,9 @@ use crate::{
     },
     connector::set_bind_addr_for_peer_connector,
     peers::peer_manager::PeerManager,
-    rpc::{
-        connector_manage_rpc_server::ConnectorManageRpc, Connector, ConnectorStatus,
-        ListConnectorRequest, ManageConnectorRequest,
+    proto::cli::{
+        Connector, ConnectorManageRpc, ConnectorStatus, ListConnectorRequest,
+        ManageConnectorRequest,
     },
     use_global_var,
 };
@@ -105,12 +110,18 @@ impl ManualConnectorManager {
         Ok(())
     }
 
-    pub async fn remove_connector(&self, url: &str) -> Result<(), Error> {
+    pub async fn remove_connector(&self, url: url::Url) -> Result<(), Error> {
         tracing::info!("remove_connector: {}", url);
-        if !self.list_connectors().await.iter().any(|x| x.url == url) {
+        let url = url.into();
+        if !self
+            .list_connectors()
+            .await
+            .iter()
+            .any(|x| x.url.as_ref() == Some(&url))
+        {
             return Err(Error::NotFound);
         }
-        self.data.removed_conn_urls.insert(url.into());
+        self.data.removed_conn_urls.insert(url.to_string());
         Ok(())
     }
 
@@ -137,7 +148,7 @@ impl ManualConnectorManager {
             ret.insert(
                 0,
                 Connector {
-                    url: conn_url,
+                    url: Some(conn_url.parse().unwrap()),
                     status: status.into(),
                 },
             );
@@ -154,7 +165,7 @@ impl ManualConnectorManager {
             ret.insert(
                 0,
                 Connector {
-                    url: conn_url,
+                    url: Some(conn_url.parse().unwrap()),
                     status: ConnectorStatus::Connecting.into(),
                 },
             );
@@ -213,14 +224,14 @@ impl ManualConnectorManager {
     }
 
     async fn handle_event(event: &GlobalCtxEvent, data: &ConnectorManagerData) {
-        let need_add_alive = |conn_info: &easytier_rpc::PeerConnInfo| conn_info.is_client;
+        let need_add_alive = |conn_info: &PeerConnInfo| conn_info.is_client;
         match event {
             GlobalCtxEvent::PeerConnAdded(conn_info) => {
                 if !need_add_alive(conn_info) {
                     return;
                 }
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
-                data.alive_conn_urls.insert(addr);
+                data.alive_conn_urls.insert(addr.unwrap().to_string());
                 tracing::warn!("peer conn added: {:?}", conn_info);
             }
 
@@ -229,7 +240,7 @@ impl ManualConnectorManager {
                     return;
                 }
                 let addr = conn_info.tunnel.as_ref().unwrap().remote_addr.clone();
-                data.alive_conn_urls.remove(&addr);
+                data.alive_conn_urls.remove(&addr.unwrap().to_string());
                 tracing::warn!("peer conn removed: {:?}", conn_info);
             }
 
@@ -303,7 +314,7 @@ impl ManualConnectorManager {
         tracing::info!("reconnect get tunnel succ: {:?}", tunnel);
         assert_eq!(
             dead_url,
-            tunnel.info().unwrap().remote_addr,
+            tunnel.info().unwrap().remote_addr.unwrap().to_string(),
             "info: {:?}",
             tunnel.info()
         );
@@ -387,43 +398,43 @@ impl ManualConnectorManager {
 
 pub struct ConnectorManagerRpcService(pub Arc<ManualConnectorManager>);
 
-#[tonic::async_trait]
+#[async_trait::async_trait]
 impl ConnectorManageRpc for ConnectorManagerRpcService {
+    type Controller = BaseController;
+
     async fn list_connector(
         &self,
-        _request: tonic::Request<ListConnectorRequest>,
-    ) -> Result<tonic::Response<easytier_rpc::ListConnectorResponse>, tonic::Status> {
-        let mut ret = easytier_rpc::ListConnectorResponse::default();
+        _: BaseController,
+        _request: ListConnectorRequest,
+    ) -> Result<ListConnectorResponse, rpc_types::error::Error> {
+        let mut ret = ListConnectorResponse::default();
         let connectors = self.0.list_connectors().await;
         ret.connectors = connectors;
-        Ok(tonic::Response::new(ret))
+        Ok(ret)
     }
 
     async fn manage_connector(
         &self,
-        request: tonic::Request<ManageConnectorRequest>,
-    ) -> Result<tonic::Response<easytier_rpc::ManageConnectorResponse>, tonic::Status> {
-        let req = request.into_inner();
-        let url = url::Url::parse(&req.url)
-            .map_err(|_| tonic::Status::invalid_argument("invalid url"))?;
-        if req.action == easytier_rpc::ConnectorManageAction::Remove as i32 {
-            self.0.remove_connector(url.path()).await.map_err(|e| {
-                tonic::Status::invalid_argument(format!("remove connector failed: {:?}", e))
-            })?;
-            return Ok(tonic::Response::new(
-                easytier_rpc::ManageConnectorResponse::default(),
-            ));
+        _: BaseController,
+        req: ManageConnectorRequest,
+    ) -> Result<ManageConnectorResponse, rpc_types::error::Error> {
+        let url: url::Url = req.url.ok_or(anyhow::anyhow!("url is empty"))?.into();
+        if req.action == ConnectorManageAction::Remove as i32 {
+            self.0
+                .remove_connector(url.clone())
+                .await
+                .map_err(|e| {
+                    tonic::Status::invalid_argument(format!("remove connector failed: {:?}", e))
+                })
+                .with_context(|| format!("remove connector failed: {:?}", url))?;
+            return Ok(ManageConnectorResponse::default());
         } else {
             self.0
                 .add_connector_by_url(url.as_str())
                 .await
-                .map_err(|e| {
-                    tonic::Status::invalid_argument(format!("add connector failed: {:?}", e))
-                })?;
+                .with_context(|| format!("add connector failed: {:?}", url))?;
         }
-        Ok(tonic::Response::new(
-            easytier_rpc::ManageConnectorResponse::default(),
-        ))
+        Ok(ManageConnectorResponse::default())
     }
 }
 
