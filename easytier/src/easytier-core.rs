@@ -299,7 +299,7 @@ impl Cli {
             return vec![];
         }
 
-        let origin_listners = listeners.clone();
+        let origin_listners = listeners;
         let mut listeners: Vec<String> = Vec::new();
         if origin_listners.len() == 1 {
             if let Ok(port) = origin_listners[0].parse::<u16>() {
@@ -446,7 +446,7 @@ impl From<Cli> for TomlConfigLoader {
                 file: Some(format!("easytier-{}", cli.instance_name)),
             });
         }
-        
+
         cfg.set_inst_name(cli.instance_name);
 
         if let Some(vpn_portal) = cli.vpn_portal {
