@@ -47,7 +47,7 @@
 3. **通过源码安装**
 
     ```sh
-    cargo install --git https://github.com/EasyTier/EasyTier.git
+    cargo install --git https://github.com/EasyTier/EasyTier.git easytier
     ```
 
 4. **通过Docker Compose安装**
