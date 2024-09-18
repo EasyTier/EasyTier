@@ -43,7 +43,7 @@ logging_copy_dir: Copy Log Path
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 exit: Exit
-
+use_latency_first: Latency First Mode
 chips_placeholder: 'e.g: {0}, press Enter to add'
 hostname_placeholder: 'Leave blank and default to host name: {0}'
 off_text: Press to disable
