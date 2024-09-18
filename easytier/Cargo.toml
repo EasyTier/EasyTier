@@ -49,7 +49,7 @@ futures = { version = "0.3", features = ["bilock", "unstable"] }
 
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-tokio-util = { version = "0.7.9", features = ["codec", "net"] }
+tokio-util = { version = "0.7.9", features = ["codec", "net", "io"] }
 
 async-stream = "0.3.5"
 async-trait = "0.1.74"

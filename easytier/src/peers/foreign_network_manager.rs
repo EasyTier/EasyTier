@@ -468,7 +468,7 @@ mod tests {
             tests::{connect_peer_manager, wait_route_appear},
         },
         proto::common::NatType,
-        tunnel::common::tests::{enable_log, wait_for_condition},
+        tunnel::common::tests::wait_for_condition,
     };
 
     use super::*;

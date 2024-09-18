@@ -29,7 +29,8 @@ use crate::tunnel::{Tunnel, TunnelError, ZCPacketStream};
 use super::packet::PacketMerger;
 use super::{RpcTransactId, Transport};
 
-static CUR_TID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static CUR_TID: once_cell::sync::Lazy<atomic_shim::AtomicI64> =
+    once_cell::sync::Lazy::new(|| atomic_shim::AtomicI64::new(rand::random()));
 
 type RpcPacketSender = mpsc::UnboundedSender<RpcPacket>;
 type RpcPacketReceiver = mpsc::UnboundedReceiver<RpcPacket>;
