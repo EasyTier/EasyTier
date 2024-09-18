@@ -207,6 +207,15 @@ onMounted(async () => {
           <div class="flex flex-column gap-y-2">
             <div class="flex flex-row gap-x-9 flex-wrap">
               <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex align-items-center">
+                  <Checkbox v-model="curNetwork.latency_first" input-id="use_latency_first" :binary="true" />
+                  <label for="use_latency_first" class="ml-2"> {{ t('use_latency_first') }} </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="flex flex-row gap-x-9 flex-wrap">
+              <div class="flex flex-column gap-2 basis-5/12 grow">
                 <label for="hostname">{{ t('hostname') }}</label>
                 <InputText
                   id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"

@@ -50,6 +50,7 @@ on_text: 点击开启
 show_config: 显示配置
 close: 关闭
 
+use_latency_first: 延迟优先模式
 my_node_info: 当前节点信息
 peer_count: 已连接
 upload: 上传

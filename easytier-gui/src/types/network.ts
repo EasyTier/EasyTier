@@ -31,6 +31,7 @@ export interface NetworkConfig {
 
   listener_urls: string[]
   rpc_port: number
+  latency_first: boolean
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -62,6 +63,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'wg://0.0.0.0:11011',
     ],
     rpc_port: 0,
+    latency_first: true,
   }
 }
 
