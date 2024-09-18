@@ -624,6 +624,8 @@ pub async fn wireguard_vpn_portal() {
     )
     .await;
 
+    enable_log();
+
     // ping portal node
     wait_for_condition(
         || async { ping_test("net_d", "10.144.144.3", None).await },

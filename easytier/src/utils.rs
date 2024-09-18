@@ -117,16 +117,10 @@ pub fn list_peer_route_pair(peers: Vec<PeerInfo>, routes: Vec<Route>) -> Vec<Pee
 
     for route in routes.iter() {
         let peer = peers.iter().find(|peer| peer.peer_id == route.peer_id);
-        let has_tunnel = peer.map(|p| !p.conns.is_empty()).unwrap_or(false);
-        let mut pair = PeerRoutePair {
+        let pair = PeerRoutePair {
             route: route.clone(),
             peer: peer.cloned(),
         };
-
-        // it is relayed by public server, adjust the cost
-        if !has_tunnel && pair.route.cost == 1 {
-            pair.route.cost = 2;
-        }
 
         pairs.push(pair);
     }

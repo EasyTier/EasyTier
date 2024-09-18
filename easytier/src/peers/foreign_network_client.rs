@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
     tunnel::packet_def::ZCPacket,
 };
 
@@ -13,6 +13,7 @@ pub struct ForeignNetworkClient {
     my_peer_id: PeerId,
 
     peer_map: Arc<PeerMap>,
+    task: Mutex<Option<ScopedTask<()>>>,
 }
 
 impl ForeignNetworkClient {
@@ -33,6 +34,7 @@ impl ForeignNetworkClient {
             my_peer_id,
 
             peer_map,
+            task: Mutex::new(None),
         }
     }
 
@@ -78,7 +80,21 @@ impl ForeignNetworkClient {
         Err(Error::RouteError(Some("no next hop".to_string())))
     }
 
-    pub async fn run(&self) {}
+    pub async fn run(&self) {
+        let peer_map = Arc::downgrade(&self.peer_map);
+        *self.task.lock().unwrap() = Some(
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                    let Some(peer_map) = peer_map.upgrade() else {
+                        break;
+                    };
+                    peer_map.clean_peer_without_conn().await;
+                }
+            })
+            .into(),
+        );
+    }
 
     pub fn get_peer_map(&self) -> Arc<PeerMap> {
         self.peer_map.clone()

@@ -447,8 +447,17 @@ impl ForeignNetworkManager {
     }
 }
 
+impl Drop for ForeignNetworkManager {
+    fn drop(&mut self) {
+        self.data.peer_network_map.clear();
+        self.data.network_peer_maps.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
         connector::udp_hole_punch::tests::{
@@ -459,6 +468,7 @@ mod tests {
             tests::{connect_peer_manager, wait_route_appear},
         },
         proto::common::NatType,
+        tunnel::common::tests::{enable_log, wait_for_condition},
     };
 
     use super::*;
@@ -692,5 +702,28 @@ mod tests {
                 .network_peer_maps
                 .len()
         );
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_foreign_network() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        tracing::debug!("pma_net1: {:?}", pma_net1.my_peer_id(),);
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+
+        wait_for_condition(
+            || async { pma_net1.list_routes().await.len() == 1 },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        drop(pm_center);
+        wait_for_condition(
+            || async { pma_net1.list_routes().await.len() == 0 },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 }
