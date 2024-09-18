@@ -14,4 +14,4 @@ pub mod launcher;
 pub mod tunnel;
 pub mod utils;
 
-pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION: &str = common::constants::EASYTIER_VERSION;

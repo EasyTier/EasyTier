@@ -19,7 +19,10 @@ use tokio::{
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
+    common::{
+        constants::EASYTIER_VERSION, error::Error, global_ctx::ArcGlobalCtx,
+        stun::StunInfoCollectorTrait, PeerId,
+    },
     peers::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
@@ -746,7 +749,7 @@ impl PeerManager {
                 .map(|x| x.to_string())
                 .collect(),
             config: self.global_ctx.config.dump(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: EASYTIER_VERSION.to_string(),
         }
     }
 

@@ -23,10 +23,12 @@ use tokio::{
 };
 
 use crate::{
-    common::{global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
+    common::{
+        constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId,
+    },
     peers::route_trait::{Route, RouteInterfaceBox},
-    proto::common::{NatType, StunInfo},
     proto::{
+        common::{NatType, StunInfo},
         peer_rpc::{
             OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
             RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest,
@@ -99,6 +101,7 @@ impl RoutePeerInfo {
             udp_stun_info: 0,
             last_update: Some(SystemTime::now().into()),
             version: 0,
+            easytier_version: EASYTIER_VERSION.to_string(),
         }
     }
 
@@ -122,6 +125,8 @@ impl RoutePeerInfo {
             // following fields do not participate in comparison.
             last_update: self.last_update,
             version: self.version,
+
+            easytier_version: EASYTIER_VERSION.to_string(),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -162,7 +167,7 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
                 Some(stun_info)
             },
             inst_id: self.inst_id.map(|x| x.to_string()).unwrap_or_default(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: self.easytier_version,
         }
     }
 }
