@@ -16,6 +16,8 @@ message RoutePeerInfo {
   common.NatType udp_stun_info = 7;
   google.protobuf.Timestamp last_update = 8;
   uint32 version = 9;
+
+  string easytier_version = 10;
 }
 
 message PeerIdVersion {

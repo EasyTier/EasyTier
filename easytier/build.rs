@@ -129,6 +129,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "windows")]
     WindowsBuild::check_for_win();
 
+    let proto_files = [
+        "src/proto/peer_rpc.proto",
+        "src/proto/common.proto",
+        "src/proto/error.proto",
+        "src/proto/tests.proto",
+        "src/proto/cli.proto",
+    ];
+
+    for proto_file in &proto_files {
+        println!("cargo:rerun-if-changed={}", proto_file);
+    }
+
     prost_build::Config::new()
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
@@ -142,16 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
         .btree_map(&["."])
-        .compile_protos(
-            &[
-                "src/proto/peer_rpc.proto",
-                "src/proto/common.proto",
-                "src/proto/error.proto",
-                "src/proto/tests.proto",
-                "src/proto/cli.proto",
-            ],
-            &["src/proto/"],
-        )
+        .compile_protos(&proto_files, &["src/proto/"])
         .unwrap();
 
     check_locale();
