@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+import "error.proto";
+
+package common;
+
+message RpcDescriptor {
+  // allow same service registered multiple times in different domain
+  string domain_name = 1;
+
+  string proto_name = 2;
+  string service_name = 3;
+  uint32 method_index = 4;
+}
+
+message RpcRequest {
+  RpcDescriptor descriptor = 1;
+
+  bytes request = 2;
+  int32 timeout_ms = 3;
+}
+
+message RpcResponse {
+  bytes response = 1;
+  error.Error error = 2;
+
+  uint64 runtime_us = 3;
+}
+
+message RpcPacket {
+  uint32 from_peer = 1;
+  uint32 to_peer = 2;
+  int64 transaction_id = 3;
+
+  RpcDescriptor descriptor = 4;
+  bytes body = 5;
+  bool is_request = 6;
+
+  uint32 total_pieces = 7;
+  uint32 piece_idx = 8;
+
+  int32 trace_id = 9;
+}
+
+message UUID {
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+enum NatType {
+  // has NAT; but own a single public IP, port is not changed
+  Unknown = 0;
+  OpenInternet = 1;
+  NoPAT = 2;
+  FullCone = 3;
+  Restricted = 4;
+  PortRestricted = 5;
+  Symmetric = 6;
+  SymUdpFirewall = 7;
+}
+
+message Ipv4Addr { uint32 addr = 1; }
+
+message Ipv6Addr {
+  uint64 high = 1;
+  uint64 low = 2;
+}
+
+message Url { string url = 1; }
+
+message SocketAddr {
+  oneof ip {
+    Ipv4Addr ipv4 = 1;
+    Ipv6Addr ipv6 = 2;
+  };
+  uint32 port = 3;
+}
+
+message TunnelInfo {
+  string tunnel_type = 1;
+  common.Url local_addr = 2;
+  common.Url remote_addr = 3;
+}
+
+message StunInfo {
+  NatType udp_nat_type = 1;
+  NatType tcp_nat_type = 2;
+  int64 last_update_time = 3;
+  repeated string public_ip = 4;
+  uint32 min_port = 5;
+  uint32 max_port = 6;
+}

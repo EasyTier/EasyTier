@@ -89,8 +89,8 @@ impl WireGuardImpl {
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
-                info.local_addr.clone(),
-                info.remote_addr.clone(),
+                info.local_addr.clone().unwrap_or_default().to_string(),
+                info.remote_addr.clone().unwrap_or_default().to_string(),
             ));
 
         let mut map_key = None;
@@ -120,7 +120,7 @@ impl WireGuardImpl {
             };
             if !ip_registered {
                 let client_entry = Arc::new(ClientEntry {
-                    endpoint_addr: remote_addr.parse().ok(),
+                    endpoint_addr: remote_addr.clone().map(Into::into),
                     sink: mpsc_tunnel.get_sink(),
                 });
                 map_key = Some(i.get_source());
@@ -142,8 +142,8 @@ impl WireGuardImpl {
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientDisconnected(
-                info.local_addr,
-                info.remote_addr,
+                info.local_addr.unwrap_or_default().to_string(),
+                info.remote_addr.unwrap_or_default().to_string(),
             ));
     }
 

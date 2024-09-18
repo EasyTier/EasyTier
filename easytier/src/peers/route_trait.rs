@@ -1,9 +1,6 @@
 use std::{net::Ipv4Addr, sync::Arc};
 
-use async_trait::async_trait;
-use tokio_util::bytes::Bytes;
-
-use crate::common::{error::Error, PeerId};
+use crate::common::PeerId;
 
 #[derive(Clone, Debug)]
 pub enum NextHopPolicy {
@@ -17,15 +14,9 @@ impl Default for NextHopPolicy {
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait RouteInterface {
     async fn list_peers(&self) -> Vec<PeerId>;
-    async fn send_route_packet(
-        &self,
-        msg: Bytes,
-        route_id: u8,
-        dst_peer_id: PeerId,
-    ) -> Result<(), Error>;
     fn my_peer_id(&self) -> PeerId;
 }
 
@@ -56,7 +47,7 @@ impl RouteCostCalculatorInterface for DefaultRouteCostCalculator {}
 
 pub type RouteCostCalculator = Box<dyn RouteCostCalculatorInterface>;
 
-#[async_trait]
+#[async_trait::async_trait]
 #[auto_impl::auto_impl(Box, Arc)]
 pub trait Route {
     async fn open(&self, interface: RouteInterfaceBox) -> Result<u8, ()>;
@@ -71,7 +62,7 @@ pub trait Route {
         self.get_next_hop(peer_id).await
     }
 
-    async fn list_routes(&self) -> Vec<crate::rpc::Route>;
+    async fn list_routes(&self) -> Vec<crate::proto::cli::Route>;
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use crossbeam::atomic::AtomicCell;
@@ -18,14 +18,17 @@ use crate::{
         route_trait::{RouteCostCalculator, RouteCostCalculatorInterface},
         rpc_service::PeerManagerRpcService,
     },
-    rpc::{GetGlobalPeerMapRequest, GetGlobalPeerMapResponse},
+    proto::{
+        peer_rpc::{
+            GetGlobalPeerMapRequest, GetGlobalPeerMapResponse, GlobalPeerMap, PeerCenterRpc,
+            PeerCenterRpcClientFactory, PeerCenterRpcServer, PeerInfoForGlobalMap,
+            ReportPeersRequest, ReportPeersResponse,
+        },
+        rpc_types::{self, controller::BaseController},
+    },
 };
 
-use super::{
-    server::PeerCenterServer,
-    service::{GlobalPeerMap, PeerCenterService, PeerCenterServiceClient, PeerInfoForGlobalMap},
-    Digest, Error,
-};
+use super::{server::PeerCenterServer, Digest, Error};
 
 struct PeerCenterBase {
     peer_mgr: Arc<PeerManager>,
@@ -44,11 +47,14 @@ struct PeridicJobCtx<T> {
 
 impl PeerCenterBase {
     pub async fn init(&self) -> Result<(), Error> {
-        self.peer_mgr.get_peer_rpc_mgr().run_service(
-            SERVICE_ID,
-            PeerCenterServer::new(self.peer_mgr.my_peer_id()).serve(),
-        );
-
+        self.peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
+                &self.peer_mgr.get_global_ctx().get_network_name(),
+            );
         Ok(())
     }
 
@@ -70,11 +76,17 @@ impl PeerCenterBase {
 
     async fn init_periodic_job<
         T: Send + Sync + 'static + Clone,
-        Fut: Future<Output = Result<u32, tarpc::client::RpcError>> + Send + 'static,
+        Fut: Future<Output = Result<u32, rpc_types::error::Error>> + Send + 'static,
     >(
         &self,
         job_ctx: T,
-        job_fn: (impl Fn(PeerCenterServiceClient, Arc<PeridicJobCtx<T>>) -> Fut + Send + Sync + 'static),
+        job_fn: (impl Fn(
+            Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
+            Arc<PeridicJobCtx<T>>,
+        ) -> Fut
+             + Send
+             + Sync
+             + 'static),
     ) -> () {
         let my_peer_id = self.peer_mgr.my_peer_id();
         let peer_mgr = self.peer_mgr.clone();
@@ -96,14 +108,14 @@ impl PeerCenterBase {
                     tracing::trace!(?center_peer, "run periodic job");
                     let rpc_mgr = peer_mgr.get_peer_rpc_mgr();
                     let _g = lock.lock().await;
-                    let ret = rpc_mgr
-                        .do_client_rpc_scoped(SERVICE_ID, center_peer, |c| async {
-                            let client =
-                                PeerCenterServiceClient::new(tarpc::client::Config::default(), c)
-                                    .spawn();
-                            job_fn(client, ctx.clone()).await
-                        })
-                        .await;
+                    let stub = rpc_mgr
+                        .rpc_client()
+                        .scoped_client::<PeerCenterRpcClientFactory<BaseController>>(
+                            my_peer_id,
+                            center_peer,
+                            peer_mgr.get_global_ctx().get_network_name(),
+                        );
+                    let ret = job_fn(stub, ctx.clone()).await;
                     drop(_g);
 
                     let Ok(sleep_time_ms) = ret else {
@@ -130,25 +142,34 @@ impl PeerCenterBase {
     }
 }
 
+#[derive(Clone)]
 pub struct PeerCenterInstanceService {
     global_peer_map: Arc<RwLock<GlobalPeerMap>>,
     global_peer_map_digest: Arc<AtomicCell<Digest>>,
 }
 
-#[tonic::async_trait]
-impl crate::rpc::cli::peer_center_rpc_server::PeerCenterRpc for PeerCenterInstanceService {
+#[async_trait::async_trait]
+impl PeerCenterRpc for PeerCenterInstanceService {
+    type Controller = BaseController;
+
     async fn get_global_peer_map(
         &self,
-        _request: tonic::Request<GetGlobalPeerMapRequest>,
-    ) -> Result<tonic::Response<GetGlobalPeerMapResponse>, tonic::Status> {
-        let global_peer_map = self.global_peer_map.read().unwrap().clone();
-        Ok(tonic::Response::new(GetGlobalPeerMapResponse {
-            global_peer_map: global_peer_map
-                .map
-                .into_iter()
-                .map(|(k, v)| (k, v))
-                .collect(),
-        }))
+        _: BaseController,
+        _: GetGlobalPeerMapRequest,
+    ) -> Result<GetGlobalPeerMapResponse, rpc_types::error::Error> {
+        let global_peer_map = self.global_peer_map.read().unwrap();
+        Ok(GetGlobalPeerMapResponse {
+            global_peer_map: global_peer_map.map.clone(),
+            digest: Some(self.global_peer_map_digest.load()),
+        })
+    }
+
+    async fn report_peers(
+        &self,
+        _: BaseController,
+        _req: ReportPeersRequest,
+    ) -> Result<ReportPeersResponse, rpc_types::error::Error> {
+        Err(anyhow::anyhow!("not implemented").into())
     }
 }
 
@@ -166,7 +187,7 @@ impl PeerCenterInstance {
         PeerCenterInstance {
             peer_mgr: peer_mgr.clone(),
             client: Arc::new(PeerCenterBase::new(peer_mgr.clone())),
-            global_peer_map: Arc::new(RwLock::new(GlobalPeerMap::new())),
+            global_peer_map: Arc::new(RwLock::new(GlobalPeerMap::default())),
             global_peer_map_digest: Arc::new(AtomicCell::new(Digest::default())),
             global_peer_map_update_time: Arc::new(AtomicCell::new(Instant::now())),
         }
@@ -193,9 +214,6 @@ impl PeerCenterInstance {
 
         self.client
             .init_periodic_job(ctx, |client, ctx| async move {
-                let mut rpc_ctx = tarpc::context::current();
-                rpc_ctx.deadline = SystemTime::now() + Duration::from_secs(3);
-
                 if ctx
                     .job_ctx
                     .global_peer_map_update_time
@@ -208,8 +226,13 @@ impl PeerCenterInstance {
                 }
 
                 let ret = client
-                    .get_global_peer_map(rpc_ctx, ctx.job_ctx.global_peer_map_digest.load())
-                    .await?;
+                    .get_global_peer_map(
+                        BaseController {},
+                        GetGlobalPeerMapRequest {
+                            digest: ctx.job_ctx.global_peer_map_digest.load(),
+                        },
+                    )
+                    .await;
 
                 let Ok(resp) = ret else {
                     tracing::error!(
@@ -219,9 +242,10 @@ impl PeerCenterInstance {
                     return Ok(1000);
                 };
 
-                let Some(resp) = resp else {
+                if resp == GetGlobalPeerMapResponse::default() {
+                    // digest match, no need to update
                     return Ok(5000);
-                };
+                }
 
                 tracing::info!(
                     "get global info from center server: {:?}, digest: {:?}",
@@ -229,8 +253,12 @@ impl PeerCenterInstance {
                     resp.digest
                 );
 
-                *ctx.job_ctx.global_peer_map.write().unwrap() = resp.global_peer_map;
-                ctx.job_ctx.global_peer_map_digest.store(resp.digest);
+                *ctx.job_ctx.global_peer_map.write().unwrap() = GlobalPeerMap {
+                    map: resp.global_peer_map,
+                };
+                ctx.job_ctx
+                    .global_peer_map_digest
+                    .store(resp.digest.unwrap_or_default());
                 ctx.job_ctx
                     .global_peer_map_update_time
                     .store(Instant::now());
@@ -274,12 +302,15 @@ impl PeerCenterInstance {
                     return Ok(5000);
                 }
 
-                let mut rpc_ctx = tarpc::context::current();
-                rpc_ctx.deadline = SystemTime::now() + Duration::from_secs(3);
-
                 let ret = client
-                    .report_peers(rpc_ctx, my_node_id.clone(), peers)
-                    .await?;
+                    .report_peers(
+                        BaseController {},
+                        ReportPeersRequest {
+                            my_peer_id: my_node_id,
+                            peer_infos: Some(peers),
+                        },
+                    )
+                    .await;
 
                 if ret.is_ok() {
                     ctx.job_ctx.last_center_peer.store(ctx.center_peer.load());
@@ -339,7 +370,7 @@ impl PeerCenterInstance {
 
         Box::new(RouteCostCalculatorImpl {
             global_peer_map: self.global_peer_map.clone(),
-            global_peer_map_clone: GlobalPeerMap::new(),
+            global_peer_map_clone: GlobalPeerMap::default(),
             last_update_time: AtomicCell::new(
                 self.global_peer_map_update_time.load() - Duration::from_secs(1),
             ),

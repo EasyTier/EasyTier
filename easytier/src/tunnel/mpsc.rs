@@ -3,9 +3,13 @@
 use std::{pin::Pin, time::Duration};
 
 use anyhow::Context;
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::time::timeout;
 
-use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
+use crate::common::scoped_task::ScopedTask;
+
+use super::{
+    packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+};
 
 use tachyonix::{channel, Receiver, Sender};
 
@@ -29,12 +33,12 @@ impl MpscTunnelSender {
 }
 
 pub struct MpscTunnel<T> {
-    tx: Sender<ZCPacket>,
+    tx: Option<Sender<ZCPacket>>,
 
     tunnel: T,
     stream: Option<Pin<Box<dyn ZCPacketStream>>>,
 
-    task: Option<JoinHandle<()>>,
+    task: ScopedTask<()>,
 }
 
 impl<T: Tunnel> MpscTunnel<T> {
@@ -54,10 +58,10 @@ impl<T: Tunnel> MpscTunnel<T> {
         });
 
         Self {
-            tx,
+            tx: Some(tx),
             tunnel,
             stream: Some(stream),
-            task: Some(task),
+            task: task.into(),
         }
     }
 
@@ -81,7 +85,12 @@ impl<T: Tunnel> MpscTunnel<T> {
     }
 
     pub fn get_sink(&self) -> MpscTunnelSender {
-        MpscTunnelSender(self.tx.clone())
+        MpscTunnelSender(self.tx.as_ref().unwrap().clone())
+    }
+
+    pub fn close(&mut self) {
+        self.tx.take();
+        self.task.abort();
     }
 }
 

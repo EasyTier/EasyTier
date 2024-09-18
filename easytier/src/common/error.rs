@@ -31,8 +31,6 @@ pub enum Error {
     // RpcListenError(String),
     #[error("Rpc connect error: {0}")]
     RpcConnectError(String),
-    #[error("Rpc error: {0}")]
-    RpcClientError(#[from] tarpc::client::RpcError),
     #[error("Timeout error: {0}")]
     Timeout(#[from] tokio::time::error::Elapsed),
     #[error("url in blacklist")]

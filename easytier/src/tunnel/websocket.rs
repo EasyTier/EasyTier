@@ -8,7 +8,8 @@ use tokio_rustls::TlsAcceptor;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message};
 use zerocopy::AsBytes;
 
-use crate::{rpc::TunnelInfo, tunnel::insecure_tls::get_insecure_tls_client_config};
+use super::TunnelInfo;
+use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
 
 use super::{
     common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
@@ -72,12 +73,14 @@ impl WSTunnelListener {
     async fn try_accept(&mut self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
         let info = TunnelInfo {
             tunnel_type: self.addr.scheme().to_owned(),
-            local_addr: self.local_url().into(),
-            remote_addr: super::build_url_from_socket_addr(
-                &stream.peer_addr()?.to_string(),
-                self.addr.scheme().to_string().as_str(),
-            )
-            .into(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(
+                    &stream.peer_addr()?.to_string(),
+                    self.addr.scheme().to_string().as_str(),
+                )
+                .into(),
+            ),
         };
 
         let server_bulder = tokio_websockets::ServerBuilder::new().limits(Limits::unlimited());
@@ -182,12 +185,14 @@ impl WSTunnelConnector {
 
         let info = TunnelInfo {
             tunnel_type: addr.scheme().to_owned(),
-            local_addr: super::build_url_from_socket_addr(
-                &stream.local_addr()?.to_string(),
-                addr.scheme().to_string().as_str(),
-            )
-            .into(),
-            remote_addr: addr.to_string(),
+            local_addr: Some(
+                super::build_url_from_socket_addr(
+                    &stream.local_addr()?.to_string(),
+                    addr.scheme().to_string().as_str(),
+                )
+                .into(),
+            ),
+            remote_addr: Some(addr.clone().into()),
         };
 
         let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());

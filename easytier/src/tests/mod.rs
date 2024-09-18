@@ -127,7 +127,7 @@ pub fn enable_log() {
         .init();
 }
 
-fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::rpc::Route>) {
+fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::cli::Route>) {
     let mut found = false;
     for r in routes.iter() {
         if r.ipv4_addr == ipv4.to_string() {

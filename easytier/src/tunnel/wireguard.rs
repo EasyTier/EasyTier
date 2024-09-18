@@ -20,13 +20,11 @@ use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
 use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
-use crate::{
-    rpc::TunnelInfo,
-    tunnel::{
-        build_url_from_socket_addr,
-        common::TunnelWrapper,
-        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
-    },
+use super::TunnelInfo;
+use crate::tunnel::{
+    build_url_from_socket_addr,
+    common::TunnelWrapper,
+    packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
 };
 
 use super::{
@@ -522,12 +520,16 @@ impl WgTunnelListener {
                     sink,
                     Some(TunnelInfo {
                         tunnel_type: "wg".to_owned(),
-                        local_addr: build_url_from_socket_addr(
-                            &socket.local_addr().unwrap().to_string(),
-                            "wg",
-                        )
-                        .into(),
-                        remote_addr: build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                        local_addr: Some(
+                            build_url_from_socket_addr(
+                                &socket.local_addr().unwrap().to_string(),
+                                "wg",
+                            )
+                            .into(),
+                        ),
+                        remote_addr: Some(
+                            build_url_from_socket_addr(&addr.to_string(), "wg").into(),
+                        ),
                     }),
                 ));
                 if let Err(e) = conn_sender.send(tunnel) {
@@ -670,8 +672,8 @@ impl WgTunnelConnector {
             sink,
             Some(TunnelInfo {
                 tunnel_type: "wg".to_owned(),
-                local_addr: super::build_url_from_socket_addr(&local_addr, "wg").into(),
-                remote_addr: addr_url.to_string(),
+                local_addr: Some(super::build_url_from_socket_addr(&local_addr, "wg").into()),
+                remote_addr: Some(addr_url.into()),
             }),
             Some(Box::new(wg_peer)),
         ));

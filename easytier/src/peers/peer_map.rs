@@ -10,7 +10,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         PeerId,
     },
-    rpc::PeerConnInfo,
+    proto::cli::PeerConnInfo,
     tunnel::packet_def::ZCPacket,
     tunnel::TunnelError,
 };
@@ -66,7 +66,7 @@ impl PeerMap {
     }
 
     pub fn has_peer(&self, peer_id: PeerId) -> bool {
-        self.peer_map.contains_key(&peer_id)
+        peer_id == self.my_peer_id || self.peer_map.contains_key(&peer_id)
     }
 
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
@@ -113,10 +113,8 @@ impl PeerMap {
                 .get_next_hop_with_policy(dst_peer_id, policy.clone())
                 .await
             {
-                // for foreign network, gateway_peer_id may not connect to me
-                if self.has_peer(gateway_peer_id) {
-                    return Some(gateway_peer_id);
-                }
+                // NOTIC: for foreign network, gateway_peer_id may not connect to me
+                return Some(gateway_peer_id);
             }
         }
 

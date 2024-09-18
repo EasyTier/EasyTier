@@ -7,14 +7,21 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use tokio::{task::JoinSet};
+use tokio::task::JoinSet;
 
-use crate::{common::PeerId, rpc::DirectConnectedPeerInfo};
-
-use super::{
-    service::{GetGlobalPeerMapResponse, GlobalPeerMap, PeerCenterService, PeerInfoForGlobalMap},
-    Digest, Error,
+use crate::{
+    common::PeerId,
+    proto::{
+        peer_rpc::{
+            DirectConnectedPeerInfo, GetGlobalPeerMapRequest, GetGlobalPeerMapResponse,
+            GlobalPeerMap, PeerCenterRpc, PeerInfoForGlobalMap, ReportPeersRequest,
+            ReportPeersResponse,
+        },
+        rpc_types::{self, controller::BaseController},
+    },
 };
+
+use super::Digest;
 
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq, Hash)]
 pub(crate) struct SrcDstPeerPair {
@@ -95,15 +102,19 @@ impl PeerCenterServer {
     }
 }
 
-#[tarpc::server]
-impl PeerCenterService for PeerCenterServer {
+#[async_trait::async_trait]
+impl PeerCenterRpc for PeerCenterServer {
+    type Controller = BaseController;
+
     #[tracing::instrument()]
     async fn report_peers(
-        self,
-        _: tarpc::context::Context,
-        my_peer_id: PeerId,
-        peers: PeerInfoForGlobalMap,
-    ) -> Result<(), Error> {
+        &self,
+        _: BaseController,
+        req: ReportPeersRequest,
+    ) -> Result<ReportPeersResponse, rpc_types::error::Error> {
+        let my_peer_id = req.my_peer_id;
+        let peers = req.peer_infos.unwrap_or_default();
+
         tracing::debug!("receive report_peers");
 
         let data = get_global_data(self.my_node_id);
@@ -125,20 +136,23 @@ impl PeerCenterService for PeerCenterServer {
         data.digest
             .store(PeerCenterServer::calc_global_digest(self.my_node_id));
 
-        Ok(())
+        Ok(ReportPeersResponse::default())
     }
 
+    #[tracing::instrument()]
     async fn get_global_peer_map(
-        self,
-        _: tarpc::context::Context,
-        digest: Digest,
-    ) -> Result<Option<GetGlobalPeerMapResponse>, Error> {
+        &self,
+        _: BaseController,
+        req: GetGlobalPeerMapRequest,
+    ) -> Result<GetGlobalPeerMapResponse, rpc_types::error::Error> {
+        let digest = req.digest;
+
         let data = get_global_data(self.my_node_id);
         if digest == data.digest.load() && digest != 0 {
-            return Ok(None);
+            return Ok(GetGlobalPeerMapResponse::default());
         }
 
-        let mut global_peer_map = GlobalPeerMap::new();
+        let mut global_peer_map = GlobalPeerMap::default();
         for item in data.global_peer_map.iter() {
             let (pair, entry) = item.pair();
             global_peer_map
@@ -151,9 +165,9 @@ impl PeerCenterService for PeerCenterServer {
                 .insert(pair.dst, entry.info.clone());
         }
 
-        Ok(Some(GetGlobalPeerMapResponse {
-            global_peer_map,
-            digest: data.digest.load(),
-        }))
+        Ok(GetGlobalPeerMapResponse {
+            global_peer_map: global_peer_map.map,
+            digest: Some(data.digest.load()),
+        })
     }
 }

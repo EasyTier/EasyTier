@@ -11,9 +11,10 @@ use crate::{
     },
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
-    rpc::{
-        cli::{PeerInfo, Route, StunInfo},
-        peer::GetIpListResponse,
+    proto::{
+        cli::{PeerInfo, Route},
+        common::StunInfo,
+        peer_rpc::GetIpListResponse,
     },
     utils::{list_peer_route_pair, PeerRoutePair},
 };

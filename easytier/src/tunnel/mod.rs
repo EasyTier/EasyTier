@@ -8,7 +8,7 @@ use std::fmt::Debug;
 
 use tokio::time::error::Elapsed;
 
-use crate::rpc::TunnelInfo;
+use crate::proto::common::TunnelInfo;
 
 use self::packet_def::ZCPacket;
 

@@ -25,7 +25,18 @@ use tokio::{
 use crate::{
     common::{global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::route_trait::{Route, RouteInterfaceBox},
-    rpc::{NatType, StunInfo},
+    proto::common::{NatType, StunInfo},
+    proto::{
+        peer_rpc::{
+            OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
+            RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError, SyncRouteInfoRequest,
+            SyncRouteInfoResponse,
+        },
+        rpc_types::{
+            self,
+            controller::{BaseController, Controller},
+        },
+    },
 };
 
 use super::{
@@ -76,31 +87,17 @@ impl From<Version> for AtomicVersion {
     }
 }
 
-#[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
-struct RoutePeerInfo {
-    // means next hop in route table.
-    peer_id: PeerId,
-    inst_id: uuid::Uuid,
-    cost: u8,
-    ipv4_addr: Option<Ipv4Addr>,
-    proxy_cidrs: Vec<String>,
-    hostname: Option<String>,
-    udp_stun_info: i8,
-    last_update: SystemTime,
-    version: Version,
-}
-
 impl RoutePeerInfo {
     pub fn new() -> Self {
         Self {
             peer_id: 0,
-            inst_id: uuid::Uuid::nil(),
+            inst_id: Some(uuid::Uuid::nil().into()),
             cost: 0,
             ipv4_addr: None,
             proxy_cidrs: Vec::new(),
             hostname: None,
             udp_stun_info: 0,
-            last_update: SystemTime::now(),
+            last_update: Some(SystemTime::now().into()),
             version: 0,
         }
     }
@@ -108,9 +105,9 @@ impl RoutePeerInfo {
     pub fn update_self(&self, my_peer_id: PeerId, global_ctx: &ArcGlobalCtx) -> Self {
         let mut new = Self {
             peer_id: my_peer_id,
-            inst_id: global_ctx.get_id(),
+            inst_id: Some(global_ctx.get_id().into()),
             cost: 0,
-            ipv4_addr: global_ctx.get_ipv4(),
+            ipv4_addr: global_ctx.get_ipv4().map(|x| x.into()),
             proxy_cidrs: global_ctx
                 .get_proxy_cidrs()
                 .iter()
@@ -121,20 +118,22 @@ impl RoutePeerInfo {
             udp_stun_info: global_ctx
                 .get_stun_info_collector()
                 .get_stun_info()
-                .udp_nat_type as i8,
+                .udp_nat_type,
             // following fields do not participate in comparison.
             last_update: self.last_update,
             version: self.version,
         };
 
-        let need_update_periodically = if let Ok(d) = new.last_update.elapsed() {
+        let need_update_periodically = if let Ok(Ok(d)) =
+            SystemTime::try_from(new.last_update.unwrap()).map(|x| x.elapsed())
+        {
             d > UPDATE_PEER_INFO_PERIOD
         } else {
             true
         };
 
         if new != *self || need_update_periodically {
-            new.last_update = SystemTime::now();
+            new.last_update = Some(SystemTime::now().into());
             new.version += 1;
         }
 
@@ -142,9 +141,9 @@ impl RoutePeerInfo {
     }
 }
 
-impl Into<crate::rpc::Route> for RoutePeerInfo {
-    fn into(self) -> crate::rpc::Route {
-        crate::rpc::Route {
+impl Into<crate::proto::cli::Route> for RoutePeerInfo {
+    fn into(self) -> crate::proto::cli::Route {
+        crate::proto::cli::Route {
             peer_id: self.peer_id,
             ipv4_addr: if let Some(ipv4_addr) = self.ipv4_addr {
                 ipv4_addr.to_string()
@@ -162,7 +161,7 @@ impl Into<crate::rpc::Route> for RoutePeerInfo {
                 }
                 Some(stun_info)
             },
-            inst_id: self.inst_id.to_string(),
+            inst_id: self.inst_id.map(|x| x.to_string()).unwrap_or_default(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
@@ -172,6 +171,35 @@ impl Into<crate::rpc::Route> for RoutePeerInfo {
 struct RouteConnBitmap {
     peer_ids: Vec<(PeerId, Version)>,
     bitmap: Vec<u8>,
+}
+
+impl Into<crate::proto::peer_rpc::RouteConnBitmap> for RouteConnBitmap {
+    fn into(self) -> crate::proto::peer_rpc::RouteConnBitmap {
+        crate::proto::peer_rpc::RouteConnBitmap {
+            peer_ids: self
+                .peer_ids
+                .into_iter()
+                .map(|x| PeerIdVersion {
+                    peer_id: x.0,
+                    version: x.1,
+                })
+                .collect(),
+            bitmap: self.bitmap,
+        }
+    }
+}
+
+impl From<crate::proto::peer_rpc::RouteConnBitmap> for RouteConnBitmap {
+    fn from(v: crate::proto::peer_rpc::RouteConnBitmap) -> Self {
+        RouteConnBitmap {
+            peer_ids: v
+                .peer_ids
+                .into_iter()
+                .map(|x| (x.peer_id, x.version))
+                .collect(),
+            bitmap: v.bitmap,
+        }
+    }
 }
 
 impl RouteConnBitmap {
@@ -200,28 +228,7 @@ impl RouteConnBitmap {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-enum Error {
-    DuplicatePeerId,
-    Stopped,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-struct SyncRouteInfoResponse {
-    is_initiator: bool,
-    session_id: SessionId,
-}
-
-#[tarpc::service]
-trait RouteService {
-    async fn sync_route_info(
-        my_peer_id: PeerId,
-        my_session_id: SessionId,
-        is_initiator: bool,
-        peer_infos: Option<Vec<RoutePeerInfo>>,
-        conn_bitmap: Option<RouteConnBitmap>,
-    ) -> Result<SyncRouteInfoResponse, Error>;
-}
+type Error = SyncRouteInfoError;
 
 // constructed with all infos synced from all peers.
 #[derive(Debug)]
@@ -299,7 +306,7 @@ impl SyncedRouteInfo {
         for mut route_info in peer_infos.iter().map(Clone::clone) {
             // time between peers may not be synchronized, so update last_update to local now.
             // note only last_update with larger version will be updated to local saved peer info.
-            route_info.last_update = SystemTime::now();
+            route_info.last_update = Some(SystemTime::now().into());
 
             self.peer_infos
                 .entry(route_info.peer_id)
@@ -581,7 +588,7 @@ impl RouteTable {
             let info = item.value();
 
             if let Some(ipv4_addr) = info.ipv4_addr {
-                self.ipv4_peer_id_map.insert(ipv4_addr, *peer_id);
+                self.ipv4_peer_id_map.insert(ipv4_addr.into(), *peer_id);
             }
 
             for cidr in info.proxy_cidrs.iter() {
@@ -996,7 +1003,8 @@ impl PeerRouteServiceImpl {
         let now = SystemTime::now();
         let mut to_remove = Vec::new();
         for item in self.synced_route_info.peer_infos.iter() {
-            if let Ok(d) = now.duration_since(item.value().last_update) {
+            if let Ok(d) = now.duration_since(item.value().last_update.unwrap().try_into().unwrap())
+            {
                 if d > REMOVE_DEAD_PEER_INFO_AFTER {
                     to_remove.push(*item.key());
                 }
@@ -1021,7 +1029,7 @@ impl PeerRouteServiceImpl {
         let my_peer_id = self.my_peer_id;
 
         let (peer_infos, conn_bitmap) = self.build_sync_request(&session);
-        tracing::info!("my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
+        tracing::info!("building sync_route request. my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
                        my_peer_id, dst_peer_id, peer_infos, conn_bitmap, self.synced_route_info, session);
 
         if peer_infos.is_none()
@@ -1035,33 +1043,60 @@ impl PeerRouteServiceImpl {
             .need_sync_initiator_info
             .store(false, Ordering::Relaxed);
 
-        let ret = peer_rpc
-            .do_client_rpc_scoped(SERVICE_ID, dst_peer_id, |c| async {
-                let client = RouteServiceClient::new(tarpc::client::Config::default(), c).spawn();
-                let mut rpc_ctx = tarpc::context::current();
-                rpc_ctx.deadline = SystemTime::now() + Duration::from_secs(3);
-                client
-                    .sync_route_info(
-                        rpc_ctx,
-                        my_peer_id,
-                        session.my_session_id.load(Ordering::Relaxed),
-                        session.we_are_initiator.load(Ordering::Relaxed),
-                        peer_infos.clone(),
-                        conn_bitmap.clone(),
-                    )
-                    .await
-            })
+        let rpc_stub = peer_rpc
+            .rpc_client()
+            .scoped_client::<OspfRouteRpcClientFactory<BaseController>>(
+                self.my_peer_id,
+                dst_peer_id,
+                self.global_ctx.get_network_name(),
+            );
+
+        let mut ctrl = BaseController {};
+        ctrl.set_timeout_ms(3000);
+        let ret = rpc_stub
+            .sync_route_info(
+                ctrl,
+                SyncRouteInfoRequest {
+                    my_peer_id,
+                    my_session_id: session.my_session_id.load(Ordering::Relaxed),
+                    is_initiator: session.we_are_initiator.load(Ordering::Relaxed),
+                    peer_infos: peer_infos.clone().map(|x| RoutePeerInfos { items: x }),
+                    conn_bitmap: conn_bitmap.clone().map(Into::into),
+                },
+            )
             .await;
 
-        match ret {
-            Ok(Ok(ret)) => {
+        if let Err(e) = &ret {
+            tracing::error!(
+                ?ret,
+                ?my_peer_id,
+                ?dst_peer_id,
+                ?e,
+                "sync_route_info failed"
+            );
+            session
+                .need_sync_initiator_info
+                .store(true, Ordering::Relaxed);
+        } else {
+            let resp = ret.as_ref().unwrap();
+            if resp.error.is_some() {
+                let err = resp.error.unwrap();
+                if err == Error::DuplicatePeerId as i32 {
+                    panic!("duplicate peer id");
+                } else {
+                    tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
+                    session
+                        .need_sync_initiator_info
+                        .store(true, Ordering::Relaxed);
+                }
+            } else {
                 session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
 
                 session
                     .dst_is_initiator
-                    .store(ret.is_initiator, Ordering::Relaxed);
+                    .store(resp.is_initiator, Ordering::Relaxed);
 
-                session.update_dst_session_id(ret.session_id);
+                session.update_dst_session_id(resp.session_id);
 
                 if let Some(peer_infos) = &peer_infos {
                     session.update_dst_saved_peer_info_version(&peer_infos);
@@ -1070,17 +1105,6 @@ impl PeerRouteServiceImpl {
                 if let Some(conn_bitmap) = &conn_bitmap {
                     session.update_dst_saved_conn_bitmap_version(&conn_bitmap);
                 }
-            }
-
-            Ok(Err(Error::DuplicatePeerId)) => {
-                panic!("duplicate peer id");
-            }
-
-            _ => {
-                tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
-                session
-                    .need_sync_initiator_info
-                    .store(true, Ordering::Relaxed);
             }
         }
         return false;
@@ -1103,59 +1127,37 @@ impl Debug for RouteSessionManager {
     }
 }
 
-#[tarpc::server]
-impl RouteService for RouteSessionManager {
+#[async_trait::async_trait]
+impl OspfRouteRpc for RouteSessionManager {
+    type Controller = BaseController;
     async fn sync_route_info(
-        self,
-        _: tarpc::context::Context,
-        from_peer_id: PeerId,
-        from_session_id: SessionId,
-        is_initiator: bool,
-        peer_infos: Option<Vec<RoutePeerInfo>>,
-        conn_bitmap: Option<RouteConnBitmap>,
-    ) -> Result<SyncRouteInfoResponse, Error> {
-        let Some(service_impl) = self.service_impl.upgrade() else {
-            return Err(Error::Stopped);
-        };
+        &self,
+        _ctrl: BaseController,
+        request: SyncRouteInfoRequest,
+    ) -> Result<SyncRouteInfoResponse, rpc_types::error::Error> {
+        let from_peer_id = request.my_peer_id;
+        let from_session_id = request.my_session_id;
+        let is_initiator = request.is_initiator;
+        let peer_infos = request.peer_infos.map(|x| x.items);
+        let conn_bitmap = request.conn_bitmap.map(Into::into);
 
-        let my_peer_id = service_impl.my_peer_id;
-        let session = self.get_or_start_session(from_peer_id)?;
-
-        session.rpc_rx_count.fetch_add(1, Ordering::Relaxed);
-
-        session.update_dst_session_id(from_session_id);
-
-        if let Some(peer_infos) = &peer_infos {
-            service_impl.synced_route_info.update_peer_infos(
-                my_peer_id,
+        let ret = self
+            .do_sync_route_info(
                 from_peer_id,
+                from_session_id,
+                is_initiator,
                 peer_infos,
-            )?;
-            session.update_dst_saved_peer_info_version(peer_infos);
-        }
+                conn_bitmap,
+            )
+            .await;
 
-        if let Some(conn_bitmap) = &conn_bitmap {
-            service_impl.synced_route_info.update_conn_map(&conn_bitmap);
-            session.update_dst_saved_conn_bitmap_version(conn_bitmap);
-        }
-
-        service_impl.update_route_table_and_cached_local_conn_bitmap();
-
-        tracing::info!(
-            "sync_route_info: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
-            from_peer_id, is_initiator, peer_infos, conn_bitmap, service_impl.synced_route_info, session, service_impl.route_table);
-
-        session
-            .dst_is_initiator
-            .store(is_initiator, Ordering::Relaxed);
-        let is_initiator = session.we_are_initiator.load(Ordering::Relaxed);
-        let session_id = session.my_session_id.load(Ordering::Relaxed);
-
-        self.sync_now("sync_route_info");
-
-        Ok(SyncRouteInfoResponse {
-            is_initiator,
-            session_id,
+        Ok(match ret {
+            Ok(v) => v,
+            Err(e) => {
+                let mut resp = SyncRouteInfoResponse::default();
+                resp.error = Some(e as i32);
+                resp
+            }
         })
     }
 }
@@ -1366,6 +1368,60 @@ impl RouteSessionManager {
         let ret = self.sync_now_broadcast.send(());
         tracing::debug!(?ret, ?reason, "sync_now_broadcast.send");
     }
+
+    async fn do_sync_route_info(
+        &self,
+        from_peer_id: PeerId,
+        from_session_id: SessionId,
+        is_initiator: bool,
+        peer_infos: Option<Vec<RoutePeerInfo>>,
+        conn_bitmap: Option<RouteConnBitmap>,
+    ) -> Result<SyncRouteInfoResponse, Error> {
+        let Some(service_impl) = self.service_impl.upgrade() else {
+            return Err(Error::Stopped);
+        };
+
+        let my_peer_id = service_impl.my_peer_id;
+        let session = self.get_or_start_session(from_peer_id)?;
+
+        session.rpc_rx_count.fetch_add(1, Ordering::Relaxed);
+
+        session.update_dst_session_id(from_session_id);
+
+        if let Some(peer_infos) = &peer_infos {
+            service_impl.synced_route_info.update_peer_infos(
+                my_peer_id,
+                from_peer_id,
+                peer_infos,
+            )?;
+            session.update_dst_saved_peer_info_version(peer_infos);
+        }
+
+        if let Some(conn_bitmap) = &conn_bitmap {
+            service_impl.synced_route_info.update_conn_map(&conn_bitmap);
+            session.update_dst_saved_conn_bitmap_version(conn_bitmap);
+        }
+
+        service_impl.update_route_table_and_cached_local_conn_bitmap();
+
+        tracing::info!(
+            "handling sync_route_info rpc: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
+            from_peer_id, is_initiator, peer_infos, conn_bitmap, service_impl.synced_route_info, session, service_impl.route_table);
+
+        session
+            .dst_is_initiator
+            .store(is_initiator, Ordering::Relaxed);
+        let is_initiator = session.we_are_initiator.load(Ordering::Relaxed);
+        let session_id = session.my_session_id.load(Ordering::Relaxed);
+
+        self.sync_now("sync_route_info");
+
+        Ok(SyncRouteInfoResponse {
+            is_initiator,
+            session_id,
+            error: None,
+        })
+    }
 }
 
 pub struct PeerRoute {
@@ -1415,7 +1471,7 @@ impl PeerRoute {
             tokio::time::sleep(Duration::from_secs(60)).await;
             service_impl.clear_expired_peer();
             // TODO: use debug log level for this.
-            tracing::info!(?service_impl, "clear_expired_peer");
+            tracing::debug!(?service_impl, "clear_expired_peer");
         }
     }
 
@@ -1453,8 +1509,10 @@ impl PeerRoute {
     }
 
     async fn start(&self) {
-        self.peer_rpc
-            .run_service(SERVICE_ID, RouteService::serve(self.session_mgr.clone()));
+        self.peer_rpc.rpc_server().registry().register(
+            OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.global_ctx.get_network_name(),
+        );
 
         self.tasks
             .lock()
@@ -1476,6 +1534,15 @@ impl PeerRoute {
             .lock()
             .unwrap()
             .spawn(Self::clear_expired_peer(self.service_impl.clone()));
+    }
+}
+
+impl Drop for PeerRoute {
+    fn drop(&mut self) {
+        self.peer_rpc.rpc_server().registry().unregister(
+            OspfRouteRpcServer::new(self.session_mgr.clone()),
+            &self.global_ctx.get_network_name(),
+        );
     }
 }
 
@@ -1507,7 +1574,7 @@ impl Route for PeerRoute {
         route_table.get_next_hop(dst_peer_id).map(|x| x.0)
     }
 
-    async fn list_routes(&self) -> Vec<crate::rpc::Route> {
+    async fn list_routes(&self) -> Vec<crate::proto::cli::Route> {
         let route_table = &self.service_impl.route_table;
         let mut routes = Vec::new();
         for item in route_table.peer_infos.iter() {
@@ -1517,7 +1584,7 @@ impl Route for PeerRoute {
             let Some(next_hop_peer) = route_table.get_next_hop(*item.key()) else {
                 continue;
             };
-            let mut route: crate::rpc::Route = item.value().clone().into();
+            let mut route: crate::proto::cli::Route = item.value().clone().into();
             route.next_hop_peer_id = next_hop_peer.0;
             route.cost = next_hop_peer.1;
             routes.push(route);
@@ -1567,7 +1634,7 @@ mod tests {
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface},
             tests::connect_peer_manager,
         },
-        rpc::NatType,
+        proto::common::NatType,
         tunnel::common::tests::wait_for_condition,
     };
 

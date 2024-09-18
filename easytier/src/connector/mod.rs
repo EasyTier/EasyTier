@@ -32,14 +32,14 @@ async fn set_bind_addr_for_peer_connector(
     if is_ipv4 {
         let mut bind_addrs = vec![];
         for ipv4 in ips.interface_ipv4s {
-            let socket_addr = SocketAddrV4::new(ipv4.parse().unwrap(), 0).into();
+            let socket_addr = SocketAddrV4::new(ipv4.into(), 0).into();
             bind_addrs.push(socket_addr);
         }
         connector.set_bind_addrs(bind_addrs);
     } else {
         let mut bind_addrs = vec![];
         for ipv6 in ips.interface_ipv6s {
-            let socket_addr = SocketAddrV6::new(ipv6.parse().unwrap(), 0, 0, 0).into();
+            let socket_addr = SocketAddrV6::new(ipv6.into(), 0, 0, 0).into();
             bind_addrs.push(socket_addr);
         }
         connector.set_bind_addrs(bind_addrs);

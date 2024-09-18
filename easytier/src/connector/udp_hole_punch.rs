@@ -5,6 +5,7 @@ use std::{
         Arc,
     },
     time::Duration,
+    u16,
 };
 
 use anyhow::Context;
@@ -21,12 +22,20 @@ use zerocopy::FromBytes;
 
 use crate::{
     common::{
-        constants, error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
+        error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
         scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId,
     },
     defer,
     peers::peer_manager::PeerManager,
-    rpc::NatType,
+    proto::{
+        common::NatType,
+        peer_rpc::{
+            TryPunchHoleRequest, TryPunchHoleResponse, TryPunchSymmetricRequest,
+            TryPunchSymmetricResponse, UdpHolePunchRpc, UdpHolePunchRpcClientFactory,
+            UdpHolePunchRpcServer,
+        },
+        rpc_types::{self, controller::BaseController},
+    },
     tunnel::{
         common::setup_sokcet2,
         packet_def::{UDPTunnelHeader, UdpPacketType, UDP_TUNNEL_HEADER_SIZE},
@@ -186,21 +195,6 @@ impl std::fmt::Debug for UdpSocketArray {
     }
 }
 
-#[tarpc::service]
-pub trait UdpHolePunchService {
-    async fn try_punch_hole(local_mapped_addr: SocketAddr) -> Option<SocketAddr>;
-    async fn try_punch_symmetric(
-        listener_addr: SocketAddr,
-        port: u16,
-        public_ips: Vec<Ipv4Addr>,
-        min_port: u16,
-        max_port: u16,
-        transaction_id: u32,
-        round: u32,
-        last_port_index: usize,
-    ) -> Option<usize>;
-}
-
 #[derive(Debug)]
 struct UdpHolePunchListener {
     socket: Arc<UdpSocket>,
@@ -324,23 +318,34 @@ impl UdpHolePunchConnectorData {
 }
 
 #[derive(Clone)]
-struct UdpHolePunchRpcServer {
+struct UdpHolePunchRpcService {
     data: Arc<UdpHolePunchConnectorData>,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 }
 
-#[tarpc::server]
-impl UdpHolePunchService for UdpHolePunchRpcServer {
+#[async_trait::async_trait]
+impl UdpHolePunchRpc for UdpHolePunchRpcService {
+    type Controller = BaseController;
+
     #[tracing::instrument(skip(self))]
     async fn try_punch_hole(
-        self,
-        _: tarpc::context::Context,
-        local_mapped_addr: SocketAddr,
-    ) -> Option<SocketAddr> {
+        &self,
+        _: BaseController,
+        request: TryPunchHoleRequest,
+    ) -> Result<TryPunchHoleResponse, rpc_types::error::Error> {
+        let local_mapped_addr = request.local_mapped_addr.ok_or(anyhow::anyhow!(
+            "try_punch_hole request missing local_mapped_addr"
+        ))?;
+        let local_mapped_addr = std::net::SocketAddr::from(local_mapped_addr);
         // local mapped addr will be unspecified if peer is symmetric
         let peer_is_symmetric = local_mapped_addr.ip().is_unspecified();
-        let (socket, mapped_addr) = self.select_listener(peer_is_symmetric).await?;
+        let (socket, mapped_addr) =
+            self.select_listener(peer_is_symmetric)
+                .await
+                .ok_or(anyhow::anyhow!(
+                    "failed to select listener for hole punching"
+                ))?;
         tracing::warn!(?local_mapped_addr, ?mapped_addr, "start hole punching");
 
         if !peer_is_symmetric {
@@ -380,32 +385,48 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
             }
         }
 
-        Some(mapped_addr)
+        Ok(TryPunchHoleResponse {
+            remote_mapped_addr: Some(mapped_addr.into()),
+        })
     }
 
     #[instrument(skip(self))]
     async fn try_punch_symmetric(
-        self,
-        _: tarpc::context::Context,
-        listener_addr: SocketAddr,
-        port: u16,
-        public_ips: Vec<Ipv4Addr>,
-        mut min_port: u16,
-        mut max_port: u16,
-        transaction_id: u32,
-        round: u32,
-        last_port_index: usize,
-    ) -> Option<usize> {
+        &self,
+        _: BaseController,
+        request: TryPunchSymmetricRequest,
+    ) -> Result<TryPunchSymmetricResponse, rpc_types::error::Error> {
+        let listener_addr = request.listener_addr.ok_or(anyhow::anyhow!(
+            "try_punch_symmetric request missing listener_addr"
+        ))?;
+        let listener_addr = std::net::SocketAddr::from(listener_addr);
+        let port = request.port as u16;
+        let public_ips = request
+            .public_ips
+            .into_iter()
+            .map(|ip| std::net::Ipv4Addr::from(ip))
+            .collect::<Vec<_>>();
+        let mut min_port = request.min_port as u16;
+        let mut max_port = request.max_port as u16;
+        let transaction_id = request.transaction_id;
+        let round = request.round;
+        let last_port_index = request.last_port_index as usize;
+
         tracing::info!("try_punch_symmetric start");
 
         let punch_predictablely = self.data.punch_predicablely.load(Ordering::Relaxed);
         let punch_randomly = self.data.punch_randomly.load(Ordering::Relaxed);
         let total_port_count = self.data.shuffled_port_vec.len();
-        let listener = self.find_listener(&listener_addr).await?;
+        let listener = self
+            .find_listener(&listener_addr)
+            .await
+            .ok_or(anyhow::anyhow!(
+                "try_punch_symmetric failed to find listener"
+            ))?;
         let ip_count = public_ips.len();
         if ip_count == 0 {
             tracing::warn!("try_punch_symmetric got zero len public ip");
-            return None;
+            return Err(anyhow::anyhow!("try_punch_symmetric got zero len public ip").into());
         }
 
         min_port = std::cmp::max(1, min_port);
@@ -447,7 +468,7 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
                 &ports,
             )
             .await
-            .ok()?;
+            .with_context(|| "failed to send symmetric hole punch packet predict")?;
         }
 
         if punch_randomly {
@@ -461,20 +482,22 @@ impl UdpHolePunchService for UdpHolePunchRpcServer {
                 &self.data.shuffled_port_vec[start..end],
             )
             .await
-            .ok()?;
+            .with_context(|| "failed to send symmetric hole punch packet randomly")?;
 
             return if end >= self.data.shuffled_port_vec.len() {
-                Some(1)
+                Ok(TryPunchSymmetricResponse { last_port_index: 1 })
             } else {
-                Some(end)
+                Ok(TryPunchSymmetricResponse {
+                    last_port_index: end as u32,
+                })
             };
         }
 
-        return Some(1);
+        return Ok(TryPunchSymmetricResponse { last_port_index: 1 });
     }
 }
 
-impl UdpHolePunchRpcServer {
+impl UdpHolePunchRpcService {
     pub fn new(data: Arc<UdpHolePunchConnectorData>) -> Self {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "UdpHolePunchRpcServer".to_owned());
@@ -593,10 +616,15 @@ impl UdpHolePunchConnector {
     }
 
     pub async fn run_as_server(&mut self) -> Result<(), Error> {
-        self.data.peer_mgr.get_peer_rpc_mgr().run_service(
-            constants::UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID,
-            UdpHolePunchRpcServer::new(self.data.clone()).serve(),
-        );
+        self.data
+            .peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                UdpHolePunchRpcServer::new(UdpHolePunchRpcService::new(self.data.clone())),
+                &self.data.global_ctx.get_network_name(),
+            );
 
         Ok(())
     }
@@ -736,26 +764,26 @@ impl UdpHolePunchConnector {
             .with_context(|| "failed to get udp port mapping")?;
 
         // client -> server: tell server the mapped port, server will return the mapped address of listening port.
-        let Some(remote_mapped_addr) = data
+        let rpc_stub = data
             .peer_mgr
             .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(
-                constants::UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID,
+            .rpc_client()
+            .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(
+                data.peer_mgr.my_peer_id(),
                 dst_peer_id,
-                |c| async {
-                    let client =
-                        UdpHolePunchServiceClient::new(tarpc::client::Config::default(), c).spawn();
-                    let remote_mapped_addr = client
-                        .try_punch_hole(tarpc::context::current(), local_mapped_addr)
-                        .await;
-                    tracing::info!(?remote_mapped_addr, ?dst_peer_id, "got remote mapped addr");
-                    remote_mapped_addr
+                data.global_ctx.get_network_name(),
+            );
+
+        let remote_mapped_addr = rpc_stub
+            .try_punch_hole(
+                BaseController {},
+                TryPunchHoleRequest {
+                    local_mapped_addr: Some(local_mapped_addr.into()),
                 },
             )
             .await?
-        else {
-            return Err(anyhow::anyhow!("failed to get remote mapped addr"));
-        };
+            .remote_mapped_addr
+            .ok_or(anyhow::anyhow!("failed to get remote mapped addr"))?;
 
         // server: will send some punching resps, total 10 packets.
         // client: use the socket to create UdpTunnel with UdpTunnelConnector
@@ -769,9 +797,11 @@ impl UdpHolePunchConnector {
         setup_sokcet2(&socket2_socket, &local_socket_addr)?;
         let socket = Arc::new(UdpSocket::from_std(socket2_socket.into())?);
 
-        Ok(Self::try_connect_with_socket(socket, remote_mapped_addr)
-            .await
-            .with_context(|| "UdpTunnelConnector failed to connect remote")?)
+        Ok(
+            Self::try_connect_with_socket(socket, remote_mapped_addr.into())
+                .await
+                .with_context(|| "UdpTunnelConnector failed to connect remote")?,
+        )
     }
 
     #[tracing::instrument(err(level = Level::ERROR))]
@@ -783,30 +813,28 @@ impl UdpHolePunchConnector {
             return Err(anyhow::anyhow!("udp array not started"));
         };
 
-        let Some(remote_mapped_addr) = data
+        let rpc_stub = data
             .peer_mgr
             .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(
-                constants::UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID,
+            .rpc_client()
+            .scoped_client::<UdpHolePunchRpcClientFactory<BaseController>>(
+                data.peer_mgr.my_peer_id(),
                 dst_peer_id,
-                |c| async {
-                    let client =
-                        UdpHolePunchServiceClient::new(tarpc::client::Config::default(), c).spawn();
-                    let remote_mapped_addr = client
-                        .try_punch_hole(tarpc::context::current(), "0.0.0.0:0".parse().unwrap())
-                        .await;
-                    tracing::debug!(
-                        ?remote_mapped_addr,
-                        ?dst_peer_id,
-                        "hole punching symmetric got remote mapped addr"
-                    );
-                    remote_mapped_addr
+                data.global_ctx.get_network_name(),
+            );
+
+        let local_mapped_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let remote_mapped_addr = rpc_stub
+            .try_punch_hole(
+                BaseController {},
+                TryPunchHoleRequest {
+                    local_mapped_addr: Some(local_mapped_addr.into()),
                 },
             )
             .await?
-        else {
-            return Err(anyhow::anyhow!("failed to get remote mapped addr"));
-        };
+            .remote_mapped_addr
+            .ok_or(anyhow::anyhow!("failed to get remote mapped addr"))?
+            .into();
 
         // try direct connect first
         if data.try_direct_connect.load(Ordering::Relaxed) {
@@ -852,38 +880,26 @@ impl UdpHolePunchConnector {
         let mut last_port_idx = rand::thread_rng().gen_range(0..data.shuffled_port_vec.len());
 
         for round in 0..5 {
-            let ret = data
-                .peer_mgr
-                .get_peer_rpc_mgr()
-                .do_client_rpc_scoped(
-                    constants::UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID,
-                    dst_peer_id,
-                    |c| async {
-                        let client =
-                            UdpHolePunchServiceClient::new(tarpc::client::Config::default(), c)
-                                .spawn();
-                        let last_port_idx = client
-                            .try_punch_symmetric(
-                                tarpc::context::current(),
-                                remote_mapped_addr,
-                                port,
-                                public_ips.clone(),
-                                stun_info.min_port as u16,
-                                stun_info.max_port as u16,
-                                tid,
-                                round,
-                                last_port_idx,
-                            )
-                            .await;
-                        tracing::info!(?last_port_idx, ?dst_peer_id, "punch symmetric return");
-                        last_port_idx
+            let ret = rpc_stub
+                .try_punch_symmetric(
+                    BaseController {},
+                    TryPunchSymmetricRequest {
+                        listener_addr: Some(remote_mapped_addr.into()),
+                        port: port as u32,
+                        public_ips: public_ips.clone().into_iter().map(|x| x.into()).collect(),
+                        min_port: stun_info.min_port as u32,
+                        max_port: stun_info.max_port as u32,
+                        transaction_id: tid,
+                        round,
+                        last_port_index: last_port_idx as u32,
                     },
                 )
                 .await;
+            tracing::info!(?ret, "punch symmetric return");
 
             let next_last_port_idx = match ret {
-                Ok(Some(idx)) => idx,
-                err => {
+                Ok(s) => s.last_port_index as usize,
+                Err(err) => {
                     tracing::error!(?err, "failed to get remote mapped addr");
                     rand::thread_rng().gen_range(0..data.shuffled_port_vec.len())
                 }
@@ -1027,11 +1043,11 @@ pub mod tests {
 
     use tokio::net::UdpSocket;
 
-    use crate::rpc::{NatType, StunInfo};
+    use crate::common::stun::MockStunInfoCollector;
+    use crate::proto::common::NatType;
     use crate::tunnel::common::tests::wait_for_condition;
 
     use crate::{
-        common::{error::Error, stun::StunInfoCollectorTrait},
         connector::udp_hole_punch::UdpHolePunchConnector,
         peers::{
             peer_manager::PeerManager,
@@ -1041,31 +1057,6 @@ pub mod tests {
             },
         },
     };
-
-    struct MockStunInfoCollector {
-        udp_nat_type: NatType,
-    }
-
-    #[async_trait::async_trait]
-    impl StunInfoCollectorTrait for MockStunInfoCollector {
-        fn get_stun_info(&self) -> StunInfo {
-            StunInfo {
-                udp_nat_type: self.udp_nat_type as i32,
-                tcp_nat_type: NatType::Unknown as i32,
-                last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
-                min_port: 100,
-                max_port: 200,
-                ..Default::default()
-            }
-        }
-
-        async fn get_udp_port_mapping(&self, mut port: u16) -> Result<std::net::SocketAddr, Error> {
-            if port == 0 {
-                port = 40144;
-            }
-            Ok(format!("127.0.0.1:{}", port).parse().unwrap())
-        }
-    }
 
     pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });

@@ -17,7 +17,6 @@ use tokio::{
     task::JoinSet,
 };
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_util::bytes::Bytes;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
@@ -27,6 +26,7 @@ use crate::{
         route_trait::{NextHopPolicy, RouteInterface},
         PeerPacketFilter,
     },
+    proto::cli,
     tunnel::{
         self,
         packet_def::{PacketType, ZCPacket},
@@ -41,7 +41,6 @@ use super::{
     peer_conn::PeerConnId,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
-    peer_rip_route::BasicRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver,
@@ -75,7 +74,15 @@ impl PeerRpcManagerTransport for RpcTransport {
             .ok_or(Error::Unknown)?;
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
 
-        if let Some(gateway_id) = peers
+        if foreign_peers.has_next_hop(dst_peer_id) {
+            // do not encrypt for data sending to public server
+            tracing::debug!(
+                ?dst_peer_id,
+                ?self.my_peer_id,
+                "failed to send msg to peer, try foreign network",
+            );
+            foreign_peers.send_msg(msg, dst_peer_id).await
+        } else if let Some(gateway_id) = peers
             .get_gateway_peer_id(dst_peer_id, NextHopPolicy::LeastHop)
             .await
         {
@@ -88,20 +95,11 @@ impl PeerRpcManagerTransport for RpcTransport {
             self.encryptor
                 .encrypt(&mut msg)
                 .with_context(|| "encrypt failed")?;
-            peers.send_msg_directly(msg, gateway_id).await
-        } else if foreign_peers.has_next_hop(dst_peer_id) {
-            if !foreign_peers.is_peer_public_node(&dst_peer_id) {
-                // do not encrypt for msg sending to public node
-                self.encryptor
-                    .encrypt(&mut msg)
-                    .with_context(|| "encrypt failed")?;
+            if peers.has_peer(gateway_id) {
+                peers.send_msg_directly(msg, gateway_id).await
+            } else {
+                foreign_peers.send_msg(msg, gateway_id).await
             }
-            tracing::debug!(
-                ?dst_peer_id,
-                ?self.my_peer_id,
-                "failed to send msg to peer, try foreign network",
-            );
-            foreign_peers.send_msg(msg, dst_peer_id).await
         } else {
             Err(Error::RouteError(Some(format!(
                 "peermgr RpcTransport no route for dst_peer_id: {}",
@@ -120,13 +118,11 @@ impl PeerRpcManagerTransport for RpcTransport {
 }
 
 pub enum RouteAlgoType {
-    Rip,
     Ospf,
     None,
 }
 
 enum RouteAlgoInst {
-    Rip(Arc<BasicRoute>),
     Ospf(Arc<PeerRoute>),
     None,
 }
@@ -217,9 +213,6 @@ impl PeerManager {
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
 
         let route_algo_inst = match route_algo {
-            RouteAlgoType::Rip => {
-                RouteAlgoInst::Rip(Arc::new(BasicRoute::new(my_peer_id, global_ctx.clone())))
-            }
             RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
                 my_peer_id,
                 global_ctx.clone(),
@@ -438,7 +431,10 @@ impl PeerManager {
         impl PeerPacketFilter for PeerRpcPacketProcessor {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
                 let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type == PacketType::TaRpc as u8 {
+                if hdr.packet_type == PacketType::TaRpc as u8
+                    || hdr.packet_type == PacketType::RpcReq as u8
+                    || hdr.packet_type == PacketType::RpcResp as u8
+                {
                     self.peer_rpc_tspt_sender.send(packet).unwrap();
                     None
                 } else {
@@ -477,33 +473,11 @@ impl PeerManager {
                     return vec![];
                 };
 
-                let mut peers = foreign_client.list_foreign_peers();
+                let mut peers = foreign_client.list_public_peers().await;
                 peers.extend(peer_map.list_peers_with_conn().await);
                 peers
             }
-            async fn send_route_packet(
-                &self,
-                msg: Bytes,
-                _route_id: u8,
-                dst_peer_id: PeerId,
-            ) -> Result<(), Error> {
-                let foreign_client = self
-                    .foreign_network_client
-                    .upgrade()
-                    .ok_or(Error::Unknown)?;
-                let peer_map = self.peers.upgrade().ok_or(Error::Unknown)?;
-                let mut zc_packet = ZCPacket::new_with_payload(&msg);
-                zc_packet.fill_peer_manager_hdr(
-                    self.my_peer_id,
-                    dst_peer_id,
-                    PacketType::Route as u8,
-                );
-                if foreign_client.has_next_hop(dst_peer_id) {
-                    foreign_client.send_msg(zc_packet, dst_peer_id).await
-                } else {
-                    peer_map.send_msg_directly(zc_packet, dst_peer_id).await
-                }
-            }
+
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
             }
@@ -525,13 +499,12 @@ impl PeerManager {
 
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
         match &self.route_algo_inst {
-            RouteAlgoInst::Rip(route) => Box::new(route.clone()),
             RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
             RouteAlgoInst::None => panic!("no route"),
         }
     }
 
-    pub async fn list_routes(&self) -> Vec<crate::rpc::Route> {
+    pub async fn list_routes(&self) -> Vec<cli::Route> {
         self.get_route().list_routes().await
     }
 
@@ -649,13 +622,23 @@ impl PeerManager {
                 .get_gateway_peer_id(*peer_id, next_hop_policy.clone())
                 .await
             {
-                if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {
-                    errs.push(e);
+                if self.peers.has_peer(gateway) {
+                    if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {
+                        errs.push(e);
+                    }
+                } else if self.foreign_network_client.has_next_hop(gateway) {
+                    if let Err(e) = self.foreign_network_client.send_msg(msg, gateway).await {
+                        errs.push(e);
+                    }
+                } else {
+                    tracing::warn!(
+                        ?gateway,
+                        ?peer_id,
+                        "cannot send msg to peer through gateway"
+                    );
                 }
-            } else if self.foreign_network_client.has_next_hop(*peer_id) {
-                if let Err(e) = self.foreign_network_client.send_msg(msg, *peer_id).await {
-                    errs.push(e);
-                }
+            } else {
+                tracing::debug!(?peer_id, "no gateway for peer");
             }
         }
 
@@ -693,7 +676,6 @@ impl PeerManager {
     pub async fn run(&self) -> Result<(), Error> {
         match &self.route_algo_inst {
             RouteAlgoInst::Ospf(route) => self.add_route(route.clone()).await,
-            RouteAlgoInst::Rip(route) => self.add_route(route.clone()).await,
             RouteAlgoInst::None => {}
         };
 
@@ -732,13 +714,6 @@ impl PeerManager {
         self.nic_channel.clone()
     }
 
-    pub fn get_basic_route(&self) -> Arc<BasicRoute> {
-        match &self.route_algo_inst {
-            RouteAlgoInst::Rip(route) => route.clone(),
-            _ => panic!("not rip route"),
-        }
-    }
-
     pub fn get_foreign_network_manager(&self) -> Arc<ForeignNetworkManager> {
         self.foreign_network_manager.clone()
     }
@@ -747,8 +722,8 @@ impl PeerManager {
         self.foreign_network_client.clone()
     }
 
-    pub fn get_my_info(&self) -> crate::rpc::NodeInfo {
-        crate::rpc::NodeInfo {
+    pub fn get_my_info(&self) -> cli::NodeInfo {
+        cli::NodeInfo {
             peer_id: self.my_peer_id,
             ipv4_addr: self
                 .global_ctx
@@ -774,6 +749,12 @@ impl PeerManager {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
+
+    pub async fn wait(&self) {
+        while !self.tasks.lock().await.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -789,12 +770,11 @@ mod tests {
         instance::listeners::get_listener_by_url,
         peers::{
             peer_manager::RouteAlgoType,
-            peer_rpc::tests::{MockService, TestRpcService, TestRpcServiceClient},
+            peer_rpc::tests::register_service,
             tests::{connect_peer_manager, wait_route_appear},
         },
-        rpc::NatType,
-        tunnel::common::tests::wait_for_condition,
-        tunnel::{TunnelConnector, TunnelListener},
+        proto::common::NatType,
+        tunnel::{common::tests::wait_for_condition, TunnelConnector, TunnelListener},
     };
 
     use super::PeerManager;
@@ -857,25 +837,18 @@ mod tests {
         #[values("tcp", "udp", "wg", "quic")] proto1: &str,
         #[values("tcp", "udp", "wg", "quic")] proto2: &str,
     ) {
+        use crate::proto::{
+            rpc_impl::RpcController,
+            tests::{GreetingClientFactory, SayHelloRequest},
+        };
+
         let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        peer_mgr_a.get_peer_rpc_mgr().run_service(
-            100,
-            MockService {
-                prefix: "hello a".to_owned(),
-            }
-            .serve(),
-        );
+        register_service(&peer_mgr_a.peer_rpc_mgr, "", 0, "hello a");
 
         let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
 
         let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
-        peer_mgr_c.get_peer_rpc_mgr().run_service(
-            100,
-            MockService {
-                prefix: "hello c".to_owned(),
-            }
-            .serve(),
-        );
+        register_service(&peer_mgr_c.peer_rpc_mgr, "", 0, "hello c");
 
         let mut listener1 = get_listener_by_url(
             &format!("{}://0.0.0.0:31013", proto1).parse().unwrap(),
@@ -913,16 +886,26 @@ mod tests {
             .await
             .unwrap();
 
-        let ret = peer_mgr_a
-            .get_peer_rpc_mgr()
-            .do_client_rpc_scoped(100, peer_mgr_c.my_peer_id(), |c| async {
-                let c = TestRpcServiceClient::new(tarpc::client::Config::default(), c).spawn();
-                let ret = c.hello(tarpc::context::current(), "abc".to_owned()).await;
-                ret
-            })
+        let stub = peer_mgr_a
+            .peer_rpc_mgr
+            .rpc_client()
+            .scoped_client::<GreetingClientFactory<RpcController>>(
+                peer_mgr_a.my_peer_id,
+                peer_mgr_c.my_peer_id,
+                "".to_string(),
+            );
+
+        let ret = stub
+            .say_hello(
+                RpcController {},
+                SayHelloRequest {
+                    name: "abc".to_string(),
+                },
+            )
             .await
             .unwrap();
-        assert_eq!(ret, "hello c abc");
+
+        assert_eq!(ret.greeting, "hello c abc!");
     }
 
     #[tokio::test]

@@ -1,11 +1,12 @@
 use std::{net::IpAddr, ops::Deref, sync::Arc};
 
-use crate::rpc::peer::GetIpListResponse;
 use pnet::datalink::NetworkInterface;
 use tokio::{
     sync::{Mutex, RwLock},
     task::JoinSet,
 };
+
+use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::{netns::NetNS, stun::StunInfoCollectorTrait};
 
@@ -163,7 +164,7 @@ pub struct IPCollector {
 impl IPCollector {
     pub fn new<T: StunInfoCollectorTrait + 'static>(net_ns: NetNS, stun_info_collector: T) -> Self {
         Self {
-            cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::new())),
+            cached_ip_list: Arc::new(RwLock::new(GetIpListResponse::default())),
             collect_ip_task: Mutex::new(JoinSet::new()),
             net_ns,
             stun_info_collector: Arc::new(Box::new(stun_info_collector)),
@@ -195,14 +196,18 @@ impl IPCollector {
                         let Ok(ip_addr) = ip.parse::<IpAddr>() else {
                             continue;
                         };
-                        if ip_addr.is_ipv4() {
-                            cached_ip_list.write().await.public_ipv4 = ip.clone();
-                        } else {
-                            cached_ip_list.write().await.public_ipv6 = ip.clone();
+
+                        match ip_addr {
+                            IpAddr::V4(v) => {
+                                cached_ip_list.write().await.public_ipv4 = Some(v.into())
+                            }
+                            IpAddr::V6(v) => {
+                                cached_ip_list.write().await.public_ipv6 = Some(v.into())
+                            }
                         }
                     }
 
-                    let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_empty() {
+                    let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_none() {
                         CACHED_IP_LIST_TIMEOUT_SEC
                     } else {
                         3
@@ -236,7 +241,7 @@ impl IPCollector {
 
     #[tracing::instrument(skip(net_ns))]
     async fn do_collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
-        let mut ret = crate::rpc::peer::GetIpListResponse::new();
+        let mut ret = GetIpListResponse::default();
 
         let ifaces = Self::collect_interfaces(net_ns.clone()).await;
         let _g = net_ns.guard();
@@ -246,25 +251,28 @@ impl IPCollector {
                 if ip.is_loopback() || ip.is_multicast() {
                     continue;
                 }
-                if ip.is_ipv4() {
-                    ret.interface_ipv4s.push(ip.to_string());
-                } else if ip.is_ipv6() {
-                    ret.interface_ipv6s.push(ip.to_string());
+                match ip {
+                    std::net::IpAddr::V4(v4) => {
+                        ret.interface_ipv4s.push(v4.into());
+                    }
+                    std::net::IpAddr::V6(v6) => {
+                        ret.interface_ipv6s.push(v6.into());
+                    }
                 }
             }
         }
 
         if let Ok(v4_addr) = local_ipv4().await {
             tracing::trace!("got local ipv4: {}", v4_addr);
-            if !ret.interface_ipv4s.contains(&v4_addr.to_string()) {
-                ret.interface_ipv4s.push(v4_addr.to_string());
+            if !ret.interface_ipv4s.contains(&v4_addr.into()) {
+                ret.interface_ipv4s.push(v4_addr.into());
             }
         }
 
         if let Ok(v6_addr) = local_ipv6().await {
             tracing::trace!("got local ipv6: {}", v6_addr);
-            if !ret.interface_ipv6s.contains(&v6_addr.to_string()) {
-                ret.interface_ipv6s.push(v6_addr.to_string());
+            if !ret.interface_ipv6s.contains(&v6_addr.into()) {
+                ret.interface_ipv6s.push(v6_addr.into());
             }
         }
 

@@ -3,9 +3,10 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::rpc::TunnelInfo;
 use auto_impl::auto_impl;
 use futures::{Sink, SinkExt, Stream, StreamExt};
+
+use crate::proto::common::TunnelInfo;
 
 use self::stats::Throughput;
 

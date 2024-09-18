@@ -5,12 +5,12 @@ only forward packets of peers that directly connected to this node.
 in future, with the help wo peer center we can forward packets of peers that
 connected to any node in the local network.
 */
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use dashmap::DashMap;
 use tokio::{
     sync::{
-        mpsc::{self, unbounded_channel, UnboundedReceiver, UnboundedSender},
+        mpsc::{self, UnboundedReceiver, UnboundedSender},
         Mutex,
     },
     task::JoinSet,
@@ -18,26 +18,35 @@ use tokio::{
 
 use crate::{
     common::{
+        config::{ConfigLoader, TomlConfigLoader},
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
+        global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
+        stun::MockStunInfoCollector,
         PeerId,
     },
-    rpc::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+    peers::route_trait::{Route, RouteInterface},
+    proto::{
+        cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+        common::NatType,
+    },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
 
 use super::{
     peer_conn::PeerConn,
     peer_map::PeerMap,
+    peer_ospf_route::PeerRoute,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
-    route_trait::NextHopPolicy,
+    route_trait::{ArcRoute, NextHopPolicy},
     PacketRecvChan, PacketRecvChanReceiver,
 };
 
 struct ForeignNetworkEntry {
+    global_ctx: ArcGlobalCtx,
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
     relay_data: bool,
+    route: ArcRoute,
 }
 
 impl ForeignNetworkEntry {
@@ -47,19 +56,70 @@ impl ForeignNetworkEntry {
         global_ctx: ArcGlobalCtx,
         my_peer_id: PeerId,
         relay_data: bool,
+        peer_rpc: Arc<PeerRpcManager>,
     ) -> Self {
-        let peer_map = Arc::new(PeerMap::new(packet_sender, global_ctx, my_peer_id));
+        let config = TomlConfigLoader::default();
+        config.set_network_identity(network.clone());
+        config.set_hostname(Some(format!("PublicServer_{}", global_ctx.get_hostname())));
+        let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
+        foreign_global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+            udp_nat_type: NatType::Unknown,
+        }));
+
+        let peer_map = Arc::new(PeerMap::new(
+            packet_sender,
+            foreign_global_ctx.clone(),
+            my_peer_id,
+        ));
+
+        let route = PeerRoute::new(my_peer_id, foreign_global_ctx.clone(), peer_rpc);
+
         Self {
+            global_ctx: foreign_global_ctx,
             network,
             peer_map,
             relay_data,
+            route: Arc::new(Box::new(route)),
         }
+    }
+
+    async fn prepare(&self, my_peer_id: PeerId) {
+        struct Interface {
+            my_peer_id: PeerId,
+            peer_map: Weak<PeerMap>,
+        }
+
+        #[async_trait::async_trait]
+        impl RouteInterface for Interface {
+            async fn list_peers(&self) -> Vec<PeerId> {
+                let Some(peer_map) = self.peer_map.upgrade() else {
+                    return vec![];
+                };
+
+                peer_map.list_peers_with_conn().await
+            }
+
+            fn my_peer_id(&self) -> PeerId {
+                self.my_peer_id
+            }
+        }
+
+        self.route
+            .open(Box::new(Interface {
+                my_peer_id,
+                peer_map: Arc::downgrade(&self.peer_map),
+            }))
+            .await
+            .unwrap();
+
+        self.peer_map.add_route(self.route.clone()).await;
     }
 }
 
 struct ForeignNetworkManagerData {
     network_peer_maps: DashMap<String, Arc<ForeignNetworkEntry>>,
     peer_network_map: DashMap<PeerId, String>,
+    lock: std::sync::Mutex<()>,
 }
 
 impl ForeignNetworkManagerData {
@@ -88,18 +148,27 @@ impl ForeignNetworkManagerData {
         self.network_peer_maps.get(network_name).map(|v| v.clone())
     }
 
-    fn remove_peer(&self, peer_id: PeerId) {
+    fn remove_peer(&self, peer_id: PeerId, network_name: &String) {
+        let _l = self.lock.lock().unwrap();
         self.peer_network_map.remove(&peer_id);
-        self.network_peer_maps.retain(|_, v| !v.peer_map.is_empty());
+        self.network_peer_maps
+            .remove_if(network_name, |_, v| v.peer_map.is_empty());
     }
 
-    fn clear_no_conn_peer(&self) {
-        for item in self.network_peer_maps.iter() {
-            let peer_map = item.value().peer_map.clone();
-            tokio::spawn(async move {
-                peer_map.clean_peer_without_conn().await;
-            });
-        }
+    async fn clear_no_conn_peer(&self, network_name: &String) {
+        let peer_map = self
+            .network_peer_maps
+            .get(network_name)
+            .unwrap()
+            .peer_map
+            .clone();
+        peer_map.clean_peer_without_conn().await;
+    }
+
+    fn remove_network(&self, network_name: &String) {
+        let _l = self.lock.lock().unwrap();
+        self.peer_network_map.retain(|_, v| v != network_name);
+        self.network_peer_maps.remove(network_name);
     }
 }
 
@@ -117,11 +186,16 @@ impl PeerRpcManagerTransport for RpcTransport {
     }
 
     async fn send(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+        tracing::debug!(
+            "foreign network manager send rpc to peer: {:?}",
+            dst_peer_id
+        );
         self.data.send_msg(msg, dst_peer_id).await
     }
 
     async fn recv(&self) -> Result<ZCPacket, Error> {
         if let Some(o) = self.packet_recv.lock().await.recv().await {
+            tracing::info!("recv rpc packet in foreign network manager rpc transport");
             Ok(o)
         } else {
             Err(Error::Unknown)
@@ -130,23 +204,6 @@ impl PeerRpcManagerTransport for RpcTransport {
 }
 
 pub const FOREIGN_NETWORK_SERVICE_ID: u32 = 1;
-
-#[tarpc::service]
-pub trait ForeignNetworkService {
-    async fn list_network_peers(network_identy: NetworkIdentity) -> Option<Vec<PeerId>>;
-}
-
-#[tarpc::server]
-impl ForeignNetworkService for Arc<ForeignNetworkManagerData> {
-    async fn list_network_peers(
-        self,
-        _: tarpc::context::Context,
-        network_identy: NetworkIdentity,
-    ) -> Option<Vec<PeerId>> {
-        let entry = self.network_peer_maps.get(&network_identy.network_name)?;
-        Some(entry.peer_map.list_peers().await)
-    }
-}
 
 pub struct ForeignNetworkManager {
     my_peer_id: PeerId,
@@ -175,6 +232,7 @@ impl ForeignNetworkManager {
         let data = Arc::new(ForeignNetworkManagerData {
             network_peer_maps: DashMap::new(),
             peer_network_map: DashMap::new(),
+            lock: std::sync::Mutex::new(()),
         });
 
         // handle rpc from foreign networks
@@ -225,25 +283,39 @@ impl ForeignNetworkManager {
             return ret;
         }
 
-        let entry = self
-            .data
-            .network_peer_maps
-            .entry(peer_conn.get_network_identity().network_name.clone())
-            .or_insert_with(|| {
-                Arc::new(ForeignNetworkEntry::new(
-                    peer_conn.get_network_identity(),
-                    self.packet_sender.clone(),
-                    self.global_ctx.clone(),
-                    self.my_peer_id,
-                    !ret.is_err(),
-                ))
-            })
-            .clone();
+        let mut new_added = false;
 
-        self.data.peer_network_map.insert(
-            peer_conn.get_peer_id(),
-            peer_conn.get_network_identity().network_name.clone(),
-        );
+        let entry = {
+            let _l = self.data.lock.lock().unwrap();
+            let entry = self
+                .data
+                .network_peer_maps
+                .entry(peer_conn.get_network_identity().network_name.clone())
+                .or_insert_with(|| {
+                    new_added = true;
+                    Arc::new(ForeignNetworkEntry::new(
+                        peer_conn.get_network_identity(),
+                        self.packet_sender.clone(),
+                        self.global_ctx.clone(),
+                        self.my_peer_id,
+                        !ret.is_err(),
+                        self.rpc_mgr.clone(),
+                    ))
+                })
+                .clone();
+
+            self.data.peer_network_map.insert(
+                peer_conn.get_peer_id(),
+                peer_conn.get_network_identity().network_name.clone(),
+            );
+
+            entry
+        };
+
+        if new_added {
+            entry.prepare(self.my_peer_id).await;
+            self.start_event_handler(&entry).await;
+        }
 
         if entry.network != peer_conn.get_network_identity() {
             return Err(anyhow::anyhow!(
@@ -257,28 +329,26 @@ impl ForeignNetworkManager {
         Ok(entry.peer_map.add_new_peer_conn(peer_conn).await)
     }
 
-    async fn start_global_event_handler(&self) {
+    async fn start_event_handler(&self, entry: &ForeignNetworkEntry) {
         let data = self.data.clone();
-        let mut s = self.global_ctx.subscribe();
-        let (ev_tx, mut ev_rx) = unbounded_channel();
+        let network_name = entry.network.network_name.clone();
+        let mut s = entry.global_ctx.subscribe();
         self.tasks.lock().await.spawn(async move {
             while let Ok(e) = s.recv().await {
-                ev_tx.send(e).unwrap();
-            }
-            panic!("global event handler at foreign network manager exit");
-        });
-
-        self.tasks.lock().await.spawn(async move {
-            while let Some(e) = ev_rx.recv().await {
                 if let GlobalCtxEvent::PeerRemoved(peer_id) = &e {
                     tracing::info!(?e, "remove peer from foreign network manager");
-                    data.remove_peer(*peer_id);
+                    data.remove_peer(*peer_id, &network_name);
                 } else if let GlobalCtxEvent::PeerConnRemoved(..) = &e {
                     tracing::info!(?e, "clear no conn peer from foreign network manager");
-                    data.clear_no_conn_peer();
+                    data.clear_no_conn_peer(&network_name).await;
                 }
             }
+            // if lagged or recv done just remove the network
+            tracing::error!("global event handler at foreign network manager exit");
+            data.remove_network(&network_name);
         });
+
+        self.tasks.lock().await.spawn(async move {});
     }
 
     async fn start_packet_recv(&self) {
@@ -294,10 +364,14 @@ impl ForeignNetworkManager {
                     tracing::warn!("invalid packet, skip");
                     continue;
                 };
+                tracing::info!(?hdr, "recv packet in foreign network manager");
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id == my_node_id {
-                    if hdr.packet_type == PacketType::TaRpc as u8 {
+                    if hdr.packet_type == PacketType::TaRpc as u8
+                        || hdr.packet_type == PacketType::RpcReq as u8
+                        || hdr.packet_type == PacketType::RpcResp as u8
+                    {
                         rpc_sender.send(packet_bytes).unwrap();
                         continue;
                     }
@@ -335,16 +409,9 @@ impl ForeignNetworkManager {
         });
     }
 
-    async fn register_peer_rpc_service(&self) {
-        self.rpc_mgr.run();
-        self.rpc_mgr
-            .run_service(FOREIGN_NETWORK_SERVICE_ID, self.data.clone().serve())
-    }
-
     pub async fn run(&self) {
-        self.start_global_event_handler().await;
         self.start_packet_recv().await;
-        self.register_peer_rpc_service().await;
+        self.rpc_mgr.run();
     }
 
     pub async fn list_foreign_networks(&self) -> ListForeignNetworkResponse {
@@ -380,8 +447,17 @@ impl ForeignNetworkManager {
     }
 }
 
+impl Drop for ForeignNetworkManager {
+    fn drop(&mut self) {
+        self.data.peer_network_map.clear();
+        self.data.network_peer_maps.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
         connector::udp_hole_punch::tests::{
@@ -391,7 +467,8 @@ mod tests {
             peer_manager::{PeerManager, RouteAlgoType},
             tests::{connect_peer_manager, wait_route_appear},
         },
-        rpc::NatType,
+        proto::common::NatType,
+        tunnel::common::tests::wait_for_condition,
     };
 
     use super::*;
@@ -413,7 +490,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreign_network_basic() {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
@@ -428,8 +505,10 @@ mod tests {
         wait_route_appear(pma_net1.clone(), pmb_net1.clone())
             .await
             .unwrap();
-        assert_eq!(1, pma_net1.list_routes().await.len());
-        assert_eq!(1, pmb_net1.list_routes().await.len());
+        assert_eq!(2, pma_net1.list_routes().await.len());
+        assert_eq!(2, pmb_net1.list_routes().await.len());
+
+        println!("{:?}", pmb_net1.list_routes().await);
 
         let rpc_resp = pm_center
             .get_foreign_network_manager()
@@ -440,7 +519,7 @@ mod tests {
     }
 
     async fn foreign_network_whitelist_helper(name: String) {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.foreign_network_whitelist = vec!["net1".to_string(), "net2*".to_string()].join(" ");
@@ -466,7 +545,7 @@ mod tests {
 
     #[tokio::test]
     async fn only_relay_peer_rpc() {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let mut flag = pm_center.get_global_ctx().get_flags();
         flag.foreign_network_whitelist = "".to_string();
         flag.relay_all_peer_rpc = true;
@@ -485,8 +564,8 @@ mod tests {
         wait_route_appear(pma_net1.clone(), pmb_net1.clone())
             .await
             .unwrap();
-        assert_eq!(1, pma_net1.list_routes().await.len());
-        assert_eq!(1, pmb_net1.list_routes().await.len());
+        assert_eq!(2, pma_net1.list_routes().await.len());
+        assert_eq!(2, pmb_net1.list_routes().await.len());
     }
 
     #[tokio::test]
@@ -497,9 +576,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_foreign_network_manager() {
-        let pm_center = create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
-        let pm_center2 =
-            create_mock_peer_manager_with_mock_stun(crate::rpc::NatType::Unknown).await;
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pm_center2 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         connect_peer_manager(pm_center.clone(), pm_center2.clone()).await;
 
         tracing::debug!(
@@ -519,17 +597,9 @@ mod tests {
             pmb_net1.my_peer_id()
         );
 
-        let now = std::time::Instant::now();
-        let mut succ = false;
-        while now.elapsed().as_secs() < 10 {
-            let table = pma_net1.get_foreign_network_client().get_next_hop_table();
-            if table.len() >= 1 {
-                succ = true;
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
-        assert!(succ);
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
 
         assert_eq!(
             vec![pm_center.my_peer_id()],
@@ -547,11 +617,9 @@ mod tests {
                 .list_peers()
                 .await
         );
-        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
-            .await
-            .unwrap();
-        assert_eq!(1, pma_net1.list_routes().await.len());
-        assert_eq!(1, pmb_net1.list_routes().await.len());
+
+        assert_eq!(2, pma_net1.list_routes().await.len());
+        assert_eq!(2, pmb_net1.list_routes().await.len());
 
         let pmc_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
         connect_peer_manager(pmc_net1.clone(), pm_center.clone()).await;
@@ -561,7 +629,7 @@ mod tests {
         wait_route_appear(pmb_net1.clone(), pmc_net1.clone())
             .await
             .unwrap();
-        assert_eq!(2, pmc_net1.list_routes().await.len());
+        assert_eq!(3, pmc_net1.list_routes().await.len());
 
         tracing::debug!("pmc_net1: {:?}", pmc_net1.my_peer_id());
 
@@ -577,8 +645,8 @@ mod tests {
         wait_route_appear(pma_net2.clone(), pmb_net2.clone())
             .await
             .unwrap();
-        assert_eq!(1, pma_net2.list_routes().await.len());
-        assert_eq!(1, pmb_net2.list_routes().await.len());
+        assert_eq!(2, pma_net2.list_routes().await.len());
+        assert_eq!(2, pmb_net2.list_routes().await.len());
 
         assert_eq!(
             5,
@@ -634,5 +702,28 @@ mod tests {
                 .network_peer_maps
                 .len()
         );
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_foreign_network() {
+        let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        tracing::debug!("pma_net1: {:?}", pma_net1.my_peer_id(),);
+
+        connect_peer_manager(pma_net1.clone(), pm_center.clone()).await;
+
+        wait_for_condition(
+            || async { pma_net1.list_routes().await.len() == 1 },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        drop(pm_center);
+        wait_for_condition(
+            || async { pma_net1.list_routes().await.len() == 0 },
+            Duration::from_secs(5),
+        )
+        .await;
     }
 }

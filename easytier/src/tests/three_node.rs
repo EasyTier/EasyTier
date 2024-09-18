@@ -518,8 +518,8 @@ pub async fn foreign_network_forward_nic_data() {
 
     wait_for_condition(
         || async {
-            inst1.get_peer_manager().list_routes().await.len() == 1
-                && inst2.get_peer_manager().list_routes().await.len() == 1
+            inst1.get_peer_manager().list_routes().await.len() == 2
+                && inst2.get_peer_manager().list_routes().await.len() == 2
         },
         Duration::from_secs(5),
     )

@@ -15,9 +15,9 @@ use tokio::{
 
 use tracing::{instrument, Instrument};
 
+use super::TunnelInfo;
 use crate::{
     common::join_joinset_background,
-    rpc::TunnelInfo,
     tunnel::{
         build_url_from_socket_addr,
         common::{reserve_buf, TunnelWrapper},
@@ -317,8 +317,10 @@ impl UdpTunnelListenerData {
             Box::new(RingSink::new(ring_for_send_udp)),
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
-                local_addr: self.local_url.clone().into(),
-                remote_addr: build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
+                local_addr: Some(self.local_url.clone().into()),
+                remote_addr: Some(
+                    build_url_from_socket_addr(&remote_addr.to_string(), "udp").into(),
+                ),
             }),
         ));
 
@@ -607,9 +609,10 @@ impl UdpTunnelConnector {
             Box::new(RingSink::new(ring_for_send_udp)),
             Some(TunnelInfo {
                 tunnel_type: "udp".to_owned(),
-                local_addr: build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp")
-                    .into(),
-                remote_addr: self.addr.clone().into(),
+                local_addr: Some(
+                    build_url_from_socket_addr(&socket.local_addr()?.to_string(), "udp").into(),
+                ),
+                remote_addr: Some(self.addr.clone().into()),
             }),
         )))
     }
@@ -708,7 +711,7 @@ impl super::TunnelConnector for UdpTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{net::IpAddr, time::Duration};
 
     use futures::SinkExt;
     use tokio::time::timeout;
@@ -786,7 +789,11 @@ mod tests {
             loop {
                 let ret = listener.accept().await.unwrap();
                 assert_eq!(
-                    ret.info().unwrap().local_addr,
+                    ret.info()
+                        .unwrap()
+                        .local_addr
+                        .unwrap_or_default()
+                        .to_string(),
                     listener.local_url().to_string()
                 );
                 tokio::spawn(async move { _tunnel_echo_server(ret, false).await });
@@ -801,15 +808,15 @@ mod tests {
 
         tokio::spawn(timeout(
             Duration::from_secs(2),
-            send_random_data_to_socket(t1.info().unwrap().local_addr.parse().unwrap()),
+            send_random_data_to_socket(t1.info().unwrap().local_addr.unwrap().into()),
         ));
         tokio::spawn(timeout(
             Duration::from_secs(2),
-            send_random_data_to_socket(t1.info().unwrap().remote_addr.parse().unwrap()),
+            send_random_data_to_socket(t1.info().unwrap().remote_addr.unwrap().into()),
         ));
         tokio::spawn(timeout(
             Duration::from_secs(2),
-            send_random_data_to_socket(t2.info().unwrap().remote_addr.parse().unwrap()),
+            send_random_data_to_socket(t2.info().unwrap().remote_addr.unwrap().into()),
         ));
 
         let sender1 = tokio::spawn(async move {
@@ -854,12 +861,12 @@ mod tests {
         if ips.is_empty() {
             return;
         }
-        let bind_dev = get_interface_name_by_ip(&ips[0].parse().unwrap());
+        let bind_dev = get_interface_name_by_ip(&IpAddr::V4(ips[0].into()));
 
         for ip in ips {
             println!("bind to ip: {:?}, {:?}", ip, bind_dev);
             let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
-                &format!("udp://{}:11111", ip).parse().unwrap(),
+                &format!("udp://{}:11111", ip.to_string()).parse().unwrap(),
                 "udp",
             )
             .unwrap();

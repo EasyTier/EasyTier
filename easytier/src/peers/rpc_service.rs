@@ -1,14 +1,17 @@
 use std::sync::Arc;
 
-use crate::rpc::{
-    cli::PeerInfo, peer_manage_rpc_server::PeerManageRpc, DumpRouteRequest, DumpRouteResponse,
-    ListForeignNetworkRequest, ListForeignNetworkResponse, ListPeerRequest, ListPeerResponse,
-    ListRouteRequest, ListRouteResponse, ShowNodeInfoRequest, ShowNodeInfoResponse,
+use crate::proto::{
+    cli::{
+        DumpRouteRequest, DumpRouteResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
+        ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse, PeerInfo,
+        PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
+    },
+    rpc_types::{self, controller::BaseController},
 };
-use tonic::{Request, Response, Status};
 
 use super::peer_manager::PeerManager;
 
+#[derive(Clone)]
 pub struct PeerManagerRpcService {
     peer_manager: Arc<PeerManager>,
 }
@@ -36,12 +39,14 @@ impl PeerManagerRpcService {
     }
 }
 
-#[tonic::async_trait]
+#[async_trait::async_trait]
 impl PeerManageRpc for PeerManagerRpcService {
+    type Controller = BaseController;
     async fn list_peer(
         &self,
-        _request: Request<ListPeerRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<ListPeerResponse>, Status> {
+        _: BaseController,
+        _request: ListPeerRequest, // Accept request of type HelloRequest
+    ) -> Result<ListPeerResponse, rpc_types::error::Error> {
         let mut reply = ListPeerResponse::default();
 
         let peers = self.list_peers().await;
@@ -49,45 +54,49 @@ impl PeerManageRpc for PeerManagerRpcService {
             reply.peer_infos.push(peer);
         }
 
-        Ok(Response::new(reply))
+        Ok(reply)
     }
 
     async fn list_route(
         &self,
-        _request: Request<ListRouteRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<ListRouteResponse>, Status> {
+        _: BaseController,
+        _request: ListRouteRequest, // Accept request of type HelloRequest
+    ) -> Result<ListRouteResponse, rpc_types::error::Error> {
         let mut reply = ListRouteResponse::default();
         reply.routes = self.peer_manager.list_routes().await;
-        Ok(Response::new(reply))
+        Ok(reply)
     }
 
     async fn dump_route(
         &self,
-        _request: Request<DumpRouteRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<DumpRouteResponse>, Status> {
+        _: BaseController,
+        _request: DumpRouteRequest, // Accept request of type HelloRequest
+    ) -> Result<DumpRouteResponse, rpc_types::error::Error> {
         let mut reply = DumpRouteResponse::default();
         reply.result = self.peer_manager.dump_route().await;
-        Ok(Response::new(reply))
+        Ok(reply)
     }
 
     async fn list_foreign_network(
         &self,
-        _request: Request<ListForeignNetworkRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<ListForeignNetworkResponse>, Status> {
+        _: BaseController,
+        _request: ListForeignNetworkRequest, // Accept request of type HelloRequest
+    ) -> Result<ListForeignNetworkResponse, rpc_types::error::Error> {
         let reply = self
             .peer_manager
             .get_foreign_network_manager()
             .list_foreign_networks()
             .await;
-        Ok(Response::new(reply))
+        Ok(reply)
     }
 
     async fn show_node_info(
         &self,
-        _request: Request<ShowNodeInfoRequest>, // Accept request of type HelloRequest
-    ) -> Result<Response<ShowNodeInfoResponse>, Status> {
-        Ok(Response::new(ShowNodeInfoResponse {
+        _: BaseController,
+        _request: ShowNodeInfoRequest, // Accept request of type HelloRequest
+    ) -> Result<ShowNodeInfoResponse, rpc_types::error::Error> {
+        Ok(ShowNodeInfoResponse {
             node_info: Some(self.peer_manager.get_my_info()),
-        }))
+        })
     }
 }
