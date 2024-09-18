@@ -291,15 +291,15 @@ struct Cli {
 rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
-    fn parse_listeners(&self) -> Vec<String> {
-        println!("parsing listeners: {:?}", self.listeners);
+    fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> Vec<String> {
+        println!("parsing listeners: {:?}", listeners);
         let proto_port_offset = vec![("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
 
-        if self.no_listener || self.listeners.is_empty() {
+        if no_listener || listeners.is_empty() {
             return vec![];
         }
 
-        let origin_listners = self.listeners.clone();
+        let origin_listners = listeners;
         let mut listeners: Vec<String> = Vec::new();
         if origin_listners.len() == 1 {
             if let Ok(port) = origin_listners[0].parse::<u16>() {
@@ -344,8 +344,8 @@ impl Cli {
         TcpSocket::new_v4().unwrap().bind(s).map(|_| s).ok()
     }
 
-    fn parse_rpc_portal(&self) -> SocketAddr {
-        if let Ok(port) = self.rpc_portal.parse::<u16>() {
+    fn parse_rpc_portal(rpc_portal: String) -> SocketAddr {
+        if let Ok(port) = rpc_portal.parse::<u16>() {
             if port == 0 {
                 // check tcp 15888 first
                 for i in 15888..15900 {
@@ -358,7 +358,7 @@ impl Cli {
             return format!("0.0.0.0:{}", port).parse().unwrap();
         }
 
-        self.rpc_portal.parse().unwrap()
+        rpc_portal.parse().unwrap()
     }
 }
 
@@ -376,14 +376,10 @@ impl From<Cli> for TomlConfigLoader {
 
         let cfg = TomlConfigLoader::default();
 
-        cfg.set_inst_name(cli.instance_name.clone());
 
-        cfg.set_hostname(cli.hostname.clone());
+        cfg.set_hostname(cli.hostname);
 
-        cfg.set_network_identity(NetworkIdentity::new(
-            cli.network_name.clone(),
-            cli.network_secret.clone(),
-        ));
+        cfg.set_network_identity(NetworkIdentity::new(cli.network_name, cli.network_secret));
 
         cfg.set_dhcp(cli.dhcp);
 
@@ -408,7 +404,7 @@ impl From<Cli> for TomlConfigLoader {
         );
 
         cfg.set_listeners(
-            cli.parse_listeners()
+            Cli::parse_listeners(cli.no_listener, cli.listeners)
                 .into_iter()
                 .map(|s| s.parse().unwrap())
                 .collect(),
@@ -422,21 +418,15 @@ impl From<Cli> for TomlConfigLoader {
             );
         }
 
-        cfg.set_rpc_portal(cli.parse_rpc_portal());
+        cfg.set_rpc_portal(Cli::parse_rpc_portal(cli.rpc_portal));
 
-        if cli.external_node.is_some() {
+        if let Some(external_nodes) = cli.external_node {
             let mut old_peers = cfg.get_peers();
             old_peers.push(PeerConfig {
-                uri: cli
-                    .external_node
-                    .clone()
-                    .unwrap()
+                uri: external_nodes
                     .parse()
                     .with_context(|| {
-                        format!(
-                            "failed to parse external node uri: {}",
-                            cli.external_node.unwrap()
-                        )
+                        format!("failed to parse external node uri: {}", external_nodes)
                     })
                     .unwrap(),
             });
@@ -445,7 +435,7 @@ impl From<Cli> for TomlConfigLoader {
 
         if cli.console_log_level.is_some() {
             cfg.set_console_logger_config(ConsoleLoggerConfig {
-                level: cli.console_log_level.clone(),
+                level: cli.console_log_level,
             });
         }
 
@@ -457,18 +447,12 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
-        if cli.vpn_portal.is_some() {
-            let url: url::Url = cli
-                .vpn_portal
-                .clone()
-                .unwrap()
+        cfg.set_inst_name(cli.instance_name);
+
+        if let Some(vpn_portal) = cli.vpn_portal {
+            let url: url::Url = vpn_portal
                 .parse()
-                .with_context(|| {
-                    format!(
-                        "failed to parse vpn portal url: {}",
-                        cli.vpn_portal.unwrap()
-                    )
-                })
+                .with_context(|| format!("failed to parse vpn portal url: {}", vpn_portal))
                 .unwrap();
             cfg.set_vpn_portal_config(VpnPortalConfig {
                 client_cidr: url.path()[1..]
@@ -489,11 +473,9 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
-        if cli.manual_routes.is_some() {
+        if let Some(manual_routes) = cli.manual_routes {
             cfg.set_routes(Some(
-                cli.manual_routes
-                    .clone()
-                    .unwrap()
+                manual_routes
                     .iter()
                     .map(|s| {
                         s.parse()
