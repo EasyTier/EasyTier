@@ -673,7 +673,10 @@ impl UdpTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            setup_sokcet2(&socket2_socket, &bind_addr)?;
+            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
+                continue;
+            }
             let socket = UdpSocket::from_std(socket2_socket.into())?;
             futures.push(self.try_connect_with_socket(Arc::new(socket), addr));
         }

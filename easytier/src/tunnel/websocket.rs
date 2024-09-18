@@ -241,7 +241,11 @@ impl WSTunnelConnector {
                 socket2::Type::STREAM,
                 Some(socket2::Protocol::TCP),
             )?;
-            setup_sokcet2(&socket2_socket, bind_addr)?;
+
+            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
+                continue;
+            }
 
             let socket = TcpSocket::from_std_stream(socket2_socket.into());
             futures.push(Self::connect_with(

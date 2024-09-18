@@ -722,8 +722,17 @@ impl super::TunnelConnector for WgTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            setup_sokcet2(&socket2_socket, &bind_addr)?;
-            let socket = UdpSocket::from_std(socket2_socket.into())?;
+            if let Err(e) = setup_sokcet2(&socket2_socket, &bind_addr) {
+                tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
+                continue;
+            }
+            let socket = match UdpSocket::from_std(socket2_socket.into()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(bind_addr = ?bind_addr, ?addr, "create udp socket fail: {:?}", e);
+                    continue;
+                }
+            };
             tracing::info!(?bind_addr, ?self.addr, "prepare wg connect task");
             futures.push(Self::connect_with_socket(
                 self.addr.clone(),
