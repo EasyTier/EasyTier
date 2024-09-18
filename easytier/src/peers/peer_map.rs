@@ -113,10 +113,8 @@ impl PeerMap {
                 .get_next_hop_with_policy(dst_peer_id, policy.clone())
                 .await
             {
-                // for foreign network, gateway_peer_id may not connect to me
-                if self.has_peer(gateway_peer_id) {
-                    return Some(gateway_peer_id);
-                }
+                // NOTIC: for foreign network, gateway_peer_id may not connect to me
+                return Some(gateway_peer_id);
             }
         }
 

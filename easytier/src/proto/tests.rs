@@ -43,8 +43,6 @@ impl Greeting for GreetingService {
 
 use crate::proto::rpc_impl::client::Client;
 use crate::proto::rpc_impl::server::Server;
-use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
-use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
 
 struct TestContext {
     client: Client,
@@ -179,6 +177,9 @@ async fn rpc_timeout_test() {
 
 #[tokio::test]
 async fn standalone_rpc_test() {
+    use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
+    use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
+
     let mut server = StandAloneServer::new(TcpTunnelListener::new(
         "tcp://0.0.0.0:33455".parse().unwrap(),
     ));

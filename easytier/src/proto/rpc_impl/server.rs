@@ -11,7 +11,6 @@ use tokio_stream::StreamExt;
 
 use crate::{
     common::{join_joinset_background, PeerId},
-    defer,
     proto::{
         common::{self, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse},
         rpc_types::error::Result,

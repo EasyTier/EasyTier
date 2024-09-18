@@ -9,7 +9,7 @@ use proto::{
     common::NatType,
     peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
     rpc_impl::standalone::StandAloneClient,
-    rpc_types::controller::{BaseController, Controller},
+    rpc_types::controller::BaseController,
 };
 use tokio::time::timeout;
 use tunnel::tcp::TcpTunnelConnector;
@@ -293,7 +293,7 @@ impl CommandHandler {
     }
 
     async fn handle_route_dump(&self) -> Result<(), Error> {
-        let mut client = self.get_peer_manager_client().await?;
+        let client = self.get_peer_manager_client().await?;
         let request = DumpRouteRequest::default();
         let response = client.dump_route(BaseController {}, request).await?;
         println!("response: {}", response.result);
@@ -301,7 +301,7 @@ impl CommandHandler {
     }
 
     async fn handle_foreign_network_list(&self) -> Result<(), Error> {
-        let mut client = self.get_peer_manager_client().await?;
+        let client = self.get_peer_manager_client().await?;
         let request = ListForeignNetworkRequest::default();
         let response = client
             .list_foreign_network(BaseController {}, request)
@@ -502,7 +502,7 @@ async fn main() -> Result<(), Error> {
             .unwrap();
         }
         SubCommand::PeerCenter => {
-            let mut peer_center_client = handler.get_peer_center_client().await?;
+            let peer_center_client = handler.get_peer_center_client().await?;
             let resp = peer_center_client
                 .get_global_peer_map(BaseController {}, GetGlobalPeerMapRequest::default())
                 .await?;
@@ -535,7 +535,7 @@ async fn main() -> Result<(), Error> {
             );
         }
         SubCommand::VpnPortal => {
-            let mut vpn_portal_client = handler.get_vpn_portal_client().await?;
+            let vpn_portal_client = handler.get_vpn_portal_client().await?;
             let resp = vpn_portal_client
                 .get_vpn_portal_info(BaseController {}, GetVpnPortalInfoRequest::default())
                 .await?
@@ -553,7 +553,7 @@ async fn main() -> Result<(), Error> {
             println!("connected_clients:\n{:#?}", resp.connected_clients);
         }
         SubCommand::Node(sub_cmd) => {
-            let mut client = handler.get_peer_manager_client().await?;
+            let client = handler.get_peer_manager_client().await?;
             let node_info = client
                 .show_node_info(BaseController {}, ShowNodeInfoRequest::default())
                 .await?

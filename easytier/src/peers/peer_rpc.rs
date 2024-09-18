@@ -135,7 +135,7 @@ pub mod tests {
             tests::{GreetingClientFactory, GreetingServer, GreetingService, SayHelloRequest},
         },
         tunnel::{
-            common::tests::enable_log, packet_def::ZCPacket, ring::create_ring_tunnel_pair, Tunnel,
+            packet_def::ZCPacket, ring::create_ring_tunnel_pair, Tunnel,
             ZCPacketSink, ZCPacketStream,
         },
     };

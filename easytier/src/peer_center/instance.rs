@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     sync::Arc,
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, Instant},
 };
 
 use crossbeam::atomic::AtomicCell;
@@ -15,7 +15,6 @@ use crate::{
     common::PeerId,
     peers::{
         peer_manager::PeerManager,
-        peer_rpc::PeerRpcManagerTransport,
         route_trait::{RouteCostCalculator, RouteCostCalculatorInterface},
         rpc_service::PeerManagerRpcService,
     },
@@ -168,7 +167,7 @@ impl PeerCenterRpc for PeerCenterInstanceService {
     async fn report_peers(
         &self,
         _: BaseController,
-        req: ReportPeersRequest,
+        _req: ReportPeersRequest,
     ) -> Result<ReportPeersResponse, rpc_types::error::Error> {
         Err(anyhow::anyhow!("not implemented").into())
     }

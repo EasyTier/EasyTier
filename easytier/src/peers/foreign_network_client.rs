@@ -45,10 +45,6 @@ impl ForeignNetworkClient {
         self.get_next_hop(peer_id).is_some()
     }
 
-    pub fn is_peer_public_node(&self, peer_id: &PeerId) -> bool {
-        self.peer_map.has_peer(*peer_id)
-    }
-
     pub async fn list_public_peers(&self) -> Vec<PeerId> {
         self.peer_map.list_peers().await
     }

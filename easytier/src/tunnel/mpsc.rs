@@ -3,17 +3,17 @@
 use std::{pin::Pin, time::Duration};
 
 use anyhow::Context;
-use tokio::{task::JoinHandle, time::timeout};
+use tokio::time::timeout;
 
 use crate::common::scoped_task::ScopedTask;
 
 use super::{
-    packet_def::ZCPacket, SinkError, SinkItem, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
+    packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream,
 };
 
 use tachyonix::{channel, Receiver, Sender};
 
-use futures::{Sink, SinkExt};
+use futures::SinkExt;
 
 #[derive(Clone)]
 pub struct MpscTunnelSender(Sender<ZCPacket>);

@@ -74,7 +74,15 @@ impl PeerRpcManagerTransport for RpcTransport {
             .ok_or(Error::Unknown)?;
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
 
-        if let Some(gateway_id) = peers
+        if foreign_peers.has_next_hop(dst_peer_id) {
+            // do not encrypt for data sending to public server
+            tracing::debug!(
+                ?dst_peer_id,
+                ?self.my_peer_id,
+                "failed to send msg to peer, try foreign network",
+            );
+            foreign_peers.send_msg(msg, dst_peer_id).await
+        } else if let Some(gateway_id) = peers
             .get_gateway_peer_id(dst_peer_id, NextHopPolicy::LeastHop)
             .await
         {
@@ -87,20 +95,11 @@ impl PeerRpcManagerTransport for RpcTransport {
             self.encryptor
                 .encrypt(&mut msg)
                 .with_context(|| "encrypt failed")?;
-            peers.send_msg_directly(msg, gateway_id).await
-        } else if foreign_peers.has_next_hop(dst_peer_id) {
-            if !foreign_peers.is_peer_public_node(&dst_peer_id) {
-                // do not encrypt for msg sending to public node
-                self.encryptor
-                    .encrypt(&mut msg)
-                    .with_context(|| "encrypt failed")?;
+            if peers.has_peer(gateway_id) {
+                peers.send_msg_directly(msg, gateway_id).await
+            } else {
+                foreign_peers.send_msg(msg, gateway_id).await
             }
-            tracing::debug!(
-                ?dst_peer_id,
-                ?self.my_peer_id,
-                "failed to send msg to peer, try foreign network",
-            );
-            foreign_peers.send_msg(msg, dst_peer_id).await
         } else {
             Err(Error::RouteError(Some(format!(
                 "peermgr RpcTransport no route for dst_peer_id: {}",
@@ -623,13 +622,23 @@ impl PeerManager {
                 .get_gateway_peer_id(*peer_id, next_hop_policy.clone())
                 .await
             {
-                if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {
-                    errs.push(e);
+                if self.peers.has_peer(gateway) {
+                    if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {
+                        errs.push(e);
+                    }
+                } else if self.foreign_network_client.has_next_hop(gateway) {
+                    if let Err(e) = self.foreign_network_client.send_msg(msg, gateway).await {
+                        errs.push(e);
+                    }
+                } else {
+                    tracing::warn!(
+                        ?gateway,
+                        ?peer_id,
+                        "cannot send msg to peer through gateway"
+                    );
                 }
-            } else if self.foreign_network_client.has_next_hop(*peer_id) {
-                if let Err(e) = self.foreign_network_client.send_msg(msg, *peer_id).await {
-                    errs.push(e);
-                }
+            } else {
+                tracing::debug!(?peer_id, "no gateway for peer");
             }
         }
 

@@ -38,7 +38,7 @@ impl StandAloneServerOneTunnel {
         let mut tasks = JoinSet::new();
 
         tasks.spawn(async move {
-            let ret = tunnel_rx.timeout(Duration::from_secs(30));
+            let ret = tunnel_rx.timeout(Duration::from_secs(60));
             tokio::pin!(ret);
             while let Ok(Some(Ok(p))) = ret.try_next().await {
                 if let Err(e) = rpc_tx.send(p).await {
@@ -105,17 +105,9 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
                 let server = StandAloneServerOneTunnel::new(tunnel, registry.clone());
                 let inflight_server = inflight_server.clone();
                 inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                println!(
-                    "inflight_server: {}",
-                    inflight_server.load(std::sync::atomic::Ordering::Relaxed)
-                );
                 tasks.lock().unwrap().spawn(async move {
                     server.run().await;
                     inflight_server.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                    println!(
-                        "inflight_server: {}",
-                        inflight_server.load(std::sync::atomic::Ordering::Relaxed)
-                    );
                 });
             }
             panic!("standalone server listener exit");
@@ -139,7 +131,7 @@ struct StandAloneClientOneTunnel {
 impl StandAloneClientOneTunnel {
     pub fn new(tunnel: Box<dyn Tunnel>) -> Self {
         let rpc_client = Client::new();
-        let (mut rpc_rx, mut rpc_tx) = (
+        let (mut rpc_rx, rpc_tx) = (
             rpc_client.get_transport_stream(),
             rpc_client.get_transport_sink(),
         );
