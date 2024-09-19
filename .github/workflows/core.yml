@@ -2,7 +2,7 @@ name: EasyTier Core
 
 on:
   push:
-    branches: ["develop", "main"]
+    branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
 
@@ -20,14 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     # Map a step output to a job output
     outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+      # do not skip push on branch starts with releases/
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
         with:
           # All of these options are optional, so you can remove them if you are happy with the defaults
-          concurrent_skipping: 'never'
+          concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
+          cancel_others: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/workflows/install_rust.sh"]'
   build:
     strategy:
@@ -84,6 +86,9 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
+      - name: Set current date as env variable
+        run: echo "NOW=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_ENV
+
       - uses: actions/checkout@v3
 
       - name: Cargo cache
@@ -187,6 +192,10 @@ jobs:
           path: |
             ./artifacts/*
 
+      - name: Compress for OSS
+        run: |
+          (cd ./artifacts; zip -r easytier-${{ matrix.ARTIFACT_NAME }}.zip .)
+
       - name: Upload OSS
         if: ${{ env.OSS_BUCKET != '' }}
         uses: Menci/upload-to-oss@main
@@ -195,8 +204,8 @@ jobs:
           access-key-secret: ${{ secrets.ALIYUN_OSS_ACCESS_KEY }}
           endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
           bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
-          local-path: ./artifacts/
-          remote-path: /easytier-releases/${{ github.sha }}/
+          local-path: ./artifacts/easytier-${{ matrix.ARTIFACT_NAME }}.zip
+          remote-path: /easytier-releases/${{ env.NOW }}/
           no-delete-remote-files: true
           retry: 5
   core-result:

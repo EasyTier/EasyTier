@@ -2,7 +2,7 @@ name: EasyTier GUI
 
 on:
   push:
-    branches: ["develop", "main"]
+    branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
       
@@ -20,14 +20,15 @@ jobs:
     runs-on: ubuntu-latest
     # Map a step output to a job output
     outputs:
-      should_skip: ${{ steps.skip_check.outputs.should_skip }}
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
         with:
           # All of these options are optional, so you can remove them if you are happy with the defaults
-          concurrent_skipping: 'never'
+          concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
+          cancel_others: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh"]'
   build-gui:
     strategy:
@@ -67,6 +68,9 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
+      - name: Set current date as env variable
+        run: echo "NOW=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_ENV
+
       - uses: actions/checkout@v3
 
       - uses: actions/setup-node@v4
@@ -197,7 +201,7 @@ jobs:
           endpoint: ${{ secrets.ALIYUN_OSS_ENDPOINT }}
           bucket: ${{ secrets.ALIYUN_OSS_BUCKET }}
           local-path: ./artifacts/
-          remote-path: /easytier-releases/${{ github.sha }}/gui
+          remote-path: /easytier-releases/${{ env.NOW }}/gui
           no-delete-remote-files: true
           retry: 5
   gui-result:
