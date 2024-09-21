@@ -6,6 +6,7 @@ pub mod peer_manager;
 pub mod peer_map;
 pub mod peer_ospf_route;
 pub mod peer_rpc;
+pub mod peer_rpc_service;
 pub mod route_trait;
 pub mod rpc_service;
 

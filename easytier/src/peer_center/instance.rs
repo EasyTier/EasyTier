@@ -65,7 +65,10 @@ impl PeerCenterBase {
         }
         // find peer with alphabetical smallest id.
         let mut min_peer = peer_mgr.my_peer_id();
-        for peer in peers.iter() {
+        for peer in peers
+            .iter()
+            .filter(|r| r.feature_flag.map(|r| !r.is_public_server).unwrap_or(true))
+        {
             let peer_id = peer.peer_id;
             if peer_id < min_peer {
                 min_peer = peer_id;
@@ -342,15 +345,22 @@ impl PeerCenterInstance {
             global_peer_map_update_time: Arc<AtomicCell<Instant>>,
         }
 
-        impl RouteCostCalculatorInterface for RouteCostCalculatorImpl {
-            fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
-                let ret = self
-                    .global_peer_map_clone
+        impl RouteCostCalculatorImpl {
+            fn directed_cost(&self, src: PeerId, dst: PeerId) -> Option<i32> {
+                self.global_peer_map_clone
                     .map
                     .get(&src)
                     .and_then(|src_peer_info| src_peer_info.direct_peers.get(&dst))
-                    .and_then(|info| Some(info.latency_ms));
-                ret.unwrap_or(80)
+                    .and_then(|info| Some(info.latency_ms))
+            }
+        }
+
+        impl RouteCostCalculatorInterface for RouteCostCalculatorImpl {
+            fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
+                if let Some(cost) = self.directed_cost(src, dst) {
+                    return cost;
+                }
+                self.directed_cost(dst, src).unwrap_or(100)
             }
 
             fn begin_update(&mut self) {

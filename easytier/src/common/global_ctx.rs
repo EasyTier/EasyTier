@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::proto::cli::PeerConnInfo;
+use crate::proto::common::PeerFeatureFlag;
 use crossbeam::atomic::AtomicCell;
 
 use super::{
@@ -68,6 +69,8 @@ pub struct GlobalCtx {
 
     enable_exit_node: bool,
     no_tun: bool,
+
+    feature_flags: AtomicCell<PeerFeatureFlag>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -119,6 +122,8 @@ impl GlobalCtx {
 
             enable_exit_node,
             no_tun,
+
+            feature_flags: AtomicCell::new(PeerFeatureFlag::default()),
         }
     }
 
@@ -245,6 +250,14 @@ impl GlobalCtx {
 
     pub fn no_tun(&self) -> bool {
         self.no_tun
+    }
+
+    pub fn get_feature_flags(&self) -> PeerFeatureFlag {
+        self.feature_flags.load()
+    }
+
+    pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
+        self.feature_flags.store(flags);
     }
 }
 

@@ -4,13 +4,16 @@ use std::{net::SocketAddr, sync::Arc};
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
-    peers::{peer_manager::PeerManager, peer_rpc::PeerRpcManager},
+    peers::{
+        peer_manager::PeerManager, peer_rpc::PeerRpcManager,
+        peer_rpc_service::DirectConnectorManagerRpcServer,
+    },
     proto::{
         peer_rpc::{
             DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
             GetIpListRequest, GetIpListResponse,
         },
-        rpc_types::{self, controller::BaseController},
+        rpc_types::controller::BaseController,
     },
 };
 
@@ -38,7 +41,10 @@ impl PeerManagerForDirectConnector for PeerManager {
         let mut ret = vec![];
 
         let routes = self.list_routes().await;
-        for r in routes.iter() {
+        for r in routes
+            .iter()
+            .filter(|r| r.feature_flag.map(|r| !r.is_public_server).unwrap_or(true))
+        {
             ret.push(r.peer_id);
         }
 
@@ -51,38 +57,6 @@ impl PeerManagerForDirectConnector for PeerManager {
 
     fn get_peer_rpc_mgr(&self) -> Arc<PeerRpcManager> {
         self.get_peer_rpc_mgr()
-    }
-}
-
-#[derive(Clone)]
-struct DirectConnectorManagerRpcServer {
-    // TODO: this only cache for one src peer, should make it global
-    global_ctx: ArcGlobalCtx,
-}
-
-#[async_trait::async_trait]
-impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
-    type Controller = BaseController;
-
-    async fn get_ip_list(
-        &self,
-        _: BaseController,
-        _: GetIpListRequest,
-    ) -> rpc_types::error::Result<GetIpListResponse> {
-        let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        ret.listeners = self
-            .global_ctx
-            .get_running_listeners()
-            .into_iter()
-            .map(Into::into)
-            .collect();
-        Ok(ret)
-    }
-}
-
-impl DirectConnectorManagerRpcServer {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Self {
-        Self { global_ctx }
     }
 }
 

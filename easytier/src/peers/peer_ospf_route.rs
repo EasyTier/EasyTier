@@ -102,6 +102,7 @@ impl RoutePeerInfo {
             last_update: Some(SystemTime::now().into()),
             version: 0,
             easytier_version: EASYTIER_VERSION.to_string(),
+            feature_flag: None,
         }
     }
 
@@ -127,6 +128,7 @@ impl RoutePeerInfo {
             version: self.version,
 
             easytier_version: EASYTIER_VERSION.to_string(),
+            feature_flag: Some(global_ctx.get_feature_flags()),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -168,6 +170,7 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
             },
             inst_id: self.inst_id.map(|x| x.to_string()).unwrap_or_default(),
             version: self.easytier_version,
+            feature_flag: self.feature_flag,
         }
     }
 }

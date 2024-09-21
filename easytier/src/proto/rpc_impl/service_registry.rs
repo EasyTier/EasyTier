@@ -84,6 +84,10 @@ impl ServiceRegistry {
         self.table.remove(&key).map(|_| ())
     }
 
+    pub fn unregister_by_domain(&self, domain_name: &str) {
+        self.table.retain(|k, _| k.domain_name != domain_name);
+    }
+
     pub async fn call_method(
         &self,
         rpc_desc: RpcDescriptor,

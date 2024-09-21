@@ -53,6 +53,7 @@ message Route {
   common.StunInfo stun_info = 7;
   string inst_id = 8;
   string version = 9;
+  common.PeerFeatureFlag feature_flag = 10;
 }
 
 message NodeInfo {
@@ -65,6 +66,7 @@ message NodeInfo {
   repeated string listeners = 7;
   string config = 8;
   string version = 9;
+  common.PeerFeatureFlag feature_flag = 10;
 }
 
 message ShowNodeInfoRequest {}

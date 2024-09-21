@@ -28,6 +28,7 @@ use crate::{
     proto::{
         cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
         common::NatType,
+        peer_rpc::DirectConnectorRpcServer,
     },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
@@ -37,6 +38,7 @@ use super::{
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
+    peer_rpc_service::DirectConnectorManagerRpcServer,
     route_trait::{ArcRoute, NextHopPolicy},
     PacketRecvChan, PacketRecvChanReceiver,
 };
@@ -47,6 +49,7 @@ struct ForeignNetworkEntry {
     peer_map: Arc<PeerMap>,
     relay_data: bool,
     route: ArcRoute,
+    peer_rpc: Weak<PeerRpcManager>,
 }
 
 impl ForeignNetworkEntry {
@@ -65,6 +68,9 @@ impl ForeignNetworkEntry {
         foreign_global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
             udp_nat_type: NatType::Unknown,
         }));
+        let mut feature_flag = global_ctx.get_feature_flags();
+        feature_flag.is_public_server = true;
+        global_ctx.set_feature_flags(feature_flag);
 
         let peer_map = Arc::new(PeerMap::new(
             packet_sender,
@@ -72,7 +78,17 @@ impl ForeignNetworkEntry {
             my_peer_id,
         ));
 
-        let route = PeerRoute::new(my_peer_id, foreign_global_ctx.clone(), peer_rpc);
+        let route = PeerRoute::new(my_peer_id, foreign_global_ctx.clone(), peer_rpc.clone());
+
+        for u in global_ctx.get_running_listeners().into_iter() {
+            foreign_global_ctx.add_running_listener(u);
+        }
+        peer_rpc.rpc_server().registry().register(
+            DirectConnectorRpcServer::new(DirectConnectorManagerRpcServer::new(
+                foreign_global_ctx.clone(),
+            )),
+            &network.network_name,
+        );
 
         Self {
             global_ctx: foreign_global_ctx,
@@ -80,6 +96,7 @@ impl ForeignNetworkEntry {
             peer_map,
             relay_data,
             route: Arc::new(Box::new(route)),
+            peer_rpc: Arc::downgrade(&peer_rpc),
         }
     }
 
@@ -113,6 +130,17 @@ impl ForeignNetworkEntry {
             .unwrap();
 
         self.peer_map.add_route(self.route.clone()).await;
+    }
+}
+
+impl Drop for ForeignNetworkEntry {
+    fn drop(&mut self) {
+        if let Some(peer_rpc) = self.peer_rpc.upgrade() {
+            peer_rpc
+                .rpc_server()
+                .registry()
+                .unregister_by_domain(&self.network.network_name);
+        }
     }
 }
 
