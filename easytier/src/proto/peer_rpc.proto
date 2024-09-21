@@ -18,6 +18,7 @@ message RoutePeerInfo {
   uint32 version = 9;
 
   string easytier_version = 10;
+  common.PeerFeatureFlag feature_flag = 11;
 }
 
 message PeerIdVersion {

@@ -750,6 +750,7 @@ impl PeerManager {
                 .collect(),
             config: self.global_ctx.config.dump(),
             version: EASYTIER_VERSION.to_string(),
+            feature_flag: Some(self.global_ctx.get_feature_flags()),
         }
     }
 

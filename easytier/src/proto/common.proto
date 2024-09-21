@@ -90,3 +90,8 @@ message StunInfo {
   uint32 min_port = 5;
   uint32 max_port = 6;
 }
+
+message PeerFeatureFlag {
+  bool is_public_server = 1;
+  bool no_relay_data = 2;
+}
