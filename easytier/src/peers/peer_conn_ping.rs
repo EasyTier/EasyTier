@@ -6,17 +6,97 @@ use std::{
     time::Duration,
 };
 
-use tokio::{sync::broadcast, task::JoinSet, time::timeout};
+use rand::{thread_rng, Rng};
+use tokio::{
+    sync::broadcast,
+    task::JoinSet,
+    time::{timeout, Interval},
+};
 
 use crate::{
     common::{error::Error, PeerId},
     tunnel::{
         mpsc::MpscTunnelSender,
         packet_def::{PacketType, ZCPacket},
-        stats::WindowLatency,
+        stats::{Throughput, WindowLatency},
         TunnelError,
     },
 };
+
+struct PingIntervalController {
+    throughput: Arc<Throughput>,
+    loss_rate_20: Arc<WindowLatency>,
+
+    interval: Interval,
+
+    logic_time: u64,
+    last_send_logic_time: u64,
+
+    backoff_idx: i32,
+    max_backoff_idx: i32,
+
+    last_throughput: Throughput,
+}
+
+impl PingIntervalController {
+    fn new(throughput: Arc<Throughput>, loss_rate_20: Arc<WindowLatency>) -> Self {
+        let last_throughput = *throughput;
+
+        Self {
+            throughput,
+            loss_rate_20,
+            interval: tokio::time::interval(Duration::from_secs(1)),
+            logic_time: 0,
+            last_send_logic_time: 0,
+
+            backoff_idx: 0,
+            max_backoff_idx: 5,
+
+            last_throughput,
+        }
+    }
+
+    async fn tick(&mut self) {
+        self.interval.tick().await;
+        self.logic_time += 1;
+    }
+
+    fn tx_increase(&self) -> bool {
+        self.throughput.tx_packets() > self.last_throughput.tx_packets()
+    }
+
+    fn rx_increase(&self) -> bool {
+        self.throughput.rx_packets() > self.last_throughput.rx_packets()
+    }
+
+    fn should_send_ping(&mut self) -> bool {
+        if self.loss_rate_20.get_latency_us::<f64>() > 0.0 {
+            self.backoff_idx = 0;
+        } else if self.tx_increase()
+            && !self.rx_increase()
+            && self.logic_time - self.last_send_logic_time > 2
+        {
+            // if tx increase but rx not increase, we should do pingpong more frequently
+            self.backoff_idx = 0;
+        }
+
+        self.last_throughput = *self.throughput;
+
+        if (self.logic_time - self.last_send_logic_time) < (1 << self.backoff_idx) {
+            return false;
+        }
+
+        self.backoff_idx = std::cmp::min(self.backoff_idx + 1, self.max_backoff_idx);
+
+        // use this makes two peers not pingpong at the same time
+        if self.backoff_idx > self.max_backoff_idx - 2 && thread_rng().gen_bool(0.2) {
+            self.backoff_idx -= 1;
+        }
+
+        self.last_send_logic_time = self.logic_time;
+        return true;
+    }
+}
 
 pub struct PeerConnPinger {
     my_peer_id: PeerId,
@@ -25,6 +105,7 @@ pub struct PeerConnPinger {
     ctrl_sender: broadcast::Sender<ZCPacket>,
     latency_stats: Arc<WindowLatency>,
     loss_rate_stats: Arc<AtomicU32>,
+    throughput_stats: Arc<Throughput>,
     tasks: JoinSet<Result<(), TunnelError>>,
 }
 
@@ -45,6 +126,7 @@ impl PeerConnPinger {
         ctrl_sender: broadcast::Sender<ZCPacket>,
         latency_stats: Arc<WindowLatency>,
         loss_rate_stats: Arc<AtomicU32>,
+        throughput_stats: Arc<Throughput>,
     ) -> Self {
         Self {
             my_peer_id,
@@ -54,6 +136,7 @@ impl PeerConnPinger {
             latency_stats,
             ctrl_sender,
             loss_rate_stats,
+            throughput_stats,
         }
     }
 
@@ -125,17 +208,23 @@ impl PeerConnPinger {
 
         let (ping_res_sender, mut ping_res_receiver) = tokio::sync::mpsc::channel(100);
 
+        // one with 1% precision
+        let loss_rate_stats_1 = WindowLatency::new(100);
+        // one with 20% precision, so we can fast fail this conn.
+        let loss_rate_stats_20 = Arc::new(WindowLatency::new(5));
+
         let stopped = Arc::new(AtomicU32::new(0));
 
         // generate a pingpong task every 200ms
         let mut pingpong_tasks = JoinSet::new();
         let ctrl_resp_sender = self.ctrl_sender.clone();
         let stopped_clone = stopped.clone();
+        let mut controller =
+            PingIntervalController::new(self.throughput_stats.clone(), loss_rate_stats_20.clone());
         self.tasks.spawn(async move {
             let mut req_seq = 0;
             loop {
-                let receiver = ctrl_resp_sender.subscribe();
-                let ping_res_sender = ping_res_sender.clone();
+                controller.tick().await;
 
                 if stopped_clone.load(Ordering::Relaxed) != 0 {
                     return Ok(());
@@ -145,7 +234,13 @@ impl PeerConnPinger {
                     pingpong_tasks.join_next().await;
                 }
 
+                if !controller.should_send_ping() {
+                    continue;
+                }
+
                 let mut sink = sink.clone();
+                let receiver = ctrl_resp_sender.subscribe();
+                let ping_res_sender = ping_res_sender.clone();
                 pingpong_tasks.spawn(async move {
                     let mut receiver = receiver.resubscribe();
                     let pingpong_once_ret = Self::do_pingpong_once(
@@ -163,16 +258,12 @@ impl PeerConnPinger {
                 });
 
                 req_seq = req_seq.wrapping_add(1);
-                tokio::time::sleep(Duration::from_millis(1000)).await;
             }
         });
 
-        // one with 1% precision
-        let loss_rate_stats_1 = WindowLatency::new(100);
-        // one with 20% precision, so we can fast fail this conn.
-        let loss_rate_stats_20 = WindowLatency::new(5);
-
         let mut counter: u64 = 0;
+        let throughput = self.throughput_stats.clone();
+        let mut last_rx_packets = throughput.rx_packets();
 
         while let Some(ret) = ping_res_receiver.recv().await {
             counter += 1;
@@ -199,16 +290,29 @@ impl PeerConnPinger {
             );
 
             if (counter > 5 && loss_rate_20 > 0.74) || (counter > 150 && loss_rate_1 > 0.20) {
-                tracing::warn!(
-                    ?ret,
-                    ?self,
-                    ?loss_rate_1,
-                    ?loss_rate_20,
-                    "pingpong loss rate too high, closing"
-                );
-                break;
+                let current_rx_packets = throughput.rx_packets();
+                let need_close = if last_rx_packets != current_rx_packets {
+                    // if we receive some packet from peers, we should relax the condition
+                    counter > 50 && loss_rate_1 > 0.5
+                } else {
+                    true
+                };
+
+                if need_close {
+                    tracing::warn!(
+                        ?ret,
+                        ?self,
+                        ?loss_rate_1,
+                        ?loss_rate_20,
+                        ?last_rx_packets,
+                        ?current_rx_packets,
+                        "pingpong loss rate too high, closing"
+                    );
+                    break;
+                }
             }
 
+            last_rx_packets = throughput.rx_packets();
             self.loss_rate_stats
                 .store((loss_rate_1 * 100.0) as u32, Ordering::Relaxed);
         }

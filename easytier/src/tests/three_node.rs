@@ -373,7 +373,10 @@ pub async fn subnet_proxy_three_node_test(
 #[tokio::test]
 #[serial_test::serial]
 pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str) {
-    use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
+    use crate::{
+        common::scoped_task::ScopedTask,
+        tunnel::wireguard::{WgConfig, WgTunnelConnector},
+    };
 
     let insts = init_three_node(proto).await;
     let mut inst4 = Instance::new(get_inst_config("inst4", Some("net_d"), "10.144.144.4"));
@@ -417,16 +420,25 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             );
 
             set_link_status("net_d", false);
-            tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
-            let routes = insts[0].get_peer_manager().list_routes().await;
-            assert!(
-                routes
-                    .iter()
-                    .find(|r| r.peer_id == inst4.peer_id())
-                    .is_none(),
-                "inst4 should not be in inst1's route list, {:?}",
-                routes
-            );
+            let _t = ScopedTask::from(tokio::spawn(async move {
+                // do some ping in net_a to trigger net_c pingpong
+                loop {
+                    ping_test("net_a", "10.144.144.4", Some(1)).await;
+                }
+            }));
+            wait_for_condition(
+                || async {
+                    insts[0]
+                        .get_peer_manager()
+                        .list_routes()
+                        .await
+                        .iter()
+                        .find(|r| r.peer_id == inst4.peer_id())
+                        .is_none()
+                },
+                Duration::from_secs(15),
+            )
+            .await;
             set_link_status("net_d", true);
         }
     });

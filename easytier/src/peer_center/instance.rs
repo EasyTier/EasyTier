@@ -220,7 +220,7 @@ impl PeerCenterInstance {
                     .load()
                     .elapsed()
                     .as_secs()
-                    > 60
+                    > 120
                 {
                     ctx.job_ctx.global_peer_map_digest.store(Digest::default());
                 }
@@ -239,12 +239,12 @@ impl PeerCenterInstance {
                         "get global info from center server got error result: {:?}",
                         ret
                     );
-                    return Ok(1000);
+                    return Ok(10000);
                 };
 
                 if resp == GetGlobalPeerMapResponse::default() {
                     // digest match, no need to update
-                    return Ok(5000);
+                    return Ok(15000);
                 }
 
                 tracing::info!(
@@ -263,7 +263,7 @@ impl PeerCenterInstance {
                     .global_peer_map_update_time
                     .store(Instant::now());
 
-                Ok(5000)
+                Ok(15000)
             })
             .await;
     }
@@ -426,7 +426,7 @@ mod tests {
                     false
                 }
             },
-            Duration::from_secs(10),
+            Duration::from_secs(20),
         )
         .await;
 
@@ -435,7 +435,7 @@ mod tests {
             let rpc_service = pc.get_rpc_service();
             wait_for_condition(
                 || async { rpc_service.global_peer_map.read().unwrap().map.len() == 3 },
-                Duration::from_secs(10),
+                Duration::from_secs(20),
             )
             .await;
 
