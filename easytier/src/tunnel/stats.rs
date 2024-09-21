@@ -48,7 +48,7 @@ impl WindowLatency {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub struct Throughput {
     tx_bytes: u64,
     rx_bytes: u64,

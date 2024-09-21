@@ -309,6 +309,7 @@ impl PeerConn {
             self.ctrl_resp_sender.clone(),
             self.latency_stats.clone(),
             self.loss_rate_stats.clone(),
+            self.throughput.clone(),
         );
 
         let close_event_sender = self.close_event_sender.clone().unwrap();
@@ -388,6 +389,7 @@ mod tests {
     use super::*;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
+    use crate::common::scoped_task::ScopedTask;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
@@ -429,12 +431,24 @@ mod tests {
         assert_eq!(c_peer.get_network_identity(), NetworkIdentity::default());
     }
 
-    async fn peer_conn_pingpong_test_common(drop_start: u32, drop_end: u32, conn_closed: bool) {
+    async fn peer_conn_pingpong_test_common(
+        drop_start: u32,
+        drop_end: u32,
+        conn_closed: bool,
+        drop_both: bool,
+    ) {
         let (c, s) = create_ring_tunnel_pair();
 
         // drop 1-3 packets should not affect pingpong
         let c_recorder = Arc::new(DropSendTunnelFilter::new(drop_start, drop_end));
         let c = TunnelWithFilter::new(c, c_recorder.clone());
+
+        let s = if drop_both {
+            let s_recorder = Arc::new(DropSendTunnelFilter::new(drop_start, drop_end));
+            Box::new(TunnelWithFilter::new(s, s_recorder.clone()))
+        } else {
+            s
+        };
 
         let c_peer_id = new_peer_id();
         let s_peer_id = new_peer_id();
@@ -462,7 +476,15 @@ mod tests {
             .start_recv_loop(tokio::sync::mpsc::channel(200).0)
             .await;
 
-        // wait 5s, conn should not be disconnected
+        let throughput = c_peer.throughput.clone();
+        let _t = ScopedTask::from(tokio::spawn(async move {
+            // if not drop both, we mock some rx traffic for client peer to test pinger
+            while !drop_both {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                throughput.record_rx_bytes(3);
+            }
+        }));
+
         tokio::time::sleep(Duration::from_secs(15)).await;
 
         if conn_closed {
@@ -473,9 +495,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_conn_pingpong_timeout() {
-        peer_conn_pingpong_test_common(3, 5, false).await;
-        peer_conn_pingpong_test_common(5, 12, true).await;
+    async fn peer_conn_pingpong_timeout_not_close() {
+        peer_conn_pingpong_test_common(3, 5, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn peer_conn_pingpong_oneside_timeout() {
+        peer_conn_pingpong_test_common(4, 12, false, false).await;
+    }
+
+    #[tokio::test]
+    async fn peer_conn_pingpong_bothside_timeout() {
+        peer_conn_pingpong_test_common(4, 12, true, true).await;
     }
 
     #[tokio::test]
