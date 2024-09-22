@@ -112,7 +112,7 @@ elif [ "$ARCH" == "UNKNOWN" ]; then
   echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platfrom\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
   exit 1
 elif ! command -v systemctl >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, your Linux do not support systemctl\r\nnTry ${GREEN_COLOR}install by band${RES}\r\n"
+  echo -e "\r\n${RED_COLOR}Opus${RES}, your Linux do not support systemctl\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
   exit 1
 fi
 
