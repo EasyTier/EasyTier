@@ -86,7 +86,24 @@ message ListForeignNetworkRequest {}
 message ForeignNetworkEntryPb { repeated PeerInfo peers = 1; }
 
 message ListForeignNetworkResponse {
+  // foreign network in local
   map<string, ForeignNetworkEntryPb> foreign_networks = 1;
+}
+
+message ListGlobalForeignNetworkRequest {}
+
+message ListGlobalForeignNetworkResponse {
+  // foreign network in the entire network
+  message OneForeignNetwork {
+    string network_name = 1;
+    repeated uint32 peer_ids = 2;
+    string last_updated = 3;
+    uint32 version = 4;
+  }
+
+  message ForeignNetworks { repeated OneForeignNetwork foreign_networks = 1; }
+
+  map<uint32, ForeignNetworks> foreign_networks = 1;
 }
 
 service PeerManageRpc {
@@ -95,6 +112,8 @@ service PeerManageRpc {
   rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
   rpc ListForeignNetwork(ListForeignNetworkRequest)
       returns (ListForeignNetworkResponse);
+  rpc ListGlobalForeignNetwork(ListGlobalForeignNetworkRequest)
+      returns (ListGlobalForeignNetworkResponse);
   rpc ShowNodeInfo(ShowNodeInfoRequest) returns (ShowNodeInfoResponse);
 }
 

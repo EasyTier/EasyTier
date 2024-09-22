@@ -72,6 +72,7 @@ enum PeerSubCommand {
     Remove,
     List(PeerListArgs),
     ListForeign,
+    ListGlobalForeign,
 }
 
 #[derive(Args, Debug)]
@@ -342,6 +343,30 @@ impl CommandHandler {
         Ok(())
     }
 
+    async fn handle_global_foreign_network_list(&self) -> Result<(), Error> {
+        let client = self.get_peer_manager_client().await?;
+        let request = ListGlobalForeignNetworkRequest::default();
+        let response = client
+            .list_global_foreign_network(BaseController {}, request)
+            .await?;
+        if self.verbose {
+            println!("{:#?}", response);
+            return Ok(());
+        }
+
+        for (k, v) in response.foreign_networks.iter() {
+            println!("Peer ID: {}", k);
+            for n in v.foreign_networks.iter() {
+                println!(
+                    "  Network Name: {}, Last Updated: {}, Version: {}, PeerIds: {:?}",
+                    n.network_name, n.last_updated, n.version, n.peer_ids
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn handle_route_list(&self) -> Result<(), Error> {
         #[derive(tabled::Tabled)]
         struct RouteTableItem {
@@ -463,6 +488,9 @@ async fn main() -> Result<(), Error> {
             }
             Some(PeerSubCommand::ListForeign) => {
                 handler.handle_foreign_network_list().await?;
+            }
+            Some(PeerSubCommand::ListGlobalForeign) => {
+                handler.handle_global_foreign_network_list().await?;
             }
             None => {
                 handler.handle_peer_list(&peer_args).await?;

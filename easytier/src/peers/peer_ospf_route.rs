@@ -424,6 +424,7 @@ impl SyncedRouteInfo {
         my_peer_id: PeerId,
         foreign_networks: ForeignNetworkRouteInfoMap,
     ) -> bool {
+        let now = SystemTime::now();
         let mut updated = false;
         for mut item in self
             .foreign_network
@@ -432,8 +433,14 @@ impl SyncedRouteInfo {
         {
             let (key, entry) = item.pair_mut();
             if let Some(mut new_entry) = foreign_networks.get_mut(key) {
+                assert!(!new_entry.foreign_peer_ids.is_empty());
                 if let Some(is_newer) = is_foreign_network_info_newer(&new_entry, entry) {
-                    if is_newer {
+                    let need_renew = is_newer
+                        || now
+                            .duration_since(entry.last_update.unwrap().try_into().unwrap())
+                            .unwrap()
+                            > UPDATE_PEER_INFO_PERIOD;
+                    if need_renew {
                         new_entry.version = entry.version + 1;
                         *entry = new_entry.clone();
                         updated = true;
@@ -450,6 +457,7 @@ impl SyncedRouteInfo {
         }
 
         for item in foreign_networks.iter() {
+            assert!(!item.value().foreign_peer_ids.is_empty());
             self.foreign_network
                 .entry(item.key().clone())
                 .and_modify(|v| panic!("key should not exist, {:?}", v))
@@ -1222,6 +1230,7 @@ impl PeerRouteServiceImpl {
 
         if peer_infos.is_none()
             && conn_bitmap.is_none()
+            && foreign_network.is_none()
             && !session.need_sync_initiator_info.load(Ordering::Relaxed)
         {
             return true;
@@ -1250,7 +1259,7 @@ impl PeerRouteServiceImpl {
                     is_initiator: session.we_are_initiator.load(Ordering::Relaxed),
                     peer_infos: peer_infos.clone().map(|x| RoutePeerInfos { items: x }),
                     conn_bitmap: conn_bitmap.clone().map(Into::into),
-                    foreign_network_infos: foreign_network,
+                    foreign_network_infos: foreign_network.clone(),
                 },
             )
             .await;
@@ -1294,6 +1303,10 @@ impl PeerRouteServiceImpl {
                 if let Some(conn_bitmap) = &conn_bitmap {
                     session.update_dst_saved_conn_bitmap_version(&conn_bitmap);
                 }
+
+                if let Some(foreign_network) = &foreign_network {
+                    session.update_dst_saved_foreign_network_version(&foreign_network);
+                }
             }
         }
         return false;
@@ -1329,6 +1342,7 @@ impl OspfRouteRpc for RouteSessionManager {
         let is_initiator = request.is_initiator;
         let peer_infos = request.peer_infos.map(|x| x.items);
         let conn_bitmap = request.conn_bitmap.map(Into::into);
+        let foreign_network = request.foreign_network_infos;
 
         let ret = self
             .do_sync_route_info(
@@ -1337,6 +1351,7 @@ impl OspfRouteRpc for RouteSessionManager {
                 is_initiator,
                 peer_infos,
                 conn_bitmap,
+                foreign_network,
             )
             .await;
 
@@ -1565,6 +1580,7 @@ impl RouteSessionManager {
         is_initiator: bool,
         peer_infos: Option<Vec<RoutePeerInfo>>,
         conn_bitmap: Option<RouteConnBitmap>,
+        foreign_network: Option<RouteForeignNetworkInfos>,
     ) -> Result<SyncRouteInfoResponse, Error> {
         let Some(service_impl) = self.service_impl.upgrade() else {
             return Err(Error::Stopped);
@@ -1589,6 +1605,13 @@ impl RouteSessionManager {
         if let Some(conn_bitmap) = &conn_bitmap {
             service_impl.synced_route_info.update_conn_map(&conn_bitmap);
             session.update_dst_saved_conn_bitmap_version(conn_bitmap);
+        }
+
+        if let Some(foreign_network) = &foreign_network {
+            service_impl
+                .synced_route_info
+                .update_foreign_network(&foreign_network);
+            session.update_dst_saved_foreign_network_version(foreign_network);
         }
 
         service_impl.update_route_table_and_cached_local_conn_bitmap();
@@ -1802,6 +1825,27 @@ impl Route for PeerRoute {
 
     async fn dump(&self) -> String {
         format!("{:#?}", self)
+    }
+
+    async fn list_foreign_network_info(&self) -> RouteForeignNetworkInfos {
+        let route_table = &self.service_impl.route_table;
+        let mut foreign_networks = RouteForeignNetworkInfos::default();
+        for item in self
+            .service_impl
+            .synced_route_info
+            .foreign_network
+            .iter()
+            .filter(|x| !x.value().foreign_peer_ids.is_empty())
+            .filter(|x| route_table.peer_reachable(x.key().peer_id))
+        {
+            foreign_networks
+                .infos
+                .push(route_foreign_network_infos::Info {
+                    key: Some(item.key().clone()),
+                    value: Some(item.value().clone()),
+                });
+        }
+        foreign_networks
     }
 }
 
