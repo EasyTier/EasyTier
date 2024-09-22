@@ -2,11 +2,13 @@ use std::{
     fmt::Debug,
     net::Ipv4Addr,
     sync::{Arc, Weak},
+    time::{Instant, SystemTime},
 };
 
 use anyhow::Context;
 use async_trait::async_trait;
 
+use dashmap::DashMap;
 use futures::StreamExt;
 
 use tokio::{
@@ -26,10 +28,13 @@ use crate::{
     peers::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
-        route_trait::{NextHopPolicy, RouteInterface},
+        route_trait::{ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface},
         PeerPacketFilter,
     },
-    proto::cli,
+    proto::{
+        cli,
+        peer_rpc::{ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey},
+    },
     tunnel::{
         self,
         packet_def::{PacketType, ZCPacket},
@@ -463,6 +468,7 @@ impl PeerManager {
             my_peer_id: PeerId,
             peers: Weak<PeerMap>,
             foreign_network_client: Weak<ForeignNetworkClient>,
+            foreign_network_manager: Weak<ForeignNetworkManager>,
         }
 
         #[async_trait]
@@ -484,6 +490,32 @@ impl PeerManager {
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
             }
+
+            async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
+                let ret = DashMap::new();
+                let Some(foreign_mgr) = self.foreign_network_manager.upgrade() else {
+                    return ret;
+                };
+
+                let networks = foreign_mgr.list_foreign_networks().await;
+                for (network_name, info) in networks.foreign_networks.iter() {
+                    let last_update = foreign_mgr
+                        .get_foreign_network_last_update(network_name)
+                        .unwrap_or(SystemTime::now());
+                    ret.insert(
+                        ForeignNetworkRouteInfoKey {
+                            network_name: network_name.clone(),
+                            peer_id: self.my_peer_id,
+                        },
+                        ForeignNetworkRouteInfoEntry {
+                            foreign_peer_ids: info.peers.iter().map(|x| x.peer_id).collect(),
+                            last_update: Some(last_update.into()),
+                            version: 0,
+                        },
+                    );
+                }
+                ret
+            }
         }
 
         let my_peer_id = self.my_peer_id;
@@ -492,6 +524,7 @@ impl PeerManager {
                 my_peer_id,
                 peers: Arc::downgrade(&self.peers),
                 foreign_network_client: Arc::downgrade(&self.foreign_network_client),
+                foreign_network_manager: Arc::downgrade(&self.foreign_network_manager),
             }))
             .await
             .unwrap();
@@ -672,7 +705,6 @@ impl PeerManager {
             .await
             .replace(Arc::downgrade(&self.foreign_network_client));
 
-        self.foreign_network_manager.run().await;
         self.foreign_network_client.run().await;
     }
 

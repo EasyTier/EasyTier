@@ -716,7 +716,10 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     }
     let mut center_inst = Instance::new(center_node_config);
 
-    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1"));
+    let inst1_config = get_inst_config("inst1", Some("net_b"), "10.144.145.1");
+    inst1_config.set_listeners(vec![]);
+    let mut inst1 = Instance::new(inst1_config);
+
     let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2"));
 
     center_inst.run().await.unwrap();
