@@ -1,6 +1,11 @@
 use std::{net::Ipv4Addr, sync::Arc};
 
-use crate::common::PeerId;
+use dashmap::DashMap;
+
+use crate::{
+    common::PeerId,
+    proto::peer_rpc::{ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey},
+};
 
 #[derive(Clone, Debug)]
 pub enum NextHopPolicy {
@@ -14,10 +19,16 @@ impl Default for NextHopPolicy {
     }
 }
 
+pub type ForeignNetworkRouteInfoMap =
+    DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>;
+
 #[async_trait::async_trait]
 pub trait RouteInterface {
     async fn list_peers(&self) -> Vec<PeerId>;
     fn my_peer_id(&self) -> PeerId;
+    async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
+        DashMap::new()
+    }
 }
 
 pub type RouteInterfaceBox = Box<dyn RouteInterface + Send + Sync>;

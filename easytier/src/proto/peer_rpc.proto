@@ -33,12 +33,32 @@ message RouteConnBitmap {
 
 message RoutePeerInfos { repeated RoutePeerInfo items = 1; }
 
+message ForeignNetworkRouteInfoKey {
+  uint32 peer_id = 1;
+  string network_name = 2;
+}
+
+message ForeignNetworkRouteInfoEntry {
+  repeated uint32 foreign_peer_ids = 1;
+  google.protobuf.Timestamp last_update = 2;
+  uint32 version = 3;
+}
+
+message RouteForeignNetworkInfos {
+  message Info {
+    ForeignNetworkRouteInfoKey key = 1;
+    ForeignNetworkRouteInfoEntry value = 2;
+  }
+  repeated Info infos = 1;
+}
+
 message SyncRouteInfoRequest {
   uint32 my_peer_id = 1;
   uint64 my_session_id = 2;
   bool is_initiator = 3;
   RoutePeerInfos peer_infos = 4;
   RouteConnBitmap conn_bitmap = 5;
+  RouteForeignNetworkInfos foreign_network_infos = 6;
 }
 
 enum SyncRouteInfoError {
