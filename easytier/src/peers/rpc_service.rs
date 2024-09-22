@@ -3,8 +3,9 @@ use std::sync::Arc;
 use crate::proto::{
     cli::{
         DumpRouteRequest, DumpRouteResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
-        ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse, PeerInfo,
-        PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
+        ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
+        ListPeerResponse, ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc,
+        ShowNodeInfoRequest, ShowNodeInfoResponse,
     },
     rpc_types::{self, controller::BaseController},
 };
@@ -88,6 +89,14 @@ impl PeerManageRpc for PeerManagerRpcService {
             .list_foreign_networks()
             .await;
         Ok(reply)
+    }
+
+    async fn list_global_foreign_network(
+        &self,
+        _: BaseController,
+        _request: ListGlobalForeignNetworkRequest,
+    ) -> Result<ListGlobalForeignNetworkResponse, rpc_types::error::Error> {
+        Ok(self.peer_manager.list_global_foreign_network().await)
     }
 
     async fn show_node_info(

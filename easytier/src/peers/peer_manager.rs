@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     net::Ipv4Addr,
     sync::{Arc, Weak},
-    time::{Instant, SystemTime},
+    time::SystemTime,
 };
 
 use anyhow::Context;
@@ -32,7 +32,10 @@ use crate::{
         PeerPacketFilter,
     },
     proto::{
-        cli,
+        cli::{
+            self, list_global_foreign_network_response::OneForeignNetwork,
+            ListGlobalForeignNetworkResponse,
+        },
         peer_rpc::{ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey},
     },
     tunnel::{
@@ -499,6 +502,10 @@ impl PeerManager {
 
                 let networks = foreign_mgr.list_foreign_networks().await;
                 for (network_name, info) in networks.foreign_networks.iter() {
+                    if info.peers.is_empty() {
+                        continue;
+                    }
+
                     let last_update = foreign_mgr
                         .get_foreign_network_last_update(network_name)
                         .unwrap_or(SystemTime::now());
@@ -546,6 +553,28 @@ impl PeerManager {
 
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
+    }
+
+    pub async fn list_global_foreign_network(&self) -> ListGlobalForeignNetworkResponse {
+        let mut resp = ListGlobalForeignNetworkResponse::default();
+        let ret = self.get_route().list_foreign_network_info().await;
+        for info in ret.infos.iter() {
+            let entry = resp
+                .foreign_networks
+                .entry(info.key.as_ref().unwrap().peer_id)
+                .or_insert_with(|| Default::default());
+
+            let mut f = OneForeignNetwork::default();
+            f.network_name = info.key.as_ref().unwrap().network_name.clone();
+            f.peer_ids
+                .extend(info.value.as_ref().unwrap().foreign_peer_ids.iter());
+            f.last_updated = format!("{}", info.value.as_ref().unwrap().last_update.unwrap());
+            f.version = info.value.as_ref().unwrap().version;
+
+            entry.foreign_networks.push(f);
+        }
+
+        resp
     }
 
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
