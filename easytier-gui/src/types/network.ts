@@ -32,6 +32,8 @@ export interface NetworkConfig {
   listener_urls: string[]
   rpc_port: number
   latency_first: boolean
+
+  dev_name: string
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -64,6 +66,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     ],
     rpc_port: 0,
     latency_first: true,
+    dev_name: '',
   }
 }
 
@@ -77,6 +80,7 @@ export interface NetworkInstance {
 }
 
 export interface NetworkInstanceRunningInfo {
+  dev_name: string
   my_node_info: NodeInfo
   events: Record<string, any>
   node_info: NodeInfo

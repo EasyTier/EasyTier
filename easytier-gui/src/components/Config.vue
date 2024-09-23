@@ -174,7 +174,7 @@ onMounted(async () => {
                 <label for="network_secret">{{ t('network_secret') }}</label>
                 <InputText
                   id="network_secret" v-model="curNetwork.network_secret"
-                  aria-describedby=" network_secret-help"
+                  aria-describedby="network_secret-help"
                 />
               </div>
             </div>
@@ -278,8 +278,18 @@ onMounted(async () => {
               <div class="flex flex-column gap-2 basis-5/12 grow">
                 <label for="rpc_port">{{ t('rpc_port') }}</label>
                 <InputNumber
-                  id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="username-help"
+                  id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="rpc_port-help"
                   :format="false" :min="0" :max="65535"
+                />
+              </div>
+            </div>
+
+            <div class="flex flex-row gap-x-9 flex-wrap">
+              <div class="flex flex-column gap-2 basis-5/12 grow">
+                <label for="dev_name">{{ t('dev_name') }}</label>
+                <InputText
+                  id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
+                  :placeholder="t('dev_name_placeholder')"
                 />
               </div>
             </div>
