@@ -425,6 +425,10 @@ impl SyncedRouteInfo {
         foreign_networks: ForeignNetworkRouteInfoMap,
     ) -> bool {
         let now = SystemTime::now();
+        let now_version = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as Version;
         let mut updated = false;
         for mut item in self
             .foreign_network
@@ -441,7 +445,7 @@ impl SyncedRouteInfo {
                             .unwrap()
                             > UPDATE_PEER_INFO_PERIOD;
                     if need_renew {
-                        new_entry.version = entry.version + 1;
+                        new_entry.version = std::cmp::max(new_entry.version + 1, now_version);
                         *entry = new_entry.clone();
                         updated = true;
                     }
@@ -451,7 +455,7 @@ impl SyncedRouteInfo {
             } else if !item.foreign_peer_ids.is_empty() {
                 item.foreign_peer_ids.clear();
                 item.last_update = Some(SystemTime::now().into());
-                item.version += 1;
+                item.version = std::cmp::max(item.version + 1, now_version);
                 updated = true;
             }
         }
@@ -463,7 +467,7 @@ impl SyncedRouteInfo {
                 .and_modify(|v| panic!("key should not exist, {:?}", v))
                 .or_insert_with(|| {
                     let mut v = item.value().clone();
-                    v.version = 1;
+                    v.version = now_version;
                     v
                 });
             updated = true;
