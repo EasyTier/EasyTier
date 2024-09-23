@@ -61,6 +61,8 @@ struct NetworkConfig {
     listener_urls: Vec<String>,
     rpc_port: i32,
     latency_first: bool,
+
+    dev_name: String,
 }
 
 impl NetworkConfig {
@@ -163,6 +165,7 @@ impl NetworkConfig {
         }
         let mut flags = Flags::default();
         flags.latency_first = self.latency_first;
+        flags.dev_name = self.dev_name.clone();
         cfg.set_flags(flags);
         Ok(cfg)
     }

@@ -131,8 +131,16 @@ const myNodeInfoChips = computed(() => {
   if (!my_node_info)
     return chips
 
-  // virtual ipv4
+  // TUN Device Name
+  const dev_name = curNetworkInst.value.detail?.dev_name
+  if (dev_name) {
+    chips.push({
+      label: `TUN Device Name: ${dev_name}`,
+      icon: '',
+    } as Chip)
+  }
 
+  // virtual ipv4
   chips.push({
     label: `Virtual IPv4: ${my_node_info.virtual_ipv4}`,
     icon: '',

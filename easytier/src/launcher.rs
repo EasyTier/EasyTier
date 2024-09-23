@@ -267,6 +267,7 @@ impl Drop for EasyTierLauncher {
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct NetworkInstanceRunningInfo {
+    pub dev_name: String,
     pub my_node_info: MyNodeInfo,
     pub events: Vec<(DateTime<Local>, GlobalCtxEvent)>,
     pub node_info: MyNodeInfo,
@@ -306,6 +307,7 @@ impl NetworkInstance {
         let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
 
         Some(NetworkInstanceRunningInfo {
+            dev_name: self.config.get_flags().dev_name.clone(),
             my_node_info: launcher.get_node_info(),
             events: launcher.get_events(),
             node_info: launcher.get_node_info(),
