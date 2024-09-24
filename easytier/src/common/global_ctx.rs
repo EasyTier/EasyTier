@@ -227,6 +227,10 @@ impl GlobalCtx {
         self.config.get_flags()
     }
 
+    pub fn set_flags(&self, flags: Flags) {
+        self.config.set_flags(flags);
+    }
+
     pub fn get_128_key(&self) -> [u8; 16] {
         let mut key = [0u8; 16];
         let secret = self

@@ -242,6 +242,7 @@ pub struct VirtualNic {
     ifname: Option<String>,
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
+
 #[cfg(target_os = "windows")]
 pub fn checkreg(dev_name: &str) -> io::Result<()> {
     use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
@@ -352,20 +353,26 @@ impl VirtualNic {
                 Ok(_) => tracing::trace!("delete successful!"),
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
-            use rand::distributions::Distribution as _;
-            let c = crate::arch::windows::interface_count()?;
-            let mut rng = rand::thread_rng();
-            let s: String = rand::distributions::Alphanumeric
-                .sample_iter(&mut rng)
-                .take(4)
-                .map(char::from)
-                .collect::<String>()
-                .to_lowercase();
 
             if !dev_name.is_empty() {
                 config.tun_name(format!("{}", dev_name));
             } else {
-                config.tun_name(format!("et_{}_{}", c, s));
+                use rand::distributions::Distribution as _;
+                let c = crate::arch::windows::interface_count()?;
+                let mut rng = rand::thread_rng();
+                let s: String = rand::distributions::Alphanumeric
+                    .sample_iter(&mut rng)
+                    .take(4)
+                    .map(char::from)
+                    .collect::<String>()
+                    .to_lowercase();
+
+                let random_dev_name = format!("et_{}_{}", c, s);
+                config.tun_name(random_dev_name.clone());
+
+                let mut flags = self.global_ctx.get_flags();
+                flags.dev_name = random_dev_name.clone();
+                self.global_ctx.set_flags(flags);
             }
 
             config.platform_config(|config| {
@@ -482,6 +489,39 @@ impl VirtualNic {
     pub fn get_ifcfg(&self) -> impl IfConfiguerTrait {
         IfConfiger {}
     }
+}
+
+#[cfg(target_os = "windows")]
+pub fn reg_change_catrgory_in_profile(dev_name: &str) -> io::Result<()> {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let profiles_key = hklm.open_subkey_with_flags(
+        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
+        KEY_ALL_ACCESS,
+    )?;
+
+    for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
+        let subkey = profiles_key.open_subkey_with_flags(&subkey_name, KEY_ALL_ACCESS)?;
+        match subkey.get_value::<String, _>("ProfileName") {
+            Ok(profile_name) => {
+                if !dev_name.is_empty() && dev_name == profile_name
+                {
+                    match subkey.set_value("Category", &1u32) {
+                        Ok(_) => tracing::trace!("Successfully set Category in registry"),
+                        Err(e) => tracing::error!("Failed to set Category in registry: {}", e),
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!(
+                    "Failed to read ProfileName for subkey {}: {}",
+                    subkey_name,
+                    e
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 pub struct NicCtx {
@@ -673,6 +713,13 @@ impl NicCtx {
             let mut nic = self.nic.lock().await;
             match nic.create_dev().await {
                 Ok(ret) => {
+
+                    #[cfg(target_os = "windows")] 
+                    {
+                        let dev_name = self.global_ctx.get_flags().dev_name;
+                        let _ = reg_change_catrgory_in_profile(&dev_name);
+                    }
+            
                     self.global_ctx
                         .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
                     ret
