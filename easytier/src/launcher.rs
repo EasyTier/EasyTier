@@ -41,6 +41,7 @@ struct EasyTierData {
     routes: Arc<RwLock<Vec<Route>>>,
     peers: Arc<RwLock<Vec<PeerInfo>>>,
     tun_fd: Arc<RwLock<Option<i32>>>,
+    tun_dev_name: Arc<RwLock<String>>,
 }
 
 pub struct EasyTierLauncher {
@@ -136,6 +137,10 @@ impl EasyTierLauncher {
         let vpn_portal = instance.get_vpn_portal_inst();
         tasks.spawn(async move {
             loop {
+
+                // Update TUN Device Name
+                *data_c.tun_dev_name.write().unwrap() = global_ctx_c.get_flags().dev_name.clone();
+
                 let node_info = MyNodeInfo {
                     virtual_ipv4: global_ctx_c
                         .get_ipv4()
@@ -235,6 +240,10 @@ impl EasyTierLauncher {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    pub fn get_dev_name(&self) -> String {
+        self.data.tun_dev_name.read().unwrap().clone()
+    }
+
     pub fn get_events(&self) -> Vec<(DateTime<Local>, GlobalCtxEvent)> {
         let events = self.data.events.read().unwrap();
         events.iter().cloned().collect()
@@ -307,7 +316,7 @@ impl NetworkInstance {
         let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
 
         Some(NetworkInstanceRunningInfo {
-            dev_name: self.config.get_flags().dev_name.clone(),
+            dev_name: launcher.get_dev_name(),
             my_node_info: launcher.get_node_info(),
             events: launcher.get_events(),
             node_info: launcher.get_node_info(),
