@@ -598,6 +598,7 @@ impl NicCtx {
                 }
                 Self::do_forward_nic_to_peers_ipv4(ret.unwrap(), mgr.as_ref()).await;
             }
+            panic!("nic stream closed");
         });
 
         Ok(())
@@ -618,6 +619,7 @@ impl NicCtx {
                     tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
                 }
             }
+            panic!("peer packet receiver closed");
         });
     }
 

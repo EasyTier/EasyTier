@@ -292,7 +292,6 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
     fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> Vec<String> {
-        println!("parsing listeners: {:?}", listeners);
         let proto_port_offset = vec![("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
 
         if no_listener || listeners.is_empty() {
@@ -375,7 +374,6 @@ impl From<Cli> for TomlConfigLoader {
         }
 
         let cfg = TomlConfigLoader::default();
-
 
         cfg.set_hostname(cli.hostname);
 

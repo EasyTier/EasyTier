@@ -290,6 +290,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-ringbuf"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32690af15155711360e74119b99605416c9e4dfd45b0859bd9af795a50693bec"
+dependencies = [
+ "futures",
+ "ringbuf",
+]
+
+[[package]]
 name = "async-signal"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1534,6 +1544,7 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "async-recursion",
+ "async-ringbuf",
  "async-stream",
  "async-trait",
  "atomic-shim",
@@ -1580,6 +1591,7 @@ dependencies = [
  "regex",
  "reqwest 0.11.27",
  "ring 0.17.8",
+ "ringbuf",
  "rpc_build",
  "rstest",
  "rust-i18n",
@@ -4880,6 +4892,15 @@ dependencies = [
  "spin 0.9.8",
  "untrusted 0.9.0",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "ringbuf"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb0d14419487131a897031a7e81c3b23d092296984fac4eb6df48cc4e3b2f3c5"
+dependencies = [
+ "crossbeam-utils",
 ]
 
 [[package]]
