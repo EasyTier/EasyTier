@@ -25,6 +25,7 @@ use zerocopy::AsBytes;
 use crate::{
     common::{
         config::{NetworkIdentity, NetworkSecretDigest},
+        defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
         PeerId,
@@ -103,7 +104,9 @@ impl PeerConn {
             my_peer_id,
             global_ctx,
 
-            tunnel: Arc::new(Mutex::new(Box::new(mpsc_tunnel))),
+            tunnel: Arc::new(Mutex::new(Box::new(defer::Defer::new(move || {
+                mpsc_tunnel.close()
+            })))),
             sink,
             recv: Arc::new(Mutex::new(Some(recv))),
             tunnel_info,

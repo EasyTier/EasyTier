@@ -151,9 +151,9 @@ async fn forward_from_ring_to_udp(
     }
 }
 
-async fn udp_recv_from_socket_forward_task<F>(socket: Arc<UdpSocket>, f: F)
+async fn udp_recv_from_socket_forward_task<F>(socket: Arc<UdpSocket>, mut f: F)
 where
-    F: Fn(ZCPacket, SocketAddr) -> (),
+    F: FnMut(ZCPacket, SocketAddr) -> (),
 {
     let mut buf = BytesMut::new();
     loop {
@@ -220,7 +220,7 @@ impl UdpConnection {
         }
     }
 
-    pub fn handle_packet_from_remote(&self, zc_packet: ZCPacket) -> Result<(), TunnelError> {
+    pub fn handle_packet_from_remote(&mut self, zc_packet: ZCPacket) -> Result<(), TunnelError> {
         let header = zc_packet.udp_tunnel_header().unwrap();
         let conn_id = header.conn_id.get();
 
@@ -232,11 +232,9 @@ impl UdpConnection {
             return Err(TunnelError::ConnIdNotMatch(self.conn_id, conn_id));
         }
 
-        if !self.ring_sender.has_empty_slot() {
-            return Err(TunnelError::BufferFull);
+        if let Err(e) = self.ring_sender.try_send(zc_packet) {
+            tracing::trace!(?e, "ring sender full, drop packet");
         }
-
-        self.ring_sender.push_no_check(zc_packet)?;
 
         Ok(())
     }
@@ -294,8 +292,8 @@ impl UdpTunnelListenerData {
             return;
         }
 
-        let ring_for_send_udp = Arc::new(RingTunnel::new(128));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
+        let ring_for_send_udp = Arc::new(RingTunnel::new(32));
+        let ring_for_recv_udp = Arc::new(RingTunnel::new(32));
         tracing::debug!(
             ?ring_for_send_udp,
             ?ring_for_recv_udp,
@@ -336,7 +334,7 @@ impl UdpTunnelListenerData {
         if header.msg_type == UdpPacketType::Syn as u8 {
             tokio::spawn(Self::handle_new_connect(self.clone(), addr, zc_packet));
         } else if header.msg_type != UdpPacketType::HolePunch as u8 {
-            let Some(conn) = self.sock_map.get(&addr) else {
+            let Some(mut conn) = self.sock_map.get_mut(&addr) else {
                 tracing::trace!(?header, "udp forward packet error, connection not found");
                 return;
             };
@@ -569,7 +567,7 @@ impl UdpTunnelConnector {
 
         let ring_recv = RingStream::new(ring_for_send_udp.clone());
         let ring_sender = RingSink::new(ring_for_recv_udp.clone());
-        let udp_conn = UdpConnection::new(
+        let mut udp_conn = UdpConnection::new(
             socket.clone(),
             conn_id,
             dst_addr,
