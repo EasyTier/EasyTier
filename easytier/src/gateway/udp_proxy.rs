@@ -12,12 +12,10 @@ use pnet::packet::{
     udp::{self, MutableUdpPacket},
     Packet,
 };
+use tachyonix::{channel, Receiver, Sender, TrySendError};
 use tokio::{
     net::UdpSocket,
-    sync::{
-        mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-        Mutex,
-    },
+    sync::Mutex,
     task::{JoinHandle, JoinSet},
     time::timeout,
 };
@@ -85,7 +83,7 @@ impl UdpNatEntry {
 
     async fn compose_ipv4_packet(
         self: &Arc<Self>,
-        packet_sender: &mut UnboundedSender<ZCPacket>,
+        packet_sender: &mut Sender<ZCPacket>,
         buf: &mut [u8],
         src_v4: &SocketAddrV4,
         payload_len: usize,
@@ -122,11 +120,13 @@ impl UdpNatEntry {
                 p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
                 p.mut_peer_manager_header().unwrap().set_no_proxy(true);
 
-                if let Err(e) = packet_sender.send(p) {
-                    tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
-                    return Err(Error::AnyhowError(e.into()));
+                match packet_sender.try_send(p) {
+                    Err(TrySendError::Closed(e)) => {
+                        tracing::error!("send icmp packet to peer failed: {:?}, may exiting..", e);
+                        Err(Error::Unknown)
+                    }
+                    _ => Ok(()),
                 }
-                Ok(())
             },
         )?;
 
@@ -135,7 +135,7 @@ impl UdpNatEntry {
 
     async fn forward_task(
         self: Arc<Self>,
-        mut packet_sender: UnboundedSender<ZCPacket>,
+        mut packet_sender: Sender<ZCPacket>,
         virtual_ipv4: Ipv4Addr,
     ) {
         let mut buf = [0u8; 65536];
@@ -182,7 +182,7 @@ impl UdpNatEntry {
                 &mut buf,
                 &src_v4,
                 len,
-                1200,
+                1256,
                 ip_id,
             )
             .await
@@ -213,8 +213,8 @@ pub struct UdpProxy {
 
     nat_table: Arc<DashMap<UdpNatKey, Arc<UdpNatEntry>>>,
 
-    sender: UnboundedSender<ZCPacket>,
-    receiver: Mutex<Option<UnboundedReceiver<ZCPacket>>>,
+    sender: Sender<ZCPacket>,
+    receiver: Mutex<Option<Receiver<ZCPacket>>>,
 
     tasks: Mutex<JoinSet<()>>,
 
@@ -350,7 +350,7 @@ impl UdpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new(global_ctx.clone());
-        let (sender, receiver) = unbounded_channel();
+        let (sender, receiver) = channel(64);
         let ret = Self {
             global_ctx,
             peer_manager,
@@ -398,7 +398,7 @@ impl UdpProxy {
         let mut receiver = self.receiver.lock().await.take().unwrap();
         let peer_manager = self.peer_manager.clone();
         self.tasks.lock().await.spawn(async move {
-            while let Some(msg) = receiver.recv().await {
+            while let Ok(msg) = receiver.recv().await {
                 let to_peer_id: PeerId = msg.peer_manager_header().unwrap().to_peer_id.get();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
                 let ret = peer_manager.send_msg(msg, to_peer_id).await;
