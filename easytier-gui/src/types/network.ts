@@ -91,15 +91,26 @@ export interface NetworkInstanceRunningInfo {
   error_msg?: string
 }
 
+export interface Ipv4Addr {
+  addr: number
+}
+
+export interface Ipv6Addr {
+  part1: number
+  part2: number
+  part3: number
+  part4: number
+}
+
 export interface NodeInfo {
   virtual_ipv4: string
   hostname: string
   version: string
   ips: {
-    public_ipv4: string
-    interface_ipv4s: string[]
-    public_ipv6: string
-    interface_ipv6s: string[]
+    public_ipv4: Ipv4Addr
+    interface_ipv4s: Ipv4Addr[]
+    public_ipv6: Ipv6Addr
+    interface_ipv6s: Ipv6Addr[]
     listeners: {
       serialization: string
       scheme_end: number
