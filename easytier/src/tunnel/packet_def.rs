@@ -500,6 +500,12 @@ impl ZCPacket {
     pub fn mut_inner(&mut self) -> &mut BytesMut {
         &mut self.inner
     }
+
+    pub fn is_lossy(&self) -> bool {
+        self.peer_manager_header()
+            .and_then(|hdr| Some(hdr.packet_type == PacketType::Data as u8))
+            .unwrap_or(false)
+    }
 }
 
 #[cfg(test)]

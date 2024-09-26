@@ -10,14 +10,14 @@ use std::net::SocketAddr;
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
-    task::{JoinHandle, JoinSet},
+    task::JoinSet,
 };
 
 use tracing::{instrument, Instrument};
 
 use super::TunnelInfo;
 use crate::{
-    common::join_joinset_background,
+    common::{join_joinset_background, scoped_task::ScopedTask},
     tunnel::{
         build_url_from_socket_addr,
         common::{reserve_buf, TunnelWrapper},
@@ -190,7 +190,7 @@ struct UdpConnection {
     dst_addr: SocketAddr,
 
     ring_sender: RingSink,
-    forward_task: JoinHandle<()>,
+    forward_task: ScopedTask<()>,
 }
 
 impl UdpConnection {
@@ -209,7 +209,8 @@ impl UdpConnection {
             if let Err(e) = close_event_sender.send((dst_addr, err)) {
                 tracing::error!(?e, "udp send close event error");
             }
-        });
+        })
+        .into();
 
         Self {
             socket,
@@ -232,17 +233,17 @@ impl UdpConnection {
             return Err(TunnelError::ConnIdNotMatch(self.conn_id, conn_id));
         }
 
-        if let Err(e) = self.ring_sender.try_send(zc_packet) {
-            tracing::trace!(?e, "ring sender full, drop packet");
+        if zc_packet.is_lossy() {
+            if let Err(e) = self.ring_sender.try_send(zc_packet) {
+                tracing::trace!(?e, "ring sender full, drop lossy packet");
+            }
+        } else {
+            if let Err(e) = self.ring_sender.force_send(zc_packet) {
+                tracing::trace!(?e, "ring sender full, drop non-lossy packet");
+            }
         }
 
         Ok(())
-    }
-}
-
-impl Drop for UdpConnection {
-    fn drop(&mut self) {
-        self.forward_task.abort();
     }
 }
 
@@ -555,8 +556,8 @@ impl UdpTunnelConnector {
         dst_addr: SocketAddr,
         conn_id: u32,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let ring_for_send_udp = Arc::new(RingTunnel::new(128));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
+        let ring_for_send_udp = Arc::new(RingTunnel::new(32));
+        let ring_for_recv_udp = Arc::new(RingTunnel::new(32));
         tracing::debug!(
             ?ring_for_send_udp,
             ?ring_for_recv_udp,

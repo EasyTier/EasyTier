@@ -26,7 +26,8 @@ use super::{
     StreamItem, Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener,
 };
 
-static RING_TUNNEL_CAP: usize = 128;
+static RING_TUNNEL_CAP: usize = 64;
+static RING_TUNNEL_RESERVERD_CAP: usize = 4;
 
 type RingLock = parking_lot::Mutex<()>;
 
@@ -46,7 +47,7 @@ impl RingTunnel {
 
     pub fn new(cap: usize) -> Self {
         let id = Uuid::new_v4();
-        let ring_impl = AsyncHeapRb::new(cap);
+        let ring_impl = AsyncHeapRb::new(std::cmp::max(RING_TUNNEL_RESERVERD_CAP * 2, cap));
         let (ring_prod_impl, ring_cons_impl) = ring_impl.split();
         Self {
             id: id.clone(),
@@ -121,6 +122,14 @@ impl RingSink {
     }
 
     pub fn try_send(&mut self, item: RingItem) -> Result<(), RingItem> {
+        let base = self.ring_prod_impl.base();
+        if base.occupied_len() >= base.capacity().get() - RING_TUNNEL_RESERVERD_CAP {
+            return Err(item);
+        }
+        self.ring_prod_impl.try_push(item)
+    }
+
+    pub fn force_send(&mut self, item: RingItem) -> Result<(), RingItem> {
         self.ring_prod_impl.try_push(item)
     }
 }

@@ -26,5 +26,6 @@ pub const UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID: u32 = 2;
 pub const EASYTIER_VERSION: &str = git_version::git_version!(
     args = ["--abbrev=8", "--always", "--dirty=~"],
     prefix = concat!(env!("CARGO_PKG_VERSION"), "-"),
-    suffix = ""
+    suffix = "",
+    fallback = env!("CARGO_PKG_VERSION")
 );
