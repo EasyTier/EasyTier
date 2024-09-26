@@ -29,6 +29,9 @@ importers:
       aura:
         specifier: link:@primevue/themes/aura
         version: link:@primevue/themes/aura
+      ip-num:
+        specifier: 1.5.1
+        version: 1.5.1
       pinia:
         specifier: ^2.2.2
         version: 2.2.2(typescript@5.6.2)(vue@3.5.3(typescript@5.6.2))
@@ -2242,6 +2245,9 @@ packages:
   ip-bigint@7.3.0:
     resolution: {integrity: sha512-2qVAe0Q9+Y+5nGvmogwK9y4kefD5Ks5l/IG0Jo1lhU9gIF34jifhqrwXwzkIl+LC594Q6SyAlngs4p890xsXVw==}
     engines: {node: '>=16'}
+
+  ip-num@1.5.1:
+    resolution: {integrity: sha512-QziFxgxq3mjIf5CuwlzXFYscHxgLqdEdJKRo2UJ5GurL5zrSRMzT/O+nK0ABimoFH8MWF8YwIiwECYsHc1LpUQ==}
 
   ip-regex@5.0.0:
     resolution: {integrity: sha512-fOCG6lhoKKakwv+C6KdsOnGvgXnmgfmp0myi3bcNwj3qfwPAxRKWEuFhvEFF7ceYIz6+1jRZ+yguLFAmUNPEfw==}
@@ -5845,6 +5851,8 @@ snapshots:
       p-event: 5.0.1
 
   ip-bigint@7.3.0: {}
+
+  ip-num@1.5.1: {}
 
   ip-regex@5.0.0: {}
 

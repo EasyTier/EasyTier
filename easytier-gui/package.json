@@ -19,6 +19,7 @@
     "@tauri-apps/plugin-process": "2.0.0-rc.1",
     "@tauri-apps/plugin-shell": "2.0.0-rc.1",
     "aura": "link:@primevue/themes/aura",
+    "ip-num": "1.5.1",
     "pinia": "^2.2.2",
     "primeflex": "^3.3.1",
     "primeicons": "^7.0.0",

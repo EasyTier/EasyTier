@@ -62,8 +62,10 @@ enum NatType {
 message Ipv4Addr { uint32 addr = 1; }
 
 message Ipv6Addr {
-  uint64 high = 1;
-  uint64 low = 2;
+  uint32 part1 = 1;
+  uint32 part2 = 2;
+  uint32 part3 = 3;
+  uint32 part4 = 4;
 }
 
 message Url { string url = 1; }
