@@ -56,6 +56,7 @@ pub enum PacketType {
     Route = 7,
     RpcReq = 8,
     RpcResp = 9,
+    ForeignNetworkPacket = 10,
 }
 
 bitflags::bitflags! {
@@ -148,6 +149,46 @@ impl PeerManagerHeader {
         }
         self.flags = flags.bits();
         self
+    }
+}
+
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct ForeignNetworkPacketHeader {
+    pub header_len: U16<DefaultEndian>,
+    pub dst_peer_id: U32<DefaultEndian>,
+    pub network_name_offset: U16<DefaultEndian>,
+    pub network_name_len: U16<DefaultEndian>,
+    /* variable length network_name string */
+}
+
+impl ForeignNetworkPacketHeader {
+    pub fn new(dst_peer_id: u32, network_name: &str) -> Self {
+        let network_name_offset = std::mem::size_of::<ForeignNetworkPacketHeader>() as u16;
+        let network_name_len = network_name.len() as u16;
+        let header_len = network_name_offset + network_name_len;
+        Self {
+            header_len: U16::new(header_len),
+            dst_peer_id: U32::new(dst_peer_id),
+            network_name_offset: U16::new(network_name_offset),
+            network_name_len: U16::new(network_name_len),
+        }
+    }
+
+    pub fn get_network_name(&self, zc_packet_payload: &[u8]) -> String {
+        let offset = self.network_name_offset.get() as usize;
+        let len = self.network_name_len.get() as usize;
+        std::str::from_utf8(&zc_packet_payload[offset..offset + len])
+            .unwrap()
+            .to_string()
+    }
+
+    pub fn get_dst_peer_id(&self) -> u32 {
+        self.dst_peer_id.get()
+    }
+
+    pub fn get_header_len(&self) -> usize {
+        self.header_len.get() as usize
     }
 }
 
@@ -317,6 +358,40 @@ impl ZCPacket {
         ret.inner.reserve(cap);
         let total_len = ret.packet_type.get_packet_offsets().payload_offset - packet_info_len;
         unsafe { ret.inner.set_len(total_len) };
+        ret
+    }
+
+    pub fn new_for_foreign_network(
+        network_name: &String,
+        dst_peer_id: u32,
+        foreign_zc_packet: &ZCPacket,
+    ) -> Self {
+        let foreign_network_hdr = ForeignNetworkPacketHeader::new(dst_peer_id, &network_name);
+        let total_payload_len =
+            foreign_network_hdr.get_header_len() + foreign_zc_packet.tunnel_payload().len();
+
+        let mut ret = Self::new_nic_packet();
+        let payload_off = ret.packet_type.get_packet_offsets().payload_offset;
+        ret.inner.reserve(payload_off + total_payload_len);
+        unsafe { ret.inner.set_len(payload_off + total_payload_len) };
+
+        let fixed_hdr_len = std::mem::size_of::<ForeignNetworkPacketHeader>();
+        ret.mut_payload()[..fixed_hdr_len].copy_from_slice(foreign_network_hdr.as_bytes());
+
+        let name_offset = foreign_network_hdr.network_name_offset.get() as usize;
+        let name_len = foreign_network_hdr.network_name_len.get() as usize;
+        ret.mut_payload()[name_offset..name_offset + name_len]
+            .copy_from_slice(network_name.as_bytes());
+
+        ret.mut_payload()[foreign_network_hdr.get_header_len()..]
+            .copy_from_slice(foreign_zc_packet.tunnel_payload());
+
+        let hdr = ret.mut_peer_manager_header().unwrap();
+        hdr.from_peer_id = 0.into();
+        hdr.to_peer_id = 0.into();
+        hdr.packet_type = PacketType::ForeignNetworkPacket as u8;
+        hdr.len.set(total_payload_len as u32);
+
         ret
     }
 
@@ -505,6 +580,26 @@ impl ZCPacket {
         self.peer_manager_header()
             .and_then(|hdr| Some(hdr.packet_type == PacketType::Data as u8))
             .unwrap_or(false)
+    }
+
+    pub fn foreign_network_hdr(&self) -> Option<&ForeignNetworkPacketHeader> {
+        if self.peer_manager_header().unwrap().packet_type == PacketType::ForeignNetworkPacket as u8
+        {
+            ForeignNetworkPacketHeader::ref_from_prefix(self.payload())
+        } else {
+            None
+        }
+    }
+
+    pub fn foreign_network_packet(mut self) -> Self {
+        let hdr = self.foreign_network_hdr().unwrap();
+        let foreign_hdr_len = hdr.get_header_len();
+
+        Self::new_from_buf(
+            self.inner
+                .split_off(foreign_hdr_len + self.payload_offset()),
+            ZCPacketType::DummyTunnel,
+        )
     }
 }
 

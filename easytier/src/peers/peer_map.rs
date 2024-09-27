@@ -7,12 +7,11 @@ use tokio::sync::RwLock;
 use crate::{
     common::{
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
         PeerId,
     },
     proto::cli::PeerConnInfo,
-    tunnel::packet_def::ZCPacket,
-    tunnel::TunnelError,
+    tunnel::{packet_def::ZCPacket, TunnelError},
 };
 
 use super::{
@@ -119,6 +118,20 @@ impl PeerMap {
         }
 
         None
+    }
+
+    pub async fn list_peers_own_foreign_network(
+        &self,
+        network_identity: &NetworkIdentity,
+    ) -> Vec<PeerId> {
+        let mut ret = Vec::new();
+        for route in self.routes.read().await.iter() {
+            let peers = route
+                .list_peers_own_foreign_network(&network_identity)
+                .await;
+            ret.extend(peers);
+        }
+        ret
     }
 
     pub async fn send_msg(
@@ -236,5 +249,15 @@ impl PeerMap {
             }
         }
         route_map
+    }
+}
+
+impl Drop for PeerMap {
+    fn drop(&mut self) {
+        tracing::debug!(
+            self.my_peer_id,
+            network = ?self.global_ctx.get_network_identity(),
+            "PeerMap is dropped"
+        );
     }
 }

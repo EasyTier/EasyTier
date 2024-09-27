@@ -3,7 +3,7 @@ use std::{net::Ipv4Addr, sync::Arc};
 use dashmap::DashMap;
 
 use crate::{
-    common::PeerId,
+    common::{global_ctx::NetworkIdentity, PeerId},
     proto::peer_rpc::{
         ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
     },
@@ -79,6 +79,13 @@ pub trait Route {
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None
+    }
+
+    async fn list_peers_own_foreign_network(
+        &self,
+        _network_identity: &NetworkIdentity,
+    ) -> Vec<PeerId> {
+        vec![]
     }
 
     async fn list_foreign_network_info(&self) -> RouteForeignNetworkInfos {
