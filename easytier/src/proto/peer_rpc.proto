@@ -42,6 +42,7 @@ message ForeignNetworkRouteInfoEntry {
   repeated uint32 foreign_peer_ids = 1;
   google.protobuf.Timestamp last_update = 2;
   uint32 version = 3;
+  bytes network_secret_digest = 4;
 }
 
 message RouteForeignNetworkInfos {

@@ -83,7 +83,10 @@ message DumpRouteResponse { string result = 1; }
 
 message ListForeignNetworkRequest {}
 
-message ForeignNetworkEntryPb { repeated PeerInfo peers = 1; }
+message ForeignNetworkEntryPb {
+  repeated PeerInfo peers = 1;
+  bytes network_secret_digest = 2;
+}
 
 message ListForeignNetworkResponse {
   // foreign network in local

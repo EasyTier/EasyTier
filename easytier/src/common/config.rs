@@ -72,7 +72,7 @@ pub trait ConfigLoader: Send + Sync {
 
 pub type NetworkSecretDigest = [u8; 32];
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default, Eq, Hash)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
