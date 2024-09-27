@@ -1,9 +1,12 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use bytes::BytesMut;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::{
+    net::{TcpListener, TcpSocket, TcpStream},
+    time::timeout,
+};
 use tokio_rustls::TlsAcceptor;
 use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message};
 use zerocopy::AsBytes;
@@ -141,9 +144,9 @@ impl TunnelListener for WSTunnelListener {
             // only fail on tcp accept error
             let (stream, _) = listener.accept().await?;
             stream.set_nodelay(true).unwrap();
-            match self.try_accept(stream).await {
-                Ok(tunnel) => return Ok(tunnel),
-                Err(e) => {
+            match timeout(Duration::from_secs(3), self.try_accept(stream)).await {
+                Ok(Ok(tunnel)) => return Ok(tunnel),
+                e => {
                     tracing::error!(?e, ?self, "Failed to accept ws/wss tunnel");
                     continue;
                 }
