@@ -1539,7 +1539,7 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 
 [[package]]
 name = "easytier"
-version = "1.2.3"
+version = "2.0.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1597,6 +1597,7 @@ dependencies = [
  "rust-i18n",
  "rustls",
  "serde",
+ "serde_json",
  "serial_test",
  "smoltcp",
  "socket2",
@@ -1630,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-gui"
-version = "1.2.3"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "chrono",

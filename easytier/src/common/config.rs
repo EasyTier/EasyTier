@@ -208,7 +208,10 @@ struct Config {
 
     socks5_proxy: Option<url::Url>,
 
-    flags: Option<Flags>,
+    flags: Option<serde_json::Map<String, serde_json::Value>>,
+
+    #[serde(skip)]
+    flags_struct: Option<Flags>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,12 +227,14 @@ impl Default for TomlConfigLoader {
 
 impl TomlConfigLoader {
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
-        let config = toml::de::from_str::<Config>(config_str).with_context(|| {
+        let mut config = toml::de::from_str::<Config>(config_str).with_context(|| {
             format!(
                 "failed to parse config file: {}\n{}",
                 config_str, config_str
             )
         })?;
+
+        config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
 
         Ok(TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
@@ -247,6 +252,28 @@ impl TomlConfigLoader {
         ));
 
         Ok(ret)
+    }
+
+    fn gen_flags(mut flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
+        let default_flags_json = serde_json::to_string(&Flags::default()).unwrap();
+        let default_flags_hashmap =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
+                .unwrap();
+
+        tracing::debug!("default_flags_hashmap: {:?}", default_flags_hashmap);
+
+        let mut merged_hashmap = serde_json::Map::new();
+        for (key, value) in default_flags_hashmap {
+            if let Some(v) = flags_hashmap.remove(&key) {
+                merged_hashmap.insert(key, v);
+            } else {
+                merged_hashmap.insert(key, value);
+            }
+        }
+
+        tracing::debug!("merged_hashmap: {:?}", merged_hashmap);
+
+        serde_json::from_value(serde_json::Value::Object(merged_hashmap)).unwrap()
     }
 }
 
@@ -474,13 +501,13 @@ impl ConfigLoader for TomlConfigLoader {
         self.config
             .lock()
             .unwrap()
-            .flags
+            .flags_struct
             .clone()
             .unwrap_or_default()
     }
 
     fn set_flags(&self, flags: Flags) {
-        self.config.lock().unwrap().flags = Some(flags);
+        self.config.lock().unwrap().flags_struct = Some(flags);
     }
 
     fn get_exit_nodes(&self) -> Vec<Ipv4Addr> {
