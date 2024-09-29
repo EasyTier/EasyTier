@@ -117,10 +117,16 @@ impl RoutePeerInfo {
             version: 0,
             easytier_version: EASYTIER_VERSION.to_string(),
             feature_flag: None,
+            peer_route_id: 0,
         }
     }
 
-    pub fn update_self(&self, my_peer_id: PeerId, global_ctx: &ArcGlobalCtx) -> Self {
+    pub fn update_self(
+        &self,
+        my_peer_id: PeerId,
+        peer_route_id: u64,
+        global_ctx: &ArcGlobalCtx,
+    ) -> Self {
         let mut new = Self {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
@@ -143,6 +149,7 @@ impl RoutePeerInfo {
 
             easytier_version: EASYTIER_VERSION.to_string(),
             feature_flag: Some(global_ctx.get_feature_flags()),
+            peer_route_id,
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -296,6 +303,7 @@ impl SyncedRouteInfo {
     fn check_duplicate_peer_id(
         &self,
         my_peer_id: PeerId,
+        my_peer_route_id: u64,
         dst_peer_id: PeerId,
         route_infos: &Vec<RoutePeerInfo>,
     ) -> Result<(), Error> {
@@ -310,7 +318,7 @@ impl SyncedRouteInfo {
                 }
             }
 
-            if info.peer_id == dst_peer_id {
+            if info.peer_id == dst_peer_id && info.peer_route_id != my_peer_route_id {
                 if info.version < self.get_peer_info_version_with_default(info.peer_id) {
                     // if dst peer send to us with lower version info of dst peer, dst peer id is duplicated
                     return Err(Error::DuplicatePeerId);
@@ -323,10 +331,11 @@ impl SyncedRouteInfo {
     fn update_peer_infos(
         &self,
         my_peer_id: PeerId,
+        my_peer_route_id: u64,
         dst_peer_id: PeerId,
         peer_infos: &Vec<RoutePeerInfo>,
     ) -> Result<(), Error> {
-        self.check_duplicate_peer_id(my_peer_id, dst_peer_id, peer_infos)?;
+        self.check_duplicate_peer_id(my_peer_id, my_peer_route_id, dst_peer_id, peer_infos)?;
         for mut route_info in peer_infos.iter().map(Clone::clone) {
             // time between peers may not be synchronized, so update last_update to local now.
             // note only last_update with larger version will be updated to local saved peer info.
@@ -391,12 +400,17 @@ impl SyncedRouteInfo {
         }
     }
 
-    fn update_my_peer_info(&self, my_peer_id: PeerId, global_ctx: &ArcGlobalCtx) -> bool {
+    fn update_my_peer_info(
+        &self,
+        my_peer_id: PeerId,
+        my_peer_route_id: u64,
+        global_ctx: &ArcGlobalCtx,
+    ) -> bool {
         let mut old = self
             .peer_infos
             .entry(my_peer_id)
             .or_insert(RoutePeerInfo::new());
-        let new = old.update_self(my_peer_id, &global_ctx);
+        let new = old.update_self(my_peer_id, my_peer_route_id, &global_ctx);
         let new_version = new.version;
         let old_version = old.version;
         *old = new;
@@ -885,6 +899,7 @@ impl Drop for SyncRouteSession {
 
 struct PeerRouteServiceImpl {
     my_peer_id: PeerId,
+    my_peer_route_id: u64,
     global_ctx: ArcGlobalCtx,
     sessions: DashMap<PeerId, Arc<SyncRouteSession>>,
 
@@ -904,6 +919,7 @@ impl Debug for PeerRouteServiceImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PeerRouteServiceImpl")
             .field("my_peer_id", &self.my_peer_id)
+            .field("my_peer_route_id", &self.my_peer_route_id)
             .field("network", &self.global_ctx.get_network_identity())
             .field("sessions", &self.sessions)
             .field("route_table", &self.route_table)
@@ -922,6 +938,7 @@ impl PeerRouteServiceImpl {
     fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx) -> Self {
         PeerRouteServiceImpl {
             my_peer_id,
+            my_peer_route_id: rand::random(),
             global_ctx,
             sessions: DashMap::new(),
 
@@ -977,10 +994,11 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_my_peer_info(&self) -> bool {
-        if self
-            .synced_route_info
-            .update_my_peer_info(self.my_peer_id, &self.global_ctx)
-        {
+        if self.synced_route_info.update_my_peer_info(
+            self.my_peer_id,
+            self.my_peer_route_id,
+            &self.global_ctx,
+        ) {
             self.update_route_table_and_cached_local_conn_bitmap();
             return true;
         }
@@ -1677,6 +1695,7 @@ impl RouteSessionManager {
         if let Some(peer_infos) = &peer_infos {
             service_impl.synced_route_info.update_peer_infos(
                 my_peer_id,
+                service_impl.my_peer_route_id,
                 from_peer_id,
                 peer_infos,
             )?;
