@@ -199,20 +199,20 @@ sudo easytier-core --ipv4 10.144.144.2 -n 10.1.1.0/24
 
 ### 无公网IP组网
 
-EasyTier 支持共享公网节点进行组网。目前已部署共享的公网节点 ``tcp://easytier.public.kkrainbow.top:11010``。
+EasyTier 支持共享公网节点进行组网。目前已部署共享的公网节点 ``tcp://public.easytier.top:11010``。
 
 使用共享节点时，需要每个入网节点提供相同的 ``--network-name`` 和 ``--network-secret`` 参数，作为网络的唯一标识。
 
 以双节点为例，节点 A 执行：
 
 ```sh
-sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e tcp://easytier.public.kkrainbow.top:11010
+sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e tcp://public.easytier.top:11010
 ```
 
 节点 B 执行
 
 ```sh
-sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e tcp://easytier.public.kkrainbow.top:11010
+sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e tcp://public.easytier.top:11010
 ```
 
 命令执行成功后，节点 A 即可通过虚拟 IP 10.144.144.2 访问节点 B。
@@ -282,7 +282,15 @@ connected_clients:
 
 ### 自建公共中转服务器
 
-每个节点都可作为其他用户网络的中转节点。不带任何参数直接启动 EasyTier 即可。
+每个虚拟网络（通过相同的网络名称和密钥建链）都可以充当公共服务器集群。其他网络的节点可以连接到公共服务器集群中的任意节点，无需公共 IP 即可发现彼此。
+
+运行自建的公共服务器集群与运行虚拟网络完全相同，不过可以跳过配置 ipv4 地址。
+
+也可以使用以下命令加入官方公共服务器集群，后续将实现公共服务器集群的节点间负载均衡：
+
+```
+sudo easytier-core --network-name easytier --network-secret easytier -p tcp://public.easytier.top:11010
+```
 
 ### 其他配置
 
