@@ -438,12 +438,12 @@ impl UdpHolePunchRpc for UdpHolePunchRpcService {
         }
 
         // send max k1 packets if we are predicting the dst port
-        let max_k1 = 60;
+        let max_k1 = 180;
         // send max k2 packets if we are sending to random port
         let max_k2 = rand::thread_rng().gen_range(600..800);
 
         // this means the NAT is allocating port in a predictable way
-        if max_port.abs_diff(min_port) <= 3 * max_k1 && round <= 6 && punch_predictablely {
+        if max_port.abs_diff(min_port) <= max_k1 && round <= 6 && punch_predictablely {
             let (min_port, max_port) = {
                 // round begin from 0. if round is even, we guess port in increasing order
                 let port_delta = (max_k1 as u32) / ip_count as u32;
@@ -879,7 +879,7 @@ impl UdpHolePunchConnector {
 
         let mut last_port_idx = rand::thread_rng().gen_range(0..data.shuffled_port_vec.len());
 
-        for round in 0..5 {
+        for round in 0..30 {
             let ret = rpc_stub
                 .try_punch_symmetric(
                     BaseController {},

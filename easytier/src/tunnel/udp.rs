@@ -293,8 +293,8 @@ impl UdpTunnelListenerData {
             return;
         }
 
-        let ring_for_send_udp = Arc::new(RingTunnel::new(32));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(32));
+        let ring_for_send_udp = Arc::new(RingTunnel::new(64));
+        let ring_for_recv_udp = Arc::new(RingTunnel::new(64));
         tracing::debug!(
             ?ring_for_send_udp,
             ?ring_for_recv_udp,

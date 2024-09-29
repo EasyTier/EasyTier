@@ -26,7 +26,7 @@ use super::{
     StreamItem, Tunnel, TunnelConnector, TunnelError, TunnelInfo, TunnelListener,
 };
 
-static RING_TUNNEL_CAP: usize = 64;
+static RING_TUNNEL_CAP: usize = 128;
 static RING_TUNNEL_RESERVERD_CAP: usize = 4;
 
 type RingLock = parking_lot::Mutex<()>;
