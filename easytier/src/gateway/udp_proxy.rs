@@ -182,7 +182,7 @@ impl UdpNatEntry {
                 &mut buf,
                 &src_v4,
                 len,
-                1256,
+                1200,
                 ip_id,
             )
             .await
@@ -350,7 +350,7 @@ impl UdpProxy {
         peer_manager: Arc<PeerManager>,
     ) -> Result<Arc<Self>, Error> {
         let cidr_set = CidrSet::new(global_ctx.clone());
-        let (sender, receiver) = channel(64);
+        let (sender, receiver) = channel(1024);
         let ret = Self {
             global_ctx,
             peer_manager,
