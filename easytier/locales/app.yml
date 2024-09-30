@@ -117,3 +117,6 @@ core_clap:
   socks5:
     en: "enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080"
     zh-CN: "启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080"
+  ipv6_listener:
+    en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
+    zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"

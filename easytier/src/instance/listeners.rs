@@ -111,9 +111,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         }
 
         if self.global_ctx.config.get_flags().enable_ipv6 {
+            let ipv6_listener = self.global_ctx.config.get_flags().ipv6_listener.clone();
             let _ = self
                 .add_listener(
-                    UdpTunnelListener::new("udp://[::]:0".parse().unwrap()),
+                    UdpTunnelListener::new(ipv6_listener.parse().unwrap()),
                     false,
                 )
                 .await?;
