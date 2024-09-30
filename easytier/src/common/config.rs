@@ -180,6 +180,8 @@ pub struct Flags {
     pub relay_all_peer_rpc: bool,
     #[derivative(Default(value = "false"))]
     pub disable_udp_hole_punching: bool,
+    #[derivative(Default(value = "\"udp://[::]:0\".to_string()"))]
+    pub ipv6_listener: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -260,8 +262,6 @@ impl TomlConfigLoader {
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
                 .unwrap();
 
-        tracing::debug!("default_flags_hashmap: {:?}", default_flags_hashmap);
-
         let mut merged_hashmap = serde_json::Map::new();
         for (key, value) in default_flags_hashmap {
             if let Some(v) = flags_hashmap.remove(&key) {
@@ -270,8 +270,6 @@ impl TomlConfigLoader {
                 merged_hashmap.insert(key, value);
             }
         }
-
-        tracing::debug!("merged_hashmap: {:?}", merged_hashmap);
 
         serde_json::from_value(serde_json::Value::Object(merged_hashmap)).unwrap()
     }
