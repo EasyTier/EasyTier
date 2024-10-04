@@ -15,6 +15,8 @@ pub mod foreign_network_manager;
 
 pub mod encrypt;
 
+pub mod peer_task;
+
 #[cfg(test)]
 pub mod tests;
 

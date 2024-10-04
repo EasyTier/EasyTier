@@ -110,11 +110,24 @@ message TryPunchSymmetricRequest {
 
 message TryPunchSymmetricResponse { uint32 last_port_index = 1; }
 
+// deprecated
 service UdpHolePunchRpc {
   rpc TryPunchHole(TryPunchHoleRequest) returns (TryPunchHoleResponse);
   rpc TryPunchSymmetric(TryPunchSymmetricRequest)
       returns (TryPunchSymmetricResponse);
 }
+
+// nat1-3 to nat1-3
+service UdpConePunchRpc {
+  rpc TryPunchHole(TryPunchHoleRequest) returns (TryPunchHoleResponse);
+}
+
+// nat4 to nat1-3
+service UdpSymPunchRpc {
+  rpc TryPunchHoleSymHard(TryPunchHoleRequest) returns (TryPunchHoleResponse);
+}
+
+// nat4 to nat4 (both predictably)
 
 message DirectConnectedPeerInfo { int32 latency_ms = 1; }
 
