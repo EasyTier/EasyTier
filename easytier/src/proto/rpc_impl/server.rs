@@ -146,7 +146,7 @@ impl Server {
     async fn handle_rpc_request(packet: RpcPacket, reg: Arc<ServiceRegistry>) -> Result<Bytes> {
         let rpc_request = RpcRequest::decode(Bytes::from(packet.body))?;
         let timeout_duration = std::time::Duration::from_millis(rpc_request.timeout_ms as u64);
-        let ctrl = RpcController {};
+        let ctrl = RpcController::default();
         Ok(timeout(
             timeout_duration,
             reg.call_method(

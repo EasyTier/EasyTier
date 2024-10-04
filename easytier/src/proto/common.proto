@@ -42,6 +42,8 @@ message RpcPacket {
   int32 trace_id = 9;
 }
 
+message Void {}
+
 message UUID {
   uint64 high = 1;
   uint64 low = 2;

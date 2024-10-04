@@ -230,7 +230,7 @@ impl PeerCenterInstance {
 
                 let ret = client
                     .get_global_peer_map(
-                        BaseController {},
+                        BaseController::default(),
                         GetGlobalPeerMapRequest {
                             digest: ctx.job_ctx.global_peer_map_digest.load(),
                         },
@@ -307,7 +307,7 @@ impl PeerCenterInstance {
 
                 let ret = client
                     .report_peers(
-                        BaseController {},
+                        BaseController::default(),
                         ReportPeersRequest {
                             my_peer_id: my_node_id,
                             peer_infos: Some(peers),

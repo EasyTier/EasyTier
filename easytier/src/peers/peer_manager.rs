@@ -1058,7 +1058,7 @@ mod tests {
 
         let ret = stub
             .say_hello(
-                RpcController {},
+                RpcController::default(),
                 SayHelloRequest {
                     name: "abc".to_string(),
                 },

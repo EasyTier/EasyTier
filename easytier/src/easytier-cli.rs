@@ -179,14 +179,16 @@ impl CommandHandler {
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
         let client = self.get_peer_manager_client().await?;
         let request = ListPeerRequest::default();
-        let response = client.list_peer(BaseController {}, request).await?;
+        let response = client.list_peer(BaseController::default(), request).await?;
         Ok(response)
     }
 
     async fn list_routes(&self) -> Result<ListRouteResponse, Error> {
         let client = self.get_peer_manager_client().await?;
         let request = ListRouteRequest::default();
-        let response = client.list_route(BaseController {}, request).await?;
+        let response = client
+            .list_route(BaseController::default(), request)
+            .await?;
         Ok(response)
     }
 
@@ -275,7 +277,7 @@ impl CommandHandler {
 
         let client = self.get_peer_manager_client().await?;
         let node_info = client
-            .show_node_info(BaseController {}, ShowNodeInfoRequest::default())
+            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -296,7 +298,9 @@ impl CommandHandler {
     async fn handle_route_dump(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
         let request = DumpRouteRequest::default();
-        let response = client.dump_route(BaseController {}, request).await?;
+        let response = client
+            .dump_route(BaseController::default(), request)
+            .await?;
         println!("response: {}", response.result);
         Ok(())
     }
@@ -305,7 +309,7 @@ impl CommandHandler {
         let client = self.get_peer_manager_client().await?;
         let request = ListForeignNetworkRequest::default();
         let response = client
-            .list_foreign_network(BaseController {}, request)
+            .list_foreign_network(BaseController::default(), request)
             .await?;
         let network_map = response;
         if self.verbose {
@@ -347,7 +351,7 @@ impl CommandHandler {
         let client = self.get_peer_manager_client().await?;
         let request = ListGlobalForeignNetworkRequest::default();
         let response = client
-            .list_global_foreign_network(BaseController {}, request)
+            .list_global_foreign_network(BaseController::default(), request)
             .await?;
         if self.verbose {
             println!("{:#?}", response);
@@ -383,7 +387,7 @@ impl CommandHandler {
         let mut items: Vec<RouteTableItem> = vec![];
         let client = self.get_peer_manager_client().await?;
         let node_info = client
-            .show_node_info(BaseController {}, ShowNodeInfoRequest::default())
+            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -451,7 +455,9 @@ impl CommandHandler {
     async fn handle_connector_list(&self) -> Result<(), Error> {
         let client = self.get_connector_manager_client().await?;
         let request = ListConnectorRequest::default();
-        let response = client.list_connector(BaseController {}, request).await?;
+        let response = client
+            .list_connector(BaseController::default(), request)
+            .await?;
         println!("response: {:#?}", response);
         Ok(())
     }
@@ -532,7 +538,10 @@ async fn main() -> Result<(), Error> {
         SubCommand::PeerCenter => {
             let peer_center_client = handler.get_peer_center_client().await?;
             let resp = peer_center_client
-                .get_global_peer_map(BaseController {}, GetGlobalPeerMapRequest::default())
+                .get_global_peer_map(
+                    BaseController::default(),
+                    GetGlobalPeerMapRequest::default(),
+                )
                 .await?;
 
             #[derive(tabled::Tabled)]
@@ -565,7 +574,10 @@ async fn main() -> Result<(), Error> {
         SubCommand::VpnPortal => {
             let vpn_portal_client = handler.get_vpn_portal_client().await?;
             let resp = vpn_portal_client
-                .get_vpn_portal_info(BaseController {}, GetVpnPortalInfoRequest::default())
+                .get_vpn_portal_info(
+                    BaseController::default(),
+                    GetVpnPortalInfoRequest::default(),
+                )
                 .await?
                 .vpn_portal_info
                 .unwrap_or_default();
@@ -583,7 +595,7 @@ async fn main() -> Result<(), Error> {
         SubCommand::Node(sub_cmd) => {
             let client = handler.get_peer_manager_client().await?;
             let node_info = client
-                .show_node_info(BaseController {}, ShowNodeInfoRequest::default())
+                .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
                 .await?
                 .node_info
                 .ok_or(anyhow::anyhow!("node info not found"))?;

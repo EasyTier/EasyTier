@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    sync::Arc,
+    time::Duration,
+};
 
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
@@ -12,11 +16,13 @@ use crate::{
         error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
         stun::StunInfoCollectorTrait as _,
     },
+    defer,
     peers::peer_manager::PeerManager,
+    proto::common::NatType,
     tunnel::{
         packet_def::{UDPTunnelHeader, UdpPacketType, UDP_TUNNEL_HEADER_SIZE},
-        udp::UdpTunnelListener,
-        TunnelConnCounter, TunnelListener as _,
+        udp::{new_hole_punch_packet, UdpTunnelConnector, UdpTunnelListener},
+        Tunnel, TunnelConnCounter, TunnelListener as _,
     },
 };
 
@@ -29,8 +35,92 @@ fn generate_shuffled_port_vec() -> Vec<u16> {
     port_vec
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum UdpNatType {
+    Unknown,
+    Open(NatType),
+    Cone(NatType),
+    EasySymmetric(NatType),
+    HardSymmetric(NatType),
+}
+
+impl From<NatType> for UdpNatType {
+    fn from(nat_type: NatType) -> Self {
+        match nat_type {
+            NatType::Unknown => UdpNatType::Unknown,
+            NatType::NoPat | NatType::OpenInternet => UdpNatType::Open(nat_type),
+            NatType::FullCone | NatType::Restricted | NatType::PortRestricted => {
+                UdpNatType::Cone(nat_type)
+            }
+            NatType::Symmetric | NatType::SymUdpFirewall => UdpNatType::HardSymmetric(nat_type),
+        }
+    }
+}
+
+impl Into<NatType> for UdpNatType {
+    fn into(self) -> NatType {
+        match self {
+            UdpNatType::Unknown => NatType::Unknown,
+            UdpNatType::Open(nat_type) => nat_type,
+            UdpNatType::Cone(nat_type) => nat_type,
+            UdpNatType::EasySymmetric(nat_type) => nat_type,
+            UdpNatType::HardSymmetric(nat_type) => nat_type,
+        }
+    }
+}
+
+impl UdpNatType {
+    pub(crate) fn is_open(&self) -> bool {
+        matches!(self, UdpNatType::Open(_))
+    }
+
+    pub(crate) fn is_unknown(&self) -> bool {
+        matches!(self, UdpNatType::Unknown)
+    }
+
+    pub(crate) fn is_sym(&self) -> bool {
+        matches!(
+            self,
+            UdpNatType::EasySymmetric(_) | UdpNatType::HardSymmetric(_)
+        )
+    }
+
+    pub(crate) fn is_hard_sym(&self) -> bool {
+        matches!(self, UdpNatType::HardSymmetric(_))
+    }
+
+    pub(crate) fn is_easy_sym(&self) -> bool {
+        matches!(self, UdpNatType::EasySymmetric(_))
+    }
+
+    pub(crate) fn is_cone(&self) -> bool {
+        matches!(self, UdpNatType::Cone(_))
+    }
+
+    pub(crate) fn can_punch_hole_as_client(&self, other: Self) -> bool {
+        if other.is_unknown() {
+            return true;
+        }
+
+        if self.is_open() || other.is_open() {
+            // open nat does not need to punch hole
+            return false;
+        }
+
+        if self.is_cone() {
+            return !other.is_sym();
+        } else if self.is_easy_sym() {
+            return !other.is_hard_sym();
+        } else if self.is_hard_sym() {
+            return !other.is_sym();
+        }
+
+        return false;
+    }
+}
+
 // used for symmetric hole punching, binding to multiple ports to increase the chance of success
-struct UdpSocketArray {
+pub(crate) struct UdpSocketArray {
     sockets: Arc<DashMap<SocketAddr, Arc<UdpSocket>>>,
     max_socket_count: usize,
     net_ns: NetNS,
@@ -60,18 +150,15 @@ impl UdpSocketArray {
         !self.sockets.is_empty()
     }
 
-    async fn add_new_socket(&self) -> Result<(), anyhow::Error> {
-        let socket = {
-            let _g = self.net_ns.guard();
-            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
-        };
+    pub async fn add_new_socket(&self, socket: Arc<UdpSocket>) -> Result<(), anyhow::Error> {
+        let socket_map = self.sockets.clone();
         let local_addr = socket.local_addr()?;
-        self.sockets.insert(local_addr, socket.clone());
-
         let intreast_tids = self.intreast_tids.clone();
         let tid_to_socket = self.tid_to_socket.clone();
+        socket_map.insert(local_addr, socket.clone());
         self.tasks.lock().unwrap().spawn(
             async move {
+                defer!(socket_map.remove(&local_addr););
                 let mut buf = [0u8; UDP_TUNNEL_HEADER_SIZE + HOLE_PUNCH_PACKET_BODY_LEN as usize];
                 tracing::trace!(?local_addr, "udp socket added");
                 loop {
@@ -116,14 +203,15 @@ impl UdpSocketArray {
 
     #[instrument(err)]
     pub async fn start(&self) -> Result<(), anyhow::Error> {
-        if self.started() {
-            return Ok(());
-        }
-
         tracing::info!("starting udp socket array");
 
         while self.sockets.len() < self.max_socket_count {
-            self.add_new_socket().await?;
+            let socket = {
+                let _g = self.net_ns.guard();
+                Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+            };
+
+            self.add_new_socket(socket).await?;
         }
 
         Ok(())
@@ -155,6 +243,10 @@ impl UdpSocketArray {
         self.intreast_tids.remove(&tid);
         self.tid_to_socket.remove(&tid);
     }
+
+    pub fn get_local_addr(&self) -> Vec<SocketAddr> {
+        self.sockets.iter().map(|s| s.key().clone()).collect()
+    }
 }
 
 impl std::fmt::Debug for UdpSocketArray {
@@ -170,7 +262,7 @@ impl std::fmt::Debug for UdpSocketArray {
 }
 
 #[derive(Debug)]
-struct UdpHolePunchListener {
+pub(crate) struct UdpHolePunchListener {
     socket: Arc<UdpSocket>,
     tasks: JoinSet<()>,
     running: Arc<AtomicCell<bool>>,
@@ -190,12 +282,25 @@ impl UdpHolePunchListener {
 
     #[instrument(err)]
     pub async fn new(peer_mgr: Arc<PeerManager>) -> Result<Self, Error> {
-        let port = Self::get_avail_port().await?;
+        Self::new_ext(peer_mgr, false, None).await
+    }
+
+    #[instrument(err)]
+    pub async fn new_ext(
+        peer_mgr: Arc<PeerManager>,
+        with_mapped_addr: bool,
+        port: Option<u16>,
+    ) -> Result<Self, Error> {
+        let port = port.unwrap_or(Self::get_avail_port().await?);
         let listen_url = format!("udp://0.0.0.0:{}", port);
 
-        let gctx = peer_mgr.get_global_ctx();
-        let stun_info_collect = gctx.get_stun_info_collector();
-        let mapped_addr = stun_info_collect.get_udp_port_mapping(port).await?;
+        let mapped_addr = if with_mapped_addr {
+            let gctx = peer_mgr.get_global_ctx();
+            let stun_info_collect = gctx.get_stun_info_collector();
+            stun_info_collect.get_udp_port_mapping(port).await?
+        } else {
+            SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), port))
+        };
 
         let mut listener = UdpTunnelListener::new(listen_url.parse().unwrap());
 
@@ -234,7 +339,7 @@ impl UdpHolePunchListener {
         tasks.spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                if conn_counter_clone.get() != 0 {
+                if conn_counter_clone.get().unwrap_or(0) != 0 {
                     last_active_time_clone.store(std::time::Instant::now());
                 }
             }
@@ -259,6 +364,10 @@ impl UdpHolePunchListener {
         self.last_select_time.store(std::time::Instant::now());
         self.socket.clone()
     }
+
+    pub async fn get_conn_count(&self) -> usize {
+        self.conn_counter.get().unwrap_or(0) as usize
+    }
 }
 
 pub(crate) struct PunchHoleServerCommon {
@@ -269,18 +378,18 @@ pub(crate) struct PunchHoleServerCommon {
 }
 
 impl PunchHoleServerCommon {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
+    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "PunchHoleServerCommon".to_owned());
-        Arc::new(Self {
+        Self {
             peer_mgr,
 
             listeners: Arc::new(Mutex::new(Vec::new())),
             tasks,
-        })
+        }
     }
 
-    async fn find_listener(&self, addr: &SocketAddr) -> Option<Arc<UdpSocket>> {
+    pub(crate) async fn find_listener(&self, addr: &SocketAddr) -> Option<Arc<UdpSocket>> {
         let all_listener_sockets = self.listeners.lock().await;
 
         let listener = all_listener_sockets
@@ -290,7 +399,15 @@ impl PunchHoleServerCommon {
         Some(listener.get_socket().await)
     }
 
-    async fn select_listener(
+    pub(crate) async fn my_udp_nat_type(&self) -> i32 {
+        self.peer_mgr
+            .get_global_ctx()
+            .get_stun_info_collector()
+            .get_stun_info()
+            .udp_nat_type
+    }
+
+    pub(crate) async fn select_listener(
         &self,
         use_new_listener: bool,
     ) -> Option<(Arc<UdpSocket>, SocketAddr)> {
@@ -326,4 +443,62 @@ impl PunchHoleServerCommon {
 
         Some((listener.get_socket().await, listener.mapped_addr))
     }
+
+    pub(crate) fn get_joinset(&self) -> Arc<std::sync::Mutex<JoinSet<()>>> {
+        self.tasks.clone()
+    }
+
+    pub(crate) fn get_global_ctx(&self) -> ArcGlobalCtx {
+        self.peer_mgr.get_global_ctx()
+    }
+
+    pub(crate) fn get_peer_mgr(&self) -> Arc<PeerManager> {
+        self.peer_mgr.clone()
+    }
+}
+
+#[tracing::instrument(err, ret(level=Level::DEBUG), skip(ports))]
+pub(crate) async fn send_symmetric_hole_punch_packet(
+    ports: &Vec<u16>,
+    udp: Arc<UdpSocket>,
+    transaction_id: u32,
+    public_ips: &Vec<Ipv4Addr>,
+    port_start_idx: usize,
+    max_packets: usize,
+) -> Result<usize, Error> {
+    tracing::debug!("sending hard symmetric hole punching packet");
+    let mut sent_packets = 0;
+    let mut cur_port_idx = port_start_idx;
+    while sent_packets < max_packets {
+        let port = ports[cur_port_idx % ports.len()];
+        for pub_ip in public_ips {
+            let addr = SocketAddr::V4(SocketAddrV4::new(*pub_ip, port));
+            let packet = new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
+            udp.send_to(&packet.into_bytes(), addr).await?;
+            sent_packets += 1;
+        }
+        cur_port_idx = cur_port_idx.wrapping_add(1);
+        tokio::time::sleep(Duration::from_millis(3)).await;
+    }
+    Ok(cur_port_idx % ports.len())
+}
+
+pub(crate) async fn try_connect_with_socket(
+    socket: Arc<UdpSocket>,
+    remote_mapped_addr: SocketAddr,
+) -> Result<Box<dyn Tunnel>, Error> {
+    let connector = UdpTunnelConnector::new(
+        format!(
+            "udp://{}:{}",
+            remote_mapped_addr.ip(),
+            remote_mapped_addr.port()
+        )
+        .to_string()
+        .parse()
+        .unwrap(),
+    );
+    connector
+        .try_connect_with_socket(socket, remote_mapped_addr)
+        .await
+        .map_err(|e| Error::from(e))
 }

@@ -776,7 +776,7 @@ impl UdpHolePunchConnector {
 
         let remote_mapped_addr = rpc_stub
             .try_punch_hole(
-                BaseController {},
+                BaseController::default(),
                 TryPunchHoleRequest {
                     local_mapped_addr: Some(local_mapped_addr.into()),
                 },
@@ -826,7 +826,7 @@ impl UdpHolePunchConnector {
         let local_mapped_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
         let remote_mapped_addr = rpc_stub
             .try_punch_hole(
-                BaseController {},
+                BaseController::default(),
                 TryPunchHoleRequest {
                     local_mapped_addr: Some(local_mapped_addr.into()),
                 },
@@ -882,7 +882,7 @@ impl UdpHolePunchConnector {
         for round in 0..30 {
             let ret = rpc_stub
                 .try_punch_symmetric(
-                    BaseController {},
+                    BaseController::default(),
                     TryPunchSymmetricRequest {
                         listener_addr: Some(remote_mapped_addr.into()),
                         port: port as u32,
@@ -1048,7 +1048,7 @@ pub mod tests {
     use crate::tunnel::common::tests::wait_for_condition;
 
     use crate::{
-        connector::udp_hole_punch::UdpHolePunchConnector,
+        connector::udp_hole_punch2::UdpHolePunchConnector,
         peers::{
             peer_manager::PeerManager,
             tests::{

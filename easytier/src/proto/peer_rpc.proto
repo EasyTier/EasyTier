@@ -93,41 +93,79 @@ service DirectConnectorRpc {
   rpc GetIpList(GetIpListRequest) returns (GetIpListResponse);
 }
 
-message TryPunchHoleRequest { common.SocketAddr local_mapped_addr = 1; }
-
-message TryPunchHoleResponse { common.SocketAddr remote_mapped_addr = 1; }
-
-message TryPunchSymmetricRequest {
-  common.SocketAddr listener_addr = 1;
-  uint32 port = 2;
-  repeated common.Ipv4Addr public_ips = 3;
-  uint32 min_port = 4;
-  uint32 max_port = 5;
-  uint32 transaction_id = 6;
-  uint32 round = 7;
-  uint32 last_port_index = 8;
+message SelectPunchListenerRequest {
+  bool force_new = 1;
 }
 
-message TryPunchSymmetricResponse { uint32 last_port_index = 1; }
+message SelectPunchListenerResponse {
+  common.SocketAddr listener_mapped_addr = 1;
+}
 
-// deprecated
+message SendPunchPacketConeRequest {
+  common.SocketAddr listener_mapped_addr = 1;
+  common.SocketAddr dest_addr = 2;
+  uint32 transaction_id = 3;
+  // send this many packets in a batch
+  uint32 packet_count_per_batch = 4;
+  // send total this batch count, total packet count = packet_batch_size * packet_batch_count
+  uint32 packet_batch_count = 5;
+  // interval between each batch
+  uint32 packet_interval_ms = 6;
+}
+
+message SendPunchPacketHardSymRequest {
+  common.SocketAddr listener_mapped_addr = 1;
+
+  repeated common.Ipv4Addr public_ips = 2;
+  uint32 transaction_id = 3;
+  uint32 port_index = 4;
+  uint32 round = 5;
+}
+
+message SendPunchPacketHardSymResponse { uint32 next_port_index = 1; }
+
+message SendPunchPacketEasySymRequest {
+  common.SocketAddr listener_mapped_addr = 1;
+  repeated common.Ipv4Addr public_ips = 2;
+  uint32 transaction_id = 3;
+
+  uint32 base_port_num = 4;
+  uint32 max_port_num = 5;
+  bool is_incremental = 6;
+}
+
+message SendPunchPacketBothEasySymRequest {
+  uint32 udp_socket_count = 1;
+  common.Ipv4Addr public_ip = 2;
+  uint32 transaction_id = 3;
+
+  uint32 dst_port_num = 4;
+  uint32 wait_time_ms = 5;
+}
+
+message SendPunchPacketBothEasySymResponse {
+  // is doing punch with other peer
+  bool is_busy = 1;
+  common.SocketAddr base_mapped_addr = 2;
+}
+
 service UdpHolePunchRpc {
-  rpc TryPunchHole(TryPunchHoleRequest) returns (TryPunchHoleResponse);
-  rpc TryPunchSymmetric(TryPunchSymmetricRequest)
-      returns (TryPunchSymmetricResponse);
-}
+  rpc SelectPunchListener(SelectPunchListenerRequest)
+      returns (SelectPunchListenerResponse);
 
-// nat1-3 to nat1-3
-service UdpConePunchRpc {
-  rpc TryPunchHole(TryPunchHoleRequest) returns (TryPunchHoleResponse);
-}
+  // send packet to one remote_addr, used by nat1-3 to nat1-3
+  rpc SendPunchPacketCone(SendPunchPacketConeRequest) returns (common.Void);
 
-// nat4 to nat1-3
-service UdpSymPunchRpc {
-  rpc TryPunchHoleSymHard(TryPunchHoleRequest) returns (TryPunchHoleResponse);
-}
+  // send packet to multiple remote_addr (birthday attack), used by nat4 to nat1-3
+  rpc SendPunchPacketHardSym(SendPunchPacketHardSymRequest)
+      returns (SendPunchPacketHardSymResponse);
+  rpc SendPunchPacketEasySym(SendPunchPacketEasySymRequest)
+      returns (common.Void);
 
-// nat4 to nat4 (both predictably)
+  // nat4 to nat4 (both predictably)
+  rpc SendPunchPacketBothEasySym(SendPunchPacketBothEasySymRequest)
+      returns (SendPunchPacketBothEasySymResponse);
+}
 
 message DirectConnectedPeerInfo { int32 latency_ms = 1; }
 

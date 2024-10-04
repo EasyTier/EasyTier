@@ -121,14 +121,14 @@ async fn rpc_basic_test() {
 
     // small size req and resp
 
-    let ctrl = RpcController {};
+    let ctrl = RpcController::default();
     let input = SayHelloRequest {
         name: "world".to_string(),
     };
     let ret = out.say_hello(ctrl, input).await;
     assert_eq!(ret.unwrap().greeting, "Hello world!");
 
-    let ctrl = RpcController {};
+    let ctrl = RpcController::default();
     let input = SayGoodbyeRequest {
         name: "world".to_string(),
     };
@@ -136,7 +136,7 @@ async fn rpc_basic_test() {
     assert_eq!(ret.unwrap().greeting, "Goodbye, world!");
 
     // large size req and resp
-    let ctrl = RpcController {};
+    let ctrl = RpcController::default();
     let name = random_string(20 * 1024 * 1024);
     let input = SayGoodbyeRequest { name: name.clone() };
     let ret = out.say_goodbye(ctrl, input).await;
@@ -160,7 +160,7 @@ async fn rpc_timeout_test() {
         .client
         .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
 
-    let ctrl = RpcController {};
+    let ctrl = RpcController::default();
     let input = SayHelloRequest {
         name: "world".to_string(),
     };
@@ -199,7 +199,7 @@ async fn standalone_rpc_test() {
         .await
         .unwrap();
 
-    let ctrl = RpcController {};
+    let ctrl = RpcController::default();
     let input = SayHelloRequest {
         name: "world".to_string(),
     };
@@ -211,7 +211,7 @@ async fn standalone_rpc_test() {
         .await
         .unwrap();
 
-    let ctrl = RpcController {};
+    let ctrl = RpcController::default();
     let input = SayGoodbyeRequest {
         name: "world".to_string(),
     };

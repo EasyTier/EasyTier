@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use tokio::task::JoinHandle;
 
-use crate::common::error::Error;
 use crate::common::scoped_task::ScopedTask;
+use anyhow::Error;
 
 use super::peer_manager::PeerManager;
 
@@ -24,7 +24,7 @@ pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
         item: Self::CollectPeerItem,
     ) -> JoinHandle<Result<Self::TaskRet, Error>>;
 
-    fn need_clear_task(&self, _data: &Self::Data) -> bool {
+    async fn need_clear_task(&self, _data: &Self::Data) -> bool {
         false
     }
 
@@ -35,7 +35,7 @@ pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
     }
 }
 
-struct PeerTaskManager<Launcher: PeerTaskLauncher> {
+pub struct PeerTaskManager<Launcher: PeerTaskLauncher> {
     launcher: Launcher,
     peer_mgr: Arc<PeerManager>,
     main_loop_task: Mutex<Option<ScopedTask<()>>>,
@@ -67,7 +67,7 @@ where
 
         loop {
             let peers_to_connect = launcher.collect_peers_need_task(&data).await;
-            let need_clear_task = launcher.need_clear_task(&data);
+            let need_clear_task = launcher.need_clear_task(&data).await;
 
             // remove task not in peers_to_connect
             let mut to_remove = vec![];

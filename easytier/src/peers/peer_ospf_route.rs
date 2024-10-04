@@ -1322,7 +1322,7 @@ impl PeerRouteServiceImpl {
                 self.global_ctx.get_network_name(),
             );
 
-        let mut ctrl = BaseController {};
+        let mut ctrl = BaseController::default();
         ctrl.set_timeout_ms(3000);
         let ret = rpc_stub
             .sync_route_info(
