@@ -389,14 +389,14 @@ impl PunchSymToConeHoleClient {
             };
 
             // if hole punched but tunnel creation failed, need to retry entire process.
-            match try_connect_with_socket(socket.clone(), remote_mapped_addr.into()).await {
+            match try_connect_with_socket(socket.socket.clone(), remote_mapped_addr.into()).await {
                 Ok(tunnel) => {
                     ret_tunnel.replace(tunnel);
                     break;
                 }
                 Err(e) => {
                     tracing::error!(?e, "failed to connect with socket");
-                    udp_array.add_new_socket(socket).await?;
+                    udp_array.add_new_socket(socket.socket).await?;
                     continue;
                 }
             }
@@ -429,7 +429,6 @@ pub mod tests {
         time::Duration,
     };
 
-    use serde_json::ser;
     use tokio::net::UdpSocket;
 
     use crate::{
@@ -438,7 +437,7 @@ pub mod tests {
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,
-        tunnel::common::tests::{enable_log, wait_for_condition},
+        tunnel::common::tests::wait_for_condition,
     };
 
     #[tokio::test]
@@ -466,8 +465,6 @@ pub mod tests {
             .sym_to_cone_client
             .punch_predicablely
             .store(false, std::sync::atomic::Ordering::Relaxed);
-
-        enable_log();
 
         hole_punching_a.run().await.unwrap();
         hole_punching_c.run().await.unwrap();
@@ -518,7 +515,7 @@ pub mod tests {
 
     #[rstest::rstest]
     #[tokio::test]
-    #[serial_test::serial]
+    #[serial_test::serial(hole_punch)]
     async fn hole_punching_symmetric_only_predict(#[values("true", "false")] is_inc: bool) {
         let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
             NatType::SymmetricEasyInc
@@ -581,6 +578,8 @@ pub mod tests {
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             });
         }
+
+        hole_punching_a.client.run_immediately().await;
 
         let udp_len = udps.len();
         wait_for_condition(

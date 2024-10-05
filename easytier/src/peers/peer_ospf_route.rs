@@ -539,7 +539,7 @@ impl RouteTable {
     fn get_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
         self.peer_infos
             .get(&peer_id)
-            .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap())
+            .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap_or_default())
     }
 
     fn build_peer_graph_from_synced_info<T: RouteCostCalculatorInterface>(

@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
+use tokio::net::UdpSocket;
 
 use crate::{
     common::{scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId},
@@ -99,17 +100,14 @@ impl PunchConeHoleClient {
 
         let global_ctx = self.peer_mgr.get_global_ctx();
         let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
-        udp_array
-            .start()
-            .await
-            .with_context(|| "failed to start udp array")?;
-        udp_array.add_intreast_tid(tid);
+        let local_socket = {
+            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
+            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+        };
 
-        let local_addr = udp_array
-            .get_local_addr()
-            .get(0)
-            .ok_or(anyhow::anyhow!("failed to get local port from udp array"))?
-            .clone();
+        let local_addr = local_socket
+            .local_addr()
+            .with_context(|| anyhow::anyhow!("failed to get local port from udp array"))?;
         let local_port = local_addr.port();
 
         let local_mapped_addr = global_ctx
@@ -146,6 +144,8 @@ impl PunchConeHoleClient {
             "hole punch got remote listener"
         );
 
+        udp_array.add_new_socket(local_socket).await?;
+        udp_array.add_intreast_tid(tid);
         let send_from_local = || async {
             udp_array
                 .send_with_all(
@@ -201,7 +201,9 @@ impl PunchConeHoleClient {
             tracing::debug!(?socket, ?tid, "punched socket found, try connect with it");
 
             for _ in 0..2 {
-                match try_connect_with_socket(socket.clone(), remote_mapped_addr.into()).await {
+                match try_connect_with_socket(socket.socket.clone(), remote_mapped_addr.into())
+                    .await
+                {
                     Ok(tunnel) => {
                         tracing::info!(?tunnel, "hole punched");
                         return Ok(tunnel);

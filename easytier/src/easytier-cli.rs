@@ -521,7 +521,7 @@ async fn main() -> Result<(), Error> {
             Some(RouteSubCommand::Dump) => handler.handle_route_dump().await?,
         },
         SubCommand::Stun => {
-            timeout(Duration::from_secs(5), async move {
+            timeout(Duration::from_secs(25), async move {
                 let collector = StunInfoCollector::new_with_default_servers();
                 loop {
                     let ret = collector.get_stun_info();

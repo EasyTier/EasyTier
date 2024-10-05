@@ -409,7 +409,7 @@ impl UdpNatTypeDetectResult {
             .filter_map(|x| x.mapped_socket_addr)
             .collect::<BTreeSet<_>>()
             .len();
-        mapped_addr_count < self.stun_server_count()
+        mapped_addr_count == 1
     }
 
     pub fn nat_type(&self) -> NatType {
@@ -736,40 +736,41 @@ impl StunInfoCollector {
                     .map(|x| x.to_string())
                     .collect();
                 let detector = UdpNatTypeDetector::new(servers, 1);
-                let ret = detector.detect_nat_type(0).await;
+                let mut ret = detector.detect_nat_type(0).await;
                 tracing::debug!(?ret, "finish udp nat type detect");
+
                 let mut nat_type = NatType::Unknown;
-                let sleep_sec = match &ret {
-                    Ok(resp) => {
-                        *udp_nat_test_result.write().unwrap() = Some(resp.clone());
-                        udp_test_time.store(Local::now());
-                        nat_type = resp.nat_type();
-                        if nat_type == NatType::Unknown {
-                            15
-                        } else {
-                            600
-                        }
-                    }
-                    _ => 15,
-                };
+                if let Ok(resp) = &ret {
+                    tracing::debug!(?resp, "got udp nat type detect result");
+                    nat_type = resp.nat_type();
+                }
 
                 // if nat type is symmtric, detect with another port to gather more info
                 if nat_type == NatType::Symmetric {
-                    let old_resp = ret.unwrap();
-                    let ret = detector
-                        .get_extra_bind_result(
-                            0,
-                            *old_resp.collect_available_stun_server().get(0).unwrap(),
-                        )
-                        .await;
-                    tracing::debug!(?ret, "finish udp nat type detect with another port");
-                    if let Ok(resp) = ret {
-                        udp_nat_test_result
-                            .write()
-                            .unwrap()
-                            .as_mut()
-                            .unwrap()
-                            .extra_bind_test = Some(resp);
+                    let old_resp = ret.as_mut().unwrap();
+                    tracing::debug!(?old_resp, "start get extra bind result");
+                    let available_stun_servers = old_resp.collect_available_stun_server();
+                    for server in available_stun_servers.iter() {
+                        let ret = detector
+                            .get_extra_bind_result(0, *server)
+                            .await
+                            .with_context(|| "get extra bind result failed");
+                        tracing::debug!(?ret, "finish udp nat type detect with another port");
+                        if let Ok(resp) = ret {
+                            old_resp.extra_bind_test = Some(resp);
+                            break;
+                        }
+                    }
+                }
+
+                let mut sleep_sec = 10;
+                if let Ok(resp) = &ret {
+                    udp_test_time.store(Local::now());
+                    *udp_nat_test_result.write().unwrap() = Some(resp.clone());
+                    if nat_type != NatType::Unknown
+                        && (nat_type != NatType::Symmetric || resp.extra_bind_test.is_some())
+                    {
+                        sleep_sec = 600
                     }
                 }
 

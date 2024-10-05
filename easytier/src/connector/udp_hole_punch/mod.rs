@@ -137,8 +137,8 @@ impl BackOff {
         backoff
     }
 
-    pub fn reset(&mut self) {
-        self.current_idx = 0;
+    pub fn rollback(&mut self) {
+        self.current_idx = self.current_idx.saturating_sub(1);
     }
 
     pub async fn sleep_for_next_backoff(&mut self) {
@@ -204,7 +204,7 @@ impl UdpHoePunchConnectorData {
 
     #[tracing::instrument(skip(self))]
     async fn sym_to_cone(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
+        let mut backoff = BackOff::new(vec![0, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
         let mut round = 0;
         let mut port_idx = rand::random();
 
@@ -243,17 +243,28 @@ impl UdpHoePunchConnectorData {
 
     #[tracing::instrument(skip(self))]
     async fn both_easy_sym(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
+        let mut backoff = BackOff::new(vec![0, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
 
         loop {
             backoff.sleep_for_next_backoff().await;
 
+            let mut is_busy = false;
+
             let ret = {
                 let _lock = self.sym_punch_lock.lock().await;
                 self.both_easy_sym_client
-                    .do_hole_punching(task_info.dst_peer_id)
+                    .do_hole_punching(
+                        task_info.dst_peer_id,
+                        task_info.my_nat_type,
+                        task_info.dst_nat_type,
+                        &mut is_busy,
+                    )
                     .await
             };
+
+            if is_busy {
+                backoff.rollback();
+            }
 
             if let Err(e) = ret {
                 tracing::info!(?e, "both_easy_sym hole punching failed");
@@ -318,6 +329,14 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         // 1. peers without direct conns;
         // 2. peers is full cone (any restricted type);
         for route in data.peer_mgr.list_routes().await.iter() {
+            if route
+                .feature_flag
+                .map(|x| x.is_public_server)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+
             let peer_nat_type = route
                 .stun_info
                 .as_ref()

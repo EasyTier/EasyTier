@@ -23,7 +23,11 @@ use crate::{
     tunnel::{udp::new_hole_punch_packet, Tunnel},
 };
 
-use super::common::{PunchHoleServerCommon, UdpSocketArray};
+use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
+
+const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
+const DST_PORT_OFFSET: u16 = 20;
+const REMOTE_WAIT_TIME_MS: u64 = 5000;
 
 pub(crate) struct PunchBothEasySymHoleServer {
     common: Arc<PunchHoleServerCommon>,
@@ -39,11 +43,12 @@ impl PunchBothEasySymHoleServer {
     }
 
     // hard sym means public port is random and cannot be predicted
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), ret, err)]
     pub(crate) async fn send_punch_packet_both_easy_sym(
         &self,
         request: SendPunchPacketBothEasySymRequest,
     ) -> Result<SendPunchPacketBothEasySymResponse, rpc_types::error::Error> {
+        tracing::info!("send_punch_packet_both_easy_sym start");
         let busy_resp = Ok(SendPunchPacketBothEasySymResponse {
             is_busy: true,
             ..Default::default()
@@ -75,6 +80,11 @@ impl PunchBothEasySymHoleServer {
         udp_array.add_intreast_tid(transaction_id);
         let peer_mgr = self.common.get_peer_mgr();
 
+        let punch_packet =
+            new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes();
+        let mut punched = vec![];
+        let common = self.common.clone();
+
         let task = tokio::spawn(async move {
             let mut listeners = Vec::new();
             let start_time = Instant::now();
@@ -82,8 +92,7 @@ impl PunchBothEasySymHoleServer {
             while start_time.elapsed() < Duration::from_millis(wait_time_ms as u64) {
                 if let Err(e) = udp_array
                     .send_with_all(
-                        &new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN)
-                            .into_bytes(),
+                        &punch_packet,
                         SocketAddr::V4(SocketAddrV4::new(
                             public_ips.into(),
                             request.dst_port_num as u16,
@@ -98,12 +107,13 @@ impl PunchBothEasySymHoleServer {
                 tokio::time::sleep(Duration::from_millis(100)).await;
 
                 if let Some(s) = udp_array.try_fetch_punched_socket(transaction_id) {
-                    tracing::info!(?s, "got punched socket in both easy sym");
-                    assert!(Arc::strong_count(&s) == 1);
-                    let Some(port) = s.local_addr().ok().map(|addr| addr.port()) else {
+                    tracing::info!(?s, ?transaction_id, "got punched socket in both easy sym");
+                    assert!(Arc::strong_count(&s.socket) == 1);
+                    let Some(port) = s.socket.local_addr().ok().map(|addr| addr.port()) else {
                         tracing::warn!("failed to get local addr from punched socket");
                         continue;
                     };
+                    let remote_addr = s.remote_addr;
                     drop(s);
 
                     let listener =
@@ -116,6 +126,7 @@ impl PunchBothEasySymHoleServer {
                                 continue;
                             }
                         };
+                    punched.push((listener.get_socket().await, remote_addr));
                     listeners.push(listener);
                 }
 
@@ -125,6 +136,26 @@ impl PunchBothEasySymHoleServer {
                         tracing::info!(?l, "got punched listener");
                         break;
                     }
+                }
+
+                if !punched.is_empty() {
+                    tracing::debug!(?punched, "got punched socket and keep sending punch packet");
+                }
+
+                for p in &punched {
+                    let (socket, remote_addr) = p;
+                    let send_remote_ret = socket.send_to(&punch_packet, remote_addr).await;
+                    tracing::debug!(
+                        ?send_remote_ret,
+                        ?socket,
+                        "send hole punch packet to punched remote"
+                    );
+                }
+            }
+
+            for l in listeners {
+                if l.get_conn_count().await > 0 {
+                    common.add_listener(l).await;
                 }
             }
         });
@@ -147,14 +178,15 @@ impl PunchBothEasySymHoleClient {
         Self { peer_mgr }
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(ret)]
     pub(crate) async fn do_hole_punching(
         &self,
         dst_peer_id: PeerId,
+        my_nat_info: UdpNatType,
+        peer_nat_info: UdpNatType,
+        is_busy: &mut bool,
     ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
-        const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
-        const DST_PORT_OFFSET: u16 = 20;
-        const REMOTE_WAIT_TIME_MS: u64 = 5000;
+        *is_busy = false;
 
         let udp_array = UdpSocketArray::new(
             UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM,
@@ -174,7 +206,12 @@ impl PunchBothEasySymHoleClient {
                 anyhow::bail!("ipv6 is not supported");
             }
         };
-        let is_incremental = true;
+        let me_is_incremental = my_nat_info
+            .get_inc_of_easy_sym()
+            .ok_or(anyhow::anyhow!("me_is_incremental is required"))?;
+        let peer_is_incremental = peer_nat_info
+            .get_inc_of_easy_sym()
+            .ok_or(anyhow::anyhow!("peer_is_incremental is required"))?;
 
         let rpc_stub = self
             .peer_mgr
@@ -187,6 +224,7 @@ impl PunchBothEasySymHoleClient {
             );
 
         let tid = rand::random();
+        udp_array.add_intreast_tid(tid);
 
         let remote_ret = rpc_stub
             .send_punch_packet_both_easy_sym(
@@ -197,7 +235,7 @@ impl PunchBothEasySymHoleClient {
                 SendPunchPacketBothEasySymRequest {
                     transaction_id: tid,
                     public_ip: Some(my_public_ip.into()),
-                    dst_port_num: if is_incremental {
+                    dst_port_num: if me_is_incremental {
                         cur_mapped_addr.port().saturating_add(DST_PORT_OFFSET)
                     } else {
                         cur_mapped_addr.port().saturating_sub(DST_PORT_OFFSET)
@@ -208,6 +246,7 @@ impl PunchBothEasySymHoleClient {
             )
             .await?;
         if remote_ret.is_busy {
+            *is_busy = true;
             anyhow::bail!("remote is busy");
         }
 
@@ -216,7 +255,7 @@ impl PunchBothEasySymHoleClient {
             .ok_or(anyhow::anyhow!("remote_mapped_addr is required"))?;
 
         let now = Instant::now();
-        remote_mapped_addr.port = if is_incremental {
+        remote_mapped_addr.port = if peer_is_incremental {
             remote_mapped_addr
                 .port
                 .saturating_add(DST_PORT_OFFSET as u32)
@@ -258,7 +297,9 @@ impl PunchBothEasySymHoleClient {
             );
 
             for _ in 0..2 {
-                match try_connect_with_socket(socket.clone(), remote_mapped_addr.into()).await {
+                match try_connect_with_socket(socket.socket.clone(), remote_mapped_addr.into())
+                    .await
+                {
                     Ok(tunnel) => {
                         return Ok(tunnel);
                     }
@@ -268,9 +309,88 @@ impl PunchBothEasySymHoleClient {
                     }
                 }
             }
-            udp_array.add_new_socket(socket).await?;
+            udp_array.add_new_socket(socket.socket).await?;
         }
 
         anyhow::bail!("failed to punch hole for both easy sym");
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use std::{
+        sync::{atomic::AtomicU32, Arc},
+        time::Duration,
+    };
+
+    use tokio::net::UdpSocket;
+
+    use crate::{
+        connector::udp_hole_punch::{
+            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
+        },
+        peers::tests::{connect_peer_manager, wait_route_appear},
+        proto::common::NatType,
+        tunnel::common::tests::wait_for_condition,
+    };
+
+    #[rstest::rstest]
+    #[tokio::test]
+    #[serial_test::serial(hole_punch)]
+    async fn hole_punching_easy_sym(#[values("true", "false")] is_inc: bool) {
+        let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
+            NatType::SymmetricEasyInc
+        } else {
+            NatType::SymmetricEasyDec
+        })
+        .await;
+        let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let p_c = create_mock_peer_manager_with_mock_stun(if !is_inc {
+            NatType::SymmetricEasyInc
+        } else {
+            NatType::SymmetricEasyDec
+        })
+        .await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
+        let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
+
+        hole_punching_a.run().await.unwrap();
+        hole_punching_c.run().await.unwrap();
+
+        // 144 + DST_PORT_OFFSET = 164
+        let udp1 = Arc::new(UdpSocket::bind("0.0.0.0:40164").await.unwrap());
+        // 144 - DST_PORT_OFFSET = 124
+        let udp2 = Arc::new(UdpSocket::bind("0.0.0.0:40124").await.unwrap());
+        let udps = vec![udp1, udp2];
+
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // all these sockets should receive hole punching packet
+        for udp in udps.iter().map(Arc::clone) {
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                let (len, addr) = udp.recv_from(&mut buf).await.unwrap();
+                println!(
+                    "got predictable punch packet, {:?} {:?} {:?}",
+                    len,
+                    addr,
+                    udp.local_addr()
+                );
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+
+        hole_punching_a.client.run_immediately().await;
+        let udp_len = udps.len();
+        wait_for_condition(
+            || async { counter.load(std::sync::atomic::Ordering::Relaxed) == udp_len as u32 },
+            Duration::from_secs(30),
+        )
+        .await;
     }
 }

@@ -166,6 +166,13 @@ impl UdpNatType {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct PunchedUdpSocket {
+    pub(crate) socket: Arc<UdpSocket>,
+    pub(crate) tid: u32,
+    pub(crate) remote_addr: SocketAddr,
+}
+
 // used for symmetric hole punching, binding to multiple ports to increase the chance of success
 pub(crate) struct UdpSocketArray {
     sockets: Arc<DashMap<SocketAddr, Arc<UdpSocket>>>,
@@ -174,7 +181,7 @@ pub(crate) struct UdpSocketArray {
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 
     intreast_tids: Arc<DashSet<u32>>,
-    tid_to_socket: Arc<DashMap<u32, Vec<Arc<UdpSocket>>>>,
+    tid_to_socket: Arc<DashMap<u32, Vec<PunchedUdpSocket>>>,
 }
 
 impl UdpSocketArray {
@@ -233,11 +240,15 @@ impl UdpSocketArray {
                     }
 
                     if intreast_tids.contains(&tid) {
-                        tracing::info!(?addr, "got hole punching packet with intreast tid");
+                        tracing::info!(?addr, ?tid, "got hole punching packet with intreast tid");
                         tid_to_socket
                             .entry(tid)
                             .or_insert_with(Vec::new)
-                            .push(socket);
+                            .push(PunchedUdpSocket {
+                                socket: socket.clone(),
+                                tid,
+                                remote_addr: addr,
+                            });
                         break;
                     }
                 }
@@ -277,7 +288,7 @@ impl UdpSocketArray {
     }
 
     #[instrument(ret(level = Level::DEBUG))]
-    pub fn try_fetch_punched_socket(&self, tid: u32) -> Option<Arc<UdpSocket>> {
+    pub fn try_fetch_punched_socket(&self, tid: u32) -> Option<PunchedUdpSocket> {
         tracing::debug!(?tid, "try fetch punched socket");
         self.tid_to_socket.get_mut(&tid)?.value_mut().pop()
     }
@@ -289,10 +300,6 @@ impl UdpSocketArray {
     pub fn remove_intreast_tid(&self, tid: u32) {
         self.intreast_tids.remove(&tid);
         self.tid_to_socket.remove(&tid);
-    }
-
-    pub fn get_local_addr(&self) -> Vec<SocketAddr> {
-        self.sockets.iter().map(|s| s.key().clone()).collect()
     }
 }
 
@@ -428,12 +435,33 @@ impl PunchHoleServerCommon {
     pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "PunchHoleServerCommon".to_owned());
+
+        let listeners = Arc::new(Mutex::new(Vec::<UdpHolePunchListener>::new()));
+
+        let l = listeners.clone();
+        tasks.lock().unwrap().spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                {
+                    // remove listener that is not active for 40 seconds but keep listeners that are selected less than 30 seconds
+                    l.lock().await.retain(|listener| {
+                        listener.last_active_time.load().elapsed().as_secs() < 40
+                            || listener.last_select_time.load().elapsed().as_secs() < 30
+                    });
+                }
+            }
+        });
+
         Self {
             peer_mgr,
 
-            listeners: Arc::new(Mutex::new(Vec::new())),
+            listeners,
             tasks,
         }
+    }
+
+    pub(crate) async fn add_listener(&self, listener: UdpHolePunchListener) {
+        self.listeners.lock().await.push(listener);
     }
 
     pub(crate) async fn find_listener(&self, addr: &SocketAddr) -> Option<Arc<UdpSocket>> {
@@ -459,12 +487,6 @@ impl PunchHoleServerCommon {
         use_new_listener: bool,
     ) -> Option<(Arc<UdpSocket>, SocketAddr)> {
         let all_listener_sockets = &self.listeners;
-
-        // remove listener that is not active for 40 seconds but keep listeners that are selected less than 30 seconds
-        all_listener_sockets.lock().await.retain(|listener| {
-            listener.last_active_time.load().elapsed().as_secs() < 40
-                || listener.last_select_time.load().elapsed().as_secs() < 30
-        });
 
         let mut use_last = false;
         if all_listener_sockets.lock().await.len() < 16 || use_new_listener {
