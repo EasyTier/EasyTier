@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use tokio::select;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::common::scoped_task::ScopedTask;
@@ -39,12 +41,13 @@ pub struct PeerTaskManager<Launcher: PeerTaskLauncher> {
     launcher: Launcher,
     peer_mgr: Arc<PeerManager>,
     main_loop_task: Mutex<Option<ScopedTask<()>>>,
+    run_signal: Arc<Notify>,
 }
 
 impl<D, C, T, L> PeerTaskManager<L>
 where
     D: Send + Sync + Clone + 'static,
-    C: Send + Sync + Clone + core::hash::Hash + Eq + 'static,
+    C: std::fmt::Debug + Send + Sync + Clone + core::hash::Hash + Eq + 'static,
     T: Send + 'static,
     L: PeerTaskLauncher<Data = D, CollectPeerItem = C, TaskRet = T> + 'static,
 {
@@ -53,21 +56,29 @@ where
             launcher,
             peer_mgr,
             main_loop_task: Mutex::new(None),
+            run_signal: Arc::new(Notify::new()),
         }
     }
 
     pub fn start(&self) {
         let data = self.launcher.new_data(self.peer_mgr.clone());
-        let task = tokio::spawn(Self::main_loop(self.launcher.clone(), data)).into();
+        let task = tokio::spawn(Self::main_loop(
+            self.launcher.clone(),
+            data,
+            self.run_signal.clone(),
+        ))
+        .into();
         self.main_loop_task.lock().unwrap().replace(task);
     }
 
-    async fn main_loop(launcher: L, data: D) {
+    async fn main_loop(launcher: L, data: D, signal: Arc<Notify>) {
         let peer_task_map = Arc::new(DashMap::<C, ScopedTask<Result<T, Error>>>::new());
 
         loop {
             let peers_to_connect = launcher.collect_peers_need_task(&data).await;
             let need_clear_task = launcher.need_clear_task(&data).await;
+
+            tracing::debug!(?peers_to_connect, ?need_clear_task, "peers to connect");
 
             // remove task not in peers_to_connect
             let mut to_remove = vec![];
@@ -108,10 +119,16 @@ where
                 launcher.all_task_done(&data).await;
             }
 
-            tokio::time::sleep(std::time::Duration::from_millis(
-                launcher.loop_interval_ms(),
-            ))
-            .await;
+            select! {
+                _ = tokio::time::sleep(std::time::Duration::from_millis(
+                    launcher.loop_interval_ms(),
+                )) => {},
+                _ = signal.notified() => {}
+            }
         }
+    }
+
+    pub async fn run_immediately(&self) {
+        self.run_signal.notify_one();
     }
 }

@@ -176,15 +176,15 @@ impl UdpSocketArray {
                         continue;
                     };
 
-                    tracing::debug!(?p, ?addr, "got udp hole punch packet");
+                    let tid = p.conn_id.get();
+                    let valid = p.msg_type == UdpPacketType::HolePunch as u8
+                        && p.len.get() == HOLE_PUNCH_PACKET_BODY_LEN;
+                    tracing::debug!(?p, ?addr, ?tid, ?valid, ?p, "got udp hole punch packet");
 
-                    if p.msg_type != UdpPacketType::HolePunch as u8
-                        || p.len.get() != HOLE_PUNCH_PACKET_BODY_LEN
-                    {
+                    if !valid {
                         continue;
                     }
 
-                    let tid = p.conn_id.get();
                     if intreast_tids.contains(&tid) {
                         tracing::info!(?addr, "got hole punching packet with intreast tid");
                         tid_to_socket
@@ -282,7 +282,7 @@ impl UdpHolePunchListener {
 
     #[instrument(err)]
     pub async fn new(peer_mgr: Arc<PeerManager>) -> Result<Self, Error> {
-        Self::new_ext(peer_mgr, false, None).await
+        Self::new_ext(peer_mgr, true, None).await
     }
 
     #[instrument(err)]

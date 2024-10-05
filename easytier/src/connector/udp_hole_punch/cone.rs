@@ -32,8 +32,8 @@ impl PunchConeHoleServer {
         Self { common }
     }
 
-    #[tracing::instrument(skip(self))]
-    pub(crate) async fn send_punch_packet_for_cone(
+    #[tracing::instrument(skip(self), ret, err)]
+    pub(crate) async fn send_punch_packet_cone(
         &self,
         _: BaseController,
         request: SendPunchPacketConeRequest,
@@ -55,7 +55,7 @@ impl PunchConeHoleServer {
         ))?;
         let dest_addr = std::net::SocketAddr::from(dest_addr);
         let dest_ip = dest_addr.ip();
-        if dest_ip.is_unspecified() || dest_ip.is_multicast() || dest_ip.is_loopback() {
+        if dest_ip.is_unspecified() || dest_ip.is_multicast() {
             return Err(anyhow::anyhow!(
                 "send_punch_packet_for_cone dest_ip is malformed, {:?}",
                 request
@@ -67,7 +67,8 @@ impl PunchConeHoleServer {
             tracing::info!(?request, "sending hole punching packet");
 
             for _ in 0..request.packet_count_per_batch {
-                let udp_packet = new_hole_punch_packet(100, HOLE_PUNCH_PACKET_BODY_LEN);
+                let udp_packet =
+                    new_hole_punch_packet(request.transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
                 if let Err(e) = listener.send_to(&udp_packet.into_bytes(), &dest_addr).await {
                     tracing::error!(?e, "failed to send hole punch packet to dest addr");
                 }
@@ -94,6 +95,7 @@ impl PunchConeHoleClient {
         dst_peer_id: PeerId,
     ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
         tracing::info!(?dst_peer_id, "start hole punching");
+        let tid = rand::random();
 
         let global_ctx = self.peer_mgr.get_global_ctx();
         let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
@@ -101,6 +103,8 @@ impl PunchConeHoleClient {
             .start()
             .await
             .with_context(|| "failed to start udp array")?;
+        udp_array.add_intreast_tid(tid);
+
         let local_addr = udp_array
             .get_local_addr()
             .get(0)
@@ -136,7 +140,11 @@ impl PunchConeHoleClient {
             "select_punch_listener response missing listener_mapped_addr"
         ))?;
 
-        let tid = rand::random();
+        tracing::debug!(
+            ?local_mapped_addr,
+            ?remote_mapped_addr,
+            "hole punch got remote listener"
+        );
 
         let send_from_local = || async {
             udp_array
@@ -190,9 +198,12 @@ impl PunchConeHoleClient {
                 continue;
             };
 
+            tracing::debug!(?socket, ?tid, "punched socket found, try connect with it");
+
             for _ in 0..2 {
                 match try_connect_with_socket(socket.clone(), remote_mapped_addr.into()).await {
                     Ok(tunnel) => {
+                        tracing::info!(?tunnel, "hole punched");
                         return Ok(tunnel);
                     }
                     Err(e) => {
@@ -211,12 +222,10 @@ pub mod tests {
 
     use crate::{
         connector::udp_hole_punch::{
-            cone::PunchConeHoleClient, tests::create_mock_peer_manager_with_mock_stun,
-            UdpHolePunchConnector,
+            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,
-        tunnel::common::tests::enable_log,
     };
 
     #[tokio::test]
@@ -231,16 +240,13 @@ pub mod tests {
 
         println!("{:?}", p_a.list_routes().await);
 
-        let hole_punching_a = PunchConeHoleClient::new(p_a.clone());
+        let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
         let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
 
+        hole_punching_a.run_as_client().await.unwrap();
         hole_punching_c.run_as_server().await.unwrap();
 
-        enable_log();
-        hole_punching_a
-            .do_hole_punching(p_c.my_peer_id())
-            .await
-            .unwrap();
+        hole_punching_a.client.run_immediately().await;
 
         wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
             .await

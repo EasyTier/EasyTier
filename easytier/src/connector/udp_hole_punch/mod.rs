@@ -82,9 +82,7 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         ctrl: Self::Controller,
         input: SendPunchPacketConeRequest,
     ) -> rpc_types::error::Result<Void> {
-        self.cone_server
-            .send_punch_packet_for_cone(ctrl, input)
-            .await
+        self.cone_server.send_punch_packet_cone(ctrl, input).await
     }
 
     /// send packet to multiple remote_addr (birthday attack), used by nat4 to nat1-3
@@ -436,20 +434,13 @@ impl UdpHolePunchConnector {
 
 #[cfg(test)]
 pub mod tests {
-    
-    use std::sync::Arc;
-    
 
-    
+    use std::sync::Arc;
 
     use crate::common::stun::MockStunInfoCollector;
     use crate::proto::common::NatType;
-    
 
-    use crate::peers::{
-            peer_manager::PeerManager,
-            tests::create_mock_peer_manager,
-        };
+    use crate::peers::{peer_manager::PeerManager, tests::create_mock_peer_manager};
 
     pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });
