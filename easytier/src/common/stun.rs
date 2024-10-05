@@ -343,6 +343,8 @@ impl StunClientBuilder {
 pub struct UdpNatTypeDetectResult {
     source_addr: SocketAddr,
     stun_resps: Vec<BindRequestResponse>,
+    // if we are easy symmetric nat, we need to test with another port to check inc or dec
+    extra_bind_test: Option<BindRequestResponse>,
 }
 
 impl UdpNatTypeDetectResult {
@@ -350,6 +352,7 @@ impl UdpNatTypeDetectResult {
         Self {
             source_addr,
             stun_resps,
+            extra_bind_test: None,
         }
     }
 
@@ -429,7 +432,32 @@ impl UdpNatTypeDetectResult {
                 return NatType::PortRestricted;
             }
         } else if !self.stun_resps.is_empty() {
-            return NatType::Symmetric;
+            if self.public_ips().len() != 1
+                || self.usable_stun_resp_count() <= 1
+                || self.max_port() - self.min_port() > 15
+                || self.extra_bind_test.is_none()
+                || self
+                    .extra_bind_test
+                    .as_ref()
+                    .unwrap()
+                    .mapped_socket_addr
+                    .is_none()
+            {
+                return NatType::Symmetric;
+            } else {
+                let extra_bind_test = self.extra_bind_test.as_ref().unwrap();
+                let extra_port = extra_bind_test.mapped_socket_addr.unwrap().port();
+
+                let max_port_diff = extra_port.saturating_sub(self.max_port());
+                let min_port_diff = self.min_port().saturating_sub(extra_port);
+                if max_port_diff != 0 && max_port_diff < 100 {
+                    return NatType::SymmetricEasyInc;
+                } else if min_port_diff != 0 && min_port_diff < 100 {
+                    return NatType::SymmetricEasyDec;
+                } else {
+                    return NatType::Symmetric;
+                }
+            }
         } else {
             return NatType::Unknown;
         }
@@ -477,6 +505,13 @@ impl UdpNatTypeDetectResult {
             .max()
             .unwrap_or(u16::MAX)
     }
+
+    pub fn usable_stun_resp_count(&self) -> usize {
+        self.stun_resps
+            .iter()
+            .filter(|x| x.mapped_socket_addr.is_some())
+            .count()
+    }
 }
 
 pub struct UdpNatTypeDetector {
@@ -490,6 +525,19 @@ impl UdpNatTypeDetector {
             stun_server_hosts,
             max_ip_per_domain,
         }
+    }
+
+    async fn get_extra_bind_result(
+        &self,
+        source_port: u16,
+        stun_server: SocketAddr,
+    ) -> Result<BindRequestResponse, Error> {
+        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        let client_builder = StunClientBuilder::new(udp.clone());
+        client_builder
+            .new_stun_client(stun_server)
+            .bind_request(false, false)
+            .await
     }
 
     pub async fn detect_nat_type(&self, source_port: u16) -> Result<UdpNatTypeDetectResult, Error> {
@@ -630,9 +678,9 @@ impl StunInfoCollector {
         // stun server cross nation may return a external ip address with high latency and loss rate
         vec![
             "stun.miwifi.com",
-            "stun.cdnbye.com",
-            "stun.hitv.com",
             "stun.chat.bilibili.com",
+            "stun.hitv.com",
+            "stun.cdnbye.com",
             "stun.douyucdn.cn:18000",
             "fwa.lifesizecloud.com",
             "global.turn.twilio.com",
@@ -693,18 +741,20 @@ impl StunInfoCollector {
                 // if nat type is symmtric, detect with another port to gather more info
                 if nat_type == NatType::Symmetric {
                     let old_resp = ret.unwrap();
-                    let old_local_port = old_resp.local_addr().port();
-                    let new_port = if old_local_port >= 65535 {
-                        old_local_port - 1
-                    } else {
-                        old_local_port + 1
-                    };
-                    let ret = detector.detect_nat_type(new_port).await;
+                    let ret = detector
+                        .get_extra_bind_result(
+                            0,
+                            *old_resp.collect_available_stun_server().get(0).unwrap(),
+                        )
+                        .await;
                     tracing::debug!(?ret, "finish udp nat type detect with another port");
                     if let Ok(resp) = ret {
-                        udp_nat_test_result.write().unwrap().as_mut().map(|x| {
-                            x.extend_result(resp);
-                        });
+                        udp_nat_test_result
+                            .write()
+                            .unwrap()
+                            .as_mut()
+                            .unwrap()
+                            .extra_bind_test = Some(resp);
                     }
                 }
 

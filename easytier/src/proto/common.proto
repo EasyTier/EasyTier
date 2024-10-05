@@ -59,6 +59,8 @@ enum NatType {
   PortRestricted = 5;
   Symmetric = 6;
   SymUdpFirewall = 7;
+  SymmetricEasyInc = 8;
+  SymmetricEasyDec = 9;
 }
 
 message Ipv4Addr { uint32 addr = 1; }

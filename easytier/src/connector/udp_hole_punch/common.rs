@@ -40,7 +40,8 @@ pub(crate) enum UdpNatType {
     Unknown,
     Open(NatType),
     Cone(NatType),
-    EasySymmetric(NatType),
+    // bool means if it is incremental
+    EasySymmetric(NatType, bool),
     HardSymmetric(NatType),
 }
 
@@ -53,6 +54,8 @@ impl From<NatType> for UdpNatType {
                 UdpNatType::Cone(nat_type)
             }
             NatType::Symmetric | NatType::SymUdpFirewall => UdpNatType::HardSymmetric(nat_type),
+            NatType::SymmetricEasyInc => UdpNatType::EasySymmetric(nat_type, true),
+            NatType::SymmetricEasyDec => UdpNatType::EasySymmetric(nat_type, false),
         }
     }
 }
@@ -63,7 +66,7 @@ impl Into<NatType> for UdpNatType {
             UdpNatType::Unknown => NatType::Unknown,
             UdpNatType::Open(nat_type) => nat_type,
             UdpNatType::Cone(nat_type) => nat_type,
-            UdpNatType::EasySymmetric(nat_type) => nat_type,
+            UdpNatType::EasySymmetric(nat_type, _) => nat_type,
             UdpNatType::HardSymmetric(nat_type) => nat_type,
         }
     }
@@ -79,10 +82,7 @@ impl UdpNatType {
     }
 
     pub(crate) fn is_sym(&self) -> bool {
-        matches!(
-            self,
-            UdpNatType::EasySymmetric(_) | UdpNatType::HardSymmetric(_)
-        )
+        self.is_hard_sym() || self.is_easy_sym()
     }
 
     pub(crate) fn is_hard_sym(&self) -> bool {
@@ -90,7 +90,7 @@ impl UdpNatType {
     }
 
     pub(crate) fn is_easy_sym(&self) -> bool {
-        matches!(self, UdpNatType::EasySymmetric(_))
+        matches!(self, UdpNatType::EasySymmetric(_, _))
     }
 
     pub(crate) fn is_cone(&self) -> bool {
