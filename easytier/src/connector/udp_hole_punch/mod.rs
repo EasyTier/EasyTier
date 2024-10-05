@@ -2,9 +2,8 @@ use std::sync::Arc;
 
 use anyhow::Error;
 use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
-use common::{PunchHoleServerCommon, UdpNatType};
+use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
-use crossbeam::atomic::AtomicCell;
 use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
 use tokio::{sync::Mutex, task::JoinHandle};
 
@@ -155,7 +154,6 @@ struct UdpHoePunchConnectorData {
     sym_to_cone_client: PunchSymToConeHoleClient,
     both_easy_sym_client: PunchBothEasySymHoleClient,
     peer_mgr: Arc<PeerManager>,
-    last_my_nat_type: AtomicCell<UdpNatType>,
 
     // sym punch should be serialized
     sym_punch_lock: Mutex<()>,
@@ -172,7 +170,6 @@ impl UdpHoePunchConnectorData {
             sym_to_cone_client,
             both_easy_sym_client,
             peer_mgr,
-            last_my_nat_type: AtomicCell::new(UdpNatType::Unknown),
             sym_punch_lock: Mutex::new(()),
         })
     }
@@ -217,7 +214,12 @@ impl UdpHoePunchConnectorData {
             let ret = {
                 let _lock = self.sym_punch_lock.lock().await;
                 self.sym_to_cone_client
-                    .do_hole_punching(task_info.dst_peer_id, round, &mut port_idx)
+                    .do_hole_punching(
+                        task_info.dst_peer_id,
+                        round,
+                        &mut port_idx,
+                        task_info.my_nat_type,
+                    )
                     .await
             };
 
@@ -246,10 +248,13 @@ impl UdpHoePunchConnectorData {
         loop {
             backoff.sleep_for_next_backoff().await;
 
-            let ret = self
-                .both_easy_sym_client
-                .do_hole_punching(task_info.dst_peer_id)
-                .await;
+            let ret = {
+                let _lock = self.sym_punch_lock.lock().await;
+                self.both_easy_sym_client
+                    .do_hole_punching(task_info.dst_peer_id)
+                    .await
+            };
+
             if let Err(e) = ret {
                 tracing::info!(?e, "both_easy_sym hole punching failed");
                 continue;
@@ -288,9 +293,20 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
     }
 
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
-        let mut peers_to_connect: Vec<Self::CollectPeerItem> = Vec::new();
-        let my_nat_type = data.last_my_nat_type.load();
+        let my_nat_type = data
+            .peer_mgr
+            .get_global_ctx()
+            .get_stun_info_collector()
+            .get_stun_info()
+            .udp_nat_type;
+        let my_nat_type: UdpNatType = NatType::try_from(my_nat_type)
+            .unwrap_or(NatType::Unknown)
+            .into();
+        if !my_nat_type.is_sym() {
+            data.sym_to_cone_client.clear_udp_array().await;
+        }
 
+        let mut peers_to_connect: Vec<Self::CollectPeerItem> = Vec::new();
         // do not do anything if:
         // 1. our nat type is OpenInternet or NoPat, which means we can wait other peers to connect us
         // notice that if we are unknown, we treat ourselves as cone
@@ -302,10 +318,12 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         // 1. peers without direct conns;
         // 2. peers is full cone (any restricted type);
         for route in data.peer_mgr.list_routes().await.iter() {
-            let Some(peer_stun_info) = route.stun_info.as_ref() else {
-                continue;
-            };
-            let Ok(peer_nat_type) = NatType::try_from(peer_stun_info.udp_nat_type) else {
+            let peer_nat_type = route
+                .stun_info
+                .as_ref()
+                .map(|x| x.udp_nat_type)
+                .unwrap_or(0);
+            let Ok(peer_nat_type) = NatType::try_from(peer_nat_type) else {
                 continue;
             };
             let peer_nat_type = peer_nat_type.into();
@@ -343,27 +361,13 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         item: Self::CollectPeerItem,
     ) -> JoinHandle<Result<Self::TaskRet, Error>> {
         let data = data.clone();
-        tokio::spawn(data.cone_to_cone(item))
-    }
-
-    async fn need_clear_task(&self, data: &Self::Data) -> bool {
-        let my_nat_type = data
-            .peer_mgr
-            .get_global_ctx()
-            .get_stun_info_collector()
-            .get_stun_info()
-            .udp_nat_type;
-        let my_nat_type = NatType::try_from(my_nat_type)
-            .unwrap_or(NatType::Unknown)
-            .into();
-        let prev_nat_type = data.last_my_nat_type.load();
-        data.last_my_nat_type.store(my_nat_type);
-
-        if !my_nat_type.is_sym() {
-            data.sym_to_cone_client.clear_udp_array().await;
+        let punch_method = item.my_nat_type.get_punch_hole_method(item.dst_nat_type);
+        match punch_method {
+            UdpPunchClientMethod::ConeToCone => tokio::spawn(data.cone_to_cone(item)),
+            UdpPunchClientMethod::SymToCone => tokio::spawn(data.sym_to_cone(item)),
+            UdpPunchClientMethod::EasySymToEasySym => tokio::spawn(data.both_easy_sym(item)),
+            _ => unreachable!(),
         }
-
-        my_nat_type != prev_nat_type
     }
 
     async fn all_task_done(&self, data: &Self::Data) {

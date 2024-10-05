@@ -152,8 +152,8 @@ impl PunchBothEasySymHoleClient {
         &self,
         dst_peer_id: PeerId,
     ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
-        const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 10;
-        const DST_PORT_OFFSET: u16 = 7;
+        const UDP_ARRAY_SIZE_FOR_BOTH_EASY_SYM: usize = 25;
+        const DST_PORT_OFFSET: u16 = 20;
         const REMOTE_WAIT_TIME_MS: u64 = 5000;
 
         let udp_array = UdpSocketArray::new(

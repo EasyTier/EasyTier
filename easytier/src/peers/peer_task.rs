@@ -26,10 +26,6 @@ pub trait PeerTaskLauncher: Send + Sync + Clone + 'static {
         item: Self::CollectPeerItem,
     ) -> JoinHandle<Result<Self::TaskRet, Error>>;
 
-    async fn need_clear_task(&self, _data: &Self::Data) -> bool {
-        false
-    }
-
     async fn all_task_done(&self, _data: &Self::Data) {}
 
     fn loop_interval_ms(&self) -> u64 {
@@ -42,6 +38,7 @@ pub struct PeerTaskManager<Launcher: PeerTaskLauncher> {
     peer_mgr: Arc<PeerManager>,
     main_loop_task: Mutex<Option<ScopedTask<()>>>,
     run_signal: Arc<Notify>,
+    data: Launcher::Data,
 }
 
 impl<D, C, T, L> PeerTaskManager<L>
@@ -52,19 +49,20 @@ where
     L: PeerTaskLauncher<Data = D, CollectPeerItem = C, TaskRet = T> + 'static,
 {
     pub fn new(launcher: L, peer_mgr: Arc<PeerManager>) -> Self {
+        let data = launcher.new_data(peer_mgr.clone());
         Self {
             launcher,
             peer_mgr,
             main_loop_task: Mutex::new(None),
             run_signal: Arc::new(Notify::new()),
+            data,
         }
     }
 
     pub fn start(&self) {
-        let data = self.launcher.new_data(self.peer_mgr.clone());
         let task = tokio::spawn(Self::main_loop(
             self.launcher.clone(),
-            data,
+            self.data.clone(),
             self.run_signal.clone(),
         ))
         .into();
@@ -76,20 +74,20 @@ where
 
         loop {
             let peers_to_connect = launcher.collect_peers_need_task(&data).await;
-            let need_clear_task = launcher.need_clear_task(&data).await;
-
-            tracing::debug!(?peers_to_connect, ?need_clear_task, "peers to connect");
 
             // remove task not in peers_to_connect
             let mut to_remove = vec![];
             for item in peer_task_map.iter() {
-                if !peers_to_connect.contains(item.key())
-                    || item.value().is_finished()
-                    || need_clear_task
-                {
+                if !peers_to_connect.contains(item.key()) || item.value().is_finished() {
                     to_remove.push(item.key().clone());
                 }
             }
+
+            tracing::debug!(
+                ?peers_to_connect,
+                ?to_remove,
+                "got peers to connect and remove"
+            );
 
             for key in to_remove {
                 if let Some((_, task)) = peer_task_map.remove(&key) {
@@ -112,10 +110,12 @@ where
                         continue;
                     }
 
+                    tracing::debug!(?item, "launch hole punching task");
                     peer_task_map
                         .insert(item.clone(), launcher.launch_task(&data, item).await.into());
                 }
             } else if peer_task_map.is_empty() {
+                tracing::debug!("all task done");
                 launcher.all_task_done(&data).await;
             }
 
@@ -130,5 +130,9 @@ where
 
     pub async fn run_immediately(&self) {
         self.run_signal.notify_one();
+    }
+
+    pub fn data(&self) -> D {
+        self.data.clone()
     }
 }

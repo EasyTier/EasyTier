@@ -35,6 +35,13 @@ fn generate_shuffled_port_vec() -> Vec<u16> {
     port_vec
 }
 
+pub(crate) enum UdpPunchClientMethod {
+    None,
+    ConeToCone,
+    SymToCone,
+    EasySymToEasySym,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum UdpNatType {
     Unknown,
@@ -97,25 +104,65 @@ impl UdpNatType {
         matches!(self, UdpNatType::Cone(_))
     }
 
-    pub(crate) fn can_punch_hole_as_client(&self, other: Self) -> bool {
+    pub(crate) fn get_inc_of_easy_sym(&self) -> Option<bool> {
+        match self {
+            UdpNatType::EasySymmetric(_, inc) => Some(*inc),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn get_punch_hole_method(&self, other: Self) -> UdpPunchClientMethod {
         if other.is_unknown() {
-            return true;
+            if self.is_sym() {
+                return UdpPunchClientMethod::SymToCone;
+            } else {
+                return UdpPunchClientMethod::ConeToCone;
+            }
+        }
+
+        if self.is_unknown() {
+            if other.is_sym() {
+                return UdpPunchClientMethod::None;
+            } else {
+                return UdpPunchClientMethod::ConeToCone;
+            }
         }
 
         if self.is_open() || other.is_open() {
             // open nat does not need to punch hole
-            return false;
+            return UdpPunchClientMethod::None;
         }
 
         if self.is_cone() {
-            return !other.is_sym();
+            if other.is_sym() {
+                return UdpPunchClientMethod::None;
+            } else {
+                return UdpPunchClientMethod::ConeToCone;
+            }
         } else if self.is_easy_sym() {
-            return !other.is_hard_sym();
+            if other.is_hard_sym() {
+                return UdpPunchClientMethod::None;
+            } else if other.is_easy_sym() {
+                return UdpPunchClientMethod::EasySymToEasySym;
+            } else {
+                return UdpPunchClientMethod::SymToCone;
+            }
         } else if self.is_hard_sym() {
-            return !other.is_sym();
+            if other.is_sym() {
+                return UdpPunchClientMethod::None;
+            } else {
+                return UdpPunchClientMethod::SymToCone;
+            }
         }
 
-        return false;
+        unreachable!("invalid nat type");
+    }
+
+    pub(crate) fn can_punch_hole_as_client(&self, other: Self) -> bool {
+        !matches!(
+            self.get_punch_hole_method(other),
+            UdpPunchClientMethod::None
+        )
     }
 }
 
@@ -420,7 +467,7 @@ impl PunchHoleServerCommon {
         });
 
         let mut use_last = false;
-        if all_listener_sockets.lock().await.len() < 4 || use_new_listener {
+        if all_listener_sockets.lock().await.len() < 16 || use_new_listener {
             tracing::warn!("creating new udp hole punching listener");
             all_listener_sockets.lock().await.push(
                 UdpHolePunchListener::new(self.peer_mgr.clone())

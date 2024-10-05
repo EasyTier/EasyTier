@@ -626,13 +626,28 @@ impl StunInfoCollectorTrait for StunInfoCollector {
     async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
         self.start_stun_routine();
 
-        let stun_servers = self
+        let mut stun_servers = self
             .udp_nat_test_result
             .read()
             .unwrap()
             .clone()
             .map(|x| x.collect_available_stun_server())
-            .ok_or(Error::NotFound)?;
+            .unwrap_or(vec![]);
+
+        if stun_servers.is_empty() {
+            let mut host_resolver =
+                HostResolverIter::new(self.stun_servers.read().unwrap().clone(), 2);
+            while let Some(addr) = host_resolver.next().await {
+                stun_servers.push(addr);
+                if stun_servers.len() >= 2 {
+                    break;
+                }
+            }
+        }
+
+        if stun_servers.is_empty() {
+            return Err(Error::NotFound);
+        }
 
         let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
         let mut client_builder = StunClientBuilder::new(udp.clone());
@@ -784,7 +799,7 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
             last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
             min_port: 100,
             max_port: 200,
-            ..Default::default()
+            public_ip: vec!["127.0.0.1".to_string()],
         }
     }
 

@@ -31,7 +31,7 @@ use crate::{
     tunnel::{udp::new_hole_punch_packet, Tunnel},
 };
 
-use super::common::{PunchHoleServerCommon, UdpSocketArray};
+use super::common::{PunchHoleServerCommon, UdpNatType, UdpSocketArray};
 
 const UDP_ARRAY_SIZE_FOR_HARD_SYM: usize = 84;
 
@@ -53,15 +53,15 @@ impl PunchSymToConeHoleServer {
     }
 
     // hard sym means public port is random and cannot be predicted
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), ret)]
     pub(crate) async fn send_punch_packet_easy_sym(
         &self,
         request: SendPunchPacketEasySymRequest,
     ) -> Result<(), rpc_types::error::Error> {
-        tracing::info!("send_punch_packet_hard_sym start");
+        tracing::info!("send_punch_packet_easy_sym start");
 
         let listener_addr = request.listener_mapped_addr.ok_or(anyhow::anyhow!(
-            "send_punch_packet_hard_sym request missing listener_addr"
+            "send_punch_packet_easy_sym request missing listener_addr"
         ))?;
         let listener_addr = std::net::SocketAddr::from(listener_addr);
         let listener = self
@@ -69,7 +69,7 @@ impl PunchSymToConeHoleServer {
             .find_listener(&listener_addr)
             .await
             .ok_or(anyhow::anyhow!(
-                "send_punch_packet_hard_sym failed to find listener"
+                "send_punch_packet_easy_sym failed to find listener"
             ))?;
 
         let public_ips = request
@@ -78,9 +78,9 @@ impl PunchSymToConeHoleServer {
             .map(|ip| std::net::Ipv4Addr::from(ip))
             .collect::<Vec<_>>();
         if public_ips.len() == 0 {
-            tracing::warn!("send_punch_packet_hard_sym got zero len public ip");
+            tracing::warn!("send_punch_packet_easy_sym got zero len public ip");
             return Err(
-                anyhow::anyhow!("send_punch_packet_hard_sym got zero len public ip").into(),
+                anyhow::anyhow!("send_punch_packet_easy_sym got zero len public ip").into(),
             );
         }
 
@@ -102,12 +102,17 @@ impl PunchSymToConeHoleServer {
         };
 
         if port_end <= port_start {
-            return Err(anyhow::anyhow!("send_punch_packet_hard_sym invalid port range").into());
+            return Err(anyhow::anyhow!("send_punch_packet_easy_sym invalid port range").into());
         }
 
         let ports = (port_start..=port_end)
             .map(|x| x as u16)
             .collect::<Vec<_>>();
+        tracing::debug!(
+            ?ports,
+            ?public_ips,
+            "send_punch_packet_easy_sym send to ports"
+        );
         send_symmetric_hole_punch_packet(
             &ports,
             listener,
@@ -186,6 +191,8 @@ pub(crate) struct PunchSymToConeHoleClient {
     peer_mgr: Arc<PeerManager>,
     udp_array: RwLock<Option<Arc<UdpSocketArray>>>,
     try_direct_connect: AtomicBool,
+    punch_predicablely: AtomicBool,
+    punch_randomly: AtomicBool,
 }
 
 impl PunchSymToConeHoleClient {
@@ -194,6 +201,8 @@ impl PunchSymToConeHoleClient {
             peer_mgr,
             udp_array: RwLock::new(None),
             try_direct_connect: AtomicBool::new(true),
+            punch_predicablely: AtomicBool::new(true),
+            punch_randomly: AtomicBool::new(true),
         }
     }
 
@@ -223,12 +232,32 @@ impl PunchSymToConeHoleClient {
         wlocked.take();
     }
 
+    async fn get_base_port_for_easy_sym(&self, my_nat_info: UdpNatType) -> Option<u16> {
+        let global_ctx = self.peer_mgr.get_global_ctx();
+        if my_nat_info.is_easy_sym() {
+            match global_ctx
+                .get_stun_info_collector()
+                .get_udp_port_mapping(0)
+                .await
+            {
+                Ok(addr) => Some(addr.port()),
+                ret => {
+                    tracing::warn!(?ret, "failed to get udp port mapping for easy sym");
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    }
+
     #[tracing::instrument(err(level = Level::ERROR), skip(self))]
     pub(crate) async fn do_hole_punching(
         &self,
         dst_peer_id: PeerId,
         round: u32,
         last_port_idx: &mut usize,
+        my_nat_info: UdpNatType,
     ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
         let udp_array = self.prepare_udp_array().await?;
         let global_ctx = self.peer_mgr.get_global_ctx();
@@ -285,29 +314,62 @@ impl PunchSymToConeHoleClient {
             .await?;
 
         let port_index = *last_port_idx as u32;
+        let base_port_for_easy_sym = self.get_base_port_for_easy_sym(my_nat_info).await;
+        let punch_random = self.punch_randomly.load(Ordering::Relaxed);
+        let punch_predicable = self.punch_predicablely.load(Ordering::Relaxed);
         let scoped_punch_task: ScopedTask<Option<u32>> = tokio::spawn(async move {
-            match rpc_stub
-                .send_punch_packet_hard_sym(
-                    BaseController {
-                        timeout_ms: 4000,
-                        trace_id: 0,
-                    },
-                    SendPunchPacketHardSymRequest {
+            if punch_predicable {
+                if let Some(inc) = my_nat_info.get_inc_of_easy_sym() {
+                    let req = SendPunchPacketEasySymRequest {
                         listener_mapped_addr: remote_mapped_addr.clone().into(),
                         public_ips: public_ips.clone().into_iter().map(|x| x.into()).collect(),
                         transaction_id: tid,
-                        round,
-                        port_index,
-                    },
-                )
-                .await
-            {
-                Err(e) => {
-                    tracing::error!(?e, "failed to send punch packet for hard sym");
-                    None
+                        base_port_num: base_port_for_easy_sym.unwrap() as u32,
+                        max_port_num: 50,
+                        is_incremental: inc,
+                    };
+                    tracing::debug!(?req, "send punch packet for easy sym start");
+                    let ret = rpc_stub
+                        .send_punch_packet_easy_sym(
+                            BaseController {
+                                timeout_ms: 4000,
+                                trace_id: 0,
+                            },
+                            req,
+                        )
+                        .await;
+                    tracing::debug!(?ret, "send punch packet for easy sym return");
                 }
-                Ok(resp) => Some(resp.next_port_index),
             }
+
+            if punch_random {
+                let req = SendPunchPacketHardSymRequest {
+                    listener_mapped_addr: remote_mapped_addr.clone().into(),
+                    public_ips: public_ips.clone().into_iter().map(|x| x.into()).collect(),
+                    transaction_id: tid,
+                    round,
+                    port_index,
+                };
+                tracing::debug!(?req, "send punch packet for hard sym start");
+                match rpc_stub
+                    .send_punch_packet_hard_sym(
+                        BaseController {
+                            timeout_ms: 4000,
+                            trace_id: 0,
+                        },
+                        req,
+                    )
+                    .await
+                {
+                    Err(e) => {
+                        tracing::error!(?e, "failed to send punch packet for hard sym");
+                        return None;
+                    }
+                    Ok(resp) => return Some(resp.next_port_index),
+                }
+            }
+
+            None
         })
         .into();
 
@@ -341,8 +403,12 @@ impl PunchSymToConeHoleClient {
         }
 
         let punch_task_result = scoped_punch_task.await;
+        tracing::debug!(?punch_task_result, ?ret_tunnel, "punch task got result");
+
         if let Ok(Some(next_port_idx)) = punch_task_result {
             *last_port_idx = next_port_idx as usize;
+        } else {
+            *last_port_idx = rand::random();
         }
 
         if let Some(tunnel) = ret_tunnel {
@@ -353,5 +419,174 @@ impl PunchSymToConeHoleClient {
                 punch_task_result
             )
         }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use std::{
+        sync::{atomic::AtomicU32, Arc},
+        time::Duration,
+    };
+
+    use serde_json::ser;
+    use tokio::net::UdpSocket;
+
+    use crate::{
+        connector::udp_hole_punch::{
+            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
+        },
+        peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
+        proto::common::NatType,
+        tunnel::common::tests::{enable_log, wait_for_condition},
+    };
+
+    #[tokio::test]
+    async fn hole_punching_symmetric_only_random() {
+        let p_a = create_mock_peer_manager_with_mock_stun(NatType::Symmetric).await;
+        let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let p_c = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
+        let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
+
+        hole_punching_a
+            .client
+            .data()
+            .sym_to_cone_client
+            .try_direct_connect
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        hole_punching_a
+            .client
+            .data()
+            .sym_to_cone_client
+            .punch_predicablely
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        enable_log();
+
+        hole_punching_a.run().await.unwrap();
+        hole_punching_c.run().await.unwrap();
+
+        hole_punching_a.client.run_immediately().await;
+
+        wait_for_condition(
+            || async {
+                hole_punching_a
+                    .client
+                    .data()
+                    .sym_to_cone_client
+                    .udp_array
+                    .read()
+                    .await
+                    .is_some()
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        wait_for_condition(
+            || async {
+                wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
+                    .await
+                    .is_ok()
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+        println!("{:?}", p_a.list_routes().await);
+
+        wait_for_condition(
+            || async {
+                hole_punching_a
+                    .client
+                    .data()
+                    .sym_to_cone_client
+                    .udp_array
+                    .read()
+                    .await
+                    .is_none()
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn hole_punching_symmetric_only_predict(#[values("true", "false")] is_inc: bool) {
+        let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
+            NatType::SymmetricEasyInc
+        } else {
+            NatType::SymmetricEasyDec
+        })
+        .await;
+        let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let p_c = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
+        let mut hole_punching_c = UdpHolePunchConnector::new(p_c.clone());
+
+        hole_punching_a
+            .client
+            .data()
+            .sym_to_cone_client
+            .try_direct_connect
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        hole_punching_a
+            .client
+            .data()
+            .sym_to_cone_client
+            .punch_randomly
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+
+        hole_punching_a.run().await.unwrap();
+        hole_punching_c.run().await.unwrap();
+
+        let udps = if is_inc {
+            let udp1 = Arc::new(UdpSocket::bind("0.0.0.0:40147").await.unwrap());
+            let udp2 = Arc::new(UdpSocket::bind("0.0.0.0:40194").await.unwrap());
+            vec![udp1, udp2]
+        } else {
+            let udp1 = Arc::new(UdpSocket::bind("0.0.0.0:40141").await.unwrap());
+            let udp2 = Arc::new(UdpSocket::bind("0.0.0.0:40100").await.unwrap());
+            vec![udp1, udp2]
+        };
+        // let udp_dec = Arc::new(UdpSocket::bind("0.0.0.0:40140").await.unwrap());
+        // let udp_dec2 = Arc::new(UdpSocket::bind("0.0.0.0:40050").await.unwrap());
+
+        let counter = Arc::new(AtomicU32::new(0));
+
+        // all these sockets should receive hole punching packet
+        for udp in udps.iter().map(Arc::clone) {
+            let counter = counter.clone();
+            tokio::spawn(async move {
+                let mut buf = [0u8; 1024];
+                let (len, addr) = udp.recv_from(&mut buf).await.unwrap();
+                println!(
+                    "got predictable punch packet, {:?} {:?} {:?}",
+                    len,
+                    addr,
+                    udp.local_addr()
+                );
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            });
+        }
+
+        let udp_len = udps.len();
+        wait_for_condition(
+            || async { counter.load(std::sync::atomic::Ordering::Relaxed) == udp_len as u32 },
+            Duration::from_secs(30),
+        )
+        .await;
     }
 }
