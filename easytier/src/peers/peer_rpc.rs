@@ -224,7 +224,10 @@ pub mod tests {
 
         let msg = random_string(8192);
         let ret = stub
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await
             .unwrap();
 
@@ -233,7 +236,10 @@ pub mod tests {
 
         let msg = random_string(10);
         let ret = stub
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await
             .unwrap();
 
@@ -281,7 +287,10 @@ pub mod tests {
             );
 
         let ret = stub
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await
             .unwrap();
         assert_eq!(ret.greeting, format!("Hello {}!", msg));
@@ -289,14 +298,20 @@ pub mod tests {
         // call again
         let msg = random_string(16 * 1024);
         let ret = stub
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await
             .unwrap();
         assert_eq!(ret.greeting, format!("Hello {}!", msg));
 
         let msg = random_string(16 * 1024);
         let ret = stub
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await
             .unwrap();
         assert_eq!(ret.greeting, format!("Hello {}!", msg));
@@ -340,13 +355,19 @@ pub mod tests {
 
         let msg = random_string(16 * 1024);
         let ret = stub1
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await
             .unwrap();
         assert_eq!(ret.greeting, format!("Hello {}!", msg));
 
         let ret = stub2
-            .say_hello(RpcController {}, SayHelloRequest { name: msg.clone() })
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest { name: msg.clone() },
+            )
             .await;
         assert!(ret.is_err() && ret.unwrap_err().to_string().contains("Timeout"));
     }

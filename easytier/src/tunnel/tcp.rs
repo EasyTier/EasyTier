@@ -43,6 +43,10 @@ impl TunnelListener for TcpTunnelListener {
         setup_sokcet2(&socket2_socket, &addr)?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
+        if let Err(e) = socket.set_nodelay(true) {
+            tracing::warn!(?e, "set_nodelay fail in listen");
+        }
+
         self.addr
             .set_port(Some(socket.local_addr()?.port()))
             .unwrap();
@@ -54,7 +58,11 @@ impl TunnelListener for TcpTunnelListener {
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let listener = self.listener.as_ref().unwrap();
         let (stream, _) = listener.accept().await?;
-        stream.set_nodelay(true).unwrap();
+
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::warn!(?e, "set_nodelay fail in accept");
+        }
+
         let info = TunnelInfo {
             tunnel_type: "tcp".to_owned(),
             local_addr: Some(self.local_url().into()),
@@ -80,7 +88,9 @@ fn get_tunnel_with_tcp_stream(
     stream: TcpStream,
     remote_url: url::Url,
 ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-    stream.set_nodelay(true).unwrap();
+    if let Err(e) = stream.set_nodelay(true) {
+        tracing::warn!(?e, "set_nodelay fail in get_tunnel_with_tcp_stream");
+    }
 
     let info = TunnelInfo {
         tunnel_type: "tcp".to_owned(),

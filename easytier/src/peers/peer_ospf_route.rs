@@ -539,7 +539,7 @@ impl RouteTable {
     fn get_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
         self.peer_infos
             .get(&peer_id)
-            .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap())
+            .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap_or_default())
     }
 
     fn build_peer_graph_from_synced_info<T: RouteCostCalculatorInterface>(
@@ -1322,7 +1322,7 @@ impl PeerRouteServiceImpl {
                 self.global_ctx.get_network_name(),
             );
 
-        let mut ctrl = BaseController {};
+        let mut ctrl = BaseController::default();
         ctrl.set_timeout_ms(3000);
         let ret = rpc_stub
             .sync_route_info(

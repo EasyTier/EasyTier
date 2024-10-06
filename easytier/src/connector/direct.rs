@@ -425,7 +425,7 @@ impl DirectConnectorManager {
             );
 
         let ip_list = rpc_stub
-            .get_ip_list(BaseController {}, GetIpListRequest {})
+            .get_ip_list(BaseController::default(), GetIpListRequest {})
             .await
             .with_context(|| format!("get ip list from peer {}", dst_peer_id))?;
 

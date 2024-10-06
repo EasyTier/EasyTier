@@ -1,4 +1,7 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{
+    fmt::Debug,
+    sync::{Arc, Weak},
+};
 
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -445,25 +448,25 @@ impl TunnelListener for UdpTunnelListener {
 
     fn get_conn_counter(&self) -> Arc<Box<dyn TunnelConnCounter>> {
         struct UdpTunnelConnCounter {
-            sock_map: Arc<DashMap<SocketAddr, UdpConnection>>,
+            sock_map: Weak<DashMap<SocketAddr, UdpConnection>>,
+        }
+
+        impl TunnelConnCounter for UdpTunnelConnCounter {
+            fn get(&self) -> Option<u32> {
+                self.sock_map.upgrade().map(|x| x.len() as u32)
+            }
         }
 
         impl Debug for UdpTunnelConnCounter {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 f.debug_struct("UdpTunnelConnCounter")
-                    .field("sock_map_len", &self.sock_map.len())
+                    .field("sock_map_len", &self.get())
                     .finish()
             }
         }
 
-        impl TunnelConnCounter for UdpTunnelConnCounter {
-            fn get(&self) -> u32 {
-                self.sock_map.len() as u32
-            }
-        }
-
         Arc::new(Box::new(UdpTunnelConnCounter {
-            sock_map: self.data.sock_map.clone(),
+            sock_map: Arc::downgrade(&self.data.sock_map.clone()),
         }))
     }
 }
@@ -942,14 +945,22 @@ mod tests {
 
         listener.listen().await.unwrap();
         let c1 = listener.accept().await.unwrap();
-        assert_eq!(conn_counter.get(), 1);
+        assert_eq!(conn_counter.get(), Some(1));
         let c2 = listener.accept().await.unwrap();
-        assert_eq!(conn_counter.get(), 2);
+        assert_eq!(conn_counter.get(), Some(2));
 
         drop(c2);
-        wait_for_condition(|| async { conn_counter.get() == 1 }, Duration::from_secs(1)).await;
+        wait_for_condition(
+            || async { conn_counter.get() == Some(1) },
+            Duration::from_secs(1),
+        )
+        .await;
 
         drop(c1);
-        wait_for_condition(|| async { conn_counter.get() == 0 }, Duration::from_secs(1)).await;
+        wait_for_condition(
+            || async { conn_counter.get().unwrap_or(0) == 0 },
+            Duration::from_secs(1),
+        )
+        .await;
     }
 }

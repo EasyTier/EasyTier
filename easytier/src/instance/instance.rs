@@ -161,7 +161,7 @@ impl Instance {
             DirectConnectorManager::new(global_ctx.clone(), peer_manager.clone());
         direct_conn_manager.run();
 
-        let udp_hole_puncher = UdpHolePunchConnector::new(global_ctx.clone(), peer_manager.clone());
+        let udp_hole_puncher = UdpHolePunchConnector::new(peer_manager.clone());
 
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 

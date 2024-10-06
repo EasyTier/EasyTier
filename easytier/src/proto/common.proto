@@ -42,6 +42,8 @@ message RpcPacket {
   int32 trace_id = 9;
 }
 
+message Void {}
+
 message UUID {
   uint64 high = 1;
   uint64 low = 2;
@@ -57,6 +59,8 @@ enum NatType {
   PortRestricted = 5;
   Symmetric = 6;
   SymUdpFirewall = 7;
+  SymmetricEasyInc = 8;
+  SymmetricEasyDec = 9;
 }
 
 message Ipv4Addr { uint32 addr = 1; }
