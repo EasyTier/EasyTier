@@ -441,6 +441,7 @@ pub mod tests {
     };
 
     #[tokio::test]
+    #[serial_test::serial(hole_punch)]
     async fn hole_punching_symmetric_only_random() {
         let p_a = create_mock_peer_manager_with_mock_stun(NatType::Symmetric).await;
         let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
