@@ -185,7 +185,7 @@ impl PeerManager {
     ) -> Self {
         let my_peer_id = rand::random();
 
-        let (packet_send, packet_recv) = mpsc::channel(100);
+        let (packet_send, packet_recv) = mpsc::channel(128);
         let peers = Arc::new(PeerMap::new(
             packet_send.clone(),
             global_ctx.clone(),
