@@ -7,7 +7,7 @@ import AutoFormFieldInput from './AutoFormFieldInput.vue'
 import AutoFormFieldNumber from './AutoFormFieldNumber.vue'
 import AutoFormFieldObject from './AutoFormFieldObject.vue'
 
-export const INPUT_COMPONENTS = {
+export const INPUT_COMPONENTS: any = {
   date: AutoFormFieldDate,
   select: AutoFormFieldEnum,
   radio: AutoFormFieldEnum,

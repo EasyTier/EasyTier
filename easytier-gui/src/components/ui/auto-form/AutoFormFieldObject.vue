@@ -1,4 +1,5 @@
 <script setup lang="ts" generic="T extends ZodRawShape">
+/// <reference types="@vue/shared" />
 import type { ZodAny, ZodObject, ZodRawShape } from 'zod'
 import type { Config, ConfigItem, Shape } from './interface'
 import { FieldContextKey, useField } from 'vee-validate'

@@ -1,4 +1,5 @@
 <script setup lang="ts" generic="T extends z.ZodAny">
+/// <reference types="@vue/shared" />
 import type { Config, ConfigItem } from './interface'
 import { PlusIcon, TrashIcon } from 'lucide-vue-next'
 import { FieldArray, FieldContextKey, useField } from 'vee-validate'

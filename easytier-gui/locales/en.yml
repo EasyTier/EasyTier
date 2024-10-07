@@ -1,0 +1,90 @@
+component:
+  about:
+    description: EasyTier is a simple, safe 和 decentralized VPN networking solution implemented with the Rust language & Tokio framework.
+  dialogList:
+    addInstance:
+      title: Add Instance
+      submit: add
+      defaultTemplate: default template
+      customTemplate: custom template
+      tips:
+        from: Add instances based on {source}.
+    appCloseConfirm:
+      title: Are you sure you want to exit?
+      content: Exiting will close all instances. If you need to minimize, please click the minimize button!
+      confirm: confirm
+      cancel: cancel
+      minimize: minimize
+    appAutostart:
+      title: Autostart config
+      switch: autostart
+      selectPlaceholder: automatically enabled after autostart.
+      instance: instance
+  drawerList:
+    dropFile:
+      title: Release to add instance configuration.
+  instance:
+    display:
+      back: back
+      more: more
+      instanceAction: Action
+      share: share
+      autostart: autostart
+      delete: delete
+      log:
+        title: log
+        off: off
+        warn: warn
+        debug: debug
+        info: info
+        trace: trace
+        open: log dir
+
+    status:
+      overview:
+        title: overview
+        ip: IP
+        nat: NAT Type
+        device: '{time} device'
+        bandwidth: '{time} bandwidth'
+        history: history
+        realTime: real time
+      detail:
+        title: detail
+        noData: No Data
+      config: config
+    peerDetail:
+      latency: latency
+      lost: list
+      up: upload
+      down: download
+      deviceNum: device
+      server: server
+      local: local
+      relay: 可中转
+
+page:
+  index:
+    search: search
+
+form:
+  instance:
+    instance_name: Instance Name
+    hostname: hostname
+    instance_id: Instance ID
+    ipv4: IPv4
+    dhcp: DHCP
+    listeners: listeners
+    exit_node: exit node
+    rpc_portal: RPC portal
+    network_name: network name
+    network_secret: network secret
+    submit: save
+
+toast:
+  error:
+    operateInstance: Failed to operate instance
+    parseInstanceConfig: Failed to parse instance
+
+tray:
+  exit: 退出

@@ -121,7 +121,7 @@ function dispatch(action: Action) {
   }
 }
 
-function useToast() {
+function useToast(): any {
   return {
     toasts: computed(() => state.value.toasts),
     toast,
