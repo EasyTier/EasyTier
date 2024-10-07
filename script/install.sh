@@ -55,6 +55,12 @@ if ! command -v unzip >/dev/null 2>&1; then
   exit 1
 fi
 
+# check if curl is installed
+if ! command -v curl >/dev/null 2>&1; then
+  echo -e "\r\n${RED_COLOR}Error: curl is not installed${RES}\r\n"
+  exit 1
+fi
+
 echo -e "\r\n${RED_COLOR}----------------------NOTICE----------------------${RES}\r\n"
 echo " This is a temporary script to install EasyTier "
 echo " EasyTier requires a dedicated empty folder to install"
