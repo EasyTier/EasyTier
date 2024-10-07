@@ -9,10 +9,6 @@
     "core:path:default",
     "core:event:default",
     "core:window:default",
-    "core:window:allow-hide",
-    "core:window:allow-show",
-    "core:window:allow-set-focus",
-    "core:window:allow-is-visible",
     "core:app:default",
     "core:resources:default",
     "core:menu:default",
@@ -25,7 +21,6 @@
     "vpnservice:allow-start-vpn",
     "vpnservice:allow-stop-vpn",
     "vpnservice:allow-register-listener",
-    "os:default",
-    "autostart:default"
+    "os:default"
   ]
 }
