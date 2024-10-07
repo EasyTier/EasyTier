@@ -499,16 +499,26 @@ impl PunchHoleServerCommon {
             use_last = true;
         }
 
-        let locked = all_listener_sockets.lock().await;
+        let mut locked = all_listener_sockets.lock().await;
 
         let listener = if use_last {
-            locked.last()?
+            locked.last_mut()?
         } else {
             // use the listener that is active most recently
             locked
-                .iter()
+                .iter_mut()
                 .max_by_key(|listener| listener.last_active_time.load())?
         };
+
+        if listener.mapped_addr.ip().is_unspecified() {
+            tracing::info!("listener mapped addr is unspecified, trying to get mapped addr");
+            listener.mapped_addr = self
+                .get_global_ctx()
+                .get_stun_info_collector()
+                .get_udp_port_mapping(listener.mapped_addr.port())
+                .await
+                .ok()?;
+        }
 
         Some((listener.get_socket().await, listener.mapped_addr))
     }

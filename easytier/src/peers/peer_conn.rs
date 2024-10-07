@@ -282,9 +282,7 @@ impl PeerConn {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
                     } else {
-                        if zc_packet.is_lossy() {
-                            let _ = sender.try_send(zc_packet);
-                        } else if sender.send(zc_packet).await.is_err() {
+                        if sender.send(zc_packet).await.is_err() {
                             break;
                         }
                     }
