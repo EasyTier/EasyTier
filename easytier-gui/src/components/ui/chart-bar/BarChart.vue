@@ -71,14 +71,14 @@ const selectorsBar = computed(() => props.type === 'grouped' ? GroupedBar.select
       <ChartCrosshair v-if="showTooltip" :colors="colors" :items="legendItems" :custom-tooltip="customTooltip" :index="index" />
 
       <VisBarComponent
-        :x="(d: Data, i: number) => i"
+        :x="(_d: Data, i: number) => i"
         :y="categories.map(category => (d: Data) => d[category]) "
         :color="colors"
         :rounded-corners="roundedCorners"
         :bar-padding="0.05"
         :attributes="{
           [selectorsBar]: {
-            opacity: (d: Data, i:number) => {
+            opacity: (_d: Data, i:number) => {
               const pos = i % categories.length
               return legendItems[pos]?.inactive ? filterOpacity : 1
             },
