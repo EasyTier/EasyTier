@@ -1,0 +1,31 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:path:default",
+    "core:event:default",
+    "core:window:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-is-visible",
+    "core:app:default",
+    "core:resources:default",
+    "core:menu:default",
+    "core:tray:default",
+    "shell:default",
+    "process:default",
+    "clipboard-manager:default",
+    "vpnservice:allow-ping",
+    "vpnservice:allow-prepare-vpn",
+    "vpnservice:allow-start-vpn",
+    "vpnservice:allow-stop-vpn",
+    "vpnservice:allow-register-listener",
+    "os:default",
+    "autostart:default"
+  ]
+}

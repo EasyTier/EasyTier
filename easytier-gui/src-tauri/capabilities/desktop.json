@@ -1,0 +1,14 @@
+{
+  "identifier": "desktop-capability",
+  "platforms": [
+    "macOS",
+    "windows",
+    "linux"
+  ],
+  "permissions": [
+    "autostart:default",
+    "core:path:default",
+    "core:event:default",
+    "core:window:default"
+  ]
+}

@@ -1,9 +1,24 @@
 {
+  "productName": "easytier-gui",
+  "version": "2.0.0",
+  "identifier": "com.kkrainbow.easytier",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
+    "beforeDevCommand": "pnpm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EasyTier-GUI",
+        "width": 958,
+        "height": 500
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
@@ -15,21 +30,5 @@
       "icons/icon.ico"
     ],
     "createUpdaterArtifacts": false
-  },
-  "productName": "easytier-gui",
-  "version": "2.0.0",
-  "identifier": "com.kkrainbow.easytier",
-  "plugins": {},
-  "app": {
-    "windows": [
-      {
-        "title": "easytier-gui",
-        "width": 800,
-        "height": 600
-      }
-    ],
-    "security": {
-      "csp": null
-    }
   }
 }

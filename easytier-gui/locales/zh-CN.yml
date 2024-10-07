@@ -1,0 +1,90 @@
+component:
+  about:
+    description: 一个简单、安全、去中心化的内网穿透 VPN 组网方案
+  dialogList:
+    addInstance:
+      title: 添加实例
+      submit: 添加
+      defaultTemplate: 默认模板
+      customTemplate: 自定义模板
+      tips:
+        from: 基于{source}添加实例。
+    appCloseConfirm:
+      title: 确认要退出吗？
+      content: 退出将关闭所有实例。 如需要最小化请点击最小化按钮！
+      confirm: 确认
+      cancel: 取消
+      minimize: 最小化
+    appAutostart:
+      title: 开机自启动配置
+      switch: 自启动
+      selectPlaceholder: 选择自启动后自动启用的实例
+      instance: 实例
+  drawerList:
+    dropFile:
+      title: 松开以添加实例配置
+  instance:
+    display:
+      back: 返回
+      more: 更多
+      instanceAction: 实例操作
+      share: 分享
+      autostart: 自启动
+      delete: 删除
+      log:
+        title: 日志
+        off: 关闭
+        warn: 警告
+        debug: 调试
+        info: 信息
+        trace: 跟踪
+        open: 日志目录
+
+    status:
+      overview:
+        title: 概览
+        ip: 虚拟IP
+        nat: NAT类型
+        device: '{time}设备'
+        bandwidth: '{time}带宽'
+        history: 历史
+        realTime: 实时
+      detail:
+        title: 详情
+        noData: 暂无数据
+      config: 配置
+    peerDetail:
+      latency: 延迟
+      lost: 丢包
+      up: 上传
+      down: 下载
+      deviceNum: 设备数
+      server: 服务器
+      local: 本机
+      relay: 可中转
+
+page:
+  index:
+    search: 搜索
+
+form:
+  instance:
+    instance_name: 实例名称
+    hostname: 主机名
+    instance_id: 实例ID
+    ipv4: IPv4
+    dhcp: DHCP
+    listeners: 监听地址
+    exit_node: 出口节点
+    rpc_portal: RPC端口
+    network_name: 组网名称
+    network_secret: 组网密钥
+    submit: 保存
+
+toast:
+  error:
+    operateInstance: 操作实例失败
+    parseInstanceConfig: 解析实例配置失败
+
+tray:
+  exit: 退出

@@ -12,10 +12,10 @@ name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.0.0-rc", features = [] }
+tauri-build = { version = "2.0.1", features = [] }
 
 [dependencies]
-tauri = { version = "2.0.0-rc", features = [
+tauri = { version = "2.0.1", features = [
     "tray-icon",
     "image-png",
     "image-ico",
@@ -37,13 +37,13 @@ gethostname = "0.5"
 
 dunce = "1.0.4"
 
-tauri-plugin-shell = "2.0.0-rc"
-tauri-plugin-process = "2.0.0-rc"
-tauri-plugin-clipboard-manager = "2.0.0-rc"
-tauri-plugin-positioner = { version = "2.0.0-rc", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0.1"
+tauri-plugin-process = "2.0.1"
+tauri-plugin-clipboard-manager = "2.0.1"
+tauri-plugin-positioner = { version = "2.0.1", features = ["tray-icon"] }
 tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
-tauri-plugin-os = "2.0.0-rc"
-tauri-plugin-autostart = "2.0.0-rc"
+tauri-plugin-os = "2.0.1"
+tauri-plugin-autostart = "2.0.1"
 
 
 [features]
@@ -51,4 +51,5 @@ tauri-plugin-autostart = "2.0.0-rc"
 custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-single-instance = "2.0.0-rc.0"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2.0.1"
