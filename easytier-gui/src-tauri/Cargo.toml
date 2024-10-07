@@ -43,13 +43,11 @@ tauri-plugin-clipboard-manager = "2.0.1"
 tauri-plugin-positioner = { version = "2.0.1", features = ["tray-icon"] }
 tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
 tauri-plugin-os = "2.0.1"
-tauri-plugin-autostart = "2.0.1"
-
 
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-autostart = "2"
+tauri-plugin-autostart = "2.0.1"
 tauri-plugin-single-instance = "2.0.1"
