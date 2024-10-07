@@ -14,7 +14,7 @@ use zerocopy::FromBytes as _;
 use crate::{
     common::{
         error::Error, global_ctx::ArcGlobalCtx, join_joinset_background, netns::NetNS,
-        stun::StunInfoCollectorTrait as _,
+        stun::StunInfoCollectorTrait as _, PeerId,
     },
     defer,
     peers::peer_manager::PeerManager,
@@ -158,11 +158,17 @@ impl UdpNatType {
         unreachable!("invalid nat type");
     }
 
-    pub(crate) fn can_punch_hole_as_client(&self, other: Self) -> bool {
-        !matches!(
-            self.get_punch_hole_method(other),
-            UdpPunchClientMethod::None
-        )
+    pub(crate) fn can_punch_hole_as_client(
+        &self,
+        other: Self,
+        my_peer_id: PeerId,
+        dst_peer_id: PeerId,
+    ) -> bool {
+        match self.get_punch_hole_method(other) {
+            UdpPunchClientMethod::None => false,
+            UdpPunchClientMethod::ConeToCone | UdpPunchClientMethod::SymToCone => true,
+            UdpPunchClientMethod::EasySymToEasySym => my_peer_id < dst_peer_id,
+        }
     }
 }
 
