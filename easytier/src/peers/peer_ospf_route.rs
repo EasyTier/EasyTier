@@ -6,7 +6,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Weak,
     },
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use crossbeam::atomic::AtomicCell;
@@ -1290,6 +1290,7 @@ impl PeerRouteServiceImpl {
         &self,
         dst_peer_id: PeerId,
         peer_rpc: Arc<PeerRpcManager>,
+        sync_as_initiator: bool,
     ) -> bool {
         let Some(session) = self.get_session(dst_peer_id) else {
             // if session not exist, exit the sync loop.
@@ -1306,6 +1307,7 @@ impl PeerRouteServiceImpl {
             && conn_bitmap.is_none()
             && foreign_network.is_none()
             && !session.need_sync_initiator_info.load(Ordering::Relaxed)
+            && !(sync_as_initiator && session.we_are_initiator.load(Ordering::Relaxed))
         {
             return true;
         }
@@ -1462,6 +1464,7 @@ impl RouteSessionManager {
         dst_peer_id: PeerId,
         mut sync_now: tokio::sync::broadcast::Receiver<()>,
     ) {
+        let mut last_sync = Instant::now();
         loop {
             let mut first_time = true;
 
@@ -1479,8 +1482,16 @@ impl RouteSessionManager {
                     service_impl.update_my_infos().await;
                 }
 
+                // if we are initiator, we should ensure the dst has the session.
+                let sync_as_initiator = if last_sync.elapsed().as_secs() > 10 {
+                    last_sync = Instant::now();
+                    true
+                } else {
+                    false
+                };
+
                 if service_impl
-                    .sync_route_with_peer(dst_peer_id, peer_rpc.clone())
+                    .sync_route_with_peer(dst_peer_id, peer_rpc.clone(), sync_as_initiator)
                     .await
                 {
                     break;
