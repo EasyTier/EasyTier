@@ -1,7 +1,7 @@
-import { Menu, MenuItem, PredefinedMenuItem } from '@tauri-apps/api/menu'
+import type { MenuItem } from '@tauri-apps/api/menu'
+import { Menu, PredefinedMenuItem } from '@tauri-apps/api/menu'
 import { TrayIcon } from '@tauri-apps/api/tray'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import pkg from '~/../package.json'
 
 const DEFAULT_TRAY_NAME = 'main'
 
@@ -15,6 +15,19 @@ async function toggleVisibility() {
   }
 }
 
+const menuItems = computedAsync(
+  async () => {
+    // const { t } = useI18n()
+    return [
+      await PredefinedMenuItem.new({
+        text: 'exit',
+        item: 'Quit',
+      }),
+    ]
+  },
+  [],
+)
+
 export async function useTray(init: boolean = false) {
   let tray
   try {
@@ -26,7 +39,7 @@ export async function useTray(init: boolean = false) {
         id: DEFAULT_TRAY_NAME,
         menu: await Menu.new({
           id: 'main',
-          items: await generateMenuItem(),
+          items: menuItems.value,
         }),
         action: async () => {
           toggleVisibility()
@@ -44,54 +57,33 @@ export async function useTray(init: boolean = false) {
     tray.setMenuOnLeftClick(false)
     tray.setMenu(await Menu.new({
       id: 'main',
-      items: await generateMenuItem(),
+      items: menuItems.value,
     }))
   }
 
   return tray
 }
 
-export async function generateMenuItem() {
-  return [
-    await MenuItemExit('Exit'),
-    await PredefinedMenuItem.new({ item: 'Separator' }),
-    await MenuItemShow('Show / Hide'),
-  ]
-}
-
-export async function MenuItemExit(text: string) {
-  return await PredefinedMenuItem.new({
-    text,
-    item: 'Quit',
-  })
-}
-
-export async function MenuItemShow(text: string) {
-  return await MenuItem.new({
-    id: 'show',
-    text,
-    action: async () => {
-      await toggleVisibility()
-    },
-  })
-}
-
 export async function setTrayMenu(items: (MenuItem | PredefinedMenuItem)[] | undefined = undefined) {
-  const tray = await useTray()
-  if (!tray)
-    return
-  const menu = await Menu.new({
-    id: 'main',
-    items: items || await generateMenuItem(),
-  })
-  tray.setMenu(menu)
+  if (isTauri && !platformIsMobile.value) {
+    const tray = await useTray()
+    if (!tray)
+      return
+    const menu = await Menu.new({
+      id: 'main',
+      items: items || menuItems.value,
+    })
+    tray.setMenu(menu)
+  }
 }
 
 export async function setTrayRunState(isRunning: boolean = false) {
-  const tray = await useTray()
-  if (!tray)
-    return
-  tray.setIcon(isRunning ? 'icons/icon-inactive.ico' : 'icons/icon.ico')
+  if (isTauri && !platformIsMobile.value) {
+    const tray = await useTray()
+    if (!tray)
+      return
+    tray.setIcon(isRunning ? 'icons/icon-inactive.ico' : 'icons/icon.ico')
+  }
 }
 
 export async function setTrayTooltip(tooltip: string) {

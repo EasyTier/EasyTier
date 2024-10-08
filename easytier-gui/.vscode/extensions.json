@@ -1,7 +1,14 @@
 {
   "recommendations": [
+    "Vue.volar",
+    "tauri-apps.tauri-vscode",
+    "rust-lang.rust-analyzer",
+    "shenqingchuan.vue-vine-extension",
     "dbaeumer.vscode-eslint",
-    "vue.volar",
-    "lokalise.i18n-ally"
+    "lokalise.i18n-ally",
+    "cpylua.language-postcss",
+    "csstools.postcss",
+    "vunguyentuan.vscode-postcss",
+    "bradlc.vscode-tailwindcss"
   ]
 }

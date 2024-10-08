@@ -7,18 +7,14 @@ this is a GUI implementation for EasyTier, based on Tauri2.
 ### Install prerequisites
 
 ```
-apt install npm
-npm install -g pnpm
+cd ../tauri-plugin-vpnservice
+pnpm install
+pnpm build
 ```
 
 ### For Desktop (Win/Mac/Linux)
 
 ```
-cd ../tauri-plugin-vpnservice
-pnpm install
-pnpm build
-
-cd ../easytier-gui
 pnpm install
 pnpm tauri build
 ```
