@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
-use anyhow::Error;
+use anyhow::{Context, Error};
 use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
 use common::{PunchHoleServerCommon, UdpNatType, UdpPunchClientMethod};
 use cone::{PunchConeHoleClient, PunchConeHoleServer};
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
 use sym_to_cone::{PunchSymToConeHoleClient, PunchSymToConeHoleServer};
 use tokio::{sync::Mutex, task::JoinHandle};
 
@@ -31,6 +33,17 @@ pub(crate) mod both_easy_sym;
 pub(crate) mod common;
 pub(crate) mod cone;
 pub(crate) mod sym_to_cone;
+
+// sym punch should be serialized
+static SYM_PUNCH_LOCK: Lazy<DashMap<PeerId, Arc<Mutex<()>>>> = Lazy::new(|| DashMap::new());
+
+fn get_sym_punch_lock(peer_id: PeerId) -> Arc<Mutex<()>> {
+    SYM_PUNCH_LOCK
+        .entry(peer_id)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .value()
+        .clone()
+}
 
 struct UdpHolePunchServer {
     common: Arc<PunchHoleServerCommon>,
@@ -112,6 +125,9 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SendPunchPacketBothEasySymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketBothEasySymResponse> {
+        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+            .try_lock_owned()
+            .with_context(|| "sym punch lock is busy")?;
         self.both_easy_sym_server
             .send_punch_packet_both_easy_sym(input)
             .await
@@ -154,9 +170,6 @@ struct UdpHoePunchConnectorData {
     sym_to_cone_client: PunchSymToConeHoleClient,
     both_easy_sym_client: PunchBothEasySymHoleClient,
     peer_mgr: Arc<PeerManager>,
-
-    // sym punch should be serialized
-    sym_punch_lock: Mutex<()>,
 }
 
 impl UdpHoePunchConnectorData {
@@ -170,7 +183,6 @@ impl UdpHoePunchConnectorData {
             sym_to_cone_client,
             both_easy_sym_client,
             peer_mgr,
-            sym_punch_lock: Mutex::new(()),
         })
     }
 
@@ -212,7 +224,9 @@ impl UdpHoePunchConnectorData {
             backoff.sleep_for_next_backoff().await;
 
             let ret = {
-                let _lock = self.sym_punch_lock.lock().await;
+                let _lock = get_sym_punch_lock(self.peer_mgr.my_peer_id())
+                    .lock_owned()
+                    .await;
                 self.sym_to_cone_client
                     .do_hole_punching(
                         task_info.dst_peer_id,
@@ -251,7 +265,9 @@ impl UdpHoePunchConnectorData {
             let mut is_busy = false;
 
             let ret = {
-                let _lock = self.sym_punch_lock.lock().await;
+                let _lock = get_sym_punch_lock(self.peer_mgr.my_peer_id())
+                    .lock_owned()
+                    .await;
                 self.both_easy_sym_client
                     .do_hole_punching(
                         task_info.dst_peer_id,
@@ -325,6 +341,8 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
             return peers_to_connect;
         }
 
+        let my_peer_id = data.peer_mgr.my_peer_id();
+
         // collect peer list from peer manager and do some filter:
         // 1. peers without direct conns;
         // 2. peers is full cone (any restricted type);
@@ -353,7 +371,7 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if !my_nat_type.can_punch_hole_as_client(peer_nat_type) {
+            if !my_nat_type.can_punch_hole_as_client(peer_nat_type, my_peer_id, peer_id) {
                 continue;
             }
 
