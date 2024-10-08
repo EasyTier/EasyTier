@@ -1539,7 +1539,7 @@ checksum = "0d6ef0072f8a535281e4876be788938b528e9a1d43900b82c2569af7da799125"
 
 [[package]]
 name = "easytier"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1631,7 +1631,7 @@ dependencies = [
 
 [[package]]
 name = "easytier-gui"
-version = "2.0.1"
+version = "2.0.2"
 dependencies = [
  "anyhow",
  "chrono",

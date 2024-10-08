@@ -296,8 +296,8 @@ impl UdpTunnelListenerData {
             return;
         }
 
-        let ring_for_send_udp = Arc::new(RingTunnel::new(64));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(64));
+        let ring_for_send_udp = Arc::new(RingTunnel::new(128));
+        let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
         tracing::debug!(
             ?ring_for_send_udp,
             ?ring_for_recv_udp,
@@ -559,8 +559,8 @@ impl UdpTunnelConnector {
         dst_addr: SocketAddr,
         conn_id: u32,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let ring_for_send_udp = Arc::new(RingTunnel::new(32));
-        let ring_for_recv_udp = Arc::new(RingTunnel::new(32));
+        let ring_for_send_udp = Arc::new(RingTunnel::new(128));
+        let ring_for_recv_udp = Arc::new(RingTunnel::new(128));
         tracing::debug!(
             ?ring_for_send_udp,
             ?ring_for_recv_udp,
