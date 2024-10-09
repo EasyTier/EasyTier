@@ -305,26 +305,32 @@ impl SyncedRouteInfo {
         my_peer_id: PeerId,
         my_peer_route_id: u64,
         dst_peer_id: PeerId,
-        route_infos: &Vec<RoutePeerInfo>,
+        dst_peer_route_id: Option<u64>,
+        info: &RoutePeerInfo,
     ) -> Result<(), Error> {
         // 1. check if we are duplicated.
-        for info in route_infos.iter() {
-            if info.peer_id == my_peer_id {
-                if info.version > self.get_peer_info_version_with_default(info.peer_id) {
-                    // if dst peer send to us with higher version info of my peer, our peer id is duplicated
-                    // TODO: handle this better. restart peer manager?
-                    panic!("my peer id is duplicated");
-                    // return Err(Error::DuplicatePeerId);
-                }
+        if info.peer_id == my_peer_id {
+            if info.peer_route_id != my_peer_route_id
+                && info.version > self.get_peer_info_version_with_default(info.peer_id)
+            {
+                // if dst peer send to us with higher version info of my peer, our peer id is duplicated
+                // TODO: handle this better. restart peer manager?
+                panic!("my peer id is duplicated");
+                // return Err(Error::DuplicatePeerId);
             }
+        } else if info.peer_id == dst_peer_id {
+            let Some(dst_peer_route_id) = dst_peer_route_id else {
+                return Ok(());
+            };
 
-            if info.peer_id == dst_peer_id && info.peer_route_id != my_peer_route_id {
-                if info.version < self.get_peer_info_version_with_default(info.peer_id) {
-                    // if dst peer send to us with lower version info of dst peer, dst peer id is duplicated
-                    return Err(Error::DuplicatePeerId);
-                }
+            if dst_peer_route_id != info.peer_route_id
+                && info.version < self.get_peer_info_version_with_default(info.peer_id)
+            {
+                // if dst peer send to us with lower version info of dst peer, dst peer id is duplicated
+                return Err(Error::DuplicatePeerId);
             }
         }
+
         Ok(())
     }
 
@@ -335,8 +341,19 @@ impl SyncedRouteInfo {
         dst_peer_id: PeerId,
         peer_infos: &Vec<RoutePeerInfo>,
     ) -> Result<(), Error> {
-        self.check_duplicate_peer_id(my_peer_id, my_peer_route_id, dst_peer_id, peer_infos)?;
         for mut route_info in peer_infos.iter().map(Clone::clone) {
+            self.check_duplicate_peer_id(
+                my_peer_id,
+                my_peer_route_id,
+                dst_peer_id,
+                if route_info.peer_id == dst_peer_id {
+                    self.peer_infos.get(&dst_peer_id).map(|x| x.peer_route_id)
+                } else {
+                    None
+                },
+                &route_info,
+            )?;
+
             // time between peers may not be synchronized, so update last_update to local now.
             // note only last_update with larger version will be updated to local saved peer info.
             route_info.last_update = Some(SystemTime::now().into());
