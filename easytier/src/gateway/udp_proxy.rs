@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use cidr::Ipv4Inet;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use pnet::packet::{
@@ -245,7 +246,8 @@ impl UdpProxy {
         if !self.cidr_set.contains_v4(ipv4.get_destination())
             && !is_exit_node
             && !(self.global_ctx.no_tun()
-                && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4())
+                && Some(ipv4.get_destination())
+                    == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
             return None;
         }
@@ -296,14 +298,16 @@ impl UdpProxy {
                 .replace(tokio::spawn(UdpNatEntry::forward_task(
                     nat_entry.clone(),
                     self.sender.clone(),
-                    self.global_ctx.get_ipv4()?,
+                    self.global_ctx.get_ipv4().map(|x| x.address())?,
                 )));
         }
 
         nat_entry.mark_active();
 
         // TODO: should it be async.
-        let dst_socket = if Some(ipv4.get_destination()) == self.global_ctx.get_ipv4() {
+        let dst_socket = if Some(ipv4.get_destination())
+            == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address)
+        {
             format!("127.0.0.1:{}", udp_packet.get_destination())
                 .parse()
                 .unwrap()

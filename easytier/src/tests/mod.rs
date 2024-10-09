@@ -130,7 +130,7 @@ pub fn enable_log() {
 fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::cli::Route>) {
     let mut found = false;
     for r in routes.iter() {
-        if r.ipv4_addr == ipv4.to_string() {
+        if r.ipv4_addr == Some(ipv4.parse().unwrap()) {
             found = true;
             assert_eq!(r.peer_id, dst_peer_id, "{:?}", routes);
         }
@@ -154,7 +154,7 @@ async fn wait_proxy_route_appear(
             let r = r;
             if r.proxy_cidrs.contains(&proxy_cidr.to_owned()) {
                 assert_eq!(r.peer_id, dst_peer_id);
-                assert_eq!(r.ipv4_addr, ipv4);
+                assert_eq!(r.ipv4_addr, Some(ipv4.parse().unwrap()));
                 return;
             }
         }

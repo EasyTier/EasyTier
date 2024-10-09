@@ -504,8 +504,7 @@ pub fn reg_change_catrgory_in_profile(dev_name: &str) -> io::Result<()> {
         let subkey = profiles_key.open_subkey_with_flags(&subkey_name, KEY_ALL_ACCESS)?;
         match subkey.get_value::<String, _>("ProfileName") {
             Ok(profile_name) => {
-                if !dev_name.is_empty() && dev_name == profile_name
-                {
+                if !dev_name.is_empty() && dev_name == profile_name {
                     match subkey.set_value("Category", &1u32) {
                         Ok(_) => tracing::trace!("Successfully set Category in registry"),
                         Err(e) => tracing::error!("Failed to set Category in registry: {}", e),
@@ -548,14 +547,16 @@ impl NicCtx {
         }
     }
 
-    async fn assign_ipv4_to_tun_device(&self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+    async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
         let nic = self.nic.lock().await;
         nic.link_up().await?;
         nic.remove_ip(None).await?;
-        nic.add_ip(ipv4_addr, 24).await?;
+        nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
+            .await?;
         #[cfg(any(target_os = "macos", target_os = "freebsd"))]
         {
-            nic.add_route(ipv4_addr, 24).await?;
+            nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
+                .await?;
         }
         Ok(())
     }
@@ -710,18 +711,17 @@ impl NicCtx {
         Ok(())
     }
 
-    pub async fn run(&mut self, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+    pub async fn run(&mut self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
             match nic.create_dev().await {
                 Ok(ret) => {
-
-                    #[cfg(target_os = "windows")] 
+                    #[cfg(target_os = "windows")]
                     {
                         let dev_name = self.global_ctx.get_flags().dev_name;
                         let _ = reg_change_catrgory_in_profile(&dev_name);
                     }
-            
+
                     self.global_ctx
                         .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
                     ret

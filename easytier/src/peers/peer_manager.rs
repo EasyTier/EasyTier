@@ -718,8 +718,16 @@ impl PeerManager {
 
         let mut is_exit_node = false;
         let mut dst_peers = vec![];
-        // NOTE: currently we only support ipv4 and cidr is 24
-        if ipv4_addr.is_broadcast() || ipv4_addr.is_multicast() || ipv4_addr.octets()[3] == 255 {
+        let network_length = self
+            .global_ctx
+            .get_ipv4()
+            .map(|x| x.network_length())
+            .unwrap_or(24);
+        let ipv4_inet = cidr::Ipv4Inet::new(ipv4_addr, network_length).unwrap();
+        if ipv4_addr.is_broadcast()
+            || ipv4_addr.is_multicast()
+            || ipv4_addr == ipv4_inet.last_address()
+        {
             dst_peers.extend(
                 self.peers
                     .list_routes()

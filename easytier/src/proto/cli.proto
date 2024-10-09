@@ -45,7 +45,7 @@ message ListPeerResponse {
 
 message Route {
   uint32 peer_id = 1;
-  string ipv4_addr = 2;
+  common.Ipv4Inet ipv4_addr = 2;
   uint32 next_hop_peer_id = 3;
   int32 cost = 4;
   repeated string proxy_cidrs = 5;

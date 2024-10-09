@@ -72,6 +72,11 @@ message Ipv6Addr {
   uint32 part4 = 4;
 }
 
+message Ipv4Inet {
+  Ipv4Addr address = 1;
+  uint32 network_length = 2;
+}
+
 message Url { string url = 1; }
 
 message SocketAddr {

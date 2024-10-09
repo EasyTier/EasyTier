@@ -23,8 +23,8 @@ pub trait ConfigLoader: Send + Sync {
     fn get_netns(&self) -> Option<String>;
     fn set_netns(&self, ns: Option<String>);
 
-    fn get_ipv4(&self) -> Option<std::net::Ipv4Addr>;
-    fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>);
+    fn get_ipv4(&self) -> Option<cidr::Ipv4Inet>;
+    fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>);
 
     fn get_dhcp(&self) -> bool;
     fn set_dhcp(&self, dhcp: bool);
@@ -324,16 +324,23 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().netns = ns;
     }
 
-    fn get_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+    fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
         let locked_config = self.config.lock().unwrap();
         locked_config
             .ipv4
             .as_ref()
             .map(|s| s.parse().ok())
             .flatten()
+            .map(|c: cidr::Ipv4Inet| {
+                if c.network_length() == 32 {
+                    cidr::Ipv4Inet::new(c.address(), 24).unwrap()
+                } else {
+                    c
+                }
+            })
     }
 
-    fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>) {
+    fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
         self.config.lock().unwrap().ipv4 = if let Some(addr) = addr {
             Some(addr.to_string())
         } else {
@@ -590,7 +597,7 @@ level = "warn"
         assert!(ret.is_ok());
 
         let ret = ret.unwrap();
-        assert_eq!("10.144.144.10", ret.get_ipv4().unwrap().to_string());
+        assert_eq!("10.144.144.10/24", ret.get_ipv4().unwrap().to_string());
 
         assert_eq!(
             vec!["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"],

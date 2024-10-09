@@ -284,13 +284,11 @@ impl VpnPortal for WireGuard {
             .collect::<Vec<_>>();
         for ipv4 in routes
             .iter()
-            .map(|x| x.ipv4_addr.clone())
-            .chain(global_ctx.get_ipv4().iter().map(|x| x.to_string()))
+            .filter(|x| x.ipv4_addr.is_some())
+            .map(|x| x.ipv4_addr.unwrap())
+            .chain(global_ctx.get_ipv4().into_iter().map(Into::into))
         {
-            let Ok(ipv4) = ipv4.parse() else {
-                continue;
-            };
-            let inet = Ipv4Inet::new(ipv4, 24).unwrap();
+            let inet = Ipv4Inet::from(ipv4);
             allow_ips.push(inet.network().to_string());
             break;
         }
