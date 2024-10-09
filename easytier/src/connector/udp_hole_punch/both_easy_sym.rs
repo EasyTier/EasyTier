@@ -185,7 +185,7 @@ impl PunchBothEasySymHoleClient {
         my_nat_info: UdpNatType,
         peer_nat_info: UdpNatType,
         is_busy: &mut bool,
-    ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
+    ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
         *is_busy = false;
 
         let udp_array = UdpSocketArray::new(
@@ -301,7 +301,7 @@ impl PunchBothEasySymHoleClient {
                     .await
                 {
                     Ok(tunnel) => {
-                        return Ok(tunnel);
+                        return Ok(Some(tunnel));
                     }
                     Err(e) => {
                         tracing::error!(?e, "failed to connect with socket");
@@ -312,7 +312,7 @@ impl PunchBothEasySymHoleClient {
             udp_array.add_new_socket(socket.socket).await?;
         }
 
-        anyhow::bail!("failed to punch hole for both easy sym");
+        Ok(None)
     }
 }
 
@@ -325,6 +325,7 @@ pub mod tests {
 
     use tokio::net::UdpSocket;
 
+    use crate::connector::udp_hole_punch::RUN_TESTING;
     use crate::{
         connector::udp_hole_punch::{
             tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
@@ -338,6 +339,8 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial(hole_punch)]
     async fn hole_punching_easy_sym(#[values("true", "false")] is_inc: bool) {
+        RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
+
         let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
             NatType::SymmetricEasyInc
         } else {

@@ -258,7 +258,7 @@ impl PunchSymToConeHoleClient {
         round: u32,
         last_port_idx: &mut usize,
         my_nat_info: UdpNatType,
-    ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
+    ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
         let udp_array = self.prepare_udp_array().await?;
         let global_ctx = self.peer_mgr.get_global_ctx();
 
@@ -291,7 +291,7 @@ impl PunchSymToConeHoleClient {
             )
             .await
             {
-                return Ok(tunnel);
+                return Ok(Some(tunnel));
             }
         }
 
@@ -411,14 +411,7 @@ impl PunchSymToConeHoleClient {
             *last_port_idx = rand::random();
         }
 
-        if let Some(tunnel) = ret_tunnel {
-            Ok(tunnel)
-        } else {
-            anyhow::bail!(
-                "failed to hole punch, punch task result: {:?}",
-                punch_task_result
-            )
-        }
+        Ok(ret_tunnel)
     }
 }
 
@@ -433,7 +426,7 @@ pub mod tests {
 
     use crate::{
         connector::udp_hole_punch::{
-            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector,
+            tests::create_mock_peer_manager_with_mock_stun, UdpHolePunchConnector, RUN_TESTING,
         },
         peers::tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         proto::common::NatType,
@@ -443,6 +436,8 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial(hole_punch)]
     async fn hole_punching_symmetric_only_random() {
+        RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
+
         let p_a = create_mock_peer_manager_with_mock_stun(NatType::Symmetric).await;
         let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
         let p_c = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
@@ -518,6 +513,8 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial(hole_punch)]
     async fn hole_punching_symmetric_only_predict(#[values("true", "false")] is_inc: bool) {
+        RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
+
         let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
             NatType::SymmetricEasyInc
         } else {
