@@ -110,11 +110,17 @@ impl PunchConeHoleClient {
             .with_context(|| anyhow::anyhow!("failed to get local port from udp array"))?;
         let local_port = local_addr.port();
 
+        drop(local_socket);
         let local_mapped_addr = global_ctx
             .get_stun_info_collector()
             .get_udp_port_mapping(local_port)
             .await
             .with_context(|| "failed to get udp port mapping")?;
+
+        let local_socket = {
+            let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
+            Arc::new(UdpSocket::bind(local_addr).await?)
+        };
 
         // client -> server: tell server the mapped port, server will return the mapped address of listening port.
         let rpc_stub = self
