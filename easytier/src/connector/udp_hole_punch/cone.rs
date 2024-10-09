@@ -94,7 +94,7 @@ impl PunchConeHoleClient {
     pub(crate) async fn do_hole_punching(
         &self,
         dst_peer_id: PeerId,
-    ) -> Result<Box<dyn Tunnel>, anyhow::Error> {
+    ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
         tracing::info!(?dst_peer_id, "start hole punching");
         let tid = rand::random();
 
@@ -212,7 +212,7 @@ impl PunchConeHoleClient {
                 {
                     Ok(tunnel) => {
                         tracing::info!(?tunnel, "hole punched");
-                        return Ok(tunnel);
+                        return Ok(Some(tunnel));
                     }
                     Err(e) => {
                         tracing::error!(?e, "failed to connect with socket");
@@ -221,7 +221,7 @@ impl PunchConeHoleClient {
             }
         }
 
-        return Err(anyhow::anyhow!("punch task finished but no hole punched"));
+        return Ok(None);
     }
 }
 

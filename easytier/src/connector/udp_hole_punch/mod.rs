@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc};
 
 use anyhow::{Context, Error};
 use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
@@ -27,6 +27,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
+    tunnel::Tunnel,
 };
 
 pub(crate) mod both_easy_sym;
@@ -36,6 +37,7 @@ pub(crate) mod sym_to_cone;
 
 // sym punch should be serialized
 static SYM_PUNCH_LOCK: Lazy<DashMap<PeerId, Arc<Mutex<()>>>> = Lazy::new(|| DashMap::new());
+static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
 
 fn get_sym_punch_lock(peer_id: PeerId) -> Arc<Mutex<()>> {
     SYM_PUNCH_LOCK
@@ -103,6 +105,9 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SendPunchPacketHardSymRequest,
     ) -> rpc_types::error::Result<SendPunchPacketHardSymResponse> {
+        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+            .try_lock_owned()
+            .with_context(|| "sym punch lock is busy")?;
         self.sym_to_cone_server
             .send_punch_packet_hard_sym(input)
             .await
@@ -113,6 +118,9 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
         _ctrl: Self::Controller,
         input: SendPunchPacketEasySymRequest,
     ) -> rpc_types::error::Result<Void> {
+        let _locked = get_sym_punch_lock(self.common.get_peer_mgr().my_peer_id())
+            .try_lock_owned()
+            .with_context(|| "sym punch lock is busy")?;
         self.sym_to_cone_server
             .send_punch_packet_easy_sym(input)
             .await
@@ -134,6 +142,7 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
     }
 }
 
+#[derive(Debug)]
 struct BackOff {
     backoffs_ms: Vec<u64>,
     current_idx: usize,
@@ -187,6 +196,53 @@ impl UdpHoePunchConnectorData {
     }
 
     #[tracing::instrument(skip(self))]
+    async fn handle_punch_result(
+        self: &Self,
+        ret: Result<Option<Box<dyn Tunnel>>, Error>,
+        backoff: Option<&mut BackOff>,
+        round: Option<&mut u32>,
+    ) -> bool {
+        let op = |rollback: bool| {
+            if rollback {
+                if let Some(backoff) = backoff {
+                    backoff.rollback();
+                }
+                if let Some(round) = round {
+                    *round = round.saturating_sub(1);
+                }
+            } else {
+                if let Some(round) = round {
+                    *round += 1;
+                }
+            }
+        };
+
+        match ret {
+            Ok(Some(tunnel)) => {
+                tracing::info!(?tunnel, "hole punching get tunnel success");
+
+                if let Err(e) = self.peer_mgr.add_client_tunnel(tunnel).await {
+                    tracing::warn!(?e, "add client tunnel failed");
+                    op(true);
+                    false
+                } else {
+                    true
+                }
+            }
+            Ok(None) => {
+                tracing::info!("hole punching failed, no punch tunnel");
+                op(false);
+                false
+            }
+            Err(e) => {
+                tracing::info!(?e, "hole punching failed");
+                op(true);
+                false
+            }
+        }
+    }
+
+    #[tracing::instrument(skip(self))]
     async fn cone_to_cone(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
         let mut backoff = BackOff::new(vec![0, 1000, 2000, 4000, 4000, 8000, 8000, 16000]);
 
@@ -197,20 +253,15 @@ impl UdpHoePunchConnectorData {
                 .cone_client
                 .do_hole_punching(task_info.dst_peer_id)
                 .await;
-            if let Err(e) = ret {
-                tracing::info!(?e, "cone_to_cone hole punching failed");
-                continue;
-            }
 
-            if let Err(e) = self.peer_mgr.add_client_tunnel(ret.unwrap()).await {
-                tracing::warn!(?e, "cone_to_cone add client tunnel failed");
-                continue;
+            if self
+                .handle_punch_result(ret, Some(&mut backoff), None)
+                .await
+            {
+                break;
             }
-
-            break;
         }
 
-        tracing::info!("cone_to_cone hole punching success");
         Ok(())
     }
 
@@ -222,6 +273,17 @@ impl UdpHoePunchConnectorData {
 
         loop {
             backoff.sleep_for_next_backoff().await;
+
+            // always try cone first
+            if !RUN_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
+                let ret = self
+                    .cone_client
+                    .do_hole_punching(task_info.dst_peer_id)
+                    .await;
+                if self.handle_punch_result(ret, None, None).await {
+                    break;
+                }
+            }
 
             let ret = {
                 let _lock = get_sym_punch_lock(self.peer_mgr.my_peer_id())
@@ -237,19 +299,12 @@ impl UdpHoePunchConnectorData {
                     .await
             };
 
-            round += 1;
-
-            if let Err(e) = ret {
-                tracing::info!(?e, "sym_to_cone hole punching failed");
-                continue;
+            if self
+                .handle_punch_result(ret, Some(&mut backoff), Some(&mut round))
+                .await
+            {
+                break;
             }
-
-            if let Err(e) = self.peer_mgr.add_client_tunnel(ret.unwrap()).await {
-                tracing::warn!(?e, "sym_to_cone add client tunnel failed");
-                continue;
-            }
-
-            break;
         }
 
         Ok(())
@@ -261,6 +316,17 @@ impl UdpHoePunchConnectorData {
 
         loop {
             backoff.sleep_for_next_backoff().await;
+
+            // always try cone first
+            if !RUN_TESTING.load(std::sync::atomic::Ordering::Relaxed) {
+                let ret = self
+                    .cone_client
+                    .do_hole_punching(task_info.dst_peer_id)
+                    .await;
+                if self.handle_punch_result(ret, None, None).await {
+                    break;
+                }
+            }
 
             let mut is_busy = false;
 
@@ -280,19 +346,12 @@ impl UdpHoePunchConnectorData {
 
             if is_busy {
                 backoff.rollback();
+            } else if self
+                .handle_punch_result(ret, Some(&mut backoff), None)
+                .await
+            {
+                break;
             }
-
-            if let Err(e) = ret {
-                tracing::info!(?e, "both_easy_sym hole punching failed");
-                continue;
-            }
-
-            if let Err(e) = self.peer_mgr.add_client_tunnel(ret.unwrap()).await {
-                tracing::warn!(?e, "both_easy_sym add client tunnel failed");
-                continue;
-            }
-
-            break;
         }
 
         Ok(())
