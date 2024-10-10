@@ -270,19 +270,11 @@ impl Instance {
 
                 let mut used_ipv4 = HashSet::new();
                 for route in routes {
-                    if route.ipv4_addr.is_empty() {
-                        continue;
-                    }
-
-                    let Ok(peer_ipv4_addr) = route.ipv4_addr.parse::<Ipv4Addr>() else {
+                    let Some(peer_ipv4_addr) = route.ipv4_addr else {
                         continue;
                     };
 
-                    let Ok(peer_ipv4_addr) = Ipv4Inet::new(peer_ipv4_addr, 24) else {
-                        continue;
-                    };
-
-                    used_ipv4.insert(peer_ipv4_addr);
+                    used_ipv4.insert(peer_ipv4_addr.into());
                 }
 
                 let dhcp_inet = used_ipv4.iter().next().unwrap_or(&default_ipv4_addr);
@@ -304,7 +296,7 @@ impl Instance {
                     continue;
                 }
 
-                let last_ip = current_dhcp_ip.as_ref().map(Ipv4Inet::address);
+                let last_ip = current_dhcp_ip.clone();
                 tracing::debug!(
                     ?current_dhcp_ip,
                     ?candidate_ipv4_addr,
@@ -316,11 +308,9 @@ impl Instance {
                 if let Some(ip) = candidate_ipv4_addr {
                     if global_ctx_c.no_tun() {
                         current_dhcp_ip = Some(ip);
-                        global_ctx_c.set_ipv4(Some(ip.address()));
-                        global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(
-                            last_ip,
-                            Some(ip.address()),
-                        ));
+                        global_ctx_c.set_ipv4(Some(ip));
+                        global_ctx_c
+                            .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
                         continue;
                     }
 
@@ -331,7 +321,7 @@ impl Instance {
                             &peer_manager_c,
                             _peer_packet_receiver.clone(),
                         );
-                        if let Err(e) = new_nic_ctx.run(ip.address()).await {
+                        if let Err(e) = new_nic_ctx.run(ip).await {
                             tracing::error!(
                                 ?current_dhcp_ip,
                                 ?candidate_ipv4_addr,
@@ -345,9 +335,8 @@ impl Instance {
                     }
 
                     current_dhcp_ip = Some(ip);
-                    global_ctx_c.set_ipv4(Some(ip.address()));
-                    global_ctx_c
-                        .issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip.address())));
+                    global_ctx_c.set_ipv4(Some(ip));
+                    global_ctx_c.issue_event(GlobalCtxEvent::DhcpIpv4Changed(last_ip, Some(ip)));
                 } else {
                     current_dhcp_ip = None;
                     global_ctx_c.set_ipv4(None);

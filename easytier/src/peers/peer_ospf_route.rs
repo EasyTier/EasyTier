@@ -30,7 +30,7 @@ use crate::{
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
-        common::{NatType, StunInfo},
+        common::{Ipv4Inet, NatType, StunInfo},
         peer_rpc::{
             route_foreign_network_infos, ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey,
             OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
@@ -118,6 +118,7 @@ impl RoutePeerInfo {
             easytier_version: EASYTIER_VERSION.to_string(),
             feature_flag: None,
             peer_route_id: 0,
+            network_length: 24,
         }
     }
 
@@ -131,7 +132,7 @@ impl RoutePeerInfo {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
             cost: 0,
-            ipv4_addr: global_ctx.get_ipv4().map(|x| x.into()),
+            ipv4_addr: global_ctx.get_ipv4().map(|x| x.address().into()),
             proxy_cidrs: global_ctx
                 .get_proxy_cidrs()
                 .iter()
@@ -150,6 +151,10 @@ impl RoutePeerInfo {
             easytier_version: EASYTIER_VERSION.to_string(),
             feature_flag: Some(global_ctx.get_feature_flags()),
             peer_route_id,
+            network_length: global_ctx
+                .get_ipv4()
+                .map(|x| x.network_length() as u32)
+                .unwrap_or(24),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -171,12 +176,21 @@ impl RoutePeerInfo {
 
 impl Into<crate::proto::cli::Route> for RoutePeerInfo {
     fn into(self) -> crate::proto::cli::Route {
+        let network_length = if self.network_length == 0 {
+            24
+        } else {
+            self.network_length
+        };
+
         crate::proto::cli::Route {
             peer_id: self.peer_id,
             ipv4_addr: if let Some(ipv4_addr) = self.ipv4_addr {
-                ipv4_addr.to_string()
+                Some(Ipv4Inet {
+                    address: Some(ipv4_addr.into()),
+                    network_length,
+                })
             } else {
-                "".to_string()
+                None
             },
             next_hop_peer_id: 0,
             cost: self.cost as i32,

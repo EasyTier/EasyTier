@@ -40,8 +40,8 @@ pub enum GlobalCtxEvent {
     VpnPortalClientConnected(String, String), // (portal, client ip)
     VpnPortalClientDisconnected(String, String), // (portal, client ip)
 
-    DhcpIpv4Changed(Option<std::net::Ipv4Addr>, Option<std::net::Ipv4Addr>), // (old, new)
-    DhcpIpv4Conflicted(Option<std::net::Ipv4Addr>),
+    DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
+    DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
 }
 
 type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
@@ -56,7 +56,7 @@ pub struct GlobalCtx {
 
     event_bus: EventBus,
 
-    cached_ipv4: AtomicCell<Option<std::net::Ipv4Addr>>,
+    cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<cidr::IpCidr>>>,
 
     ip_collector: Arc<IPCollector>,
@@ -139,7 +139,7 @@ impl GlobalCtx {
         }
     }
 
-    pub fn get_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+    pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
         if let Some(ret) = self.cached_ipv4.load() {
             return Some(ret);
         }
@@ -148,7 +148,7 @@ impl GlobalCtx {
         return addr;
     }
 
-    pub fn set_ipv4(&self, addr: Option<std::net::Ipv4Addr>) {
+    pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
         self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
     }

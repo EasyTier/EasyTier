@@ -1,5 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
+use anyhow::Context;
+
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
 impl From<uuid::Uuid> for Uuid {
@@ -60,10 +62,8 @@ impl From<Ipv6Addr> for std::net::Ipv6Addr {
         let part3 = value.part3.to_be_bytes();
         let part4 = value.part4.to_be_bytes();
         std::net::Ipv6Addr::from([
-            part1[0], part1[1], part1[2], part1[3], 
-            part2[0], part2[1], part2[2], part2[3], 
-            part3[0], part3[1], part3[2], part3[3], 
-            part4[0], part4[1], part4[2], part4[3]
+            part1[0], part1[1], part1[2], part1[3], part2[0], part2[1], part2[2], part2[3],
+            part3[0], part3[1], part3[2], part3[3], part4[0], part4[1], part4[2], part4[3],
         ])
     }
 }
@@ -71,6 +71,37 @@ impl From<Ipv6Addr> for std::net::Ipv6Addr {
 impl ToString for Ipv6Addr {
     fn to_string(&self) -> String {
         std::net::Ipv6Addr::from(self.clone()).to_string()
+    }
+}
+
+impl From<cidr::Ipv4Inet> for Ipv4Inet {
+    fn from(value: cidr::Ipv4Inet) -> Self {
+        Ipv4Inet {
+            address: Some(value.address().into()),
+            network_length: value.network_length() as u32,
+        }
+    }
+}
+
+impl From<Ipv4Inet> for cidr::Ipv4Inet {
+    fn from(value: Ipv4Inet) -> Self {
+        cidr::Ipv4Inet::new(value.address.unwrap().into(), value.network_length as u8).unwrap()
+    }
+}
+
+impl std::fmt::Display for Ipv4Inet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", cidr::Ipv4Inet::from(self.clone()))
+    }
+}
+
+impl FromStr for Ipv4Inet {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Ipv4Inet::from(
+            cidr::Ipv4Inet::from_str(s).with_context(|| "Failed to parse Ipv4Inet")?,
+        ))
     }
 }
 

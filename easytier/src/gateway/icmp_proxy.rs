@@ -358,7 +358,12 @@ impl IcmpProxy {
         if !self.cidr_set.contains_v4(ipv4.get_destination())
             && !is_exit_node
             && !(self.global_ctx.no_tun()
-                && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4())
+                && Some(ipv4.get_destination())
+                    == self
+                        .global_ctx
+                        .get_ipv4()
+                        .as_ref()
+                        .map(cidr::Ipv4Inet::address))
         {
             return None;
         }
@@ -382,7 +387,14 @@ impl IcmpProxy {
             return None;
         }
 
-        if self.global_ctx.no_tun() && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4() {
+        if self.global_ctx.no_tun()
+            && Some(ipv4.get_destination())
+                == self
+                    .global_ctx
+                    .get_ipv4()
+                    .as_ref()
+                    .map(cidr::Ipv4Inet::address)
+        {
             self.send_icmp_reply_to_peer(
                 &ipv4.get_destination(),
                 &ipv4.get_source(),

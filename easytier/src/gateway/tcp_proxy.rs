@@ -1,3 +1,4 @@
+use cidr::Ipv4Inet;
 use core::panic;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
@@ -526,7 +527,8 @@ impl TcpProxy {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        let nat_dst = if Some(nat_entry.dst.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip))
+        let nat_dst = if Some(nat_entry.dst.ip())
+            == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
         {
             format!("127.0.0.1:{}", nat_entry.dst.port())
                 .parse()
@@ -591,7 +593,10 @@ impl TcpProxy {
         {
             Some(Ipv4Addr::new(192, 88, 99, 254))
         } else {
-            self.global_ctx.get_ipv4()
+            self.global_ctx
+                .get_ipv4()
+                .as_ref()
+                .map(cidr::Ipv4Inet::address)
         }
     }
 
@@ -621,7 +626,8 @@ impl TcpProxy {
         if !self.cidr_set.contains_v4(ipv4.get_destination())
             && !is_exit_node
             && !(self.global_ctx.no_tun()
-                && Some(ipv4.get_destination()) == self.global_ctx.get_ipv4())
+                && Some(ipv4.get_destination())
+                    == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
             return None;
         }

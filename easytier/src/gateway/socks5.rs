@@ -111,7 +111,7 @@ struct Socks5Entry {
 type Socks5EntrySet = Arc<DashSet<Socks5Entry>>;
 
 struct Socks5ServerNet {
-    ipv4_addr: Ipv4Addr,
+    ipv4_addr: cidr::Ipv4Inet,
     auth: Option<SimpleUserPassword>,
 
     smoltcp_net: Arc<Net>,
@@ -122,7 +122,7 @@ struct Socks5ServerNet {
 
 impl Socks5ServerNet {
     pub fn new(
-        ipv4_addr: Ipv4Addr,
+        ipv4_addr: cidr::Ipv4Inet,
         auth: Option<SimpleUserPassword>,
         peer_manager: Arc<PeerManager>,
         packet_recv: Arc<Mutex<mpsc::Receiver<ZCPacket>>>,
@@ -173,8 +173,10 @@ impl Socks5ServerNet {
             dev,
             NetConfig::new(
                 interface_config,
-                format!("{}/24", ipv4_addr).parse().unwrap(),
-                vec![format!("{}", ipv4_addr).parse().unwrap()],
+                format!("{}/{}", ipv4_addr.address(), ipv4_addr.network_length())
+                    .parse()
+                    .unwrap(),
+                vec![format!("{}", ipv4_addr.address()).parse().unwrap()],
             ),
         );
 

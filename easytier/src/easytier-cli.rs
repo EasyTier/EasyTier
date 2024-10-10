@@ -227,7 +227,12 @@ impl CommandHandler {
         impl From<PeerRoutePair> for PeerTableItem {
             fn from(p: PeerRoutePair) -> Self {
                 PeerTableItem {
-                    ipv4: p.route.ipv4_addr.clone(),
+                    ipv4: p
+                        .route
+                        .ipv4_addr
+                        .clone()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                     hostname: p.route.hostname.clone(),
                     cost: cost_to_str(p.route.cost),
                     lat_ms: float_to_str(p.get_latency_ms().unwrap_or(0.0), 3),
@@ -413,7 +418,12 @@ impl CommandHandler {
 
             if p.route.cost == 1 {
                 items.push(RouteTableItem {
-                    ipv4: p.route.ipv4_addr.clone(),
+                    ipv4: p
+                        .route
+                        .ipv4_addr
+                        .clone()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                     hostname: p.route.hostname.clone(),
                     proxy_cidrs: p.route.proxy_cidrs.clone().join(",").to_string(),
                     next_hop_ipv4: "DIRECT".to_string(),
@@ -428,10 +438,20 @@ impl CommandHandler {
                 });
             } else {
                 items.push(RouteTableItem {
-                    ipv4: p.route.ipv4_addr.clone(),
+                    ipv4: p
+                        .route
+                        .ipv4_addr
+                        .clone()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                     hostname: p.route.hostname.clone(),
                     proxy_cidrs: p.route.proxy_cidrs.clone().join(",").to_string(),
-                    next_hop_ipv4: next_hop_pair.route.ipv4_addr.clone(),
+                    next_hop_ipv4: next_hop_pair
+                        .route
+                        .ipv4_addr
+                        .clone()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                     next_hop_hostname: next_hop_pair.route.hostname.clone(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
                     cost: p.route.cost,

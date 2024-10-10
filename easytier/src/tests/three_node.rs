@@ -184,13 +184,13 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
     let insts = init_three_node(proto).await;
 
     check_route(
-        "10.144.144.2",
+        "10.144.144.2/24",
         insts[1].peer_id(),
         insts[0].get_peer_manager().list_routes().await,
     );
 
     check_route(
-        "10.144.144.3",
+        "10.144.144.3/24",
         insts[2].peer_id(),
         insts[0].get_peer_manager().list_routes().await,
     );
@@ -357,7 +357,7 @@ pub async fn subnet_proxy_three_node_test(
 
     wait_proxy_route_appear(
         &insts[0].get_peer_manager(),
-        "10.144.144.3",
+        "10.144.144.3/24",
         insts[2].peer_id(),
         "10.1.2.0/24",
     )
