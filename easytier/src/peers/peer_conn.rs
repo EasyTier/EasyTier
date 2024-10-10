@@ -224,7 +224,12 @@ impl PeerConn {
         self.info = Some(rsp);
         self.is_client = Some(false);
         self.send_handshake().await?;
-        Ok(())
+
+        if self.get_peer_id() == self.my_peer_id {
+            Err(Error::WaitRespError("peer id conflict".to_owned()))
+        } else {
+            Ok(())
+        }
     }
 
     #[tracing::instrument]
@@ -235,7 +240,12 @@ impl PeerConn {
         tracing::info!("handshake response: {:?}", rsp);
         self.info = Some(rsp);
         self.is_client = Some(true);
-        Ok(())
+
+        if self.get_peer_id() == self.my_peer_id {
+            Err(Error::WaitRespError("peer id conflict".to_owned()))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn handshake_done(&self) -> bool {
@@ -395,6 +405,24 @@ mod tests {
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
+
+    #[tokio::test]
+    async fn peer_conn_handshake_same_id() {
+        let (c, s) = create_ring_tunnel_pair();
+        let c_peer_id = new_peer_id();
+        let s_peer_id = c_peer_id;
+
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c));
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s));
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        assert!(c_ret.is_err());
+        assert!(s_ret.is_err());
+    }
 
     #[tokio::test]
     async fn peer_conn_handshake() {

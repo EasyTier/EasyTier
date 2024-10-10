@@ -294,6 +294,8 @@ impl PeerConnPinger {
                 let need_close = if last_rx_packets != current_rx_packets {
                     // if we receive some packet from peers, we should relax the condition
                     counter > 50 && loss_rate_1 > 0.5
+
+                    // TODO: wait more time to see if the loss rate is still high after no rx
                 } else {
                     true
                 };
