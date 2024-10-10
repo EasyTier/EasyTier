@@ -70,17 +70,32 @@ impl<T: Tunnel> MpscTunnel<T> {
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
     ) -> Result<(), TunnelError> {
         let item = rx.recv().await.with_context(|| "recv error")?;
-        sink.feed(item).await?;
-        while let Ok(item) = rx.try_recv() {
-            if let Err(e) = timeout(Duration::from_secs(5), sink.feed(item))
-                .await
-                .unwrap()
-            {
-                tracing::error!(?e, "feed error");
-                break;
+
+        match timeout(Duration::from_secs(10), async move {
+            sink.feed(item).await?;
+            while let Ok(item) = rx.try_recv() {
+                match sink.feed(item).await {
+                    Err(e) => {
+                        tracing::error!(?e, "feed error");
+                        return Err(e);
+                    }
+                    Ok(_) => {}
+                }
+            }
+            sink.flush().await
+        })
+        .await
+        {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => {
+                tracing::error!(?e, "forward error");
+                Err(e)
+            }
+            Err(e) => {
+                tracing::error!(?e, "forward timeout");
+                Err(e.into())
             }
         }
-        sink.flush().await
     }
 
     pub fn get_stream(&mut self) -> Pin<Box<dyn ZCPacketStream>> {
