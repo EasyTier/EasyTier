@@ -41,7 +41,8 @@ function searchUrlSuggestions(e: { query: string }): string[] {
   if (query.match(/^\w+:.*/)) {
     // if query is a valid url, then add to suggestions
     try {
-      const _test = new URL(query)
+      // eslint-disable-next-line no-new
+      new URL(query)
       ret.push(query)
     }
     catch {}
