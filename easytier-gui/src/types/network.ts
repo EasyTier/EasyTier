@@ -137,7 +137,10 @@ export interface StunInfo {
 
 export interface Route {
   peer_id: number
-  ipv4_addr: string
+  ipv4_addr: {
+    address: Ipv4Addr
+    network_length: number
+  } | string | null
   next_hop_peer_id: number
   cost: number
   proxy_cidrs: string[]
