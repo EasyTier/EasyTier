@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useTimeAgo } from '@vueuse/core'
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
 import type { NodeInfo, PeerRoutePair } from '~/types/network'
 
@@ -315,16 +316,18 @@ function showEventLogs() {
 
 <template>
   <div>
-    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" :style="{ width: '70%' }">
-      <Panel>
-        <ScrollPanel style="width: 100%; height: 400px">
-          <pre>{{ dialogContent }}</pre>
-        </ScrollPanel>
-      </Panel>
-      <Divider />
-      <div class="flex justify-content-end gap-2">
-        <Button type="button" :label="t('close')" @click="dialogVisible = false" />
-      </div>
+    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-2/3 h-auto">
+      <ScrollPanel v-if="dialogHeader === 'vpn_portal_config'">
+        <pre>{{ dialogContent }}</pre>
+      </ScrollPanel>
+      <Timeline v-else :value="dialogContent">
+        <template #opposite="slotProps">
+          <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item[0])) }}</small>
+        </template>
+        <template #content="slotProps">
+          {{ slotProps.item[1] }}
+        </template>
+      </Timeline>
     </Dialog>
 
     <Card v-if="curNetworkInst?.error_msg">
