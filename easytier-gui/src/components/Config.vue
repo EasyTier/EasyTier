@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { ping } from 'tauri-plugin-vpnservice-api'
 import { getOsHostname } from '~/composables/network'
 
 import { NetworkingMethod } from '~/types/network'
@@ -42,10 +41,11 @@ function searchUrlSuggestions(e: { query: string }): string[] {
   if (query.match(/^\w+:.*/)) {
     // if query is a valid url, then add to suggestions
     try {
+      // eslint-disable-next-line no-new
       new URL(query)
       ret.push(query)
     }
-    catch (e) {}
+    catch {}
   }
   else {
     for (const proto in protos) {
@@ -128,18 +128,12 @@ const osHostname = ref<string>('')
 
 onMounted(async () => {
   osHostname.value = await getOsHostname()
-  osHostname.value = await ping('ffdklsajflkdsjl') || ''
 })
 </script>
 
 <template>
   <div class="flex flex-column h-full">
     <div class="flex flex-column">
-      <div class="w-10/12 self-center mb-3">
-        <Message severity="warn">
-          {{ t('dhcp_experimental_warning') }}
-        </Message>
-      </div>
       <div class="w-10/12 self-center ">
         <Panel :header="t('basic_settings')">
           <div class="flex flex-column gap-y-2">

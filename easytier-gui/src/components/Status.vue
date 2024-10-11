@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useTimeAgo } from '@vueuse/core'
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
 import type { NodeInfo, PeerRoutePair } from '~/types/network'
 
@@ -111,6 +112,13 @@ function version(info: PeerRoutePair) {
   return info.route.version === '' ? 'unknown' : info.route.version
 }
 
+function ipFormat(info: PeerRoutePair) {
+  const ip = info.route.ipv4_addr
+  if (typeof ip === 'string')
+    return ip
+  return ip ? `${num2ipv4(ip.address)}/${ip.network_length}` : ''
+}
+
 const myNodeInfo = computed(() => {
   if (!curNetworkInst.value)
     return {} as NodeInfo
@@ -151,7 +159,7 @@ const myNodeInfoChips = computed(() => {
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
   for (const [idx, ip] of local_ipv4s?.entries()) {
     chips.push({
-      label: `Local IPv4 ${idx}: ${IPv4.fromNumber(ip.addr)}`,
+      label: `Local IPv4 ${idx}: ${num2ipv4(ip)}`,
       icon: '',
     } as Chip)
   }
@@ -160,11 +168,7 @@ const myNodeInfoChips = computed(() => {
   const local_ipv6s = my_node_info.ips?.interface_ipv6s
   for (const [idx, ip] of local_ipv6s?.entries()) {
     chips.push({
-      label: `Local IPv6 ${idx}: ${IPv6.fromBigInt((BigInt(ip.part1) << BigInt(96))
-        + (BigInt(ip.part2) << BigInt(64))
-        + (BigInt(ip.part3) << BigInt(32))
-        + BigInt(ip.part4),
-      )}`,
+      label: `Local IPv6 ${idx}: ${num2ipv6(ip)}`,
       icon: '',
     } as Chip)
   }
@@ -312,16 +316,18 @@ function showEventLogs() {
 
 <template>
   <div>
-    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" :style="{ width: '70%' }">
-      <Panel>
-        <ScrollPanel style="width: 100%; height: 400px">
-          <pre>{{ dialogContent }}</pre>
-        </ScrollPanel>
-      </Panel>
-      <Divider />
-      <div class="flex justify-content-end gap-2">
-        <Button type="button" :label="t('close')" @click="dialogVisible = false" />
-      </div>
+    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-2/3 h-auto">
+      <ScrollPanel v-if="dialogHeader === 'vpn_portal_config'">
+        <pre>{{ dialogContent }}</pre>
+      </ScrollPanel>
+      <Timeline v-else :value="dialogContent">
+        <template #opposite="slotProps">
+          <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item[0])) }}</small>
+        </template>
+        <template #content="slotProps">
+          {{ slotProps.item[1] }}
+        </template>
+      </Timeline>
     </Dialog>
 
     <Card v-if="curNetworkInst?.error_msg">
@@ -405,14 +411,22 @@ function showEventLogs() {
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
-            <Column field="route.ipv4_addr" style="width: 100px;" :header="t('virtual_ipv4')" />
-            <Column field="route.hostname" style="max-width: 250px;" :header="t('hostname')" />
+            <Column :field="ipFormat" style="width: 100px;" :header="t('virtual_ipv4')" />
+            <Column style="max-width: 250px;" :header="t('hostname')">
+              <template #body="slotProps">
+                <span v-tooltip="slotProps.data.route.hostname">{{ slotProps.data.route.hostname }}</span>
+              </template>
+            </Column>
             <Column :field="routeCost" style="width: 100px;" :header="t('route_cost')" />
             <Column :field="latencyMs" style="width: 80px;" :header="t('latency')" />
             <Column :field="txBytes" style="width: 80px;" :header="t('upload_bytes')" />
             <Column :field="rxBytes" style="width: 80px;" :header="t('download_bytes')" />
             <Column :field="lossRate" style="width: 100px;" :header="t('loss_rate')" />
-            <Column :field="version" style="width: 100px;" :header="t('status.version')" />
+            <Column style="width: 100px;" :header="t('status.version')">
+              <template #body="slotProps">
+                <span>{{ version(slotProps.data) }}</span>
+              </template>
+            </Column>
           </DataTable>
         </template>
       </Card>

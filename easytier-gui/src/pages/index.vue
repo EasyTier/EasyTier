@@ -181,7 +181,7 @@ const setting_menu_items = ref([
         label: () => t('logging_open_dir'),
         icon: 'pi pi-folder-open',
         command: async () => {
-          console.log('open log dir', await appLogDir())
+          // console.log('open log dir', await appLogDir())
           await open(await appLogDir())
         },
       })

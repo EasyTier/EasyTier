@@ -18,6 +18,7 @@
     "@tauri-apps/plugin-os": "2.0.0-rc.1",
     "@tauri-apps/plugin-process": "2.0.0-rc.1",
     "@tauri-apps/plugin-shell": "2.0.0-rc.1",
+    "@vueuse/core": "^11.1.0",
     "aura": "link:@primevue\\themes\\aura",
     "ip-num": "1.5.1",
     "pinia": "^2.2.4",
@@ -38,7 +39,7 @@
     "@types/node": "^22.7.4",
     "@types/uuid": "^10.0.0",
     "@vitejs/plugin-vue": "^5.1.4",
-    "@vue-macros/volar": "^0.29.1",
+    "@vue-macros/volar": "0.30.3",
     "autoprefixer": "^10.4.20",
     "eslint": "^9.12.0",
     "eslint-plugin-format": "^0.1.2",
@@ -57,5 +58,6 @@
     "vite-plugin-vue-layouts": "^0.11.0",
     "vue-i18n": "^10.0.0",
     "vue-tsc": "^2.1.6"
-  }
+  },
+  "packageManager": "pnpm@9.12.1+sha512.e5a7e52a4183a02d5931057f7a0dbff9d5e9ce3161e33fa68ae392125b79282a8a8a470a51dfc8a0ed86221442eb2fb57019b0990ed24fab519bf0e1bc5ccfc4"
 }
