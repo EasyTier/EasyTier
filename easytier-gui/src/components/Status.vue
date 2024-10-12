@@ -325,7 +325,7 @@ function showEventLogs() {
           <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item[0])) }}</small>
         </template>
         <template #content="slotProps">
-          {{ slotProps.item[1] }}
+          <HumanEvent :event="slotProps.item[1]" />
         </template>
       </Timeline>
     </Dialog>
@@ -433,3 +433,9 @@ function showEventLogs() {
     </template>
   </div>
 </template>
+
+<style lang="postcss" scoped>
+.p-timeline :deep(.p-timeline-event-opposite) {
+  @apply flex-none;
+}
+</style>

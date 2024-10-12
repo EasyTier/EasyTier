@@ -1,4 +1,5 @@
 {
+  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "migrated",
   "description": "permissions that were migrated from v1",
   "local": true,
@@ -13,6 +14,7 @@
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
+    "core:window:allow-set-title",
     "core:app:default",
     "core:resources:default",
     "core:menu:default",
@@ -24,7 +26,6 @@
     "shell:default",
     "process:default",
     "clipboard-manager:default",
-    "core:tray:default",
     "core:tray:allow-new",
     "core:tray:allow-set-menu",
     "core:tray:allow-set-title",
