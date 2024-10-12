@@ -71,6 +71,8 @@ loss_rate: Loss Rate
 status:
   version: Version
   local: Local
+  server: Server
+  relay: Relay
 
 run_network: Run Network
 stop_network: Stop Network

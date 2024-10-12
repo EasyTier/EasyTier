@@ -410,19 +410,33 @@ function showEventLogs() {
           {{ t('peer_info') }}
         </template>
         <template #content>
-          <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-style="width: 100%">
-            <Column :field="ipFormat" style="width: 100px;" :header="t('virtual_ipv4')" />
-            <Column style="max-width: 250px;" :header="t('hostname')">
+          <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
+            <Column :field="ipFormat" :header="t('virtual_ipv4')" />
+            <Column :header="t('hostname')">
               <template #body="slotProps">
-                <span v-tooltip="slotProps.data.route.hostname">{{ slotProps.data.route.hostname }}</span>
+                <div
+                  v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
+                  v-tooltip="slotProps.data.route.hostname"
+                >
+                  {{
+                    slotProps.data.route.hostname }}
+                </div>
+                <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
+                  <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
+                    {{ t('status.server') }}
+                  </Tag>
+                  <Tag v-if="slotProps.data.route.no_relay_data" severity="warn" value="Warn">
+                    {{ t('status.relay') }}
+                  </Tag>
+                </div>
               </template>
             </Column>
-            <Column :field="routeCost" style="width: 100px;" :header="t('route_cost')" />
-            <Column :field="latencyMs" style="width: 80px;" :header="t('latency')" />
-            <Column :field="txBytes" style="width: 80px;" :header="t('upload_bytes')" />
-            <Column :field="rxBytes" style="width: 80px;" :header="t('download_bytes')" />
-            <Column :field="lossRate" style="width: 100px;" :header="t('loss_rate')" />
-            <Column style="width: 100px;" :header="t('status.version')">
+            <Column :field="routeCost" :header="t('route_cost')" />
+            <Column :field="latencyMs" :header="t('latency')" />
+            <Column :field="txBytes" :header="t('upload_bytes')" />
+            <Column :field="rxBytes" :header="t('download_bytes')" />
+            <Column :field="lossRate" :header="t('loss_rate')" />
+            <Column :header="t('status.version')">
               <template #body="slotProps">
                 <span>{{ version(slotProps.data) }}</span>
               </template>

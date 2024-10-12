@@ -72,6 +72,8 @@ loss_rate: 丢包率
 status:
   version: 内核版本
   local: 本机
+  server: 服务器
+  relay: 中继
 
 run_network: 运行网络
 stop_network: 停止网络
