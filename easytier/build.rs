@@ -1,10 +1,5 @@
 #[cfg(target_os = "windows")]
-use std::{
-    env,
-    fs::File,
-    io::{copy, Cursor},
-    path::PathBuf,
-};
+use std::{env, io::Cursor, path::PathBuf};
 
 #[cfg(target_os = "windows")]
 struct WindowsBuild {}

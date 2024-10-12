@@ -158,6 +158,7 @@ export interface PeerInfo {
 export interface PeerConnInfo {
   conn_id: string
   my_peer_id: number
+  is_client: boolean
   peer_id: number
   features: string[]
   tunnel?: TunnelInfo
@@ -182,4 +183,29 @@ export interface PeerConnStats {
   rx_packets: number
   tx_packets: number
   latency_us: number
+}
+
+export enum EventType {
+  TunDeviceReady = 'TunDeviceReady', // string
+  TunDeviceError = 'TunDeviceError', // string
+
+  PeerAdded = 'PeerAdded', // number
+  PeerRemoved = 'PeerRemoved', // number
+  PeerConnAdded = 'PeerConnAdded', // PeerConnInfo
+  PeerConnRemoved = 'PeerConnRemoved', // PeerConnInfo
+
+  ListenerAdded = 'ListenerAdded', // any
+  ListenerAddFailed = 'ListenerAddFailed', // any, string
+  ListenerAcceptFailed = 'ListenerAcceptFailed', // any, string
+  ConnectionAccepted = 'ConnectionAccepted', // string, string
+  ConnectionError = 'ConnectionError', // string, string, string
+
+  Connecting = 'Connecting', // any
+  ConnectError = 'ConnectError', // string, string, string
+
+  VpnPortalClientConnected = 'VpnPortalClientConnected', // string, string
+  VpnPortalClientDisconnected = 'VpnPortalClientDisconnected', // string, string, string
+
+  DhcpIpv4Changed = 'DhcpIpv4Changed', // ipv4 | null, ipv4 | null
+  DhcpIpv4Conflicted = 'DhcpIpv4Conflicted', // ipv4 | null
 }

@@ -72,6 +72,8 @@ loss_rate: 丢包率
 status:
   version: 内核版本
   local: 本机
+  server: 服务器
+  relay: 中继
 
 run_network: 运行网络
 stop_network: 停止网络
@@ -91,3 +93,23 @@ about:
   license: 许可证
   description: 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
   check_update: 检查更新
+
+event:
+  Unknown: 未知
+  TunDeviceReady: Tun设备就绪
+  TunDeviceError: Tun设备错误
+  PeerAdded: 对端添加
+  PeerRemoved: 对端移除
+  PeerConnAdded: 对端连接添加
+  PeerConnRemoved: 对端连接移除
+  ListenerAdded: 监听器添加
+  ListenerAddFailed: 监听器添加失败
+  ListenerAcceptFailed: 监听器接受连接失败
+  ConnectionAccepted: 连接已接受
+  ConnectionError: 连接错误
+  Connecting: 正在连接
+  ConnectError: 连接错误
+  VpnPortalClientConnected: VPN门户客户端已连接
+  VpnPortalClientDisconnected: VPN门户客户端已断开连接
+  DhcpIpv4Changed: DHCP IPv4地址更改
+  DhcpIpv4Conflicted: DHCP IPv4地址冲突

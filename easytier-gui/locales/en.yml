@@ -71,6 +71,8 @@ loss_rate: Loss Rate
 status:
   version: Version
   local: Local
+  server: Server
+  relay: Relay
 
 run_network: Run Network
 stop_network: Stop Network
@@ -90,3 +92,23 @@ about:
   license: License
   description: 'EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.'
   check_update: Check Update
+
+event:
+  Unknown: Unknown
+  TunDeviceReady: TunDeviceReady
+  TunDeviceError: TunDeviceError
+  PeerAdded: PeerAdded
+  PeerRemoved: PeerRemoved
+  PeerConnAdded: PeerConnAdded
+  PeerConnRemoved: PeerConnRemoved
+  ListenerAdded: ListenerAdded
+  ListenerAddFailed: ListenerAddFailed
+  ListenerAcceptFailed: ListenerAcceptFailed
+  ConnectionAccepted: ConnectionAccepted
+  ConnectionError: ConnectionError
+  Connecting: Connecting
+  ConnectError: ConnectError
+  VpnPortalClientConnected: VpnPortalClientConnected
+  VpnPortalClientDisconnected: VpnPortalClientDisconnected
+  DhcpIpv4Changed: DhcpIpv4Changed
+  DhcpIpv4Conflicted: DhcpIpv4Conflicted
