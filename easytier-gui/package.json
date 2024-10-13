@@ -1,7 +1,7 @@
 {
   "name": "easytier-gui",
   "type": "module",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "private": true,
   "scripts": {
     "dev": "vite",
