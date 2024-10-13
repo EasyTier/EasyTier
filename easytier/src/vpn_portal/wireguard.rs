@@ -81,7 +81,7 @@ impl WireGuardImpl {
         wg_peer_ip_table: WgPeerIpTable,
     ) {
         let info = t.info().unwrap_or_default();
-        let mut mpsc_tunnel = MpscTunnel::new(t);
+        let mut mpsc_tunnel = MpscTunnel::new(t, None);
         let mut stream = mpsc_tunnel.get_stream();
         let mut ip_registered = false;
 

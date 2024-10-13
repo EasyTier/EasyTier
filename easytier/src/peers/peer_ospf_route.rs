@@ -1387,7 +1387,9 @@ impl PeerRouteServiceImpl {
             if resp.error.is_some() {
                 let err = resp.error.unwrap();
                 if err == Error::DuplicatePeerId as i32 {
-                    panic!("duplicate peer id");
+                    if !self.global_ctx.get_feature_flags().is_public_server {
+                        panic!("duplicate peer id");
+                    }
                 } else {
                     tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
                     session
