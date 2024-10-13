@@ -7,7 +7,7 @@ use crate::{
     common::{
         config::{ConfigLoader, TomlConfigLoader},
         constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtxEvent,
+        global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         stun::StunInfoCollectorTrait,
     },
     instance::instance::Instance,
@@ -21,7 +21,7 @@ use crate::{
 };
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
-use tokio::task::JoinSet;
+use tokio::{sync::broadcast, task::JoinSet};
 
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct MyNodeInfo {
@@ -34,14 +34,31 @@ pub struct MyNodeInfo {
     pub vpn_portal_cfg: Option<String>,
 }
 
-#[derive(Default, Clone)]
 struct EasyTierData {
-    events: Arc<RwLock<VecDeque<(DateTime<Local>, GlobalCtxEvent)>>>,
-    node_info: Arc<RwLock<MyNodeInfo>>,
-    routes: Arc<RwLock<Vec<Route>>>,
-    peers: Arc<RwLock<Vec<PeerInfo>>>,
-    tun_fd: Arc<RwLock<Option<i32>>>,
-    tun_dev_name: Arc<RwLock<String>>,
+    events: RwLock<VecDeque<(DateTime<Local>, GlobalCtxEvent)>>,
+    node_info: RwLock<MyNodeInfo>,
+    routes: RwLock<Vec<Route>>,
+    peers: RwLock<Vec<PeerInfo>>,
+    tun_fd: RwLock<Option<i32>>,
+    tun_dev_name: RwLock<String>,
+    event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
+    instance_stop_notifier: Arc<tokio::sync::Notify>,
+}
+
+impl Default for EasyTierData {
+    fn default() -> Self {
+        let (tx, _) = broadcast::channel(100);
+        Self {
+            event_subscriber: RwLock::new(tx),
+            events: RwLock::new(VecDeque::new()),
+            node_info: RwLock::new(MyNodeInfo::default()),
+            routes: RwLock::new(Vec::new()),
+            peers: RwLock::new(Vec::new()),
+            tun_fd: RwLock::new(None),
+            tun_dev_name: RwLock::new(String::new()),
+            instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
 }
 
 pub struct EasyTierLauncher {
@@ -51,7 +68,7 @@ pub struct EasyTierLauncher {
     running_cfg: String,
 
     error_msg: Arc<RwLock<Option<String>>>,
-    data: EasyTierData,
+    data: Arc<EasyTierData>,
 }
 
 impl EasyTierLauncher {
@@ -64,12 +81,13 @@ impl EasyTierLauncher {
             running_cfg: String::new(),
 
             stop_flag: Arc::new(AtomicBool::new(false)),
-            data: EasyTierData::default(),
+            data: Arc::new(EasyTierData::default()),
         }
     }
 
-    async fn handle_easytier_event(event: GlobalCtxEvent, data: EasyTierData) {
+    async fn handle_easytier_event(event: GlobalCtxEvent, data: &EasyTierData) {
         let mut events = data.events.write().unwrap();
+        let _ = data.event_subscriber.read().unwrap().send(event.clone());
         events.push_back((chrono::Local::now(), event));
         if events.len() > 100 {
             events.pop_front();
@@ -113,7 +131,7 @@ impl EasyTierLauncher {
     async fn easytier_routine(
         cfg: TomlConfigLoader,
         stop_signal: Arc<tokio::sync::Notify>,
-        data: EasyTierData,
+        data: Arc<EasyTierData>,
     ) -> Result<(), anyhow::Error> {
         let mut instance = Instance::new(cfg);
         let peer_mgr = instance.get_peer_manager();
@@ -126,7 +144,7 @@ impl EasyTierLauncher {
         tasks.spawn(async move {
             let mut receiver = global_ctx.subscribe();
             while let Ok(event) = receiver.recv().await {
-                Self::handle_easytier_event(event, data_c.clone()).await;
+                Self::handle_easytier_event(event, &data_c).await;
             }
         });
 
@@ -188,13 +206,15 @@ impl EasyTierLauncher {
         F: FnOnce() -> Result<TomlConfigLoader, anyhow::Error> + Send + Sync,
     {
         let error_msg = self.error_msg.clone();
-        let cfg = cfg_generator();
-        if let Err(e) = cfg {
-            error_msg.write().unwrap().replace(e.to_string());
-            return;
-        }
+        let cfg = match cfg_generator() {
+            Err(e) => {
+                error_msg.write().unwrap().replace(e.to_string());
+                return;
+            }
+            Ok(cfg) => cfg,
+        };
 
-        self.running_cfg = cfg.as_ref().unwrap().dump();
+        self.running_cfg = cfg.dump();
 
         let stop_flag = self.stop_flag.clone();
 
@@ -204,10 +224,18 @@ impl EasyTierLauncher {
         let data = self.data.clone();
 
         self.thread_handle = Some(std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+            let rt = if cfg.get_flags().multi_thread {
+                tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+            } else {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+            }
+            .unwrap();
+
             let stop_notifier = Arc::new(tokio::sync::Notify::new());
 
             let stop_notifier_clone = stop_notifier.clone();
@@ -218,15 +246,13 @@ impl EasyTierLauncher {
                 stop_notifier_clone.notify_one();
             });
 
-            let ret = rt.block_on(Self::easytier_routine(
-                cfg.unwrap(),
-                stop_notifier.clone(),
-                data,
-            ));
+            let notifier = data.instance_stop_notifier.clone();
+            let ret = rt.block_on(Self::easytier_routine(cfg, stop_notifier.clone(), data));
             if let Err(e) = ret {
                 error_msg.write().unwrap().replace(e.to_string());
             }
             instance_alive.store(false, std::sync::atomic::Ordering::Relaxed);
+            notifier.notify_one();
         }));
     }
 
@@ -333,15 +359,37 @@ impl NetworkInstance {
         }
     }
 
-    pub fn start(&mut self) -> Result<(), anyhow::Error> {
+    pub fn start(&mut self) -> Result<EventBusSubscriber, anyhow::Error> {
         if self.is_easytier_running() {
-            return Ok(());
+            return Ok(self.subscribe_event().unwrap());
         }
 
-        let mut launcher = EasyTierLauncher::new();
-        launcher.start(|| Ok(self.config.clone()));
-
+        let launcher = EasyTierLauncher::new();
         self.launcher = Some(launcher);
-        Ok(())
+        let ev = self.subscribe_event().unwrap();
+
+        self.launcher
+            .as_mut()
+            .unwrap()
+            .start(|| Ok(self.config.clone()));
+
+        Ok(ev)
+    }
+
+    fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
+        if let Some(launcher) = self.launcher.as_ref() {
+            Some(launcher.data.event_subscriber.read().unwrap().subscribe())
+        } else {
+            None
+        }
+    }
+
+    pub async fn wait(&self) -> Option<String> {
+        if let Some(launcher) = self.launcher.as_ref() {
+            launcher.data.instance_stop_notifier.notified().await;
+            launcher.error_msg.read().unwrap().clone()
+        } else {
+            None
+        }
     }
 }

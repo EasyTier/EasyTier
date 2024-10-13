@@ -182,6 +182,8 @@ pub struct Flags {
     pub disable_udp_hole_punching: bool,
     #[derivative(Default(value = "\"udp://[::]:0\".to_string()"))]
     pub ipv6_listener: String,
+    #[derivative(Default(value = "false"))]
+    pub multi_thread: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
