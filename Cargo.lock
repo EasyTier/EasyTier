@@ -1564,6 +1564,7 @@ dependencies = [
  "dashmap",
  "defguard_wireguard_rs",
  "derivative",
+ "easytier-rpc-build 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "encoding",
  "futures",
  "futures-util",
@@ -1592,7 +1593,6 @@ dependencies = [
  "reqwest 0.11.27",
  "ring 0.17.8",
  "ringbuf",
- "rpc_build",
  "rstest",
  "rust-i18n",
  "rustls",
@@ -1654,6 +1654,24 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-vpnservice",
  "tokio",
+]
+
+[[package]]
+name = "easytier-rpc-build"
+version = "0.1.0"
+dependencies = [
+ "heck 0.5.0",
+ "prost-build",
+]
+
+[[package]]
+name = "easytier-rpc-build"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "24829168c28f6a448f57d18116c255dcbd2b8c25e76dbc60f6cd16d68ad2cf07"
+dependencies = [
+ "heck 0.5.0",
+ "prost-build",
 ]
 
 [[package]]
@@ -4902,14 +4920,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fb0d14419487131a897031a7e81c3b23d092296984fac4eb6df48cc4e3b2f3c5"
 dependencies = [
  "crossbeam-utils",
-]
-
-[[package]]
-name = "rpc_build"
-version = "0.1.0"
-dependencies = [
- "heck 0.5.0",
- "prost-build",
 ]
 
 [[package]]
