@@ -214,6 +214,8 @@ const myNodeInfoChips = computed(() => {
     PortRestricted = 5,
     Symmetric = 6,
     SymUdpFirewall = 7,
+    SymmetricEasyInc = 8,
+    SymmetricEasyDec = 9,
   };
   const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
   if (udpNatType !== undefined) {
@@ -226,6 +228,8 @@ const myNodeInfoChips = computed(() => {
       [NatType.PortRestricted]: 'Port Restricted',
       [NatType.Symmetric]: 'Symmetric',
       [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
+      [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
+      [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
     }
 
     chips.push({

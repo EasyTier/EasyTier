@@ -93,7 +93,7 @@ impl PeerConn {
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, peer_conn_tunnel_filter);
-        let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel);
+        let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
 
         let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
 

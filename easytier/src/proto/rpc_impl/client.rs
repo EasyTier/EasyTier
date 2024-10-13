@@ -61,8 +61,8 @@ impl Client {
     pub fn new() -> Self {
         let (ring_a, ring_b) = create_ring_tunnel_pair();
         Self {
-            mpsc: Mutex::new(MpscTunnel::new(ring_a)),
-            transport: Mutex::new(MpscTunnel::new(ring_b)),
+            mpsc: Mutex::new(MpscTunnel::new(ring_a, None)),
+            transport: Mutex::new(MpscTunnel::new(ring_b, None)),
             inflight_requests: Arc::new(DashMap::new()),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }

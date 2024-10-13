@@ -85,6 +85,20 @@ function searchPeerSuggestions(e: { query: string }) {
   peerSuggestions.value = searchUrlSuggestions(e)
 }
 
+const inetSuggestions = ref([''])
+
+function searchInetSuggestions(e: { query: string }) {
+  if (e.query.search('/') >= 0) {
+    inetSuggestions.value = [e.query]
+  } else {
+    const ret = []
+    for (let i = 0; i < 32; i++) {
+      ret.push(`${e.query}/${i}`)
+    }
+    inetSuggestions.value = ret
+  }
+}
+
 const listenerSuggestions = ref([''])
 
 function searchListenerSuggestiong(e: { query: string }) {
@@ -153,8 +167,9 @@ onMounted(async () => {
                     aria-describedby="virtual_ipv4-help"
                   />
                   <InputGroupAddon>
-                    <span>/24</span>
+                    <span>/</span>
                   </InputGroupAddon>
+                  <InputNumber v-model="curNetwork.network_length" :disabled="curNetwork.dhcp" inputId="horizontal-buttons" showButtons :step="1" mode="decimal" :min="1" :max="32" fluid class="max-w-20"/>
                 </InputGroup>
               </div>
             </div>
@@ -221,9 +236,10 @@ onMounted(async () => {
             <div class="flex flex-row gap-x-9 flex-wrap w-full">
               <div class="flex flex-column gap-2 grow p-fluid">
                 <label for="username">{{ t('proxy_cidrs') }}</label>
-                <Chips
-                  id="chips" v-model="curNetwork.proxy_cidrs"
-                  :placeholder="t('chips_placeholder', ['10.0.0.0/24'])" separator=" " class="w-full"
+                <AutoComplete
+                  id="subnet-proxy"
+                  v-model="curNetwork.proxy_cidrs" :placeholder="t('chips_placeholder', ['10.0.0.0/24'])"
+                  class="w-full" multiple fluid :suggestions="inetSuggestions" @complete="searchInetSuggestions"
                 />
               </div>
             </div>

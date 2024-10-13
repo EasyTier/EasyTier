@@ -41,13 +41,13 @@ pub struct MpscTunnel<T> {
 }
 
 impl<T: Tunnel> MpscTunnel<T> {
-    pub fn new(tunnel: T) -> Self {
+    pub fn new(tunnel: T, send_timeout: Option<Duration>) -> Self {
         let (tx, mut rx) = channel(32);
         let (stream, mut sink) = tunnel.split();
 
         let task = tokio::spawn(async move {
             loop {
-                if let Err(e) = Self::forward_one_round(&mut rx, &mut sink).await {
+                if let Err(e) = Self::forward_one_round(&mut rx, &mut sink, send_timeout).await {
                     tracing::error!(?e, "forward error");
                     break;
                 }
@@ -68,21 +68,44 @@ impl<T: Tunnel> MpscTunnel<T> {
     async fn forward_one_round(
         rx: &mut Receiver<ZCPacket>,
         sink: &mut Pin<Box<dyn ZCPacketSink>>,
+        send_timeout_ms: Option<Duration>,
     ) -> Result<(), TunnelError> {
         let item = rx.recv().await.with_context(|| "recv error")?;
+        if let Some(timeout_ms) = send_timeout_ms {
+            Self::forward_one_round_with_timeout(rx, sink, item, timeout_ms).await
+        } else {
+            Self::forward_one_round_no_timeout(rx, sink, item).await
+        }
+    }
 
-        match timeout(Duration::from_secs(10), async move {
-            sink.feed(item).await?;
-            while let Ok(item) = rx.try_recv() {
-                match sink.feed(item).await {
-                    Err(e) => {
-                        tracing::error!(?e, "feed error");
-                        return Err(e);
-                    }
-                    Ok(_) => {}
+    async fn forward_one_round_no_timeout(
+        rx: &mut Receiver<ZCPacket>,
+        sink: &mut Pin<Box<dyn ZCPacketSink>>,
+        initial_item: ZCPacket,
+    ) -> Result<(), TunnelError> {
+        sink.feed(initial_item).await?;
+
+        while let Ok(item) = rx.try_recv() {
+            match sink.feed(item).await {
+                Err(e) => {
+                    tracing::error!(?e, "feed error");
+                    return Err(e);
                 }
+                Ok(_) => {}
             }
-            sink.flush().await
+        }
+
+        sink.flush().await
+    }
+
+    async fn forward_one_round_with_timeout(
+        rx: &mut Receiver<ZCPacket>,
+        sink: &mut Pin<Box<dyn ZCPacketSink>>,
+        initial_item: ZCPacket,
+        timeout_ms: Duration,
+    ) -> Result<(), TunnelError> {
+        match timeout(timeout_ms, async move {
+            Self::forward_one_round_no_timeout(rx, sink, initial_item).await
         })
         .await
         {
@@ -112,17 +135,12 @@ impl<T: Tunnel> MpscTunnel<T> {
     }
 }
 
-impl<T: Tunnel> From<T> for MpscTunnel<T> {
-    fn from(tunnel: T) -> Self {
-        Self::new(tunnel)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
 
     use crate::tunnel::{
+        ring::{create_ring_tunnel_pair, RING_TUNNEL_CAP},
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         TunnelConnector, TunnelListener,
     };
@@ -162,7 +180,7 @@ mod tests {
         });
 
         let tunnel = connector.connect().await.unwrap();
-        let mpsc_tunnel = MpscTunnel::from(tunnel);
+        let mpsc_tunnel = MpscTunnel::new(tunnel, None);
 
         let sink1 = mpsc_tunnel.get_sink();
         let t2 = tokio::spawn(async move {
@@ -212,5 +230,25 @@ mod tests {
         });
 
         let _ = tokio::join!(t1, t2, t3, t4);
+    }
+
+    #[tokio::test]
+    async fn mpsc_slow_receiver_with_send_timeout() {
+        let (a, _b) = create_ring_tunnel_pair();
+        let mpsc_tunnel = MpscTunnel::new(a, Some(Duration::from_secs(1)));
+        let s = mpsc_tunnel.get_sink();
+        for _ in 0..RING_TUNNEL_CAP {
+            s.send(ZCPacket::new_with_payload(&[0; 1024]))
+                .await
+                .unwrap();
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let e = s.send(ZCPacket::new_with_payload(&[0; 1024])).await;
+        assert!(e.is_ok());
+
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        let e = s.send(ZCPacket::new_with_payload(&[0; 1024])).await;
+        assert!(e.is_err());
     }
 }

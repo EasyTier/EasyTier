@@ -176,6 +176,83 @@ async fn rpc_timeout_test() {
 }
 
 #[tokio::test]
+async fn rpc_tunnel_stuck_test() {
+    use crate::proto::rpc_types;
+    use crate::tunnel::ring::RING_TUNNEL_CAP;
+
+    let rpc_server = Server::new();
+    rpc_server.run();
+    let server = GreetingServer::new(GreetingService {
+        delay_ms: 0,
+        prefix: "Hello".to_string(),
+    });
+    rpc_server.registry().register(server, "test");
+
+    let client = Client::new();
+    client.run();
+
+    let rpc_tasks = Arc::new(Mutex::new(JoinSet::new()));
+    let (mut rx, tx) = (
+        rpc_server.get_transport_stream(),
+        client.get_transport_sink(),
+    );
+
+    rpc_tasks.lock().unwrap().spawn(async move {
+        while let Some(Ok(packet)) = rx.next().await {
+            if let Err(err) = tx.send(packet).await {
+                println!("{:?}", err);
+                break;
+            }
+        }
+    });
+
+    // mock server is stuck (no task to do forwards)
+
+    let mut tasks = JoinSet::new();
+    for _ in 0..RING_TUNNEL_CAP + 15 {
+        let out =
+            client.scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
+        tasks.spawn(async move {
+            let mut ctrl = RpcController::default();
+            ctrl.timeout_ms = 1000;
+
+            let input = SayHelloRequest {
+                name: "world".to_string(),
+            };
+
+            out.say_hello(ctrl, input).await
+        });
+    }
+    while let Some(ret) = tasks.join_next().await {
+        assert!(matches!(ret, Ok(Err(rpc_types::error::Error::Timeout(_)))));
+    }
+
+    // start server consumer, new requests should be processed
+    let (mut rx, tx) = (
+        client.get_transport_stream(),
+        rpc_server.get_transport_sink(),
+    );
+    rpc_tasks.lock().unwrap().spawn(async move {
+        while let Some(Ok(packet)) = rx.next().await {
+            if let Err(err) = tx.send(packet).await {
+                println!("{:?}", err);
+                break;
+            }
+        }
+    });
+
+    let out =
+        client.scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
+    let mut ctrl = RpcController::default();
+    ctrl.timeout_ms = 1000;
+    let input = SayHelloRequest {
+        name: "fuck world".to_string(),
+    };
+    let ret = out.say_hello(ctrl, input).await.unwrap();
+    assert_eq!(ret.greeting, "Hello fuck world!");
+}
+
+#[tokio::test]
 async fn standalone_rpc_test() {
     use crate::proto::rpc_impl::standalone::{StandAloneClient, StandAloneServer};
     use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};

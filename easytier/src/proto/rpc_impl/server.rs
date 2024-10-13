@@ -56,8 +56,8 @@ impl Server {
 
         Self {
             registry,
-            mpsc: Mutex::new(Some(MpscTunnel::new(ring_a))),
-            transport: Mutex::new(MpscTunnel::new(ring_b)),
+            mpsc: Mutex::new(Some(MpscTunnel::new(ring_a, None))),
+            transport: Mutex::new(MpscTunnel::new(ring_b, None)),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             packet_mergers: Arc::new(DashMap::new()),
         }
