@@ -4,7 +4,7 @@ use std::{net::SocketAddr, sync::Mutex, time::Duration, vec};
 
 use anyhow::{Context, Ok};
 use clap::{command, Args, Parser, Subcommand};
-use common::stun::StunInfoCollectorTrait;
+use common::{constants::EASYTIER_VERSION, stun::StunInfoCollectorTrait};
 use proto::{
     common::NatType,
     peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -30,7 +30,7 @@ use humansize::format_size;
 use tabled::settings::Style;
 
 #[derive(Parser, Debug)]
-#[command(name = "easytier-cli", author, version, about, long_about = None)]
+#[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
 struct Cli {
     /// the instance name
     #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]

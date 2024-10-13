@@ -26,8 +26,9 @@ mod tunnel;
 mod utils;
 mod vpn_portal;
 
-use common::config::{
-    ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig,
+use common::{
+    config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig},
+    constants::EASYTIER_VERSION,
 };
 use instance::instance::Instance;
 use tokio::net::TcpSocket;
@@ -49,7 +50,7 @@ use mimalloc_rust::*;
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
 #[derive(Parser, Debug)]
-#[command(name = "easytier-core", author, version, about, long_about = None)]
+#[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
     #[arg(
         short,
