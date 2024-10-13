@@ -41,6 +41,7 @@ struct NetworkConfig {
 
     dhcp: bool,
     virtual_ipv4: String,
+    network_length: i32,
     hostname: Option<String>,
     network_name: String,
     network_secret: String,
@@ -83,9 +84,15 @@ impl NetworkConfig {
 
         if !self.dhcp {
             if self.virtual_ipv4.len() > 0 {
-                cfg.set_ipv4(Some(self.virtual_ipv4.parse().with_context(|| {
-                    format!("failed to parse ipv4 address: {}", self.virtual_ipv4)
-                })?))
+                let ip = format!("{}/{}", self.virtual_ipv4, self.network_length)
+                    .parse()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse ipv4 inet address: {}, {}",
+                            self.virtual_ipv4, self.network_length
+                        )
+                    })?;
+                cfg.set_ipv4(Some(ip));
             }
         }
 

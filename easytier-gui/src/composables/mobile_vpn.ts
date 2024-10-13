@@ -48,7 +48,7 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
 
   console.log('start vpn')
   const start_ret = await start_vpn({
-    ipv4Addr: `${ipv4Addr}/${cidr}`,
+    ipv4Addr: `${ipv4Addr}`,
     routes,
     disallowedApplications: ['com.kkrainbow.easytier'],
     mtu: 1300,

@@ -11,6 +11,7 @@ export interface NetworkConfig {
 
   dhcp: boolean
   virtual_ipv4: string
+  network_length: number,
   hostname?: string
   network_name: string
   network_secret: string
@@ -42,6 +43,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
 
     dhcp: true,
     virtual_ipv4: '',
+    network_length: 24,
     network_name: 'easytier',
     network_secret: '',
 
