@@ -1,8 +1,0 @@
-[package]
-name = "rpc_build"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-heck = "0.5"
-prost-build = "0.13"
