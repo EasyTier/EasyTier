@@ -69,10 +69,14 @@ impl<'d> TxToken for BufferTxToken<'d> {
 }
 
 impl Device for BufferDevice {
-    type RxToken<'a> = BufferRxToken
-        where Self:'a;
-    type TxToken<'a> = BufferTxToken<'a>
-        where Self:'a;
+    type RxToken<'a>
+        = BufferRxToken
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = BufferTxToken<'a>
+    where
+        Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         match self.recv_queue.pop_front() {
