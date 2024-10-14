@@ -137,7 +137,6 @@ impl EasyTierLauncher {
         let vpn_portal = instance.get_vpn_portal_inst();
         tasks.spawn(async move {
             loop {
-
                 // Update TUN Device Name
                 *data_c.tun_dev_name.write().unwrap() = global_ctx_c.get_flags().dev_name.clone();
 

@@ -56,8 +56,10 @@ impl HostResolverIter {
                     self.ips = ips
                         .filter(|x| x.is_ipv4())
                         .choose_multiple(&mut rand::thread_rng(), self.max_ip_per_domain as usize);
-                    
-                    if self.ips.is_empty() {return self.next().await;}
+
+                    if self.ips.is_empty() {
+                        return self.next().await;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(?host, ?e, "lookup host for stun failed");
