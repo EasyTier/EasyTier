@@ -71,6 +71,12 @@ jobs:
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
+          - TARGET: i686-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-x86_32
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-aarch64
 
           - TARGET: x86_64-unknown-freebsd
             OS: ubuntu-latest
