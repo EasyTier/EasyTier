@@ -700,11 +700,21 @@ impl PeerManager {
         let policy =
             Self::get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
 
-        if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy).await {
-            peers.send_msg_directly(msg, gateway).await
-        } else if foreign_network_client.has_next_hop(dst_peer_id) {
-            foreign_network_client.send_msg(msg, dst_peer_id).await
+        if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
+            if peers.has_peer(gateway) {
+                peers.send_msg_directly(msg, gateway).await
+            } else if foreign_network_client.has_next_hop(gateway) {
+                foreign_network_client.send_msg(msg, gateway).await
+            } else {
+                tracing::warn!(
+                    ?gateway,
+                    ?dst_peer_id,
+                    "cannot send msg to peer through gateway"
+                );
+                Err(Error::RouteError(None))
+            }
         } else {
+            tracing::debug!(?dst_peer_id, "no gateway for peer");
             Err(Error::RouteError(None))
         }
     }
@@ -767,10 +777,8 @@ impl PeerManager {
             .unwrap()
             .set_latency_first(is_latency_first)
             .set_exit_node(is_exit_node);
-        let next_hop_policy = Self::get_next_hop_policy(is_latency_first);
 
         let mut errs: Vec<Error> = vec![];
-
         let mut msg = Some(msg);
         let total_dst_peers = dst_peers.len();
         for i in 0..total_dst_peers {
@@ -786,28 +794,11 @@ impl PeerManager {
                 .to_peer_id
                 .set(*peer_id);
 
-            if let Some(gateway) = self
-                .peers
-                .get_gateway_peer_id(*peer_id, next_hop_policy.clone())
-                .await
+            if let Err(e) =
+                Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, *peer_id)
+                    .await
             {
-                if self.peers.has_peer(gateway) {
-                    if let Err(e) = self.peers.send_msg_directly(msg, gateway).await {
-                        errs.push(e);
-                    }
-                } else if self.foreign_network_client.has_next_hop(gateway) {
-                    if let Err(e) = self.foreign_network_client.send_msg(msg, gateway).await {
-                        errs.push(e);
-                    }
-                } else {
-                    tracing::warn!(
-                        ?gateway,
-                        ?peer_id,
-                        "cannot send msg to peer through gateway"
-                    );
-                }
-            } else {
-                tracing::debug!(?peer_id, "no gateway for peer");
+                errs.push(e);
             }
         }
 
