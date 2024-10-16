@@ -76,8 +76,8 @@ core_clap:
     en: "optional tun interface name"
     zh-CN: "可选的TUN接口名称"
   mtu:
-    en: "mtu of the TUN device, default is 1420 for non-encryption, 1400 for encryption"
-    zh-CN: "TUN设备的MTU，默认为非加密时为1420，加密时为1400"
+    en: "mtu of the TUN device, default is 1380 for non-encryption, 1360 for encryption"
+    zh-CN: "TUN设备的MTU，默认为非加密时为1380，加密时为1360"
   latency_first:
     en: "latency first mode, will try to relay traffic with lowest latency path, default is using shortest path"
     zh-CN: "延迟优先模式，将尝试使用最低延迟路径转发流量，默认使用最短路径"
@@ -99,7 +99,7 @@ core_clap:
   relay_network_whitelist:
     en: |+
         only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
-        if this parameter is empty, forwarding is disabled. by default, all networks are allowed. 
+        if this parameter is empty, forwarding is disabled. by default, all networks are allowed.
         e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)"
     zh-CN: |+
         仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
