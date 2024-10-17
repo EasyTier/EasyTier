@@ -39,6 +39,7 @@ jobs:
             OS: ubuntu-latest
             GUI_TARGET: aarch64-unknown-linux-gnu
             ARTIFACT_NAME: linux-aarch64
+            ARGS: --bundles deb
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-latest
             GUI_TARGET: x86_64-unknown-linux-gnu
@@ -55,8 +56,14 @@ jobs:
 
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
-            GUI_TARGET: x86_64-pc-windows-msvc
             ARTIFACT_NAME: windows-x86_64
+          - TARGET: i686-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-x86_32
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-aarch64
+            ARGS: --bundles nsis
 
     runs-on: ${{ matrix.OS }}
     env:
@@ -157,7 +164,7 @@ jobs:
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-latest' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.ARGS  }}
 
       - name: Compress
         run: |
