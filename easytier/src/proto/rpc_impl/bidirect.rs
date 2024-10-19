@@ -1,9 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use futures::{SinkExt as _, StreamExt};
-use tokio::task::JoinSet;
+use tokio::{task::JoinSet, time::timeout};
 
-use crate::tunnel::{packet_def::PacketType, ring::create_ring_tunnel_pair, Tunnel};
+use crate::{
+    proto::rpc_types::error::Error,
+    tunnel::{packet_def::PacketType, ring::create_ring_tunnel_pair, Tunnel},
+};
 
 use super::{client::Client, server::Server};
 
@@ -11,7 +14,11 @@ pub struct BidirectRpcManager {
     rpc_client: Client,
     rpc_server: Server,
 
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    rx_timeout: Option<std::time::Duration>,
+    error: Arc<Mutex<Option<Error>>>,
+    tunnel: Mutex<Option<Box<dyn Tunnel>>>,
+
+    tasks: Mutex<Option<JoinSet<()>>>,
 }
 
 impl BidirectRpcManager {
@@ -20,8 +27,17 @@ impl BidirectRpcManager {
             rpc_client: Client::new(),
             rpc_server: Server::new(),
 
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            rx_timeout: None,
+            error: Arc::new(Mutex::new(None)),
+            tunnel: Mutex::new(None),
+
+            tasks: Mutex::new(None),
         }
+    }
+
+    pub fn set_rx_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.rx_timeout = timeout;
+        self
     }
 
     pub fn run_and_create_tunnel(&self) -> Box<dyn Tunnel> {
@@ -31,10 +47,7 @@ impl BidirectRpcManager {
     }
 
     pub fn run_with_tunnel(&self, inner: Box<dyn Tunnel>) {
-        if !self.tasks.lock().unwrap().is_empty() {
-            panic!("rpc manager already running");
-        }
-
+        let mut tasks = JoinSet::new();
         self.rpc_client.run();
         self.rpc_server.run();
 
@@ -48,8 +61,10 @@ impl BidirectRpcManager {
         );
 
         let (mut inner_rx, mut inner_tx) = inner.split();
+        self.tunnel.lock().unwrap().replace(inner);
 
-        self.tasks.lock().unwrap().spawn(async move {
+        let e_clone = self.error.clone();
+        tasks.spawn(async move {
             loop {
                 let packet = tokio::select! {
                     Some(Ok(packet)) = server_rx.next() => {
@@ -68,15 +83,39 @@ impl BidirectRpcManager {
 
                 if let Err(e) = inner_tx.send(packet).await {
                     tracing::error!(error = ?e, "send to peer failed");
+                    e_clone.lock().unwrap().replace(Error::from(e));
                 }
             }
         });
 
-        self.tasks.lock().unwrap().spawn(async move {
+        let recv_timeout = self.rx_timeout;
+        let e_clone = self.error.clone();
+        tasks.spawn(async move {
             loop {
-                let Some(Ok(o)) = inner_rx.next().await else {
-                    tracing::warn!("peer rpc transport read aborted, exiting");
-                    break;
+                let ret = if let Some(recv_timeout) = recv_timeout {
+                    match timeout(recv_timeout, inner_rx.next()).await {
+                        Ok(ret) => ret,
+                        Err(e) => {
+                            e_clone.lock().unwrap().replace(e.into());
+                            break;
+                        }
+                    }
+                } else {
+                    inner_rx.next().await
+                };
+
+                let o = match ret {
+                    Some(Ok(o)) => o,
+                    Some(Err(e)) => {
+                        tracing::error!(error = ?e, "recv from peer failed");
+                        e_clone.lock().unwrap().replace(Error::from(e));
+                        break;
+                    }
+                    None => {
+                        tracing::warn!("peer rpc transport read aborted, exiting");
+                        e_clone.lock().unwrap().replace(Error::Shutdown);
+                        break;
+                    }
                 };
 
                 if o.peer_manager_header().unwrap().packet_type == PacketType::RpcReq as u8 {
@@ -89,6 +128,8 @@ impl BidirectRpcManager {
                 }
             }
         });
+
+        self.tasks.lock().unwrap().replace(tasks);
     }
 
     pub fn rpc_client(&self) -> &Client {
@@ -100,7 +141,24 @@ impl BidirectRpcManager {
     }
 
     pub async fn stop(&self) {
-        self.tasks.lock().unwrap().abort_all();
-        while let Some(_) = self.tasks.lock().unwrap().join_next().await {}
+        let Some(mut tasks) = self.tasks.lock().unwrap().take() else {
+            return;
+        };
+        tasks.abort_all();
+        while let Some(_) = tasks.join_next().await {}
+    }
+
+    pub fn take_error(&self) -> Option<Error> {
+        self.error.lock().unwrap().take()
+    }
+
+    pub async fn wait(&self) {
+        let Some(mut tasks) = self.tasks.lock().unwrap().take() else {
+            return;
+        };
+        while let Some(_) = tasks.join_next().await {
+            // when any task is done, abort all tasks
+            tasks.abort_all();
+        }
     }
 }

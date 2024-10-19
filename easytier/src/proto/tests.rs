@@ -41,8 +41,12 @@ impl Greeting for GreetingService {
     }
 }
 
+use crate::common::scoped_task::ScopedTask;
+use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
 use crate::proto::rpc_impl::client::Client;
 use crate::proto::rpc_impl::server::Server;
+use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
+use crate::tunnel::{TunnelConnector, TunnelListener};
 
 struct TestContext {
     client: Client,
@@ -299,4 +303,71 @@ async fn standalone_rpc_test() {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     assert_eq!(0, server.inflight_server());
+}
+
+#[tokio::test]
+async fn test_bidirect_rpc_manager() {
+    let c = BidirectRpcManager::new();
+    let s = BidirectRpcManager::new();
+
+    let service = GreetingServer::new(GreetingService {
+        delay_ms: 0,
+        prefix: "Hello Client".to_string(),
+    });
+    c.rpc_server().registry().register(service, "test");
+
+    let service = GreetingServer::new(GreetingService {
+        delay_ms: 0,
+        prefix: "Hello Server".to_string(),
+    });
+    s.rpc_server().registry().register(service, "test");
+
+    let mut tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let s_task: ScopedTask<()> = tokio::spawn(async move {
+        tcp_listener.listen().await.unwrap();
+        let tunnel = tcp_listener.accept().await.unwrap();
+        s.run_with_tunnel(tunnel);
+
+        let s_c = s
+            .rpc_client()
+            .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
+        let ret = s_c
+            .say_hello(
+                RpcController::default(),
+                SayHelloRequest {
+                    name: "world".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(ret.greeting, "Hello Client world!");
+        println!("server done, {:?}", ret);
+
+        s.wait().await;
+    })
+    .into();
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    let mut tcp_connector = TcpTunnelConnector::new("tcp://0.0.0.0:55443".parse().unwrap());
+    let c_tunnel = tcp_connector.connect().await.unwrap();
+    c.run_with_tunnel(c_tunnel);
+
+    let c_c = c
+        .rpc_client()
+        .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
+    let ret = c_c
+        .say_hello(
+            RpcController::default(),
+            SayHelloRequest {
+                name: "world".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ret.greeting, "Hello Server world!");
+    println!("client done, {:?}", ret);
+
+    drop(c);
+    s_task.await.unwrap();
 }

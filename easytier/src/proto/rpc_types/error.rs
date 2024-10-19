@@ -29,6 +29,9 @@ pub enum Error {
 
     #[error("Tunnel error: {0}")]
     TunnelError(#[from] crate::tunnel::TunnelError),
+
+    #[error("Shutdown")]
+    Shutdown,
 }
 
 pub type Result<T> = result::Result<T, Error>;
