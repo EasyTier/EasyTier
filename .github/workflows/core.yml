@@ -37,28 +37,28 @@ jobs:
       matrix:
         include:
           - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-x86_64
           - TARGET: mips-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-mips
           - TARGET: mipsel-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-mipsel
           - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-armv7hf
           - TARGET: armv7-unknown-linux-musleabi # raspberry pi 2-3-4, not tested
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-armv7
           - TARGET: arm-unknown-linux-musleabihf # raspberry pi 0-1, not tested
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-armhf
           - TARGET: arm-unknown-linux-musleabi # raspberry pi 0-1, not tested
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: linux-arm
 
           - TARGET: x86_64-apple-darwin
@@ -73,7 +73,7 @@ jobs:
             ARTIFACT_NAME: windows-x86_64
 
           - TARGET: x86_64-unknown-freebsd
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: freebsd-13.2-x86_64
             BSD_VERSION: 13.2
 

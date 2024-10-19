@@ -36,7 +36,7 @@ jobs:
       matrix:
         include:
           - TARGET: android
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             ARTIFACT_NAME: android
     runs-on: ${{ matrix.OS }}
     env:

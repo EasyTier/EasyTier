@@ -36,11 +36,11 @@ jobs:
       matrix:
         include:
           - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             GUI_TARGET: aarch64-unknown-linux-gnu
             ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
-            OS: ubuntu-latest
+            OS: ubuntu-22.04
             GUI_TARGET: x86_64-unknown-linux-gnu
             ARTIFACT_NAME: linux-x86_64
 
@@ -157,7 +157,7 @@ jobs:
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-latest' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
 
       - name: Compress
         run: |

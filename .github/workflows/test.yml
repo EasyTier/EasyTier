@@ -30,7 +30,7 @@ jobs:
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml"]'
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
