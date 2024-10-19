@@ -39,7 +39,7 @@ struct EasyTierData {
     node_info: RwLock<MyNodeInfo>,
     routes: RwLock<Vec<Route>>,
     peers: RwLock<Vec<PeerInfo>>,
-    tun_fd: RwLock<Option<i32>>,
+    tun_fd: Arc<RwLock<Option<i32>>>,
     tun_dev_name: RwLock<String>,
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
@@ -54,7 +54,7 @@ impl Default for EasyTierData {
             node_info: RwLock::new(MyNodeInfo::default()),
             routes: RwLock::new(Vec::new()),
             peers: RwLock::new(Vec::new()),
-            tun_fd: RwLock::new(None),
+            tun_fd: Arc::new(RwLock::new(None)),
             tun_dev_name: RwLock::new(String::new()),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
         }

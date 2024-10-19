@@ -41,12 +41,8 @@ impl Greeting for GreetingService {
     }
 }
 
-use crate::common::scoped_task::ScopedTask;
-use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
 use crate::proto::rpc_impl::client::Client;
 use crate::proto::rpc_impl::server::Server;
-use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
-use crate::tunnel::{TunnelConnector, TunnelListener};
 
 struct TestContext {
     client: Client,
@@ -307,6 +303,11 @@ async fn standalone_rpc_test() {
 
 #[tokio::test]
 async fn test_bidirect_rpc_manager() {
+    use crate::common::scoped_task::ScopedTask;
+    use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
+    use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
+    use crate::tunnel::{TunnelConnector, TunnelListener};
+
     let c = BidirectRpcManager::new();
     let s = BidirectRpcManager::new();
 
