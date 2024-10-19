@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["easytier", "easytier-gui/src-tauri", "easytier-rpc-build"]
+members = ["easytier", "easytier-gui/src-tauri", "easytier-rpc-build", "easytier-web"]
 default-members = ["easytier"]
 
 [profile.dev]
