@@ -674,7 +674,7 @@ async fn main() {
     println!("{}", cfg.dump());
     println!("-----------------------------------");
 
-    let mut l = launcher::NetworkInstance::new(cfg);
+    let mut l = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
     let _t = ScopedTask::from(handle_event(l.start().unwrap()));
     if let Some(e) = l.wait().await {
         panic!("launcher error: {:?}", e);

@@ -66,19 +66,21 @@ pub struct EasyTierLauncher {
     stop_flag: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     running_cfg: String,
+    fetch_node_info: bool,
 
     error_msg: Arc<RwLock<Option<String>>>,
     data: Arc<EasyTierData>,
 }
 
 impl EasyTierLauncher {
-    pub fn new() -> Self {
+    pub fn new(fetch_node_info: bool) -> Self {
         let instance_alive = Arc::new(AtomicBool::new(false));
         Self {
             instance_alive,
             thread_handle: None,
             error_msg: Arc::new(RwLock::new(None)),
             running_cfg: String::new(),
+            fetch_node_info,
 
             stop_flag: Arc::new(AtomicBool::new(false)),
             data: Arc::new(EasyTierData::default()),
@@ -132,6 +134,7 @@ impl EasyTierLauncher {
         cfg: TomlConfigLoader,
         stop_signal: Arc<tokio::sync::Notify>,
         data: Arc<EasyTierData>,
+        fetch_node_info: bool,
     ) -> Result<(), anyhow::Error> {
         let mut instance = Instance::new(cfg);
         let peer_mgr = instance.get_peer_manager();
@@ -149,45 +152,48 @@ impl EasyTierLauncher {
         });
 
         // update my node info
-        let data_c = data.clone();
-        let global_ctx_c = instance.get_global_ctx();
-        let peer_mgr_c = peer_mgr.clone();
-        let vpn_portal = instance.get_vpn_portal_inst();
-        tasks.spawn(async move {
-            loop {
-                // Update TUN Device Name
-                *data_c.tun_dev_name.write().unwrap() = global_ctx_c.get_flags().dev_name.clone();
+        if fetch_node_info {
+            let data_c = data.clone();
+            let global_ctx_c = instance.get_global_ctx();
+            let peer_mgr_c = peer_mgr.clone();
+            let vpn_portal = instance.get_vpn_portal_inst();
+            tasks.spawn(async move {
+                loop {
+                    // Update TUN Device Name
+                    *data_c.tun_dev_name.write().unwrap() =
+                        global_ctx_c.get_flags().dev_name.clone();
 
-                let node_info = MyNodeInfo {
-                    virtual_ipv4: global_ctx_c
-                        .get_ipv4()
-                        .map(|x| x.to_string())
-                        .unwrap_or_default(),
-                    hostname: global_ctx_c.get_hostname(),
-                    version: EASYTIER_VERSION.to_string(),
-                    ips: global_ctx_c.get_ip_collector().collect_ip_addrs().await,
-                    stun_info: global_ctx_c.get_stun_info_collector().get_stun_info(),
-                    listeners: global_ctx_c
-                        .get_running_listeners()
-                        .iter()
-                        .map(|x| x.to_string())
-                        .collect(),
-                    vpn_portal_cfg: Some(
-                        vpn_portal
-                            .lock()
-                            .await
-                            .dump_client_config(peer_mgr_c.clone())
-                            .await,
-                    ),
-                };
-                *data_c.node_info.write().unwrap() = node_info.clone();
-                *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
-                *data_c.peers.write().unwrap() = PeerManagerRpcService::new(peer_mgr_c.clone())
-                    .list_peers()
-                    .await;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
+                    let node_info = MyNodeInfo {
+                        virtual_ipv4: global_ctx_c
+                            .get_ipv4()
+                            .map(|x| x.to_string())
+                            .unwrap_or_default(),
+                        hostname: global_ctx_c.get_hostname(),
+                        version: EASYTIER_VERSION.to_string(),
+                        ips: global_ctx_c.get_ip_collector().collect_ip_addrs().await,
+                        stun_info: global_ctx_c.get_stun_info_collector().get_stun_info(),
+                        listeners: global_ctx_c
+                            .get_running_listeners()
+                            .iter()
+                            .map(|x| x.to_string())
+                            .collect(),
+                        vpn_portal_cfg: Some(
+                            vpn_portal
+                                .lock()
+                                .await
+                                .dump_client_config(peer_mgr_c.clone())
+                                .await,
+                        ),
+                    };
+                    *data_c.node_info.write().unwrap() = node_info.clone();
+                    *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
+                    *data_c.peers.write().unwrap() = PeerManagerRpcService::new(peer_mgr_c.clone())
+                        .list_peers()
+                        .await;
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            });
+        }
 
         #[cfg(target_os = "android")]
         Self::run_routine_for_android(&instance, &data, &mut tasks).await;
@@ -222,6 +228,7 @@ impl EasyTierLauncher {
         instance_alive.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let data = self.data.clone();
+        let fetch_node_info = self.fetch_node_info;
 
         self.thread_handle = Some(std::thread::spawn(move || {
             let rt = if cfg.get_flags().multi_thread {
@@ -247,7 +254,12 @@ impl EasyTierLauncher {
             });
 
             let notifier = data.instance_stop_notifier.clone();
-            let ret = rt.block_on(Self::easytier_routine(cfg, stop_notifier.clone(), data));
+            let ret = rt.block_on(Self::easytier_routine(
+                cfg,
+                stop_notifier.clone(),
+                data,
+                fetch_node_info,
+            ));
             if let Err(e) = ret {
                 error_msg.write().unwrap().replace(e.to_string());
             }
@@ -315,6 +327,8 @@ pub struct NetworkInstanceRunningInfo {
 pub struct NetworkInstance {
     config: TomlConfigLoader,
     launcher: Option<EasyTierLauncher>,
+
+    fetch_node_info: bool,
 }
 
 impl NetworkInstance {
@@ -322,7 +336,13 @@ impl NetworkInstance {
         Self {
             config,
             launcher: None,
+            fetch_node_info: true,
         }
+    }
+
+    pub fn set_fetch_node_info(mut self, fetch_node_info: bool) -> Self {
+        self.fetch_node_info = fetch_node_info;
+        self
     }
 
     pub fn is_easytier_running(&self) -> bool {
@@ -364,7 +384,7 @@ impl NetworkInstance {
             return Ok(self.subscribe_event().unwrap());
         }
 
-        let launcher = EasyTierLauncher::new();
+        let launcher = EasyTierLauncher::new(self.fetch_node_info);
         self.launcher = Some(launcher);
         let ev = self.subscribe_event().unwrap();
 
