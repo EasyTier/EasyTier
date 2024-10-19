@@ -16,7 +16,6 @@ use easytier::{
 use serde::{Deserialize, Serialize};
 
 use tauri::Manager as _;
-use tauri::RunEvent;
 
 pub const AUTOSTART_ARG: &str = "--autostart";
 
@@ -336,7 +335,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_vpnservice::init());
 
-    let mut app = builder
+    let app = builder
         .setup(|app| {
             // for logging config
             let Ok(log_dir) = app.path().app_log_dir() else {
@@ -402,10 +401,13 @@ pub fn run() {
     app.run(|_app, _event| {});
 
     #[cfg(target_os = "macos")]
-    app.run(|app, event| match event {
-        RunEvent::Reopen { .. } => {
-            toggle_window_visibility(app);
-        }
-        _ => {}
-    });
+    {
+        use tauri::RunEvent;
+        app.run(|app, event| match event {
+            RunEvent::Reopen { .. } => {
+                toggle_window_visibility(app);
+            }
+            _ => {}
+        });
+    }
 }

@@ -44,8 +44,8 @@ pub enum GlobalCtxEvent {
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
 }
 
-type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
-type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
+pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
+pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
 
 pub struct GlobalCtx {
     pub inst_name: String,

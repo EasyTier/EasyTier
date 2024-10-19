@@ -19,6 +19,7 @@ mod common;
 mod connector;
 mod gateway;
 mod instance;
+mod launcher;
 mod peer_center;
 mod peers;
 mod proto;
@@ -29,8 +30,9 @@ mod vpn_portal;
 use common::{
     config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig},
     constants::EASYTIER_VERSION,
+    global_ctx::EventBusSubscriber,
+    scoped_task::ScopedTask,
 };
-use instance::instance::Instance;
 use tokio::net::TcpSocket;
 use utils::setup_panic_handler;
 
@@ -525,6 +527,7 @@ impl From<Cli> for TomlConfigLoader {
                 .with_context(|| format!("failed to parse ipv6 listener: {}", ipv6_listener))
                 .unwrap();
         }
+        f.multi_thread = cli.multi_thread;
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());
@@ -549,13 +552,7 @@ fn peer_conn_info_to_string(p: crate::proto::cli::PeerConnInfo) -> String {
 }
 
 #[tracing::instrument]
-pub async fn async_main(cli: Cli) {
-    let cfg: TomlConfigLoader = cli.into();
-
-    init_logger(&cfg, false).unwrap();
-    let mut inst = Instance::new(cfg.clone());
-
-    let mut events = inst.get_global_ctx().subscribe();
+pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Ok(e) = events.recv().await {
             match e {
@@ -658,39 +655,28 @@ pub async fn async_main(cli: Cli) {
                 }
             }
         }
-    });
-
-    println!("Starting easytier with config:");
-    println!("############### TOML ###############\n");
-    println!("{}", cfg.dump());
-    println!("-----------------------------------");
-
-    inst.run().await.unwrap();
-
-    inst.wait().await;
+    })
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     setup_panic_handler();
 
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
 
     let cli = Cli::parse();
-    tracing::info!(cli = ?cli, "cli args parsed");
+    let cfg = TomlConfigLoader::from(cli);
+    init_logger(&cfg, false).unwrap();
 
-    if cli.multi_thread {
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async move { async_main(cli).await })
-    } else {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async move { async_main(cli).await })
+    println!("Starting easytier with config:");
+    println!("############### TOML ###############\n");
+    println!("{}", cfg.dump());
+    println!("-----------------------------------");
+
+    let mut l = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
+    let _t = ScopedTask::from(handle_event(l.start().unwrap()));
+    if let Some(e) = l.wait().await {
+        panic!("launcher error: {:?}", e);
     }
 }

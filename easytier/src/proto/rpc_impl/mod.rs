@@ -2,6 +2,7 @@ use crate::tunnel::{mpsc::MpscTunnel, Tunnel};
 
 pub type RpcController = super::rpc_types::controller::BaseController;
 
+pub mod bidirect;
 pub mod client;
 pub mod packet;
 pub mod server;

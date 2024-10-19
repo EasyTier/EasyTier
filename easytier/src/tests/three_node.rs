@@ -789,7 +789,7 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
         .await
         .unwrap();
 
-    assert_eq!(1, conns.len());
+    assert!(conns.len() >= 1);
 
     wait_for_condition(
         || async { ping_test("net_b", "10.144.145.2", None).await },

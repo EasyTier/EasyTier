@@ -164,7 +164,7 @@ pub struct Flags {
     pub enable_ipv6: bool,
     #[derivative(Default(value = "1380"))]
     pub mtu: u16,
-    #[derivative(Default(value = "true"))]
+    #[derivative(Default(value = "false"))]
     pub latency_first: bool,
     #[derivative(Default(value = "false"))]
     pub enable_exit_node: bool,
@@ -182,6 +182,8 @@ pub struct Flags {
     pub disable_udp_hole_punching: bool,
     #[derivative(Default(value = "\"udp://[::]:0\".to_string()"))]
     pub ipv6_listener: String,
+    #[derivative(Default(value = "false"))]
+    pub multi_thread: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -529,7 +531,28 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn dump(&self) -> String {
-        toml::to_string_pretty(&*self.config.lock().unwrap()).unwrap()
+        let default_flags_json = serde_json::to_string(&Flags::default()).unwrap();
+        let default_flags_hashmap =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
+                .unwrap();
+
+        let cur_flags_json = serde_json::to_string(&self.get_flags()).unwrap();
+        let cur_flags_hashmap =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&cur_flags_json)
+                .unwrap();
+
+        let mut flag_map: serde_json::Map<String, serde_json::Value> = Default::default();
+        for (key, value) in default_flags_hashmap {
+            if let Some(v) = cur_flags_hashmap.get(&key) {
+                if *v != value {
+                    flag_map.insert(key, v.clone());
+                }
+            }
+        }
+
+        let mut config = self.config.lock().unwrap().clone();
+        config.flags = Some(flag_map);
+        toml::to_string_pretty(&config).unwrap()
     }
 
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>> {

@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
-use futures::StreamExt;
+use futures::{SinkExt as _, StreamExt};
 use tokio::task::JoinSet;
 
 use crate::{
     common::{error::Error, PeerId},
-    proto::rpc_impl,
-    tunnel::packet_def::{PacketType, ZCPacket},
+    proto::rpc_impl::{self, bidirect::BidirectRpcManager},
+    tunnel::packet_def::ZCPacket,
 };
 
 const RPC_PACKET_CONTENT_MTU: usize = 1300;
@@ -25,9 +25,7 @@ pub trait PeerRpcManagerTransport: Send + Sync + 'static {
 // handle rpc request from one peer
 pub struct PeerRpcManager {
     tspt: Arc<Box<dyn PeerRpcManagerTransport>>,
-    rpc_client: rpc_impl::client::Client,
-    rpc_server: rpc_impl::server::Server,
-
+    bidirect_rpc: BidirectRpcManager,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
@@ -43,78 +41,41 @@ impl PeerRpcManager {
     pub fn new(tspt: impl PeerRpcManagerTransport) -> Self {
         Self {
             tspt: Arc::new(Box::new(tspt)),
-            rpc_client: rpc_impl::client::Client::new(),
-            rpc_server: rpc_impl::server::Server::new(),
+            bidirect_rpc: BidirectRpcManager::new(),
 
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
 
     pub fn run(&self) {
-        self.rpc_client.run();
-        self.rpc_server.run();
-
-        let (server_tx, mut server_rx) = (
-            self.rpc_server.get_transport_sink(),
-            self.rpc_server.get_transport_stream(),
-        );
-        let (client_tx, mut client_rx) = (
-            self.rpc_client.get_transport_sink(),
-            self.rpc_client.get_transport_stream(),
-        );
-
+        let ret = self.bidirect_rpc.run_and_create_tunnel();
+        let (mut rx, mut tx) = ret.split();
         let tspt = self.tspt.clone();
-
         self.tasks.lock().unwrap().spawn(async move {
-            loop {
-                let packet = tokio::select! {
-                    Some(Ok(packet)) = server_rx.next() => {
-                        tracing::trace!(?packet, "recv rpc packet from server");
-                        packet
-                    }
-                    Some(Ok(packet)) = client_rx.next() => {
-                        tracing::trace!(?packet, "recv rpc packet from client");
-                        packet
-                    }
-                    else => {
-                        tracing::warn!("rpc transport read aborted, exiting");
-                        break;
-                    }
-                };
-
+            while let Some(Ok(packet)) = rx.next().await {
                 let dst_peer_id = packet.peer_manager_header().unwrap().to_peer_id.into();
                 if let Err(e) = tspt.send(packet, dst_peer_id).await {
-                    tracing::error!(error = ?e, dst_peer_id = ?dst_peer_id, "send to peer failed");
+                    tracing::error!("send to rpc tspt error: {:?}", e);
                 }
             }
         });
 
         let tspt = self.tspt.clone();
         self.tasks.lock().unwrap().spawn(async move {
-            loop {
-                let Ok(o) = tspt.recv().await else {
-                    tracing::warn!("peer rpc transport read aborted, exiting");
-                    break;
-                };
-
-                if o.peer_manager_header().unwrap().packet_type == PacketType::RpcReq as u8 {
-                    server_tx.send(o).await.unwrap();
-                    continue;
-                } else if o.peer_manager_header().unwrap().packet_type == PacketType::RpcResp as u8
-                {
-                    client_tx.send(o).await.unwrap();
-                    continue;
+            while let Ok(packet) = tspt.recv().await {
+                if let Err(e) = tx.send(packet).await {
+                    tracing::error!("send to rpc tspt error: {:?}", e);
                 }
             }
         });
     }
 
     pub fn rpc_client(&self) -> &rpc_impl::client::Client {
-        &self.rpc_client
+        self.bidirect_rpc.rpc_client()
     }
 
     pub fn rpc_server(&self) -> &rpc_impl::server::Server {
-        &self.rpc_server
+        self.bidirect_rpc.rpc_server()
     }
 
     pub fn my_peer_id(&self) -> PeerId {
