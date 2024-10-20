@@ -19,3 +19,4 @@ pub mod web_client;
 mod tests;
 
 pub const VERSION: &str = common::constants::EASYTIER_VERSION;
+rust_i18n::i18n!("locales", fallback = "en");
