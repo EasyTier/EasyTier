@@ -138,10 +138,11 @@ pub fn setup_panic_handler() {
         };
 
         if let Some(payload_str) = payload_str {
-            println!("panic occurred: {}", payload_str);
+            println!("panic occurred: payload:{}, location: {:?}", payload_str, info.location());
         } else {
-            println!("panic occurred");
+            println!("panic occurred: location: {:?}", info.location());
         }
+        println!("backtrace saved to easytier-panic.log");
         let _ = std::fs::File::create("easytier-panic.log")
             .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
         std::process::exit(1);
