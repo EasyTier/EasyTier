@@ -13,6 +13,7 @@ pub mod peers;
 pub mod proto;
 pub mod tunnel;
 pub mod utils;
+pub mod web_client;
 
 #[cfg(test)]
 mod tests;

@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+import "common.proto";
+import "peer_rpc.proto";
+
+package web;
+
+message MyNodeInfo {
+  common.Ipv4Addr virtual_ipv4 = 1;
+  string hostname = 2;
+  string version = 3;
+  peer_rpc.GetIpListResponse ips = 4;
+  common.StunInfo stun_info = 5;
+  repeated common.Url listeners = 6;
+  optional string vpn_portal_cfg = 7;
+}
+
+message HeartbeatRequest {
+    common.UUID machine_id = 1;
+    common.UUID inst_id = 2;
+    string user_token = 3;
+}
+
+message HeartbeatResponse {
+}
+
+service WebServerService {
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}
