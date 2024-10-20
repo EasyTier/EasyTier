@@ -59,6 +59,14 @@ impl ServiceRegistry {
         }
     }
 
+    pub fn replace_registry(&self, registry: &ServiceRegistry) {
+        self.table.clear();
+        for item in registry.table.iter() {
+            let (k, v) = item.pair();
+            self.table.insert(k.clone(), v.clone());
+        }
+    }
+
     pub fn register<H: Handler<Controller = RpcController>>(&self, h: H, domain_name: &str) {
         let desc = h.service_descriptor();
         let key = ServiceKey {

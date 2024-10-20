@@ -134,6 +134,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     prost_build::Config::new()
+        .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".cli", "#[derive(serde::Serialize, serde::Deserialize)]")

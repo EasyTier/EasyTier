@@ -197,7 +197,7 @@ tonic-build = "0.12"
 globwalk = "0.8.1"
 regex = "1"
 prost-build = "0.13.2"
-rpc_build = { path = "src/proto/rpc_build" }
+rpc_build = { package = "easytier-rpc-build", version = "0.1.0", features = ["internal-namespace"] }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.11", features = ["blocking"] }
