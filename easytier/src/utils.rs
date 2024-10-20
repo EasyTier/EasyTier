@@ -128,7 +128,20 @@ pub fn setup_panic_handler() {
     use std::io::Write;
     std::panic::set_hook(Box::new(|info| {
         let backtrace = backtrace::Backtrace::force_capture();
-        println!("panic occurred: {:?}, backtrace: {:#?}", info, backtrace);
+        let payload = info.payload();
+        let payload_str: Option<&str> = if let Some(s) = payload.downcast_ref::<&str>() {
+            Some(s)
+        } else if let Some(s) = payload.downcast_ref::<String>() {
+            Some(s)
+        } else {
+            None
+        };
+
+        if let Some(payload_str) = payload_str {
+            println!("panic occurred: {}", payload_str);
+        } else {
+            println!("panic occurred");
+        }
         let _ = std::fs::File::create("easytier-panic.log")
             .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
         std::process::exit(1);
