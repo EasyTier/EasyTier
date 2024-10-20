@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "common.proto";
 import "peer_rpc.proto";
+import "cli.proto";
 
 package web;
 
@@ -15,6 +16,22 @@ message MyNodeInfo {
   optional string vpn_portal_cfg = 7;
 }
 
+message NetworkInstanceRunningInfo {
+  string dev_name = 1;
+  MyNodeInfo my_node_info = 2;
+  map<string, string> events = 3;
+  MyNodeInfo node_info = 4;
+  repeated cli.Route routes = 5;
+  repeated cli.PeerInfo peers = 6;
+  repeated cli.PeerRoutePair peer_route_pairs = 7;
+  bool running = 8;
+  optional string error_msg = 9;
+}
+
+message NetworkInstanceRunningInfoMap {
+  map<string, NetworkInstanceRunningInfo> map = 1;
+}
+
 message HeartbeatRequest {
     common.UUID machine_id = 1;
     common.UUID inst_id = 2;
@@ -26,4 +43,43 @@ message HeartbeatResponse {
 
 service WebServerService {
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
+}
+
+message ValidateConfigRequest {
+  string config = 1;
+}
+
+message ValidateConfigResponse {
+  optional string error_msg = 1;
+}
+
+message RunNetworkInstanceRequest {
+  string config = 1;
+}
+
+message RunNetworkInstanceResponse {
+  optional string error_msg = 1;
+}
+
+message RetainNetworkInstanceRequest {
+  repeated common.UUID inst_ids = 1;
+}
+
+message RetainNetworkInstanceResponse {
+  optional string error_msg = 1;
+}
+
+message CollectNetworkInfoRequest {
+}
+
+message CollectNetworkInfoResponse {
+  NetworkInstanceRunningInfoMap info = 1;
+  optional string error_msg = 2;
+}
+
+service WebClientService {
+  rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse) {}
+  rpc RunNetworkInstance(RunNetworkInstanceRequest) returns (RunNetworkInstanceResponse) {}
+  rpc RetainNetworkInstance(RetainNetworkInstanceRequest) returns (RetainNetworkInstanceResponse) {}
+  rpc CollectNetworkInfo(CollectNetworkInfoRequest) returns (CollectNetworkInfoResponse) {}
 }

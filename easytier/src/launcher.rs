@@ -13,11 +13,11 @@ use crate::{
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
     proto::{
-        cli::{PeerInfo, Route},
+        cli::{list_peer_route_pair, PeerInfo, Route},
         common::StunInfo,
         peer_rpc::GetIpListResponse,
     },
-    utils::{list_peer_route_pair, PeerRoutePair},
+    utils::PeerRoutePair,
 };
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
@@ -299,18 +299,7 @@ impl Drop for EasyTierLauncher {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-pub struct NetworkInstanceRunningInfo {
-    pub dev_name: String,
-    pub my_node_info: MyNodeInfo,
-    pub events: Vec<(DateTime<Local>, GlobalCtxEvent)>,
-    pub node_info: MyNodeInfo,
-    pub routes: Vec<Route>,
-    pub peers: Vec<PeerInfo>,
-    pub peer_route_pairs: Vec<PeerRoutePair>,
-    pub running: bool,
-    pub error_msg: Option<String>,
-}
+pub type NetworkInstanceRunningInfo = crate::proto::web::NetworkInstanceRunningInfo;
 
 pub struct NetworkInstance {
     config: TomlConfigLoader,
@@ -350,9 +339,13 @@ impl NetworkInstance {
 
         Some(NetworkInstanceRunningInfo {
             dev_name: launcher.get_dev_name(),
-            my_node_info: launcher.get_node_info(),
-            events: launcher.get_events(),
-            node_info: launcher.get_node_info(),
+            my_node_info: Some(launcher.get_node_info()),
+            events: launcher
+                .get_events()
+                .iter()
+                .map(|(t, e)| (t.to_string(), format!("{:?}", e)))
+                .collect(),
+            node_info: Some(launcher.get_node_info()),
             routes,
             peers,
             peer_route_pairs,

@@ -12,3 +12,10 @@ tokio = { version = "1", features = ["full"] }
 dashmap = "6.1"
 url = "2.2"
 async-trait = "0.1"
+axum = "0.7"
+clap = { version = "4.4.8", features = [
+    "string",
+    "unicode",
+    "derive",
+    "wrap_help",
+] }
