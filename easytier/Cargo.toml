@@ -17,6 +17,7 @@ readme = "README.md"
 [[bin]]
 name = "easytier-core"
 path = "src/easytier-core.rs"
+test = false
 
 [[bin]]
 name = "easytier-cli"

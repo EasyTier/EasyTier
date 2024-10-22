@@ -318,7 +318,7 @@ impl PunchSymToConeHoleClient {
         let punch_random = self.punch_randomly.load(Ordering::Relaxed);
         let punch_predicable = self.punch_predicablely.load(Ordering::Relaxed);
         let scoped_punch_task: ScopedTask<Option<u32>> = tokio::spawn(async move {
-            if punch_predicable {
+            if punch_predicable && base_port_for_easy_sym.is_some() {
                 if let Some(inc) = my_nat_info.get_inc_of_easy_sym() {
                     let req = SendPunchPacketEasySymRequest {
                         listener_mapped_addr: remote_mapped_addr.clone().into(),
