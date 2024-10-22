@@ -3,6 +3,7 @@
   "type": "module",
   "version": "2.0.3",
   "private": true,
+  "packageManager": "pnpm@9.12.1+sha512.e5a7e52a4183a02d5931057f7a0dbff9d5e9ce3161e33fa68ae392125b79282a8a8a470a51dfc8a0ed86221442eb2fb57019b0990ed24fab519bf0e1bc5ccfc4",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
@@ -26,7 +27,7 @@
     "primeicons": "^7.0.0",
     "primevue": "^4.1.0",
     "tauri-plugin-vpnservice-api": "link:..\\tauri-plugin-vpnservice",
-    "vue": "^3.5.11",
+    "vue": "=3.4.38",
     "vue-i18n": "^10.0.4",
     "vue-router": "^4.4.5"
   },
@@ -58,6 +59,5 @@
     "vite-plugin-vue-layouts": "^0.11.0",
     "vue-i18n": "^10.0.0",
     "vue-tsc": "^2.1.6"
-  },
-  "packageManager": "pnpm@9.12.1+sha512.e5a7e52a4183a02d5931057f7a0dbff9d5e9ce3161e33fa68ae392125b79282a8a8a470a51dfc8a0ed86221442eb2fb57019b0990ed24fab519bf0e1bc5ccfc4"
+  }
 }
