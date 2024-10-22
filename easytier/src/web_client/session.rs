@@ -1,23 +1,22 @@
 use std::sync::Arc;
 
 use tokio::{
-    sync::{broadcast, Mutex, Notify},
-    task::{JoinHandle, JoinSet},
-    time::{interval, Interval},
+    sync::{broadcast, Mutex},
+    task::JoinSet,
+    time::interval,
 };
-use tracing::instrument::WithSubscriber;
 
 use crate::{
-    common::scoped_task::ScopedTask,
+    common::get_machine_id,
     proto::{
-        rpc_impl::{bidirect::BidirectRpcManager, standalone::StandAloneClient},
+        rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
         web::{
-            HeartbeatRequest, HeartbeatResponse, WebServerServiceClient,
+            HeartbeatRequest, HeartbeatResponse, WebClientServiceServer,
             WebServerServiceClientFactory,
         },
     },
-    tunnel::{generate_digest_from_str, Tunnel, TunnelConnector},
+    tunnel::Tunnel,
 };
 
 use super::controller::Controller;
@@ -42,8 +41,13 @@ impl Session {
         let rpc_mgr = BidirectRpcManager::new();
         rpc_mgr.run_with_tunnel(tunnel);
 
+        rpc_mgr
+            .rpc_server()
+            .registry()
+            .register(WebClientServiceServer::new(controller.clone()), "");
+
         let mut tasks: JoinSet<()> = JoinSet::new();
-        let heartbeat_ctx = Self::heartbeat_routine(&rpc_mgr, &mut tasks);
+        let heartbeat_ctx = Self::heartbeat_routine(&rpc_mgr, controller.token(), &mut tasks);
 
         Session {
             rpc_mgr,
@@ -53,7 +57,11 @@ impl Session {
         }
     }
 
-    fn heartbeat_routine(rpc_mgr: &BidirectRpcManager, tasks: &mut JoinSet<()>) -> HeartbeatCtx {
+    fn heartbeat_routine(
+        rpc_mgr: &BidirectRpcManager,
+        token: String,
+        tasks: &mut JoinSet<()>,
+    ) -> HeartbeatCtx {
         let (tx, _rx1) = broadcast::channel(2);
 
         let ctx = HeartbeatCtx {
@@ -61,18 +69,12 @@ impl Session {
             resp: Arc::new(Mutex::new(None)),
         };
 
-        let mid = machine_uid::get()
-            .map(|x| {
-                let mut b = [0u8; 16];
-                generate_digest_from_str("", x.as_str(), &mut b);
-                uuid::Uuid::from_bytes(b)
-            })
-            .unwrap_or(uuid::Uuid::new_v4());
+        let mid = get_machine_id();
         let inst_id = uuid::Uuid::new_v4();
-        let token = "test_token".to_string();
+        let token = token;
 
         let ctx_clone = ctx.clone();
-        let mut tick = interval(std::time::Duration::from_secs(5));
+        let mut tick = interval(std::time::Duration::from_secs(1));
         let client = rpc_mgr
             .rpc_client()
             .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, "".to_string());

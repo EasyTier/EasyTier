@@ -21,7 +21,7 @@ message MalformatRpcPacket { string error_message = 1; }
 message Timeout { string error_message = 1; }
 
 message Error {
-  oneof error {
+  oneof error_kind {
     OtherError other_error = 1;
     InvalidMethodIndex invalid_method_index = 2;
     InvalidService invalid_service = 3;

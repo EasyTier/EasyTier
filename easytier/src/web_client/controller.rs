@@ -1,60 +1,66 @@
 use std::collections::BTreeMap;
 
-use anyhow::Context;
 use dashmap::DashMap;
 
 use crate::{
     common::config::{ConfigLoader, TomlConfigLoader},
-    launcher::{NetworkInstance, NetworkInstanceRunningInfo},
+    launcher::NetworkInstance,
     proto::{
         rpc_types::{self, controller::BaseController},
         web::{
-            CollectNetworkInfoRequest, CollectNetworkInfoResponse, NetworkInstanceRunningInfoMap,
-            RetainNetworkInstanceRequest, RetainNetworkInstanceResponse, RunNetworkInstanceRequest,
-            RunNetworkInstanceResponse, ValidateConfigRequest, ValidateConfigResponse,
-            WebClientService,
+            CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
+            DeleteNetworkInstanceResponse, ListNetworkInstanceRequest, ListNetworkInstanceResponse,
+            NetworkInstanceRunningInfoMap, RetainNetworkInstanceRequest,
+            RetainNetworkInstanceResponse, RunNetworkInstanceRequest, RunNetworkInstanceResponse,
+            ValidateConfigRequest, ValidateConfigResponse, WebClientService,
         },
     },
 };
 
 pub struct Controller {
+    token: String,
     instance_map: DashMap<uuid::Uuid, NetworkInstance>,
 }
 
 impl Controller {
-    pub fn new() -> Self {
+    pub fn new(token: String) -> Self {
         Controller {
+            token,
             instance_map: DashMap::new(),
         }
     }
 
-    pub fn run_network_instance(&self, cfg: TomlConfigLoader) -> Result<(), String> {
+    pub fn run_network_instance(&self, cfg: TomlConfigLoader) -> Result<(), anyhow::Error> {
         let instance_id = cfg.get_id();
         if self.instance_map.contains_key(&instance_id) {
-            return Err("instance already exists".to_string());
+            anyhow::bail!("instance {} already exists", instance_id);
         }
 
         let mut instance = NetworkInstance::new(cfg);
-        instance.start().map_err(|e| e.to_string())?;
+        instance.start()?;
 
         println!("instance {} started", instance_id);
         self.instance_map.insert(instance_id, instance);
         Ok(())
     }
 
-    pub fn retain_network_instance(&self, instance_ids: Vec<uuid::Uuid>) -> Result<(), String> {
-        let _ = self.instance_map.retain(|k, _| instance_ids.contains(k));
-        println!(
-            "instance {:?} retained",
-            self.instance_map
-                .iter()
-                .map(|item| item.key().clone())
-                .collect::<Vec<_>>()
-        );
-        Ok(())
+    pub fn retain_network_instance(
+        &self,
+        instance_ids: Vec<uuid::Uuid>,
+    ) -> Result<RetainNetworkInstanceResponse, anyhow::Error> {
+        self.instance_map.retain(|k, _| instance_ids.contains(k));
+        let remain = self
+            .instance_map
+            .iter()
+            .map(|item| item.key().clone().into())
+            .collect::<Vec<_>>();
+        println!("instance {:?} retained", remain);
+        Ok(RetainNetworkInstanceResponse {
+            remain_inst_ids: remain,
+        })
     }
 
-    pub fn collect_network_infos(&self) -> Result<NetworkInstanceRunningInfoMap, String> {
+    pub fn collect_network_infos(&self) -> Result<NetworkInstanceRunningInfoMap, anyhow::Error> {
         let mut map = BTreeMap::new();
         for instance in self.instance_map.iter() {
             if let Some(info) = instance.get_running_info() {
@@ -62,6 +68,17 @@ impl Controller {
             }
         }
         Ok(NetworkInstanceRunningInfoMap { map })
+    }
+
+    pub fn list_network_instance_ids(&self) -> Vec<uuid::Uuid> {
+        self.instance_map
+            .iter()
+            .map(|item| item.key().clone())
+            .collect()
+    }
+
+    pub fn token(&self) -> String {
+        self.token.clone()
     }
 }
 
@@ -74,10 +91,8 @@ impl WebClientService for Controller {
         _: BaseController,
         req: ValidateConfigRequest,
     ) -> Result<ValidateConfigResponse, rpc_types::error::Error> {
-        let error_msg = TomlConfigLoader::new_from_str(&req.config)
-            .err()
-            .map(|e| e.to_string());
-        Ok(ValidateConfigResponse { error_msg })
+        let _ = TomlConfigLoader::new_from_str(&req.config)?;
+        Ok(ValidateConfigResponse {})
     }
 
     async fn run_network_instance(
@@ -85,14 +100,9 @@ impl WebClientService for Controller {
         _: BaseController,
         req: RunNetworkInstanceRequest,
     ) -> Result<RunNetworkInstanceResponse, rpc_types::error::Error> {
-        let cfg = TomlConfigLoader::new_from_str(&req.config);
-        if let Err(e) = cfg {
-            return Ok(RunNetworkInstanceResponse {
-                error_msg: Some(e.to_string()),
-            });
-        }
-        let ret = self.run_network_instance(cfg.unwrap()).err();
-        Ok(RunNetworkInstanceResponse { error_msg: ret })
+        let cfg = TomlConfigLoader::new_from_str(&req.config)?;
+        self.run_network_instance(cfg)?;
+        Ok(RunNetworkInstanceResponse {})
     }
 
     async fn retain_network_instance(
@@ -100,28 +110,62 @@ impl WebClientService for Controller {
         _: BaseController,
         req: RetainNetworkInstanceRequest,
     ) -> Result<RetainNetworkInstanceResponse, rpc_types::error::Error> {
-        let error_msg = self
-            .retain_network_instance(req.inst_ids.into_iter().map(Into::into).collect())
-            .err();
-        Ok(RetainNetworkInstanceResponse { error_msg })
+        Ok(self.retain_network_instance(req.inst_ids.into_iter().map(Into::into).collect())?)
     }
 
     async fn collect_network_info(
         &self,
         _: BaseController,
-        _: CollectNetworkInfoRequest,
+        req: CollectNetworkInfoRequest,
     ) -> Result<CollectNetworkInfoResponse, rpc_types::error::Error> {
-        let ret = self.collect_network_infos();
-        if let Err(e) = ret {
-            Ok(CollectNetworkInfoResponse {
-                error_msg: Some(e),
-                info: None,
-            })
-        } else {
-            Ok(CollectNetworkInfoResponse {
-                error_msg: None,
-                info: Some(ret.unwrap()),
-            })
+        let mut ret = self.collect_network_infos()?;
+        let include_inst_ids = req
+            .inst_ids
+            .iter()
+            .cloned()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        if !include_inst_ids.is_empty() {
+            let mut to_remove = Vec::new();
+            for (k, _) in ret.map.iter() {
+                if !include_inst_ids.contains(&k) {
+                    to_remove.push(k.clone());
+                }
+            }
+
+            for k in to_remove {
+                ret.map.remove(&k);
+            }
         }
+        Ok(CollectNetworkInfoResponse { info: Some(ret) })
+    }
+
+    //   rpc ListNetworkInstance(ListNetworkInstanceRequest) returns (ListNetworkInstanceResponse) {}
+    async fn list_network_instance(
+        &self,
+        _: BaseController,
+        _: ListNetworkInstanceRequest,
+    ) -> Result<ListNetworkInstanceResponse, rpc_types::error::Error> {
+        Ok(ListNetworkInstanceResponse {
+            inst_ids: self
+                .list_network_instance_ids()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        })
+    }
+
+    //   rpc DeleteNetworkInstance(DeleteNetworkInstanceRequest) returns (DeleteNetworkInstanceResponse) {}
+    async fn delete_network_instance(
+        &self,
+        _: BaseController,
+        req: DeleteNetworkInstanceRequest,
+    ) -> Result<DeleteNetworkInstanceResponse, rpc_types::error::Error> {
+        let mut inst_ids = self.list_network_instance_ids();
+        inst_ids.retain(|id| !req.inst_ids.contains(&(id.clone().into())));
+        self.retain_network_instance(inst_ids.clone())?;
+        Ok(DeleteNetworkInstanceResponse {
+            remain_inst_ids: inst_ids.into_iter().map(Into::into).collect(),
+        })
     }
 }

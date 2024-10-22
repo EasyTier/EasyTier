@@ -7,14 +7,18 @@ use tabled::settings::Style;
 use tokio::time::timeout;
 
 use easytier::{
-    common::{constants::EASYTIER_VERSION, stun::StunInfoCollector, stun::StunInfoCollectorTrait},
+    common::{
+        constants::EASYTIER_VERSION,
+        stun::{StunInfoCollector, StunInfoCollectorTrait},
+    },
     proto::{
         cli::{
-            ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetVpnPortalInfoRequest, ListConnectorRequest, ListForeignNetworkRequest,
-            ListGlobalForeignNetworkRequest, ListPeerRequest, ListPeerResponse, ListRouteRequest,
-            ListRouteResponse, NodeInfo, PeerManageRpc, PeerManageRpcClientFactory,
-            ShowNodeInfoRequest, VpnPortalRpc, VpnPortalRpcClientFactory,
+            list_peer_route_pair, ConnectorManageRpc, ConnectorManageRpcClientFactory,
+            DumpRouteRequest, GetVpnPortalInfoRequest, ListConnectorRequest,
+            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListPeerRequest,
+            ListPeerResponse, ListRouteRequest, ListRouteResponse, NodeInfo, PeerManageRpc,
+            PeerManageRpcClientFactory, ShowNodeInfoRequest, VpnPortalRpc,
+            VpnPortalRpcClientFactory,
         },
         common::NatType,
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -22,7 +26,7 @@ use easytier::{
         rpc_types::controller::BaseController,
     },
     tunnel::tcp::TcpTunnelConnector,
-    utils::{cost_to_str, float_to_str, list_peer_route_pair, PeerRoutePair},
+    utils::{cost_to_str, float_to_str, PeerRoutePair},
 };
 
 #[derive(Parser, Debug)]

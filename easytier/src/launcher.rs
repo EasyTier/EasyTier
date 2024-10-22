@@ -12,15 +12,9 @@ use crate::{
     },
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
-    proto::{
-        cli::{list_peer_route_pair, PeerInfo, Route},
-        common::StunInfo,
-        peer_rpc::GetIpListResponse,
-    },
-    utils::PeerRoutePair,
+    proto::cli::{list_peer_route_pair, PeerInfo, Route},
 };
 use chrono::{DateTime, Local};
-use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinSet};
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;

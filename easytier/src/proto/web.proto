@@ -50,7 +50,6 @@ message ValidateConfigRequest {
 }
 
 message ValidateConfigResponse {
-  optional string error_msg = 1;
 }
 
 message RunNetworkInstanceRequest {
@@ -58,7 +57,6 @@ message RunNetworkInstanceRequest {
 }
 
 message RunNetworkInstanceResponse {
-  optional string error_msg = 1;
 }
 
 message RetainNetworkInstanceRequest {
@@ -66,15 +64,30 @@ message RetainNetworkInstanceRequest {
 }
 
 message RetainNetworkInstanceResponse {
-  optional string error_msg = 1;
+  repeated common.UUID remain_inst_ids = 1;
 }
 
 message CollectNetworkInfoRequest {
+  repeated common.UUID inst_ids = 1;
 }
 
 message CollectNetworkInfoResponse {
   NetworkInstanceRunningInfoMap info = 1;
-  optional string error_msg = 2;
+}
+
+message ListNetworkInstanceRequest {
+}
+
+message ListNetworkInstanceResponse {
+  repeated common.UUID inst_ids = 1;
+}
+
+message DeleteNetworkInstanceRequest {
+  repeated common.UUID inst_ids = 1;
+}
+
+message DeleteNetworkInstanceResponse {
+  repeated common.UUID remain_inst_ids = 1;
 }
 
 service WebClientService {
@@ -82,4 +95,6 @@ service WebClientService {
   rpc RunNetworkInstance(RunNetworkInstanceRequest) returns (RunNetworkInstanceResponse) {}
   rpc RetainNetworkInstance(RetainNetworkInstanceRequest) returns (RetainNetworkInstanceResponse) {}
   rpc CollectNetworkInfo(CollectNetworkInfoRequest) returns (CollectNetworkInfoResponse) {}
+  rpc ListNetworkInstance(ListNetworkInstanceRequest) returns (ListNetworkInstanceResponse) {}
+  rpc DeleteNetworkInstance(DeleteNetworkInstanceRequest) returns (DeleteNetworkInstanceResponse) {}
 }

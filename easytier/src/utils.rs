@@ -1,15 +1,8 @@
 use anyhow::Context;
-use serde::{Deserialize, Serialize};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-use crate::{
-    common::{config::ConfigLoader, get_logger_timer_rfc3339},
-    proto::{
-        cli::{PeerInfo, Route},
-        common::NatType,
-    },
-};
+use crate::common::{config::ConfigLoader, get_logger_timer_rfc3339};
 
 pub type PeerRoutePair = crate::proto::cli::PeerRoutePair;
 
@@ -135,7 +128,7 @@ pub fn setup_panic_handler() {
     use std::io::Write;
     std::panic::set_hook(Box::new(|info| {
         let backtrace = backtrace::Backtrace::force_capture();
-        println!("panic occurred: {:?}", info);
+        println!("panic occurred: {:?}, backtrace: {:#?}", info, backtrace);
         let _ = std::fs::File::create("easytier-panic.log")
             .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
         std::process::exit(1);

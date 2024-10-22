@@ -3,8 +3,6 @@ include!(concat!(env!("OUT_DIR"), "/tests.rs"));
 use std::sync::{Arc, Mutex};
 
 use futures::StreamExt as _;
-use tokio::sync::futures::Notified;
-use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
 use super::rpc_impl::RpcController;
@@ -309,6 +307,7 @@ async fn test_bidirect_rpc_manager() {
     use crate::proto::rpc_impl::bidirect::BidirectRpcManager;
     use crate::tunnel::tcp::{TcpTunnelConnector, TcpTunnelListener};
     use crate::tunnel::{TunnelConnector, TunnelListener};
+    use tokio::sync::Notify;
 
     let c = BidirectRpcManager::new();
     let s = BidirectRpcManager::new();
@@ -325,8 +324,8 @@ async fn test_bidirect_rpc_manager() {
     });
     s.rpc_server().registry().register(service, "test");
 
-    let mut server_test_done = Arc::new(Notify::new());
-    let mut server_test_done_clone = server_test_done.clone();
+    let server_test_done = Arc::new(Notify::new());
+    let server_test_done_clone = server_test_done.clone();
     let mut tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:55443".parse().unwrap());
     let s_task: ScopedTask<()> = tokio::spawn(async move {
         tcp_listener.listen().await.unwrap();
