@@ -1,33 +1,29 @@
-#![allow(dead_code)]
-
 use std::{net::SocketAddr, sync::Mutex, time::Duration, vec};
 
 use anyhow::{Context, Ok};
 use clap::{command, Args, Parser, Subcommand};
-use common::{constants::EASYTIER_VERSION, stun::StunInfoCollectorTrait};
-use proto::{
-    common::NatType,
-    peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
-    rpc_impl::standalone::StandAloneClient,
-    rpc_types::controller::BaseController,
-};
-use tokio::time::timeout;
-use tunnel::tcp::TcpTunnelConnector;
-use utils::{list_peer_route_pair, PeerRoutePair};
-
-mod arch;
-mod common;
-mod proto;
-mod tunnel;
-mod utils;
-
-use crate::{
-    common::stun::StunInfoCollector,
-    proto::cli::*,
-    utils::{cost_to_str, float_to_str},
-};
 use humansize::format_size;
 use tabled::settings::Style;
+use tokio::time::timeout;
+
+use easytier::{
+    common::{constants::EASYTIER_VERSION, stun::StunInfoCollector, stun::StunInfoCollectorTrait},
+    proto::{
+        cli::{
+            ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
+            GetVpnPortalInfoRequest, ListConnectorRequest, ListForeignNetworkRequest,
+            ListGlobalForeignNetworkRequest, ListPeerRequest, ListPeerResponse, ListRouteRequest,
+            ListRouteResponse, NodeInfo, PeerManageRpc, PeerManageRpcClientFactory,
+            ShowNodeInfoRequest, VpnPortalRpc, VpnPortalRpcClientFactory,
+        },
+        common::NatType,
+        peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
+        rpc_impl::standalone::StandAloneClient,
+        rpc_types::controller::BaseController,
+    },
+    tunnel::tcp::TcpTunnelConnector,
+    utils::{cost_to_str, float_to_str, list_peer_route_pair, PeerRoutePair},
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]

@@ -5,7 +5,7 @@ mod connector;
 mod gateway;
 mod instance;
 mod peer_center;
-mod peers;
+pub mod peers;
 mod vpn_portal;
 
 pub mod common;

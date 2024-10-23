@@ -1,7 +1,8 @@
-use crate::common::PeerId;
-
 #[cfg(target_os = "linux")]
 mod three_node;
+
+use easytier::common::PeerId;
+use easytier::peers;
 
 pub fn get_guest_veth_name(net_ns: &str) -> &str {
     Box::leak(format!("veth_{}_g", net_ns).into_boxed_str())
@@ -143,7 +144,7 @@ fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::cli::R
 }
 
 async fn wait_proxy_route_appear(
-    mgr: &std::sync::Arc<crate::peers::peer_manager::PeerManager>,
+    mgr: &std::sync::Arc<peers::peer_manager::PeerManager>,
     ipv4: &str,
     dst_peer_id: PeerId,
     proxy_cidr: &str,
