@@ -492,7 +492,7 @@ impl From<Cli> for TomlConfigLoader {
         f.enable_encryption = !cli.disable_encryption;
         f.enable_ipv6 = !cli.disable_ipv6;
         f.latency_first = cli.latency_first;
-        f.dev_name = cli.dev_name.unwrap_or(Default::default());
+        f.dev_name = cli.dev_name.unwrap_or_default();
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu;
         }

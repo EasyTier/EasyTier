@@ -226,7 +226,6 @@ impl CommandHandler {
                     ipv4: p
                         .route
                         .ipv4_addr
-                        .clone()
                         .map(|ip| ip.to_string())
                         .unwrap_or_default(),
                     hostname: p.route.hostname.clone(),
@@ -235,7 +234,7 @@ impl CommandHandler {
                     loss_rate: float_to_str(p.get_loss_rate().unwrap_or(0.0), 3),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
-                    tunnel_proto: p.get_conn_protos().unwrap_or(vec![]).join(",").to_string(),
+                    tunnel_proto: p.get_conn_protos().unwrap_or_default().join(",").to_string(),
                     nat_type: p.get_udp_nat_type(),
                     id: p.route.peer_id.to_string(),
                     version: if p.route.version.is_empty() {
@@ -290,7 +289,7 @@ impl CommandHandler {
 
         println!(
             "{}",
-            tabled::Table::new(items).with(Style::modern()).to_string()
+            tabled::Table::new(items).with(Style::modern())
         );
 
         Ok(())
@@ -417,7 +416,6 @@ impl CommandHandler {
                     ipv4: p
                         .route
                         .ipv4_addr
-                        .clone()
                         .map(|ip| ip.to_string())
                         .unwrap_or_default(),
                     hostname: p.route.hostname.clone(),
@@ -437,7 +435,6 @@ impl CommandHandler {
                     ipv4: p
                         .route
                         .ipv4_addr
-                        .clone()
                         .map(|ip| ip.to_string())
                         .unwrap_or_default(),
                     hostname: p.route.hostname.clone(),
@@ -445,7 +442,6 @@ impl CommandHandler {
                     next_hop_ipv4: next_hop_pair
                         .route
                         .ipv4_addr
-                        .clone()
                         .map(|ip| ip.to_string())
                         .unwrap_or_default(),
                     next_hop_hostname: next_hop_pair.route.hostname.clone(),
@@ -462,7 +458,7 @@ impl CommandHandler {
 
         println!(
             "{}",
-            tabled::Table::new(items).with(Style::modern()).to_string()
+            tabled::Table::new(items).with(Style::modern())
         );
 
         Ok(())
@@ -584,7 +580,6 @@ async fn main() -> Result<(), Error> {
                 "{}",
                 tabled::Table::new(table_rows)
                     .with(Style::modern())
-                    .to_string()
             );
         }
         SubCommand::VpnPortal => {
@@ -639,7 +634,7 @@ async fn main() -> Result<(), Error> {
                         builder.push_record(vec![format!("Listener {}", idx).as_str(), l]);
                     }
 
-                    println!("{}", builder.build().with(Style::modern()).to_string());
+                    println!("{}", builder.build().with(Style::modern()));
                 }
                 Some(NodeSubCommand::Config) => {
                     println!("{}", node_info.config);

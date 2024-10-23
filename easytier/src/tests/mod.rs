@@ -15,29 +15,29 @@ pub fn get_host_veth_name(net_ns: &str) -> &str {
 pub fn del_netns(name: &str) {
     // del veth host
     let _ = std::process::Command::new("ip")
-        .args(&["link", "del", get_host_veth_name(name)])
+        .args(["link", "del", get_host_veth_name(name)])
         .output();
 
     let _ = std::process::Command::new("ip")
-        .args(&["netns", "del", name])
+        .args(["netns", "del", name])
         .output();
 }
 
 pub fn create_netns(name: &str, ipv4: &str) {
     // create netns
     let _ = std::process::Command::new("ip")
-        .args(&["netns", "add", name])
+        .args(["netns", "add", name])
         .output()
         .unwrap();
 
     // set lo up
     let _ = std::process::Command::new("ip")
-        .args(&["netns", "exec", name, "ip", "link", "set", "lo", "up"])
+        .args(["netns", "exec", name, "ip", "link", "set", "lo", "up"])
         .output()
         .unwrap();
 
     let _ = std::process::Command::new("ip")
-        .args(&[
+        .args([
             "link",
             "add",
             get_host_veth_name(name),
@@ -51,12 +51,12 @@ pub fn create_netns(name: &str, ipv4: &str) {
         .unwrap();
 
     let _ = std::process::Command::new("ip")
-        .args(&["link", "set", get_guest_veth_name(name), "netns", name])
+        .args(["link", "set", get_guest_veth_name(name), "netns", name])
         .output()
         .unwrap();
 
     let _ = std::process::Command::new("ip")
-        .args(&[
+        .args([
             "netns",
             "exec",
             name,
@@ -70,12 +70,12 @@ pub fn create_netns(name: &str, ipv4: &str) {
         .unwrap();
 
     let _ = std::process::Command::new("ip")
-        .args(&["link", "set", get_host_veth_name(name), "up"])
+        .args(["link", "set", get_host_veth_name(name), "up"])
         .output()
         .unwrap();
 
     let _ = std::process::Command::new("ip")
-        .args(&[
+        .args([
             "netns",
             "exec",
             name,
@@ -93,25 +93,25 @@ pub fn create_netns(name: &str, ipv4: &str) {
 pub fn prepare_bridge(name: &str) {
     // del bridge with brctl
     let _ = std::process::Command::new("brctl")
-        .args(&["delbr", name])
+        .args(["delbr", name])
         .output();
 
     // create new br
     let _ = std::process::Command::new("brctl")
-        .args(&["addbr", name])
+        .args(["addbr", name])
         .output();
 }
 
 pub fn add_ns_to_bridge(br_name: &str, ns_name: &str) {
     // use brctl to add ns to bridge
     let _ = std::process::Command::new("brctl")
-        .args(&["addif", br_name, get_host_veth_name(ns_name)])
+        .args(["addif", br_name, get_host_veth_name(ns_name)])
         .output()
         .unwrap();
 
     // set bridge up
     let _ = std::process::Command::new("ip")
-        .args(&["link", "set", br_name, "up"])
+        .args(["link", "set", br_name, "up"])
         .output()
         .unwrap();
 }
@@ -168,7 +168,7 @@ async fn wait_proxy_route_appear(
 
 fn set_link_status(net_ns: &str, up: bool) {
     let _ = std::process::Command::new("ip")
-        .args(&[
+        .args([
             "netns",
             "exec",
             net_ns,
