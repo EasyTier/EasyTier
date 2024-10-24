@@ -191,6 +191,7 @@ windows-sys = { version = "0.52", features = [
 ] }
 encoding = "0.2"
 winreg = "0.52"
+windows-service = "0.7.0"
 
 [build-dependencies]
 tonic-build = "0.12"

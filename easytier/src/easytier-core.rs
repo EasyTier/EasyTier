@@ -4,8 +4,7 @@
 mod tests;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
+    ffi::OsString, net::{Ipv4Addr, SocketAddr}, path::PathBuf
 };
 
 #[macro_use]
@@ -43,6 +42,9 @@ use crate::{
     },
     utils::init_logger,
 };
+
+#[cfg(target_os = "windows")]
+windows_service::define_windows_service!(ffi_service_main, win_service_main);
 
 #[cfg(feature = "mimalloc")]
 use mimalloc_rust::*;
@@ -658,6 +660,95 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
     })
 }
 
+#[cfg(target_os = "windows")]
+fn win_service_event_loop(  
+    stop_notify: std::sync::Arc<tokio::sync::Notify>,
+    inst: launcher::NetworkInstance,  
+    status_handle: windows_service::service_control_handler::ServiceStatusHandle,  
+) {  
+    use tokio::runtime::Runtime;
+    use std::time::Duration;
+    use windows_service::service::*;
+
+    std::thread::spawn(move || {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(async move {
+            tokio::select! {
+                res = inst.wait() => {
+                    if let Some(e) = res {
+                        status_handle.set_service_status(ServiceStatus {
+                            service_type: ServiceType::OWN_PROCESS,
+                            current_state: ServiceState::Stopped,
+                            controls_accepted: ServiceControlAccept::empty(),
+                            checkpoint: 0,
+                            wait_hint: Duration::default(),
+                            exit_code: ServiceExitCode::ServiceSpecific(1u32),
+                            process_id: None
+                        }).unwrap();
+                        panic!("launcher error: {:?}", e);
+                    }
+                },
+                _ = stop_notify.notified() => {
+                    status_handle.set_service_status(ServiceStatus {
+                        service_type: ServiceType::OWN_PROCESS,
+                        current_state: ServiceState::Stopped,
+                        controls_accepted: ServiceControlAccept::empty(),
+                        checkpoint: 0,
+                        wait_hint: Duration::default(),
+                        exit_code: ServiceExitCode::Win32(0),
+                        process_id: None
+                    }).unwrap();
+                }
+            }
+        });
+    });
+}
+
+#[cfg(target_os = "windows")]
+fn win_service_main(_: Vec<OsString>) {
+    use std::time::Duration;
+    use windows_service::service_control_handler::*;
+    use windows_service::service::*;
+    use std::sync::Arc;
+    use tokio::sync::Notify;
+    
+    let cli = Cli::parse();
+    let cfg = TomlConfigLoader::from(cli);
+
+    init_logger(&cfg, false).unwrap(); 
+
+    let stop_notify_send = Arc::new(Notify::new());
+    let stop_notify_recv = Arc::clone(&stop_notify_send);
+    let event_handler = move |control_event| -> ServiceControlHandlerResult {
+        match control_event {
+            ServiceControl::Interrogate => {
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Stop =>
+            {
+                stop_notify_send.notify_one();
+                ServiceControlHandlerResult::NoError
+            }
+            _ => ServiceControlHandlerResult::NotImplemented,
+        }
+    };
+    let status_handle = register(String::new(), event_handler).expect("register service fail");
+    let next_status = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    };
+    let mut inst = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
+      
+    inst.start().unwrap();    
+    status_handle.set_service_status(next_status).expect("set service status fail");
+    win_service_event_loop(stop_notify_recv, inst, status_handle);    
+}
+
 #[tokio::main]
 async fn main() {
     setup_panic_handler();
@@ -665,6 +756,13 @@ async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
 
+    #[cfg(target_os = "windows")] 
+    {
+        use windows_service::service_dispatcher;
+        if let Ok(()) = service_dispatcher::start(String::new(), ffi_service_main) {
+            return;
+        }
+    }
     let cli = Cli::parse();
     let cfg = TomlConfigLoader::from(cli);
     init_logger(&cfg, false).unwrap();
