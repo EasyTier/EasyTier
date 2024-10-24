@@ -1,51 +1,31 @@
-#![allow(dead_code)]
-
-#[cfg(test)]
-mod tests;
+#[macro_use]
+extern crate rust_i18n;
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 
-#[macro_use]
-extern crate rust_i18n;
-
 use anyhow::Context;
 use clap::Parser;
-
-mod arch;
-mod common;
-mod connector;
-mod gateway;
-mod instance;
-mod launcher;
-mod peer_center;
-mod peers;
-mod proto;
-mod tunnel;
-mod utils;
-mod vpn_portal;
-
-use common::{
-    config::{ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig, VpnPortalConfig},
-    constants::EASYTIER_VERSION,
-    global_ctx::EventBusSubscriber,
-    scoped_task::ScopedTask,
-};
 use tokio::net::TcpSocket;
-use utils::setup_panic_handler;
 
-use crate::{
+use easytier::{
     common::{
-        config::{ConfigLoader, TomlConfigLoader},
-        global_ctx::GlobalCtxEvent,
+        config::{
+            ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig,
+            TomlConfigLoader, VpnPortalConfig,
+        },
+        constants::EASYTIER_VERSION,
+        global_ctx::{EventBusSubscriber, GlobalCtxEvent},
+        scoped_task::ScopedTask,
     },
-    utils::init_logger,
+    launcher, proto,
+    utils::{init_logger, setup_panic_handler},
 };
 
 #[cfg(feature = "mimalloc")]
-use mimalloc_rust::*;
+use mimalloc_rust::GlobalMiMalloc;
 
 #[cfg(feature = "mimalloc")]
 #[global_allocator]
@@ -509,7 +489,7 @@ impl From<Cli> for TomlConfigLoader {
         f.enable_encryption = !cli.disable_encryption;
         f.enable_ipv6 = !cli.disable_ipv6;
         f.latency_first = cli.latency_first;
-        f.dev_name = cli.dev_name.unwrap_or(Default::default());
+        f.dev_name = cli.dev_name.unwrap_or_default();
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu;
         }
@@ -544,7 +524,7 @@ fn print_event(msg: String) {
     );
 }
 
-fn peer_conn_info_to_string(p: crate::proto::cli::PeerConnInfo) -> String {
+fn peer_conn_info_to_string(p: proto::cli::PeerConnInfo) -> String {
     format!(
         "my_peer_id: {}, dst_peer_id: {}, tunnel_info: {:?}",
         p.my_peer_id, p.peer_id, p.tunnel
