@@ -21,12 +21,10 @@ path = "src/easytier-core.rs"
 [[bin]]
 name = "easytier-cli"
 path = "src/easytier-cli.rs"
-test = false
 
 [lib]
 name = "easytier"
 path = "src/lib.rs"
-test = false
 
 [dependencies]
 git-version = "0.3.9"

@@ -194,6 +194,7 @@ pub fn init_logger(
             .rotation(tracing_appender::rolling::Rotation::DAILY)
             .max_log_files(5)
             .filename_prefix(file_config.file.unwrap_or("easytier".to_string()))
+            .filename_suffix("log")
             .build(file_config.dir.unwrap_or("./".to_string()))
             .with_context(|| "failed to initialize rolling file appender")?;
         file_layer = Some(
