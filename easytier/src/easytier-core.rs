@@ -756,13 +756,21 @@ async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
 
-    #[cfg(target_os = "windows")] 
-    {
-        use windows_service::service_dispatcher;
-        if let Ok(()) = service_dispatcher::start(String::new(), ffi_service_main) {
-            return;
-        }
-    }
+    #[cfg(target_os = "windows")]
+    match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
+        Ok(_) => return,
+        Err(e) =>
+        {    
+             let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
+                 io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
+             } else { true };
+             
+             if should_panic {
+                 panic!("SCM start an error: {}", e);
+             }
+         }
+     };
+     
     let cli = Cli::parse();
     let cfg = TomlConfigLoader::from(cli);
     init_logger(&cfg, false).unwrap();
