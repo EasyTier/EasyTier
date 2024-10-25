@@ -6,4 +6,5 @@ pub mod common;
 pub mod error;
 pub mod peer_rpc;
 
+#[cfg(test)]
 pub mod tests;
