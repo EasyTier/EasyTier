@@ -2,7 +2,8 @@
 extern crate rust_i18n;
 
 use std::{
-    ffi::OsString, net::{Ipv4Addr, SocketAddr}, path::PathBuf
+    net::{Ipv4Addr, SocketAddr}, 
+    path::PathBuf,
 };
 
 use anyhow::Context;
@@ -686,7 +687,7 @@ fn win_service_event_loop(
 }
 
 #[cfg(target_os = "windows")]
-fn win_service_main(_: Vec<OsString>) {
+fn win_service_main(_: Vec<std::ffi::OsString>) {
     use std::time::Duration;
     use windows_service::service_control_handler::*;
     use windows_service::service::*;
