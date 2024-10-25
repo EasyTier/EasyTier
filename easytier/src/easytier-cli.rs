@@ -29,6 +29,8 @@ use easytier::{
     utils::{cost_to_str, float_to_str, PeerRoutePair},
 };
 
+rust_i18n::i18n!("locales", fallback = "en");
+
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
 struct Cli {
