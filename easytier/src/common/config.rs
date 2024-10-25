@@ -231,12 +231,8 @@ impl Default for TomlConfigLoader {
 
 impl TomlConfigLoader {
     pub fn new_from_str(config_str: &str) -> Result<Self, anyhow::Error> {
-        let mut config = toml::de::from_str::<Config>(config_str).with_context(|| {
-            format!(
-                "failed to parse config file: {}\n{}",
-                config_str, config_str
-            )
-        })?;
+        let mut config = toml::de::from_str::<Config>(config_str)
+            .with_context(|| format!("failed to parse config file: {}", config_str))?;
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
 

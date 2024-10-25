@@ -17,6 +17,7 @@ readme = "README.md"
 [[bin]]
 name = "easytier-core"
 path = "src/easytier-core.rs"
+test = false
 
 [[bin]]
 name = "easytier-cli"
@@ -179,6 +180,9 @@ sys-locale = "0.3"
 
 ringbuf = "0.4.5"
 async-ringbuf = "0.3.1"
+
+[target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
+machine-uid = "0.5.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = [

@@ -1,9 +1,10 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 
 use futures::{SinkExt as _, StreamExt};
 use tokio::{task::JoinSet, time::timeout};
 
 use crate::{
+    defer,
     proto::rpc_types::error::Error,
     tunnel::{packet_def::PacketType, ring::create_ring_tunnel_pair, Tunnel},
 };
@@ -17,6 +18,7 @@ pub struct BidirectRpcManager {
     rx_timeout: Option<std::time::Duration>,
     error: Arc<Mutex<Option<Error>>>,
     tunnel: Mutex<Option<Box<dyn Tunnel>>>,
+    running: Arc<AtomicBool>,
 
     tasks: Mutex<Option<JoinSet<()>>>,
 }
@@ -30,6 +32,7 @@ impl BidirectRpcManager {
             rx_timeout: None,
             error: Arc::new(Mutex::new(None)),
             tunnel: Mutex::new(None),
+            running: Arc::new(AtomicBool::new(false)),
 
             tasks: Mutex::new(None),
         }
@@ -50,6 +53,8 @@ impl BidirectRpcManager {
         let mut tasks = JoinSet::new();
         self.rpc_client.run();
         self.rpc_server.run();
+        self.running
+            .store(true, std::sync::atomic::Ordering::Relaxed);
 
         let (server_tx, mut server_rx) = (
             self.rpc_server.get_transport_sink(),
@@ -64,7 +69,11 @@ impl BidirectRpcManager {
         self.tunnel.lock().unwrap().replace(inner);
 
         let e_clone = self.error.clone();
+        let r_clone = self.running.clone();
         tasks.spawn(async move {
+            defer! {
+                r_clone.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             loop {
                 let packet = tokio::select! {
                     Some(Ok(packet)) = server_rx.next() => {
@@ -90,7 +99,11 @@ impl BidirectRpcManager {
 
         let recv_timeout = self.rx_timeout;
         let e_clone = self.error.clone();
+        let r_clone = self.running.clone();
         tasks.spawn(async move {
+            defer! {
+                r_clone.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             loop {
                 let ret = if let Some(recv_timeout) = recv_timeout {
                     match timeout(recv_timeout, inner_rx.next()).await {
@@ -160,5 +173,9 @@ impl BidirectRpcManager {
             // when any task is done, abort all tasks
             tasks.abort_all();
         }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(std::sync::atomic::Ordering::Relaxed)
     }
 }

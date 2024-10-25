@@ -353,12 +353,13 @@ impl ForeignNetworkManagerData {
     }
 
     async fn clear_no_conn_peer(&self, network_name: &String) {
-        let peer_map = self
+        let Some(peer_map) = self
             .network_peer_maps
             .get(network_name)
-            .unwrap()
-            .peer_map
-            .clone();
+            .and_then(|v| Some(v.peer_map.clone()))
+        else {
+            return;
+        };
         peer_map.clean_peer_without_conn().await;
     }
 
