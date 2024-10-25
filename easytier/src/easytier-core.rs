@@ -678,6 +678,7 @@ fn win_service_event_loop(
                         exit_code: ServiceExitCode::Win32(0),
                         process_id: None
                     }).unwrap();
+                    std::process::exit(0);
                 }
             }
         });
@@ -738,7 +739,7 @@ async fn main() {
 
     #[cfg(target_os = "windows")]
     match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
-        Ok(_) => return,
+        Ok(_) => std::thread::park(),
         Err(e) =>
         {    
              let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
