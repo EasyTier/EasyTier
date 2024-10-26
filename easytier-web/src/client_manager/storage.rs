@@ -69,4 +69,12 @@ impl Storage {
             .get(&machine_id)
             .map(|url| url.clone())
     }
+
+    pub fn list_token_clients(&self, token: &str) -> Vec<url::Url> {
+        self.0
+            .token_clients_map
+            .get(token)
+            .map(|set| set.iter().map(|url| url.clone()).collect())
+            .unwrap_or_default()
+    }
 }

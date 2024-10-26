@@ -141,4 +141,8 @@ impl Session {
     pub async fn get_token(&self) -> Option<StorageToken> {
         self.data.read().await.storage_token.clone()
     }
+
+    pub async fn get_heartbeat_req(&self) -> Option<HeartbeatRequest> {
+        self.data.read().await.req()
+    }
 }

@@ -12,6 +12,8 @@ pub struct User {
     id: i64,
     pub username: String,
     password: String,
+    #[sqlx(skip)]
+    pub tokens: Vec<String>,
 }
 
 // Here we've implemented `Debug` manually to avoid accidentally logging the
@@ -134,10 +136,15 @@ impl AuthnBackend for Backend {
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        let user = sqlx::query_as("select * from users where id = ?")
+        let mut user: Option<User> = sqlx::query_as("select * from users where id = ?")
             .bind(user_id)
             .fetch_optional(&self.db)
             .await?;
+
+        if let Some(u) = &mut user {
+            // username is a token
+            u.tokens.push(u.username.clone());
+        }
 
         Ok(user)
     }

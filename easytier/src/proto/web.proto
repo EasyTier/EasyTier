@@ -36,6 +36,10 @@ message HeartbeatRequest {
     common.UUID machine_id = 1;
     common.UUID inst_id = 2;
     string user_token = 3;
+
+    string easytier_version = 4;
+    string report_time = 5;
+    string hostname = 6;
 }
 
 message HeartbeatResponse {

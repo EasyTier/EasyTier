@@ -4,7 +4,9 @@ pub mod storage;
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use easytier::{common::scoped_task::ScopedTask, tunnel::TunnelListener};
+use easytier::{
+    common::scoped_task::ScopedTask, proto::web::HeartbeatRequest, tunnel::TunnelListener,
+};
 use session::Session;
 use storage::{Storage, StorageToken};
 
@@ -86,6 +88,15 @@ impl ClientManager {
         self.client_sessions
             .get(&c_url)
             .map(|item| item.value().clone())
+    }
+
+    pub fn list_machine_by_token(&self, token: String) -> Vec<url::Url> {
+        self.storage.list_token_clients(&token)
+    }
+
+    pub async fn get_heartbeat_requests(&self, client_url: &url::Url) -> Option<HeartbeatRequest> {
+        let s = self.client_sessions.get(client_url)?.clone();
+        s.data().read().await.req()
     }
 }
 
