@@ -15,7 +15,9 @@ async fn main() {
     let mgr = Arc::new(mgr);
 
     let mut restful_server =
-        restful::RestfulServer::new("0.0.0.0:11211".parse().unwrap(), mgr.clone());
+        restful::RestfulServer::new("0.0.0.0:11211".parse().unwrap(), mgr.clone())
+            .await
+            .unwrap();
     restful_server.start().await.unwrap();
 
     tokio::signal::ctrl_c().await.unwrap();

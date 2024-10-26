@@ -1,3 +1,6 @@
+mod auth;
+mod users;
+
 use std::vec;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -5,9 +8,18 @@ use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{extract::State, routing::get, Json, Router};
+use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
+use axum_login::{login_required, AuthManagerLayerBuilder};
+use axum_messages::MessagesManagerLayer;
 use easytier::proto::{self, rpc_types, web::*};
 use easytier::{common::scoped_task::ScopedTask, proto::rpc_types::controller::BaseController};
+use sqlx::SqlitePool;
 use tokio::net::TcpListener;
+use tower_sessions::cookie::time::Duration;
+use tower_sessions::cookie::Key;
+use tower_sessions::Expiry;
+use tower_sessions_sqlx_store::SqliteStore;
+use users::Backend;
 
 use crate::client_manager::session::Session;
 use crate::client_manager::storage::StorageToken;
@@ -16,8 +28,10 @@ use crate::client_manager::ClientManager;
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
+    db: SqlitePool,
 
     serve_task: Option<ScopedTask<()>>,
+    delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
 }
 
 type AppStateInner = Arc<ClientManager>;
@@ -65,13 +79,22 @@ fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
 }
 
 impl RestfulServer {
-    pub fn new(bind_addr: SocketAddr, client_mgr: Arc<ClientManager>) -> Self {
+    pub async fn new(
+        bind_addr: SocketAddr,
+        client_mgr: Arc<ClientManager>,
+    ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
-        RestfulServer {
+
+        let db = SqlitePool::connect(":memory:").await?;
+        sqlx::migrate!().run(&db).await?;
+
+        Ok(RestfulServer {
             bind_addr,
             client_mgr,
+            db,
             serve_task: None,
-        }
+            delete_task: None,
+        })
     }
 
     async fn get_session_by_machine_id(
@@ -213,7 +236,38 @@ impl RestfulServer {
     }
 
     pub async fn start(&mut self) -> Result<(), anyhow::Error> {
-        let listener = TcpListener::bind(self.bind_addr).await.unwrap();
+        let listener = TcpListener::bind(self.bind_addr).await?;
+
+        // Session layer.
+        //
+        // This uses `tower-sessions` to establish a layer that will provide the session
+        // as a request extension.
+        let session_store = SqliteStore::new(self.db.clone());
+        session_store.migrate().await?;
+
+        self.delete_task.replace(
+            tokio::task::spawn(
+                session_store
+                    .clone()
+                    .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
+            )
+            .into(),
+        );
+
+        // Generate a cryptographic key to sign the session cookie.
+        let key = Key::generate();
+
+        let session_layer = SessionManagerLayer::new(session_store)
+            .with_secure(false)
+            .with_expiry(Expiry::OnInactivity(Duration::days(1)))
+            .with_signed(key);
+
+        // Auth service.
+        //
+        // This combines the session layer with our backend to establish the auth
+        // service which will provide the auth session as a request extension.
+        let backend = Backend::new(self.db.clone());
+        let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         let app = Router::new()
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
@@ -234,7 +288,11 @@ impl RestfulServer {
                 get(Self::handle_collect_one_network_info)
                     .delete(Self::handle_remove_network_instance),
             )
-            .with_state(self.client_mgr.clone());
+            .with_state(self.client_mgr.clone())
+            .route_layer(login_required!(Backend))
+            .merge(auth::router())
+            .layer(MessagesManagerLayer)
+            .layer(auth_layer);
 
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
