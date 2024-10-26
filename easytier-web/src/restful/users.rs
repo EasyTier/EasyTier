@@ -1,5 +1,7 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
-use axum_login::{AuthUser, AuthnBackend, UserId};
+use axum_login::{AuthUser, AuthnBackend, AuthzBackend, UserId};
 use password_auth::verify_password;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, SqlitePool};
@@ -99,6 +101,45 @@ impl AuthnBackend for Backend {
             .await?;
 
         Ok(user)
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash, FromRow)]
+pub struct Permission {
+    pub name: String,
+}
+
+impl From<&str> for Permission {
+    fn from(name: &str) -> Self {
+        Permission {
+            name: name.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl AuthzBackend for Backend {
+    type Permission = Permission;
+
+    async fn get_group_permissions(
+        &self,
+        user: &Self::User,
+    ) -> Result<HashSet<Self::Permission>, Self::Error> {
+        let permissions: Vec<Self::Permission> = sqlx::query_as(
+            r#"
+            select distinct permissions.name
+            from users
+            join users_groups on users.id = users_groups.user_id
+            join groups_permissions on users_groups.group_id = groups_permissions.group_id
+            join permissions on groups_permissions.permission_id = permissions.id
+            where users.id = ?
+            "#,
+        )
+        .bind(user.id)
+        .fetch_all(&self.db)
+        .await?;
+
+        Ok(permissions.into_iter().collect())
     }
 }
 

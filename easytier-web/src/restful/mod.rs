@@ -6,7 +6,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{delete, post};
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder};
@@ -272,21 +272,24 @@ impl RestfulServer {
         let app = Router::new()
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
             .route(
-                "/api/v1/network/:machine-id/validate-config",
+                "/api/v1/machine/:machine-id/validate-config",
                 post(Self::handle_validate_config),
             )
             .route(
-                "/api/v1/network/:machine-id",
+                "/api/v1/machine/:machine-id/networks",
                 post(Self::handle_run_network_instance).get(Self::handle_list_network_instance_ids),
             )
             .route(
-                "/api/v1/network/:machine-id/info",
+                "/api/v1/machine/:machine-id/networks/:inst-id",
+                delete(Self::handle_remove_network_instance),
+            )
+            .route(
+                "/api/v1/machine/:machine-id/networks/info",
                 get(Self::handle_collect_network_info),
             )
             .route(
-                "/api/v1/network/:machine-id/:inst-id",
-                get(Self::handle_collect_one_network_info)
-                    .delete(Self::handle_remove_network_instance),
+                "/api/v1/machine/:machine-id/networks/info/:inst-id",
+                get(Self::handle_collect_one_network_info),
             )
             .with_state(self.client_mgr.clone())
             .route_layer(login_required!(Backend))

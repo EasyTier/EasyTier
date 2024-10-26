@@ -16,8 +16,11 @@ pub struct LoginResult {
 
 pub fn router() -> Router<()> {
     Router::new()
-        .route("/login", post(self::post::login).get(self::get::login))
-        .route("/logout", get(self::get::logout))
+        .route(
+            "/api/v1/auth/login",
+            post(self::post::login).get(self::get::login),
+        )
+        .route("/api/v1/auth/logout", get(self::get::logout))
 }
 
 mod post {
@@ -63,7 +66,7 @@ mod get {
 
     pub async fn logout(mut auth_session: AuthSession) -> impl IntoResponse {
         match auth_session.logout().await {
-            Ok(_) => Redirect::to("/login").into_response(),
+            Ok(_) => StatusCode::OK.into_response(),
             Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         }
     }
