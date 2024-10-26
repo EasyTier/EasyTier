@@ -1,4 +1,5 @@
 mod auth;
+pub(crate) mod captcha;
 mod users;
 
 use std::vec;

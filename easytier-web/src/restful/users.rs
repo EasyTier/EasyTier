@@ -49,6 +49,12 @@ pub struct Credentials {
     pub password: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegisterNewUser {
+    pub credentials: Credentials,
+    pub captcha: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Backend {
     db: SqlitePool,
@@ -57,6 +63,39 @@ pub struct Backend {
 impl Backend {
     pub fn new(db: SqlitePool) -> Self {
         Self { db }
+    }
+
+    pub async fn register_new_user(&self, new_user: &RegisterNewUser) -> anyhow::Result<()> {
+        let hashed_password = password_auth::generate_hash(new_user.credentials.password.as_str());
+        let mut tx = self.db.begin().await?;
+
+        sqlx::query(
+            r#"
+            insert into users (username, password)
+            values ($1, $2)
+        "#,
+        )
+        .bind(new_user.credentials.username.as_str())
+        .bind(hashed_password)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            r#"
+            insert into users_groups (user_id, group_id)
+            values (
+                (select id from users where username = $1),
+                (select id from groups where name = 'users')
+            );
+        "#,
+        )
+        .bind(new_user.credentials.username.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        Ok(())
     }
 }
 
