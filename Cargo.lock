@@ -1921,6 +1921,7 @@ dependencies = [
  "sqlx",
  "thiserror",
  "tokio",
+ "tower-http",
  "tower-sessions",
  "tower-sessions-sqlx-store",
  "tracing",
@@ -7479,6 +7480,20 @@ dependencies = [
  "futures-util",
  "http 1.1.0",
  "parking_lot",
+ "pin-project-lite",
+ "tower-layer",
+ "tower-service",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8437150ab6bbc8c5f0f519e3d5ed4aa883a83dd4cdd3d1b21f9482936046cb97"
+dependencies = [
+ "bitflags 2.6.0",
+ "bytes",
+ "http 1.1.0",
  "pin-project-lite",
  "tower-layer",
  "tower-service",

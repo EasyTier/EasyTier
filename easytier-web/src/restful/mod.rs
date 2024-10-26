@@ -14,7 +14,8 @@ use axum_login::{login_required, AuthManagerLayerBuilder};
 use axum_messages::MessagesManagerLayer;
 use easytier::proto::{self, rpc_types, web::*};
 use easytier::{common::scoped_task::ScopedTask, proto::rpc_types::controller::BaseController};
-use sqlx::SqlitePool;
+use sqlx::migrate::MigrateDatabase;
+use sqlx::{Sqlite, SqlitePool};
 use tokio::net::TcpListener;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::cookie::Key;
@@ -83,19 +84,29 @@ impl RestfulServer {
     pub async fn new(
         bind_addr: SocketAddr,
         client_mgr: Arc<ClientManager>,
+        db_path: &str,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
-
-        let db = SqlitePool::connect(":memory:").await?;
-        sqlx::migrate!().run(&db).await?;
 
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
-            db,
+            db: Self::prepare_db(db_path).await?,
             serve_task: None,
             delete_task: None,
         })
+    }
+
+    #[tracing::instrument(ret)]
+    async fn prepare_db(db_path: &str) -> anyhow::Result<SqlitePool> {
+        if !Sqlite::database_exists(db_path).await.unwrap_or(false) {
+            tracing::info!("Database not found, creating a new one");
+            Sqlite::create_database(db_path).await?;
+        }
+
+        let db = SqlitePool::connect(db_path).await?;
+        sqlx::migrate!().run(&db).await?;
+        Ok(db)
     }
 
     async fn get_session_by_machine_id(
@@ -296,7 +307,8 @@ impl RestfulServer {
             .route_layer(login_required!(Backend))
             .merge(auth::router())
             .layer(MessagesManagerLayer)
-            .layer(auth_layer);
+            .layer(auth_layer)
+            .layer(tower_http::cors::CorsLayer::very_permissive());
 
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();

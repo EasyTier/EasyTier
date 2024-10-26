@@ -22,6 +22,7 @@ tower-sessions-sqlx-store = { version = "0.14.1", features = ["sqlite"] }
 tower-sessions = { version = "0.13.0", default-features = false, features = [
     "signed",
 ] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 # for captcha
 raqote = { version = "0.8", default-features = false, features = ["text"] }

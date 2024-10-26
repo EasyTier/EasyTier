@@ -39,18 +39,18 @@ create table if not exists groups_permissions (
 
 -- # Fixture hydration.
 
--- Insert "ferris" user.
+-- Insert "user" user. password: "user"
 insert into users (username, password)
 values (
-    'ferris',
-    '$argon2id$v=19$m=19456,t=2,p=1$VE0e3g7DalWHgDwou3nuRA$uC6TER156UQpk0lNQ5+jHM0l5poVjPA1he/Tyn9J4Zw'
+    'user',
+    '$argon2i$v=19$m=16,t=2,p=1$dHJ5dXZkYmZkYXM$UkrNqWz0BbSVBq4ykLSuJw'
 );
 
--- Insert "admin" user.
+-- Insert "admin" user. password: "admin"
 insert into users (username, password)
 values (
     'admin',
-    '$argon2id$v=19$m=19456,t=2,p=1$VE0e3g7DalWHgDwou3nuRA$uC6TER156UQpk0lNQ5+jHM0l5poVjPA1he/Tyn9J4Zw'
+    '$argon2i$v=19$m=16,t=2,p=1$Ymd1Y2FlcnQ$x0q4oZinW9S1ZB9BcaHEpQ'
 );
 
 -- Insert "users" and "superusers" groups.
@@ -74,7 +74,7 @@ values (
 -- Insert users into groups.
 insert into users_groups (user_id, group_id)
 values (
-    (select id from users where username = 'ferris'),
+    (select id from users where username = 'user'),
     (select id from groups where name = 'users')
 ), (
     (select id from users where username = 'admin'),
