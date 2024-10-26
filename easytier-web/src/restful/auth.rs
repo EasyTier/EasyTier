@@ -7,14 +7,17 @@ use axum::{
 use axum_messages::{Message, Messages};
 use serde::{Deserialize, Serialize};
 
-use super::users::{AuthSession, Credentials};
+use super::{
+    users::{AuthSession, Credentials},
+    AppStateInner,
+};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LoginResult {
     messages: Vec<Message>,
 }
 
-pub fn router() -> Router<()> {
+pub fn router() -> Router<AppStateInner> {
     Router::new()
         .route(
             "/api/v1/auth/login",
