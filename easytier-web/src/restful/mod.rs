@@ -13,8 +13,6 @@ use axum_messages::MessagesManagerLayer;
 use easytier::common::scoped_task::ScopedTask;
 use easytier::proto::{self, rpc_types};
 use network::NetworkApi;
-use sqlx::migrate::MigrateDatabase;
-use sqlx::{Sqlite, SqlitePool};
 use tokio::net::TcpListener;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::cookie::Key;
@@ -25,11 +23,12 @@ use users::Backend;
 use crate::client_manager::session::Session;
 use crate::client_manager::storage::StorageToken;
 use crate::client_manager::ClientManager;
+use crate::db::Db;
 
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
-    db: SqlitePool,
+    db: Db,
 
     serve_task: Option<ScopedTask<()>>,
     delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
@@ -60,7 +59,7 @@ impl RestfulServer {
     pub async fn new(
         bind_addr: SocketAddr,
         client_mgr: Arc<ClientManager>,
-        db_path: &str,
+        db: Db,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -69,28 +68,11 @@ impl RestfulServer {
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
-            db: Self::prepare_db(db_path).await?,
+            db,
             serve_task: None,
             delete_task: None,
             network_api,
         })
-    }
-
-    #[tracing::instrument(ret)]
-    async fn prepare_db(db_path: &str) -> anyhow::Result<SqlitePool> {
-        if !Sqlite::database_exists(db_path).await.unwrap_or(false) {
-            tracing::info!("Database not found, creating a new one");
-            Sqlite::create_database(db_path).await?;
-        }
-
-        let db = sqlx::pool::PoolOptions::new()
-            .max_lifetime(None)
-            .idle_timeout(None)
-            .connect(db_path)
-            .await?;
-
-        sqlx::migrate!().run(&db).await?;
-        Ok(db)
     }
 
     async fn get_session_by_machine_id(
@@ -118,7 +100,7 @@ impl RestfulServer {
         //
         // This uses `tower-sessions` to establish a layer that will provide the session
         // as a request extension.
-        let session_store = SqliteStore::new(self.db.clone());
+        let session_store = SqliteStore::new(self.db.inner());
         session_store.migrate().await?;
 
         self.delete_task.replace(
@@ -142,7 +124,7 @@ impl RestfulServer {
         //
         // This combines the session layer with our backend to establish the auth
         // service which will provide the auth session as a request extension.
-        let backend = Backend::new(self.db.clone());
+        let backend = Backend::new(self.db.inner());
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         let app = Router::new()

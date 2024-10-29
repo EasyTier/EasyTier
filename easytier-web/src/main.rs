@@ -9,6 +9,7 @@ use easytier::{
 };
 
 mod client_manager;
+mod db;
 mod restful;
 
 #[tokio::main]
@@ -19,19 +20,17 @@ async fn main() {
     });
     init_logger(config, false).unwrap();
 
+    let db = db::Db::new(":memory:").await.unwrap();
+
     let listener = UdpTunnelListener::new("udp://0.0.0.0:22020".parse().unwrap());
     let mut mgr = client_manager::ClientManager::new();
     mgr.serve(listener).await.unwrap();
     let mgr = Arc::new(mgr);
 
-    let mut restful_server = restful::RestfulServer::new(
-        "0.0.0.0:11211".parse().unwrap(),
-        mgr.clone(),
-        // "sqlite://web.db",
-        ":memory:",
-    )
-    .await
-    .unwrap();
+    let mut restful_server =
+        restful::RestfulServer::new("0.0.0.0:11211".parse().unwrap(), mgr.clone(), db)
+            .await
+            .unwrap();
     restful_server.start().await.unwrap();
 
     tokio::signal::ctrl_c().await.unwrap();
