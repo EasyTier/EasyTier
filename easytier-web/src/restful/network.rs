@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{extract::State, routing::get, Json, Router};
 use dashmap::DashSet;
+use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::proto::{self, web::*};
 
@@ -119,7 +120,7 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<ValidateConfigJsonReq>,
-    ) -> Result<(), HttpHandleError> {
+    ) -> Result<Json<Void>, HttpHandleError> {
         let config = payload.config;
         let result =
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
@@ -128,7 +129,7 @@ impl NetworkApi {
         c.validate_config(BaseController::default(), ValidateConfigRequest { config })
             .await
             .map_err(convert_rpc_error)?;
-        Ok(())
+        Ok(Void::default().into())
     }
 
     async fn handle_run_network_instance(
@@ -136,7 +137,7 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<RunNetworkJsonReq>,
-    ) -> Result<(), HttpHandleError> {
+    ) -> Result<Json<Void>, HttpHandleError> {
         let config = payload.config;
         let result =
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
@@ -148,7 +149,7 @@ impl NetworkApi {
         )
         .await
         .map_err(convert_rpc_error)?;
-        Ok(())
+        Ok(Void::default().into())
     }
 
     async fn handle_collect_one_network_info(

@@ -43,10 +43,18 @@ type AppState = State<AppStateInner>;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListSessionJsonResp(Vec<StorageToken>);
 
-type Error = proto::error::Error;
-type ErrorKind = proto::error::error::ErrorKind;
+pub type Error = proto::error::Error;
+pub type ErrorKind = proto::error::error::ErrorKind;
 type RpcError = rpc_types::error::Error;
 type HttpHandleError = (StatusCode, Json<Error>);
+
+pub fn other_error<T: ToString>(error_message: T) -> Error {
+    Error {
+        error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
+            error_message: error_message.to_string(),
+        })),
+    }
+}
 
 impl RestfulServer {
     pub async fn new(
@@ -75,7 +83,12 @@ impl RestfulServer {
             Sqlite::create_database(db_path).await?;
         }
 
-        let db = SqlitePool::connect(db_path).await?;
+        let db = sqlx::pool::PoolOptions::new()
+            .max_lifetime(None)
+            .idle_timeout(None)
+            .connect(db_path)
+            .await?;
+
         sqlx::migrate!().run(&db).await?;
         Ok(db)
     }
@@ -85,15 +98,7 @@ impl RestfulServer {
         machine_id: &uuid::Uuid,
     ) -> Result<Arc<Session>, HttpHandleError> {
         let Some(result) = client_mgr.get_session_by_machine_id(machine_id) else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Error {
-                    error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
-                        error_message: "No such session".to_string(),
-                    })),
-                }
-                .into(),
-            ));
+            return Err((StatusCode::NOT_FOUND, other_error("No such session").into()));
         };
 
         Ok(result)
