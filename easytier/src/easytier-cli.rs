@@ -7,14 +7,18 @@ use tabled::settings::Style;
 use tokio::time::timeout;
 
 use easytier::{
-    common::{constants::EASYTIER_VERSION, stun::StunInfoCollector, stun::StunInfoCollectorTrait},
+    common::{
+        constants::EASYTIER_VERSION,
+        stun::{StunInfoCollector, StunInfoCollectorTrait},
+    },
     proto::{
         cli::{
-            ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetVpnPortalInfoRequest, ListConnectorRequest, ListForeignNetworkRequest,
-            ListGlobalForeignNetworkRequest, ListPeerRequest, ListPeerResponse, ListRouteRequest,
-            ListRouteResponse, NodeInfo, PeerManageRpc, PeerManageRpcClientFactory,
-            ShowNodeInfoRequest, VpnPortalRpc, VpnPortalRpcClientFactory,
+            list_peer_route_pair, ConnectorManageRpc, ConnectorManageRpcClientFactory,
+            DumpRouteRequest, GetVpnPortalInfoRequest, ListConnectorRequest,
+            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListPeerRequest,
+            ListPeerResponse, ListRouteRequest, ListRouteResponse, NodeInfo, PeerManageRpc,
+            PeerManageRpcClientFactory, ShowNodeInfoRequest, VpnPortalRpc,
+            VpnPortalRpcClientFactory,
         },
         common::NatType,
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -22,8 +26,10 @@ use easytier::{
         rpc_types::controller::BaseController,
     },
     tunnel::tcp::TcpTunnelConnector,
-    utils::{cost_to_str, float_to_str, list_peer_route_pair, PeerRoutePair},
+    utils::{cost_to_str, float_to_str, PeerRoutePair},
 };
+
+rust_i18n::i18n!("locales", fallback = "en");
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
@@ -222,25 +228,26 @@ impl CommandHandler {
 
         impl From<PeerRoutePair> for PeerTableItem {
             fn from(p: PeerRoutePair) -> Self {
+                let route = p.route.clone().unwrap_or_default();
                 PeerTableItem {
-                    ipv4: p
-                        .route
-                        .ipv4_addr
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    hostname: p.route.hostname.clone(),
-                    cost: cost_to_str(p.route.cost),
+                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                    hostname: route.hostname.clone(),
+                    cost: cost_to_str(route.cost),
                     lat_ms: float_to_str(p.get_latency_ms().unwrap_or(0.0), 3),
                     loss_rate: float_to_str(p.get_loss_rate().unwrap_or(0.0), 3),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
-                    tunnel_proto: p.get_conn_protos().unwrap_or_default().join(",").to_string(),
+                    tunnel_proto: p
+                        .get_conn_protos()
+                        .unwrap_or_default()
+                        .join(",")
+                        .to_string(),
                     nat_type: p.get_udp_nat_type(),
-                    id: p.route.peer_id.to_string(),
-                    version: if p.route.version.is_empty() {
+                    id: route.peer_id.to_string(),
+                    version: if route.version.is_empty() {
                         "unknown".to_string()
                     } else {
-                        p.route.version.to_string()
+                        route.version.to_string()
                     },
                 }
             }
@@ -287,10 +294,7 @@ impl CommandHandler {
             items.push(p.into());
         }
 
-        println!(
-            "{}",
-            tabled::Table::new(items).with(Style::modern())
-        );
+        println!("{}", tabled::Table::new(items).with(Style::modern()));
 
         Ok(())
     }
@@ -404,62 +408,59 @@ impl CommandHandler {
         });
         let peer_routes = self.list_peer_route_pair().await?;
         for p in peer_routes.iter() {
-            let Some(next_hop_pair) = peer_routes
-                .iter()
-                .find(|pair| pair.route.peer_id == p.route.next_hop_peer_id)
-            else {
+            let Some(next_hop_pair) = peer_routes.iter().find(|pair| {
+                pair.route.clone().unwrap_or_default().peer_id
+                    == p.route.clone().unwrap_or_default().next_hop_peer_id
+            }) else {
                 continue;
             };
 
-            if p.route.cost == 1 {
+            let route = p.route.clone().unwrap_or_default();
+            if route.cost == 1 {
                 items.push(RouteTableItem {
-                    ipv4: p
-                        .route
-                        .ipv4_addr
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    hostname: p.route.hostname.clone(),
-                    proxy_cidrs: p.route.proxy_cidrs.clone().join(",").to_string(),
+                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                    hostname: route.hostname.clone(),
+                    proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
                     next_hop_ipv4: "DIRECT".to_string(),
                     next_hop_hostname: "".to_string(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                    cost: p.route.cost,
-                    version: if p.route.version.is_empty() {
+                    cost: route.cost,
+                    version: if route.version.is_empty() {
                         "unknown".to_string()
                     } else {
-                        p.route.version.to_string()
+                        route.version.to_string()
                     },
                 });
             } else {
                 items.push(RouteTableItem {
-                    ipv4: p
-                        .route
-                        .ipv4_addr
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    hostname: p.route.hostname.clone(),
-                    proxy_cidrs: p.route.proxy_cidrs.clone().join(",").to_string(),
+                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                    hostname: route.hostname.clone(),
+                    proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
                     next_hop_ipv4: next_hop_pair
                         .route
+                        .clone()
+                        .unwrap_or_default()
                         .ipv4_addr
                         .map(|ip| ip.to_string())
                         .unwrap_or_default(),
-                    next_hop_hostname: next_hop_pair.route.hostname.clone(),
+                    next_hop_hostname: next_hop_pair
+                        .route
+                        .clone()
+                        .unwrap_or_default()
+                        .hostname
+                        .clone(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                    cost: p.route.cost,
-                    version: if p.route.version.is_empty() {
+                    cost: route.cost,
+                    version: if route.version.is_empty() {
                         "unknown".to_string()
                     } else {
-                        p.route.version.to_string()
+                        route.version.to_string()
                     },
                 });
             }
         }
 
-        println!(
-            "{}",
-            tabled::Table::new(items).with(Style::modern())
-        );
+        println!("{}", tabled::Table::new(items).with(Style::modern()));
 
         Ok(())
     }
@@ -576,11 +577,7 @@ async fn main() -> Result<(), Error> {
                 });
             }
 
-            println!(
-                "{}",
-                tabled::Table::new(table_rows)
-                    .with(Style::modern())
-            );
+            println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
         }
         SubCommand::VpnPortal => {
             let vpn_portal_client = handler.get_vpn_portal_client().await?;

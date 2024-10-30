@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 #[macro_use]
 extern crate rust_i18n;
 
@@ -21,7 +23,9 @@ use easytier::{
         scoped_task::ScopedTask,
     },
     launcher, proto,
+    tunnel::udp::UdpTunnelConnector,
     utils::{init_logger, setup_panic_handler},
+    web_client,
 };
 
 #[cfg(target_os = "windows")]
@@ -37,6 +41,13 @@ static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 #[derive(Parser, Debug)]
 #[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
+    #[arg(
+        short = 'w',
+        long,
+        help = t!("core_clap.config_server").to_string()
+    )]
+    config_server: Option<String>,
+
     #[arg(
         short,
         long,
@@ -733,8 +744,6 @@ fn win_service_main(_: Vec<std::ffi::OsString>) {
 
 #[tokio::main]
 async fn main() {
-    setup_panic_handler();
-
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
 
@@ -754,6 +763,43 @@ async fn main() {
      };
      
     let cli = Cli::parse();
+
+    setup_panic_handler();
+
+    if cli.config_server.is_some() {
+        let config_server_url_s = cli.config_server.clone().unwrap();
+        let config_server_url = match url::Url::parse(&config_server_url_s) {
+            Ok(u) => u,
+            Err(_) => format!(
+                "udp://config-server.easytier.top:22020/{}",
+                config_server_url_s
+            )
+            .parse()
+            .unwrap(),
+        };
+
+        let mut c_url = config_server_url.clone();
+        c_url.set_path("");
+        let token = config_server_url
+            .path_segments()
+            .and_then(|mut x| x.next())
+            .map(|x| x.to_string())
+            .unwrap_or_default();
+
+        println!(
+            "Entering config client mode...\n  server: {}\n  token: {}",
+            c_url, token,
+        );
+
+        if token.is_empty() {
+            panic!("empty token");
+        }
+
+        let _wc = web_client::WebClient::new(UdpTunnelConnector::new(c_url), token.to_string());
+        tokio::signal::ctrl_c().await.unwrap();
+        return;
+    }
+
     let cfg = TomlConfigLoader::from(cli);
     init_logger(&cfg, false).unwrap();
 

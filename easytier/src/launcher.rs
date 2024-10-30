@@ -12,27 +12,12 @@ use crate::{
     },
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
-    proto::{
-        cli::{PeerInfo, Route},
-        common::StunInfo,
-        peer_rpc::GetIpListResponse,
-    },
-    utils::{list_peer_route_pair, PeerRoutePair},
+    proto::cli::{list_peer_route_pair, PeerInfo, Route},
 };
 use chrono::{DateTime, Local};
-use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinSet};
 
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
-pub struct MyNodeInfo {
-    pub virtual_ipv4: String,
-    pub hostname: String,
-    pub version: String,
-    pub ips: GetIpListResponse,
-    pub stun_info: StunInfo,
-    pub listeners: Vec<String>,
-    pub vpn_portal_cfg: Option<String>,
-}
+pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
 struct EasyTierData {
     events: RwLock<VecDeque<(DateTime<Local>, GlobalCtxEvent)>>,
@@ -164,18 +149,15 @@ impl EasyTierLauncher {
                         global_ctx_c.get_flags().dev_name.clone();
 
                     let node_info = MyNodeInfo {
-                        virtual_ipv4: global_ctx_c
-                            .get_ipv4()
-                            .map(|x| x.to_string())
-                            .unwrap_or_default(),
+                        virtual_ipv4: global_ctx_c.get_ipv4().map(|x| x.address().into()),
                         hostname: global_ctx_c.get_hostname(),
                         version: EASYTIER_VERSION.to_string(),
-                        ips: global_ctx_c.get_ip_collector().collect_ip_addrs().await,
-                        stun_info: global_ctx_c.get_stun_info_collector().get_stun_info(),
+                        ips: Some(global_ctx_c.get_ip_collector().collect_ip_addrs().await),
+                        stun_info: Some(global_ctx_c.get_stun_info_collector().get_stun_info()),
                         listeners: global_ctx_c
                             .get_running_listeners()
-                            .iter()
-                            .map(|x| x.to_string())
+                            .into_iter()
+                            .map(Into::into)
                             .collect(),
                         vpn_portal_cfg: Some(
                             vpn_portal
@@ -311,18 +293,7 @@ impl Drop for EasyTierLauncher {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-pub struct NetworkInstanceRunningInfo {
-    pub dev_name: String,
-    pub my_node_info: MyNodeInfo,
-    pub events: Vec<(DateTime<Local>, GlobalCtxEvent)>,
-    pub node_info: MyNodeInfo,
-    pub routes: Vec<Route>,
-    pub peers: Vec<PeerInfo>,
-    pub peer_route_pairs: Vec<PeerRoutePair>,
-    pub running: bool,
-    pub error_msg: Option<String>,
-}
+pub type NetworkInstanceRunningInfo = crate::proto::web::NetworkInstanceRunningInfo;
 
 pub struct NetworkInstance {
     config: TomlConfigLoader,
@@ -362,9 +333,13 @@ impl NetworkInstance {
 
         Some(NetworkInstanceRunningInfo {
             dev_name: launcher.get_dev_name(),
-            my_node_info: launcher.get_node_info(),
-            events: launcher.get_events(),
-            node_info: launcher.get_node_info(),
+            my_node_info: Some(launcher.get_node_info()),
+            events: launcher
+                .get_events()
+                .iter()
+                .map(|(t, e)| (t.to_string(), format!("{:?}", e)))
+                .collect(),
+            node_info: Some(launcher.get_node_info()),
             routes,
             peers,
             peer_route_pairs,

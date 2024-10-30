@@ -111,7 +111,7 @@ jobs:
         run: |
           bash ./.github/workflows/install_rust.sh
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips
+            cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips --package=easytier
           else
             cargo build --release --verbose --target $TARGET
           fi
@@ -182,6 +182,9 @@ jobs:
 
           mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
           mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
+          if [[ ! $TARGET =~ ^mips.*$ ]]; then
+            mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./artifacts/objects/
+          fi
 
           mv ./artifacts/objects/* ./artifacts/
           rm -rf ./artifacts/objects/

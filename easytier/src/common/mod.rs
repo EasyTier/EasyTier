@@ -80,6 +80,36 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
     );
 }
 
+pub fn get_machine_id() -> uuid::Uuid {
+    // TODO: load from local file
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    ))]
+    let gen_mid = machine_uid::get()
+        .map(|x| {
+            let mut b = [0u8; 16];
+            crate::tunnel::generate_digest_from_str("", x.as_str(), &mut b);
+            uuid::Uuid::from_bytes(b)
+        })
+        .unwrap_or(uuid::Uuid::new_v4());
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    )))]
+    let gen_mid = uuid::Uuid::new_v4();
+
+    // TODO: save to local file
+
+    gen_mid
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

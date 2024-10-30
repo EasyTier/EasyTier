@@ -11,7 +11,7 @@ export interface NetworkConfig {
 
   dhcp: boolean
   virtual_ipv4: string
-  network_length: number,
+  network_length: number
   hostname?: string
   network_name: string
   network_secret: string

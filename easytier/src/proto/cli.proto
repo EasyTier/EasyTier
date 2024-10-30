@@ -56,6 +56,11 @@ message Route {
   common.PeerFeatureFlag feature_flag = 10;
 }
 
+message PeerRoutePair {
+  Route route = 1;
+  PeerInfo peer = 2;
+}
+
 message NodeInfo {
   uint32 peer_id = 1;
   string ipv4_addr = 2;
