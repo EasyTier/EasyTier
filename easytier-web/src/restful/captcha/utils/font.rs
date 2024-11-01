@@ -1,5 +1,5 @@
-use font_kit::font::Font;
 use rust_embed::RustEmbed;
+use rusttype::Font;
 use std::error::Error;
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ pub fn get_font(font_name: &str) -> Option<Arc<Font>> {
 pub fn load_font(font_name: &str) -> Result<Option<Font>, Box<dyn Error>> {
     match FontAssets::get(font_name) {
         Some(assets) => {
-            let font = Font::from_bytes(Arc::new(Vec::from(assets.data)), 0)?;
+            let font = Font::try_from_vec(Vec::from(assets.data)).unwrap();
             Ok(Some(font))
         }
         None => {

@@ -4,9 +4,8 @@ use super::super::utils::color::Color;
 use super::super::utils::font;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
-use font_kit::font::Font;
 
-use raqote::{DrawOptions, DrawTarget, PathBuilder, SolidSource, Source, StrokeStyle};
+use rusttype::Font;
 use std::fmt::Debug;
 use std::io::Write;
 use std::sync::Arc;
@@ -124,19 +123,6 @@ impl Captcha {
         cs
     }
 
-    /// 给定范围获得随机颜色
-    pub fn color_range(&mut self, fc: u8, bc: u8) -> Color {
-        let r = fc + self.randoms.num((bc - fc) as usize) as u8;
-        let g = fc + self.randoms.num((bc - fc) as usize) as u8;
-        let b = fc + self.randoms.num((bc - fc) as usize) as u8;
-        return (r, g, b).into();
-    }
-
-    /// 获取随机常用颜色
-    pub fn color(&mut self) -> Color {
-        self.color[self.randoms.num(self.color.len())].clone()
-    }
-
     /// 获取当前的验证码
     pub fn text(&mut self) -> String {
         self.check_alpha();
@@ -153,136 +139,6 @@ impl Captcha {
     pub fn check_alpha(&mut self) {
         if self.chars.is_none() {
             self.alphas();
-        }
-    }
-
-    /// 随机画干扰线
-    pub fn draw_line(&mut self, num: usize, g: &mut DrawTarget, color: Option<Color>) {
-        for _ in 0..num {
-            let color = color.clone().unwrap_or_else(|| self.color());
-            let color: raqote::Color = color.into();
-
-            let x1 = self.randoms.num_between(-10, self.width - 10);
-            let y1 = self.randoms.num_between(5, self.height - 5);
-            let x2 = self.randoms.num_between(10, self.width + 10);
-            let y2 = self.randoms.num_between(2, self.height - 2);
-
-            let mut pb = PathBuilder::new();
-            pb.move_to(x1 as f32, y1 as f32);
-            pb.line_to(x2 as f32, y2 as f32);
-            let path = pb.finish();
-
-            g.stroke(
-                &path,
-                &Source::Solid(SolidSource::from(color)),
-                &StrokeStyle {
-                    width: 2.,
-                    ..Default::default()
-                },
-                &DrawOptions::new(),
-            );
-        }
-    }
-
-    /// 随机画干扰圆
-    pub fn draw_oval(&mut self, num: usize, g: &mut DrawTarget, color: Option<Color>) {
-        self.draw_oval_with_option(num, g, color, DrawOptions::new());
-    }
-
-    /// 随机画干扰圆（包含选项）
-    pub fn draw_oval_with_option(
-        &mut self,
-        num: usize,
-        g: &mut DrawTarget,
-        color: Option<Color>,
-        options: DrawOptions,
-    ) {
-        for _ in 0..num {
-            let color = color.clone().unwrap_or_else(|| self.color());
-            let color: raqote::Color = color.into();
-
-            let w = 5 + self.randoms.num(10);
-            let x = self.randoms.num(self.width as usize - 25) + w;
-            let y = self.randoms.num(self.height as usize - 15) + w;
-
-            let mut pb = PathBuilder::new();
-            pb.arc(x as f32, y as f32, w as f32, 0., 2. * std::f32::consts::PI);
-            let path = pb.finish();
-
-            g.stroke(
-                &path,
-                &Source::Solid(SolidSource::from(color)),
-                &StrokeStyle {
-                    width: 2.,
-                    ..Default::default()
-                },
-                &options,
-            );
-        }
-    }
-
-    /// 随机画干扰贝塞尔曲线
-    pub fn draw_bessel_line(&mut self, num: usize, g: &mut DrawTarget, color: Option<Color>) {
-        self.draw_bessel_line_with_all_option(
-            num,
-            g,
-            color,
-            StrokeStyle {
-                width: 2.,
-                ..Default::default()
-            },
-            DrawOptions::new(),
-        )
-    }
-
-    /// 随机画干扰贝塞尔曲线（包含所有选项）
-    pub fn draw_bessel_line_with_all_option(
-        &mut self,
-        num: usize,
-        g: &mut DrawTarget,
-        color: Option<Color>,
-        stroke_style: StrokeStyle,
-        draw_options: DrawOptions,
-    ) {
-        for _ in 0..num {
-            let color = color.clone().unwrap_or_else(|| self.color());
-            let color: raqote::Color = color.into();
-
-            let x1 = 5;
-            let mut y1 = self.randoms.num_between(5, self.height / 2);
-            let x2 = self.width - 5;
-            let mut y2 = self.randoms.num_between(self.height / 2, self.height - 5);
-
-            let cx = self.randoms.num_between(self.width / 4, self.width / 4 * 3);
-            let cy = self.randoms.num_between(5, self.height - 5);
-
-            if self.randoms.num(2) == 0 {
-                (y2, y1) = (y1, y2)
-            }
-
-            let mut pb = PathBuilder::new();
-            pb.move_to(x1 as f32, y1 as f32);
-
-            if self.randoms.num(2) == 0 {
-                // 二阶曲线
-                pb.quad_to(cx as f32, cy as f32, x2 as f32, y2 as f32);
-            } else {
-                // 三阶曲线
-                let cx1 = self.randoms.num_between(self.width / 4, self.width / 4 * 3);
-                let cy1 = self.randoms.num_between(5, self.height - 5);
-                pb.cubic_to(
-                    cx as f32, cy as f32, cx1 as f32, cy1 as f32, x2 as f32, y2 as f32,
-                );
-            }
-
-            let path = pb.finish();
-
-            g.stroke(
-                &path,
-                &Source::Solid(SolidSource::from(color)),
-                &stroke_style,
-                &draw_options,
-            );
         }
     }
 

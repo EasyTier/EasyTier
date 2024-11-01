@@ -50,11 +50,4 @@ impl Into<u32> for Color {
     }
 }
 
-impl Into<raqote::Color> for Color {
-    fn into(self) -> raqote::Color {
-        let color: (u8, u8, u8, u8) = self.into();
-        raqote::Color::new(color.3, color.0, color.1, color.2)
-    }
-}
-
 impl Color {}
