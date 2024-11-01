@@ -3,16 +3,18 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use axum_login::{AuthUser, AuthnBackend, AuthzBackend, UserId};
 use password_auth::verify_password;
+use sea_orm::{
+    ActiveModelTrait as _, ColumnTrait, EntityTrait, FromQueryResult, JoinType, QueryFilter,
+    QuerySelect as _, RelationTrait, Set, TransactionTrait,
+};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, SqlitePool};
 use tokio::task;
 
-#[derive(Clone, Serialize, Deserialize, FromRow)]
+use crate::db::{self, entity};
+
+#[derive(Clone, Serialize, Deserialize)]
 pub struct User {
-    id: i64,
-    pub username: String,
-    password: String,
-    #[sqlx(skip)]
+    db_user: entity::users::Model,
     pub tokens: Vec<String>,
 }
 
@@ -21,25 +23,25 @@ pub struct User {
 impl std::fmt::Debug for User {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("User")
-            .field("id", &self.id)
-            .field("username", &self.username)
+            .field("id", &self.db_user.id)
+            .field("username", &self.db_user.username)
             .field("password", &"[redacted]")
             .finish()
     }
 }
 
 impl AuthUser for User {
-    type Id = i64;
+    type Id = i32;
 
     fn id(&self) -> Self::Id {
-        self.id
+        self.db_user.id
     }
 
     fn session_auth_hash(&self) -> &[u8] {
-        self.password.as_bytes() // We use the password hash as the auth
-                                 // hash--what this means
-                                 // is when the user changes their password the
-                                 // auth session becomes invalid.
+        self.db_user.password.as_bytes() // We use the password hash as the auth
+                                         // hash--what this means
+                                         // is when the user changes their password the
+                                         // auth session becomes invalid.
     }
 }
 
@@ -59,43 +61,44 @@ pub struct RegisterNewUser {
 
 #[derive(Debug, Clone)]
 pub struct Backend {
-    db: SqlitePool,
+    db: db::Db,
 }
 
 impl Backend {
-    pub fn new(db: SqlitePool) -> Self {
+    pub fn new(db: db::Db) -> Self {
         Self { db }
     }
 
     pub async fn register_new_user(&self, new_user: &RegisterNewUser) -> anyhow::Result<()> {
         let hashed_password = password_auth::generate_hash(new_user.credentials.password.as_str());
-        let mut tx = self.db.begin().await?;
+        let mut txn = self.db.orm_db().begin().await?;
 
-        sqlx::query(
-            r#"
-            insert into users (username, password)
-            values ($1, $2)
-        "#,
-        )
-        .bind(new_user.credentials.username.as_str())
-        .bind(hashed_password)
-        .execute(&mut *tx)
+        entity::users::ActiveModel {
+            username: Set(new_user.credentials.username.clone()),
+            password: Set(hashed_password.clone()),
+            ..Default::default()
+        }
+        .save(&mut txn)
         .await?;
 
-        sqlx::query(
-            r#"
-            insert into users_groups (user_id, group_id)
-            values (
-                (select id from users where username = $1),
-                (select id from groups where name = 'users')
-            );
-        "#,
-        )
-        .bind(new_user.credentials.username.as_str())
-        .execute(&mut *tx)
+        entity::users_groups::ActiveModel {
+            user_id: Set(entity::users::Entity::find()
+                .filter(entity::users::Column::Username.eq(new_user.credentials.username.as_str()))
+                .one(&mut txn)
+                .await?
+                .unwrap()
+                .id),
+            group_id: Set(entity::groups::Entity::find()
+                .filter(entity::groups::Column::Name.eq("users"))
+                .one(&mut txn)
+                .await?
+                .unwrap()
+                .id),
+            ..Default::default()
+        }
+        .save(&mut txn)
         .await?;
-
-        tx.commit().await?;
+        txn.commit().await?;
 
         Ok(())
     }
@@ -104,7 +107,7 @@ impl Backend {
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Sqlx(#[from] sqlx::Error),
+    Sqlx(#[from] sea_orm::DbErr),
 
     #[error(transparent)]
     TaskJoin(#[from] task::JoinError),
@@ -120,37 +123,44 @@ impl AuthnBackend for Backend {
         &self,
         creds: Self::Credentials,
     ) -> Result<Option<Self::User>, Self::Error> {
-        let user: Option<Self::User> = sqlx::query_as("select * from users where username = ? ")
-            .bind(creds.username)
-            .fetch_optional(&self.db)
+        let user = entity::users::Entity::find()
+            .filter(entity::users::Column::Username.eq(creds.username))
+            .one(self.db.orm_db())
             .await?;
-
-        // Verifying the password is blocking and potentially slow, so we'll do so via
-        // `spawn_blocking`.
         task::spawn_blocking(|| {
             // We're using password-based authentication--this works by comparing our form
             // input with an argon2 password hash.
-            Ok(user.filter(|user| verify_password(creds.password, &user.password).is_ok()))
+            Ok(user
+                .filter(|user| verify_password(creds.password, &user.password).is_ok())
+                .map(|user| User {
+                    db_user: user.clone(),
+                    tokens: vec![user.username.clone()],
+                }))
         })
         .await?
     }
 
     async fn get_user(&self, user_id: &UserId<Self>) -> Result<Option<Self::User>, Self::Error> {
-        let mut user: Option<User> = sqlx::query_as("select * from users where id = ?")
-            .bind(user_id)
-            .fetch_optional(&self.db)
+        let mut user = entity::users::Entity::find()
+            .filter(entity::users::Column::Id.eq(*user_id))
+            .one(self.db.orm_db())
             .await?;
 
         if let Some(u) = &mut user {
+            let mut user = User {
+                db_user: u.clone(),
+                tokens: vec![],
+            };
             // username is a token
-            u.tokens.push(u.username.clone());
+            user.tokens.push(u.username.clone());
+            Ok(Some(user))
+        } else {
+            Ok(None)
         }
-
-        Ok(user)
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Hash, FromRow)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, FromQueryResult)]
 pub struct Permission {
     pub name: String,
 }
@@ -169,21 +179,29 @@ impl AuthzBackend for Backend {
 
     async fn get_group_permissions(
         &self,
-        user: &Self::User,
+        _user: &Self::User,
     ) -> Result<HashSet<Self::Permission>, Self::Error> {
-        let permissions: Vec<Self::Permission> = sqlx::query_as(
-            r#"
-            select distinct permissions.name
-            from users
-            join users_groups on users.id = users_groups.user_id
-            join groups_permissions on users_groups.group_id = groups_permissions.group_id
-            join permissions on groups_permissions.permission_id = permissions.id
-            where users.id = ?
-            "#,
-        )
-        .bind(user.id)
-        .fetch_all(&self.db)
-        .await?;
+        let permissions = entity::users::Entity::find()
+            .column_as(entity::permissions::Column::Name, "name")
+            .join(
+                JoinType::LeftJoin,
+                entity::users::Relation::UsersGroups.def(),
+            )
+            .join(
+                JoinType::LeftJoin,
+                entity::users_groups::Relation::Groups.def(),
+            )
+            .join(
+                JoinType::LeftJoin,
+                entity::groups::Relation::GroupsPermissions.def(),
+            )
+            .join(
+                JoinType::LeftJoin,
+                entity::groups_permissions::Relation::Permissions.def(),
+            )
+            .into_model::<Self::Permission>()
+            .all(self.db.orm_db())
+            .await?;
 
         Ok(permissions.into_iter().collect())
     }

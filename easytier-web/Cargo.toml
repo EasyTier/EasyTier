@@ -16,13 +16,16 @@ async-trait = "0.1"
 axum = { version = "0.7", features = ["macros"] }
 axum-login = { version = "0.16" }
 password-auth = { version = "1.0.0" }
-sqlx = { version = "0.8", features = ["sqlite"] }
 axum-messages = "0.7.0"
 tower-sessions-sqlx-store = { version = "0.14.1", features = ["sqlite"] }
 tower-sessions = { version = "0.13.0", default-features = false, features = [
     "signed",
 ] }
 tower-http = { version = "0.6", features = ["cors"] }
+sqlx = { version = "0.8", features = ["sqlite"] }
+sea-orm = { version = "1.1", features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
+sea-orm-migration = { version = "1.1" }
+
 
 # for captcha
 raqote = { version = "0.8", default-features = false, features = ["text"] }

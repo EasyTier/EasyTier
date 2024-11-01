@@ -8,7 +8,7 @@ use std::{net::SocketAddr, sync::Arc};
 use axum::http::StatusCode;
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
-use axum_login::{login_required, AuthManagerLayerBuilder};
+use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::scoped_task::ScopedTask;
 use easytier::proto::{self, rpc_types};
@@ -18,7 +18,7 @@ use tower_sessions::cookie::time::Duration;
 use tower_sessions::cookie::Key;
 use tower_sessions::Expiry;
 use tower_sessions_sqlx_store::SqliteStore;
-use users::Backend;
+use users::{AuthSession, Backend};
 
 use crate::client_manager::session::Session;
 use crate::client_manager::storage::StorageToken;
@@ -87,8 +87,15 @@ impl RestfulServer {
     }
 
     async fn handle_list_all_sessions(
+        auth_session: AuthSession,
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
+        let pers = auth_session
+            .backend
+            .get_group_permissions(auth_session.user.as_ref().unwrap())
+            .await
+            .unwrap();
+        println!("{:?}", pers);
         let ret = client_mgr.list_sessions().await;
         Ok(ListSessionJsonResp(ret).into())
     }
@@ -124,7 +131,7 @@ impl RestfulServer {
         //
         // This combines the session layer with our backend to establish the auth
         // service which will provide the auth session as a request extension.
-        let backend = Backend::new(self.db.inner());
+        let backend = Backend::new(self.db.clone());
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         let app = Router::new()
