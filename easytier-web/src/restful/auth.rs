@@ -1,10 +1,13 @@
 use axum::{
     http::StatusCode,
-    routing::{get, post},
+    routing::{get, post, put},
     Router,
 };
+use axum_login::login_required;
 use axum_messages::Message;
 use serde::{Deserialize, Serialize};
+
+use crate::restful::users::Backend;
 
 use super::{
     users::{AuthSession, Credentials},
@@ -17,11 +20,46 @@ pub struct LoginResult {
 }
 
 pub fn router() -> Router<AppStateInner> {
+    let r = Router::new()
+        .route("/api/v1/auth/password", put(self::put::change_password))
+        .route_layer(login_required!(Backend));
     Router::new()
+        .merge(r)
         .route("/api/v1/auth/login", post(self::post::login))
         .route("/api/v1/auth/logout", get(self::get::logout))
         .route("/api/v1/auth/captcha", get(self::get::get_captcha))
         .route("/api/v1/auth/register", post(self::post::register))
+}
+
+mod put {
+    use axum::Json;
+    use axum_login::AuthUser;
+    use easytier::proto::common::Void;
+
+    use crate::restful::{other_error, users::ChangePassword, HttpHandleError};
+
+    use super::*;
+
+    pub async fn change_password(
+        mut auth_session: AuthSession,
+        Json(req): Json<ChangePassword>,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        if let Err(e) = auth_session
+            .backend
+            .change_password(auth_session.user.as_ref().unwrap().id(), &req)
+            .await
+        {
+            tracing::error!("Failed to change password: {:?}", e);
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json::from(other_error(format!("{:?}", e))),
+            ));
+        }
+
+        let _ = auth_session.logout().await;
+
+        Ok(Void::default().into())
+    }
 }
 
 mod post {

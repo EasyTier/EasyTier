@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use axum_login::{AuthUser, AuthnBackend, AuthzBackend, UserId};
 use password_auth::verify_password;
 use sea_orm::{
-    ActiveModelTrait as _, ColumnTrait, EntityTrait, FromQueryResult, JoinType, QueryFilter,
-    QuerySelect as _, RelationTrait, Set, TransactionTrait,
+    ActiveModelTrait as _, ColumnTrait, EntityTrait, FromQueryResult, IntoActiveModel, JoinType,
+    QueryFilter, QuerySelect as _, RelationTrait, Set, TransactionTrait,
 };
 use serde::{Deserialize, Serialize};
 use tokio::task;
@@ -59,6 +59,11 @@ pub struct RegisterNewUser {
     pub captcha: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ChangePassword {
+    pub new_password: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Backend {
     db: db::Db,
@@ -99,6 +104,29 @@ impl Backend {
         .save(&mut txn)
         .await?;
         txn.commit().await?;
+
+        Ok(())
+    }
+
+    pub async fn change_password(
+        &self,
+        id: <User as AuthUser>::Id,
+        req: &ChangePassword,
+    ) -> anyhow::Result<()> {
+        let hashed_password = password_auth::generate_hash(req.new_password.as_str());
+
+        use entity::users;
+
+        let mut user = users::Entity::find_by_id(id)
+            .one(self.db.orm_db())
+            .await?
+            .ok_or(anyhow::anyhow!("User not found"))?
+            .into_active_model();
+        user.password = Set(hashed_password.clone());
+
+        entity::users::Entity::update(user)
+            .exec(self.db.orm_db())
+            .await?;
 
         Ok(())
     }

@@ -195,6 +195,8 @@ impl Session {
                 }
             };
 
+            let mut has_failed = false;
+
             for c in local_configs {
                 if running_inst_ids.contains(&c.network_instance_id) {
                     continue;
@@ -214,6 +216,13 @@ impl Session {
                     ret,
                     req.user_token
                 );
+
+                has_failed |= ret.is_err();
+            }
+
+            if !has_failed {
+                tracing::info!(?req, "All network instances are running");
+                break;
             }
         }
     }
