@@ -1,6 +1,5 @@
 // src/migrator/m20220602_000001_create_bakery_table.rs (create new file)
 
-
 use sea_orm_migration::{prelude::*, schema::*};
 
 pub struct Migration;
@@ -137,6 +136,17 @@ enum GroupsPermissions {
     PermissionId,
 }
 
+#[derive(DeriveIden)]
+enum UserRunningNetworkConfigs {
+    Table,
+    Id,
+    UserId,
+    NetworkInstanceId,
+    NetworkConfig,
+    CreateTime,
+    UpdateTime,
+}
+
 #[async_trait::async_trait]
 impl MigrationTrait for Migration {
     // Define how to apply this migration: Create the Bakery table.
@@ -250,6 +260,42 @@ impl MigrationTrait for Migration {
                             .on_delete(ForeignKeyAction::Cascade)
                             .on_update(ForeignKeyAction::Cascade),
                     )
+                    .to_owned(),
+            )
+            .await?;
+
+        // create user running network configs table
+        manager
+            .create_table(
+                Table::create()
+                    .if_not_exists()
+                    .table(UserRunningNetworkConfigs::Table)
+                    .col(pk_auto(UserRunningNetworkConfigs::Id).not_null())
+                    .col(integer(UserRunningNetworkConfigs::UserId).not_null())
+                    .col(integer(UserRunningNetworkConfigs::NetworkInstanceId).not_null())
+                    .col(json(UserRunningNetworkConfigs::NetworkConfig).not_null())
+                    .col(timestamp_with_time_zone(UserRunningNetworkConfigs::CreateTime).not_null())
+                    .col(timestamp_with_time_zone(UserRunningNetworkConfigs::UpdateTime).not_null())
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk_user_running_network_configs_user_id_to_users_id")
+                            .from(
+                                UserRunningNetworkConfigs::Table,
+                                UserRunningNetworkConfigs::UserId,
+                            )
+                            .to(Users::Table, Users::Id)
+                            .on_delete(ForeignKeyAction::Cascade)
+                            .on_update(ForeignKeyAction::Cascade),
+                    )
+                    .to_owned(),
+            )
+            .await?;
+        manager
+            .create_index(
+                Index::create()
+                    .name("idx_user_running_network_configs_user_id")
+                    .table(UserRunningNetworkConfigs::Table)
+                    .col(UserRunningNetworkConfigs::UserId)
                     .to_owned(),
             )
             .await?;

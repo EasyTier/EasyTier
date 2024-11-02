@@ -6,5 +6,6 @@ pub mod groups;
 pub mod groups_permissions;
 pub mod permissions;
 pub mod tower_sessions;
+pub mod user_running_network_configs;
 pub mod users;
 pub mod users_groups;

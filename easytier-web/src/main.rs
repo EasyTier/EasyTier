@@ -8,8 +8,6 @@ use easytier::{
     utils::init_logger,
 };
 
-
-
 mod client_manager;
 mod db;
 mod migrator;
