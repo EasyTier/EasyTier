@@ -40,6 +40,8 @@ message HeartbeatRequest {
     string easytier_version = 4;
     string report_time = 5;
     string hostname = 6;
+
+    repeated common.UUID running_network_instances = 7;
 }
 
 message HeartbeatResponse {
@@ -57,10 +59,12 @@ message ValidateConfigResponse {
 }
 
 message RunNetworkInstanceRequest {
-  string config = 1;
+  common.UUID inst_id = 1;
+  string config = 2;
 }
 
 message RunNetworkInstanceResponse {
+  common.UUID inst_id = 1;
 }
 
 message RetainNetworkInstanceRequest {

@@ -17,6 +17,12 @@ impl From<Uuid> for uuid::Uuid {
     }
 }
 
+impl From<String> for Uuid {
+    fn from(value: String) -> Self {
+        uuid::Uuid::parse_str(&value).unwrap().into()
+    }
+}
+
 impl Display for Uuid {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", uuid::Uuid::from(self.clone()))

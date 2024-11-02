@@ -10,6 +10,8 @@ use easytier::{
 use session::Session;
 use storage::{Storage, StorageToken};
 
+use crate::db::Db;
+
 #[derive(Debug)]
 pub struct ClientManager {
     accept_task: Option<ScopedTask<()>>,
@@ -20,13 +22,13 @@ pub struct ClientManager {
 }
 
 impl ClientManager {
-    pub fn new() -> Self {
+    pub fn new(db: Db) -> Self {
         ClientManager {
             accept_task: None,
             clear_task: None,
 
             client_sessions: Arc::new(DashMap::new()),
-            storage: Storage::new(),
+            storage: Storage::new(db),
         }
     }
 
@@ -43,7 +45,8 @@ impl ClientManager {
                 let info = tunnel.info().unwrap();
                 let client_url: url::Url = info.remote_addr.unwrap().into();
                 println!("New session from {:?}", tunnel.info());
-                let session = Session::new(tunnel, storage.clone(), client_url.clone());
+                let mut session = Session::new(storage.clone(), client_url.clone());
+                session.serve(tunnel).await;
                 sessions.insert(client_url, Arc::new(session));
             }
         });
@@ -98,6 +101,10 @@ impl ClientManager {
         let s = self.client_sessions.get(client_url)?.clone();
         s.data().read().await.req()
     }
+
+    pub fn db(&self) -> &Db {
+        self.storage.db()
+    }
 }
 
 #[cfg(test)]
@@ -112,12 +119,12 @@ mod tests {
         web_client::WebClient,
     };
 
-    use crate::client_manager::ClientManager;
+    use crate::{client_manager::ClientManager, db::Db};
 
     #[tokio::test]
     async fn test_client() {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:54333".parse().unwrap());
-        let mut mgr = ClientManager::new();
+        let mut mgr = ClientManager::new(Db::memory_db().await);
         mgr.serve(Box::new(listener)).await.unwrap();
 
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());

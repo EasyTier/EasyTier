@@ -25,7 +25,7 @@ async fn main() {
     let db = db::Db::new("et.db").await.unwrap();
 
     let listener = UdpTunnelListener::new("udp://0.0.0.0:22020".parse().unwrap());
-    let mut mgr = client_manager::ClientManager::new();
+    let mut mgr = client_manager::ClientManager::new(db.clone());
     mgr.serve(listener).await.unwrap();
     let mgr = Arc::new(mgr);
 

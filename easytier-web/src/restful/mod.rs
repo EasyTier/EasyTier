@@ -13,6 +13,7 @@ use axum_messages::MessagesManagerLayer;
 use easytier::common::scoped_task::ScopedTask;
 use easytier::proto::{self, rpc_types};
 use network::NetworkApi;
+use sea_orm::DbErr;
 use tokio::net::TcpListener;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::cookie::Key;
@@ -53,6 +54,13 @@ pub fn other_error<T: ToString>(error_message: T) -> Error {
             error_message: error_message.to_string(),
         })),
     }
+}
+
+pub fn convert_db_error(e: DbErr) -> HttpHandleError {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        other_error(format!("DB Error: {:#}", e)).into(),
+    )
 }
 
 impl RestfulServer {

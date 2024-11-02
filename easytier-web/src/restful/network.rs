@@ -4,6 +4,7 @@ use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{extract::State, routing::get, Json, Router};
+use axum_login::AuthUser;
 use dashmap::DashSet;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
@@ -13,7 +14,9 @@ use crate::client_manager::session::Session;
 use crate::client_manager::ClientManager;
 
 use super::users::AuthSession;
-use super::{AppState, AppStateInner, Error, ErrorKind, HttpHandleError, RpcError};
+use super::{
+    convert_db_error, AppState, AppStateInner, Error, ErrorKind, HttpHandleError, RpcError,
+};
 
 fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
     let status_code = match &e {
@@ -143,12 +146,27 @@ impl NetworkApi {
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
 
         let c = result.scoped_rpc_client();
-        c.run_network_instance(
-            BaseController::default(),
-            RunNetworkInstanceRequest { config },
-        )
-        .await
-        .map_err(convert_rpc_error)?;
+        let resp = c
+            .run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: None,
+                    config: config.clone(),
+                },
+            )
+            .await
+            .map_err(convert_rpc_error)?;
+
+        client_mgr
+            .db()
+            .insert_or_update_user_network_config(
+                auth_session.user.as_ref().unwrap().id(),
+                resp.inst_id.clone().unwrap_or_default().into(),
+                config,
+            )
+            .await
+            .map_err(convert_db_error)?;
+
         Ok(Void::default().into())
     }
 
@@ -226,6 +244,12 @@ impl NetworkApi {
     ) -> Result<(), HttpHandleError> {
         let result =
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
+
+        client_mgr
+            .db()
+            .delete_network_config(auth_session.user.as_ref().unwrap().id(), inst_id)
+            .await
+            .map_err(convert_db_error)?;
 
         let c = result.scoped_rpc_client();
         c.delete_network_instance(

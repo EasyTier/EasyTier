@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use tokio::{
     sync::{broadcast, Mutex},
@@ -47,7 +47,8 @@ impl Session {
             .register(WebClientServiceServer::new(controller.clone()), "");
 
         let mut tasks: JoinSet<()> = JoinSet::new();
-        let heartbeat_ctx = Self::heartbeat_routine(&rpc_mgr, controller.token(), &mut tasks);
+        let heartbeat_ctx =
+            Self::heartbeat_routine(&rpc_mgr, Arc::downgrade(&controller), &mut tasks);
 
         Session {
             rpc_mgr,
@@ -59,7 +60,7 @@ impl Session {
 
     fn heartbeat_routine(
         rpc_mgr: &BidirectRpcManager,
-        token: String,
+        controller: Weak<Controller>,
         tasks: &mut JoinSet<()>,
     ) -> HeartbeatCtx {
         let (tx, _rx1) = broadcast::channel(2);
@@ -71,7 +72,7 @@ impl Session {
 
         let mid = get_machine_id();
         let inst_id = uuid::Uuid::new_v4();
-        let token = token;
+        let token = controller.upgrade().unwrap().token();
         let hostname = gethostname::gethostname().to_string_lossy().to_string();
 
         let ctx_clone = ctx.clone();
@@ -83,6 +84,10 @@ impl Session {
             loop {
                 tick.tick().await;
 
+                let Some(controller) = controller.upgrade() else {
+                    break;
+                };
+
                 let req = HeartbeatRequest {
                     machine_id: Some(mid.into()),
                     inst_id: Some(inst_id.into()),
@@ -91,6 +96,12 @@ impl Session {
                     easytier_version: EASYTIER_VERSION.to_string(),
                     hostname: hostname.clone(),
                     report_time: chrono::Local::now().to_string(),
+
+                    running_network_instances: controller
+                        .list_network_instance_ids()
+                        .into_iter()
+                        .map(Into::into)
+                        .collect(),
                 };
 
                 match client

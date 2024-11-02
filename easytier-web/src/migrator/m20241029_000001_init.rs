@@ -143,6 +143,7 @@ enum UserRunningNetworkConfigs {
     UserId,
     NetworkInstanceId,
     NetworkConfig,
+    Disabled,
     CreateTime,
     UpdateTime,
 }
@@ -272,8 +273,17 @@ impl MigrationTrait for Migration {
                     .table(UserRunningNetworkConfigs::Table)
                     .col(pk_auto(UserRunningNetworkConfigs::Id).not_null())
                     .col(integer(UserRunningNetworkConfigs::UserId).not_null())
-                    .col(integer(UserRunningNetworkConfigs::NetworkInstanceId).not_null())
-                    .col(json(UserRunningNetworkConfigs::NetworkConfig).not_null())
+                    .col(
+                        text(UserRunningNetworkConfigs::NetworkInstanceId)
+                            .unique_key()
+                            .not_null(),
+                    )
+                    .col(text(UserRunningNetworkConfigs::NetworkConfig).not_null())
+                    .col(
+                        boolean(UserRunningNetworkConfigs::Disabled)
+                            .not_null()
+                            .default(false),
+                    )
                     .col(timestamp_with_time_zone(UserRunningNetworkConfigs::CreateTime).not_null())
                     .col(timestamp_with_time_zone(UserRunningNetworkConfigs::UpdateTime).not_null())
                     .foreign_key(

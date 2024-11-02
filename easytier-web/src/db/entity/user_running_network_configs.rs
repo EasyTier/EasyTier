@@ -9,8 +9,11 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     pub user_id: i32,
-    pub network_instance_id: i32,
-    pub network_config: Json,
+    #[sea_orm(column_type = "Text", unique)]
+    pub network_instance_id: String,
+    #[sea_orm(column_type = "Text")]
+    pub network_config: String,
+    pub disabled: bool,
     pub create_time: DateTimeWithTimeZone,
     pub update_time: DateTimeWithTimeZone,
 }
