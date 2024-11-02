@@ -170,7 +170,7 @@ impl Service {
                 vec![OsString::from("dnscache"), OsString::from("rpcss")],
             )?
         );
-        
+
         #[cfg(not(target_os = "windows"))]
         let service_manager = <dyn ServiceManager>::native()?;
 
@@ -180,7 +180,7 @@ impl Service {
         })
     }
 
-    pub fn install(&self, bin_args: Vec<std::ffi::OsString>) -> Result<(), std::io::Error> {  
+    pub fn install(&self, bin_args: Vec<OsString>) -> Result<(), std::io::Error> {  
         let ctx = ServiceInstallCtx {
             label: self.lable.clone(),
             contents: None,
