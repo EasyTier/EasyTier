@@ -162,17 +162,18 @@ pub struct Service{
 
 impl Service {
     pub fn new() -> Result<Self, anyhow::Error> {
-        let service_manager = if cfg!(windows) {
-            Box::new(
-                crate::arch::windows::WinServiceManager::new(
+        #[cfg(target_os = "windows")]
+        let service_manager = Box::new(
+            crate::arch::windows::WinServiceManager::new(
                 Some(OsString::from("EasyTier Service")),
                 Some(OsString::from(env!("CARGO_PKG_DESCRIPTION"))),
                 vec![OsString::from("dnscache"), OsString::from("rpcss")],
-                )?
-            )
-        } else {
-            <dyn ServiceManager>::native()?
-        };
+            )?
+        );
+        
+        #[cfg(not(target_os = "windows"))]
+        let service_manager = <dyn ServiceManager>::native()?;
+
         Ok(Self {
             lable: env!("CARGO_PKG_NAME").parse().unwrap(),
             service_manager
