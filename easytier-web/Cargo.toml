@@ -12,7 +12,30 @@ tokio = { version = "1", features = ["full"] }
 dashmap = "6.1"
 url = "2.2"
 async-trait = "0.1"
+
 axum = { version = "0.7", features = ["macros"] }
+axum-login = { version = "0.16" }
+password-auth = { version = "1.0.0" }
+axum-messages = "0.7.0"
+tower-sessions-sqlx-store = { version = "0.14.1", features = ["sqlite"] }
+tower-sessions = { version = "0.13.0", default-features = false, features = [
+    "signed",
+] }
+tower-http = { version = "0.6", features = ["cors"] }
+sqlx = { version = "0.8", features = ["sqlite"] }
+sea-orm = { version = "1.1", features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
+sea-orm-migration = { version = "1.1" }
+
+
+# for captcha
+rust-embed = { version = "8.5.0", features = ["debug-embed"] }
+base64 = "0.22"
+rand = "0.8"
+image = {version="0.24", default-features = false, features = ["png"]}
+rusttype = "0.9.3"
+imageproc = "0.23.0"
+
+
 clap = { version = "4.4.8", features = [
     "string",
     "unicode",

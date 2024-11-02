@@ -2,6 +2,8 @@ use std::sync::{Arc, Weak};
 
 use dashmap::{DashMap, DashSet};
 
+use crate::db::Db;
+
 // use this to maintain Storage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StorageToken {
@@ -15,6 +17,7 @@ pub struct StorageInner {
     // some map for indexing
     pub token_clients_map: DashMap<String, DashSet<url::Url>>,
     pub machine_client_url_map: DashMap<uuid::Uuid, url::Url>,
+    pub db: Db,
 }
 
 #[derive(Debug, Clone)]
@@ -30,10 +33,11 @@ impl TryFrom<WeakRefStorage> for Storage {
 }
 
 impl Storage {
-    pub fn new() -> Self {
+    pub fn new(db: Db) -> Self {
         Storage(Arc::new(StorageInner {
             token_clients_map: DashMap::new(),
             machine_client_url_map: DashMap::new(),
+            db,
         }))
     }
 
@@ -68,5 +72,17 @@ impl Storage {
             .machine_client_url_map
             .get(&machine_id)
             .map(|url| url.clone())
+    }
+
+    pub fn list_token_clients(&self, token: &str) -> Vec<url::Url> {
+        self.0
+            .token_clients_map
+            .get(token)
+            .map(|set| set.iter().map(|url| url.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn db(&self) -> &Db {
+        &self.0.db
     }
 }

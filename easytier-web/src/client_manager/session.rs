@@ -1,12 +1,13 @@
 use std::{fmt::Debug, sync::Arc};
 
 use easytier::{
+    common::scoped_task::ScopedTask,
     proto::{
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{self, controller::BaseController},
         web::{
-            HeartbeatRequest, HeartbeatResponse, WebClientService, WebClientServiceClientFactory,
-            WebServerService, WebServerServiceServer,
+            HeartbeatRequest, HeartbeatResponse, RunNetworkInstanceRequest, WebClientService,
+            WebClientServiceClientFactory, WebServerService, WebServerServiceServer,
         },
     },
     tunnel::Tunnel,
@@ -98,6 +99,8 @@ pub struct Session {
     rpc_mgr: BidirectRpcManager,
 
     data: SharedSessionData,
+
+    run_network_on_start_task: Option<ScopedTask<()>>,
 }
 
 impl Debug for Session {
@@ -106,20 +109,122 @@ impl Debug for Session {
     }
 }
 
+type SessionRpcClient = Box<dyn WebClientService<Controller = BaseController> + Send>;
+
 impl Session {
-    pub fn new(tunnel: Box<dyn Tunnel>, storage: WeakRefStorage, client_url: url::Url) -> Self {
+    pub fn new(storage: WeakRefStorage, client_url: url::Url) -> Self {
+        let session_data = SessionData::new(storage, client_url);
+        let data = Arc::new(RwLock::new(session_data));
+
         let rpc_mgr =
             BidirectRpcManager::new().set_rx_timeout(Some(std::time::Duration::from_secs(30)));
-        rpc_mgr.run_with_tunnel(tunnel);
-
-        let data = Arc::new(RwLock::new(SessionData::new(storage, client_url)));
 
         rpc_mgr.rpc_server().registry().register(
             WebServerServiceServer::new(SessionRpcService { data: data.clone() }),
             "",
         );
 
-        Session { rpc_mgr, data }
+        Session {
+            rpc_mgr,
+            data,
+            run_network_on_start_task: None,
+        }
+    }
+
+    pub async fn serve(&mut self, tunnel: Box<dyn Tunnel>) {
+        self.rpc_mgr.run_with_tunnel(tunnel);
+
+        let data = self.data.read().await;
+        self.run_network_on_start_task.replace(
+            tokio::spawn(Self::run_network_on_start(
+                data.heartbeat_waiter(),
+                data.storage.clone(),
+                self.scoped_rpc_client(),
+            ))
+            .into(),
+        );
+    }
+
+    async fn run_network_on_start(
+        mut heartbeat_waiter: broadcast::Receiver<HeartbeatRequest>,
+        storage: WeakRefStorage,
+        rpc_client: SessionRpcClient,
+    ) {
+        loop {
+            heartbeat_waiter = heartbeat_waiter.resubscribe();
+            let req = heartbeat_waiter.recv().await;
+            if req.is_err() {
+                tracing::error!(
+                    "Failed to receive heartbeat request, error: {:?}",
+                    req.err()
+                );
+                return;
+            }
+            let req = req.unwrap();
+            let running_inst_ids = req
+                .running_network_instances
+                .iter()
+                .map(|x| x.to_string())
+                .collect::<Vec<_>>();
+            let Some(storage) = storage.upgrade() else {
+                tracing::error!("Failed to get storage");
+                return;
+            };
+
+            let user_id = match storage
+                .db
+                .get_user_id_by_token(req.user_token.clone())
+                .await
+            {
+                Ok(Some(user_id)) => user_id,
+                Ok(None) => {
+                    tracing::info!("User not found by token: {:?}", req.user_token);
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to get user id by token, error: {:?}", e);
+                    return;
+                }
+            };
+
+            let local_configs = match storage.db.list_network_configs(user_id, true).await {
+                Ok(configs) => configs,
+                Err(e) => {
+                    tracing::error!("Failed to list network configs, error: {:?}", e);
+                    return;
+                }
+            };
+
+            let mut has_failed = false;
+
+            for c in local_configs {
+                if running_inst_ids.contains(&c.network_instance_id) {
+                    continue;
+                }
+                let ret = rpc_client
+                    .run_network_instance(
+                        BaseController::default(),
+                        RunNetworkInstanceRequest {
+                            inst_id: Some(c.network_instance_id.clone().into()),
+                            config: c.network_config,
+                        },
+                    )
+                    .await;
+                tracing::info!(
+                    ?user_id,
+                    "Run network instance: {:?}, user_token: {:?}",
+                    ret,
+                    req.user_token
+                );
+
+                has_failed |= ret.is_err();
+            }
+
+            if !has_failed {
+                tracing::info!(?req, "All network instances are running");
+                break;
+            }
+        }
     }
 
     pub fn is_running(&self) -> bool {
@@ -130,9 +235,7 @@ impl Session {
         self.data.clone()
     }
 
-    pub fn scoped_rpc_client(
-        &self,
-    ) -> Box<dyn WebClientService<Controller = BaseController> + Send> {
+    pub fn scoped_rpc_client(&self) -> SessionRpcClient {
         self.rpc_mgr
             .rpc_client()
             .scoped_client::<WebClientServiceClientFactory<BaseController>>(1, 1, "".to_string())
@@ -140,5 +243,9 @@ impl Session {
 
     pub async fn get_token(&self) -> Option<StorageToken> {
         self.data.read().await.storage_token.clone()
+    }
+
+    pub async fn get_heartbeat_req(&self) -> Option<HeartbeatRequest> {
+        self.data.read().await.req()
     }
 }
