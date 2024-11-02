@@ -6,10 +6,16 @@ extern crate rust_i18n;
 use std::{
     net::{Ipv4Addr, SocketAddr}, 
     path::PathBuf,
+    ffi::OsString
 };
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{
+    command,
+    Parser,
+    Subcommand,
+    Args
+};
 use tokio::net::TcpSocket;
 
 use easytier::{
@@ -24,7 +30,7 @@ use easytier::{
     },
     launcher, proto,
     tunnel::udp::UdpTunnelConnector,
-    utils::{init_logger, setup_panic_handler},
+    utils::{init_logger, setup_panic_handler, Service},
     web_client,
 };
 
@@ -39,15 +45,14 @@ use mimalloc_rust::GlobalMiMalloc;
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
 
 #[derive(Parser, Debug)]
-#[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
-struct Cli {
+struct RunArgs {  
     #[arg(
         short = 'w',
         long,
         help = t!("core_clap.config_server").to_string()
     )]
-    config_server: Option<String>,
-
+    config_server: Option<String>, 
+     
     #[arg(
         short,
         long,
@@ -289,11 +294,47 @@ struct Cli {
         help = t!("core_clap.ipv6_listener").to_string()
     )]
     ipv6_listener: Option<String>,
+
+    #[arg(
+        long,
+        help = t!("core_clap.work_dir").to_string()
+    )]
+    work_dir: Option<PathBuf>
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
+struct Cli{
+    #[command(subcommand)]
+    sub_command: SubCmd
+}
+#[derive(Subcommand, Debug)]
+enum SubCmd {
+    #[command(
+        about = t!("core_clap.run").to_string()
+    )]
+    Run(RunArgs),
+    #[command(
+        about = t!("core_clap.service").to_string()
+    )]
+    Service(ServiceArgs)
+}
+
+#[derive(Args, Debug)]
+struct ServiceArgs{
+    #[command(subcommand)]
+    sub_command: SrvSubCmd
+}
+#[derive(Subcommand, Debug)]
+enum SrvSubCmd {
+    Install(RunArgs),
+    Uninstall,
+    Status
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
 
-impl Cli {
+impl RunArgs {
     fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> Vec<String> {
         let proto_port_offset = vec![("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
 
@@ -351,7 +392,7 @@ impl Cli {
             if port == 0 {
                 // check tcp 15888 first
                 for i in 15888..15900 {
-                    if let Some(s) = Cli::check_tcp_available(i) {
+                    if let Some(s) = RunArgs::check_tcp_available(i) {
                         return s;
                     }
                 }
@@ -364,27 +405,27 @@ impl Cli {
     }
 }
 
-impl From<Cli> for TomlConfigLoader {
-    fn from(cli: Cli) -> Self {
-        if let Some(config_file) = &cli.config_file {
+impl From<RunArgs> for TomlConfigLoader {
+    fn from(args: RunArgs) -> Self {
+        if let Some(config_file) = &args.config_file {
             println!(
                 "NOTICE: loading config file: {:?}, will ignore all command line flags\n",
                 config_file
             );
             return TomlConfigLoader::new(config_file)
-                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))
+                .with_context(|| format!("failed to load config file: {:?}", args.config_file))
                 .unwrap();
         }
 
         let cfg = TomlConfigLoader::default();
 
-        cfg.set_hostname(cli.hostname);
+        cfg.set_hostname(args.hostname);
 
-        cfg.set_network_identity(NetworkIdentity::new(cli.network_name, cli.network_secret));
+        cfg.set_network_identity(NetworkIdentity::new(args.network_name, args.network_secret));
 
-        cfg.set_dhcp(cli.dhcp);
+        cfg.set_dhcp(args.dhcp);
 
-        if let Some(ipv4) = &cli.ipv4 {
+        if let Some(ipv4) = &args.ipv4 {
             cfg.set_ipv4(Some(
                 ipv4.parse()
                     .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
@@ -393,7 +434,7 @@ impl From<Cli> for TomlConfigLoader {
         }
 
         cfg.set_peers(
-            cli.peers
+            args.peers
                 .iter()
                 .map(|s| PeerConfig {
                     uri: s
@@ -405,13 +446,13 @@ impl From<Cli> for TomlConfigLoader {
         );
 
         cfg.set_listeners(
-            Cli::parse_listeners(cli.no_listener, cli.listeners)
+            RunArgs::parse_listeners(args.no_listener, args.listeners)
                 .into_iter()
                 .map(|s| s.parse().unwrap())
                 .collect(),
         );
 
-        for n in cli.proxy_networks.iter() {
+        for n in args.proxy_networks.iter() {
             cfg.add_proxy_cidr(
                 n.parse()
                     .with_context(|| format!("failed to parse proxy network: {}", n))
@@ -419,9 +460,9 @@ impl From<Cli> for TomlConfigLoader {
             );
         }
 
-        cfg.set_rpc_portal(Cli::parse_rpc_portal(cli.rpc_portal));
+        cfg.set_rpc_portal(RunArgs::parse_rpc_portal(args.rpc_portal));
 
-        if let Some(external_nodes) = cli.external_node {
+        if let Some(external_nodes) = args.external_node {
             let mut old_peers = cfg.get_peers();
             old_peers.push(PeerConfig {
                 uri: external_nodes
@@ -434,23 +475,23 @@ impl From<Cli> for TomlConfigLoader {
             cfg.set_peers(old_peers);
         }
 
-        if cli.console_log_level.is_some() {
+        if args.console_log_level.is_some() {
             cfg.set_console_logger_config(ConsoleLoggerConfig {
-                level: cli.console_log_level,
+                level: args.console_log_level,
             });
         }
 
-        if cli.file_log_dir.is_some() || cli.file_log_level.is_some() {
+        if args.file_log_dir.is_some() || args.file_log_level.is_some() {
             cfg.set_file_logger_config(FileLoggerConfig {
-                level: cli.file_log_level.clone(),
-                dir: cli.file_log_dir.clone(),
-                file: Some(format!("easytier-{}", cli.instance_name)),
+                level: args.file_log_level.clone(),
+                dir: args.file_log_dir.clone(),
+                file: Some(format!("easytier-{}", args.instance_name)),
             });
         }
 
-        cfg.set_inst_name(cli.instance_name);
+        cfg.set_inst_name(args.instance_name);
 
-        if let Some(vpn_portal) = cli.vpn_portal {
+        if let Some(vpn_portal) = args.vpn_portal {
             let url: url::Url = vpn_portal
                 .parse()
                 .with_context(|| format!("failed to parse vpn portal url: {}", vpn_portal))
@@ -474,7 +515,7 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
-        if let Some(manual_routes) = cli.manual_routes {
+        if let Some(manual_routes) = args.manual_routes {
             cfg.set_routes(Some(
                 manual_routes
                     .iter()
@@ -488,7 +529,7 @@ impl From<Cli> for TomlConfigLoader {
         }
 
         #[cfg(feature = "socks5")]
-        if let Some(socks5_proxy) = cli.socks5 {
+        if let Some(socks5_proxy) = args.socks5 {
             cfg.set_socks5_portal(Some(
                 format!("socks5://0.0.0.0:{}", socks5_proxy)
                     .parse()
@@ -497,34 +538,34 @@ impl From<Cli> for TomlConfigLoader {
         }
 
         let mut f = cfg.get_flags();
-        if cli.default_protocol.is_some() {
-            f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
+        if args.default_protocol.is_some() {
+            f.default_protocol = args.default_protocol.as_ref().unwrap().clone();
         }
-        f.enable_encryption = !cli.disable_encryption;
-        f.enable_ipv6 = !cli.disable_ipv6;
-        f.latency_first = cli.latency_first;
-        f.dev_name = cli.dev_name.unwrap_or_default();
-        if let Some(mtu) = cli.mtu {
+        f.enable_encryption = !args.disable_encryption;
+        f.enable_ipv6 = !args.disable_ipv6;
+        f.latency_first = args.latency_first;
+        f.dev_name = args.dev_name.unwrap_or_default();
+        if let Some(mtu) = args.mtu {
             f.mtu = mtu;
         }
-        f.enable_exit_node = cli.enable_exit_node;
-        f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
-        f.use_smoltcp = cli.use_smoltcp;
-        if let Some(wl) = cli.relay_network_whitelist {
+        f.enable_exit_node = args.enable_exit_node;
+        f.no_tun = args.no_tun || cfg!(not(feature = "tun"));
+        f.use_smoltcp = args.use_smoltcp;
+        if let Some(wl) = args.relay_network_whitelist {
             f.foreign_network_whitelist = wl.join(" ");
         }
-        f.disable_p2p = cli.disable_p2p;
-        f.relay_all_peer_rpc = cli.relay_all_peer_rpc;
-        if let Some(ipv6_listener) = cli.ipv6_listener {
+        f.disable_p2p = args.disable_p2p;
+        f.relay_all_peer_rpc = args.relay_all_peer_rpc;
+        if let Some(ipv6_listener) = args.ipv6_listener {
             f.ipv6_listener = ipv6_listener
                 .parse()
                 .with_context(|| format!("failed to parse ipv6 listener: {}", ipv6_listener))
                 .unwrap();
         }
-        f.multi_thread = cli.multi_thread;
+        f.multi_thread = args.multi_thread;
         cfg.set_flags(f);
 
-        cfg.set_exit_nodes(cli.exit_nodes.clone());
+        cfg.set_exit_nodes(args.exit_nodes.clone());
 
         cfg
     }
@@ -654,42 +695,48 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
 
 #[cfg(target_os = "windows")]
 fn win_service_event_loop(  
+    args: RunArgs,
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
-    inst: launcher::NetworkInstance,  
-    status_handle: windows_service::service_control_handler::ServiceStatusHandle,  
+    status_handle: windows_service::service_control_handler::ServiceStatusHandle,
 ) {  
     use tokio::runtime::Runtime;
     use std::time::Duration;
     use windows_service::service::*;
 
+    let err_stop = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        exit_code: ServiceExitCode::Win32(1),
+        process_id: None,
+    };
+    let normal_stop = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::STOP,
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        exit_code: ServiceExitCode::Win32(0),
+        process_id: None,
+    };
+
     std::thread::spawn(move || {
         let rt = Runtime::new().unwrap();
         rt.block_on(async move {
             tokio::select! {
-                res = inst.wait() => {
-                    if let Some(e) = res {
-                        status_handle.set_service_status(ServiceStatus {
-                            service_type: ServiceType::OWN_PROCESS,
-                            current_state: ServiceState::Stopped,
-                            controls_accepted: ServiceControlAccept::empty(),
-                            checkpoint: 0,
-                            wait_hint: Duration::default(),
-                            exit_code: ServiceExitCode::ServiceSpecific(1u32),
-                            process_id: None
-                        }).unwrap();
-                        panic!("launcher error: {:?}", e);
+                res = main_run(args) => {
+                    if let Err(e) = res {
+                        status_handle.set_service_status(err_stop).unwrap();
+                        panic!("{:?}", e);                      
+                    } else {
+                        status_handle.set_service_status(normal_stop).unwrap();
+                        std::process::exit(0);
                     }
                 },
                 _ = stop_notify.notified() => {
-                    status_handle.set_service_status(ServiceStatus {
-                        service_type: ServiceType::OWN_PROCESS,
-                        current_state: ServiceState::Stopped,
-                        controls_accepted: ServiceControlAccept::empty(),
-                        checkpoint: 0,
-                        wait_hint: Duration::default(),
-                        exit_code: ServiceExitCode::Win32(0),
-                        process_id: None
-                    }).unwrap();
+                    status_handle.set_service_status(normal_stop).unwrap();
                     std::process::exit(0);
                 }
             }
@@ -698,17 +745,20 @@ fn win_service_event_loop(
 }
 
 #[cfg(target_os = "windows")]
-fn win_service_main(_: Vec<std::ffi::OsString>) {
+fn win_service_main(_: Vec<OsString>) {
     use std::time::Duration;
     use windows_service::service_control_handler::*;
     use windows_service::service::*;
     use std::sync::Arc;
     use tokio::sync::Notify;
     
-    let cli = Cli::parse();
-    let cfg = TomlConfigLoader::from(cli);
-
-    init_logger(&cfg, false).unwrap(); 
+    let args = RunArgs::try_parse().unwrap_or_else(|_| {
+            if let SubCmd::Run(args_) = Cli::parse().sub_command {
+                args_
+            } else {
+                panic!("invalid args")
+            }
+        });
 
     let stop_notify_send = Arc::new(Notify::new());
     let stop_notify_recv = Arc::clone(&stop_notify_send);
@@ -735,39 +785,81 @@ fn win_service_main(_: Vec<std::ffi::OsString>) {
         wait_hint: Duration::default(),
         process_id: None,
     };
-    let mut inst = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
-      
-    inst.start().unwrap();    
+
     status_handle.set_service_status(next_status).expect("set service status fail");
-    win_service_event_loop(stop_notify_recv, inst, status_handle);    
+    win_service_event_loop(args, stop_notify_recv, status_handle);    
 }
 
-#[tokio::main]
-async fn main() {
-    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
-    rust_i18n::set_locale(&locale);
+fn service_manager_handle(srv_arg: ServiceArgs) -> Result<(), String> {
+    use service_manager::ServiceStatus;
+    let service = Service::new().map_err(|e| {
+        format!("Service manager init failed: {:?}", e)
+    })?;
+    let status = service.status().map_err(|e|{
+        format!("Failed to get service info: {:?}", e)
+    })?;
 
-    #[cfg(target_os = "windows")]
-    match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
-        Ok(_) => std::thread::park(),
-        Err(e) =>
-        {    
-             let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
-                 io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
-             } else { true };
-             
-             if should_panic {
-                 panic!("SCM start an error: {}", e);
-             }
-         }
-     };
-     
-    let cli = Cli::parse();
+    match srv_arg.sub_command {
+        SrvSubCmd::Install(_) => {
+            if status == ServiceStatus::NotInstalled {
+                let mut args = std::env::args_os().skip(3).collect::<Vec<OsString>>();
+                args.insert(0, OsString::from("run"));
+                
+                if let Some(work_dir) = args.iter().position(|x| x == "--work-dir") {
+                    let d = std::fs::canonicalize(&args[work_dir + 1]).map_err(|e| {
+                        format!("failed to get work dir: {:?}", e)
+                    })?;
+                    args[work_dir + 1] = OsString::from(d);
+                } else {
+                    let d = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+                    args.push(OsString::from("--work-dir"));                    
+                    args.push(OsString::from(d));
+                }
+                service.install(args).map_err(|e| {
+                    format!("Service install failed: {:?}", e)
+                })?;
+                println!("Service installed successfully.");
+            } 
+            else {
+                return Err("Service already installed, please uninstall it first.".to_string());
+            }
+        }
+        SrvSubCmd::Uninstall => {
+            if status != ServiceStatus::NotInstalled {
+                if status == ServiceStatus::Running{
+                    service.stop().map_err(|e| {
+                        format!("Service stop failed: {:?}", e)
+                    })?;
+                }
+                service.uninstall().map_err(|e| {
+                    format!("Service uninstall failed: {:?}", e)
+                })?;
+                println!("Service uninstalled successfully.");                
+            } 
+            else {
+                eprint!("Service not installed.");
+            }
+        }
+        SrvSubCmd::Status => {
+            println!("Service status: {}", match status {
+                ServiceStatus::NotInstalled => "Not Installed",
+                ServiceStatus::Stopped(_) => "Stopped",
+                ServiceStatus::Running => "Running",                       
+            });
+        }
+    }
+    Ok(())
+}
 
-    setup_panic_handler();
-
-    if cli.config_server.is_some() {
-        let config_server_url_s = cli.config_server.clone().unwrap();
+async fn main_run(args: RunArgs) -> Result<(), String> {
+    if let Some(work_dir) = &args.work_dir {
+        std::env::set_current_dir(work_dir).map_err(|e| {
+            format!("failed to set work dir: {:?}", e)
+        })?;
+    }
+    
+    if args.config_server.is_some() {
+        let config_server_url_s = args.config_server.clone().unwrap();
         let config_server_url = match url::Url::parse(&config_server_url_s) {
             Ok(u) => u,
             Err(_) => format!(
@@ -797,10 +889,11 @@ async fn main() {
 
         let _wc = web_client::WebClient::new(UdpTunnelConnector::new(c_url), token.to_string());
         tokio::signal::ctrl_c().await.unwrap();
-        return;
+        return Ok(());
     }
 
-    let cfg = TomlConfigLoader::from(cli);
+    let cfg = TomlConfigLoader::from(args);
+
     init_logger(&cfg, false).unwrap();
 
     println!("Starting easytier with config:");
@@ -810,7 +903,53 @@ async fn main() {
 
     let mut l = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
     let _t = ScopedTask::from(handle_event(l.start().unwrap()));
-    if let Some(e) = l.wait().await {
-        panic!("launcher error: {:?}", e);
+    if let Some(e) = l.wait().await{
+        Err(format!("launcher error: {}", e))
+    } else {
+        Ok(())
+    }
+        
+}
+
+#[tokio::main]
+async fn main() {
+    setup_panic_handler();
+
+    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+    rust_i18n::set_locale(&locale);
+
+    #[cfg(target_os = "windows")]
+    match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
+        Ok(_) => std::thread::park(),
+        Err(e) =>
+        {    
+             let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
+                 io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
+             } else { true };
+             
+             if should_panic {
+                 panic!("SCM start an error: {}", e);
+             }
+         }
+     };
+     
+    let run_result = if let Ok(args) = RunArgs::try_parse() {
+        main_run(args).await
+    } else {
+        match Cli::parse().sub_command {
+            SubCmd::Run(args) => main_run(args).await,
+            SubCmd::Service(serv_args) => {
+                if let Err(e) = service_manager_handle(serv_args) {
+                    eprint!("{}", e);
+                    std::process::exit(1);
+                }
+                return;
+            }
+        }
+    };
+
+    if let Err(e) = run_result {
+        panic!("{:?}", e);
     }
 }
+

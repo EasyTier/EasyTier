@@ -1,5 +1,5 @@
 use std::{
-    ffi::c_void,
+    ffi::{c_void, OsStr, OsString},
     io::{self, ErrorKind},
     mem,
     net::SocketAddr,
@@ -11,12 +11,33 @@ use network_interface::NetworkInterfaceConfig;
 use windows_sys::{
     core::PCSTR,
     Win32::{
-        Foundation::{BOOL, FALSE},
+        Foundation::{BOOL, FALSE, ERROR_SERVICE_DOES_NOT_EXIST},
         Networking::WinSock::{
             htonl, setsockopt, WSAGetLastError, WSAIoctl, IPPROTO_IP, IPPROTO_IPV6,
             IPV6_UNICAST_IF, IP_UNICAST_IF, SIO_UDP_CONNRESET, SOCKET, SOCKET_ERROR,
         },
     },
+};
+use service_manager::{
+    ServiceInstallCtx, 
+    ServiceLevel, 
+    ServiceStartCtx, 
+    ServiceStatus, 
+    ServiceStatusCtx, 
+    ServiceUninstallCtx,
+    ServiceStopCtx
+};
+use windows_service::service::{
+    ServiceType,
+    ServiceErrorControl,
+    ServiceDependency,
+    ServiceInfo,
+    ServiceStartType,
+    ServiceAccess
+};
+use windows_service::service_manager::{
+    ServiceManagerAccess,
+    ServiceManager
 };
 
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
@@ -153,3 +174,129 @@ pub fn setup_socket_for_win<S: AsRawSocket>(
 
     Ok(())
 }
+
+pub struct WinServiceManager {
+    service_manager: ServiceManager,
+    display_name: Option<OsString>,
+    description: Option<OsString>,
+    dependencies: Vec<OsString>  
+}
+
+impl WinServiceManager {
+    pub fn new(display_name: Option<OsString>, description: Option<OsString>, dependencies: Vec<OsString>,) -> Result<Self, windows_service::Error> {
+        let service_manager = ServiceManager::local_computer(
+            None::<&str>,
+            ServiceManagerAccess::ALL_ACCESS,
+        )?;
+        Ok(Self {
+            service_manager,
+            display_name,
+            description,
+            dependencies,
+        })
+    }
+}
+
+impl service_manager::ServiceManager for WinServiceManager {
+    fn available(&self) -> io::Result<bool> {
+        Ok(true)
+    }
+
+    fn install(&self, ctx: ServiceInstallCtx) -> io::Result<()> {
+        let start_type_ = if ctx.autostart { ServiceStartType::AutoStart } else { ServiceStartType::OnDemand };
+        let srv_name = OsString::from(ctx.label.to_qualified_name());
+        let dis_name = self.display_name.clone().unwrap_or_else(|| srv_name.clone());
+        let dependencies = self.dependencies.iter().map(|dep| ServiceDependency::Service(dep.clone())).collect::<Vec<_>>();
+        let service_info = ServiceInfo {
+            name: srv_name,
+            display_name: dis_name,
+            service_type: ServiceType::OWN_PROCESS,
+            start_type: start_type_,
+            error_control: ServiceErrorControl::Normal,
+            executable_path: ctx.program,
+            launch_arguments: ctx.args,
+            dependencies: dependencies.clone(),
+            account_name: None,
+            account_password: None
+        };
+
+        let service = self.service_manager.create_service(&service_info, ServiceAccess::ALL_ACCESS).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+        if let Some(s) = &self.description {
+            service.set_description(s.clone()).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+        }
+
+        Ok(())
+    }
+    
+    fn uninstall(&self, ctx: ServiceUninstallCtx) -> io::Result<()> {
+        let service = self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS).map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+        service.delete().map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })
+    }
+    
+    fn start(&self, ctx: ServiceStartCtx) -> io::Result<()> {
+        let service = self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS).map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+        service.start(&[] as &[&OsStr]).map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })
+    }
+    
+    fn stop(&self, ctx: ServiceStopCtx) -> io::Result<()> {
+        let service = self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS).map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+        _ = service.stop().map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+        Ok(())
+    }
+    
+    fn level(&self) -> ServiceLevel {
+        ServiceLevel::System
+    }
+    
+    fn set_level(&mut self, level: ServiceLevel) -> io::Result<()> {
+        match level {
+            ServiceLevel::System => Ok(()),
+            _ => Err(io::Error::new(io::ErrorKind::Other, "Unsupported service level"))            
+        }
+    }
+    
+    fn status(&self, ctx: ServiceStatusCtx) -> io::Result<ServiceStatus> {
+        let service = match self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::QUERY_STATUS) {
+            Ok(s) => s,
+            Err(e) => {
+                if let windows_service::Error::Winapi(ref win_err) = e {
+                    if win_err.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
+                        return Ok(ServiceStatus::NotInstalled);
+                    }
+                }
+                return Err(io::Error::new(io::ErrorKind::Other, e));
+            }
+        };
+
+        let status = service.query_status().map_err(|e|{
+            io::Error::new(io::ErrorKind::Other, e)
+        })?;
+
+        match status.current_state {
+            windows_service::service::ServiceState::Stopped => Ok(ServiceStatus::Stopped(None)),
+            _ => Ok(ServiceStatus::Running),
+        }
+    }
+}
+

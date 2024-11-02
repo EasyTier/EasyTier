@@ -1,6 +1,8 @@
 use anyhow::Context;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use std::ffi::OsString;
+use service_manager::*;
 
 use crate::common::{config::ConfigLoader, get_logger_timer_rfc3339};
 
@@ -151,6 +153,75 @@ pub fn setup_panic_handler() {
             .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
         std::process::exit(1);
     }));
+}
+
+pub struct Service{
+    lable: ServiceLabel,
+    service_manager: Box<dyn ServiceManager>
+}
+
+impl Service {
+    pub fn new() -> Result<Self, anyhow::Error> {
+        let service_manager = if cfg!(windows) {
+            Box::new(
+                crate::arch::windows::WinServiceManager::new(
+                Some(OsString::from("EasyTier Service")),
+                Some(OsString::from(env!("CARGO_PKG_DESCRIPTION"))),
+                vec![OsString::from("dnscache"), OsString::from("rpcss")],
+                )?
+            )
+        } else {
+            <dyn ServiceManager>::native()?
+        };
+        Ok(Self {
+            lable: env!("CARGO_PKG_NAME").parse().unwrap(),
+            service_manager
+        })
+    }
+
+    pub fn install(&self, bin_args: Vec<std::ffi::OsString>) -> Result<(), std::io::Error> {  
+        let ctx = ServiceInstallCtx {
+            label: self.lable.clone(),
+            contents: None,
+            program: std::env::current_exe().unwrap(),
+            args: bin_args,
+            autostart: true,
+            username: None, 
+            working_directory: None,
+            environment: None,
+        };
+        self.service_manager.install(ctx)?;           
+        Ok(())
+    }
+
+    pub fn uninstall(&self) -> Result<(), std::io::Error> {
+        let ctx = ServiceUninstallCtx {
+            label: self.lable.clone(),
+        };
+        self.service_manager.uninstall(ctx)
+    }
+
+    pub fn status(&self) -> Result<ServiceStatus, std::io::Error> {
+        let ctx = ServiceStatusCtx {
+            label: self.lable.clone(),
+        };
+        self.service_manager.status(ctx)
+    }
+
+    pub fn start(&self) -> Result<(), std::io::Error> {
+        let ctx = ServiceStartCtx {
+            label: self.lable.clone(),
+        };
+        self.service_manager.start(ctx)
+    }
+
+    pub fn stop(&self) -> Result<(), std::io::Error> {
+        let ctx = ServiceStopCtx {
+            label: self.lable.clone(),
+        };
+        self.service_manager.stop(ctx)
+    }
+
 }
 
 #[cfg(test)]
