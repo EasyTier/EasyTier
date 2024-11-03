@@ -1,0 +1,3 @@
+packages:
+  - 'easytier-web/frontend'
+  - 'easytier-web/frontend-lib'

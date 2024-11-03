@@ -30,3 +30,6 @@ musl_gcc
 
 # log
 easytier-panic.log
+
+# web
+node_modules
