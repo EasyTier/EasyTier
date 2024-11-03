@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { HelloWorld } from 'easytier-frontend-lib'
+import { HelloWorld, Config } from 'easytier-frontend-lib'
 </script>
 
 <template>
+  <span class="text-3xl"> fuck </span>
   <HelloWorld msg="Vite + Vue" />
-  <!-- <Config /> -->
+  <Config />
 </template>
 
 <style scoped>

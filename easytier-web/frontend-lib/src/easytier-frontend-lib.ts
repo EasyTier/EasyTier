@@ -10,11 +10,39 @@
 
 import type { App } from 'vue';
 import { HelloWorld, Config } from "./components";
+import { createI18n } from 'vue-i18n';
+import Aura from '@primevue/themes/aura'
+import PrimeVue from 'primevue/config'
+import ToastService from 'primevue/toastservice'
+
+import './style.css'
+import 'primeicons/primeicons.css'
+import 'primeflex/primeflex.css'
+
+export const i18n = createI18n({
+    legacy: false,
+    locale: '',
+    fallbackLocale: '',
+    messages: {},
+})
 
 export default {
     install: (app: App) => {
+        app.use(i18n, { useScope: 'global' })
+        app.use(PrimeVue, {
+            theme: {
+                preset: Aura,
+                options: {
+                    prefix: 'p',
+                    darkModeSelector: 'system',
+                    cssLayer: false,
+                },
+            },
+        });
+        app.use(ToastService);
+
         app.component('HelloWorld', HelloWorld);
-        app.component('HelloWorld', Config);
+        app.component('Config', Config);
     }
 };
 

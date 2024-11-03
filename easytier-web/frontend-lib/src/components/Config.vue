@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton } from 'primevue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button } from 'primevue'
 import { DEFAULT_NETWORK_CONFIG, NetworkConfig, NetworkingMethod } from '../types/network'
 import { defineProps, defineEmits, ref, } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -16,7 +16,7 @@ defineEmits(['runNetwork'])
 
 const curNetwork = defineModel('curNetwork', {
   type: Object as () => NetworkConfig,
-  default: () => DEFAULT_NETWORK_CONFIG,
+  default: DEFAULT_NETWORK_CONFIG(),
 })
 
 const { t } = useI18n()
