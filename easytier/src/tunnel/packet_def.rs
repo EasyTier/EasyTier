@@ -547,7 +547,7 @@ impl ZCPacket {
             ZCPacketType::NIC => unreachable!(),
         };
 
-        tracing::debug!(?self.packet_type, ?target_packet_type, ?new_offset, "convert zc packet type");
+        tracing::trace!(?self.packet_type, ?target_packet_type, ?new_offset, "convert zc packet type");
 
         if new_offset == INVALID_OFFSET {
             // copy peer manager header and payload to new buffer

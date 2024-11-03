@@ -101,8 +101,14 @@ impl WebClientService for Controller {
         req: RunNetworkInstanceRequest,
     ) -> Result<RunNetworkInstanceResponse, rpc_types::error::Error> {
         let cfg = TomlConfigLoader::new_from_str(&req.config)?;
+        let id = cfg.get_id();
+        if let Some(inst_id) = req.inst_id {
+            cfg.set_id(inst_id.into());
+        }
         self.run_network_instance(cfg)?;
-        Ok(RunNetworkInstanceResponse {})
+        Ok(RunNetworkInstanceResponse {
+            inst_id: Some(id.into()),
+        })
     }
 
     async fn retain_network_instance(

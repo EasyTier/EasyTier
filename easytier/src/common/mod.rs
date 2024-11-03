@@ -55,7 +55,6 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
                 }
 
                 future::poll_fn(|cx| {
-                    tracing::debug!("try join joinset tasks");
                     let Some(js) = js.upgrade() else {
                         return std::task::Poll::Ready(());
                     };
