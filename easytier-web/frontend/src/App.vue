@@ -1,10 +1,16 @@
 <script setup lang="ts">
-import { HelloWorld, Config } from 'easytier-frontend-lib'
+
+import { Config, I18nUtils } from 'easytier-frontend-lib'
+import { onMounted } from 'vue';
+
+onMounted(async () => {
+  await I18nUtils.loadLanguageAsync('cn')
+});
+
 </script>
 
 <template>
   <span class="text-3xl"> fuck </span>
-  <HelloWorld msg="Vite + Vue" />
   <Config />
 </template>
 

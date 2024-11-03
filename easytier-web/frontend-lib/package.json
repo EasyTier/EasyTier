@@ -10,7 +10,8 @@
       "import": "./dist/easytier-frontend-lib.js",
       "require": "./dist/easytier-frontend-lib.umd.cjs"
     },
-     "./*.css": "./dist/*.css"
+    "./*.css": "./dist/*.css",
+    "./locales/*.yaml": "./dist/locales/*.yaml"
   },
   "scripts": {
     "dev": "vite",
@@ -18,22 +19,23 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "primevue": "^4.2.1",
     "@primevue/themes": "^4.1.0",
     "aura": "link:@primevue\\themes\\aura",
     "primeflex": "^3.3.1",
     "primeicons": "^7.0.0",
+    "primevue": "^4.2.1",
     "uuid": "^11.0.2",
     "vue": "^3.5.12",
     "vue-i18n": "^10.0.4"
   },
   "devDependencies": {
+    "@modyfi/vite-plugin-yaml": "^1.1.0",
     "@types/node": "^22.8.6",
     "@vitejs/plugin-vue": "^5.1.4",
+    "tailwindcss": "^3.4.13",
     "typescript": "~5.6.3",
     "vite": "^5.4.10",
     "vite-plugin-dts": "^4.3.0",
-    "tailwindcss": "^3.4.13",
     "vue-tsc": "^2.1.8"
   }
 }

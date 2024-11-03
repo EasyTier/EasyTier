@@ -2,12 +2,13 @@ import { resolve } from 'path'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import dts from "vite-plugin-dts"
+import ViteYaml from '@modyfi/vite-plugin-yaml';
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue(), dts({
     tsconfigPath: './tsconfig.app.json',
-  }),],
+  }), ViteYaml()],
   build: {
     lib: {
       // Could also be a dictionary or array of multiple entry points

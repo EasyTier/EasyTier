@@ -9,8 +9,7 @@
 // }
 
 import type { App } from 'vue';
-import { HelloWorld, Config } from "./components";
-import { createI18n } from 'vue-i18n';
+import { Config } from "./components";
 import Aura from '@primevue/themes/aura'
 import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
@@ -19,16 +18,11 @@ import './style.css'
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 
-export const i18n = createI18n({
-    legacy: false,
-    locale: '',
-    fallbackLocale: '',
-    messages: {},
-})
+import I18nUtils from './modules/i18n'
 
 export default {
     install: (app: App) => {
-        app.use(i18n, { useScope: 'global' })
+        app.use(I18nUtils.i18n, { useScope: 'global' })
         app.use(PrimeVue, {
             theme: {
                 preset: Aura,
@@ -41,9 +35,8 @@ export default {
         });
         app.use(ToastService);
 
-        app.component('HelloWorld', HelloWorld);
         app.component('Config', Config);
     }
 };
 
-export { HelloWorld, Config };
+export { Config, I18nUtils };
