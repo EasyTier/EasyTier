@@ -21,9 +21,7 @@ const abc = ref('fuckfjdlksajkfldsjlk')
 <template>
   <div id="root" class="flex flex-column">
     <div class="h-full overflow-y-auto">
-      <Panel header="fuck">
-        <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
-      </Panel>
+      <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
     </div>
   </div>
 </template>
