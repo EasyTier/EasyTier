@@ -1,17 +1,23 @@
 <script setup lang="ts">
 
-import { Config, I18nUtils } from 'easytier-frontend-lib'
-import { onMounted } from 'vue';
+import { Config, I18nUtils, NetworkTypes } from 'easytier-frontend-lib'
+import { onMounted, ref } from 'vue';
 
 onMounted(async () => {
   await I18nUtils.loadLanguageAsync('cn')
 });
 
+const curNetwork = ref(NetworkTypes.DEFAULT_NETWORK_CONFIG())
+
+const runNetwork = async () => {
+  alert('runNetwork')
+}
+
 </script>
 
 <template>
   <span class="text-3xl"> fuck </span>
-  <Config />
+  <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
 </template>
 
 <style scoped>

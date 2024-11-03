@@ -1,13 +1,3 @@
-// import HelloWorld from './components/HelloWorld.vue'
-// import Config from './components/Config.vue'
-// import * as NetworkTypes from './types/network'
-
-// export default {
-//     HelloWorld,
-//     Config,
-//     ...NetworkTypes,
-// }
-
 import type { App } from 'vue';
 import { Config } from "./components";
 import Aura from '@primevue/themes/aura'
@@ -19,6 +9,7 @@ import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 
 import I18nUtils from './modules/i18n'
+import * as NetworkTypes from './types/network'
 
 export default {
     install: (app: App) => {
@@ -39,4 +30,4 @@ export default {
     }
 };
 
-export { Config, I18nUtils };
+export { Config, I18nUtils, NetworkTypes };

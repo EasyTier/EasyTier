@@ -16,7 +16,7 @@ defineEmits(['runNetwork'])
 
 const curNetwork = defineModel('curNetwork', {
   type: Object as () => NetworkConfig,
-  default: DEFAULT_NETWORK_CONFIG(),
+  default: DEFAULT_NETWORK_CONFIG,
 })
 
 const { t } = useI18n()

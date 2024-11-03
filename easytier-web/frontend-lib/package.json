@@ -10,8 +10,7 @@
       "import": "./dist/easytier-frontend-lib.js",
       "require": "./dist/easytier-frontend-lib.umd.cjs"
     },
-    "./*.css": "./dist/*.css",
-    "./locales/*.yaml": "./dist/locales/*.yaml"
+    "./*.css": "./dist/*.css"
   },
   "scripts": {
     "dev": "vite",
