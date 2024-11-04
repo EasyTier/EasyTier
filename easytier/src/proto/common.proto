@@ -4,6 +4,24 @@ import "error.proto";
 
 package common;
 
+message FlagsInConfig {
+  string default_protocol = 1;
+  string dev_name = 2;
+  bool enable_encryption = 3;
+  bool enable_ipv6 = 4;
+  uint32 mtu = 5;
+  bool latency_first = 6;
+  bool enable_exit_node = 7;
+  bool no_tun = 8;
+  bool use_smoltcp = 9;
+  string foreign_network_whitelist = 10;
+  bool disable_p2p = 11;
+  bool relay_all_peer_rpc = 12;
+  bool disable_udp_hole_punching = 13;
+  string ipv6_listener = 14;
+  bool multi_thread = 15;
+}
+
 message RpcDescriptor {
   // allow same service registered multiple times in different domain
   string domain_name = 1;

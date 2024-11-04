@@ -9,6 +9,28 @@ use serde::{Deserialize, Serialize};
 
 use crate::tunnel::generate_digest_from_str;
 
+pub type Flags = crate::proto::common::FlagsInConfig;
+
+pub fn gen_default_flags() -> Flags {
+    Flags {
+        default_protocol: "tcp".to_string(),
+        dev_name: "".to_string(),
+        enable_encryption: true,
+        enable_ipv6: true,
+        mtu: 1380,
+        latency_first: false,
+        enable_exit_node: false,
+        no_tun: false,
+        use_smoltcp: false,
+        foreign_network_whitelist: "*".to_string(),
+        disable_p2p: false,
+        relay_all_peer_rpc: false,
+        disable_udp_hole_punching: false,
+        ipv6_listener: "udp://[::]:0".to_string(),
+        multi_thread: false,
+    }
+}
+
 #[auto_impl::auto_impl(Box, &)]
 pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;
@@ -127,7 +149,7 @@ pub struct PeerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-pub struct NetworkConfig {
+pub struct ProxyNetworkConfig {
     pub cidr: String,
     pub allow: Option<Vec<String>>,
 }
@@ -150,42 +172,6 @@ pub struct VpnPortalConfig {
     pub wireguard_listen: SocketAddr,
 }
 
-// Flags is used to control the behavior of the program
-#[derive(derivative::Derivative, Deserialize, Serialize)]
-#[derivative(Debug, Clone, PartialEq, Default)]
-pub struct Flags {
-    #[derivative(Default(value = "\"tcp\".to_string()"))]
-    pub default_protocol: String,
-    #[derivative(Default(value = "\"\".to_string()"))]
-    pub dev_name: String,
-    #[derivative(Default(value = "true"))]
-    pub enable_encryption: bool,
-    #[derivative(Default(value = "true"))]
-    pub enable_ipv6: bool,
-    #[derivative(Default(value = "1380"))]
-    pub mtu: u16,
-    #[derivative(Default(value = "false"))]
-    pub latency_first: bool,
-    #[derivative(Default(value = "false"))]
-    pub enable_exit_node: bool,
-    #[derivative(Default(value = "false"))]
-    pub no_tun: bool,
-    #[derivative(Default(value = "false"))]
-    pub use_smoltcp: bool,
-    #[derivative(Default(value = "\"*\".to_string()"))]
-    pub foreign_network_whitelist: String,
-    #[derivative(Default(value = "false"))]
-    pub disable_p2p: bool,
-    #[derivative(Default(value = "false"))]
-    pub relay_all_peer_rpc: bool,
-    #[derivative(Default(value = "false"))]
-    pub disable_udp_hole_punching: bool,
-    #[derivative(Default(value = "\"udp://[::]:0\".to_string()"))]
-    pub ipv6_listener: String,
-    #[derivative(Default(value = "false"))]
-    pub multi_thread: bool,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Config {
     netns: Option<String>,
@@ -199,7 +185,7 @@ struct Config {
     exit_nodes: Option<Vec<Ipv4Addr>>,
 
     peer: Option<Vec<PeerConfig>>,
-    proxy_network: Option<Vec<NetworkConfig>>,
+    proxy_network: Option<Vec<ProxyNetworkConfig>>,
 
     file_logger: Option<FileLoggerConfig>,
     console_logger: Option<ConsoleLoggerConfig>,
@@ -255,7 +241,7 @@ impl TomlConfigLoader {
     }
 
     fn gen_flags(mut flags_hashmap: serde_json::Map<String, serde_json::Value>) -> Flags {
-        let default_flags_json = serde_json::to_string(&Flags::default()).unwrap();
+        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
                 .unwrap();
@@ -372,7 +358,7 @@ impl ConfigLoader for TomlConfigLoader {
                 .proxy_network
                 .as_mut()
                 .unwrap()
-                .push(NetworkConfig {
+                .push(ProxyNetworkConfig {
                     cidr: cidr_str,
                     allow: None,
                 });
@@ -527,7 +513,7 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn dump(&self) -> String {
-        let default_flags_json = serde_json::to_string(&Flags::default()).unwrap();
+        let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
             serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&default_flags_json)
                 .unwrap();

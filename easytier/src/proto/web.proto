@@ -6,6 +6,42 @@ import "cli.proto";
 
 package web;
 
+enum NetworkingMethod {
+    PublicServer = 0;
+    Manual = 1;
+    Standalone = 2;
+}
+
+message NetworkConfig {
+    string instance_id = 1;
+
+    bool dhcp = 2;
+    string virtual_ipv4 = 3;
+    int32 network_length = 4;
+    optional string hostname = 5;
+    string network_name = 6;
+    string network_secret = 7;
+    NetworkingMethod networking_method = 8;
+
+    string public_server_url = 9;
+    repeated string peer_urls = 10;
+
+    repeated string proxy_cidrs = 11;
+
+    bool enable_vpn_portal = 12;
+    int32 vpn_portal_listen_port = 13;
+    string vpn_portal_client_network_addr = 14;
+    int32 vpn_portal_client_network_len = 15;
+
+    bool advanced_settings = 16;
+
+    repeated string listener_urls = 17;
+    int32 rpc_port = 18;
+    bool latency_first = 19;
+
+    string dev_name = 20;
+}
+
 message MyNodeInfo {
   common.Ipv4Addr virtual_ipv4 = 1;
   string hostname = 2;
