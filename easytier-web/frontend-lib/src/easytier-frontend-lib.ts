@@ -20,10 +20,7 @@ export default {
                 options: {
                     prefix: 'p',
                     darkModeSelector: 'system',
-                    cssLayer: {
-                        name: 'primevue',
-                        order: 'tailwind-base, primevue, tailwind-utilities'
-                    }
+                    cssLayer: false,
                 },
             },
         });

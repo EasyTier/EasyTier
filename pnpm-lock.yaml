@@ -8,12 +8,21 @@ importers:
 
   easytier-web/frontend:
     dependencies:
+      '@primevue/themes':
+        specifier: ^4.2.1
+        version: 4.2.1
+      aura:
+        specifier: link:@primevue/themes/aura
+        version: link:@primevue/themes/aura
       easytier-frontend-lib:
         specifier: workspace:*
         version: link:../frontend-lib
       primevue:
         specifier: ^4.2.1
         version: 4.2.1(vue@3.5.12(typescript@5.6.3))
+      tailwindcss-primeui:
+        specifier: ^0.3.4
+        version: 0.3.4(tailwindcss@3.4.14)
       vue:
         specifier: ^3.5.12
         version: 3.5.12(typescript@5.6.3)
@@ -24,6 +33,15 @@ importers:
       '@vitejs/plugin-vue':
         specifier: ^5.1.4
         version: 5.1.4(vite@5.4.10(@types/node@22.8.6))(vue@3.5.12(typescript@5.6.3))
+      autoprefixer:
+        specifier: ^10.4.20
+        version: 10.4.20(postcss@8.4.47)
+      postcss:
+        specifier: ^8.4.47
+        version: 8.4.47
+      tailwindcss:
+        specifier: ^3.4.14
+        version: 3.4.14
       typescript:
         specifier: ~5.6.2
         version: 5.6.3
