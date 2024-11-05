@@ -9,11 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vue": "^3.5.12",
+    "easytier-frontend-lib": "workspace:*",
     "primevue": "^4.2.1",
-    "easytier-frontend-lib": "workspace:*"
+    "vue": "^3.5.12"
   },
   "devDependencies": {
+    "@types/node": "^22.8.6",
     "@vitejs/plugin-vue": "^5.1.4",
     "typescript": "~5.6.2",
     "vite": "^5.4.10",

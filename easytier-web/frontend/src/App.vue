@@ -2,7 +2,7 @@
 
 import { Config, I18nUtils, NetworkTypes } from 'easytier-frontend-lib'
 import { onMounted, ref } from 'vue';
-import { Panel } from 'primevue';
+import Login from './components/Login.vue';
 
 onMounted(async () => {
   await I18nUtils.loadLanguageAsync('cn')
@@ -20,9 +20,13 @@ const abc = ref('fuckfjdlksajkfldsjlk')
 
 <template>
   <div id="root" class="flex flex-column">
-    <div class="h-full overflow-y-auto">
-      <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
+    <div id="login">
+      <Login></Login>
     </div>
+
+    <!-- <div class="h-full overflow-y-auto">
+      <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
+    </div> -->
   </div>
 </template>
 

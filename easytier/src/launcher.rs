@@ -402,39 +402,42 @@ impl NetworkConfig {
         let cfg = TomlConfigLoader::default();
         cfg.set_id(
             self.instance_id
+                .clone()
+                .unwrap_or(uuid::Uuid::new_v4().to_string())
                 .parse()
-                .with_context(|| format!("failed to parse instance id: {}", self.instance_id))?,
+                .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
         );
         cfg.set_hostname(self.hostname.clone());
-        cfg.set_dhcp(self.dhcp);
-        cfg.set_inst_name(self.network_name.clone());
+        cfg.set_dhcp(self.dhcp.unwrap_or_default());
+        cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
         cfg.set_network_identity(NetworkIdentity::new(
-            self.network_name.clone(),
-            self.network_secret.clone(),
+            self.network_name.clone().unwrap_or_default(),
+            self.network_secret.clone().unwrap_or_default(),
         ));
 
-        if !self.dhcp {
-            if self.virtual_ipv4.len() > 0 {
-                let ip = format!("{}/{}", self.virtual_ipv4, self.network_length)
+        if !cfg.get_dhcp() {
+            let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
+            if virtual_ipv4.len() > 0 {
+                let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
                     .parse()
                     .with_context(|| {
                         format!(
-                            "failed to parse ipv4 inet address: {}, {}",
-                            self.virtual_ipv4, self.network_length
+                            "failed to parse ipv4 inet address: {}, {:?}",
+                            virtual_ipv4, self.network_length
                         )
                     })?;
                 cfg.set_ipv4(Some(ip));
             }
         }
 
-        match NetworkingMethod::try_from(self.networking_method).unwrap_or_default() {
+        match NetworkingMethod::try_from(self.networking_method.unwrap_or_default())
+            .unwrap_or_default()
+        {
             NetworkingMethod::PublicServer => {
+                let public_server_url = self.public_server_url.clone().unwrap_or_default();
                 cfg.set_peers(vec![PeerConfig {
-                    uri: self.public_server_url.parse().with_context(|| {
-                        format!(
-                            "failed to parse public server uri: {}",
-                            self.public_server_url
-                        )
+                    uri: public_server_url.parse().with_context(|| {
+                        format!("failed to parse public server uri: {}", public_server_url)
                     })?,
                 }]);
             }
@@ -477,42 +480,45 @@ impl NetworkConfig {
         }
 
         cfg.set_rpc_portal(
-            format!("0.0.0.0:{}", self.rpc_port)
+            format!("0.0.0.0:{}", self.rpc_port.unwrap_or_default())
                 .parse()
-                .with_context(|| format!("failed to parse rpc portal port: {}", self.rpc_port))?,
+                .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
         );
 
-        if self.enable_vpn_portal {
+        if self.enable_vpn_portal.unwrap_or_default() {
             let cidr = format!(
                 "{}/{}",
-                self.vpn_portal_client_network_addr, self.vpn_portal_client_network_len
+                self.vpn_portal_client_network_addr
+                    .clone()
+                    .unwrap_or_default(),
+                self.vpn_portal_client_network_len.unwrap_or(24)
             );
             cfg.set_vpn_portal_config(VpnPortalConfig {
                 client_cidr: cidr
                     .parse()
                     .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
-                wireguard_listen: format!("0.0.0.0:{}", self.vpn_portal_listen_port)
-                    .parse()
-                    .with_context(|| {
-                        format!(
-                            "failed to parse vpn portal wireguard listen port. {}",
-                            self.vpn_portal_listen_port
-                        )
-                    })?,
+                wireguard_listen: format!(
+                    "0.0.0.0:{}",
+                    self.vpn_portal_listen_port.unwrap_or_default()
+                )
+                .parse()
+                .with_context(|| {
+                    format!(
+                        "failed to parse vpn portal wireguard listen port. {:?}",
+                        self.vpn_portal_listen_port
+                    )
+                })?,
             });
         }
         let mut flags = gen_default_flags();
-        flags.latency_first = self.latency_first;
-        flags.dev_name = self.dev_name.clone();
+        if let Some(latency_first) = self.latency_first {
+            flags.latency_first = latency_first;
+        }
+
+        if let Some(dev_name) = self.dev_name.clone() {
+            flags.dev_name = dev_name;
+        }
         cfg.set_flags(flags);
         Ok(cfg)
-    }
-
-    pub fn set_instance_id(&mut self, instance_id: String) {
-        self.instance_id = instance_id;
-    }
-
-    pub fn instance_id(&self) -> &str {
-        &self.instance_id
     }
 }

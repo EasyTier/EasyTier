@@ -1,11 +1,14 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::AuthUser;
 use dashmap::DashSet;
+use easytier::common::config::ConfigLoader;
+use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::proto::{self, web::*};
@@ -15,7 +18,8 @@ use crate::client_manager::ClientManager;
 
 use super::users::AuthSession;
 use super::{
-    convert_db_error, AppState, AppStateInner, Error, ErrorKind, HttpHandleError, RpcError,
+    convert_db_error, other_error, AppState, AppStateInner, Error, ErrorKind, HttpHandleError,
+    RpcError,
 };
 
 fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
@@ -30,7 +34,7 @@ fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ValidateConfigJsonReq {
-    config: String,
+    config: NetworkConfig,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -129,9 +133,14 @@ impl NetworkApi {
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
 
         let c = result.scoped_rpc_client();
-        c.validate_config(BaseController::default(), ValidateConfigRequest { config })
-            .await
-            .map_err(convert_rpc_error)?;
+        c.validate_config(
+            BaseController::default(),
+            ValidateConfigRequest {
+                config: Some(config),
+            },
+        )
+        .await
+        .map_err(convert_rpc_error)?;
         Ok(Void::default().into())
     }
 
