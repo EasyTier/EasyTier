@@ -327,7 +327,7 @@ function showEventLogs() {
         Run Network Error
       </template>
       <template #content>
-        <div class="flex flex-column gap-y-5">
+        <div class="flex flex-col gap-y-5">
           <div class="text-red-500">
             {{ curNetworkInst.error_msg }}
           </div>
@@ -341,9 +341,9 @@ function showEventLogs() {
           {{ t('my_node_info') }}
         </template>
         <template #content>
-          <div class="flex w-full flex-column gap-y-5">
+          <div class="flex w-full flex-col gap-y-5">
             <div class="m-0 flex flex-row justify-center gap-x-5">
-              <div class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6"
                 style="border: 1px solid green">
                 <div class="font-bold">
                   {{ t('peer_count') }}
@@ -353,7 +353,7 @@ function showEventLogs() {
                 </div>
               </div>
 
-              <div class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6"
                 style="border: 1px solid purple">
                 <div class="font-bold">
                   {{ t('upload') }}
@@ -363,7 +363,7 @@ function showEventLogs() {
                 </div>
               </div>
 
-              <div class="rounded-full w-32 h-32 flex flex-column align-items-center pt-4"
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6"
                 style="border: 1px solid fuchsia">
                 <div class="font-bold">
                   {{ t('download') }}
@@ -374,7 +374,7 @@ function showEventLogs() {
               </div>
             </div>
 
-            <div class="flex flex-row align-items-center flex-wrap w-full max-h-40 overflow-scroll">
+            <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
               <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
                 class="mr-2 mt-2 text-sm" />
             </div>

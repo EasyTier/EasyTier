@@ -20,7 +20,7 @@ const abc = ref('fuckfjdlksajkfldsjlk')
 </script>
 
 <template>
-  <div id="root" class="flex flex-column">
+  <div id="root" class="">
     <div id="login">
       <MenuBar />
       <Login></Login>

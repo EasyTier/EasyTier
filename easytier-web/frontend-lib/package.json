@@ -22,7 +22,6 @@
     "@vueuse/core": "^11.1.0",
     "aura": "link:@primevue\\themes\\aura",
     "ip-num": "1.5.1",
-    "primeflex": "^3.3.1",
     "primeicons": "^7.0.0",
     "primevue": "^4.2.1",
     "tailwindcss-primeui": "^0.3.4",

@@ -125,14 +125,14 @@ function searchListenerSuggestiong(e: { query: string }) {
 
 <template>
   <div class="frontend-lib">
-    <div class="flex flex-column h-full">
-      <div class="flex flex-column">
+    <div class="flex flex-col h-full">
+      <div class="flex flex-col">
         <div class="w-10/12 self-center ">
           <Panel :header="t('basic_settings')">
-            <div class="flex flex-column gap-y-2">
+            <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
-                  <div class="flex align-items-center" for="virtual_ip">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center" for="virtual_ip">
                     <label class="mr-2"> {{ t('virtual_ipv4') }} </label>
                     <Checkbox v-model="curNetwork.dhcp" input-id="virtual_ip_auto" :binary="true" />
 
@@ -154,11 +154,11 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_name">{{ t('network_name') }}</label>
                   <InputText id="network_name" v-model="curNetwork.network_name" aria-describedby="network_name-help" />
                 </div>
-                <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_secret">{{ t('network_secret') }}</label>
                   <InputText id="network_secret" v-model="curNetwork.network_secret"
                     aria-describedby="network_secret-help" />
@@ -166,7 +166,7 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="nm">{{ t('networking_method') }}</label>
                   <SelectButton v-model="curNetwork.networking_method" :options="networking_methods"
                     :option-label="(v) => v.label()" option-value="value" />
@@ -188,10 +188,10 @@ function searchListenerSuggestiong(e: { query: string }) {
           <Divider />
 
           <Panel :header="t('advanced_settings')" toggleable collapsed>
-            <div class="flex flex-column gap-y-2">
+            <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
-                  <div class="flex align-items-center">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex items-center">
                     <Checkbox v-model="curNetwork.latency_first" input-id="use_latency_first" :binary="true" />
                     <label for="use_latency_first" class="ml-2"> {{ t('use_latency_first') }} </label>
                   </div>
@@ -199,7 +199,7 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="hostname">{{ t('hostname') }}</label>
                   <InputText id="hostname" v-model="curNetwork.hostname" aria-describedby="hostname-help" :format="true"
                     :placeholder="t('hostname_placeholder', [props.hostname])" />
@@ -207,7 +207,7 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-column gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="username">{{ t('proxy_cidrs') }}</label>
                   <AutoComplete id="subnet-proxy" v-model="curNetwork.proxy_cidrs"
                     :placeholder="t('chips_placeholder', ['10.0.0.0/24'])" class="w-full" multiple fluid
@@ -216,7 +216,7 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap ">
-                <div class="flex flex-column gap-2 grow">
+                <div class="flex flex-col gap-2 grow">
                   <label for="username">VPN Portal</label>
                   <ToggleButton v-model="curNetwork.enable_vpn_portal" on-icon="pi pi-check" off-icon="pi pi-times"
                     :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
@@ -231,14 +231,14 @@ function searchListenerSuggestiong(e: { query: string }) {
                       </InputGroup>
 
                       <InputNumber v-model="curNetwork.vpn_portal_listen_port" :allow-empty="false" :format="false"
-                        :min="0" :max="65535" class="w-8" fluid />
+                        :min="0" :max="65535" class="w-8/12" fluid />
                     </div>
                   </div>
                 </div>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 grow p-fluid">
+                <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
                   <AutoComplete id="listener_urls" v-model="curNetwork.listener_urls" :suggestions="listenerSuggestions"
                     class="w-full" dropdown :complete-on-focus="true"
@@ -248,7 +248,7 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="rpc_port">{{ t('rpc_port') }}</label>
                   <InputNumber id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="rpc_port-help"
                     :format="false" :min="0" :max="65535" />
@@ -256,7 +256,7 @@ function searchListenerSuggestiong(e: { query: string }) {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-column gap-2 basis-5/12 grow">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="dev_name">{{ t('dev_name') }}</label>
                   <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
                     :placeholder="t('dev_name_placeholder')" />
@@ -265,7 +265,7 @@ function searchListenerSuggestiong(e: { query: string }) {
             </div>
           </Panel>
 
-          <div class="flex pt-4 justify-content-center">
+          <div class="flex pt-6 justify-center">
             <Button :label="t('run_network')" icon="pi pi-arrow-right" icon-pos="right" :disabled="configInvalid"
               @click="$emit('runNetwork', curNetwork)" />
           </div>

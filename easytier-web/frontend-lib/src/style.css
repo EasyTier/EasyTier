@@ -1,10 +1,8 @@
-@import url('primeflex/primeflex.css') layer(primeflex);
+@import 'primeicons/primeicons.css';
 
 .frontend-lib {
 
-/* @import 'primeicons/primeicons.css'; */
-
-@layer tailwind-base, primevue, tailwind-utilities, primeflex;
+@layer tailwind-base, primevue, tailwind-utilities;
 
 @layer tailwind-base {
   @tailwind base;
