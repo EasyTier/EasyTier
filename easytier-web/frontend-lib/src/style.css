@@ -1,4 +1,10 @@
-@layer tailwind-base, primevue, tailwind-utilities;
+@import url('primeflex/primeflex.css') layer(primeflex);
+
+.frontend-lib {
+
+/* @import 'primeicons/primeicons.css'; */
+
+@layer tailwind-base, primevue, tailwind-utilities, primeflex;
 
 @layer tailwind-base {
   @tailwind base;
@@ -44,4 +50,6 @@
 ::-webkit-scrollbar-thumb {
   border-radius: 4px;
   background-color: #0000005d;
+}
+
 }

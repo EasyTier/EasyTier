@@ -1,5 +1,3 @@
-import 'primeflex/primeflex.css'
-import 'primeicons/primeicons.css'
 import './style.css'
 
 import type { App } from 'vue';

@@ -25,10 +25,10 @@ const abc = ref('fuckfjdlksajkfldsjlk')
       <MenuBar />
       <Login></Login>
     </div>
-    <!-- 
+
     <div class="h-full overflow-y-auto">
       <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
-    </div> -->
+    </div>
   </div>
 </template>
 

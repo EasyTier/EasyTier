@@ -307,7 +307,7 @@ function showEventLogs() {
 </script>
 
 <template>
-  <div>
+  <div class="frontend-lib">
     <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-2/3 h-auto">
       <ScrollPanel v-if="dialogHeader === 'vpn_portal_config'">
         <pre>{{ dialogContent }}</pre>
