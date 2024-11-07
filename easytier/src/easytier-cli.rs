@@ -1,10 +1,18 @@
-use std::{net::SocketAddr, sync::Mutex, time::Duration, vec};
+use std::{
+    ffi::OsString,
+    net::SocketAddr, 
+    path::PathBuf, 
+    sync::Mutex, 
+    time::Duration, 
+    vec
+};
 
 use anyhow::{Context, Ok};
 use clap::{command, Args, Parser, Subcommand};
 use humansize::format_size;
 use tabled::settings::Style;
 use tokio::time::timeout;
+use service_manager::*;
 
 use easytier::{
     common::{
@@ -26,7 +34,7 @@ use easytier::{
         rpc_types::controller::BaseController,
     },
     tunnel::tcp::TcpTunnelConnector,
-    utils::{cost_to_str, float_to_str, PeerRoutePair},
+    utils::{cost_to_str, float_to_str, PeerRoutePair},    
 };
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -54,6 +62,7 @@ enum SubCommand {
     PeerCenter,
     VpnPortal,
     Node(NodeArgs),
+    Service(ServiceArgs)
 }
 
 #[derive(Args, Debug)]
@@ -74,7 +83,7 @@ enum PeerSubCommand {
     Remove,
     List(PeerListArgs),
     ListForeign,
-    ListGlobalForeign,
+    ListGlobalForeign,    
 }
 
 #[derive(Args, Debug)]
@@ -118,6 +127,29 @@ enum NodeSubCommand {
 struct NodeArgs {
     #[command(subcommand)]
     sub_command: Option<NodeSubCommand>,
+}
+
+#[derive(Args, Debug)]
+struct ServiceArgs{
+    #[command(subcommand)]
+    sub_command: ServiceSubCommand
+}
+
+#[derive(Subcommand, Debug)]
+enum ServiceSubCommand {
+    Install(InstallArgs),
+    Uninstall,
+    Status,
+    Start,
+    Stop
+}
+
+#[derive(Args, Debug)]
+struct InstallArgs {
+    #[arg(short = 'p', long)]
+    core_path: Option<PathBuf>,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    core_args: Option<Vec<OsString>>
 }
 
 type Error = anyhow::Error;
@@ -476,6 +508,120 @@ impl CommandHandler {
     }
 }
 
+pub struct Service{
+    lable: ServiceLabel,
+    service_manager: Box<dyn ServiceManager>
+}
+
+impl Service {
+    pub fn new() -> Result<Self, Error> {
+        #[cfg(target_os = "windows")]
+        let service_manager = Box::new(
+            crate::win_service_manager::WinServiceManager::new(
+                Some(OsString::from("EasyTier Service")),
+                Some(OsString::from(env!("CARGO_PKG_DESCRIPTION"))),
+                vec![OsString::from("dnscache"), OsString::from("rpcss")],
+            )?
+        );
+
+        #[cfg(not(target_os = "windows"))]
+        let service_manager = <dyn ServiceManager>::native()?;
+
+        Ok(Self {
+            lable: env!("CARGO_PKG_NAME").parse().unwrap(),
+            service_manager
+        })
+    }
+
+    pub fn install(&self, bin_path: std::path::PathBuf, bin_args: Vec<OsString>) -> Result<(), Error> {
+        let ctx = ServiceInstallCtx {
+            label: self.lable.clone(),
+            contents: None,
+            program: bin_path,
+            args: bin_args,
+            autostart: true,
+            username: None, 
+            working_directory: None,
+            environment: None,
+        };
+
+        if self.status()? != ServiceStatus::NotInstalled {
+            return Err(anyhow::anyhow!("Service is already installed"));
+        }
+
+        self.service_manager.install(ctx).map_err(|e| anyhow::anyhow!("failed to install service: {}", e))
+    }
+
+    pub fn uninstall(&self) -> Result<(), Error> {
+        let ctx = ServiceUninstallCtx {
+            label: self.lable.clone(),
+        };
+        let status = self.status()?;
+
+        if status == ServiceStatus::NotInstalled {
+            return Err(anyhow::anyhow!("Service is not installed"));
+        }
+
+        if status == ServiceStatus::Running {
+            self.service_manager.stop(ServiceStopCtx {
+                label: self.lable.clone(),
+            })?;
+        }
+
+        self.service_manager.uninstall(ctx).map_err(|e| anyhow::anyhow!("failed to uninstall service: {}", e))
+    }
+
+    pub fn status(&self) -> Result<ServiceStatus, Error> {
+        let ctx = ServiceStatusCtx {
+            label: self.lable.clone(),
+        };
+        let status = self.service_manager.status(ctx)?;
+
+        Ok(status)
+    }
+
+    pub fn start(&self) -> Result<(), Error> {
+        let ctx = ServiceStartCtx {
+            label: self.lable.clone(),
+        };
+        let status = self.status()?;
+
+        match status {
+            ServiceStatus::Running => {
+                Err(anyhow::anyhow!("Service is already running"))
+            }
+            ServiceStatus::Stopped(_) => {
+                self.service_manager.start(ctx).map_err(|e| anyhow::anyhow!("failed to start service: {}", e))?;
+                Ok(())
+            }
+            ServiceStatus::NotInstalled => {
+                Err(anyhow::anyhow!("Service is not installed"))
+            }            
+        }
+    }
+
+    pub fn stop(&self) -> Result<(), Error> {
+        let ctx = ServiceStopCtx {
+            label: self.lable.clone(),
+        };
+        let status = self.status()?;
+
+        match status {
+            ServiceStatus::Running => {
+                self.service_manager.stop(ctx).map_err(|e| anyhow::anyhow!("failed to stop service: {}", e))?;
+                Ok(())
+            }
+            ServiceStatus::Stopped(_) => {
+                Err(anyhow::anyhow!("Service is already stopped"))
+            }
+            ServiceStatus::NotInstalled => {
+                Err(anyhow::anyhow!("Service is not installed"))
+            }
+        }
+    }
+
+}
+
 #[tokio::main]
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
@@ -638,7 +784,203 @@ async fn main() -> Result<(), Error> {
                 }
             }
         }
+        SubCommand::Service(service_args) => {
+            let service = Service::new()?;
+            match service_args.sub_command {
+                ServiceSubCommand::Install(install_args) => {                    
+                    let bin_path = install_args.core_path.unwrap_or_else(|| {
+                        let mut ret = std::env::current_exe()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("easytier-core");
+                        #[cfg(target_os = "windows")]
+                        ret.set_extension("exe");
+                        ret
+                    });
+                    let bin_path = std::fs::canonicalize(bin_path).map_err(|e| {
+                        anyhow::anyhow!("failed to get easytier core application: {}", e)
+                    })?;
+                    let bin_args = install_args.core_args.unwrap_or_default();
+                    service.install(bin_path, bin_args)?;
+                }
+                ServiceSubCommand::Uninstall => {
+                    service.uninstall()?;
+                }
+                ServiceSubCommand::Status => {
+                    let status = service.status()?;
+                    match status {
+                        ServiceStatus::Running => println!("Service is running"),
+                        ServiceStatus::Stopped(_) => println!("Service is stopped"),
+                        ServiceStatus::NotInstalled => println!("Service is not installed"),
+                    }
+                }
+                ServiceSubCommand::Start => {
+                    service.start()?;
+                }
+                ServiceSubCommand::Stop => {
+                    service.stop()?;
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+mod win_service_manager {
+    use windows_service::{
+        service::{
+            ServiceType,
+            ServiceErrorControl,
+            ServiceDependency,
+            ServiceInfo,
+            ServiceStartType,
+            ServiceAccess
+        },
+        service_manager::{
+            ServiceManagerAccess,
+            ServiceManager
+        }  
+    };
+    use std::{
+        io,
+        ffi::OsString,
+        ffi::OsStr
+    };
+
+    use service_manager::{
+        ServiceInstallCtx, 
+        ServiceLevel, 
+        ServiceStartCtx, 
+        ServiceStatus, 
+        ServiceStatusCtx, 
+        ServiceUninstallCtx,
+        ServiceStopCtx
+    };
+
+    pub struct WinServiceManager {
+        service_manager: ServiceManager,
+        display_name: Option<crate::OsString>,
+        description: Option<OsString>,
+        dependencies: Vec<OsString>  
+    }
+
+    impl WinServiceManager {
+        pub fn new(display_name: Option<OsString>, description: Option<OsString>, dependencies: Vec<OsString>,) -> Result<Self, crate::Error> {
+            let service_manager = ServiceManager::local_computer(
+                None::<&str>,
+                ServiceManagerAccess::ALL_ACCESS,
+            )?;
+            Ok(Self {
+                service_manager,
+                display_name,
+                description,
+                dependencies,
+            })
+        }
+    }
+    impl service_manager::ServiceManager for WinServiceManager {
+        fn available(&self) -> io::Result<bool> {
+            Ok(true)
+        }
+    
+        fn install(&self, ctx: ServiceInstallCtx) -> io::Result<()> {
+            let start_type_ = if ctx.autostart { ServiceStartType::AutoStart } else { ServiceStartType::OnDemand };
+            let srv_name = OsString::from(ctx.label.to_qualified_name());
+            let dis_name = self.display_name.clone().unwrap_or_else(|| srv_name.clone());
+            let dependencies = self.dependencies.iter().map(|dep| ServiceDependency::Service(dep.clone())).collect::<Vec<_>>();
+            let service_info = ServiceInfo {
+                name: srv_name,
+                display_name: dis_name,
+                service_type: ServiceType::OWN_PROCESS,
+                start_type: start_type_,
+                error_control: ServiceErrorControl::Normal,
+                executable_path: ctx.program,
+                launch_arguments: ctx.args,
+                dependencies: dependencies.clone(),
+                account_name: None,
+                account_password: None
+            };
+    
+            let service = self.service_manager.create_service(&service_info, ServiceAccess::ALL_ACCESS).map_err(|e| {
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+    
+            if let Some(s) = &self.description {
+                service.set_description(s.clone()).map_err(|e| {
+                    io::Error::new(io::ErrorKind::Other, e)
+                })?;
+            }
+    
+            Ok(())
+        }
+        
+        fn uninstall(&self, ctx: ServiceUninstallCtx) -> io::Result<()> {
+            let service = self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS).map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+    
+            service.delete().map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })
+        }
+        
+        fn start(&self, ctx: ServiceStartCtx) -> io::Result<()> {
+            let service = self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS).map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+    
+            service.start(&[] as &[&OsStr]).map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })
+        }
+        
+        fn stop(&self, ctx: ServiceStopCtx) -> io::Result<()> {
+            let service = self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS).map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+    
+            _ = service.stop().map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+    
+            Ok(())
+        }
+        
+        fn level(&self) -> ServiceLevel {
+            ServiceLevel::System
+        }
+        
+        fn set_level(&mut self, level: ServiceLevel) -> io::Result<()> {
+            match level {
+                ServiceLevel::System => Ok(()),
+                _ => Err(io::Error::new(io::ErrorKind::Other, "Unsupported service level"))            
+            }
+        }
+        
+        fn status(&self, ctx: ServiceStatusCtx) -> io::Result<ServiceStatus> {
+            let service = match self.service_manager.open_service(ctx.label.to_qualified_name(), ServiceAccess::QUERY_STATUS) {
+                Ok(s) => s,
+                Err(e) => {
+                    if let windows_service::Error::Winapi(ref win_err) = e {
+                        if win_err.raw_os_error() == Some(0x424) {
+                            return Ok(ServiceStatus::NotInstalled);
+                        }
+                    }
+                    return Err(io::Error::new(io::ErrorKind::Other, e));
+                }
+            };
+    
+            let status = service.query_status().map_err(|e|{
+                io::Error::new(io::ErrorKind::Other, e)
+            })?;
+    
+            match status.current_state {
+                windows_service::service::ServiceState::Stopped => Ok(ServiceStatus::Stopped(None)),
+                _ => Ok(ServiceStatus::Running),
+            }
+        }
+    }
 }
