@@ -5,18 +5,13 @@ import { DEFAULT_NETWORK_CONFIG, NetworkInstance, type NetworkConfig, type NodeI
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { num2ipv4, num2ipv6 } from '../modules/utils';
+import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 
 const props = defineProps<{
-  curNetworkInst: NetworkInstance,
+  curNetworkInst: NetworkInstance | null,
 }>()
 
 const { t } = useI18n()
-
-const curNetwork = defineModel('curNetwork', {
-  type: Object as () => NetworkConfig,
-  default: DEFAULT_NETWORK_CONFIG,
-})
-
 
 const peerRouteInfos = computed(() => {
   if (props.curNetworkInst) {
@@ -343,8 +338,7 @@ function showEventLogs() {
         <template #content>
           <div class="flex w-full flex-col gap-y-5">
             <div class="m-0 flex flex-row justify-center gap-x-5">
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6"
-                style="border: 1px solid green">
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid green">
                 <div class="font-bold">
                   {{ t('peer_count') }}
                 </div>
@@ -353,8 +347,7 @@ function showEventLogs() {
                 </div>
               </div>
 
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6"
-                style="border: 1px solid purple">
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid purple">
                 <div class="font-bold">
                   {{ t('upload') }}
                 </div>
@@ -363,8 +356,7 @@ function showEventLogs() {
                 </div>
               </div>
 
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6"
-                style="border: 1px solid fuchsia">
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid fuchsia">
                 <div class="font-bold">
                   {{ t('download') }}
                 </div>

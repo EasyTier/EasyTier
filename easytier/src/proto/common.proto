@@ -63,8 +63,10 @@ message RpcPacket {
 message Void {}
 
 message UUID {
-  uint64 high = 1;
-  uint64 low = 2;
+  uint32 part1 = 1;
+  uint32 part2 = 2;
+  uint32 part3 = 3;
+  uint32 part4 = 4;
 }
 
 enum NatType {

@@ -53,21 +53,33 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Card, InputText, Password, Button } from 'primevue';
+import ApiClient from '../modules/api';
+import { Credential } from '../modules/api';
+
+const props = defineProps({
+    api: ApiClient,
+});
+
+const api = props.api;
 
 const username = ref('');
 const password = ref('');
 const registerUsername = ref('');
 const registerPassword = ref('');
 const captcha = ref('');
-const captchaSrc = ref('http://10.147.223.128:11211/api/v1/auth/captcha'); // Replace with actual captcha image path
+const captchaSrc = computed(() => api?.captcha_url());
 const isRegistering = ref(false);
 
-const onSubmit = () => {
+
+const onSubmit = async () => {
     console.log('Username:', username.value);
     console.log('Password:', password.value);
     // Add your login logic here
+    const credential: Credential = { username: username.value, password: password.value, };
+    const ret = await api?.login(credential);
+    alert(ret?.message);
 };
 
 const onRegister = () => {

@@ -1,7 +1,7 @@
 import './style.css'
 
 import type { App } from 'vue';
-import { Config } from "./components";
+import { Config, Status } from "./components";
 import Aura from '@primevue/themes/aura'
 import PrimeVue from 'primevue/config'
 import ToastService from 'primevue/toastservice'
@@ -28,7 +28,8 @@ export default {
         app.use(ToastService);
 
         app.component('Config', Config);
+        app.component('Status', Status);
     }
 };
 
-export { Config, I18nUtils, NetworkTypes };
+export { Config, Status, I18nUtils, NetworkTypes };

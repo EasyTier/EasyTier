@@ -11,6 +11,7 @@
   "dependencies": {
     "@primevue/themes": "^4.2.1",
     "aura": "link:@primevue/themes/aura",
+    "axios": "^1.7.7",
     "easytier-frontend-lib": "workspace:*",
     "primevue": "^4.2.1",
     "tailwindcss-primeui": "^0.3.4",
