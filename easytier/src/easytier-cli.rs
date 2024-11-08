@@ -146,7 +146,7 @@ enum ServiceSubCommand {
 
 #[derive(Args, Debug)]
 struct InstallArgs {
-    #[arg(short = 'p', long)]
+    #[arg(long)]
     core_path: Option<PathBuf>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     core_args: Option<Vec<OsString>>
@@ -794,8 +794,11 @@ async fn main() -> Result<(), Error> {
                             .parent()
                             .unwrap()
                             .join("easytier-core");
-                        #[cfg(target_os = "windows")]
-                        ret.set_extension("exe");
+
+                        if cfg!(target_os = "windows") {
+                            ret.set_extension("exe");
+                        }
+
                         ret
                     });
                     let bin_path = std::fs::canonicalize(bin_path).map_err(|e| {
@@ -862,7 +865,7 @@ mod win_service_manager {
 
     pub struct WinServiceManager {
         service_manager: ServiceManager,
-        display_name: Option<crate::OsString>,
+        display_name: Option<OsString>,
         description: Option<OsString>,
         dependencies: Vec<OsString>  
     }

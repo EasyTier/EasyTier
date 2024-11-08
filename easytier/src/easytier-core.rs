@@ -289,16 +289,22 @@ struct Cli {
         help = t!("core_clap.ipv6_listener").to_string()
     )]
     ipv6_listener: Option<String>,
+
+    #[arg(
+        long,
+        help = t!("core_clap.work_dir").to_string()
+    )]
+    work_dir: Option<String>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
-    fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> Vec<String> {
+    fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> anyhow::Result<Vec<String>> {
         let proto_port_offset = vec![("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
 
         if no_listener || listeners.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
         let origin_listners = listeners;
@@ -308,7 +314,7 @@ impl Cli {
                 for (proto, offset) in proto_port_offset {
                     listeners.push(format!("{}://0.0.0.0:{}", proto, port + offset));
                 }
-                return listeners;
+                return Ok(listeners);
             }
         }
 
@@ -325,7 +331,7 @@ impl Cli {
                     .iter()
                     .find(|(proto, _)| *proto == proto_port[0])
                 else {
-                    panic!("unknown protocol: {}", proto_port[0]);
+                    return Err(anyhow::anyhow!("unknown protocol: {}", proto_port[0]));
                 };
 
                 let port = if proto_port.len() == 2 {
@@ -338,7 +344,7 @@ impl Cli {
             }
         }
 
-        listeners
+        Ok(listeners)
     }
 
     fn check_tcp_available(port: u16) -> Option<SocketAddr> {
@@ -346,66 +352,62 @@ impl Cli {
         TcpSocket::new_v4().unwrap().bind(s).map(|_| s).ok()
     }
 
-    fn parse_rpc_portal(rpc_portal: String) -> SocketAddr {
+    fn parse_rpc_portal(rpc_portal: String) -> anyhow::Result<SocketAddr> {
         if let Ok(port) = rpc_portal.parse::<u16>() {
             if port == 0 {
                 // check tcp 15888 first
                 for i in 15888..15900 {
                     if let Some(s) = Cli::check_tcp_available(i) {
-                        return s;
+                        return Ok(s);
                     }
                 }
-                return "0.0.0.0:0".parse().unwrap();
+                return Ok("0.0.0.0:0".parse().unwrap());
             }
-            return format!("0.0.0.0:{}", port).parse().unwrap();
+            return Ok("0.0.0.0:0".parse().unwrap());
         }
 
-        rpc_portal.parse().unwrap()
+        Ok(rpc_portal.parse()?)
     }
 }
 
-impl From<Cli> for TomlConfigLoader {
-    fn from(cli: Cli) -> Self {
+impl TryFrom<&Cli> for TomlConfigLoader {
+    type Error = anyhow::Error;
+
+    fn try_from(cli: &Cli) -> Result<Self, Self::Error> {
         if let Some(config_file) = &cli.config_file {
             println!(
                 "NOTICE: loading config file: {:?}, will ignore all command line flags\n",
                 config_file
             );
-            return TomlConfigLoader::new(config_file)
-                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))
-                .unwrap();
+            return Ok(TomlConfigLoader::new(config_file)
+                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))?)
         }
 
         let cfg = TomlConfigLoader::default();
 
-        cfg.set_hostname(cli.hostname);
+        cfg.set_hostname(cli.hostname.clone());
 
-        cfg.set_network_identity(NetworkIdentity::new(cli.network_name, cli.network_secret));
+        cfg.set_network_identity(NetworkIdentity::new(cli.network_name.clone(), cli.network_secret.clone()));
 
         cfg.set_dhcp(cli.dhcp);
 
         if let Some(ipv4) = &cli.ipv4 {
             cfg.set_ipv4(Some(
                 ipv4.parse()
-                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))
-                    .unwrap(),
+                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))?
             ))
         }
 
-        cfg.set_peers(
-            cli.peers
-                .iter()
-                .map(|s| PeerConfig {
-                    uri: s
-                        .parse()
-                        .with_context(|| format!("failed to parse peer uri: {}", s))
-                        .unwrap(),
-                })
-                .collect(),
-        );
+        let mut peers = Vec::<PeerConfig>::with_capacity(cli.peers.len());
+        for p in &cli.peers {
+            peers.push(PeerConfig {
+                uri: p.parse().with_context(|| format!("failed to parse peer uri: {}", p))?,
+            });
+        }
+        cfg.set_peers(peers);
 
         cfg.set_listeners(
-            Cli::parse_listeners(cli.no_listener, cli.listeners)
+            Cli::parse_listeners(cli.no_listener, cli.listeners.clone())?
                 .into_iter()
                 .map(|s| s.parse().unwrap())
                 .collect(),
@@ -414,29 +416,29 @@ impl From<Cli> for TomlConfigLoader {
         for n in cli.proxy_networks.iter() {
             cfg.add_proxy_cidr(
                 n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))
-                    .unwrap(),
+                    .with_context(|| format!("failed to parse proxy network: {}", n))?
             );
         }
 
-        cfg.set_rpc_portal(Cli::parse_rpc_portal(cli.rpc_portal));
+        cfg.set_rpc_portal(Cli::parse_rpc_portal(cli.rpc_portal.clone()).with_context(|| {
+            format!("failed to parse rpc portal: {}", cli.rpc_portal)
+        })?);
 
-        if let Some(external_nodes) = cli.external_node {
+        if let Some(external_nodes) = cli.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
             old_peers.push(PeerConfig {
                 uri: external_nodes
                     .parse()
                     .with_context(|| {
                         format!("failed to parse external node uri: {}", external_nodes)
-                    })
-                    .unwrap(),
+                    })?
             });
             cfg.set_peers(old_peers);
         }
 
         if cli.console_log_level.is_some() {
             cfg.set_console_logger_config(ConsoleLoggerConfig {
-                level: cli.console_log_level,
+                level: cli.console_log_level.clone(),
             });
         }
 
@@ -448,43 +450,30 @@ impl From<Cli> for TomlConfigLoader {
             });
         }
 
-        cfg.set_inst_name(cli.instance_name);
+        cfg.set_inst_name(cli.instance_name.clone());
 
-        if let Some(vpn_portal) = cli.vpn_portal {
+        if let Some(vpn_portal) = cli.vpn_portal.as_ref() {
             let url: url::Url = vpn_portal
                 .parse()
-                .with_context(|| format!("failed to parse vpn portal url: {}", vpn_portal))
-                .unwrap();
+                .with_context(|| format!("failed to parse vpn portal url: {}", vpn_portal))?;
+            let host = url.host_str().ok_or_else(|| anyhow::anyhow!("vpn portal url missing host"))?;
+            let port = url.port().ok_or_else(|| anyhow::anyhow!("vpn portal url missing port"))?;
+            let client_cidr = url.path()[1..]
+                .parse()
+                .with_context(|| format!("failed to parse vpn portal client cidr: {}", url.path()))?;
+            let wireguard_listen: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
             cfg.set_vpn_portal_config(VpnPortalConfig {
-                client_cidr: url.path()[1..]
-                    .parse()
-                    .with_context(|| {
-                        format!("failed to parse vpn portal client cidr: {}", url.path())
-                    })
-                    .unwrap(),
-                wireguard_listen: format!("{}:{}", url.host_str().unwrap(), url.port().unwrap())
-                    .parse()
-                    .with_context(|| {
-                        format!(
-                            "failed to parse vpn portal wireguard listen address: {}",
-                            url.host_str().unwrap()
-                        )
-                    })
-                    .unwrap(),
+                wireguard_listen,
+                client_cidr,
             });
         }
 
-        if let Some(manual_routes) = cli.manual_routes {
-            cfg.set_routes(Some(
-                manual_routes
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("failed to parse route: {}", s))
-                            .unwrap()
-                    })
-                    .collect(),
-            ));
+        if let Some(manual_routes) = cli.manual_routes.as_ref() {
+            let mut routes = Vec::<cidr::Ipv4Cidr>::with_capacity(manual_routes.len());
+            for r in manual_routes{
+                routes.push(r.parse().with_context(|| format!("failed to parse route: {}", r))?);
+            }
+            cfg.set_routes(Some(routes));
         }
 
         #[cfg(feature = "socks5")]
@@ -503,30 +492,29 @@ impl From<Cli> for TomlConfigLoader {
         f.enable_encryption = !cli.disable_encryption;
         f.enable_ipv6 = !cli.disable_ipv6;
         f.latency_first = cli.latency_first;
-        f.dev_name = cli.dev_name.unwrap_or_default();
+        f.dev_name = cli.dev_name.clone().unwrap_or_default();
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu;
         }
         f.enable_exit_node = cli.enable_exit_node;
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
-        if let Some(wl) = cli.relay_network_whitelist {
+        if let Some(wl) = cli.relay_network_whitelist.as_ref() {
             f.foreign_network_whitelist = wl.join(" ");
         }
         f.disable_p2p = cli.disable_p2p;
         f.relay_all_peer_rpc = cli.relay_all_peer_rpc;
-        if let Some(ipv6_listener) = cli.ipv6_listener {
+        if let Some(ipv6_listener) = cli.ipv6_listener.as_ref() {
             f.ipv6_listener = ipv6_listener
                 .parse()
-                .with_context(|| format!("failed to parse ipv6 listener: {}", ipv6_listener))
-                .unwrap();
+                .with_context(|| format!("failed to parse ipv6 listener: {}", ipv6_listener))?
         }
         f.multi_thread = cli.multi_thread;
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());
 
-        cfg
+        Ok(cfg)
     }
 }
 
@@ -655,41 +643,56 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
 #[cfg(target_os = "windows")]
 fn win_service_event_loop(  
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
-    inst: launcher::NetworkInstance,  
+    cli: Cli,
     status_handle: windows_service::service_control_handler::ServiceStatusHandle,  
 ) {  
     use tokio::runtime::Runtime;
     use std::time::Duration;
     use windows_service::service::*;
 
+    let normal_status = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Running,
+        controls_accepted: ServiceControlAccept::STOP,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    };
+    let error_status = ServiceStatus {
+        service_type: ServiceType::OWN_PROCESS,
+        current_state: ServiceState::Stopped,
+        controls_accepted: ServiceControlAccept::empty(),
+        exit_code: ServiceExitCode::ServiceSpecific(1u32),
+        checkpoint: 0,
+        wait_hint: Duration::default(),
+        process_id: None,
+    };
+
+    if cli.work_dir == None {
+        let mut path = std::env::current_exe().unwrap();
+        path.pop();
+        std::env::set_current_dir(path).unwrap();
+    }
+
     std::thread::spawn(move || {
         let rt = Runtime::new().unwrap();
         rt.block_on(async move {
             tokio::select! {
-                res = inst.wait() => {
-                    if let Some(e) = res {
-                        status_handle.set_service_status(ServiceStatus {
-                            service_type: ServiceType::OWN_PROCESS,
-                            current_state: ServiceState::Stopped,
-                            controls_accepted: ServiceControlAccept::empty(),
-                            checkpoint: 0,
-                            wait_hint: Duration::default(),
-                            exit_code: ServiceExitCode::ServiceSpecific(1u32),
-                            process_id: None
-                        }).unwrap();
-                        panic!("launcher error: {:?}", e);
+                res = run_main(cli) => {
+                    match res {
+                        Ok(_) => {
+                            status_handle.set_service_status(normal_status).unwrap();
+                            std::process::exit(0);
+                        }
+                        Err(e) => {
+                            status_handle.set_service_status(error_status).unwrap();
+                            eprintln!("error: {}", e);
+                        }
                     }
                 },
                 _ = stop_notify.notified() => {
-                    status_handle.set_service_status(ServiceStatus {
-                        service_type: ServiceType::OWN_PROCESS,
-                        current_state: ServiceState::Stopped,
-                        controls_accepted: ServiceControlAccept::empty(),
-                        checkpoint: 0,
-                        wait_hint: Duration::default(),
-                        exit_code: ServiceExitCode::Win32(0),
-                        process_id: None
-                    }).unwrap();
+                    _ = status_handle.set_service_status(normal_status);
                     std::process::exit(0);
                 }
             }
@@ -706,9 +709,6 @@ fn win_service_main(_: Vec<std::ffi::OsString>) {
     use tokio::sync::Notify;
     
     let cli = Cli::parse();
-    let cfg = TomlConfigLoader::from(cli);
-
-    init_logger(&cfg, false).unwrap(); 
 
     let stop_notify_send = Arc::new(Notify::new());
     let stop_notify_recv = Arc::clone(&stop_notify_send);
@@ -734,36 +734,16 @@ fn win_service_main(_: Vec<std::ffi::OsString>) {
         checkpoint: 0,
         wait_hint: Duration::default(),
         process_id: None,
-    };
-    let mut inst = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
-      
-    inst.start().unwrap();    
+    }; 
     status_handle.set_service_status(next_status).expect("set service status fail");
-    win_service_event_loop(stop_notify_recv, inst, status_handle);    
+
+    win_service_event_loop(stop_notify_recv, cli, status_handle);
 }
 
-#[tokio::main]
-async fn main() {
-    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
-    rust_i18n::set_locale(&locale);
-    setup_panic_handler();
-
-    #[cfg(target_os = "windows")]
-    match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
-        Ok(_) => std::thread::park(),
-        Err(e) =>
-        {    
-             let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
-                 io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
-             } else { true };
-             
-             if should_panic {
-                 panic!("SCM start an error: {}", e);
-             }
-         }
-     };
-     
-    let cli = Cli::parse();
+async fn run_main(cli: Cli) -> anyhow::Result<()> {
+    if let Some(dir) = cli.work_dir.as_ref() {
+        std::env::set_current_dir(dir).map_err(|e| anyhow::anyhow!("failed to set work dir: {}", e))?;
+    }
 
     if cli.config_server.is_some() {
         let config_server_url_s = cli.config_server.clone().unwrap();
@@ -796,11 +776,11 @@ async fn main() {
 
         let _wc = web_client::WebClient::new(UdpTunnelConnector::new(c_url), token.to_string());
         tokio::signal::ctrl_c().await.unwrap();
-        return;
+        return Ok(());
     }
 
-    let cfg = TomlConfigLoader::from(cli);
-    init_logger(&cfg, false).unwrap();
+    let cfg = TomlConfigLoader::try_from(&cli)?;
+    init_logger(&cfg, false)?;
 
     println!("Starting easytier with config:");
     println!("############### TOML ###############\n");
@@ -809,7 +789,37 @@ async fn main() {
 
     let mut l = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
     let _t = ScopedTask::from(handle_event(l.start().unwrap()));
-    if let Some(e) = l.wait().await {
-        panic!("launcher error: {:?}", e);
+    if let Some(e) = l.wait().await{
+        return Err(anyhow::anyhow!("launcher error: {}", e));
+    }
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() {
+    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+    rust_i18n::set_locale(&locale);
+    setup_panic_handler();
+
+    #[cfg(target_os = "windows")]
+    match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
+        Ok(_) => std::thread::park(),
+        Err(e) =>
+        {    
+             let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
+                 io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
+             } else { true };
+             
+             if should_panic {
+                 panic!("SCM start an error: {}", e);
+             }
+         }
+     };
+     
+    let cli = Cli::parse();
+
+    if let Err(e) = run_main(cli).await {
+        eprintln!("error: {:?}", e);
+        std::process::exit(1);
     }
 }

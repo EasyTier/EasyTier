@@ -121,14 +121,8 @@ core_clap:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
   work_dir:
-    en: "specify the working directory for the program"
-    zh-CN: "指定程序的工作目录"
-  run:
-    en: "Run the EasyTier core application"
-    zh-CN: "运行 EasyTier 核心应用程序"
-  service:
-    en: "Manage the EasyTier service"
-    zh-CN: "管理 EasyTier 服务"
+    en: "Specify the working directory for the program. If not specified, the current directory will be used."
+    zh-CN: "指定程序的工作目录。如果未指定，将使用当前目录。"
 
 core_app:
   panic_backtrace_save:
