@@ -36,7 +36,6 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
-        target: x86_64-unknown-linux-gnu
 
     - name: Install Linux Dependencies
       run: |
@@ -47,6 +46,8 @@ jobs:
     - name: Install Frontend Dependencies
       working-directory: ./easytier-web
       run: |
+        pwd
+        ls -la
         pnpm install
 
     # 构建前端库
@@ -67,19 +68,27 @@ jobs:
       env:
         PROTOC: /usr/bin/protoc
       run: |
-        rustup target add x86_64-unknown-linux-gnu
-        cargo clean
-        cargo build --release --target x86_64-unknown-linux-gnu
-        ls -la target/x86_64-unknown-linux-gnu/release/
+        pwd
+        ls -la
+        echo "=== Cargo metadata ==="
+        cargo metadata --format-version 1
+        echo "=== Building ==="
+        cargo build --release
+        echo "=== Build complete, checking target directory ==="
+        ls -R target/release/
 
     # 打包
     - name: Package Build
       working-directory: ./easytier-web
       run: |
+        echo "=== Current directory structure ==="
+        pwd
+        ls -la
+        echo "=== Target directory content ==="
+        ls -R target/
+        echo "=== Creating release package ==="
         mkdir -p release
-        find target -name "easytier-web" -type f -exec ls -l {} \;
-        find target -name "easytier_web" -type f -exec ls -l {} \;
-        cp target/x86_64-unknown-linux-gnu/release/easytier_web release/easytier-web || cp target/x86_64-unknown-linux-gnu/release/easytier-web release/
+        cp target/release/easytier-web release/ || cp target/release/easytier_web release/easytier-web
         cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
