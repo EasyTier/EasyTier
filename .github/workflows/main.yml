@@ -11,13 +11,14 @@ jobs:
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
+      fail-fast: false  # 防止一个作业失败导致其他作业取消
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4  # 更新到最新版本
 
     - name: Setup Node.js
-      uses: actions/setup-node@v2
+      uses: actions/setup-node@v4  # 更新到最新版本
       with:
         node-version: '18'
 
@@ -54,14 +55,16 @@ jobs:
 
     - name: Upload Windows Artifact
       if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4  # 更新到最新版本
       with:
         name: easytier-web-windows
         path: easytier-web-windows.zip
+        retention-days: 5  # 设置保留期限
 
     - name: Upload Linux Artifact
       if: matrix.os == 'ubuntu-latest'
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4  # 更新到最新版本
       with:
         name: easytier-web-linux
         path: easytier-web-linux.tar.gz
+        retention-days: 5  # 设置保留期限
