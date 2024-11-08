@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { DEFAULT_NETWORK_CONFIG, NetworkInstance, type NetworkConfig, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { num2ipv4, num2ipv6 } from '../modules/utils';
@@ -291,7 +291,7 @@ function showVpnPortalConfig() {
 }
 
 function showEventLogs() {
-  const detail = props.curNetworkInst.detail
+  const detail = props.curNetworkInst?.detail
   if (!detail)
     return
 

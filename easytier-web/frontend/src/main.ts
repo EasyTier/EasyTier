@@ -21,4 +21,4 @@ createApp(App).use(PrimeVue,
             }
         }
     }
-).use(ConfirmationService).use(EasytierFrontendLib).mount('#app')
+).use(ConfirmationService as any).use(EasytierFrontendLib).mount('#app')

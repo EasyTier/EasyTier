@@ -1,9 +1,8 @@
 <script setup lang="ts">
 
-import { Config, I18nUtils, NetworkTypes } from 'easytier-frontend-lib'
-import { onMounted, ref } from 'vue';
+import { I18nUtils } from 'easytier-frontend-lib'
+import { onMounted } from 'vue';
 import Login from './components/Login.vue'
-import MenuBar from './components/MenuBar.vue';
 import { Button } from 'primevue';
 import ApiClient from './modules/api';
 import DeviceList from './components/DeviceList.vue';
@@ -14,37 +13,12 @@ onMounted(async () => {
   await I18nUtils.loadLanguageAsync('cn')
 });
 
-const curNetwork = ref(NetworkTypes.DEFAULT_NETWORK_CONFIG())
-
-const runNetwork = async () => {
-  alert('runNetwork' + curNetwork.value.network_name)
-}
-
-const abc = ref('fuckfjdlksajkfldsjlk')
-
-const test = async () => {
-  const resp = await api.list_machines();
-  alert(JSON.stringify(resp));
-}
-
 </script>
 
 <!-- https://flowbite.com/docs/components/sidebar/#sidebar-with-navbar -->
 
 <template>
   <div id="root" class="">
-    <!-- <div id="login">
-      <MenuBar />
-      <Button label="GetSession" @click="test"></Button>
-      <Login :api="api"></Login>
-    </div>
-
-    <div class="h-full overflow-y-auto">
-      <Config v-model:curNetwork="curNetwork" v-on:runNetwork="runNetwork" />
-    </div>
-  </div> -->
-
-
     <nav class="fixed top-0 z-50 w-full bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700">
       <div class="px-3 py-3 lg:px-5 lg:pl-3">
         <div class="flex items-center justify-between">

@@ -4,7 +4,6 @@ import type { App } from 'vue';
 import { Config, Status } from "./components";
 import Aura from '@primevue/themes/aura'
 import PrimeVue from 'primevue/config'
-import ToastService from 'primevue/toastservice'
 
 import I18nUtils from './modules/i18n'
 import * as NetworkTypes from './types/network'
@@ -25,7 +24,6 @@ export default {
                 },
             },
         });
-        app.use(ToastService);
 
         app.component('Config', Config);
         app.component('Status', Status);
