@@ -21,9 +21,10 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        registry-url: 'https://registry.npmmirror.com'  # 使用淘宝镜像
 
     - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable  # 使用新的 Rust 工具链动作
+      uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
         components: rustfmt, clippy
@@ -40,15 +41,18 @@ jobs:
     - name: Build Frontend
       working-directory: ./easytier-web/frontend
       run: |
-        npm install
+        npm config set registry https://registry.npmmirror.com  # 设置 npm 镜像
+        npm install --legacy-peer-deps  # 添加 --legacy-peer-deps 参数
         npm run build
+      env:
+        NODE_OPTIONS: "--max-old-space-size=4096"  # 增加 Node.js 内存限制
 
     - name: Build Backend
       working-directory: ./easytier-web
       run: |
         cargo build --release
       env:
-        RUSTFLAGS: "-C target-feature=+crt-static"  # 静态链接 Windows CRT
+        RUSTFLAGS: "-C target-feature=+crt-static"
 
     - name: Package Windows Build
       if: matrix.os == 'windows-latest'
