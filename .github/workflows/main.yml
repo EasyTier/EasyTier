@@ -21,7 +21,6 @@ jobs:
       uses: actions/setup-node@v4
       with:
         node-version: '18'
-        registry-url: 'https://registry.npmmirror.com'  # 使用淘宝镜像
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -38,14 +37,27 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev
 
-    - name: Build Frontend
+    - name: Build Frontend (Windows)
+      if: matrix.os == 'windows-latest'
       working-directory: ./easytier-web/frontend
       run: |
-        npm config set registry https://registry.npmmirror.com  # 设置 npm 镜像
-        npm install --legacy-peer-deps  # 添加 --legacy-peer-deps 参数
+        npm install -g typescript
+        npm install -g vue-tsc
+        npm install
         npm run build
       env:
-        NODE_OPTIONS: "--max-old-space-size=4096"  # 增加 Node.js 内存限制
+        NODE_OPTIONS: "--max-old-space-size=4096"
+
+    - name: Build Frontend (Linux)
+      if: matrix.os == 'ubuntu-latest'
+      working-directory: ./easytier-web/frontend
+      run: |
+        npm install -g typescript
+        npm install -g vue-tsc
+        npm install
+        npm run build
+      env:
+        NODE_OPTIONS: "--max-old-space-size=4096"
 
     - name: Build Backend
       working-directory: ./easytier-web
