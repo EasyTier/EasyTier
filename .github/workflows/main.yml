@@ -35,42 +35,39 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: x86_64-unknown-linux-gnu
 
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev build-essential
 
-    - name: Cache cargo registry
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+    - name: Debug Directory Structure
+      run: |
+        pwd
+        ls -la
+        echo "Current directory structure:"
+        find . -maxdepth 3 -type d
 
     - name: Build Frontend-lib
-      working-directory: ./easytier-web/frontend-lib
       run: |
+        cd easytier-web/frontend-lib
         pnpm install
         pnpm build
 
     - name: Build Frontend
-      working-directory: ./easytier-web/frontend
       run: |
+        cd easytier-web/frontend
         pnpm install
         pnpm build
 
     - name: Build Backend
-      working-directory: ./easytier-web
       run: |
+        cd easytier-web
         cargo build --release
 
     - name: Package Build
-      working-directory: ./easytier-web
       run: |
+        cd easytier-web
         mkdir -p release
         cp target/release/easytier-web release/
         cp -r frontend/dist release/
