@@ -4,7 +4,7 @@
 extern crate rust_i18n;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr}, 
+    net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
 
@@ -494,7 +494,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         f.latency_first = cli.latency_first;
         f.dev_name = cli.dev_name.clone().unwrap_or_default();
         if let Some(mtu) = cli.mtu {
-            f.mtu = mtu;
+            f.mtu = mtu as u32;
         }
         f.enable_exit_node = cli.enable_exit_node;
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
@@ -641,7 +641,7 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
 }
 
 #[cfg(target_os = "windows")]
-fn win_service_event_loop(  
+fn win_service_event_loop(
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
     cli: Cli,
     status_handle: windows_service::service_control_handler::ServiceStatusHandle,  
@@ -702,23 +702,20 @@ fn win_service_event_loop(
 
 #[cfg(target_os = "windows")]
 fn win_service_main(_: Vec<std::ffi::OsString>) {
-    use std::time::Duration;
-    use windows_service::service_control_handler::*;
-    use windows_service::service::*;
     use std::sync::Arc;
+    use std::time::Duration;
     use tokio::sync::Notify;
-    
+    use windows_service::service::*;
+    use windows_service::service_control_handler::*;
+
     let cli = Cli::parse();
 
     let stop_notify_send = Arc::new(Notify::new());
     let stop_notify_recv = Arc::clone(&stop_notify_send);
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
-            ServiceControl::Interrogate => {
-                ServiceControlHandlerResult::NoError
-            }
-            ServiceControl::Stop =>
-            {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            ServiceControl::Stop => {
                 stop_notify_send.notify_one();
                 ServiceControlHandlerResult::NoError
             }

@@ -11,7 +11,7 @@ use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::scoped_task::ScopedTask;
-use easytier::proto::{self, rpc_types};
+use easytier::proto::{rpc_types};
 use network::NetworkApi;
 use sea_orm::DbErr;
 use tokio::net::TcpListener;
@@ -43,16 +43,16 @@ type AppState = State<AppStateInner>;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListSessionJsonResp(Vec<StorageToken>);
 
-pub type Error = proto::error::Error;
-pub type ErrorKind = proto::error::error::ErrorKind;
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct Error {
+    message: String,
+}
 type RpcError = rpc_types::error::Error;
 type HttpHandleError = (StatusCode, Json<Error>);
 
 pub fn other_error<T: ToString>(error_message: T) -> Error {
     Error {
-        error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
-            error_message: error_message.to_string(),
-        })),
+        message: error_message.to_string(),
     }
 }
 

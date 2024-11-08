@@ -895,14 +895,14 @@ pub mod tests {
         let (server_cfg, client_cfg) = create_wg_config();
         let listener = WgTunnelListener::new("wg://[::1]:31016".parse().unwrap(), server_cfg);
         let mut connector =
-            WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
+            WgTunnelConnector::new("wg://test.easytier.top:31016".parse().unwrap(), client_cfg);
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
         let (server_cfg, client_cfg) = create_wg_config();
         let listener = WgTunnelListener::new("wg://127.0.0.1:31016".parse().unwrap(), server_cfg);
         let mut connector =
-            WgTunnelConnector::new("wg://test.kkrainbow.top:31016".parse().unwrap(), client_cfg);
+            WgTunnelConnector::new("wg://test.easytier.top:31016".parse().unwrap(), client_cfg);
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }

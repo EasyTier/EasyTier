@@ -91,8 +91,8 @@ impl WebClientService for Controller {
         _: BaseController,
         req: ValidateConfigRequest,
     ) -> Result<ValidateConfigResponse, rpc_types::error::Error> {
-        let _ = TomlConfigLoader::new_from_str(&req.config)?;
-        Ok(ValidateConfigResponse {})
+        let toml_config = req.config.unwrap_or_default().gen_config()?.dump();
+        Ok(ValidateConfigResponse { toml_config })
     }
 
     async fn run_network_instance(

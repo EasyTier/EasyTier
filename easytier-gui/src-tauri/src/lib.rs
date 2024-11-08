@@ -10,7 +10,7 @@ use easytier::{
         ConfigLoader, FileLoggerConfig, Flags, NetworkIdentity, PeerConfig, TomlConfigLoader,
         VpnPortalConfig,
     },
-    launcher::{NetworkInstance, NetworkInstanceRunningInfo},
+    launcher::{NetworkConfig, NetworkInstance, NetworkInstanceRunningInfo},
     utils::{self, NewFilterSender},
 };
 use serde::{Deserialize, Serialize};
@@ -19,164 +19,8 @@ use tauri::Manager as _;
 
 pub const AUTOSTART_ARG: &str = "--autostart";
 
-#[derive(Deserialize, Serialize, PartialEq, Debug)]
-enum NetworkingMethod {
-    PublicServer,
-    Manual,
-    Standalone,
-}
-
-impl Default for NetworkingMethod {
-    fn default() -> Self {
-        NetworkingMethod::PublicServer
-    }
-}
-
 #[cfg(not(target_os = "android"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-
-#[derive(Deserialize, Serialize, Debug, Default)]
-struct NetworkConfig {
-    instance_id: String,
-
-    dhcp: bool,
-    virtual_ipv4: String,
-    network_length: i32,
-    hostname: Option<String>,
-    network_name: String,
-    network_secret: String,
-    networking_method: NetworkingMethod,
-
-    public_server_url: String,
-    peer_urls: Vec<String>,
-
-    proxy_cidrs: Vec<String>,
-
-    enable_vpn_portal: bool,
-    vpn_portal_listen_port: i32,
-    vpn_portal_client_network_addr: String,
-    vpn_portal_client_network_len: i32,
-
-    advanced_settings: bool,
-
-    listener_urls: Vec<String>,
-    rpc_port: i32,
-    latency_first: bool,
-
-    dev_name: String,
-}
-
-impl NetworkConfig {
-    fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
-        let cfg = TomlConfigLoader::default();
-        cfg.set_id(
-            self.instance_id
-                .parse()
-                .with_context(|| format!("failed to parse instance id: {}", self.instance_id))?,
-        );
-        cfg.set_hostname(self.hostname.clone());
-        cfg.set_dhcp(self.dhcp);
-        cfg.set_inst_name(self.network_name.clone());
-        cfg.set_network_identity(NetworkIdentity::new(
-            self.network_name.clone(),
-            self.network_secret.clone(),
-        ));
-
-        if !self.dhcp {
-            if self.virtual_ipv4.len() > 0 {
-                let ip = format!("{}/{}", self.virtual_ipv4, self.network_length)
-                    .parse()
-                    .with_context(|| {
-                        format!(
-                            "failed to parse ipv4 inet address: {}, {}",
-                            self.virtual_ipv4, self.network_length
-                        )
-                    })?;
-                cfg.set_ipv4(Some(ip));
-            }
-        }
-
-        match self.networking_method {
-            NetworkingMethod::PublicServer => {
-                cfg.set_peers(vec![PeerConfig {
-                    uri: self.public_server_url.parse().with_context(|| {
-                        format!(
-                            "failed to parse public server uri: {}",
-                            self.public_server_url
-                        )
-                    })?,
-                }]);
-            }
-            NetworkingMethod::Manual => {
-                let mut peers = vec![];
-                for peer_url in self.peer_urls.iter() {
-                    if peer_url.is_empty() {
-                        continue;
-                    }
-                    peers.push(PeerConfig {
-                        uri: peer_url
-                            .parse()
-                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
-                    });
-                }
-
-                cfg.set_peers(peers);
-            }
-            NetworkingMethod::Standalone => {}
-        }
-
-        let mut listener_urls = vec![];
-        for listener_url in self.listener_urls.iter() {
-            if listener_url.is_empty() {
-                continue;
-            }
-            listener_urls.push(
-                listener_url
-                    .parse()
-                    .with_context(|| format!("failed to parse listener uri: {}", listener_url))?,
-            );
-        }
-        cfg.set_listeners(listener_urls);
-
-        for n in self.proxy_cidrs.iter() {
-            cfg.add_proxy_cidr(
-                n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
-            );
-        }
-
-        cfg.set_rpc_portal(
-            format!("0.0.0.0:{}", self.rpc_port)
-                .parse()
-                .with_context(|| format!("failed to parse rpc portal port: {}", self.rpc_port))?,
-        );
-
-        if self.enable_vpn_portal {
-            let cidr = format!(
-                "{}/{}",
-                self.vpn_portal_client_network_addr, self.vpn_portal_client_network_len
-            );
-            cfg.set_vpn_portal_config(VpnPortalConfig {
-                client_cidr: cidr
-                    .parse()
-                    .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
-                wireguard_listen: format!("0.0.0.0:{}", self.vpn_portal_listen_port)
-                    .parse()
-                    .with_context(|| {
-                        format!(
-                            "failed to parse vpn portal wireguard listen port. {}",
-                            self.vpn_portal_listen_port
-                        )
-                    })?,
-            });
-        }
-        let mut flags = Flags::default();
-        flags.latency_first = self.latency_first;
-        flags.dev_name = self.dev_name.clone();
-        cfg.set_flags(flags);
-        Ok(cfg)
-    }
-}
 
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
@@ -205,10 +49,10 @@ fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
 
 #[tauri::command]
 fn run_network_instance(cfg: NetworkConfig) -> Result<(), String> {
-    if INSTANCE_MAP.contains_key(&cfg.instance_id) {
+    if INSTANCE_MAP.contains_key(cfg.instance_id()) {
         return Err("instance already exists".to_string());
     }
-    let instance_id = cfg.instance_id.clone();
+    let instance_id = cfg.instance_id().to_string();
 
     let cfg = cfg.gen_config().map_err(|e| e.to_string())?;
     let mut instance = NetworkInstance::new(cfg);
