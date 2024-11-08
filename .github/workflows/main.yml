@@ -5,6 +5,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-feature=+crt-static"
 
 jobs:
   build:
@@ -16,6 +17,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'  # 确保获取所有子模块
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v2
@@ -32,18 +35,28 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
+        targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}
 
     - name: Install Linux Dependencies
       if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
-        sudo apt-get install -y pkg-config libssl-dev
+        sudo apt-get install -y pkg-config libssl-dev build-essential
 
-    - name: Build Frontend
-      working-directory: ./easytier-web/frontend
+    - name: Install Windows Dependencies
+      if: matrix.os == 'windows-latest'
       run: |
-        pnpm install
-        pnpm build
+        vcpkg integrate install
+        vcpkg install openssl:x64-windows-static
+
+    - name: Cache cargo registry
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Build Frontend-lib
       working-directory: ./easytier-web/frontend-lib
@@ -51,7 +64,22 @@ jobs:
         pnpm install
         pnpm build
 
-    - name: Build Backend
+    - name: Build Frontend
+      working-directory: ./easytier-web/frontend
+      run: |
+        pnpm install
+        pnpm build
+
+    - name: Build Backend (Windows)
+      if: matrix.os == 'windows-latest'
+      working-directory: ./easytier-web
+      run: |
+        $env:OPENSSL_DIR = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+        $env:OPENSSL_STATIC = "true"
+        cargo build --release
+
+    - name: Build Backend (Linux)
+      if: matrix.os == 'ubuntu-latest'
       working-directory: ./easytier-web
       run: |
         cargo build --release
@@ -59,6 +87,7 @@ jobs:
     - name: Package Windows Build
       if: matrix.os == 'windows-latest'
       shell: pwsh
+      working-directory: ./easytier-web
       run: |
         New-Item -ItemType Directory -Force -Path release
         Copy-Item "target\release\easytier-web.exe" -Destination "release\"
@@ -67,6 +96,7 @@ jobs:
 
     - name: Package Linux Build
       if: matrix.os == 'ubuntu-latest'
+      working-directory: ./easytier-web
       run: |
         mkdir -p release
         cp target/release/easytier-web release/
@@ -78,7 +108,7 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: easytier-web-windows
-        path: easytier-web-windows.zip
+        path: easytier-web/easytier-web-windows.zip
         retention-days: 5
 
     - name: Upload Linux Artifact
@@ -86,5 +116,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: easytier-web-linux
-        path: easytier-web-linux.tar.gz
+        path: easytier-web/easytier-web-linux.tar.gz
         retention-days: 5
