@@ -11,22 +11,31 @@ jobs:
     strategy:
       matrix:
         os: [windows-latest, ubuntu-latest]
-      fail-fast: false  # 防止一个作业失败导致其他作业取消
+      fail-fast: false
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v4  # 更新到最新版本
+    - uses: actions/checkout@v4
 
     - name: Setup Node.js
-      uses: actions/setup-node@v4  # 更新到最新版本
+      uses: actions/setup-node@v4
       with:
         node-version: '18'
 
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable  # 使用新的 Rust 工具链动作
       with:
         toolchain: stable
-        override: true
+        components: rustfmt, clippy
+
+    - name: Cache Rust Dependencies
+      uses: Swatinem/rust-cache@v2
+
+    - name: Install Linux Dependencies
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev
 
     - name: Build Frontend
       working-directory: ./easytier-web/frontend
@@ -38,33 +47,36 @@ jobs:
       working-directory: ./easytier-web
       run: |
         cargo build --release
+      env:
+        RUSTFLAGS: "-C target-feature=+crt-static"  # 静态链接 Windows CRT
 
     - name: Package Windows Build
       if: matrix.os == 'windows-latest'
+      shell: pwsh
       run: |
-        mkdir release
-        copy easytier-web\target\release\easytier-web.exe release\
-        7z a -tzip easytier-web-windows.zip .\release\*
+        New-Item -ItemType Directory -Force -Path release
+        Copy-Item "easytier-web\target\release\easytier-web.exe" -Destination "release\"
+        Compress-Archive -Path "release\*" -DestinationPath "easytier-web-windows.zip"
 
     - name: Package Linux Build
       if: matrix.os == 'ubuntu-latest'
       run: |
-        mkdir release
+        mkdir -p release
         cp easytier-web/target/release/easytier-web release/
         tar -czf easytier-web-linux.tar.gz release/
 
     - name: Upload Windows Artifact
       if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v4  # 更新到最新版本
+      uses: actions/upload-artifact@v4
       with:
         name: easytier-web-windows
         path: easytier-web-windows.zip
-        retention-days: 5  # 设置保留期限
+        retention-days: 5
 
     - name: Upload Linux Artifact
       if: matrix.os == 'ubuntu-latest'
-      uses: actions/upload-artifact@v4  # 更新到最新版本
+      uses: actions/upload-artifact@v4
       with:
         name: easytier-web-linux
         path: easytier-web-linux.tar.gz
-        retention-days: 5  # 设置保留期限
+        retention-days: 5
