@@ -1,9 +1,9 @@
 import { v4 as uuidv4 } from 'uuid'
 
 export enum NetworkingMethod {
-  PublicServer = 'PublicServer',
-  Manual = 'Manual',
-  Standalone = 'Standalone',
+  PublicServer = 0,
+  Manual = 1,
+  Standalone = 2,
 }
 
 export interface NetworkConfig {

@@ -1,5 +1,9 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 
+export interface ValidateConfigResponse {
+    toml_config: string;
+}
+
 // 定义接口返回的数据结构
 export interface LoginResponse {
     success: boolean;
@@ -97,6 +101,23 @@ class ApiClient {
     public async get_network_info(machine_id: string, inst_id: string): Promise<any> {
         const response = await this.client.get<any, Record<string, any>>('/machines/' + machine_id + '/networks/info/' + inst_id);
         return response.info.map;
+    }
+
+    public async validate_config(machine_id: string, config: any): Promise<ValidateConfigResponse> {
+        const response = await this.client.post<any, ValidateConfigResponse>(`/machines/${machine_id}/validate-config`, {
+            config: config,
+        });
+        return response;
+    }
+
+    public async run_network(machine_id: string, config: string): Promise<undefined> {
+        await this.client.post<string>(`/machines/${machine_id}/networks`, {
+            config: config,
+        });
+    }
+
+    public async delete_network(machine_id: string, inst_id: string): Promise<undefined> {
+        await this.client.delete<string>(`/machines/${machine_id}/networks/${inst_id}`);
     }
 
     public captcha_url() {

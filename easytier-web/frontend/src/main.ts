@@ -5,6 +5,7 @@ import App from './App.vue'
 import EasytierFrontendLib from 'easytier-frontend-lib'
 import PrimeVue from 'primevue/config'
 import Aura from '@primevue/themes/aura'
+import ConfirmationService from 'primevue/confirmationservice';
 
 createApp(App).use(PrimeVue,
     {
@@ -20,4 +21,4 @@ createApp(App).use(PrimeVue,
             }
         }
     }
-).use(EasytierFrontendLib).mount('#app')
+).use(ConfirmationService).use(EasytierFrontendLib).mount('#app')

@@ -18,8 +18,7 @@ use crate::client_manager::ClientManager;
 
 use super::users::AuthSession;
 use super::{
-    convert_db_error, other_error, AppState, AppStateInner, Error, ErrorKind, HttpHandleError,
-    RpcError,
+    convert_db_error, other_error, AppState, AppStateInner, Error, HttpHandleError, RpcError,
 };
 
 fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
@@ -28,7 +27,9 @@ fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
         RpcError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
         _ => StatusCode::BAD_GATEWAY,
     };
-    let error = Error::from(&e);
+    let error = Error {
+        message: format!("{:?}", e),
+    };
     (status_code, Json(error))
 }
 
@@ -81,24 +82,14 @@ impl NetworkApi {
         let Some(result) = client_mgr.get_session_by_machine_id(machine_id) else {
             return Err((
                 StatusCode::NOT_FOUND,
-                Error {
-                    error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
-                        error_message: format!("No such session: {}", machine_id),
-                    })),
-                }
-                .into(),
+                other_error(format!("No such session: {}", machine_id)).into(),
             ));
         };
 
         let Some(token) = result.get_token().await else {
             return Err((
                 StatusCode::UNAUTHORIZED,
-                Error {
-                    error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
-                        error_message: "No token reported".to_string(),
-                    })),
-                }
-                .into(),
+                other_error(format!("No token reported")).into(),
             ));
         };
 
@@ -110,12 +101,7 @@ impl NetworkApi {
         {
             return Err((
                 StatusCode::FORBIDDEN,
-                Error {
-                    error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
-                        error_message: "Token mismatch".to_string(),
-                    })),
-                }
-                .into(),
+                other_error(format!("Token mismatch")).into(),
             ));
         }
 
@@ -127,21 +113,22 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<ValidateConfigJsonReq>,
-    ) -> Result<Json<Void>, HttpHandleError> {
+    ) -> Result<Json<ValidateConfigResponse>, HttpHandleError> {
         let config = payload.config;
         let result =
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
 
         let c = result.scoped_rpc_client();
-        c.validate_config(
-            BaseController::default(),
-            ValidateConfigRequest {
-                config: Some(config),
-            },
-        )
-        .await
-        .map_err(convert_rpc_error)?;
-        Ok(Void::default().into())
+        let ret = c
+            .validate_config(
+                BaseController::default(),
+                ValidateConfigRequest {
+                    config: Some(config),
+                },
+            )
+            .await
+            .map_err(convert_rpc_error)?;
+        Ok(ret.into())
     }
 
     async fn handle_run_network_instance(

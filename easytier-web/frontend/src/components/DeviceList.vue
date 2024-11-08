@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import ApiClient from '../modules/api';
-import { Status, NetworkTypes } from 'easytier-frontend-lib'
-import { Button, Column, DataTable, Drawer, Toolbar, IftaLabel, Select } from 'primevue';
+import ApiClient, { ValidateConfigResponse } from '../modules/api';
+import { Config, Status, NetworkTypes } from 'easytier-frontend-lib'
+import { Button, Column, DataTable, Drawer, Toolbar, IftaLabel, Select, Dialog, ConfirmPopup, useConfirm } from 'primevue';
 
 function toHexString(uint64: bigint, padding = 9): string {
     let hexString = uint64.toString(16);
@@ -62,7 +62,7 @@ const instanceIdList = computed(() => {
     console.log("options", options);
     return options;
 });
-const selectedInstanceId = ref<string | null>(null);
+const selectedInstanceId = ref<any | null>(null);
 const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
 
 const loadDevices = async () => {
@@ -84,21 +84,32 @@ const loadDevices = async () => {
     console.log(deviceList.value);
 };
 
-const loadDeviceInfo = async () => {
-    console.log("loadDeviceInfo");
+interface SelectedDevice {
+    machine_id: string;
+    instance_id: string;
+}
+
+const checkDeviceSelected = (): SelectedDevice => {
     let machine_id = selectedDevice.value?.machine_id;
     let inst_id = selectedInstanceId.value?.uuid;
-    console.log("machine_id", machine_id, "inst_id", inst_id);
-    if (!machine_id || !inst_id) {
+    if (machine_id && inst_id) {
+        return { machine_id, instance_id: inst_id };
+    } else {
+        throw new Error("No device selected");
+    }
+}
+
+const loadDeviceInfo = async () => {
+    let selectedDevice = checkDeviceSelected();
+    if (!selectedDevice) {
         return;
     }
 
-    let ret = await api?.get_network_info(machine_id, inst_id);
-    let device_info = ret[inst_id]
-    console.log("network info", device_info);
+    let ret = await api?.get_network_info(selectedDevice.machine_id, selectedDevice.instance_id);
+    let device_info = ret[selectedDevice.instance_id]
 
     curNetworkInfo.value = {
-        instance_id: inst_id,
+        instance_id: selectedDevice.instance_id,
         running: device_info.running,
         error_msg: device_info.error_msg,
         detail: device_info,
@@ -106,19 +117,85 @@ const loadDeviceInfo = async () => {
 }
 
 onMounted(async () => {
-    await loadDevices();
+    setInterval(loadDevices, 1000);
     setInterval(loadDeviceInfo, 1000);
 });
 
 const visibleRight = ref(false);
+
+const showCreateNetworkDialog = ref(false);
+const newNetworkConfig = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAULT_NETWORK_CONFIG());
+
+const verifyNetworkConfig = async (): Promise<ValidateConfigResponse | undefined> => {
+    let machine_id = selectedDevice.value?.machine_id;
+    if (!machine_id) {
+        throw new Error("No machine selected");
+    }
+
+    if (!newNetworkConfig.value) {
+        throw new Error("No network config");
+    }
+
+    let ret = await api?.validate_config(machine_id, newNetworkConfig.value);
+    console.log("verifyNetworkConfig", ret);
+    return ret;
+}
+
+const createNewNetwork = async () => {
+    let config = await verifyNetworkConfig();
+    if (!config) {
+        return;
+    }
+
+    let machine_id = selectedDevice.value?.machine_id;
+    if (!machine_id) {
+        throw new Error("No machine selected");
+    }
+
+    let ret = await api?.run_network(machine_id, config?.toml_config);
+    console.log("createNewNetwork", ret);
+    showCreateNetworkDialog.value = false;
+    await loadDevices();
+}
+
+const confirm = useConfirm();
+const confirmDeleteNetwork = (event: any) => {
+    confirm.require({
+        target: event.currentTarget,
+        message: 'Do you want to delete this network?',
+        icon: 'pi pi-info-circle',
+        rejectProps: {
+            label: 'Cancel',
+            severity: 'secondary',
+            outlined: true
+        },
+        acceptProps: {
+            label: 'Delete',
+            severity: 'danger'
+        },
+        accept: async () => {
+            const ret = checkDeviceSelected();
+            await api?.delete_network(ret?.machine_id, ret?.instance_id);
+            await loadDevices();
+        },
+        reject: () => {
+            return;
+        }
+    });
+};
 
 </script>
 
 <style scoped></style>
 
 <template>
-    <DataTable :value="deviceList" tableStyle="min-width: 50rem" @rowSelect="visibleRight = true"
-        @rowUnselect="visibleRight = false" selectionMode="single" v-model:selection="selectedDevice" :metaKeySelection="true">
+    <ConfirmPopup></ConfirmPopup>
+    <Dialog v-model:visible="showCreateNetworkDialog" modal header="Create New Network" :style="{ width: '55rem' }">
+        <Config :cur-network="newNetworkConfig" @run-network="createNewNetwork"></Config>
+    </Dialog>
+
+    <DataTable :value="deviceList" tableStyle="min-width: 50rem" :metaKeySelection="true" sortField="hostname"
+        :sortOrder="-1">
         <template #header>
             <div class="text-xl font-bold">Device List</div>
         </template>
@@ -127,6 +204,12 @@ const visibleRight = ref(false);
         <Column field="running_network_count" header="Running Network Count" sortable style="width: 150px"></Column>
         <Column field="report_time" header="Report Time" sortable style="width: 150px"></Column>
         <Column field="easytier_version" header="EasyTier Version" sortable style="width: 150px"></Column>
+        <Column class="w-24 !text-end">
+            <template #body="{ data }">
+                <Button icon="pi pi-search" @click="selectedDevice = data; visibleRight = true" severity="secondary"
+                    rounded></Button>
+            </template>
+        </Column>
         <template #footer>
             <div class="flex justify-start">
                 <Button icon="pi pi-refresh" label="Reload" severity="warn" @click="loadDevices" />
@@ -134,18 +217,22 @@ const visibleRight = ref(false);
         </template>
     </DataTable>
 
-    <Drawer v-model:visible="visibleRight" header="Right Drawer" position="right" class="w-1/3">
+    <Drawer v-model:visible="visibleRight" header="Device Management" position="right" class="w-1/2 min-w-96">
         <Toolbar>
             <template #start>
                 <IftaLabel>
-                    <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid" inputId="dd-inst-id"
-                        placeholder="Select Instance" />
+                    <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid"
+                        inputId="dd-inst-id" placeholder="Select Instance" />
                     <label class="mr-3" for="dd-inst-id">Network</label>
                 </IftaLabel>
             </template>
 
             <template #end>
-                <Button>Create New Network</Button>
+                <div class="gap-x-3 flex">
+                    <Button @click="confirmDeleteNetwork($event)" icon="pi pi-minus" severity="danger" label="Delete"
+                        iconPos="right" />
+                    <Button @click="showCreateNetworkDialog = true" icon="pi pi-plus" label="Create" iconPos="right" />
+                </div>
             </template>
         </Toolbar>
 

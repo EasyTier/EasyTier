@@ -43,16 +43,16 @@ type AppState = State<AppStateInner>;
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListSessionJsonResp(Vec<StorageToken>);
 
-pub type Error = proto::error::Error;
-pub type ErrorKind = proto::error::error::ErrorKind;
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct Error {
+    message: String,
+}
 type RpcError = rpc_types::error::Error;
 type HttpHandleError = (StatusCode, Json<Error>);
 
 pub fn other_error<T: ToString>(error_message: T) -> Error {
     Error {
-        error_kind: Some(ErrorKind::OtherError(proto::error::OtherError {
-            error_message: error_message.to_string(),
-        })),
+        message: error_message.to_string(),
     }
 }
 
