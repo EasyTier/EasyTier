@@ -1,0 +1,67 @@
+name: Build EasyTier-web
+
+on:
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v2
+      with:
+        node-version: '18'
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Build Frontend
+      working-directory: ./easytier-web/frontend
+      run: |
+        npm install
+        npm run build
+
+    - name: Build Backend
+      working-directory: ./easytier-web
+      run: |
+        cargo build --release
+
+    - name: Package Windows Build
+      if: matrix.os == 'windows-latest'
+      run: |
+        mkdir release
+        copy easytier-web\target\release\easytier-web.exe release\
+        7z a -tzip easytier-web-windows.zip .\release\*
+
+    - name: Package Linux Build
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        mkdir release
+        cp easytier-web/target/release/easytier-web release/
+        tar -czf easytier-web-linux.tar.gz release/
+
+    - name: Upload Windows Artifact
+      if: matrix.os == 'windows-latest'
+      uses: actions/upload-artifact@v2
+      with:
+        name: easytier-web-windows
+        path: easytier-web-windows.zip
+
+    - name: Upload Linux Artifact
+      if: matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v2
+      with:
+        name: easytier-web-linux
+        path: easytier-web-linux.tar.gz
