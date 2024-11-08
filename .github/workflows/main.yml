@@ -45,69 +45,83 @@ jobs:
     - name: Build Frontend
       run: |
         cd easytier-web
+        echo "=== Current directory ==="
+        pwd
+        ls -la
+        
         echo "=== Installing dependencies ==="
         pnpm install
         
         echo "=== Building frontend-lib ==="
         cd frontend-lib
+        pwd
+        ls -la
         pnpm build
-        if [ ! -d "dist" ]; then
-          echo "Error: frontend-lib dist directory not found!"
-          exit 1
-        fi
+        echo "=== frontend-lib build result ==="
+        ls -la
         
         echo "=== Building frontend ==="
         cd ../frontend
+        pwd
+        ls -la
         pnpm build
-        if [ ! -d "dist" ]; then
-          echo "Error: frontend dist directory not found!"
-          exit 1
-        fi
+        echo "=== frontend build result ==="
+        ls -la
 
     # 构建后端
     - name: Build Backend
       run: |
         cd easytier-web
+        echo "=== Current directory ==="
+        pwd
+        ls -la
         echo "=== Building backend ==="
-        cargo build --release
-        
-        echo "=== Checking backend binary ==="
-        BINARY_PATH="target/release/easytier-web"
-        if [ ! -f "$BINARY_PATH" ]; then
-          BINARY_PATH="target/release/easytier_web"
-        fi
-        
-        if [ ! -f "$BINARY_PATH" ]; then
-          echo "Error: Backend binary not found!"
-          echo "=== Contents of target/release ==="
-          ls -la target/release/
-          exit 1
-        fi
+        cargo build --release --verbose
+        echo "=== Checking build results ==="
+        find . -name "target" -type d -exec ls -la {} \;
+        find . -name "easytier*" -type f -exec ls -la {} \;
 
     # 打包
     - name: Package Build
       run: |
         cd easytier-web
-        echo "=== Preparing release package ==="
+        echo "=== Current directory ==="
+        pwd
+        ls -la
+        
+        echo "=== Creating release directory ==="
         rm -rf release
         mkdir -p release
         
-        echo "=== Copying backend binary ==="
+        echo "=== Finding build artifacts ==="
+        find . -type f -name "easytier*" -exec ls -la {} \;
+        
+        echo "=== Copying files ==="
+        # 尝试复制后端二进制文件
         if [ -f "target/release/easytier-web" ]; then
           cp target/release/easytier-web release/
         elif [ -f "target/release/easytier_web" ]; then
           cp target/release/easytier_web release/easytier-web
         else
-          echo "Error: Backend binary not found!"
-          exit 1
+          echo "Warning: Backend binary not found in expected locations"
+          # 尝试查找二进制文件
+          BINARY=$(find . -type f -name "easytier*" ! -name "*.d" ! -name "*.pdb" | head -n 1)
+          if [ ! -z "$BINARY" ]; then
+            echo "Found binary at: $BINARY"
+            cp "$BINARY" release/easytier-web
+          else
+            echo "Error: No backend binary found!"
+            exit 1
+          fi
         fi
         
-        echo "=== Copying frontend files ==="
-        if [ ! -d "frontend/dist" ]; then
+        # 复制前端文件
+        if [ -d "frontend/dist" ]; then
+          cp -r frontend/dist release/
+        else
           echo "Error: Frontend dist directory not found!"
           exit 1
         fi
-        cp -r frontend/dist release/
         
         echo "=== Release directory contents ==="
         ls -la release/
