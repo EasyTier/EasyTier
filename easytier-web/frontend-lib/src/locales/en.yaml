@@ -1,0 +1,114 @@
+network: Network
+networking_method: Networking Method
+public_server: Public Server
+manual: Manual
+standalone: Standalone
+virtual_ipv4: Virtual IPv4
+virtual_ipv4_dhcp: DHCP
+network_name: Network Name
+network_secret: Network Secret
+public_server_url: Public Server URL
+peer_urls: Peer URLs
+proxy_cidrs: Subnet Proxy CIDRs
+enable_vpn_portal: Enable VPN Portal
+vpn_portal_listen_port: VPN Portal Listen Port
+vpn_portal_client_network: Client Sub Network
+dev_name: TUN interface name
+advanced_settings: Advanced Settings
+basic_settings: Basic Settings
+listener_urls: Listener URLs
+rpc_port: RPC Port
+config_network: Config Network
+running: Running
+error_msg: Error Message
+detail: Detail
+add_new_network: New Network
+del_cur_network: Delete Current Network
+select_network: Select Network
+network_instances: Network Instances
+instance_id: Instance ID
+network_infos: Network Infos
+parse_network_config: Parse Network Config
+retain_network_instance: Retain Network Instance
+collect_network_infos: Collect Network Infos
+settings: Settings
+exchange_language: 切换中文
+logging: Logging
+logging_level_info: Info
+logging_level_debug: Debug
+logging_level_warn: Warn
+logging_level_trace: Trace
+logging_level_off: Off
+logging_open_dir: Open Log Directory
+logging_copy_dir: Copy Log Path
+disable_auto_launch: Disable Launch on Reboot
+enable_auto_launch: Enable Launch on Reboot
+exit: Exit
+use_latency_first: Latency First Mode
+chips_placeholder: 'e.g: {0}, press Enter to add'
+hostname_placeholder: 'Leave blank and default to host name: {0}'
+dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
+off_text: Press to disable
+on_text: Press to enable
+show_config: Show Config
+close: Close
+my_node_info: My Node Info
+peer_count: Connected
+upload: Upload
+download: Download
+show_vpn_portal_config: Show VPN Portal Config
+vpn_portal_config: VPN Portal Config
+show_event_log: Show Event Log
+event_log: Event Log
+peer_info: Peer Info
+route_cost: Route Cost
+hostname: Hostname
+latency: Latency
+upload_bytes: Upload
+download_bytes: Download
+loss_rate: Loss Rate
+
+status:
+  version: Version
+  local: Local
+  server: Server
+  relay: Relay
+
+run_network: Run Network
+stop_network: Stop Network
+network_running: running
+network_stopped: stopped
+dhcp_experimental_warning: Experimental warning! if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
+
+tray:
+  show: Show / Hide
+  exit: Exit
+
+about:
+  title: About
+  version: Version
+  author: Author
+  homepage: Homepage
+  license: License
+  description: 'EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.'
+  check_update: Check Update
+
+event:
+  Unknown: Unknown
+  TunDeviceReady: TunDeviceReady
+  TunDeviceError: TunDeviceError
+  PeerAdded: PeerAdded
+  PeerRemoved: PeerRemoved
+  PeerConnAdded: PeerConnAdded
+  PeerConnRemoved: PeerConnRemoved
+  ListenerAdded: ListenerAdded
+  ListenerAddFailed: ListenerAddFailed
+  ListenerAcceptFailed: ListenerAcceptFailed
+  ConnectionAccepted: ConnectionAccepted
+  ConnectionError: ConnectionError
+  Connecting: Connecting
+  ConnectError: ConnectError
+  VpnPortalClientConnected: VpnPortalClientConnected
+  VpnPortalClientDisconnected: VpnPortalClientDisconnected
+  DhcpIpv4Changed: DhcpIpv4Changed
+  DhcpIpv4Conflicted: DhcpIpv4Conflicted

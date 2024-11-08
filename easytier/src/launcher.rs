@@ -5,7 +5,10 @@ use std::{
 
 use crate::{
     common::{
-        config::{ConfigLoader, TomlConfigLoader},
+        config::{
+            gen_default_flags, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
+            VpnPortalConfig,
+        },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         stun::StunInfoCollectorTrait,
@@ -14,6 +17,7 @@ use crate::{
     peers::rpc_service::PeerManagerRpcService,
     proto::cli::{list_peer_route_pair, PeerInfo, Route},
 };
+use anyhow::Context;
 use chrono::{DateTime, Local};
 use tokio::{sync::broadcast, task::JoinSet};
 
@@ -386,5 +390,134 @@ impl NetworkInstance {
         } else {
             None
         }
+    }
+}
+
+pub type NetworkingMethod = crate::proto::web::NetworkingMethod;
+pub type NetworkConfig = crate::proto::web::NetworkConfig;
+
+impl NetworkConfig {
+    pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
+        let cfg = TomlConfigLoader::default();
+        cfg.set_id(
+            self.instance_id
+                .clone()
+                .unwrap_or(uuid::Uuid::new_v4().to_string())
+                .parse()
+                .with_context(|| format!("failed to parse instance id: {:?}", self.instance_id))?,
+        );
+        cfg.set_hostname(self.hostname.clone());
+        cfg.set_dhcp(self.dhcp.unwrap_or_default());
+        cfg.set_inst_name(self.network_name.clone().unwrap_or_default());
+        cfg.set_network_identity(NetworkIdentity::new(
+            self.network_name.clone().unwrap_or_default(),
+            self.network_secret.clone().unwrap_or_default(),
+        ));
+
+        if !cfg.get_dhcp() {
+            let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
+            if virtual_ipv4.len() > 0 {
+                let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
+                    .parse()
+                    .with_context(|| {
+                        format!(
+                            "failed to parse ipv4 inet address: {}, {:?}",
+                            virtual_ipv4, self.network_length
+                        )
+                    })?;
+                cfg.set_ipv4(Some(ip));
+            }
+        }
+
+        match NetworkingMethod::try_from(self.networking_method.unwrap_or_default())
+            .unwrap_or_default()
+        {
+            NetworkingMethod::PublicServer => {
+                let public_server_url = self.public_server_url.clone().unwrap_or_default();
+                cfg.set_peers(vec![PeerConfig {
+                    uri: public_server_url.parse().with_context(|| {
+                        format!("failed to parse public server uri: {}", public_server_url)
+                    })?,
+                }]);
+            }
+            NetworkingMethod::Manual => {
+                let mut peers = vec![];
+                for peer_url in self.peer_urls.iter() {
+                    if peer_url.is_empty() {
+                        continue;
+                    }
+                    peers.push(PeerConfig {
+                        uri: peer_url
+                            .parse()
+                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                    });
+                }
+
+                cfg.set_peers(peers);
+            }
+            NetworkingMethod::Standalone => {}
+        }
+
+        let mut listener_urls = vec![];
+        for listener_url in self.listener_urls.iter() {
+            if listener_url.is_empty() {
+                continue;
+            }
+            listener_urls.push(
+                listener_url
+                    .parse()
+                    .with_context(|| format!("failed to parse listener uri: {}", listener_url))?,
+            );
+        }
+        cfg.set_listeners(listener_urls);
+
+        for n in self.proxy_cidrs.iter() {
+            cfg.add_proxy_cidr(
+                n.parse()
+                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
+            );
+        }
+
+        cfg.set_rpc_portal(
+            format!("0.0.0.0:{}", self.rpc_port.unwrap_or_default())
+                .parse()
+                .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
+        );
+
+        if self.enable_vpn_portal.unwrap_or_default() {
+            let cidr = format!(
+                "{}/{}",
+                self.vpn_portal_client_network_addr
+                    .clone()
+                    .unwrap_or_default(),
+                self.vpn_portal_client_network_len.unwrap_or(24)
+            );
+            cfg.set_vpn_portal_config(VpnPortalConfig {
+                client_cidr: cidr
+                    .parse()
+                    .with_context(|| format!("failed to parse vpn portal client cidr: {}", cidr))?,
+                wireguard_listen: format!(
+                    "0.0.0.0:{}",
+                    self.vpn_portal_listen_port.unwrap_or_default()
+                )
+                .parse()
+                .with_context(|| {
+                    format!(
+                        "failed to parse vpn portal wireguard listen port. {:?}",
+                        self.vpn_portal_listen_port
+                    )
+                })?,
+            });
+        }
+        let mut flags = gen_default_flags();
+        if let Some(latency_first) = self.latency_first {
+            flags.latency_first = latency_first;
+        }
+
+        if let Some(dev_name) = self.dev_name.clone() {
+            flags.dev_name = dev_name;
+        }
+        cfg.set_flags(flags);
+        Ok(cfg)
     }
 }

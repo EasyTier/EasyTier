@@ -99,8 +99,8 @@ jobs:
 
       - name: Install frontend dependencies
         run: |
-          (cd easytier-gui; pnpm install)
-          (cd tauri-plugin-vpnservice; pnpm install; pnpm build)
+          pnpm -r install
+          pnpm -r build
 
       - name: Cargo cache
         uses: actions/cache@v4

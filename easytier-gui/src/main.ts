@@ -52,7 +52,7 @@ async function main() {
       },
     },
   })
-  app.use(ToastService)
+  app.use(ToastService as any)
   app.mount('#app')
 }
 
