@@ -31,11 +31,6 @@ jobs:
         node-version: '18'
         cache: 'pnpm'
 
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: stable
-
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
@@ -48,26 +43,34 @@ jobs:
         echo "Current directory structure:"
         find . -maxdepth 3 -type d
 
+    # 在根目录安装所有前端依赖
+    - name: Install Frontend Dependencies
+      working-directory: ./easytier-web
+      run: |
+        pnpm install
+
+    # 构建前端库
     - name: Build Frontend-lib
+      working-directory: ./easytier-web
       run: |
-        cd easytier-web/frontend-lib
-        pnpm install
-        pnpm build
+        pnpm --filter frontend-lib build
 
+    # 构建前端
     - name: Build Frontend
+      working-directory: ./easytier-web
       run: |
-        cd easytier-web/frontend
-        pnpm install
-        pnpm build
+        pnpm --filter frontend build
 
+    # 构建后端
     - name: Build Backend
+      working-directory: ./easytier-web
       run: |
-        cd easytier-web
         cargo build --release
 
+    # 打包
     - name: Package Build
+      working-directory: ./easytier-web
       run: |
-        cd easytier-web
         mkdir -p release
         cp target/release/easytier-web release/
         cp -r frontend/dist release/
