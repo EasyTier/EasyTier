@@ -70,13 +70,16 @@ jobs:
         rustup target add x86_64-unknown-linux-gnu
         cargo clean
         cargo build --release --target x86_64-unknown-linux-gnu
+        ls -la target/x86_64-unknown-linux-gnu/release/
 
     # 打包
     - name: Package Build
       working-directory: ./easytier-web
       run: |
         mkdir -p release
-        cp target/x86_64-unknown-linux-gnu/release/easytier-web release/
+        find target -name "easytier-web" -type f -exec ls -l {} \;
+        find target -name "easytier_web" -type f -exec ls -l {} \;
+        cp target/x86_64-unknown-linux-gnu/release/easytier_web release/easytier-web || cp target/x86_64-unknown-linux-gnu/release/easytier-web release/
         cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
