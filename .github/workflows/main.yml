@@ -19,6 +19,15 @@ jobs:
       with:
         submodules: 'recursive'
 
+    - name: Debug Initial Structure
+      run: |
+        echo "=== Current location ==="
+        pwd
+        echo "=== Repository contents ==="
+        ls -la
+        echo "=== Detailed tree ==="
+        tree || find . -type d
+
     - name: Setup pnpm
       uses: pnpm/action-setup@v2
       with:
@@ -39,63 +48,58 @@ jobs:
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler
-
-    - name: Debug Repository Structure
-      run: |
-        pwd
-        echo "=== Repository root ==="
-        ls -la
-        echo "=== easytier-web directory ==="
-        ls -la easytier-web
+        sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler tree
 
     # 在根目录安装所有前端依赖
     - name: Install Frontend Dependencies
-      working-directory: easytier-web
       run: |
+        cd easytier-web
+        echo "=== Current directory before pnpm install ==="
         pwd
         ls -la
         pnpm install
 
     # 构建前端库
     - name: Build Frontend-lib
-      working-directory: easytier-web
       run: |
+        cd easytier-web
+        echo "=== Building frontend-lib ==="
         pnpm --filter frontend-lib build
+        echo "=== frontend-lib build result ==="
+        ls -la frontend-lib/dist || true
 
     # 构建前端
     - name: Build Frontend
-      working-directory: easytier-web
       run: |
+        cd easytier-web
+        echo "=== Building frontend ==="
         pnpm --filter frontend build
+        echo "=== frontend build result ==="
+        ls -la frontend/dist || true
 
     # 构建后端
     - name: Build Backend
-      working-directory: easytier-web
-      env:
-        PROTOC: /usr/bin/protoc
       run: |
-        echo "=== Current directory ==="
-        pwd
-        echo "=== Directory contents ==="
-        ls -la
+        cd easytier-web
         echo "=== Building backend ==="
         cargo build --release
-        echo "=== Build complete, checking target directory ==="
+        echo "=== Backend build result ==="
         ls -la target/release || true
+        find . -type f -name "easytier*"
 
     # 打包
     - name: Package Build
-      working-directory: easytier-web
       run: |
-        echo "=== Current directory structure ==="
-        pwd
-        ls -la
-        echo "=== Creating release package ==="
+        cd easytier-web
+        echo "=== Preparing release package ==="
         mkdir -p release
-        find . -type f -name "easytier*" -exec ls -l {} \;
-        find . -type f -name "easytier*" -exec cp {} release/easytier-web \;
-        cp -r frontend/dist release/
+        echo "=== Finding build artifacts ==="
+        find . -type f -name "easytier*"
+        echo "=== Copying files ==="
+        cp target/release/easytier-web release/ || cp target/release/easytier_web release/easytier-web || echo "No backend binary found"
+        cp -r frontend/dist release/ || echo "No frontend dist found"
+        echo "=== Release directory contents ==="
+        ls -la release/
         tar -czf easytier-web-linux.tar.gz release/
 
     - name: Upload Artifact
