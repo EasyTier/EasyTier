@@ -184,6 +184,9 @@ importers:
       vite:
         specifier: ^5.4.10
         version: 5.4.10(@types/node@22.8.6)
+      vite-plugin-singlefile:
+        specifier: ^2.0.3
+        version: 2.0.3(rollup@4.24.3)(vite@5.4.10(@types/node@22.8.6))
       vue-tsc:
         specifier: ^2.1.8
         version: 2.1.10(typescript@5.6.3)
@@ -3775,6 +3778,13 @@ packages:
     peerDependenciesMeta:
       '@nuxt/kit':
         optional: true
+
+  vite-plugin-singlefile@2.0.3:
+    resolution: {integrity: sha512-OEBEwdX8nCGPSdtaB1D7rryYnT+YfPTS8ojL1TDyeUF+bWDCTfRriQqw6T0vl9EbKI/KMg7szN3awst6cLrKkA==}
+    engines: {node: '>18.0.0'}
+    peerDependencies:
+      rollup: ^4.24.3
+      vite: ^5.4.10
 
   vite-plugin-vue-devtools@7.6.3:
     resolution: {integrity: sha512-p1rZMKzreWqxj9U05RaxY1vDoOhGYhA6iX8vKfo4nD6jqTmVoGjjk+U1g5HYwwTCdr/eck3kzO2f4gnPCjqVKA==}
@@ -7982,6 +7992,12 @@ snapshots:
     transitivePeerDependencies:
       - rollup
       - supports-color
+
+  vite-plugin-singlefile@2.0.3(rollup@4.24.3)(vite@5.4.10(@types/node@22.8.6)):
+    dependencies:
+      micromatch: 4.0.8
+      rollup: 4.24.3
+      vite: 5.4.10(@types/node@22.8.6)
 
   vite-plugin-vue-devtools@7.6.3(rollup@4.24.3)(vite@5.4.10(@types/node@22.8.6))(vue@3.4.38(typescript@5.6.3)):
     dependencies:
