@@ -31,17 +31,17 @@ jobs:
         node-version: '18'
         cache: 'pnpm'
 
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+        target: x86_64-unknown-linux-gnu
+
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev build-essential
-
-    - name: Debug Directory Structure
-      run: |
-        pwd
-        ls -la
-        echo "Current directory structure:"
-        find . -maxdepth 3 -type d
 
     # 在根目录安装所有前端依赖
     - name: Install Frontend Dependencies
@@ -65,14 +65,16 @@ jobs:
     - name: Build Backend
       working-directory: ./easytier-web
       run: |
-        cargo build --release
+        rustup target add x86_64-unknown-linux-gnu
+        cargo clean
+        cargo build --release --target x86_64-unknown-linux-gnu
 
     # 打包
     - name: Package Build
       working-directory: ./easytier-web
       run: |
         mkdir -p release
-        cp target/release/easytier-web release/
+        cp target/x86_64-unknown-linux-gnu/release/easytier-web release/
         cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
