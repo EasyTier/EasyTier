@@ -41,7 +41,7 @@ jobs:
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y pkg-config libssl-dev build-essential
+        sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler
 
     # 在根目录安装所有前端依赖
     - name: Install Frontend Dependencies
@@ -64,6 +64,8 @@ jobs:
     # 构建后端
     - name: Build Backend
       working-directory: ./easytier-web
+      env:
+        PROTOC: /usr/bin/protoc
       run: |
         rustup target add x86_64-unknown-linux-gnu
         cargo clean
