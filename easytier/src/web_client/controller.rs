@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 
-use anyhow::Context as _;
 use dashmap::DashMap;
 
 use crate::{

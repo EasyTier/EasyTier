@@ -11,7 +11,7 @@ use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::scoped_task::ScopedTask;
-use easytier::proto::{self, rpc_types};
+use easytier::proto::{rpc_types};
 use network::NetworkApi;
 use sea_orm::DbErr;
 use tokio::net::TcpListener;

@@ -6,7 +6,7 @@ use std::{
 use crate::{
     common::{
         config::{
-            gen_default_flags, ConfigLoader, Flags, NetworkIdentity, PeerConfig, TomlConfigLoader,
+            gen_default_flags, ConfigLoader, NetworkIdentity, PeerConfig, TomlConfigLoader,
             VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
@@ -19,7 +19,6 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
-use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, task::JoinSet};
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
