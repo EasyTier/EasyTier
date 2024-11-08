@@ -212,7 +212,7 @@ const confirmDeleteNetwork = (event: any) => {
         </Column>
         <template #footer>
             <div class="flex justify-start">
-                <Button icon="pi pi-refresh" label="Reload" severity="warn" @click="loadDevices" />
+                <Button icon="pi pi-refresh" label="Reload" severity="info" @click="loadDevices" />
             </div>
         </template>
     </DataTable>
