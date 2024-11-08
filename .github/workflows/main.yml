@@ -5,7 +5,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-C target-feature=+crt-static"
 
 jobs:
   build:
@@ -44,12 +43,11 @@ jobs:
       with:
         toolchain: stable
         components: rustfmt, clippy
-        targets: x86_64-unknown-linux-gnu
 
     - name: Install Linux Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler musl-tools
+        sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler
 
     # 在根目录安装所有前端依赖
     - name: Install Frontend Dependencies
@@ -76,17 +74,28 @@ jobs:
       working-directory: ./easytier-web
       env:
         PROTOC: /usr/bin/protoc
-        RUSTFLAGS: "-C target-feature=+crt-static"
       run: |
-        rustup target add x86_64-unknown-linux-musl
-        cargo build --release --target x86_64-unknown-linux-musl
+        echo "=== Current directory ==="
+        pwd
+        echo "=== Directory contents ==="
+        ls -la
+        echo "=== Building backend ==="
+        cargo build --release
+        echo "=== Build complete, checking target directory ==="
+        find target -type f -name "easytier*"
 
     # 打包
     - name: Package Build
       working-directory: ./easytier-web
       run: |
+        echo "=== Current directory structure ==="
+        pwd
+        ls -la
+        echo "=== Target directory content ==="
+        find target -type f -name "easytier*"
+        echo "=== Creating release package ==="
         mkdir -p release
-        cp target/x86_64-unknown-linux-musl/release/easytier-web release/ || cp target/x86_64-unknown-linux-musl/release/easytier_web release/easytier-web
+        cp target/release/easytier_web release/easytier-web
         cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
