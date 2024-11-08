@@ -11,7 +11,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [ubuntu-latest]  # 只保留 ubuntu
       fail-fast: false
     runs-on: ${{ matrix.os }}
 
@@ -35,19 +35,12 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        targets: ${{ matrix.os == 'windows-latest' && 'x86_64-pc-windows-msvc' || 'x86_64-unknown-linux-gnu' }}
+        targets: x86_64-unknown-linux-gnu  # 只保留 Linux target
 
     - name: Install Linux Dependencies
-      if: matrix.os == 'ubuntu-latest'
       run: |
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev build-essential
-
-    - name: Install Windows Dependencies
-      if: matrix.os == 'windows-latest'
-      run: |
-        vcpkg integrate install
-        vcpkg install openssl:x64-windows-static
 
     - name: Cache cargo registry
       uses: actions/cache@v3
@@ -70,32 +63,12 @@ jobs:
         pnpm install
         pnpm build
 
-    - name: Build Backend (Windows)
-      if: matrix.os == 'windows-latest'
-      working-directory: ./easytier-web
-      run: |
-        $env:OPENSSL_DIR = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
-        $env:OPENSSL_STATIC = "true"
-        cargo build --release
-
-    - name: Build Backend (Linux)
-      if: matrix.os == 'ubuntu-latest'
+    - name: Build Backend
       working-directory: ./easytier-web
       run: |
         cargo build --release
 
-    - name: Package Windows Build
-      if: matrix.os == 'windows-latest'
-      shell: pwsh
-      working-directory: ./easytier-web
-      run: |
-        New-Item -ItemType Directory -Force -Path release
-        Copy-Item "target\release\easytier-web.exe" -Destination "release\"
-        Copy-Item -Recurse "frontend\dist" -Destination "release\dist"
-        Compress-Archive -Path "release\*" -DestinationPath "easytier-web-windows.zip"
-
-    - name: Package Linux Build
-      if: matrix.os == 'ubuntu-latest'
+    - name: Package Build
       working-directory: ./easytier-web
       run: |
         mkdir -p release
@@ -103,16 +76,7 @@ jobs:
         cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
-    - name: Upload Windows Artifact
-      if: matrix.os == 'windows-latest'
-      uses: actions/upload-artifact@v4
-      with:
-        name: easytier-web-windows
-        path: easytier-web/easytier-web-windows.zip
-        retention-days: 5
-
-    - name: Upload Linux Artifact
-      if: matrix.os == 'ubuntu-latest'
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: easytier-web-linux
