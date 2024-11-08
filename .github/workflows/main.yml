@@ -17,19 +17,21 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 8
+
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '18'
+        cache: 'pnpm'
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
-        components: rustfmt, clippy
-
-    - name: Cache Rust Dependencies
-      uses: Swatinem/rust-cache@v2
 
     - name: Install Linux Dependencies
       if: matrix.os == 'ubuntu-latest'
@@ -37,48 +39,38 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev
 
-    - name: Build Frontend (Windows)
-      if: matrix.os == 'windows-latest'
+    - name: Build Frontend
       working-directory: ./easytier-web/frontend
       run: |
-        npm install -g typescript
-        npm install -g vue-tsc
-        npm install
-        npm run build
-      env:
-        NODE_OPTIONS: "--max-old-space-size=4096"
+        pnpm install
+        pnpm build
 
-    - name: Build Frontend (Linux)
-      if: matrix.os == 'ubuntu-latest'
-      working-directory: ./easytier-web/frontend
+    - name: Build Frontend-lib
+      working-directory: ./easytier-web/frontend-lib
       run: |
-        npm install -g typescript
-        npm install -g vue-tsc
-        npm install
-        npm run build
-      env:
-        NODE_OPTIONS: "--max-old-space-size=4096"
+        pnpm install
+        pnpm build
 
     - name: Build Backend
       working-directory: ./easytier-web
       run: |
         cargo build --release
-      env:
-        RUSTFLAGS: "-C target-feature=+crt-static"
 
     - name: Package Windows Build
       if: matrix.os == 'windows-latest'
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Force -Path release
-        Copy-Item "easytier-web\target\release\easytier-web.exe" -Destination "release\"
+        Copy-Item "target\release\easytier-web.exe" -Destination "release\"
+        Copy-Item -Recurse "frontend\dist" -Destination "release\dist"
         Compress-Archive -Path "release\*" -DestinationPath "easytier-web-windows.zip"
 
     - name: Package Linux Build
       if: matrix.os == 'ubuntu-latest'
       run: |
         mkdir -p release
-        cp easytier-web/target/release/easytier-web release/
+        cp target/release/easytier-web release/
+        cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
     - name: Upload Windows Artifact
