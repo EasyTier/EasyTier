@@ -19,15 +19,6 @@ jobs:
       with:
         submodules: 'recursive'
 
-    - name: Debug Initial Structure
-      run: |
-        echo "=== Current location ==="
-        pwd
-        echo "=== Repository contents ==="
-        ls -la
-        echo "=== Detailed tree ==="
-        tree || find . -type d
-
     - name: Setup pnpm
       uses: pnpm/action-setup@v2
       with:
@@ -50,32 +41,28 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler tree
 
-    # 在根目录安装所有前端依赖
-    - name: Install Frontend Dependencies
-      run: |
-        cd easytier-web
-        echo "=== Current directory before pnpm install ==="
-        pwd
-        ls -la
-        pnpm install
-
-    # 构建前端库
-    - name: Build Frontend-lib
-      run: |
-        cd easytier-web
-        echo "=== Building frontend-lib ==="
-        pnpm --filter frontend-lib build
-        echo "=== frontend-lib build result ==="
-        ls -la frontend-lib/dist || true
-
     # 构建前端
     - name: Build Frontend
       run: |
         cd easytier-web
+        echo "=== Installing dependencies ==="
+        pnpm install
+        
+        echo "=== Building frontend-lib ==="
+        cd frontend-lib
+        pnpm build
+        if [ ! -d "dist" ]; then
+          echo "Error: frontend-lib dist directory not found!"
+          exit 1
+        fi
+        
         echo "=== Building frontend ==="
-        pnpm --filter frontend build
-        echo "=== frontend build result ==="
-        ls -la frontend/dist || true
+        cd ../frontend
+        pnpm build
+        if [ ! -d "dist" ]; then
+          echo "Error: frontend dist directory not found!"
+          exit 1
+        fi
 
     # 构建后端
     - name: Build Backend
@@ -83,24 +70,50 @@ jobs:
         cd easytier-web
         echo "=== Building backend ==="
         cargo build --release
-        echo "=== Backend build result ==="
-        ls -la target/release || true
-        find . -type f -name "easytier*"
+        
+        echo "=== Checking backend binary ==="
+        BINARY_PATH="target/release/easytier-web"
+        if [ ! -f "$BINARY_PATH" ]; then
+          BINARY_PATH="target/release/easytier_web"
+        fi
+        
+        if [ ! -f "$BINARY_PATH" ]; then
+          echo "Error: Backend binary not found!"
+          echo "=== Contents of target/release ==="
+          ls -la target/release/
+          exit 1
+        fi
 
     # 打包
     - name: Package Build
       run: |
         cd easytier-web
         echo "=== Preparing release package ==="
+        rm -rf release
         mkdir -p release
-        echo "=== Finding build artifacts ==="
-        find . -type f -name "easytier*"
-        echo "=== Copying files ==="
-        cp target/release/easytier-web release/ || cp target/release/easytier_web release/easytier-web || echo "No backend binary found"
-        cp -r frontend/dist release/ || echo "No frontend dist found"
+        
+        echo "=== Copying backend binary ==="
+        if [ -f "target/release/easytier-web" ]; then
+          cp target/release/easytier-web release/
+        elif [ -f "target/release/easytier_web" ]; then
+          cp target/release/easytier_web release/easytier-web
+        else
+          echo "Error: Backend binary not found!"
+          exit 1
+        fi
+        
+        echo "=== Copying frontend files ==="
+        if [ ! -d "frontend/dist" ]; then
+          echo "Error: Frontend dist directory not found!"
+          exit 1
+        fi
+        cp -r frontend/dist release/
+        
         echo "=== Release directory contents ==="
         ls -la release/
-        tar -czf easytier-web-linux.tar.gz release/
+        
+        echo "=== Creating archive ==="
+        tar -czvf easytier-web-linux.tar.gz release/
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
