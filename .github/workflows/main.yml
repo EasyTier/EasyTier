@@ -46,14 +46,12 @@ jobs:
         pwd
         echo "=== Repository root ==="
         ls -la
-        echo "=== EasyTier directory ==="
-        ls -la EasyTier || ls -la easytier
         echo "=== easytier-web directory ==="
-        ls -la EasyTier/easytier-web || ls -la easytier-web
+        ls -la easytier-web
 
     # 在根目录安装所有前端依赖
     - name: Install Frontend Dependencies
-      working-directory: EasyTier/easytier-web
+      working-directory: easytier-web
       run: |
         pwd
         ls -la
@@ -61,19 +59,19 @@ jobs:
 
     # 构建前端库
     - name: Build Frontend-lib
-      working-directory: EasyTier/easytier-web
+      working-directory: easytier-web
       run: |
         pnpm --filter frontend-lib build
 
     # 构建前端
     - name: Build Frontend
-      working-directory: EasyTier/easytier-web
+      working-directory: easytier-web
       run: |
         pnpm --filter frontend build
 
     # 构建后端
     - name: Build Backend
-      working-directory: EasyTier/easytier-web
+      working-directory: easytier-web
       env:
         PROTOC: /usr/bin/protoc
       run: |
@@ -88,7 +86,7 @@ jobs:
 
     # 打包
     - name: Package Build
-      working-directory: EasyTier/easytier-web
+      working-directory: easytier-web
       run: |
         echo "=== Current directory structure ==="
         pwd
@@ -104,5 +102,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: easytier-web-linux
-        path: EasyTier/easytier-web/easytier-web-linux.tar.gz
+        path: easytier-web/easytier-web-linux.tar.gz
         retention-days: 5
