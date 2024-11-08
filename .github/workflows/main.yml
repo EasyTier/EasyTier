@@ -95,7 +95,7 @@ jobs:
         find target -type f -name "easytier*"
         echo "=== Creating release package ==="
         mkdir -p release
-        cp target/release/easytier_web release/easytier-web
+        cp target/release/easytier-web release/ || cp target/release/easytier_web release/ || cp target/release/easytier-web-server release/easytier-web
         cp -r frontend/dist release/
         tar -czf easytier-web-linux.tar.gz release/
 
