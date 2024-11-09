@@ -6,8 +6,9 @@ use easytier::{
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{self, controller::BaseController},
         web::{
-            HeartbeatRequest, HeartbeatResponse, RunNetworkInstanceRequest, WebClientService,
-            WebClientServiceClientFactory, WebServerService, WebServerServiceServer,
+            HeartbeatRequest, HeartbeatResponse, NetworkConfig, RunNetworkInstanceRequest,
+            WebClientService, WebClientServiceClientFactory, WebServerService,
+            WebServerServiceServer,
         },
     },
     tunnel::Tunnel,
@@ -160,7 +161,13 @@ impl Session {
                 );
                 return;
             }
+
             let req = req.unwrap();
+            if req.machine_id.is_none() {
+                tracing::warn!(?req, "Machine id is not set, ignore");
+                continue;
+            }
+
             let running_inst_ids = req
                 .running_network_instances
                 .iter()
@@ -187,7 +194,11 @@ impl Session {
                 }
             };
 
-            let local_configs = match storage.db.list_network_configs(user_id, true).await {
+            let local_configs = match storage
+                .db
+                .list_network_configs(user_id, Some(req.machine_id.unwrap().into()), true)
+                .await
+            {
                 Ok(configs) => configs,
                 Err(e) => {
                     tracing::error!("Failed to list network configs, error: {:?}", e);
@@ -206,7 +217,9 @@ impl Session {
                         BaseController::default(),
                         RunNetworkInstanceRequest {
                             inst_id: Some(c.network_instance_id.clone().into()),
-                            config: c.network_config,
+                            config: Some(
+                                serde_json::from_str::<NetworkConfig>(&c.network_config).unwrap(),
+                            ),
                         },
                     )
                     .await;

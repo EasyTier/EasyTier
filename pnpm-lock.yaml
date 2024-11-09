@@ -162,6 +162,9 @@ importers:
       vue:
         specifier: ^3.5.12
         version: 3.5.12(typescript@5.6.3)
+      vue-router:
+        specifier: '4'
+        version: 4.4.5(vue@3.5.12(typescript@5.6.3))
     devDependencies:
       '@types/node':
         specifier: ^22.8.6
@@ -202,6 +205,9 @@ importers:
       aura:
         specifier: link:@primevue\themes\aura
         version: link:@primevue/themes/aura
+      axios:
+        specifier: ^1.7.7
+        version: 1.7.7
       ip-num:
         specifier: 1.5.1
         version: 1.5.1
@@ -8090,6 +8096,11 @@ snapshots:
     dependencies:
       '@vue/devtools-api': 6.6.4
       vue: 3.4.38(typescript@5.6.3)
+
+  vue-router@4.4.5(vue@3.5.12(typescript@5.6.3)):
+    dependencies:
+      '@vue/devtools-api': 6.6.4
+      vue: 3.5.12(typescript@5.6.3)
 
   vue-tsc@2.1.10(typescript@5.6.3):
     dependencies:

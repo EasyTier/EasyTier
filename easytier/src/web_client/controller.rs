@@ -100,7 +100,10 @@ impl WebClientService for Controller {
         _: BaseController,
         req: RunNetworkInstanceRequest,
     ) -> Result<RunNetworkInstanceResponse, rpc_types::error::Error> {
-        let cfg = TomlConfigLoader::new_from_str(&req.config)?;
+        if req.config.is_none() {
+            return Err(anyhow::anyhow!("config is required").into());
+        }
+        let cfg = req.config.unwrap().gen_config()?;
         let id = cfg.get_id();
         if let Some(inst_id) = req.inst_id {
             cfg.set_id(inst_id.into());

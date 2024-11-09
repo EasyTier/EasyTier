@@ -65,6 +65,7 @@ impl Db {
     pub async fn insert_or_update_user_network_config<T: ToString>(
         &self,
         user_id: UserIdInDb,
+        device_id: uuid::Uuid,
         network_inst_id: uuid::Uuid,
         network_config: T,
     ) -> Result<(), DbErr> {
@@ -81,6 +82,7 @@ impl Db {
             .to_owned();
         let insert_m = urnc::ActiveModel {
             user_id: sea_orm::Set(user_id),
+            device_id: sea_orm::Set(device_id.to_string()),
             network_instance_id: sea_orm::Set(network_inst_id.to_string()),
             network_config: sea_orm::Set(network_config.to_string()),
             disabled: sea_orm::Set(false),
@@ -116,6 +118,7 @@ impl Db {
     pub async fn list_network_configs(
         &self,
         user_id: UserIdInDb,
+        device_id: Option<uuid::Uuid>,
         only_enabled: bool,
     ) -> Result<Vec<user_running_network_configs::Model>, DbErr> {
         use entity::user_running_network_configs as urnc;
@@ -123,6 +126,11 @@ impl Db {
         let configs = urnc::Entity::find().filter(urnc::Column::UserId.eq(user_id));
         let configs = if only_enabled {
             configs.filter(urnc::Column::Disabled.eq(false))
+        } else {
+            configs
+        };
+        let configs = if let Some(device_id) = device_id {
+            configs.filter(urnc::Column::DeviceId.eq(device_id.to_string()))
         } else {
             configs
         };
@@ -167,8 +175,9 @@ mod tests {
         let user_id = 1;
         let network_config = "test_config";
         let inst_id = uuid::Uuid::new_v4();
+        let device_id = uuid::Uuid::new_v4();
 
-        db.insert_or_update_user_network_config(user_id, inst_id, network_config)
+        db.insert_or_update_user_network_config(user_id, device_id, inst_id, network_config)
             .await
             .unwrap();
 
@@ -183,7 +192,7 @@ mod tests {
 
         // overwrite the config
         let network_config = "test_config2";
-        db.insert_or_update_user_network_config(user_id, inst_id, network_config)
+        db.insert_or_update_user_network_config(user_id, device_id, inst_id, network_config)
             .await
             .unwrap();
 
@@ -193,14 +202,17 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        println!("{:?}", result2);
+        println!("device: {}, {:?}", device_id, result2);
         assert_eq!(result2.network_config, network_config);
 
         assert_eq!(result.create_time, result2.create_time);
         assert_ne!(result.update_time, result2.update_time);
 
         assert_eq!(
-            db.list_network_configs(user_id, true).await.unwrap().len(),
+            db.list_network_configs(user_id, Some(device_id), true)
+                .await
+                .unwrap()
+                .len(),
             1
         );
 

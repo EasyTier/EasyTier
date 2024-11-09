@@ -181,7 +181,7 @@ const myNodeInfoChips = computed(() => {
   const listeners = my_node_info.listeners
   for (const [idx, listener] of listeners?.entries()) {
     chips.push({
-      label: `Listener ${idx}: ${listener}`,
+      label: `Listener ${idx}: ${listener.url}`,
       icon: '',
     } as Chip)
   }
@@ -295,7 +295,7 @@ function showEventLogs() {
   if (!detail)
     return
 
-  dialogContent.value = detail.events
+  dialogContent.value = detail.events.map((event: string) => JSON.parse(event))
   dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
@@ -309,10 +309,11 @@ function showEventLogs() {
       </ScrollPanel>
       <Timeline v-else :value="dialogContent">
         <template #opposite="slotProps">
-          <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item[0])) }}</small>
+          <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
+            }}</small>
         </template>
         <template #content="slotProps">
-          <HumanEvent :event="slotProps.item[1]" />
+          <HumanEvent :event="slotProps.item.event" />
         </template>
       </Timeline>
     </Dialog>

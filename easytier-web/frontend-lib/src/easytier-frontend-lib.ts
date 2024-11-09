@@ -7,6 +7,10 @@ import PrimeVue from 'primevue/config'
 
 import I18nUtils from './modules/i18n'
 import * as NetworkTypes from './types/network'
+import HumanEvent from './components/HumanEvent.vue';
+import Tooltip from 'primevue/tooltip';
+import * as Api from './modules/api';
+import * as Utils from './modules/utils';
 
 export default {
     install: (app: App) => {
@@ -27,7 +31,9 @@ export default {
 
         app.component('Config', Config);
         app.component('Status', Status);
+        app.component('HumanEvent', HumanEvent);
+        app.directive('tooltip', Tooltip);
     }
 };
 
-export { Config, Status, I18nUtils, NetworkTypes };
+export { Config, Status, I18nUtils, NetworkTypes, Api, Utils };
