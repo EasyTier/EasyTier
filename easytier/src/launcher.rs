@@ -31,7 +31,7 @@ pub struct Event {
 
 struct EasyTierData {
     events: RwLock<VecDeque<Event>>,
-    node_info: RwLock<MyNodeInfo>,
+    my_node_info: RwLock<MyNodeInfo>,
     routes: RwLock<Vec<Route>>,
     peers: RwLock<Vec<PeerInfo>>,
     tun_fd: Arc<RwLock<Option<i32>>>,
@@ -46,7 +46,7 @@ impl Default for EasyTierData {
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
-            node_info: RwLock::new(MyNodeInfo::default()),
+            my_node_info: RwLock::new(MyNodeInfo::default()),
             routes: RwLock::new(Vec::new()),
             peers: RwLock::new(Vec::new()),
             tun_fd: Arc::new(RwLock::new(None)),
@@ -162,7 +162,7 @@ impl EasyTierLauncher {
                         global_ctx_c.get_flags().dev_name.clone();
 
                     let node_info = MyNodeInfo {
-                        virtual_ipv4: global_ctx_c.get_ipv4().map(|x| x.address().into()),
+                        virtual_ipv4: global_ctx_c.get_ipv4().map(|ip| ip.into()),
                         hostname: global_ctx_c.get_hostname(),
                         version: EASYTIER_VERSION.to_string(),
                         ips: Some(global_ctx_c.get_ip_collector().collect_ip_addrs().await),
@@ -180,7 +180,7 @@ impl EasyTierLauncher {
                                 .await,
                         ),
                     };
-                    *data_c.node_info.write().unwrap() = node_info.clone();
+                    *data_c.my_node_info.write().unwrap() = node_info.clone();
                     *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
                     *data_c.peers.write().unwrap() = PeerManagerRpcService::new(peer_mgr_c.clone())
                         .list_peers()
@@ -282,7 +282,7 @@ impl EasyTierLauncher {
     }
 
     pub fn get_node_info(&self) -> MyNodeInfo {
-        self.data.node_info.read().unwrap().clone()
+        self.data.my_node_info.read().unwrap().clone()
     }
 
     pub fn get_routes(&self) -> Vec<Route> {
@@ -352,7 +352,6 @@ impl NetworkInstance {
                 .iter()
                 .map(|e| serde_json::to_string(e).unwrap())
                 .collect(),
-            node_info: Some(launcher.get_node_info()),
             routes,
             peers,
             peer_route_pairs,
