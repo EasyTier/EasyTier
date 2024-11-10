@@ -9,6 +9,8 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
     pub user_id: i32,
+    #[sea_orm(column_type = "Text")]
+    pub device_id: String,
     #[sea_orm(column_type = "Text", unique)]
     pub network_instance_id: String,
     #[sea_orm(column_type = "Text")]

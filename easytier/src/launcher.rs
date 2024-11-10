@@ -23,8 +23,14 @@ use tokio::{sync::broadcast, task::JoinSet};
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
+#[derive(serde::Serialize, Clone)]
+pub struct Event {
+    time: DateTime<Local>,
+    event: GlobalCtxEvent,
+}
+
 struct EasyTierData {
-    events: RwLock<VecDeque<(DateTime<Local>, GlobalCtxEvent)>>,
+    events: RwLock<VecDeque<Event>>,
     node_info: RwLock<MyNodeInfo>,
     routes: RwLock<Vec<Route>>,
     peers: RwLock<Vec<PeerInfo>>,
@@ -79,9 +85,12 @@ impl EasyTierLauncher {
     async fn handle_easytier_event(event: GlobalCtxEvent, data: &EasyTierData) {
         let mut events = data.events.write().unwrap();
         let _ = data.event_subscriber.read().unwrap().send(event.clone());
-        events.push_back((chrono::Local::now(), event));
-        if events.len() > 100 {
-            events.pop_front();
+        events.push_front(Event {
+            time: chrono::Local::now(),
+            event: event,
+        });
+        if events.len() > 20 {
+            events.pop_back();
         }
     }
 
@@ -267,7 +276,7 @@ impl EasyTierLauncher {
         self.data.tun_dev_name.read().unwrap().clone()
     }
 
-    pub fn get_events(&self) -> Vec<(DateTime<Local>, GlobalCtxEvent)> {
+    pub fn get_events(&self) -> Vec<Event> {
         let events = self.data.events.read().unwrap();
         events.iter().cloned().collect()
     }
@@ -341,7 +350,7 @@ impl NetworkInstance {
             events: launcher
                 .get_events()
                 .iter()
-                .map(|(t, e)| (t.to_string(), format!("{:?}", e)))
+                .map(|e| serde_json::to_string(e).unwrap())
                 .collect(),
             node_info: Some(launcher.get_node_info()),
             routes,

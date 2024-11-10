@@ -11,7 +11,7 @@ use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::scoped_task::ScopedTask;
-use easytier::proto::{rpc_types};
+use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
 use tokio::net::TcpListener;
@@ -42,6 +42,11 @@ type AppState = State<AppStateInner>;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListSessionJsonResp(Vec<StorageToken>);
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct GetSummaryJsonResp {
+    device_count: u32,
+}
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct Error {
@@ -98,14 +103,30 @@ impl RestfulServer {
         auth_session: AuthSession,
         State(client_mgr): AppState,
     ) -> Result<Json<ListSessionJsonResp>, HttpHandleError> {
-        let pers = auth_session
+        let perms = auth_session
             .backend
             .get_group_permissions(auth_session.user.as_ref().unwrap())
             .await
             .unwrap();
-        println!("{:?}", pers);
+        println!("{:?}", perms);
         let ret = client_mgr.list_sessions().await;
         Ok(ListSessionJsonResp(ret).into())
+    }
+
+    async fn handle_get_summary(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+    ) -> Result<Json<GetSummaryJsonResp>, HttpHandleError> {
+        let Some(user) = auth_session.user else {
+            return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
+        };
+
+        let machines = client_mgr.list_machine_by_token(user.tokens[0].clone());
+
+        Ok(GetSummaryJsonResp {
+            device_count: machines.len() as u32,
+        }
+        .into())
     }
 
     pub async fn start(&mut self) -> Result<(), anyhow::Error> {
@@ -143,6 +164,7 @@ impl RestfulServer {
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
 
         let app = Router::new()
+            .route("/api/v1/summary", get(Self::handle_get_summary))
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
             .merge(self.network_api.build_route())
             .route_layer(login_required!(Backend))

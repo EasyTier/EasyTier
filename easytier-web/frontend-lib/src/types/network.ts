@@ -84,7 +84,7 @@ export interface NetworkInstance {
 export interface NetworkInstanceRunningInfo {
   dev_name: string
   my_node_info: NodeInfo
-  events: Record<string, any>
+  events: Array<string>,
   node_info: NodeInfo
   routes: Route[]
   peers: PeerInfo[]
@@ -102,6 +102,10 @@ export interface Ipv6Addr {
   part2: number
   part3: number
   part4: number
+}
+
+export interface Url {
+  url: string
 }
 
 export interface NodeInfo {
@@ -127,7 +131,7 @@ export interface NodeInfo {
     }[]
   }
   stun_info: StunInfo
-  listeners: string[]
+  listeners: Url[]
   vpn_portal_cfg?: string
 }
 

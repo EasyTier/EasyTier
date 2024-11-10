@@ -21,6 +21,7 @@
     "@primevue/themes": "^4.2.1",
     "@vueuse/core": "^11.1.0",
     "aura": "link:@primevue\\themes\\aura",
+    "axios": "^1.7.7",
     "ip-num": "1.5.1",
     "primeicons": "^7.0.0",
     "primevue": "^4.2.1",

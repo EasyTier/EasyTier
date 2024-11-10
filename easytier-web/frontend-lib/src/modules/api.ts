@@ -11,8 +11,8 @@ export interface LoginResponse {
 }
 
 export interface RegisterResponse {
+    success: boolean;
     message: string;
-    user: any; // 同上
 }
 
 // 定义请求体数据结构
@@ -22,21 +22,27 @@ export interface Credential {
 }
 
 export interface RegisterData {
-    credential: Credential;
+    credentials: Credential;
     captcha: string;
 }
 
-class ApiClient {
-    private client: AxiosInstance;
+export interface Summary {
+    device_count: number;
+}
 
-    constructor(baseUrl: string) {
+export class ApiClient {
+    private client: AxiosInstance;
+    private authFailedCb: Function | undefined;
+
+    constructor(baseUrl: string, authFailedCb: Function | undefined = undefined) {
         this.client = axios.create({
-            baseURL: baseUrl,
+            baseURL: baseUrl + '/api/v1',
             withCredentials: true, // 如果需要支持跨域携带cookie
             headers: {
                 'Content-Type': 'application/json',
             },
         });
+        this.authFailedCb = authFailedCb;
 
         // 添加请求拦截器
         this.client.interceptors.request.use((config: InternalAxiosRequestConfig) => {
@@ -47,12 +53,18 @@ class ApiClient {
 
         // 添加响应拦截器
         this.client.interceptors.response.use((response: AxiosResponse) => {
-            console.log('Axios Response:', response);
+            console.debug('Axios Response:', response);
             return response.data; // 假设服务器返回的数据都在data属性中
         }, (error: any) => {
             if (error.response) {
-                // 请求已发出，但是服务器响应的状态码不在2xx范围
-                console.error('Response Error:', error.response.data);
+                let response: AxiosResponse = error.response;
+                if (response.status == 401 && this.authFailedCb) {
+                    console.error('Unauthorized:', response.data);
+                    this.authFailedCb();
+                } else {
+                    // 请求已发出，但是服务器响应的状态码不在2xx范围
+                    console.error('Response Error:', error.response.data);
+                }
             } else if (error.request) {
                 // 请求已发出，但是没有收到响应
                 console.error('Request Error:', error.request);
@@ -62,6 +74,20 @@ class ApiClient {
             }
             return Promise.reject(error);
         });
+    }
+
+    // 注册
+    public async register(data: RegisterData): Promise<RegisterResponse> {
+        try {
+            const response = await this.client.post<RegisterResponse>('/auth/register', data);
+            console.log("register response:", response);
+            return { success: true, message: 'Register success', };
+        } catch (error) {
+            if (error instanceof AxiosError) {
+                return { success: false, message: 'Failed to register, error: ' + JSON.stringify(error.response?.data), };
+            }
+            return { success: false, message: 'Unknown error, error: ' + error, };
+        }
     }
 
     // 登录
@@ -82,10 +108,24 @@ class ApiClient {
         }
     }
 
-    // 注册
-    public async register(data: RegisterData): Promise<RegisterResponse> {
-        const response = await this.client.post<RegisterResponse>('/auth/register', data);
-        return response.data;
+    public async logout() {
+        await this.client.get('/auth/logout');
+        if (this.authFailedCb) {
+            this.authFailedCb();
+        }
+    }
+
+    public async change_password(new_password: string) {
+        await this.client.put('/auth/password', { new_password: new_password });
+    }
+
+    public async check_login_status() {
+        try {
+            await this.client.get('/auth/check_login_status');
+            return true;
+        } catch (error) {
+            return false;
+        }
     }
 
     public async list_session() {
@@ -103,6 +143,11 @@ class ApiClient {
         return response.info.map;
     }
 
+    public async get_network_config(machine_id: string, inst_id: string): Promise<any> {
+        const response = await this.client.get<any, Record<string, any>>('/machines/' + machine_id + '/networks/config/' + inst_id);
+        return response;
+    }
+
     public async validate_config(machine_id: string, config: any): Promise<ValidateConfigResponse> {
         const response = await this.client.post<any, ValidateConfigResponse>(`/machines/${machine_id}/validate-config`, {
             config: config,
@@ -110,7 +155,7 @@ class ApiClient {
         return response;
     }
 
-    public async run_network(machine_id: string, config: string): Promise<undefined> {
+    public async run_network(machine_id: string, config: any): Promise<undefined> {
         await this.client.post<string>(`/machines/${machine_id}/networks`, {
             config: config,
         });
@@ -120,8 +165,13 @@ class ApiClient {
         await this.client.delete<string>(`/machines/${machine_id}/networks/${inst_id}`);
     }
 
+    public async get_summary(): Promise<Summary> {
+        const response = await this.client.get<any, Summary>('/summary');
+        return response;
+    }
+
     public captcha_url() {
-        return this.client.defaults.baseURL + 'auth/captcha';
+        return this.client.defaults.baseURL + '/auth/captcha';
     }
 }
 

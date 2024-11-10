@@ -43,6 +43,7 @@ clap = { version = "4.4.8", features = [
     "wrap_help",
 ] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 uuid = { version = "1.5.0", features = [
     "v4",
     "fast-rng",

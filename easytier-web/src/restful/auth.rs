@@ -22,6 +22,10 @@ pub struct LoginResult {
 pub fn router() -> Router<AppStateInner> {
     let r = Router::new()
         .route("/api/v1/auth/password", put(self::put::change_password))
+        .route(
+            "/api/v1/auth/check_login_status",
+            get(self::get::check_login_status),
+        )
         .route_layer(login_required!(Backend));
     Router::new()
         .merge(r)
@@ -166,6 +170,19 @@ mod get {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json::from(other_error(format!("{:?}", e))),
             )),
+        }
+    }
+
+    pub async fn check_login_status(
+        auth_session: AuthSession,
+    ) -> Result<Json<Void>, HttpHandleError> {
+        if auth_session.user.is_some() {
+            Ok(Json(Void::default()))
+        } else {
+            Err((
+                StatusCode::UNAUTHORIZED,
+                Json::from(other_error("Not logged in")),
+            ))
         }
     }
 }
