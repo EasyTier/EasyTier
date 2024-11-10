@@ -8,12 +8,17 @@ import PrimeVue from 'primevue/config'
 import I18nUtils from './modules/i18n'
 import * as NetworkTypes from './types/network'
 import HumanEvent from './components/HumanEvent.vue';
-import Tooltip from 'primevue/tooltip';
+
+// do not use primevue tooltip, it has serious memory leak issue
+// https://github.com/primefaces/primevue/issues/5856
+// import Tooltip from 'primevue/tooltip';
+import { vTooltip } from 'floating-vue';
+
 import * as Api from './modules/api';
 import * as Utils from './modules/utils';
 
 export default {
-    install: (app: App) => {
+    install: (app: App): void => {
         app.use(I18nUtils.i18n, { useScope: 'global' })
         app.use(PrimeVue, {
             theme: {
@@ -32,7 +37,7 @@ export default {
         app.component('Config', Config);
         app.component('Status', Status);
         app.component('HumanEvent', HumanEvent);
-        app.directive('tooltip', Tooltip);
+        app.directive('tooltip', vTooltip as any);
     }
 };
 

@@ -5,7 +5,7 @@ Default permissions for the plugin
 - `allow-ping`
 - `allow-start-vpn`
 
-### Permission Table 
+## Permission Table
 
 <table>
 <tr>

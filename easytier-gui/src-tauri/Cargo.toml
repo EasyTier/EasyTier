@@ -15,10 +15,11 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0.0-rc", features = [] }
 
 [dependencies]
-tauri = { version = "2.0.0-rc", features = [
+tauri = { version = "2.1", features = [
     "tray-icon",
     "image-png",
     "image-ico",
+    "devtools",
 ] }
 
 serde = { version = "1", features = ["derive"] }
@@ -37,13 +38,13 @@ gethostname = "0.5"
 
 dunce = "1.0.4"
 
-tauri-plugin-shell = "2.0.0-rc"
-tauri-plugin-process = "2.0.0-rc"
-tauri-plugin-clipboard-manager = "2.0.0-rc"
-tauri-plugin-positioner = { version = "2.0.0-rc", features = ["tray-icon"] }
+tauri-plugin-shell = "2.0"
+tauri-plugin-process = "2.0"
+tauri-plugin-clipboard-manager = "2.0"
+tauri-plugin-positioner = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
-tauri-plugin-os = "2.0.0-rc"
-tauri-plugin-autostart = "2.0.0-rc"
+tauri-plugin-os = "2.0"
+tauri-plugin-autostart = "2.0"
 
 
 [features]
