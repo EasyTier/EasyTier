@@ -2047,7 +2047,7 @@ create_public_client_config() {
     
     # 定义公共节点列表
     local public_nodes=(
-        "tcp://public.easytiertop:11010"
+        "tcp://public.easytie.top:11010"
         "tcp://c.oee.icu:60006"
         "tcp://ah.nkbpal.cn:11010"
         "tcp://s1.ct8.pl:11010"
