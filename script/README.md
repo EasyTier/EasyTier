@@ -12,6 +12,8 @@ bash
 使用国内镜像加速
 
 bash <(curl -sL https://ghp.ci/https://raw.githubusercontent.com/CGG888/EasyTier/main/script/easytier.sh)
+
+
 备用镜像
 
 bash <(curl -sL https://mirror.ghproxy.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script/easytier.sh)
