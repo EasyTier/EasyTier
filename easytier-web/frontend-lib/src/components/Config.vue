@@ -8,7 +8,6 @@ import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   configInvalid?: boolean
-  instanceId?: string
   hostname?: string
 }>()
 

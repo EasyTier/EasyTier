@@ -1,26 +1,25 @@
-import type { NetworkConfig, NetworkInstance, NetworkInstanceRunningInfo } from '~/types/network'
-import { DEFAULT_NETWORK_CONFIG } from '~/types/network'
+import { NetworkTypes } from 'easytier-frontend-lib'
 
 export const useNetworkStore = defineStore('networkStore', {
   state: () => {
-    const networkList = [DEFAULT_NETWORK_CONFIG()]
+    const networkList = [NetworkTypes.DEFAULT_NETWORK_CONFIG()]
     return {
       // for initially empty lists
-      networkList: networkList as NetworkConfig[],
+      networkList: networkList as NetworkTypes.NetworkConfig[],
       // for data that is not yet loaded
       curNetwork: networkList[0],
 
       // uuid -> instance
-      instances: {} as Record<string, NetworkInstance>,
+      instances: {} as Record<string, NetworkTypes.NetworkInstance>,
 
-      networkInfos: {} as Record<string, NetworkInstanceRunningInfo>,
+      networkInfos: {} as Record<string, NetworkTypes.NetworkInstanceRunningInfo>,
 
       autoStartInstIds: [] as string[],
     }
   },
 
   getters: {
-    lastNetwork(): NetworkConfig {
+    lastNetwork(): NetworkTypes.NetworkConfig {
       return this.networkList[this.networkList.length - 1]
     },
 
@@ -28,7 +27,7 @@ export const useNetworkStore = defineStore('networkStore', {
       return this.curNetwork.instance_id
     },
 
-    networkInstances(): Array<NetworkInstance> {
+    networkInstances(): Array<NetworkTypes.NetworkInstance> {
       return Object.values(this.instances)
     },
 
@@ -39,7 +38,7 @@ export const useNetworkStore = defineStore('networkStore', {
 
   actions: {
     addNewNetwork() {
-      this.networkList.push(DEFAULT_NETWORK_CONFIG())
+      this.networkList.push(NetworkTypes.DEFAULT_NETWORK_CONFIG())
     },
 
     delCurNetwork() {
@@ -66,7 +65,7 @@ export const useNetworkStore = defineStore('networkStore', {
       this.instances = {}
     },
 
-    updateWithNetworkInfos(networkInfos: Record<string, NetworkInstanceRunningInfo>) {
+    updateWithNetworkInfos(networkInfos: Record<string, NetworkTypes.NetworkInstanceRunningInfo>) {
       this.networkInfos = networkInfos
       for (const [instanceId, info] of Object.entries(networkInfos)) {
         if (this.instances[instanceId] === undefined)
@@ -79,17 +78,17 @@ export const useNetworkStore = defineStore('networkStore', {
     },
 
     loadFromLocalStorage() {
-      let networkList: NetworkConfig[]
+      let networkList: NetworkTypes.NetworkConfig[]
 
       // if localStorage default is [{}], instanceId will be undefined
       networkList = JSON.parse(localStorage.getItem('networkList') || '[]')
       networkList = networkList.map((cfg) => {
-        return { ...DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkConfig
+        return { ...NetworkTypes.DEFAULT_NETWORK_CONFIG(), ...cfg } as NetworkTypes.NetworkConfig
       })
 
       // prevent a empty list from localStorage, should not happen
       if (networkList.length === 0)
-        networkList = [DEFAULT_NETWORK_CONFIG()]
+        networkList = [NetworkTypes.DEFAULT_NETWORK_CONFIG()]
 
       this.networkList = networkList
       this.curNetwork = this.networkList[0]

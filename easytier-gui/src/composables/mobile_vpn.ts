@@ -1,6 +1,8 @@
 import { addPluginListener } from '@tauri-apps/api/core'
 import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
-import type { Route } from '~/types/network'
+import { NetworkTypes, Utils } from 'easytier-frontend-lib'
+
+type Route = NetworkTypes.Route
 
 const networkStore = useNetworkStore()
 
@@ -122,10 +124,15 @@ async function onNetworkInstanceChange() {
     return
   }
 
-  const virtual_ip = curNetworkInfo?.node_info?.virtual_ipv4
+  const virtual_ip = Utils.ipv4ToString(curNetworkInfo?.my_node_info?.virtual_ipv4.address)
   if (!virtual_ip || !virtual_ip.length) {
     await doStopVpn()
     return
+  }
+
+  let network_length = curNetworkInfo?.my_node_info?.virtual_ipv4.network_length
+  if (!network_length) {
+    network_length = 24
   }
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes)
