@@ -494,7 +494,7 @@ define_messages() {
         MSG_UPDATE="更新 EasyTier"
         MSG_UNINSTALL="卸载 EasyTier"
         MSG_CONFIG="配置 EasyTier"
-        MSG_TOOLS="工"
+        MSG_TOOLS="工具"
         MSG_EXIT="退出"
         
         # 工具菜单
