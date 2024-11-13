@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 定义镜像源列表
-MIRROR_URLS=(
+MIRROR_URLS=
     "https://ghp.ci/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
     "https://mirror.ghproxy.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
     "https://hub.gitmirror.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
@@ -29,6 +29,13 @@ for script in utils.sh install.sh config.sh backup.sh; do
         exit 1
     fi
 done
+
+# 导入其他脚本
+#SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#source "${SCRIPT_DIR}/utils.sh"
+#source "${SCRIPT_DIR}/install.sh"
+#source "${SCRIPT_DIR}/config.sh"
+#source "${SCRIPT_DIR}/backup.sh"
 
 # 定义颜色变量
 RED_COLOR='\e[1;31m'
@@ -242,7 +249,7 @@ show_optimization_menu() {
         echo -e "${GREEN_COLOR}      系统优化工具${RES}"
         echo -e "${GREEN_COLOR}=================================${RES}"
         
-        echo -e "\n${BLUE_COLOR}化选项：${RES}"
+        echo -e "\n${BLUE_COLOR}优化选项：${RES}"
         echo "1. 自动优化系统"
         echo "2. 优化网络参数"
         echo "3. 优化服务配置"
@@ -500,7 +507,7 @@ define_messages() {
         # 工具菜单
         MSG_TOOLS_TITLE="EasyTier 工具"
         MSG_TOOLS_OPTIONS="工具选项"
-        MSG_SYSTEM_OPTIMIZE="系优化"
+        MSG_SYSTEM_OPTIMIZE="系统优化"
         MSG_DIAGNOSTIC="诊断工具"
         MSG_PERFORMANCE="性能监控"
         MSG_SECURITY="安全检查"
@@ -635,7 +642,7 @@ define_messages() {
 
 # 主执行流程
 main() {
-    # 查权限
+    # ��查权限
     check_permissions
     if [ $? -ne 0 ]; then
         exit 1

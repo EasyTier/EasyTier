@@ -67,9 +67,13 @@ WorkingDirectory=${INSTALL_PATH}
 
 # 环境变量
 Environment=EASYTIER_CONFIG=${config_file}
+Environment=RUST_BACKTRACE=1
 
 # 主程序
 ExecStart=/usr/sbin/easytier-core -c ${config_file}
+
+# PID 文件
+PIDFile=/run/easytier/${config_name}/easytier.pid
 
 # 停止和重启设置
 Restart=on-failure
@@ -80,6 +84,9 @@ KillMode=mixed
 KillSignal=SIGTERM
 
 # 资源限制
+CPUQuota=50%
+MemoryLimit=256M
+TasksMax=4096
 LimitNOFILE=65535
 LimitNPROC=65535
 
@@ -88,6 +95,10 @@ ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+
+# 网络设置
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target
@@ -100,7 +111,7 @@ EOF
     # 重载 systemd
     systemctl daemon-reload
     
-    # 验证服务文件
+    # 验证件
     if ! systemctl cat "easytier@${config_name}.service" >/dev/null 2>&1; then
         echo -e "${RED_COLOR}服务文件创建失败${RES}"
         return 1
@@ -160,40 +171,50 @@ create_configuration() {
     
     echo -e "\n${YELLOW_COLOR}2. 客户端模式${RES}"
     echo "   用于连接到已有的网络节点"
-    echo "   可以连接到您的私有服务器或其他公开的节点"
+    echo "   可以连接到您的私有服务器或社区公共节点"
+    echo "   支持连接 EasyTier 社区提供的公共节点集群"
     
     echo -e "\n${YELLOW_COLOR}3. 公共服务器模式${RES}"
     echo "   加入公共服务器节点集群，服务于社区"
     echo "   建议具有稳定公网IP的服务器选择此模式"
-    echo "   您的节点将帮助其他用户获得更好的网络体验"
-    
-    echo -e "\n${YELLOW_COLOR}4. 公共客户端模式${RES}"
-    echo "   连接到公共节点集群网络"
-    echo "   特别适合没有公网IP的用户"
-    echo "   可以利用公共节点集群获得稳定的网络服务"
     
     echo -e "\n${BLUE_COLOR}请选择${RES}"
     echo "1. 服务器模式 (创建新的网络)"
-    echo "2. 客户端模式 (连接到现有网络)"
+    echo "2. 客户端式 (连接到现有网络)"
     echo "3. 公共服务器模式 (加入公共网络)"
-    echo "4. 公共客户端模式 (连接公共节点)"
-    echo "0. 返回上级菜单"
+    echo "0. 返上菜单"
     
-    echo -n -e "\n请选择 [0-4]: "
-    read choice
-    
-    case "$choice" in
-        1) create_server_config ;;
-        2) create_client_config ;;
-        3) create_public_server_config ;;
-        4) create_public_client_config ;;
-        0) return 0 ;;
-        *)
-            echo -e "${RED_COLOR}无效选项${RES}"
-            sleep 1
-            create_configuration
-            ;;
-    esac
+    while true; do
+        echo -n -e "\n请选择 [0-3]: "
+        read mode_choice
+        
+        case "$mode_choice" in
+            1) 
+                create_server_config
+                break
+                ;;
+            2) 
+                if type create_client_config >/dev/null 2>&1; then
+                    create_client_config
+                else
+                    echo -e "${RED_COLOR}错误：客户端配置函数未定义${RES}"
+                    sleep 2
+                fi
+                break
+                ;;
+            3) 
+                create_public_server_config
+                break
+                ;;
+            0) 
+                return 0 
+                ;;
+            *)
+                echo -e "${RED_COLOR}无效选项${RES}"
+                sleep 1
+                ;;
+        esac
+    done
 }
 
 # 创建服务器配置
@@ -211,8 +232,8 @@ create_server_config() {
     
     echo -e "\n${BLUE_COLOR}创建服务器配置：${RES}"
     
-    # 显示配置文件信息
-    echo -e "\n${BLUE_COLOR}配置文件信息：${RES}"
+    # 显示配置文件息
+    echo -e "\n${BLUE_COLOR}配文件信息：${RES}"
     echo "置文件名: ${config_name}.conf"
     echo "配置文件路径: $config_dir/${config_name}.conf"
     echo -e "${YELLOW_COLOR}注意: 配置文件创建后可在上述路径找到${RES}"
@@ -227,11 +248,11 @@ create_server_config() {
     echo "配置文件: $config_dir/${config_name}.conf"
     
     # 启动服务
-    echo -e "\n${BLUE_COLOR}正在启动服务...${RES}"
+    echo -e "\n${BLUE_COLOR}正在动服务...${RES}"
     systemctl enable "easytier@${config_name}" >/dev/null 2>&1
     if systemctl start "easytier@${config_name}"; then
         echo -e "${GREEN_COLOR}服务启动成功！${RES}"
-        sleep 2  # 等待服务完全启动
+        sleep 2  # 等务全启动
         
         # 显示服务状态
         echo -e "\n${YELLOW_COLOR}服务状态：${RES}"
@@ -242,7 +263,7 @@ create_server_config() {
         echo "服务文件: /etc/systemd/system/easytier@${config_name}.service"
         echo "运行目录: /run/easytier/${config_name}"
         
-        # 获取服务器公网IP和配置信息
+        # 获取服务公IP和配置息
         local server_ip=$(curl -s ip.sb || curl -s ifconfig.me)
         local config_file="$config_dir/${config_name}.conf"
         local tcp_port=$(grep -A 5 "listeners = \[" "$config_file" | grep "tcp://" | cut -d':' -f3 | cut -d'"' -f1)
@@ -353,7 +374,7 @@ validate_config() {
         "network_secret"
     )
     
-    echo -e "\n${BLUE_COLOR}验证配置文件...${RES}"
+    echo -e "\n${BLUE_COLOR}验证置文件...${RES}"
     
     for field in "${required_fields[@]}"; do
         if ! grep -q "^$field = " "$config_file"; then
@@ -394,65 +415,74 @@ generate_server_config() {
     local enable_proxy="${13}"
     local proxy_networks="${14}"
     
-    # 从配置文件路径中提取配置名称
-    local instance_name=$(basename "$config_file" .conf)
+    # 从配置文件路径中提取配置名称和编号
+    local config_name=$(basename "$config_file" .conf)
+    local num=$(echo "$config_name" | grep -o '[0-9]*$')
+    [ -z "$num" ] && num=1
+    
+    # 生成 TUN 设备名称 - 修复这里
+    local tun_name=$(get_tun_device_name "server" "$num")
+    # 检查 TUN 设备名称是否已存在
+    while grep -r "dev_name = \"$tun_name\"" "$config_dir"/* >/dev/null 2>&1; do
+        ((num++))
+        tun_name=$(get_tun_device_name "server" "$num")
+    done
     
     # 生成配置文件
     cat > "$config_file" << EOF
-# 实例名称，用于在同一台机器上标识此 VPN 节点
-instance_name = "$instance_name"
-# 主机名，用于标识此设备的主机名
+# 实例名称
+instance_name = "$config_name"
+# 主机名
 hostname = "$(hostname)"
-# 实例 ID，一般为 UUID，在同一个 VPN 网络中唯一
+# 实例ID
 instance_id = "$(cat /proc/sys/kernel/random/uuid)"
-# 此 VPN 节点的 IPv4 地址，如果为空，则此节点将仅转发数据包，不会创建 TUN 设备
+# 虚拟IPv4地址
 ipv4 = "$ipv4"
-# 由 Easytier 自动确定并设置IP地址默认从10.0.0.1开始
+# DHCP设置
 dhcp = $dhcp
 
-# 监听器列表，于接受连接
+# 监听器列表
 listeners = [
     "tcp://0.0.0.0:${tcp_port}",
     "udp://0.0.0.0:${tcp_port}",
-    "wg://0.0.0.0:${wg_port}",
     "ws://0.0.0.0:${ws_port}/",
     "wss://0.0.0.0:${wss_port}/"
 ]
 
-# 退出节点列
+# 退出节点列表
 exit_nodes = []
 
-# 用于管理的 RPC 门户地址
+# RPC管理端口
 rpc_portal = "127.0.0.1:${rpc_port}"
 
 [network_identity]
-# 网络名称，用于标识 VPN 网络
+# 网络名称
 network_name = "$network_name"
-# 网络密钥，用于验证此节点属于 VPN 网络
+# 网络密钥
 network_secret = "$network_secret"
 
 $([ "$enable_vpn_portal" = "true" ] && echo "$vpn_portal_config")
 
 [flags]
-# 连接到对等节点使用的默认协议
+# 默认协议
 default_protocol = "tcp"
-# TUN 设备名称，如果为空，则使用默认名称
-dev_name = ""
-# 是否启用加密
+# TUN设备名称
+dev_name = "$tun_name"
+# 启用加密
 enable_encryption = true
-# 是否启用 IPv6 支持
+# 启用IPv6
 enable_ipv6 = true
-# TUN 设备 MTU
+# MTU设置
 mtu = 1380
-# 延迟优先模式，将尝试使用最低延迟路径转发流量，默认用最短路径
+# 延迟优先模式
 latency_first = false
-# 将节点配置为退节点
+# 退出节点
 enable_exit_node = false
-# 禁用 TUN 设备
+# 禁用TUN
 no_tun = false
-# 为子网代理启用 smoltcp 堆栈
+# 启用smoltcp
 use_smoltcp = $enable_proxy
-# 仅转发白名单网络的流量，支持通配符字符串
+# 外部网络白名单
 foreign_network_whitelist = "*"
 
 [log]
@@ -462,13 +492,13 @@ file = ""
 $([ "$enable_proxy" = "true" ] && echo "$proxy_networks")
 EOF
 
-    # 验证配置文件
+    # 验配置文件
     if ! validate_config "$config_file"; then
         echo -e "${RED_COLOR}配置文件验证败${RES}"
         return 1
     fi
     
-    # 设置配置文件权限
+    # 设置配置文限
     chmod 644 "$config_file"
     chown root:root "$config_file"
     
@@ -476,7 +506,7 @@ EOF
     return 0
 }
 
-# 修改端口和IP冲突检查函数
+# 修改端口和IP冲突检查函
 check_port_and_ip_conflicts() {
     local current_config="$1"
     local tcp_port="$2"
@@ -533,12 +563,12 @@ check_port_and_ip_conflicts() {
                 ;;
         esac
     else
-        echo -e "${GREEN_COLOR}WireGuard端口 $wg_port 可用${RES}"
+        echo -e "${GREEN_COLOR}WireGuard口 $wg_port 可用${RES}"
     fi
 
     # 检查WebSocket端口
     if ! check_port "$ws_port"; then
-        echo -e "${RED_COLOR}WebSocket端口 $ws_port 已被占用${RES}"
+        echo -e "${RED_COLOR}WebSocket口 $ws_port 已被占${RES}"
         echo -e "${YELLOW_COLOR}占用详情：${RES}"
         netstat -tunlp | grep ":$ws_port" || ss -tunlp | grep ":$ws_port"
         local new_ws_port=$(generate_random_port 12000)
@@ -556,7 +586,7 @@ check_port_and_ip_conflicts() {
                 ;;
         esac
     else
-        echo -e "${GREEN_COLOR}WebSocket端口 $ws_port 可用${RES}"
+        echo -e "${GREEN_COLOR}WebSocket端 $ws_port 可用${RES}"
     fi
 
     # 检查WebSocket(SSL)端口
@@ -588,7 +618,7 @@ check_port_and_ip_conflicts() {
         echo -e "${YELLOW_COLOR}用详情：${RES}"
         netstat -tunlp | grep ":$rpc_port" || ss -tunlp | grep ":$rpc_port"
         local new_rpc_port=$(generate_random_port 15000)
-        echo -e "${GREEN_COLOR}建议使用新端口: $new_rpc_port${RES}"
+        echo -e "${GREEN_COLOR}建议使用新口: $new_rpc_port${RES}"
         echo -n "是否使用新端口？[Y/n]: "
         read confirm
         case "$confirm" in
@@ -602,7 +632,7 @@ check_port_and_ip_conflicts() {
                 ;;
         esac
     else
-        echo -e "${GREEN_COLOR}RPC端口 $rpc_port 可用${RES}"
+        echo -e "${GREEN_COLOR}RPC口 $rpc_port 可用${RES}"
     fi
 
     # 更新全局变量
@@ -638,7 +668,7 @@ get_server_config_info() {
     if [ -z "$network_name" ]; then
         network_name="ET_$(generate_random_string 10)"
     elif [[ ! $network_name =~ ^ET_ ]]; then
-        # 如果用户输入的名称没有 ET_ 前缀，自动添加
+        # 如果用户输入的名称没有 ET_ 前，自动添加
         network_name="ET_${network_name}"
     fi
     
@@ -647,7 +677,7 @@ get_server_config_info() {
     # 如果用户未输入，生成15位随机字符串
     network_secret=${network_secret:-$(generate_random_string 15)}
     
-    # 显示生成的值
+    # 显示生成值
     echo -e "\n${YELLOW_COLOR}网络名称: ${network_name}${RES}"
     echo -e "${YELLOW_COLOR}网络密钥: ${network_secret}${RES}"
     echo -e "\n请记住这些信息，客户接时需要使用。"
@@ -668,7 +698,7 @@ get_server_config_info() {
             ;;
         *) # 默认使用手动设置
             dhcp="false"
-            echo -n "请输入虚拟IPv4地址 [回车随机生]: "
+            echo -n "请输入虚拟IPv4地址 [随机生成]: "
             read manual_ip
             if [ -n "$manual_ip" ]; then
                 ipv4=$manual_ip
@@ -707,7 +737,7 @@ get_server_config_info() {
     local wss_port=""
     local rpc_port=""
     
-    # 默认进入手动设置模式
+    # 默认进入手动设置式
     if [[ ! $use_default_ports =~ ^[Yy]$ ]]; then
         echo -n "TCP/UDP 监听口 [回车随机生成]: "
         read input_port
@@ -746,7 +776,7 @@ get_server_config_info() {
             if check_port "$input_port"; then
                 wss_port=$input_port
             else
-                echo -e "${RED_COLOR}端口 $input_port 已被占用，将随机生成新端口${RES}"
+                echo -e "${RED_COLOR}端口 $input_port 已被占，将随机生成新端口${RES}"
                 wss_port=$(generate_random_port 13000)
             fi
         else
@@ -772,7 +802,7 @@ get_server_config_info() {
         if check_port "11010"; then
             tcp_port="11010"
         else
-            echo -e "${RED_COLOR}默认 TCP/UDP 端口被占用，将随机生成新端口${RES}"
+            echo -e "${RED_COLOR}默认 TCP/UDP 口被占用，随机生成新端口${RES}"
             tcp_port=$(generate_random_port 10000)
         fi
         
@@ -816,7 +846,7 @@ get_server_config_info() {
     
     if [[ $enable_wg =~ ^[Yy]$ ]]; then
         enable_wireguard="true"
-        echo -n "请输入客户端网段 [回车机生成]: "
+        echo -n "请输入客户端网段 [回机生成]: "
         read manual_cidr
         if [ -n "$manual_cidr" ]; then
             client_cidr="$manual_cidr"
@@ -842,18 +872,71 @@ wireguard_listen = \"0.0.0.0:$wg_port\""
     
     if [[ $enable_proxy_choice =~ ^[Yy]$ ]]; then
         enable_proxy="true"
-        echo "请输入要代理的子网 CIDR (每行一个，输入空行成)："
+        # 创建一个数组来存储所有输入的CIDR
+        declare -a proxy_cidrs
+        echo "请输入要代理的子网CIDR (请注意子网格式10.10.10.0/24,请勿输入错误)："
         while true; do
             echo -n "CIDR (留空完成): "
             read proxy_cidr
             if [ -z "$proxy_cidr" ]; then
                 break
             fi
+            # 将CIDR添加到数组和配置字符串中
+            proxy_cidrs+=("$proxy_cidr")
             proxy_networks="${proxy_networks}[[proxy_network]]
 cidr = \"$proxy_cidr\"
 
 "
         done
+
+        # 如果有输入的CIDR，则配置防火墙
+        if [ ${#proxy_cidrs[@]} -gt 0 ]; then
+            # 添加防火墙配置
+            echo -e "\n${BLUE_COLOR}正在配置防火墙规...${RES}"
+            echo -e "${YELLOW_COLOR}持的防火墙类型：${RES}"
+            echo "- iptables (适用于大多数Linux发行版)"
+            echo "- firewalld (适用于RHEL/CentOS/Fedora等)"
+            echo "- ufw (适用于Ubuntu/Debian等)"
+            
+            # 启用IP转发
+            echo -e "\n${BLUE_COLOR}启用IP转发...${RES}"
+            sysctl -w net.ipv4.ip_forward=1
+            echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-easytier.conf
+            sysctl -p /etc/sysctl.d/99-easytier.conf
+            
+            # 配置防火墙规则
+            echo -e "\n${BLUE_COLOR}配置防火墙规则...${RES}"
+            if command -v firewall-cmd >/dev/null 2>&1; then
+                echo -e "${GREEN_COLOR}检测到 firewalld，添加规则：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo "firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -s $cidr -j ACCEPT"
+                    echo "firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -d $cidr -j ACCEPT"
+                    firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -s "$cidr" -j ACCEPT
+                    firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -d "$cidr" -j ACCEPT
+                done
+                firewall-cmd --reload
+            elif command -v ufw >/dev/null 2>&1; then
+                echo -e "${GREEN_COLOR}检测到 ufw，添加规则：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo "ufw route allow from $cidr"
+                    echo "ufw route allow to $cidr"
+                    ufw route allow from "$cidr"
+                    ufw route allow to "$cidr"
+                done
+            else
+                echo -e "${GREEN_COLOR}使用 iptables 添加规则：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo "iptables -A FORWARD -s $cidr -j ACCEPT"
+                    echo "iptables -A FORWARD -d $cidr -j ACCEPT"
+                    iptables -A FORWARD -s "$cidr" -j ACCEPT
+                    iptables -A FORWARD -d "$cidr" -j ACCEPT
+                done
+            fi
+            
+            echo -e "${GREEN_COLOR}防火墙规则已添加${RES}"
+        else
+            echo -e "${YELLOW_COLOR}未输入任何CIDR，跳过防火墙配置${RES}"
+        fi
     fi
     
     # 生成配置文件前检查冲突
@@ -897,7 +980,7 @@ cidr = \"$proxy_cidr\"
         esac
     fi
     
-    # 生成配置文件
+    # 生配置文件
     generate_server_config "$config_file" "$network_name" "$network_secret" "$dhcp" "$ipv4" \
         "$tcp_port" "$wg_port" "$ws_port" "$wss_port" "$rpc_port" \
         "$enable_wireguard" "$wireguard_config" \
@@ -965,7 +1048,7 @@ generate_random_port() {
     while true; do
         # 生成一个基于基础端口的随机端口
         local port=$((base_port + RANDOM % range))
-        # 检查端口是否被占用
+        # 检端口是否被占用
         if check_port "$port"; then
             echo "$port"
             return 0
@@ -1013,10 +1096,10 @@ start_service() {
         done
     fi
     
-    # 启动服务
+    # 启动服
     echo -e "${BLUE_COLOR}正在启动服务...${RES}"
     if ! systemctl start "easytier@${config_name}"; then
-        echo -e "${RED_COLOR}服务启动失败${RES}"
+        echo -e "${RED_COLOR}服启动失败${RES}"
         echo -e "\n${YELLOW_COLOR}错误日志：${RES}"
         journalctl -u "easytier@${config_name}" -n 50 --no-pager
         return 1
@@ -1026,7 +1109,7 @@ start_service() {
     sleep 2
     if ! systemctl is-active --quiet "easytier@${config_name}"; then
         echo -e "${RED_COLOR}服务启动失败${RES}"
-        echo -e "\n${YELLOW_COLOR}错误日志：${RES}"
+        echo -e "\n${YELLOW_COLOR}错误日志${RES}"
         journalctl -u "easytier@${config_name}" -n 50 --no-pager
         return 1
     fi
@@ -1069,7 +1152,7 @@ install_qrencode() {
     esac
 }
 
-# 修改 WireGuard 配置生成函数，移除二维码生成部分
+# WireGuard 配置生成函数
 generate_wireguard_config() {
     local config_name="$1"
     local server_ip="$2"
@@ -1083,30 +1166,54 @@ generate_wireguard_config() {
     local wg_port=$(grep "wireguard_listen" "$config_file" | cut -d'"' -f2 | cut -d':' -f2)
     local rpc_port=$(grep "rpc_portal" "$config_file" | cut -d'"' -f2 | cut -d':' -f2)
     
-    # 生成 WireGuard 配置 - 使用正确的 RPC 端口
+    echo -e "\n${BLUE_COLOR}正在生成 WireGuard 配置...${RES}"
+    
+    # 生成 WireGuard 配置
     local wg_info=$(cd "$INSTALL_PATH" && ./easytier-cli -p "127.0.0.1:$rpc_port" vpn-portal)
     
     if [ $? -eq 0 ] && [ -n "$wg_info" ]; then
-        # 修改配置内容，确保格式正确
-        local modified_wg_info=$(echo "$wg_info" | \
-            sed "s/0.0.0.0:/${server_ip}:/g" | \
-            sed 's/# should assign an ip from this cidr manually//g' | \
-            sed 's/# should be the public ip(or domain) of the vpn server//g' | \
+        # 提取配置部分并去除注释
+        local config_content=$(echo "$wg_info" | sed -n '/############### client_config_start ###############/,/############### client_config_end ###############/p' | \
+            grep -v '###############' | \
+            sed 's/ #.*$//' | \
             sed '/^$/d' | \
-            sed 's/\[Interface\]/[Interface]\n/g' | \
-            sed 's/\[Peer\]/\n[Peer]\n/g')
+            sed 's/^[[:space:]]*//g' | \
+            sed 's/[[:space:]]*$//')
+
+        # 替换 Endpoint 中的 IP
+        config_content=$(echo "$config_content" | sed "s/0.0.0.0:/${server_ip}:/")
         
         # 保存配置文件
-        local wg_config_file="$wg_dir/${config_name}.conf"
-        echo "$modified_wg_info" > "$wg_config_file"
+        local wg_config_file="$wg_dir/${config_name}_wg.conf"
+        echo "$config_content" > "$wg_config_file"
+        
+        # 生成二维码
+        if command -v qrencode >/dev/null 2>&1; then
+            local qr_file="$wg_dir/${config_name}_wg.png"
+            echo "$config_content" | qrencode -o "$qr_file" -t PNG
+            echo -e "${GREEN_COLOR}已生成配置二维码：${RES} $qr_file"
+            
+            # 在终端打印二维码
+            echo -e "\n${YELLOW_COLOR}WireGuard 配置二维码：${RES}"
+            echo "$config_content" | qrencode -s 3 -m 3 -t ANSIUTF8
+        else
+            echo -e "${YELLOW_COLOR}未安装 qrencode，跳过二维码生成${RES}"
+        fi
         
         echo -e "\n${GREEN_COLOR}WireGuard 配置信息：${RES}"
-        echo "$modified_wg_info"
-        echo -e "\n${GREEN_COLOR}WireGuard 配置文件已保存到：${RES} $wg_config_file"
+        echo -e "${GREEN_COLOR}配置文件已保存到：${RES} $wg_config_file"
+        echo -e "\n${YELLOW_COLOR}重要说明：${RES}"
+        echo -e "${YELLOW_COLOR}如果您在内网环境中通过 WireGuard 连接本服务器，请将配置文件中的${RES}"
+        echo -e "${YELLOW_COLOR}Endpoint IP 地址修改为服务器实际的内网 IP 地址！${RES}"
+        echo -e "\n${YELLOW_COLOR}配置内容：${RES}"
+        echo "$config_content"
+        
+        return 0
     else
         echo -e "${RED_COLOR}WireGuard 配置生成失败${RES}"
         echo -e "${YELLOW_COLOR}错误信息：${RES}"
         echo "$wg_info"
+        return 1
     fi
 }
 
@@ -1121,7 +1228,7 @@ perform_full_uninstall() {
     echo "- 运行时目录"
     echo "- 日志文件"
     echo "- 缓存文件"
-    echo -e "\n${GREEN_COLOR}注意：备份文件将会保留${RES}"
+    echo -e "\n${GREEN_COLOR}注意：备份文件将会留${RES}"
     
     echo -n -e "\n${RED_COLOR}确认完全卸载？[Y/n]: ${RES}"
     read confirm
@@ -1148,7 +1255,7 @@ perform_full_uninstall() {
             systemctl daemon-reload
             
             # 删除运行时目录
-            echo -e "${BLUE_COLOR}正在删除运行时目录...${RES}"
+            echo -e "${BLUE_COLOR}正在删除运行时录...${RES}"
             rm -rf /run/easytier
             
             # 删除日志文件
@@ -1156,7 +1263,7 @@ perform_full_uninstall() {
             rm -rf /var/log/easytier
             journalctl --vacuum-time=1s
             
-            # 删除临时文件和缓存
+            # 除临时文件和缓存
             echo -e "${BLUE_COLOR}正在删除临时文件和缓存...${RES}"
             rm -f /tmp/easytier_*
             rm -rf /tmp/easytier-*
@@ -1167,7 +1274,7 @@ perform_full_uninstall() {
             sysctl --system >/dev/null 2>&1
             
             # 检查是否还有遗留文件（排除备份文件）
-            echo -e "${BLUE_COLOR}正在检查遗留文件...${RES}"
+            echo -e "${BLUE_COLOR}正在检查遗文件...${RES}"
             local leftover_files=$(find / -name "easytier*" -not -path "*/backup*" -not -name "*.bak*" 2>/dev/null)
             if [ -n "$leftover_files" ]; then
                 echo -e "${YELLOW_COLOR}发现以下遗留文件：${RES}"
@@ -1204,7 +1311,7 @@ modify_configuration() {
         echo -e "${GREEN_COLOR}=================================${RES}"
         
         # 列出现有配置
-        echo -e "\n${BLUE_COLOR}现有配置：${RES}"
+        echo -e "\n${BLUE_COLOR}现有配置${RES}"
         local configs=()
         local i=1
         
@@ -1239,7 +1346,7 @@ modify_configuration() {
             return
         fi
         
-        echo -e "\n0. 返回上级菜单"
+        echo -e "\n0. 返回级菜单"
         echo -n "请选择要修改的配置 [0-$((i-1))]: "
         read choice
         
@@ -1253,7 +1360,7 @@ modify_configuration() {
             
             # 检查文件是否存在和可读
             if [ ! -f "$config_file" ]; then
-                echo -e "${RED_COLOR}错误：配置文件不存在${RES}"
+                echo -e "${RED_COLOR}错误：配置件不存在${RES}"
                 sleep 2
                 continue
             fi
@@ -1268,7 +1375,7 @@ modify_configuration() {
             if systemctl is-active --quiet "easytier@${config_name}"; then
                 echo -e "\n${YELLOW_COLOR}警告：该配置当前正在运行${RES}"
                 echo -e "建议在修改配置前停止服务，以防止配置冲突"
-                echo -n "是否停止服务后继续？[y/N]: "
+                echo -n "是否停止服务继续？[y/N]: "
                 read stop_confirm
                 case "$stop_confirm" in
                     [Yy]*)
@@ -1300,7 +1407,7 @@ modify_configuration() {
                 
                 # 检查配置文件是否被改
                 if ! cmp -s "$config_file" "$backup_file"; then
-                    echo -e "\n${GREEN_COLOR}配置文件已修改${RES}"
+                    echo -e "\n${GREEN_COLOR}置文件已修改${RES}"
                     echo -n "是否重启服务以应用新配置？[Y/n]: "
                     read restart_confirm
                     case "$restart_confirm" in
@@ -1332,7 +1439,7 @@ modify_configuration() {
             echo -e "\n按回车键继续..."
             read
         else
-            echo -e "${RED_COLOR}无效选择${RES}"
+            echo -e "${RED_COLOR}无选择${RES}"
             sleep 1
         fi
     done
@@ -1394,58 +1501,77 @@ delete_configuration() {
             echo "1. 配置文件: $config_file"
             echo "2. 服务文件: /etc/systemd/system/easytier@${config_name}.service"
             echo "3. 运行时目录: /run/easytier/${config_name}"
-            echo "4. WireGuard配置: /opt/easytier/wireguard/${config_name}.conf"
-            echo "5. 相关日志文件"
-            echo "6. 备份文件"
+            echo "4. WireGuard配置: /opt/easytier/wireguard/${config_name}_wg.conf"
+            echo "5. WireGuard二维码: /opt/easytier/wireguard/${config_name}_wg.png"
+            echo "6. 相关日志文件"
             
-            echo -e "\n${YELLOW_COLOR}此操作不可恢复！${RES}"
-            echo -n "确认删除？[y/N]: "
+            echo -e "\n${YELLOW_COLOR}注意：删除前将自动备份所有相关文件${RES}"
+            echo -e "${YELLOW_COLOR}备份文件将保存在 $HOME/.easytier_backup/ 目录下${RES}"
+            
+            echo -n -e "\n${RED_COLOR}确认删除？[y/N]: ${RES}"
             read del_confirm
             
             case "$del_confirm" in
                 [Yy]*)
-                    # 1. 停止并禁用服务
+                    # 1. 创建备份目
+                    local backup_dir="$HOME/.easytier_backup"
+                    local backup_time=$(date +%Y%m%d_%H%M%S)
+                    local backup_path="$backup_dir/${config_name}_${backup_time}"
+                    mkdir -p "$backup_path"
+                    
+                    echo -e "\n${BLUE_COLOR}正在备份文件...${RES}"
+                    
+                    # 2. 备份配置文件
+                    if [ -f "$config_file" ]; then
+                        cp -p "$config_file" "$backup_path/"
+                        echo -e "${GREEN_COLOR}已备份配置文件${RES}"
+                    fi
+                    
+                    # 3. 备份服务文件
+                    if [ -f "/etc/systemd/system/easytier@${config_name}.service" ]; then
+                        cp -p "/etc/systemd/system/easytier@${config_name}.service" "$backup_path/"
+                        echo -e "${GREEN_COLOR}已备份服务文件${RES}"
+                    fi
+                    
+                    # 4. 备份 WireGuard 配置
+                    if [ -f "/opt/easytier/wireguard/${config_name}_wg.conf" ]; then
+                        cp -p "/opt/easytier/wireguard/${config_name}_wg.conf" "$backup_path/"
+                        echo -e "${GREEN_COLOR}已备份 WireGuard 配置${RES}"
+                    fi
+                    
+                    # 5. 备份运行时数据（如果存在）
+                    if [ -d "/run/easytier/${config_name}" ]; then
+                        cp -rp "/run/easytier/${config_name}" "$backup_path/runtime_data"
+                        echo -e "${GREEN_COLOR}已备份运行时数据${RES}"
+                    fi
+                    
                     echo -e "\n${BLUE_COLOR}正在停止服务...${RES}"
                     systemctl stop "easytier@${config_name}" 2>/dev/null
                     systemctl disable "easytier@${config_name}" 2>/dev/null
                     
-                    # 2. 删除服务文件
-                    echo -e "${BLUE_COLOR}正在删除服务文件...${RES}"
+                    echo -e "${BLUE_COLOR}正在删除文件...${RES}"
+                    # 删除服务文件
                     rm -f "/etc/systemd/system/easytier@${config_name}.service"
                     systemctl daemon-reload
                     
-                    # 3. 删除配置文件
-                    echo -e "${BLUE_COLOR}正在删除配置文件...${RES}"
+                    # 删除配置文件
                     rm -f "$config_file"
-                    rm -f "${config_file}.bak"*  # 删除所有备份文件
                     
-                    # 4. 删除运行时目录
-                    echo -e "${BLUE_COLOR}正在删除运行时目录...${RES}"
+                    # 删除运行时目录
                     rm -rf "/run/easytier/${config_name}"
                     
-                    # 5. 删除WireGuard配置
-                    echo -e "${BLUE_COLOR}正在删除WireGuard配置...${RES}"
-                    rm -f "/opt/easytier/wireguard/${config_name}.conf"
+                    # 删除 WireGuard 配置
+                    rm -f "/opt/easytier/wireguard/${config_name}_wg.conf"
+                    rm -f "/opt/easytier/wireguard/${config_name}_wg.png"
                     rm -f "/tmp/easytier_wg_${config_name}"*
                     
-                    # 6. 清理日志
-                    echo -e "${BLUE_COLOR}正在清理日志...${RES}"
+                    # 清理日志
                     journalctl --vacuum-time=1s -u "easytier@${config_name}" 2>/dev/null
                     
-                    # 7. 检查是否还有相关文件
-                    local leftover_files=$(find /opt/easytier -name "*${config_name}*" 2>/dev/null)
-                    if [ -n "$leftover_files" ]; then
-                        echo -e "\n${YELLOW_COLOR}发现以下相关文件：${RES}"
-                        echo "$leftover_files"
-                        echo -n "是否删除这些文件？[Y/n]: "
-                        read clean_confirm
-                        if [[ ! $clean_confirm =~ ^[Nn]$ ]]; then
-                            find /opt/easytier -name "*${config_name}*" -exec rm -rf {} + 2>/dev/null
-                        fi
-                    fi
-                    
                     echo -e "\n${GREEN_COLOR}配置删除完成！${RES}"
-                    sleep 1
+                    echo -e "${YELLOW_COLOR}备份文件已保存在：${RES} $backup_path"
+                    echo -e "${YELLOW_COLOR}如需恢复配置，请使用备份恢复功能。${RES}"
+                    sleep 2
                     ;;
                 *)
                     echo -e "\n${YELLOW_COLOR}操作已取消${RES}"
@@ -1467,7 +1593,7 @@ view_configuration() {
         echo -e "${GREEN_COLOR}      查看 EasyTier 配置${RES}"
         echo -e "${GREEN_COLOR}=================================${RES}"
         
-        # 列出现有配置
+        # 列现有配置
         echo -e "\n${BLUE_COLOR}现有配置：${RES}"
         local configs=()
         local i=1
@@ -1498,7 +1624,7 @@ view_configuration() {
         if [ "$choice" = "0" ]; then
             return
         elif [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
-            echo -e "\n${BLUE_COLOR}配置文件内容：${RES}"
+            echo -e "\n${BLUE_COLOR}���置文件内容：${RES}"
             echo "----------------------------------------"
             cat "$INSTALL_PATH/config/$(basename "${configs[$((choice-1))]}")"
             echo "----------------------------------------"
@@ -1513,6 +1639,8 @@ view_configuration() {
 
 # 添加客户端配置创建函数
 create_client_config() {
+    echo -e "\n${GREEN_COLOR}================== 创建客户端配 ==================${RES}"
+    
     local config_dir="$INSTALL_PATH/config"
     mkdir -p "$config_dir"
     
@@ -1524,15 +1652,16 @@ create_client_config() {
         ((num++))
     done
     
-    echo -e "\n${GREEN_COLOR}================== 创建客户端配置 ==================${RES}"
+    # 生成 TUN 设备名称
+    local tun_name="c${num}"  # 使用简短名称，如 c1, c2, c3 等
     
     # 显示配置文件信息
     echo -e "\n${BLUE_COLOR}【配置文件信息】${RES}"
     echo "配置文件名: ${config_name}.conf"
     echo "配置文件路径: $config_dir/${config_name}.conf"
-    echo -e "${YELLOW_COLOR}注意: 配置文件创建后可在上述路径找到${RES}"
+    echo -e "${YELLOW_COLOR}注意: 配置文件创建后可上述路径找${RES}"
     
-    # 1. 基础信息设置
+    # 1. 础信息设置
     echo -e "\n${BLUE_COLOR}【基础信息设置】${RES}"
     # 添加主机名称设置
     echo -n "主机名称 [默认: $(hostname)]: "
@@ -1575,7 +1704,7 @@ create_client_config() {
         1)
             dhcp="true"
             ipv4=""
-            echo -e "${YELLOW_COLOR}已选择DHCP自动分配IP${RES}"
+            echo -e "${YELLOW_COLOR}已选择DHCP自分配IP${RES}"
             ;;
         ""|2)  # 空输入或2都使用手动设置
             dhcp="false"
@@ -1585,7 +1714,7 @@ create_client_config() {
                 ipv4=$(generate_virtual_ip)
                 echo -e "${GREEN_COLOR}已生成虚拟IPv4: $ipv4${RES}"
             elif [[ ! $ipv4 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo -e "${RED_COLOR}无效的IP地址格式，将随机生成${RES}"
+                echo -e "${RED_COLOR}无效IP地址格式，将随机生成${RES}"
                 ipv4=$(generate_virtual_ip)
                 echo -e "${GREEN_COLOR}已生成虚拟IPv4: $ipv4${RES}"
             fi
@@ -1601,6 +1730,13 @@ create_client_config() {
     echo -e "\n${BLUE_COLOR}【Peer节点设置】${RES}"
     echo -e "${YELLOW_COLOR}提示: 至少需要添加一个服务器节点${RES}"
     echo -e "${YELLOW_COLOR}支持的协议: tcp://, udp://, ws://, wss://${RES}"
+    echo -e "\n${GREEN_COLOR}社区公共节点列表：${RES}"
+    echo "tcp://public.easytier.top:11010"
+    echo "tcp://c.oee.icu:60006"
+    echo "tcp://ah.nkbpal.cn:11010"
+    echo "tcp://s1.ct8.pl:11010"
+    echo "tcp://et.ie12vps.xyz:11010"
+    echo -e "${YELLOW_COLOR}您可以选择上述任意节点进行连接${RES}"
     local peers=""
     while true; do
         echo -e "\n${GREEN_COLOR}当前已添加的Peer节点：${RES}"
@@ -1617,11 +1753,11 @@ create_client_config() {
         
         case "$peer_choice" in
             1)
-                echo -n "请输入节点URI (例如: tcp://1.2.3.4:11010): "
+                echo -n "请输入节点信息 (例如: tcp://1.2.3.4:11010 或 tcp://example.com:11010): "
                 read peer_uri
                 if [ -n "$peer_uri" ]; then
-                    # 验证URI格式
-                    if [[ $peer_uri =~ ^(tcp|udp|ws|wss)://[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+:[0-9]+$ ]]; then
+                    # 修改验证正则表达式以支持域名和IP
+                    if [[ $peer_uri =~ ^(tcp|udp|ws|wss)://(([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)|([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}):[0-9]+$ ]]; then
                         peers="${peers}[[peer]]
 uri = \"$peer_uri\"
 
@@ -1629,6 +1765,10 @@ uri = \"$peer_uri\"
                         echo -e "${GREEN_COLOR}节点添加成功${RES}"
                     else
                         echo -e "${RED_COLOR}错误：无效的URI格式${RES}"
+                        echo -e "${YELLOW_COLOR}正确格式示例：${RES}"
+                        echo "- IP格式：tcp://1.2.3.4:11010"
+                        echo "- 域名格式：tcp://example.com:11010"
+                        echo -e "${YELLOW_COLOR}支持的协议：tcp://, udp://, ws://, wss://${RES}"
                     fi
                 fi
                 ;;
@@ -1654,21 +1794,167 @@ uri = \"$peer_uri\"
     local proxy_networks=""
     if [[ $enable_proxy_choice =~ ^[Yy]$ ]]; then
         enable_proxy="true"
-        echo "请输入要代理的子网CIDR (每行一个，输入空行完成)："
+        # 创建一个数组来存储所有输入的CIDR
+        declare -a proxy_cidrs
+        echo "请输入要代理的子网CIDR (请注意子网格式10.10.10.0/24,请勿输入错误)"
         while true; do
             echo -n "CIDR (留空完成): "
             read proxy_cidr
             if [ -z "$proxy_cidr" ]; then
                 break
             fi
+            # 将CIDR添加到数组和配置字符串中
+            proxy_cidrs+=("$proxy_cidr")
             proxy_networks="${proxy_networks}[[proxy_network]]
 cidr = \"$proxy_cidr\"
 
 "
         done
+
+        # 如果有输入的CIDR，则配置防火墙
+        if [ ${#proxy_cidrs[@]} -gt 0 ]; then
+            # 添加防火墙配置
+            echo -e "\n${BLUE_COLOR}正在配置防火墙规则...${RES}"
+            echo -e "${YELLOW_COLOR}支持的防火墙类型：${RES}"
+            echo "- iptables (适用于大多数Linux发行版)"
+            echo "- firewalld (适用于RHEL/CentOS/Fedora等)"
+            echo "- ufw (适用于Ubuntu/Debian等)"
+            
+            # 启用IP转发
+            echo -e "\n${BLUE_COLOR}启用IP转发...${RES}"
+            sysctl -w net.ipv4.ip_forward=1
+            echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-easytier.conf
+            sysctl -p /etc/sysctl.d/99-easytier.conf
+            
+            # 配置防火墙规则
+            echo -e "\n${BLUE_COLOR}配置防火墙规则...${RES}"
+            if command -v firewall-cmd >/dev/null 2>&1; then
+                echo -e "${GREEN_COLOR}检测到 firewalld，添加规则：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo "firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -s $cidr -j ACCEPT"
+                    echo "firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -d $cidr -j ACCEPT"
+                    firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -s "$cidr" -j ACCEPT
+                    firewall-cmd --permanent --direct --add-rule ipv4 filter FORWARD 0 -d "$cidr" -j ACCEPT
+                done
+                firewall-cmd --reload
+            elif command -v ufw >/dev/null 2>&1; then
+                echo -e "${GREEN_COLOR}检测到 ufw，添加规则：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo "ufw route allow from $cidr"
+                    echo "ufw route allow to $cidr"
+                    ufw route allow from "$cidr"
+                    ufw route allow to "$cidr"
+                done
+            else
+                echo -e "${GREEN_COLOR}使用 iptables 添加规则：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo "iptables -A FORWARD -s $cidr -j ACCEPT"
+                    echo "iptables -A FORWARD -d $cidr -j ACCEPT"
+                    iptables -A FORWARD -s "$cidr" -j ACCEPT
+                    iptables -A FORWARD -d "$cidr" -j ACCEPT
+                done
+            fi
+            
+            echo -e "${GREEN_COLOR}防火墙规则已添加${RES}"
+        else
+            echo -e "${YELLOW_COLOR}未输入任何CIDR，跳过防火墙配置${RES}"
+        fi
     fi
     
-    # 生成配置文件
+    # 4.5 WireGuard 配置（可选）
+    echo -e "\n${BLUE_COLOR}【WireGuard 配置】${RES}"
+    echo -n "否启用 WireGuard？[y/N]: "
+    read enable_wg
+
+    local enable_wireguard="false"
+    local wireguard_config=""
+    local wg_port=""
+    local ws_port=""
+    local rpc_port=""
+
+    if [[ $enable_wg =~ ^[Yy]$ ]]; then
+        enable_wireguard="true"
+        
+        # 端口设置
+        echo -e "\n${BLUE_COLOR}端口设置：${RES}"
+        echo "默认端口配置："
+        echo "WireGuard/WebSocket 监听端口: 11011"
+        echo "RPC 管理端口: 15888"
+        echo -n "是否使用默认端口配置？[y/N]: "
+        read use_default_ports
+        
+        if [[ $use_default_ports =~ ^[Yy]$ ]]; then
+            # 检查默认端口是否用
+            if check_port "11011"; then
+                wg_port="11011"
+                ws_port="11011"
+            else
+                echo -e "${RED_COLOR}默认 WireGuard/WebSocket 端口被占用，将随机生成新端口${RES}"
+                wg_port=$(generate_random_port 11000)
+                ws_port=$wg_port
+            fi
+            
+            if check_port "15888"; then
+                rpc_port="15888"
+            else
+                echo -e "${RED_COLOR}默认 RPC 端口被占用，将随机生成新端口${RES}"
+                rpc_port=$(generate_random_port 15000)
+            fi
+        else
+            # 手动设置端口
+            echo -n "WireGuard/WebSocket 监听端口 [回车随机生成]: "
+            read input_port
+            if [ -n "$input_port" ]; then
+                if check_port "$input_port"; then
+                    wg_port=$input_port
+                    ws_port=$input_port
+                else
+                    echo -e "${RED_COLOR}端口 $input_port 已被占用，随机生成新端口${RES}"
+                    wg_port=$(generate_random_port 11000)
+                    ws_port=$wg_port
+                fi
+            else
+                wg_port=$(generate_random_port 11000)
+                ws_port=$wg_port
+            fi
+            echo -e "${GREEN_COLOR}WireGuard/WebSocket 监听端口: $wg_port${RES}"
+            
+            echo -n "RPC 管理端口 [回车随机生成]: "
+            read input_port
+            if [ -n "$input_port" ]; then
+                if check_port "$input_port"; then
+                    rpc_port=$input_port
+                else
+                    echo -e "${RED_COLOR}端口 $input_port 已被占用，机生成新端口${RES}"
+                    rpc_port=$(generate_random_port 15000)
+                fi
+            else
+                rpc_port=$(generate_random_port 15000)
+            fi
+            echo -e "${GREEN_COLOR}RPC 管理端口: $rpc_port${RES}"
+        fi
+        
+        # 生成 WireGuard 配置
+        wireguard_config="# WireGuard 配置
+[vpn_portal_config]
+# VPN客户端所在的网段
+client_cidr = \"$(generate_wireguard_cidr)\"
+# wg所监听的端口
+wireguard_listen = \"0.0.0.0:$wg_port\""
+
+        # 添加监听器配置
+        listeners_config="# 监听器列表
+listeners = [
+    \"ws://0.0.0.0:${ws_port}/\"
+]"
+    else
+        # 如果不启用 WireGuard，使用随机 RPC 端口
+        rpc_port=$(generate_random_port 15000)
+        # 不添加监听器配置
+        listeners_config=""
+    fi
+
+    # 修改配置文件生成部分，根据是否启用 WireGuard 添加相应配置
     cat > "$config_dir/${config_name}.conf" << EOF
 # 实例名称
 instance_name = "$config_name"
@@ -1682,7 +1968,13 @@ ipv4 = "$ipv4"
 dhcp = $dhcp
 
 # RPC管理端口
-rpc_portal = "127.0.0.1:$(generate_random_port 15000)"
+rpc_portal = "127.0.0.1:$rpc_port"
+
+# 监听器列表
+listeners = [
+    $([ "$enable_wireguard" = "true" ] && echo "\"ws://0.0.0.0:${ws_port}/\",")
+    $([ "$enable_wireguard" = "true" ] && echo "\"wg://0.0.0.0:${wg_port}/\"")
+]
 
 [network_identity]
 # 网络名称
@@ -1696,16 +1988,16 @@ $peers
 [flags]
 # 默认协议
 default_protocol = "tcp"
-# TUN设备名称
-dev_name = ""
+# TUN设备名称（使用配置名作设备名）
+dev_name = "$tun_name"
 # 启用加密
 enable_encryption = true
 # 启用IPv6
 enable_ipv6 = true
 # MTU设置
 mtu = 1380
-# ��迟优先
-latency_first = false
+# 延迟优先模式（默认启用）
+latency_first = true
 # 退出节点
 enable_exit_node = false
 # 禁用TUN
@@ -1720,7 +2012,16 @@ level = "info"
 file = ""
 
 $([ "$enable_proxy" = "true" ] && echo "$proxy_networks")
+
+$([ "$enable_wireguard" = "true" ] && echo "$wireguard_config")
 EOF
+
+    # 在显示连接信息时添加 WireGuard 相关信息
+    if [ "$enable_wireguard" = "true" ]; then
+        echo -e "\n${YELLOW_COLOR}WireGuard 配置：${RES}"
+        echo -e "${GREEN_COLOR}WireGuard/WebSocket 端口: $wg_port${RES}"
+        echo -e "${GREEN_COLOR}RPC 管理端口: $rpc_port${RES}"
+    fi
 
     # 创建服务文件
     if create_service_file "$config_name"; then
@@ -1737,6 +2038,85 @@ EOF
             echo -e "\n${YELLOW_COLOR}服务状态：${RES}"
             systemctl status "easytier@${config_name}" --no-pager
             
+            # 如果启用了 WireGuard，生成配置
+            if [ "$enable_wireguard" = "true" ]; then
+                echo -e "\n${BLUE_COLOR}正在生成 WireGuard 配置...${RES}"
+                sleep 2  # 等待服务完全启动
+                
+                # 创建 WireGuard 配置目录
+                local wg_dir="$INSTALL_PATH/wireguard"
+                mkdir -p "$wg_dir"
+                
+                # 获取 WireGuard 配置
+                local wg_info=$(cd "$INSTALL_PATH" && ./easytier-cli -p "127.0.0.1:$rpc_port" vpn-portal)
+                
+                if [ $? -eq 0 ] && [ -n "$wg_info" ]; then
+                    # 获取当前设备的公网 IP
+                    local server_ip=$(curl -s ip.sb || curl -s ifconfig.me)
+                    
+                    # 修改配置文件中的 Endpoint
+                    if [ -n "$server_ip" ]; then
+                        wg_info=$(echo "$wg_info" | sed "s/0.0.0.0:/${server_ip}:/g")
+                    fi
+                    
+                    # 保存配置文件
+                    local wg_config_file="$wg_dir/${config_name}_wg.conf"
+                    echo "$wg_info" > "$wg_config_file"
+                    
+                    echo -e "\n${GREEN_COLOR}WireGuard 配置信息：${RES}"
+                    echo -e "${GREEN_COLOR}配置文件已保存到：${RES} $wg_config_file"
+                    echo -e "\n${YELLOW_COLOR}重要说明：${RES}"
+                    echo -e "${YELLOW_COLOR}如果您在内网环境中通过 WireGuard 连接本服务器，请将配置文件中的${RES}"
+                    echo -e "${YELLOW_COLOR}Endpoint IP 地址修改为服务器实际的内网 IP 地址！${RES}"
+                    echo -e "\n${YELLOW_COLOR}配置内容：${RES}"
+                    echo "$wg_info"
+                else
+                    echo -e "${RED_COLOR}WireGuard 配置生成失败${RES}"
+                    echo -e "${YELLOW_COLOR}错误信息：${RES}"
+                    echo "$wg_info"
+                fi
+            fi
+            
+            echo -e "\n${GREEN_COLOR}================== 连接信息 ==================${RES}"
+            echo -e "${GREEN_COLOR}网络名称: ${network_name}${RES}"
+            echo -e "${GREEN_COLOR}网络密钥: ${network_secret}${RES}"
+            if [ "$dhcp" = "true" ]; then
+                echo -e "${GREEN_COLOR}虚拟IP: 自动分配 (DHCP)${RES}"
+            else
+                echo -e "${GREEN_COLOR}虚拟IP: $ipv4${RES}"
+            fi
+            echo -e "${GREEN_COLOR}延迟优先: 已启用${RES}"
+            
+            # 显示连接节点信息
+            echo -e "\n${YELLOW_COLOR}已连接节点：${RES}"
+            if [ -n "$peers" ]; then
+                echo "$peers" | grep "uri = " | while read -r line; do
+                    echo -e "${GREEN_COLOR}- ${line#*= }${RES}" | tr -d '"'
+                done
+            fi
+            
+            # 如果启用了子网代理，显示子网信息
+            if [ "$enable_proxy" = "true" ] && [ ${#proxy_cidrs[@]} -gt 0 ]; then
+                echo -e "\n${YELLOW_COLOR}子网代理配置：${RES}"
+                echo -e "${GREEN_COLOR}已启用以下子网的转发：${RES}"
+                for cidr in "${proxy_cidrs[@]}"; do
+                    echo -e "${GREEN_COLOR}- $cidr${RES}"
+                done
+                
+                # 显示防火墙配置信息
+                echo -e "\n${YELLOW_COLOR}防火墙配置：${RES}"
+                if command -v firewall-cmd >/dev/null 2>&1; then
+                    echo -e "${GREEN_COLOR}已配置 firewalld 转发规则${RES}"
+                elif command -v ufw >/dev/null 2>&1; then
+                    echo -e "${GREEN_COLOR}已配置 ufw 转发规则${RES}"
+                else
+                    echo -e "${GREEN_COLOR}已配置 iptables 转发规则${RES}"
+                fi
+                echo -e "${GREEN_COLOR}系统 IP 转发已启用${RES}"
+            fi
+            
+            echo -e "${GREEN_COLOR}================================================${RES}"
+            
             echo -e "\n${YELLOW_COLOR}服务控制命令：${RES}"
             echo "启动服务: systemctl start easytier@${config_name}"
             echo "停止服务: systemctl stop easytier@${config_name}"
@@ -1744,7 +2124,7 @@ EOF
             echo "查看状态: systemctl status easytier@${config_name}"
             echo "查看日志: journalctl -u easytier@${config_name} -f"
         else
-            echo -e "${RED_COLOR}服务启动失败${RES}"
+            echo -e "${RED_COLOR}服务启动失${RES}"
             echo -e "\n${YELLOW_COLOR}错误信息：${RES}"
             systemctl status "easytier@${config_name}" --no-pager
         fi
@@ -1788,6 +2168,8 @@ EOF
 
 # 添加公共服务器配置函数
 create_public_server_config() {
+    echo -e "\n${GREEN_COLOR}================== 加入服务器节点集群 ==================${RES}"
+    
     local config_dir="$INSTALL_PATH/config"
     mkdir -p "$config_dir"
     
@@ -1798,15 +2180,16 @@ create_public_server_config() {
         config_name="easytier_public_server$num"
         ((num++))
     done
-    
-    echo -e "\n${GREEN_COLOR}================== 加入公共服务器节点集群 ==================${RES}"
+
+    # 生成简短的 TUN 设备名称
+    local tun_name=$(get_tun_device_name "public_server" "$num")
     
     echo -e "\n${BLUE_COLOR}【公共网络信息】${RES}"
     echo -e "${YELLOW_COLOR}网络名称: ${RES}easytier"
     echo -e "${YELLOW_COLOR}网络密钥: ${RES}easytier"
-    echo -e "${YELLOW_COLOR}公共节点: ${RES}tcp://public.easytier.top:11010"
+    echo -e "${YELLOW_COLOR}公共节: ${RES}tcp://public.easytier.top:11010"
     
-    echo -e "\n${YELLOW_COLOR}注意事项：${RES}"
+    echo -e "\n${YELLOW_COLOR}意事项：${RES}"
     echo "1. 加入公共网络意味着您的节点将成为公共服务器集群的一部分"
     echo "2. 其他用户可能会通过您的节点进行连接"
     echo "3. 建议具有公网IP的服务器使用此模式"
@@ -1823,7 +2206,7 @@ create_public_server_config() {
 instance_name = "$config_name"
 # 主机名
 hostname = "$(hostname)"
-# 实例ID
+# 例ID
 instance_id = "$(cat /proc/sys/kernel/random/uuid)"
 # 虚拟IPv4地址
 ipv4 = "$(generate_virtual_ip)"
@@ -1854,15 +2237,15 @@ network_secret = "easytier"
 [flags]
 # 默认协议
 default_protocol = "tcp"
-# TUN设备名称
-dev_name = ""
+# TUN设备名称（使用简短名称）
+dev_name = "$tun_name"
 # 启用加密
 enable_encryption = true
 # 启用IPv6
 enable_ipv6 = true
 # MTU设置
 mtu = 1380
-# 延迟优先
+# 延迟先
 latency_first = false
 # 退出节点
 enable_exit_node = false
@@ -1896,7 +2279,7 @@ EOF
                     echo -e "\n${GREEN_COLOR}================== 公共节点信息 ==================${RES}"
                     echo -e "${YELLOW_COLOR}您的节点已成功加入公共服务器集群${RES}"
                     echo -e "${GREEN_COLOR}网络名称: easytier${RES}"
-                    echo -e "${GREEN_COLOR}网络密钥: easytier${RES}"
+                    echo -e "${GREEN_COLOR}络密钥: easytier${RES}"
                     echo -e "${GREEN_COLOR}公共节点: tcp://public.easytier.top:11010${RES}"
                     echo -e "${GREEN_COLOR}================================================${RES}"
                     
@@ -1955,300 +2338,268 @@ EOF
     done
 }
 
-# 添加公共客户端配置函数
-create_public_client_config() {
-    local config_dir="$INSTALL_PATH/config"
-    mkdir -p "$config_dir"
-    
-    # 公共客户端模式命名规则
-    local config_name="easytier_public_client"
-    local num=1
-    while [ -f "$config_dir/${config_name}.conf" ]; do
-        config_name="easytier_public_client$num"
-        ((num++))
-    done
-    
-    echo -e "\n${GREEN_COLOR}================== 连接公共节点网络 ==================${RES}"
-    
-    # 显示配置文件信息
-    echo -e "\n${BLUE_COLOR}【配置文件信息】${RES}"
-    echo "配置文件名: ${config_name}.conf"
-    echo "配置文件路径: $config_dir/${config_name}.conf"
-    echo -e "${YELLOW_COLOR}注意: 配置文件创建后可在上述路径找到${RES}"
-    
-    # 1. 基础信息设置
-    echo -e "\n${BLUE_COLOR}【基础信息设置】${RES}"
-    echo -n "主机名称 [默认: $(hostname)]: "
-    read custom_hostname
-    local hostname_value=${custom_hostname:-$(hostname)}
-    echo -e "${GREEN_COLOR}已设置主机名称: $hostname_value${RES}"
-    
-    # 2. 网络信息设置
-    echo -e "\n${BLUE_COLOR}【网络信息设置】${RES}"
-    
-    echo -n "网络名称 [随机生成]: "
-    read network_name
-    # 如果用户未输入，生成带前缀的10位随机字符串
-    if [ -z "$network_name" ]; then
-        network_name="ET_$(generate_random_string 10)"
-    elif [[ ! $network_name =~ ^ET_ ]]; then
-        # 如果用户输入的名称没有 ET_ 前缀，自动添加
-        network_name="ET_${network_name}"
-    fi
-    
-    echo -n "网络密钥 [随机生成]: "
-    read network_secret
-    # 如果用户未输入，生成15位随机字符串
-    network_secret=${network_secret:-$(generate_random_string 15)}
-    
-    # 显示生成的值
-    echo -e "\n${YELLOW_COLOR}网络名称: ${network_name}${RES}"
-    echo -e "${YELLOW_COLOR}网络密钥: ${network_secret}${RES}"
-    
-    # 3. 虚拟IPv4设置
-    echo -e "\n${BLUE_COLOR}【虚拟IPv4设置】${RES}"
-    echo "1. 自动分配 (DHCP)"
-    echo "2. 手动设置 (推荐)"
-    echo -n "请选择 [1/2] [默认: 2]: "
-    read ip_choice
-    
-    local dhcp="false"
-    local ipv4=""
-    case "$ip_choice" in
-        1)
-            dhcp="true"
-            ipv4=""
-            echo -e "${YELLOW_COLOR}已选择DHCP自动分配IP${RES}"
-            ;;
-        ""|2)  # 空输入或2都使用手动设置
-            dhcp="false"
-            echo -n "请输入虚拟IPv4地址 [回车随机生成]: "
-            read ipv4
-            if [ -z "$ipv4" ]; then
-                ipv4=$(generate_virtual_ip)
-                echo -e "${GREEN_COLOR}已生成虚拟IPv4: $ipv4${RES}"
-            elif [[ ! $ipv4 =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                echo -e "${RED_COLOR}无效的IP地址格式，将随机生成${RES}"
-                ipv4=$(generate_virtual_ip)
-                echo -e "${GREEN_COLOR}已生成虚拟IPv4: $ipv4${RES}"
+# 在创建配置前添加 DNS 检查函数
+check_dns_resolution() {
+    local domain="$1"
+    if ! host "$domain" >/dev/null 2>&1; then
+        if ! nslookup "$domain" >/dev/null 2>&1; then
+            if ! dig "$domain" >/dev/null 2>&1; then
+                return 1
             fi
+        fi
+    fi
+    return 0
+}
+
+# 修改 TUN 设备名称生成函数
+get_tun_device_name() {
+    local mode="$1"
+    local num="$2"
+    
+    case "$mode" in
+        "server")
+            echo "s${num}"  # s1, s2, s3...
+            ;;
+        "client")
+            echo "c${num}"  # c1, c2, c3...
+            ;;
+        "public_server")
+            echo "ps${num}"  # ps1, ps2, ps3...
+            ;;
+        "public_client")
+            echo "pc${num}"  # pc1, pc2, pc3...
             ;;
         *)
-            echo -e "${RED_COLOR}无效选择，使用手动设置${RES}"
-            ipv4=$(generate_virtual_ip)
-            echo -e "${GREEN_COLOR}已生成虚拟IPv4: $ipv4${RES}"
+            echo "t${num}"  # 默认情况，t1, t2, t3...
             ;;
     esac
+}
+
+# 添加备份配置函数
+backup_configuration() {
+    clear
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    echo -e "${GREEN_COLOR}      备份 EasyTier 配置${RES}"
+    echo -e "${GREEN_COLOR}=================================${RES}"
     
-    # 4. 公共节点选择
-    echo -e "\n${BLUE_COLOR}【公共节点选择】${RES}"
-    echo -e "${YELLOW_COLOR}提示: 如果访问GitHub较慢，建议使用国内DNS解析${RES}"
-    echo -e "${YELLOW_COLOR}可以尝试修改hosts: 140.82.114.4 raw.githubusercontent.com${RES}"
-    
-    # 定义公共节点列表
-    local public_nodes=(
-        "tcp://public.easytie.top:11010"
-        "tcp://c.oee.icu:60006"
-        "tcp://ah.nkbpal.cn:11010"
-        "tcp://s1.ct8.pl:11010"
-        "tcp://et.ie12vps.xyz:11010"
-    )
-    
-    echo -e "\n可用的公共节点："
+    # 列出现有配置
+    echo -e "\n${BLUE_COLOR}现有配置：${RES}"
+    local configs=()
     local i=1
-    for node in "${public_nodes[@]}"; do
-        echo "$i. $node"
-        ((i++))
-    done
-    echo "$i. 全部使用"
+    local config_dir="/opt/easytier/config"
     
-    local peers=""
-    echo -n "请选择节点 [1-$i]: "
-    read node_choice
-    
-    if [ "$node_choice" -eq "$i" ]; then
-        # 选择全部节点
-        for node in "${public_nodes[@]}"; do
-            peers="${peers}[[peer]]
-uri = \"$node\"
-
-"
-        done
-        echo -e "${GREEN_COLOR}已添加所有公共节点${RES}"
-    elif [ "$node_choice" -ge 1 ] && [ "$node_choice" -lt "$i" ]; then
-        # 选择单个节点
-        peers="[[peer]]
-uri = \"${public_nodes[$((node_choice-1))}\"
-"
-        echo -e "${GREEN_COLOR}已添加节点: ${public_nodes[$((node_choice-1))]}${RES}"
-    else
-        echo -e "${RED_COLOR}无效选择，将使用第一个节点${RES}"
-        peers="[[peer]]
-uri = \"${public_nodes[0]}\"
-"
+    # 检查配置目录是否存在
+    if [ ! -d "$config_dir" ]; then
+        echo -e "${RED_COLOR}错：配置目录 $config_dir 不存在${RES}"
+        echo -e "\n按回车键继续..."
+        read
+        return
     fi
     
-    # 5. 子网代理设置（可选）
-    echo -e "\n${BLUE_COLOR}【子网代理设置】${RES}"
-    echo -n "是否启用子网代理？[y/N]: "
-    read enable_proxy_choice
-    
-    local enable_proxy="false"
-    local proxy_networks=""
-    if [[ $enable_proxy_choice =~ ^[Yy]$ ]]; then
-        enable_proxy="true"
-        echo "请输入要代理的子网CIDR (每行一个，输入空行完成)："
-        while true; do
-            echo -n "CIDR (留空完成): "
-            read proxy_cidr
-            if [ -z "$proxy_cidr" ]; then
-                break
-            fi
-            proxy_networks="${proxy_networks}[[proxy_network]]
-cidr = \"$proxy_cidr\"
-
-"
-        done
-    fi
-    
-    # 生成配置文件
-    cat > "$config_dir/${config_name}.conf" << EOF
-# 实例名称
-instance_name = "$config_name"
-# 主机名
-hostname = "$hostname_value"
-# 实例ID
-instance_id = "$(cat /proc/sys/kernel/random/uuid)"
-# 虚拟IPv4地址
-ipv4 = "$ipv4"
-# DHCP设置
-dhcp = $dhcp
-
-# RPC管理端口
-rpc_portal = "127.0.0.1:$(generate_random_port 15000)"
-
-[network_identity]
-# 网络名称
-network_name = "$network_name"
-# 网络密钥
-network_secret = "$network_secret"
-
-# Peer节点列表
-$peers
-
-[flags]
-# 默认协议
-default_protocol = "tcp"
-# TUN设备名称
-dev_name = ""
-# 启用加密
-enable_encryption = true
-# 启用IPv6
-enable_ipv6 = true
-# MTU设置
-mtu = 1380
-# 延迟优先模式（默认启用）
-latency_first = true
-# 退出节点
-enable_exit_node = false
-# 禁用TUN
-no_tun = false
-# 启用smoltcp
-use_smoltcp = $enable_proxy
-# 外部网络白名单
-foreign_network_whitelist = "*"
-
-[log]
-level = "info"
-file = ""
-
-$([ "$enable_proxy" = "true" ] && echo "$proxy_networks")
-EOF
-
-    # 创建服务文件
-    if create_service_file "$config_name"; then
-        echo -e "\n${GREEN_COLOR}配置创建成功！${RES}"
-        echo "配置文件: $config_dir/${config_name}.conf"
-        
-        # 启动服务
-        echo -e "\n${BLUE_COLOR}正在启动服务...${RES}"
-        systemctl enable "easytier@${config_name}" >/dev/null 2>&1
-        if systemctl start "easytier@${config_name}"; then
-            echo -e "${GREEN_COLOR}服务启动成功！${RES}"
-            
-            # 显示服务状态
-            echo -e "\n${YELLOW_COLOR}服务状态：${RES}"
-            systemctl status "easytier@${config_name}" --no-pager
-            
-            echo -e "\n${GREEN_COLOR}================== 连接信息 ==================${RES}"
-            echo -e "${GREEN_COLOR}网络名称: ${network_name}${RES}"
-            echo -e "${GREEN_COLOR}网络密钥: ${network_secret}${RES}"
-            if [ "$dhcp" = "true" ]; then
-                echo -e "${GREEN_COLOR}虚拟IP: 自动分配 (DHCP)${RES}"
+    while IFS= read -r file; do
+        if [[ $file == *.conf ]]; then
+            configs+=("$config_dir/$file")
+            local config_name=$(basename "$file" .conf)
+            if systemctl is-active --quiet "easytier@${config_name}"; then
+                echo -e "$i. ${config_name} [${GREEN_COLOR}运行中${RES}]"
             else
-                echo -e "${GREEN_COLOR}虚拟IP: $ipv4${RES}"
+                echo -e "$i. ${config_name} [${RED_COLOR}已停止${RES}]"
             fi
-            echo -e "${GREEN_COLOR}延迟优先: 已启用${RES}"
-            echo -e "${GREEN_COLOR}已连接节点:${RES}"
-            
-            # 显示已添加的节点
-            if [ "$node_choice" -eq "$i" ]; then
-                # 显示所有节点
-                for node in "${public_nodes[@]}"; do
-                    echo -e "${GREEN_COLOR}- $node${RES}"
-                done
-            else
-                # 显示单个选择的节点
-                echo -e "${GREEN_COLOR}- ${public_nodes[$((node_choice-1))]}${RES}"
-            fi
-            
-            echo -e "${GREEN_COLOR}================================================${RES}"
-            
-            echo -e "\n${YELLOW_COLOR}服务控制命令：${RES}"
-            echo "启动服务: systemctl start easytier@${config_name}"
-            echo "停止服务: systemctl stop easytier@${config_name}"
-            echo "重启服务: systemctl restart easytier@${config_name}"
-            echo "查看状态: systemctl status easytier@${config_name}"
-            echo "查看日志: journalctl -u easytier@${config_name} -f"
-        else
-            echo -e "${RED_COLOR}服务启动失败${RES}"
-            echo -e "\n${YELLOW_COLOR}错误信息：${RES}"
-            systemctl status "easytier@${config_name}" --no-pager
+            ((i++))
         fi
-    else
-        echo -e "${RED_COLOR}配置创建失败${RES}"
+    done < <(ls -1 "$config_dir")
+    
+    if [ ${#configs[@]} -eq 0 ]; then
+        echo "暂无配置文件"
+        echo -e "\n按回车键继续..."
+        read
+        return
     fi
     
-    echo -e "\n${BLUE_COLOR}操作选项：${RES}"
-    echo "1. 查看服务状态"
-    echo "2. 查看详细日志"
-    echo "3. 返回主菜单"
-    echo "0. 退出"
+    echo -e "\n0. 返回上级菜单"
+    echo -n "请选择要备份的配置 [0-$((i-1))]: "
+    read choice
     
-    while true; do
-        echo -n -e "\n请选择 [0-3]: "
-        read choice
+    if [ "$choice" = "0" ]; then
+        return
+    elif [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
+        local config_file="${configs[$((choice-1))]}"
+        local config_name=$(basename "$config_file" .conf)
         
-        case "$choice" in
-            1)
-                systemctl status "easytier@${config_name}"
-                echo -e "\n按回车键继续..."
-                read
-                ;;
-            2)
-                journalctl -u "easytier@${config_name}" -n 50 --no-pager
-                echo -e "\n按回车键继续..."
-                read
-                ;;
-            3)
-                return 0
-                ;;
-            0)
-                exit 0
+        # 创建备份目录
+        local backup_dir="$HOME/.easytier_backup"
+        local backup_time=$(date +%Y%m%d_%H%M%S)
+        local backup_path="$backup_dir/${config_name}_${backup_time}"
+        mkdir -p "$backup_path"
+        
+        echo -e "\n${BLUE_COLOR}正在备份文件...${RES}"
+        
+        # 1. 备份配置文件
+        if [ -f "$config_file" ]; then
+            cp -p "$config_file" "$backup_path/"
+            echo -e "${GREEN_COLOR}已备份配置文件${RES}"
+        fi
+        
+        # 2. 备份服务文件
+        if [ -f "/etc/systemd/system/easytier@${config_name}.service" ]; then
+            cp -p "/etc/systemd/system/easytier@${config_name}.service" "$backup_path/"
+            echo -e "${GREEN_COLOR}已备份服务文件${RES}"
+        fi
+        
+        # 3. 备份 WireGuard 配置
+        if [ -f "/opt/easytier/wireguard/${config_name}.conf" ]; then
+            cp -p "/opt/easytier/wireguard/${config_name}.conf" "$backup_path/"
+            echo -e "${GREEN_COLOR}已备份 WireGuard 配置${RES}"
+        fi
+        
+        # 4. 备份运行时数据（如果存在）
+        if [ -d "/run/easytier/${config_name}" ]; then
+            cp -rp "/run/easytier/${config_name}" "$backup_path/runtime_data"
+            echo -e "${GREEN_COLOR}已备份运行时数据${RES}"
+        fi
+        
+        echo -e "\n${GREEN_COLOR}备份完成！${RES}"
+        echo -e "${YELLOW_COLOR}备份文件已保存在：${RES} $backup_path"
+        echo -e "\n按回车键继续..."
+        read
+    else
+        echo -e "${RED_COLOR}无效选择${RES}"
+        sleep 1
+    fi
+}
+
+# 添加恢复配置函数
+restore_configuration() {
+    clear
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    echo -e "${GREEN_COLOR}      恢复 EasyTier 配置${RES}"
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    
+    local backup_dir="$HOME/.easytier_backup"
+    
+    # 检查备份目录是否存在
+    if [ ! -d "$backup_dir" ]; then
+        echo -e "${RED_COLOR}错误：备份目录不存在${RES}"
+        echo -e "\n按回车键继续..."
+        read
+        return
+    fi
+    
+    # 列出所有备份
+    echo -e "\n${BLUE_COLOR}可用的备份：${RES}"
+    local backups=()
+    local i=1
+    
+    while IFS= read -r backup; do
+        if [ -d "$backup" ]; then
+            backups+=("$backup")
+            local backup_name=$(basename "$backup")
+            local backup_time=${backup_name##*_}
+            local config_name=${backup_name%_*}
+            echo "$i. $config_name (备份时间: ${backup_time})"
+            ((i++))
+        fi
+    done < <(ls -d "$backup_dir"/*/ 2>/dev/null)
+    
+    if [ ${#backups[@]} -eq 0 ]; then
+        echo "暂无可用的备份"
+        echo -e "\n按回车键继续..."
+        read
+        return
+    fi
+    
+    echo -e "\n0. 返回上级菜单"
+    echo -n "请选择要恢复的备份 [0-$((i-1))]: "
+    read choice
+    
+    if [ "$choice" = "0" ]; then
+        return
+    elif [ "$choice" -ge 1 ] && [ "$choice" -le $((i-1)) ]; then
+        local backup_path="${backups[$((choice-1))]}"
+        local backup_name=$(basename "$backup_path")
+        local config_name=${backup_name%_*}
+        
+        echo -e "\n${YELLOW_COLOR}警告：恢复操作将覆盖现有配置（如果存在）${RES}"
+        echo -n "是否继续？[y/N]: "
+        read confirm
+        
+        case "$confirm" in
+            [Yy]*)
+                # 1. 停止现有服务（如果存在）
+                if systemctl is-active --quiet "easytier@${config_name}"; then
+                    echo -e "\n${BLUE_COLOR}正在停止现有服务...${RES}"
+                    systemctl stop "easytier@${config_name}"
+                    systemctl disable "easytier@${config_name}" >/dev/null 2>&1
+                fi
+                
+                echo -e "\n${BLUE_COLOR}正在恢复文件...${RES}"
+                
+                # 2. 恢复配置文件
+                if [ -f "$backup_path/${config_name}.conf" ]; then
+                    mkdir -p "/opt/easytier/config"
+                    cp -p "$backup_path/${config_name}.conf" "/opt/easytier/config/"
+                    echo -e "${GREEN_COLOR}已恢复配置文件${RES}"
+                fi
+                
+                # 3. 恢复服务文件
+                if [ -f "$backup_path/easytier@${config_name}.service" ]; then
+                    cp -p "$backup_path/easytier@${config_name}.service" "/etc/systemd/system/"
+                    systemctl daemon-reload
+                    echo -e "${GREEN_COLOR}已恢复服务文件${RES}"
+                fi
+                
+                # 4. 恢复 WireGuard 配置
+                if [ -f "$backup_path/${config_name}.conf" ]; then
+                    mkdir -p "/opt/easytier/wireguard"
+                    cp -p "$backup_path/${config_name}.conf" "/opt/easytier/wireguard/"
+                    echo -e "${GREEN_COLOR}已恢复 WireGuard 配置${RES}"
+                fi
+                
+                # 5. 恢复运行时数据
+                if [ -d "$backup_path/runtime_data" ]; then
+                    mkdir -p "/run/easytier/${config_name}"
+                    cp -rp "$backup_path/runtime_data/"* "/run/easytier/${config_name}/"
+                    echo -e "${GREEN_COLOR}已恢复运行时数据${RES}"
+                fi
+                
+                # 6. 设置正确的权限
+                chmod 644 "/opt/easytier/config/${config_name}.conf"
+                chmod 644 "/etc/systemd/system/easytier@${config_name}.service"
+                chmod -R 755 "/run/easytier/${config_name}"
+                
+                echo -e "\n${GREEN_COLOR}恢复完成！${RES}"
+                
+                # 询问是否启动服务
+                echo -n "是否立即启动服务？[Y/n]: "
+                read start_service
+                
+                case "$start_service" in
+                    [Nn]*)
+                        echo -e "${YELLOW_COLOR}服务未启动，您可以稍后手动启动${RES}"
+                        ;;
+                    *)
+                        echo -e "\n${BLUE_COLOR}正在启动服务...${RES}"
+                        systemctl enable "easytier@${config_name}" >/dev/null 2>&1
+                        if systemctl start "easytier@${config_name}"; then
+                            echo -e "${GREEN_COLOR}服务启动成功！${RES}"
+                            systemctl status "easytier@${config_name}" --no-pager
+                        else
+                            echo -e "${RED_COLOR}服务启动失败${RES}"
+                            echo -e "${YELLOW_COLOR}请检查配置文件或查看日志：${RES}"
+                            echo "journalctl -u easytier@${config_name} -n 50 --no-pager"
+                        fi
+                        ;;
+                esac
                 ;;
             *)
-                echo -e "${RED_COLOR}无效选项${RES}"
+                echo -e "\n${YELLOW_COLOR}恢复操作已取消${RES}"
                 ;;
         esac
-    done
+        
+        echo -e "\n按回车键继续..."
+        read
+    else
+        echo -e "${RED_COLOR}无效选择${RES}"
+        sleep 1
+    fi
 }
