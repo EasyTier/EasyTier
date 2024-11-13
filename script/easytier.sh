@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 定义镜像源列表
-MIRROR_URLS=
+MIRROR_URLS=(
     "https://ghp.ci/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
     "https://mirror.ghproxy.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
     "https://hub.gitmirror.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
@@ -642,7 +642,7 @@ define_messages() {
 
 # 主执行流程
 main() {
-    # ��查权限
+    # 查权限
     check_permissions
     if [ $? -ne 0 ]; then
         exit 1
