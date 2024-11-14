@@ -1,5 +1,5 @@
+import type { NetworkTypes } from 'easytier-frontend-lib'
 import { invoke } from '@tauri-apps/api/core'
-import { NetworkTypes } from 'easytier-frontend-lib'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type NetworkInstanceRunningInfo = NetworkTypes.NetworkInstanceRunningInfo

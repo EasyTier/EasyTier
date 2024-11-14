@@ -12,7 +12,7 @@ use tokio_stream::StreamExt;
 use crate::{
     common::{join_joinset_background, PeerId},
     proto::{
-        common::{self, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse},
+        common::{self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse},
         rpc_types::error::Result,
     },
     tunnel::{
@@ -23,7 +23,7 @@ use crate::{
 };
 
 use super::{
-    packet::{build_rpc_packet, PacketMerger},
+    packet::{build_rpc_packet, compress_packet, decompress_packet, PacketMerger},
     service_registry::ServiceRegistry,
     RpcController, Transport,
 };
@@ -31,7 +31,6 @@ use super::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PacketMergerKey {
     from_peer_id: PeerId,
-    rpc_desc: RpcDescriptor,
     transaction_id: i64,
 }
 
@@ -108,9 +107,10 @@ impl Server {
 
                 let key = PacketMergerKey {
                     from_peer_id: packet.from_peer,
-                    rpc_desc: packet.descriptor.clone().unwrap_or_default(),
                     transaction_id: packet.transaction_id,
                 };
+
+                tracing::trace!(?key, ?packet, "Received request packet");
 
                 let ret = packet_merges
                     .entry(key.clone())
@@ -144,7 +144,16 @@ impl Server {
     }
 
     async fn handle_rpc_request(packet: RpcPacket, reg: Arc<ServiceRegistry>) -> Result<Bytes> {
-        let rpc_request = RpcRequest::decode(Bytes::from(packet.body))?;
+        let body = if let Some(compression_info) = packet.compression_info {
+            decompress_packet(
+                compression_info.algo.try_into().unwrap_or_default(),
+                &packet.body,
+            )
+            .await?
+        } else {
+            packet.body
+        };
+        let rpc_request = RpcRequest::decode(Bytes::from(body))?;
         let timeout_duration = std::time::Duration::from_millis(rpc_request.timeout_ms as u64);
         let ctrl = RpcController::default();
         Ok(timeout(
@@ -168,6 +177,7 @@ impl Server {
         let mut resp_msg = RpcResponse::default();
         let now = std::time::Instant::now();
 
+        let compression_info = packet.compression_info.clone();
         let resp_bytes = Self::handle_rpc_request(packet, reg).await;
 
         match &resp_bytes {
@@ -180,14 +190,25 @@ impl Server {
         };
         resp_msg.runtime_us = now.elapsed().as_micros() as u64;
 
+        let (compressed_resp, algo) = compress_packet(
+            compression_info.unwrap_or_default().accepted_algo(),
+            &resp_msg.encode_to_vec(),
+        )
+        .await
+        .unwrap();
+
         let packets = build_rpc_packet(
             to_peer,
             from_peer,
             desc,
             transaction_id,
             false,
-            &resp_msg.encode_to_vec(),
+            &compressed_resp,
             trace_id,
+            RpcCompressionInfo {
+                algo: algo.into(),
+                accepted_algo: CompressionAlgoPb::Zstd.into(),
+            },
         );
 
         for packet in packets {

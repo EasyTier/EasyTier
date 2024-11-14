@@ -20,6 +20,7 @@ use tokio::{
 
 use crate::{
     common::{
+        compressor::{Compressor as _, DefaultCompressor},
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, NetworkIdentity},
@@ -41,7 +42,7 @@ use crate::{
     },
     tunnel::{
         self,
-        packet_def::{PacketType, ZCPacket},
+        packet_def::{CompressorAlgo, PacketType, ZCPacket},
         SinkItem, Tunnel, TunnelConnector,
     },
 };
@@ -61,6 +62,7 @@ use super::{
 struct RpcTransport {
     my_peer_id: PeerId,
     peers: Weak<PeerMap>,
+    // TODO: this seems can be removed
     foreign_peers: Mutex<Option<Weak<ForeignNetworkClient>>>,
 
     packet_recv: Mutex<UnboundedReceiver<ZCPacket>>,
@@ -76,48 +78,14 @@ impl PeerRpcManagerTransport for RpcTransport {
     }
 
     async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
-        let foreign_peers = self
-            .foreign_peers
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(Error::Unknown)?
-            .upgrade()
-            .ok_or(Error::Unknown)?;
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
-
-        if foreign_peers.has_next_hop(dst_peer_id) {
-            // do not encrypt for data sending to public server
-            tracing::debug!(
-                ?dst_peer_id,
-                ?self.my_peer_id,
-                "failed to send msg to peer, try foreign network",
-            );
-            foreign_peers.send_msg(msg, dst_peer_id).await
-        } else if let Some(gateway_id) = peers
-            .get_gateway_peer_id(dst_peer_id, NextHopPolicy::LeastHop)
-            .await
-        {
-            tracing::trace!(
-                ?dst_peer_id,
-                ?gateway_id,
-                ?self.my_peer_id,
-                "send msg to peer via gateway",
-            );
+        if !peers.need_relay_by_foreign_network(dst_peer_id).await? {
             self.encryptor
                 .encrypt(&mut msg)
                 .with_context(|| "encrypt failed")?;
-            if peers.has_peer(gateway_id) {
-                peers.send_msg_directly(msg, gateway_id).await
-            } else {
-                foreign_peers.send_msg(msg, gateway_id).await
-            }
-        } else {
-            Err(Error::RouteError(Some(format!(
-                "peermgr RpcTransport no route for dst_peer_id: {}",
-                dst_peer_id
-            ))))
         }
+        // send to self and this packet will be forwarded in peer_recv loop
+        peers.send_msg_directly(msg, self.my_peer_id).await
     }
 
     async fn recv(&self) -> Result<ZCPacket, Error> {
@@ -163,6 +131,7 @@ pub struct PeerManager {
     foreign_network_client: Arc<ForeignNetworkClient>,
 
     encryptor: Arc<Box<dyn Encryptor>>,
+    data_compress_algo: CompressorAlgo,
 
     exit_nodes: Vec<Ipv4Addr>,
 }
@@ -246,6 +215,12 @@ impl PeerManager {
             my_peer_id,
         ));
 
+        let data_compress_algo = global_ctx
+            .get_flags()
+            .data_compress_algo()
+            .try_into()
+            .expect("invalid data compress algo, maybe some features not enabled");
+
         let exit_nodes = global_ctx.config.get_exit_nodes();
 
         PeerManager {
@@ -272,6 +247,8 @@ impl PeerManager {
             foreign_network_client,
 
             encryptor,
+            data_compress_algo,
+
             exit_nodes,
         }
     }
@@ -462,6 +439,12 @@ impl PeerManager {
                 } else {
                     if let Err(e) = encryptor.decrypt(&mut ret) {
                         tracing::error!(?e, "decrypt failed");
+                        continue;
+                    }
+
+                    let compressor = DefaultCompressor {};
+                    if let Err(e) = compressor.decompress(&mut ret).await {
+                        tracing::error!(?e, "decompress failed");
                         continue;
                     }
 
@@ -768,6 +751,11 @@ impl PeerManager {
             tunnel::packet_def::PacketType::Data as u8,
         );
         self.run_nic_packet_process_pipeline(&mut msg).await;
+        let compressor = DefaultCompressor {};
+        compressor
+            .compress(&mut msg, self.data_compress_algo)
+            .await
+            .with_context(|| "compress failed")?;
         self.encryptor
             .encrypt(&mut msg)
             .with_context(|| "encrypt failed")?;
@@ -933,7 +921,7 @@ mod tests {
             peer_rpc::tests::register_service,
             tests::{connect_peer_manager, wait_route_appear},
         },
-        proto::common::NatType,
+        proto::common::{CompressionAlgoPb, NatType},
         tunnel::{common::tests::wait_for_condition, TunnelConnector, TunnelListener},
     };
 
@@ -1075,6 +1063,7 @@ mod tests {
             let mock_global_ctx = get_mock_global_ctx();
             mock_global_ctx.config.set_flags(Flags {
                 enable_encryption,
+                data_compress_algo: CompressionAlgoPb::Zstd.into(),
                 ..Default::default()
             });
             let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, mock_global_ctx, s));

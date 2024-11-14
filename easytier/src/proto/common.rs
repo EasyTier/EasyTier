@@ -2,6 +2,8 @@ use std::{fmt::Display, str::FromStr};
 
 use anyhow::Context;
 
+use crate::tunnel::packet_def::CompressorAlgo;
+
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
 impl From<uuid::Uuid> for Uuid {
@@ -177,6 +179,29 @@ impl From<SocketAddr> for std::net::SocketAddr {
                 0,
                 0,
             )),
+        }
+    }
+}
+
+impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
+    type Error = anyhow::Error;
+
+    fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
+        match value {
+            CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
+            CompressionAlgoPb::None => Ok(CompressorAlgo::None),
+            _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
+        }
+    }
+}
+
+impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
+    type Error = anyhow::Error;
+
+    fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
+        match value {
+            CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
+            CompressorAlgo::None => Ok(CompressionAlgoPb::None),
         }
     }
 }

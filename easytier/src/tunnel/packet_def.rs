@@ -7,6 +7,10 @@ use zerocopy::FromZeroes;
 
 type DefaultEndian = LittleEndian;
 
+const fn max(a: usize, b: usize) -> usize {
+    [a, b][(a < b) as usize]
+}
+
 // TCP TunnelHeader
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
@@ -49,11 +53,11 @@ pub enum PacketType {
     Invalid = 0,
     Data = 1,
     HandShake = 2,
-    RoutePacket = 3,
+    RoutePacket = 3, // deprecated
     Ping = 4,
     Pong = 5,
-    TaRpc = 6,
-    Route = 7,
+    TaRpc = 6, // deprecated
+    Route = 7, // deprecated
     RpcReq = 8,
     RpcResp = 9,
     ForeignNetworkPacket = 10,
@@ -65,6 +69,7 @@ bitflags::bitflags! {
         const LATENCY_FIRST = 0b0000_0010;
         const EXIT_NODE = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
+        const COMPRESSED = 0b0001_0000;
 
         const _ = !0;
     }
@@ -118,6 +123,12 @@ impl PeerManagerHeader {
             .contains(PeerManagerHeaderFlags::NO_PROXY)
     }
 
+    pub fn is_compressed(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::COMPRESSED)
+    }
+
     pub fn set_latency_first(&mut self, latency_first: bool) -> &mut Self {
         let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
         if latency_first {
@@ -146,6 +157,17 @@ impl PeerManagerHeader {
             flags.insert(PeerManagerHeaderFlags::NO_PROXY);
         } else {
             flags.remove(PeerManagerHeaderFlags::NO_PROXY);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn set_compressed(&mut self, compressed: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if compressed {
+            flags.insert(PeerManagerHeaderFlags::COMPRESSED);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::COMPRESSED);
         }
         self.flags = flags.bits();
         self
@@ -201,11 +223,34 @@ pub struct AesGcmTail {
 }
 pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
 
-pub const TAIL_RESERVED_SIZE: usize = AES_GCM_ENCRYPTION_RESERVED;
-
-const fn max(a: usize, b: usize) -> usize {
-    [a, b][(a < b) as usize]
+#[derive(AsBytes, FromZeroes, Clone, Debug, Copy)]
+#[repr(u8)]
+pub enum CompressorAlgo {
+    None = 0,
+    ZstdDefault = 1,
 }
+
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct CompressorTail {
+    pub algo: u8,
+}
+pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
+
+impl CompressorTail {
+    pub fn get_algo(&self) -> Option<CompressorAlgo> {
+        match self.algo {
+            1 => Some(CompressorAlgo::ZstdDefault),
+            _ => None,
+        }
+    }
+
+    pub fn new(algo: CompressorAlgo) -> Self {
+        Self { algo: algo as u8 }
+    }
+}
+
+pub const TAIL_RESERVED_SIZE: usize = max(AES_GCM_ENCRYPTION_RESERVED, COMPRESSOR_TAIL_SIZE);
 
 #[derive(Default, Debug)]
 pub struct ZCPacketOffsets {

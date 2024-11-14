@@ -7,7 +7,7 @@ use std::{
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::tunnel::generate_digest_from_str;
+use crate::{proto::common::CompressionAlgoPb, tunnel::generate_digest_from_str};
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
@@ -28,6 +28,7 @@ pub fn gen_default_flags() -> Flags {
         disable_udp_hole_punching: false,
         ipv6_listener: "udp://[::]:0".to_string(),
         multi_thread: false,
+        data_compress_algo: CompressionAlgoPb::None.into(),
     }
 }
 

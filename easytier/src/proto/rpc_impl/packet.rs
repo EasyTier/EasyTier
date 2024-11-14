@@ -1,17 +1,43 @@
 use prost::Message as _;
 
 use crate::{
-    common::PeerId,
+    common::{compressor::DefaultCompressor, PeerId},
     proto::{
-        common::{RpcDescriptor, RpcPacket},
+        common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,
     },
-    tunnel::packet_def::{PacketType, ZCPacket},
+    tunnel::packet_def::{CompressorAlgo, PacketType, ZCPacket},
 };
 
 use super::RpcTransactId;
 
 const RPC_PACKET_CONTENT_MTU: usize = 1300;
+
+pub async fn compress_packet(
+    accepted_compression_algo: CompressionAlgoPb,
+    content: &[u8],
+) -> Result<(Vec<u8>, CompressionAlgoPb), Error> {
+    let compressor = DefaultCompressor::new();
+    let algo = accepted_compression_algo
+        .try_into()
+        .unwrap_or(CompressorAlgo::None);
+    let compressed = compressor.compress_raw(&content, algo).await?;
+    if compressed.len() >= content.len() {
+        Ok((content.to_vec(), CompressionAlgoPb::None))
+    } else {
+        Ok((compressed, algo.try_into().unwrap()))
+    }
+}
+
+pub async fn decompress_packet(
+    compression_algo: CompressionAlgoPb,
+    content: &[u8],
+) -> Result<Vec<u8>, Error> {
+    let compressor = DefaultCompressor::new();
+    let algo = compression_algo.try_into()?;
+    let decompressed = compressor.decompress_raw(&content, algo).await?;
+    Ok(decompressed)
+}
 
 pub struct PacketMerger {
     first_piece: Option<RpcPacket>,
@@ -46,7 +72,8 @@ impl PacketMerger {
             body.extend_from_slice(&p.body);
         }
 
-        let mut tmpl_packet = self.first_piece.as_ref().unwrap().clone();
+        // only the first packet contains the complete info
+        let mut tmpl_packet = self.pieces[0].clone();
         tmpl_packet.total_pieces = 1;
         tmpl_packet.piece_idx = 0;
         tmpl_packet.body = body;
@@ -58,15 +85,15 @@ impl PacketMerger {
         let total_pieces = rpc_packet.total_pieces;
         let piece_idx = rpc_packet.piece_idx;
 
-        if rpc_packet.descriptor.is_none() {
-            return Err(Error::MalformatRpcPacket(
-                "descriptor is missing".to_owned(),
-            ));
-        }
-
         // for compatibility with old version
         if total_pieces == 0 && piece_idx == 0 {
             return Ok(Some(rpc_packet));
+        }
+
+        if rpc_packet.piece_idx == 0 && rpc_packet.descriptor.is_none() {
+            return Err(Error::MalformatRpcPacket(
+                "descriptor is missing".to_owned(),
+            ));
         }
 
         // about 32MB max size
@@ -89,6 +116,7 @@ impl PacketMerger {
         {
             self.first_piece = Some(rpc_packet.clone());
             self.pieces.clear();
+            tracing::trace!(?rpc_packet, "got first piece");
         }
 
         self.pieces
@@ -113,6 +141,7 @@ pub fn build_rpc_packet(
     is_req: bool,
     content: &Vec<u8>,
     trace_id: i32,
+    compression_info: RpcCompressionInfo,
 ) -> Vec<ZCPacket> {
     let mut ret = Vec::new();
     let content_mtu = RPC_PACKET_CONTENT_MTU;
@@ -130,13 +159,22 @@ pub fn build_rpc_packet(
         let cur_packet = RpcPacket {
             from_peer,
             to_peer,
-            descriptor: Some(rpc_desc.clone()),
+            descriptor: if cur_offset == 0 {
+                Some(rpc_desc.clone())
+            } else {
+                None
+            },
             is_request: is_req,
             total_pieces: total_pieces as u32,
             piece_idx: (cur_offset / content_mtu) as u32,
             transaction_id,
             body: cur_content,
             trace_id,
+            compression_info: if cur_offset == 0 {
+                Some(compression_info.clone())
+            } else {
+                None
+            },
         };
         cur_offset += cur_len;
 

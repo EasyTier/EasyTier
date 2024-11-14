@@ -14,8 +14,11 @@ use crate::{
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
-    tunnel::common::tests::wait_for_condition,
-    tunnel::{ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector},
+    proto::common::CompressionAlgoPb,
+    tunnel::{
+        common::tests::wait_for_condition, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
+        udp::UdpTunnelConnector,
+    },
 };
 
 #[cfg(feature = "wireguard")]
@@ -398,6 +401,47 @@ pub async fn subnet_proxy_three_node_test(
     subnet_proxy_test_icmp().await;
     subnet_proxy_test_tcp().await;
     subnet_proxy_test_udp().await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn data_compress(
+    #[values(true, false)] inst1_compress: bool,
+    #[values(true, false)] inst2_compress: bool,
+) {
+    let _insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" && inst1_compress {
+                let mut flags = cfg.get_flags();
+                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                cfg.set_flags(flags);
+            }
+
+            if cfg.get_inst_name() == "inst3" && inst2_compress {
+                let mut flags = cfg.get_flags();
+                flags.data_compress_algo = CompressionAlgoPb::Zstd.into();
+                cfg.set_flags(flags);
+            }
+
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", Some(5 * 1024)).await },
+        Duration::from_secs(5),
+    )
+    .await;
 }
 
 #[cfg(feature = "wireguard")]

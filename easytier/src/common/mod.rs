@@ -6,6 +6,7 @@ use std::{
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
+pub mod compressor;
 pub mod config;
 pub mod constants;
 pub mod defer;

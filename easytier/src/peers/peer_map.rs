@@ -250,6 +250,19 @@ impl PeerMap {
         }
         route_map
     }
+
+    pub async fn need_relay_by_foreign_network(&self, dst_peer_id: PeerId) -> Result<bool, Error> {
+        // if gateway_peer_id is not connected to me, means need relay by foreign network
+        let gateway_id = self
+            .get_gateway_peer_id(dst_peer_id, NextHopPolicy::LeastHop)
+            .await
+            .ok_or(Error::RouteError(Some(format!(
+                "peer map need_relay_by_foreign_network no gateway for dst_peer_id: {}",
+                dst_peer_id
+            ))))?;
+
+        Ok(!self.has_peer(gateway_id))
+    }
 }
 
 impl Drop for PeerMap {

@@ -22,7 +22,8 @@ use easytier::{
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         scoped_task::ScopedTask,
     },
-    launcher, proto,
+    launcher,
+    proto::{self, common::CompressionAlgoPb},
     tunnel::udp::UdpTunnelConnector,
     utils::{init_logger, setup_panic_handler},
     web_client,
@@ -289,6 +290,13 @@ struct Cli {
         help = t!("core_clap.ipv6_listener").to_string()
     )]
     ipv6_listener: Option<String>,
+
+    #[arg(
+        long,
+        help = t!("core_clap.compression").to_string(),
+        default_value = "none",
+    )]
+    compression: String,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -514,6 +522,15 @@ impl TryFrom<&Cli> for TomlConfigLoader {
                 .with_context(|| format!("failed to parse ipv6 listener: {}", ipv6_listener))?
         }
         f.multi_thread = cli.multi_thread;
+        f.data_compress_algo = match cli.compression.as_str() {
+            "none" => CompressionAlgoPb::None,
+            "zstd" => CompressionAlgoPb::Zstd,
+            _ => panic!(
+                "unknown compression algorithm: {}, supported: none, zstd",
+                cli.compression
+            ),
+        }
+        .into();
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());
