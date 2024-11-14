@@ -1,8 +1,8 @@
 # EasyTier 配置管理脚本
 
-这是一个用于管理 EasyTier VPN 配置的 Shell 脚本集合。
+这是一个用于管理 EasyTier 配置的 Shell 脚本集合。
 
-一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
+EasyTier 是一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
 * 去中心化：无需依赖中心化服务，节点平等且独立。
 * 安全：支持利用 WireGuard 加密通信，也支持 AES-GCM 加密保护中转流量。
@@ -15,6 +15,7 @@
 * TCP 支持：在 UDP 受限的情况下，通过并发 TCP 链接提供可靠的数据传输，优化性能。
 * 高可用性：支持多路径和在检测到高丢包率或网络错误时切换到健康路径。
 * IPV6 支持：支持利用 IPV6 组网。
+* \
 
 ## 系统要求
 
@@ -25,6 +26,16 @@
 ## 安装方法
 
 使用以下任一命令安装：
+
+
+##  jsdelivr CDN 镜像源
+
+```javascript
+bash <(curl -sL https://gcore.jsdelivr.net/gh/CGG888/EasyTier/script/easytier.sh)
+bash <(curl -sL https://fastly.jsdelivr.net/gh/CGG888/EasyTier/script/easytier.sh)
+bash <(curl -sL https://testingcf.jsdelivr.net/gh/CGG888/EasyTier/script/easytier.sh)
+bash <(curl -sL https://quantil.jsdelivr.net/gh/CGG888/EasyTier/script/easytier.sh)
+```
 
 #### 使用国内镜像加速
 
@@ -169,10 +180,62 @@ bash <(curl -sL https://raw.githubusercontent.com/CGG888/EasyTier/main/script/ea
 
 如有问题，请访问：
 
-* GitHub:  https://github.com/EasyTier/EasyTier 
-           https://github.com/CGG888/EasyTier/blob/main/script/README.md
-* 官  网： https://www.easytier.top
+* GitHub: https://github.com/EasyTier/EasyTier https://github.com/CGG888/EasyTier/blob/main/script/README.md
+* 官网：https://www.easytier.top
 
 ## 许可证
 
 MIT License
+
+
+## 更新说明
+
+### 最新版本 v1.0.0 (2024-11-14)
+
+#### 新增功能
+
+* 添加镜像源速度测试功能
+  * 自动检测并选择最快的镜像源
+  * 显示所有镜像源的响应时间
+  * 优先使用速度最快的镜像源加载脚本
+* WireGuard 配置优化
+  * 改进配置文件格式
+  * 优化二维码生成位置
+  * 支持终端显示二维码
+* 新增 jsdelivr CDN 镜像源支持
+  * [gcore.jsdelivr.net](http://gcore.jsdelivr.net)
+  * [fastly.jsdelivr.net](http://fastly.jsdelivr.net)
+  * [testingcf.jsdelivr.net](http://testingcf.jsdelivr.net)
+  * [quantil.jsdelivr.net](http://quantil.jsdelivr.net)
+
+#### 优化改进
+
+* 优化镜像源访问机制
+  * 添加镜像源可用性检测
+  * 自动跳过不可用的镜像源
+  * 显示镜像源加载状态
+* 改进配置文件管理
+  * 统一配置文件存储位置
+  * 优化配置文件命名规则
+  * 增强配置文件备份功能
+
+#### 修复问题
+
+* 修复 WireGuard 配置格式问题
+* 修复镜像源访问失败的处理
+* 修复配置文件权限设置
+
+#### 安装说明
+
+* 支持多种安装方式
+* 提供多个镜像源选择
+* 自动选择最快的镜像源
+* 优化安装过程的稳定性
+
+
+\
+ ![](attachments/976bc5c4-4373-43c3-a32b-7eef5f89e427.jpeg)
+
+ ![](attachments/cfeb9b72-dd09-4459-bc43-7f682ec26eb2.jpeg)
+
+ ![](attachments/f411be21-1d64-455b-b111-b7e70ebe847e.jpeg)

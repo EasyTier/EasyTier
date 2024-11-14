@@ -2,6 +2,10 @@
 
 # 定义镜像源列表
 MIRROR_URLS=(
+     "https://gcore.jsdelivr.net/gh/CGG888/EasyTier/script"
+     "https://fastly.jsdelivr.net/gh/CGG888/EasyTier/script"
+     "https://testingcf.jsdelivr.net/gh/CGG888/EasyTier/script"
+     "https://quantil.jsdelivr.net/gh/CGG888/EasyTier/script"
     "https://ghp.ci/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
     "https://mirror.ghproxy.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
     "https://hub.gitmirror.com/https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
@@ -10,15 +14,49 @@ MIRROR_URLS=(
     "https://raw.githubusercontent.com/CGG888/EasyTier/main/script"
 )
 
+# 测试镜像源速度并排序
+test_mirror_speed() {
+    local mirror_url="$1"
+    local domain=$(echo "$mirror_url" | sed -e 's|^[^/]*//||' -e 's|/.*$||')
+    local start_time=$(date +%s%N)
+    ping -c 1 -W 1 "$domain" >/dev/null 2>&1
+    local status=$?
+    local end_time=$(date +%s%N)
+    local time_diff=$((($end_time - $start_time)/1000000)) # 转换为毫秒
+
+    if [ $status -eq 0 ]; then
+        echo "$time_diff $mirror_url"
+    else
+        echo "999999 $mirror_url" # 如果ping失败，给一个很大的延迟值
+    fi
+}
+
+# 对镜像源进行速度测试和排序
+echo -e "${BLUE_COLOR}正在测试镜像源速度...${RES}"
+SORTED_MIRRORS=()
+while read -r line; do
+    SORTED_MIRRORS+=("$(echo "$line" | cut -d' ' -f2-)")
+done < <(
+    for url in "${MIRROR_URLS[@]}"; do
+        test_mirror_speed "$url"
+    done | sort -n
+)
+
+# 显示测试结果
+echo -e "\n${GREEN_COLOR}镜像源速度测试结果：${RES}"
+for i in "${!SORTED_MIRRORS[@]}"; do
+    echo "[$((i+1))] ${SORTED_MIRRORS[$i]}"
+done
+
 # 导入其他脚本
 for script in utils.sh install.sh config.sh backup.sh; do
-    echo -e "${BLUE_COLOR}正在加载 $script ...${RES}"
+    echo -e "\n${BLUE_COLOR}正在加载 $script ...${RES}"
     loaded=false
     
-    for url in "${MIRROR_URLS[@]}"; do
+    for url in "${SORTED_MIRRORS[@]}"; do
         echo -e "尝试从 ${url} 加载..."
         if source <(curl -sL "${url}/${script}"); then
-            echo -e "${GREEN_COLOR}成功加载 $script${RES}"
+            echo -e "${GREEN_COLOR}成功从最快的镜像加载 $script${RES}"
             loaded=true
             break
         fi
