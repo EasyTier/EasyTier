@@ -207,7 +207,12 @@ MIT License
   * [fastly.jsdelivr.net](http://fastly.jsdelivr.net)
   * [testingcf.jsdelivr.net](http://testingcf.jsdelivr.net)
   * [quantil.jsdelivr.net](http://quantil.jsdelivr.net)
-
+* 更新社区公共节点
+  * 暂时手动更新，后续自动获取社区公共节点列表
+  * 显示格式调整
+  * 增加社区公共节点数量
+* 修正脚本一些错别字
+ 
 #### 优化改进
 
 * 优化镜像源访问机制
