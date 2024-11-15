@@ -1014,7 +1014,7 @@ mod win_service_manager {
         service_manager::{
             ServiceManagerAccess,
             ServiceManager
-        }  
+        }
     };
     use std::{
         io,
