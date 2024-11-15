@@ -120,10 +120,7 @@ core_clap:
   ipv6_listener:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
-  work_dir:
-    en: "Specify the working directory for the program. If not specified, the current directory will be used."
-    zh-CN: "指定程序的工作目录。如果未指定，将使用当前目录。"
-
+    
 core_app:
   panic_backtrace_save:
     en: "backtrace saved to easytier-panic.log"

@@ -289,12 +289,6 @@ struct Cli {
         help = t!("core_clap.ipv6_listener").to_string()
     )]
     ipv6_listener: Option<String>,
-
-    #[arg(
-        long,
-        help = t!("core_clap.work_dir").to_string()
-    )]
-    work_dir: Option<String>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -641,6 +635,22 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
 }
 
 #[cfg(target_os = "windows")]
+fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result<()> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    use easytier::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = hklm.open_subkey_with_flags(WIN_SERVICE_WORK_DIR_REG_KEY, KEY_READ)?;
+    let dir_pat_str = key.get_value::<std::ffi::OsString, _>(service_name)?;
+    let dir_path = std::fs::canonicalize(dir_pat_str)?;
+
+    std::env::set_current_dir(dir_path)?;
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn win_service_event_loop(
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
     cli: Cli,
@@ -669,12 +679,6 @@ fn win_service_event_loop(
         process_id: None,
     };
 
-    if cli.work_dir == None {
-        let mut path = std::env::current_exe().unwrap();
-        path.pop();
-        std::env::set_current_dir(path).unwrap();
-    }
-
     std::thread::spawn(move || {
         let rt = Runtime::new().unwrap();
         rt.block_on(async move {
@@ -701,12 +705,14 @@ fn win_service_event_loop(
 }
 
 #[cfg(target_os = "windows")]
-fn win_service_main(_: Vec<std::ffi::OsString>) {
+fn win_service_main(arg: Vec<std::ffi::OsString>) {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::sync::Notify;
     use windows_service::service::*;
     use windows_service::service_control_handler::*;
+
+    _ = win_service_set_work_dir(&arg[0]);
 
     let cli = Cli::parse();
 
@@ -738,10 +744,6 @@ fn win_service_main(_: Vec<std::ffi::OsString>) {
 }
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
-    if let Some(dir) = cli.work_dir.as_ref() {
-        std::env::set_current_dir(dir).map_err(|e| anyhow::anyhow!("failed to set work dir: {}", e))?;
-    }
-
     if cli.config_server.is_some() {
         let config_server_url_s = cli.config_server.clone().unwrap();
         let config_server_url = match url::Url::parse(&config_server_url_s) {

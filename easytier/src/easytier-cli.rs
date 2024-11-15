@@ -1,5 +1,6 @@
 use std::{
     ffi::OsString,
+    fmt::Write,
     net::SocketAddr, 
     path::PathBuf, 
     sync::Mutex, 
@@ -131,6 +132,9 @@ struct NodeArgs {
 
 #[derive(Args, Debug)]
 struct ServiceArgs{
+    #[arg(short, long, default_value = env!("CARGO_PKG_NAME"), help = "service name")]
+    name: String,
+
     #[command(subcommand)]
     sub_command: ServiceSubCommand
 }
@@ -146,8 +150,22 @@ enum ServiceSubCommand {
 
 #[derive(Args, Debug)]
 struct InstallArgs {
+    #[arg(long, default_value = env!("CARGO_PKG_DESCRIPTION"), help = "service description")]
+    description: String,
+
+    #[cfg(target_os = "windows")]
+    #[arg(long)]
+    display_name: Option<String>,
+
+    #[arg(long, default_value = "false")]
+    disable_autostart: bool,
+
     #[arg(long)]
     core_path: Option<PathBuf>,
+
+    #[arg(long)]
+    service_work_dir: Option<PathBuf>,
+
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     core_args: Option<Vec<OsString>>
 }
@@ -508,43 +526,49 @@ impl CommandHandler {
     }
 }
 
+pub struct ServiceInstallOptions {
+    pub program: PathBuf,
+    pub args: Vec<OsString>, 
+    pub work_directory: PathBuf,
+    pub disable_autostart: bool,
+    pub description: Option<String>,
+    pub display_name: Option<String>,
+}
 pub struct Service{
     lable: ServiceLabel,
+    kind: ServiceManagerKind,
     service_manager: Box<dyn ServiceManager>
 }
 
 impl Service {
-    pub fn new() -> Result<Self, Error> {
+    pub fn new(name: String) -> Result<Self, Error> {
         #[cfg(target_os = "windows")]
         let service_manager = Box::new(
-            crate::win_service_manager::WinServiceManager::new(
-                Some(OsString::from("EasyTier Service")),
-                Some(OsString::from(env!("CARGO_PKG_DESCRIPTION"))),
-                vec![OsString::from("dnscache"), OsString::from("rpcss")],
-            )?
+            crate::win_service_manager::WinServiceManager::new()?
         );
 
         #[cfg(not(target_os = "windows"))]
         let service_manager = <dyn ServiceManager>::native()?;
+        let kind = ServiceManagerKind::native()?;
 
         Ok(Self {
-            lable: env!("CARGO_PKG_NAME").parse().unwrap(),
+            lable: name.parse()?,
+            kind,
             service_manager
         })
     }
 
-    pub fn install(&self, bin_path: std::path::PathBuf, bin_args: Vec<OsString>) -> Result<(), Error> {
+    pub fn install(&self, options: &ServiceInstallOptions) -> Result<(), Error> {
         let ctx = ServiceInstallCtx {
             label: self.lable.clone(),
-            contents: None,
-            program: bin_path,
-            args: bin_args,
-            autostart: true,
-            username: None, 
-            working_directory: None,
+            program: options.program.clone(),
+            args: options.args.clone(),
+            contents: self.make_install_content_option(options),
+            autostart: !options.disable_autostart,
+            username: None,
+            working_directory: Some(options.work_directory.clone()),
             environment: None,
         };
-
         if self.status()? != ServiceStatus::NotInstalled {
             return Err(anyhow::anyhow!("Service is already installed"));
         }
@@ -620,7 +644,129 @@ impl Service {
         }
     }
 
+    fn make_install_content_option(&self, options: &ServiceInstallOptions) -> Option<String> {
+        match self.kind {
+            ServiceManagerKind::Systemd => {
+                Some(self.make_systemd_unit(options).unwrap())
+            }
+            ServiceManagerKind::Rcd => {
+                Some(self.make_rcd_script(options).unwrap())
+            }
+            ServiceManagerKind::OpenRc => {
+                Some(self.make_open_rc_script(options).unwrap())
+            }
+            _ => {
+                #[cfg(target_os = "windows")] {
+                    let win_options = win_service_manager::WinServiceInstallOptions{
+                        description: options.description.clone(),
+                        display_name: options.display_name.clone(),
+                        dependencies: Some(vec!["rpcss".to_string(), "dnscache".to_string()])
+                    };
+        
+                    Some(serde_json::to_string(&win_options).unwrap())
+                }
+
+                #[cfg(not(target_os = "windows"))]
+                None
+            }           
+        }
+    }
+
+    fn make_systemd_unit(&self, options: &ServiceInstallOptions) -> Result<String, std::fmt::Error> { 
+        let args = options.args.iter()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let target_app = options.program.display().to_string();
+        let work_dir = options.work_directory.display().to_string();
+        let mut unit_content = String::new();
+    
+        writeln!(unit_content, "[Unit]")?;
+        writeln!(unit_content, "After=network.target syslog.target")?;
+        if let Some(ref d) = options.description {
+            writeln!(unit_content, "Description={d}")?;
+        }
+        writeln!(unit_content, "[Service]")?;
+        writeln!(unit_content, "Type=simple")?;
+        writeln!(unit_content,  "WorkingDirectory={work_dir}")?;
+        writeln!(unit_content, "ExecStart={target_app} {args}")?;        
+        writeln!(unit_content, "LimitNOFILE=infinity")?;
+        writeln!(unit_content)?; 
+        writeln!(unit_content, "[Install]")?;  
+        writeln!(unit_content, "WantedBy=multi-user.target")?;
+    
+        std::result::Result::Ok(unit_content)
+    }
+
+    fn make_rcd_script(&self, options: &ServiceInstallOptions) -> Result<String, std::fmt::Error> {
+        let name = self.lable.to_qualified_name();
+        let args = options.args.iter()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let target_app = options.program.display().to_string();
+        let work_dir = options.work_directory.display().to_string();
+        let mut script = String::new();
+    
+        writeln!(script, "#!/bin/sh")?;
+        writeln!(script, "#")?;
+        writeln!(script, "# PROVIDE: {name}")?;
+        writeln!(script, "# REQUIRE: LOGIN FILESYSTEMS NETWORKING ")?;
+        writeln!(script, "# KEYWORD: shutdown")?;
+        writeln!(script)?;
+        writeln!(script, ". /etc/rc.subr")?;
+        writeln!(script)?;
+        writeln!(script, "name=\"{name}\"")?;
+        if let Some(ref d) = options.description {
+            writeln!(script, "desc=\"{d}\"")?;
+        }
+        writeln!(script, "rcvar=\"{name}_enable\"")?;
+        writeln!(script)?;
+        writeln!(script, "load_rc_config ${{name}}")?;
+        writeln!(script)?;
+        writeln!(script, ": ${{{name}_options=\"{args}\"}}")?;
+        writeln!(script)?;
+        writeln!(script, "{name}_chdir=\"{work_dir}\"")?;
+        writeln!(script, "pidfile=\"/var/run/${{name}}.pid\"")?;
+        writeln!(script, "procname=\"{target_app}\"")?;
+        writeln!(script, "command=\"/usr/sbin/daemon\"")?;
+        writeln!(script, "command_args=\"-c -S -T ${{name}} -p ${{pidfile}} ${{procname}} ${{{name}_options}}\"")?;
+        writeln!(script)?;
+        writeln!(script, "run_rc_command \"$1\"")?;
+        
+        std::result::Result::Ok(script)
+    }
+
+    fn make_open_rc_script(&self, options: &ServiceInstallOptions) -> Result<String, std::fmt::Error> {
+        let args = options.args.iter()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let target_app = options.program.display().to_string();
+        let work_dir = options.work_directory.display().to_string();
+        let mut script = String::new();
+    
+        writeln!(script, "#!/sbin/openrc-run")?;
+        writeln!(script)?;
+        if let Some(ref d) = options.description {
+            writeln!(script, "description=\"{d}\"")?;
+        }
+        writeln!(script, "command=\"{target_app}\"")?;
+        writeln!(script, "command_args=\"{args}\"")?;
+        writeln!(script, "pidfile=\"/run/${{RC_SVCNAME}}.pid\"")?;
+        writeln!(script, "command_background=\"yes\"")?;
+        writeln!(script, "directory=\"{work_dir}\"")?;
+        writeln!(script)?;
+        writeln!(script, "depend() {{")?;
+        writeln!(script, "    need net")?;
+        writeln!(script, "    use looger")?;
+        writeln!(script, "}}")?;
+
+        std::result::Result::Ok(script)
+
+    }
 }
+
 
 #[tokio::main]
 #[tracing::instrument]
@@ -785,7 +931,7 @@ async fn main() -> Result<(), Error> {
             }
         }
         SubCommand::Service(service_args) => {
-            let service = Service::new()?;
+            let service = Service::new(service_args.name)?;
             match service_args.sub_command {
                 ServiceSubCommand::Install(install_args) => {                    
                     let bin_path = install_args.core_path.unwrap_or_else(|| {
@@ -805,7 +951,32 @@ async fn main() -> Result<(), Error> {
                         anyhow::anyhow!("failed to get easytier core application: {}", e)
                     })?;
                     let bin_args = install_args.core_args.unwrap_or_default();
-                    service.install(bin_path, bin_args)?;
+                    let work_dir = install_args.service_work_dir.unwrap_or_else(|| {
+                        if cfg!(target_os = "windows") {
+                            bin_path.parent().unwrap().to_path_buf()
+                        } else {
+                            std::env::temp_dir()
+                        }
+                    });
+
+                    let work_dir = std::fs::canonicalize(&work_dir).map_err(|e| {
+                        anyhow::anyhow!("failed to get service work directory[{}]: {}", work_dir.display(), e)
+                    })?;
+
+                    if !work_dir.is_dir() {
+                        return Err(anyhow::anyhow!("work directory is not a directory"));
+                    }
+                    
+                    let install_options = ServiceInstallOptions {
+                        program: bin_path,
+                        args: bin_args,
+                        work_directory: work_dir,
+                        disable_autostart: install_args.disable_autostart,
+                        description: Some(install_args.description),
+                        #[cfg(target_os = "windows")]
+                        display_name: install_args.display_name,
+                    };
+                    service.install(&install_options)?;
                 }
                 ServiceSubCommand::Uninstall => {
                     service.uninstall()?;
@@ -850,7 +1021,8 @@ mod win_service_manager {
     use std::{
         io,
         ffi::OsString,
-        ffi::OsStr
+        ffi::OsStr,
+        path::PathBuf
     };
 
     use service_manager::{
@@ -863,24 +1035,34 @@ mod win_service_manager {
         ServiceStopCtx
     };
 
+    use winreg::{enums::*, RegKey};
+
+    use easytier::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
+
+    use serde::{
+        Serialize, 
+        Deserialize
+    };
+
+    #[derive(Serialize, Deserialize)]
+    pub struct WinServiceInstallOptions {
+        pub dependencies: Option<Vec<String>>,
+        pub description: Option<String>,
+        pub display_name: Option<String>,
+    }
+
     pub struct WinServiceManager {
-        service_manager: ServiceManager,
-        display_name: Option<OsString>,
-        description: Option<OsString>,
-        dependencies: Vec<OsString>  
+        service_manager: ServiceManager
     }
 
     impl WinServiceManager {
-        pub fn new(display_name: Option<OsString>, description: Option<OsString>, dependencies: Vec<OsString>,) -> Result<Self, crate::Error> {
+        pub fn new() -> Result<Self, crate::Error> {
             let service_manager = ServiceManager::local_computer(
                 None::<&str>,
                 ServiceManagerAccess::ALL_ACCESS,
             )?;
             Ok(Self {
-                service_manager,
-                display_name,
-                description,
-                dependencies,
+                service_manager
             })
         }
     }
@@ -892,8 +1074,23 @@ mod win_service_manager {
         fn install(&self, ctx: ServiceInstallCtx) -> io::Result<()> {
             let start_type_ = if ctx.autostart { ServiceStartType::AutoStart } else { ServiceStartType::OnDemand };
             let srv_name = OsString::from(ctx.label.to_qualified_name());
-            let dis_name = self.display_name.clone().unwrap_or_else(|| srv_name.clone());
-            let dependencies = self.dependencies.iter().map(|dep| ServiceDependency::Service(dep.clone())).collect::<Vec<_>>();
+            let mut dis_name = srv_name.clone();
+            let mut description: Option<OsString> = None;
+            let mut dependencies = Vec::<ServiceDependency>::new();
+            
+            if let Some(s) = ctx.contents.as_ref() {
+                let options: WinServiceInstallOptions = serde_json::from_str(s.as_str()).unwrap();
+                if let Some(d) = options.dependencies {
+                    dependencies = d.iter().map(|dep| ServiceDependency::Service(OsString::from(dep.clone()))).collect::<Vec<_>>();
+                }
+                if let Some(d) = options.description {
+                    description = Some(OsString::from(d));
+                }
+                if let Some(d) = options.display_name {
+                    dis_name = OsString::from(d);
+                }
+            }
+
             let service_info = ServiceInfo {
                 name: srv_name,
                 display_name: dis_name,
@@ -911,10 +1108,14 @@ mod win_service_manager {
                 io::Error::new(io::ErrorKind::Other, e)
             })?;
     
-            if let Some(s) = &self.description {
+            if let Some(s) = description {
                 service.set_description(s.clone()).map_err(|e| {
                     io::Error::new(io::ErrorKind::Other, e)
                 })?;
+            }
+
+            if let Some(work_dir) = ctx.working_directory {
+                set_service_work_directory(&ctx.label.to_qualified_name(), work_dir)?;                
             }
     
             Ok(())
@@ -985,5 +1186,11 @@ mod win_service_manager {
                 _ => Ok(ServiceStatus::Running),
             }
         }
+    }
+
+    fn set_service_work_directory(service_name: &str, work_directory: PathBuf) -> io::Result<()> {
+        let (reg_key, _) = RegKey::predef(HKEY_LOCAL_MACHINE).create_subkey(WIN_SERVICE_WORK_DIR_REG_KEY)?;
+        reg_key.set_value::<OsString, _>(service_name, &work_directory.as_os_str().to_os_string())?;
+        Ok(())
     }
 }
