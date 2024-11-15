@@ -357,7 +357,7 @@ impl Cli {
                 }
                 return Ok("0.0.0.0:0".parse().unwrap());
             }
-            return Ok("0.0.0.0:0".parse().unwrap());
+            return Ok(format!("0.0.0.0:{}", port).parse().unwrap());
         }
 
         Ok(rpc_portal.parse()?)
@@ -374,28 +374,32 @@ impl TryFrom<&Cli> for TomlConfigLoader {
                 config_file
             );
             return Ok(TomlConfigLoader::new(config_file)
-                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))?)
+                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))?);
         }
 
         let cfg = TomlConfigLoader::default();
 
         cfg.set_hostname(cli.hostname.clone());
 
-        cfg.set_network_identity(NetworkIdentity::new(cli.network_name.clone(), cli.network_secret.clone()));
+        cfg.set_network_identity(NetworkIdentity::new(
+            cli.network_name.clone(),
+            cli.network_secret.clone(),
+        ));
 
         cfg.set_dhcp(cli.dhcp);
 
         if let Some(ipv4) = &cli.ipv4 {
-            cfg.set_ipv4(Some(
-                ipv4.parse()
-                    .with_context(|| format!("failed to parse ipv4 address: {}", ipv4))?
-            ))
+            cfg.set_ipv4(Some(ipv4.parse().with_context(|| {
+                format!("failed to parse ipv4 address: {}", ipv4)
+            })?))
         }
 
         let mut peers = Vec::<PeerConfig>::with_capacity(cli.peers.len());
         for p in &cli.peers {
             peers.push(PeerConfig {
-                uri: p.parse().with_context(|| format!("failed to parse peer uri: {}", p))?,
+                uri: p
+                    .parse()
+                    .with_context(|| format!("failed to parse peer uri: {}", p))?,
             });
         }
         cfg.set_peers(peers);
@@ -410,22 +414,21 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         for n in cli.proxy_networks.iter() {
             cfg.add_proxy_cidr(
                 n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))?
+                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
             );
         }
 
-        cfg.set_rpc_portal(Cli::parse_rpc_portal(cli.rpc_portal.clone()).with_context(|| {
-            format!("failed to parse rpc portal: {}", cli.rpc_portal)
-        })?);
+        cfg.set_rpc_portal(
+            Cli::parse_rpc_portal(cli.rpc_portal.clone())
+                .with_context(|| format!("failed to parse rpc portal: {}", cli.rpc_portal))?,
+        );
 
         if let Some(external_nodes) = cli.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
             old_peers.push(PeerConfig {
-                uri: external_nodes
-                    .parse()
-                    .with_context(|| {
-                        format!("failed to parse external node uri: {}", external_nodes)
-                    })?
+                uri: external_nodes.parse().with_context(|| {
+                    format!("failed to parse external node uri: {}", external_nodes)
+                })?,
             });
             cfg.set_peers(old_peers);
         }
@@ -450,11 +453,15 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             let url: url::Url = vpn_portal
                 .parse()
                 .with_context(|| format!("failed to parse vpn portal url: {}", vpn_portal))?;
-            let host = url.host_str().ok_or_else(|| anyhow::anyhow!("vpn portal url missing host"))?;
-            let port = url.port().ok_or_else(|| anyhow::anyhow!("vpn portal url missing port"))?;
-            let client_cidr = url.path()[1..]
-                .parse()
-                .with_context(|| format!("failed to parse vpn portal client cidr: {}", url.path()))?;
+            let host = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("vpn portal url missing host"))?;
+            let port = url
+                .port()
+                .ok_or_else(|| anyhow::anyhow!("vpn portal url missing port"))?;
+            let client_cidr = url.path()[1..].parse().with_context(|| {
+                format!("failed to parse vpn portal client cidr: {}", url.path())
+            })?;
             let wireguard_listen: SocketAddr = format!("{}:{}", host, port).parse().unwrap();
             cfg.set_vpn_portal_config(VpnPortalConfig {
                 wireguard_listen,
@@ -464,8 +471,11 @@ impl TryFrom<&Cli> for TomlConfigLoader {
 
         if let Some(manual_routes) = cli.manual_routes.as_ref() {
             let mut routes = Vec::<cidr::Ipv4Cidr>::with_capacity(manual_routes.len());
-            for r in manual_routes{
-                routes.push(r.parse().with_context(|| format!("failed to parse route: {}", r))?);
+            for r in manual_routes {
+                routes.push(
+                    r.parse()
+                        .with_context(|| format!("failed to parse route: {}", r))?,
+                );
             }
             cfg.set_routes(Some(routes));
         }
@@ -636,9 +646,9 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
 
 #[cfg(target_os = "windows")]
 fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result<()> {
+    use easytier::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
     use winreg::enums::*;
     use winreg::RegKey;
-    use easytier::common::constants::WIN_SERVICE_WORK_DIR_REG_KEY;
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
     let key = hklm.open_subkey_with_flags(WIN_SERVICE_WORK_DIR_REG_KEY, KEY_READ)?;
@@ -654,10 +664,10 @@ fn win_service_set_work_dir(service_name: &std::ffi::OsString) -> anyhow::Result
 fn win_service_event_loop(
     stop_notify: std::sync::Arc<tokio::sync::Notify>,
     cli: Cli,
-    status_handle: windows_service::service_control_handler::ServiceStatusHandle,  
-) {  
-    use tokio::runtime::Runtime;
+    status_handle: windows_service::service_control_handler::ServiceStatusHandle,
+) {
     use std::time::Duration;
+    use tokio::runtime::Runtime;
     use windows_service::service::*;
 
     let normal_status = ServiceStatus {
@@ -737,13 +747,18 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
         checkpoint: 0,
         wait_hint: Duration::default(),
         process_id: None,
-    }; 
-    status_handle.set_service_status(next_status).expect("set service status fail");
+    };
+    status_handle
+        .set_service_status(next_status)
+        .expect("set service status fail");
 
     win_service_event_loop(stop_notify_recv, cli, status_handle);
 }
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
+    let cfg = TomlConfigLoader::try_from(&cli)?;
+    init_logger(&cfg, false)?;
+
     if cli.config_server.is_some() {
         let config_server_url_s = cli.config_server.clone().unwrap();
         let config_server_url = match url::Url::parse(&config_server_url_s) {
@@ -778,9 +793,6 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let cfg = TomlConfigLoader::try_from(&cli)?;
-    init_logger(&cfg, false)?;
-
     println!("Starting easytier with config:");
     println!("############### TOML ###############\n");
     println!("{}", cfg.dump());
@@ -788,8 +800,8 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     let mut l = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
     let _t = ScopedTask::from(handle_event(l.start().unwrap()));
-    if let Some(e) = l.wait().await{
-        return Err(anyhow::anyhow!("launcher error: {}", e));
+    if let Some(e) = l.wait().await {
+        anyhow::bail!("launcher error: {}", e);
     }
     Ok(())
 }
@@ -803,18 +815,19 @@ async fn main() {
     #[cfg(target_os = "windows")]
     match windows_service::service_dispatcher::start(String::new(), ffi_service_main) {
         Ok(_) => std::thread::park(),
-        Err(e) =>
-        {    
-             let should_panic = if let windows_service::Error::Winapi(ref io_error) = e { 
-                 io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
-             } else { true };
-             
-             if should_panic {
-                 panic!("SCM start an error: {}", e);
-             }
-         }
-     };
-     
+        Err(e) => {
+            let should_panic = if let windows_service::Error::Winapi(ref io_error) = e {
+                io_error.raw_os_error() != Some(0x427) // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT
+            } else {
+                true
+            };
+
+            if should_panic {
+                panic!("SCM start an error: {}", e);
+            }
+        }
+    };
+
     let cli = Cli::parse();
 
     if let Err(e) = run_main(cli).await {
