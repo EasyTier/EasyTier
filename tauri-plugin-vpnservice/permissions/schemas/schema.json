@@ -295,81 +295,59 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "allow-ping -> Enables the ping command without any pre-configured scope.",
+          "description": "Enables the ping command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "allow-ping"
-          ]
+          "const": "allow-ping"
         },
         {
-          "description": "deny-ping -> Denies the ping command without any pre-configured scope.",
+          "description": "Denies the ping command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "deny-ping"
-          ]
+          "const": "deny-ping"
         },
         {
-          "description": "allow-prepare-vpn -> Enables the prepare_vpn command without any pre-configured scope.",
+          "description": "Enables the prepare_vpn command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "allow-prepare-vpn"
-          ]
+          "const": "allow-prepare-vpn"
         },
         {
-          "description": "deny-prepare-vpn -> Denies the prepare_vpn command without any pre-configured scope.",
+          "description": "Denies the prepare_vpn command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "deny-prepare-vpn"
-          ]
+          "const": "deny-prepare-vpn"
         },
         {
-          "description": "allow-register-listener -> Enables the register_listener command without any pre-configured scope.",
+          "description": "Enables the register_listener command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "allow-register-listener"
-          ]
+          "const": "allow-register-listener"
         },
         {
-          "description": "deny-register-listener -> Denies the register_listener command without any pre-configured scope.",
+          "description": "Denies the register_listener command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "deny-register-listener"
-          ]
+          "const": "deny-register-listener"
         },
         {
-          "description": "allow-start-vpn -> Enables the start_vpn command without any pre-configured scope.",
+          "description": "Enables the start_vpn command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "allow-start-vpn"
-          ]
+          "const": "allow-start-vpn"
         },
         {
-          "description": "deny-start-vpn -> Denies the start_vpn command without any pre-configured scope.",
+          "description": "Denies the start_vpn command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "deny-start-vpn"
-          ]
+          "const": "deny-start-vpn"
         },
         {
-          "description": "allow-stop-vpn -> Enables the stop_vpn command without any pre-configured scope.",
+          "description": "Enables the stop_vpn command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "allow-stop-vpn"
-          ]
+          "const": "allow-stop-vpn"
         },
         {
-          "description": "deny-stop-vpn -> Denies the stop_vpn command without any pre-configured scope.",
+          "description": "Denies the stop_vpn command without any pre-configured scope.",
           "type": "string",
-          "enum": [
-            "deny-stop-vpn"
-          ]
+          "const": "deny-stop-vpn"
         },
         {
-          "description": "default -> Default permissions for the plugin",
+          "description": "Default permissions for the plugin",
           "type": "string",
-          "enum": [
-            "default"
-          ]
+          "const": "default"
         }
       ]
     }

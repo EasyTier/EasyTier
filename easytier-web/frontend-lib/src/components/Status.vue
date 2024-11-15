@@ -4,7 +4,7 @@ import { IPv4 } from 'ip-num/IPNumber'
 import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { num2ipv4, num2ipv6 } from '../modules/utils';
+import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
 import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 
 const props = defineProps<{
@@ -138,7 +138,7 @@ const myNodeInfoChips = computed(() => {
 
   // virtual ipv4
   chips.push({
-    label: `Virtual IPv4: ${my_node_info.virtual_ipv4}`,
+    label: `Virtual IPv4: ${ipv4InetToString(my_node_info.virtual_ipv4)}`,
     icon: '',
   } as Chip)
 
@@ -146,7 +146,7 @@ const myNodeInfoChips = computed(() => {
   const local_ipv4s = my_node_info.ips?.interface_ipv4s
   for (const [idx, ip] of local_ipv4s?.entries()) {
     chips.push({
-      label: `Local IPv4 ${idx}: ${num2ipv4(ip)}`,
+      label: `Local IPv4 ${idx}: ${ipv4ToString(ip)}`,
       icon: '',
     } as Chip)
   }
@@ -155,7 +155,7 @@ const myNodeInfoChips = computed(() => {
   const local_ipv6s = my_node_info.ips?.interface_ipv6s
   for (const [idx, ip] of local_ipv6s?.entries()) {
     chips.push({
-      label: `Local IPv6 ${idx}: ${num2ipv6(ip)}`,
+      label: `Local IPv6 ${idx}: ${ipv6ToString(ip)}`,
       icon: '',
     } as Chip)
   }
@@ -172,7 +172,7 @@ const myNodeInfoChips = computed(() => {
   const public_ipv6 = my_node_info.ips?.public_ipv6
   if (public_ipv6) {
     chips.push({
-      label: `Public IPv6: ${num2ipv6(public_ipv6)}`,
+      label: `Public IPv6: ${ipv6ToString(public_ipv6)}`,
       icon: '',
     } as Chip)
   }
@@ -181,7 +181,7 @@ const myNodeInfoChips = computed(() => {
   const listeners = my_node_info.listeners
   for (const [idx, listener] of listeners?.entries()) {
     chips.push({
-      label: `Listener ${idx}: ${listener}`,
+      label: `Listener ${idx}: ${listener.url}`,
       icon: '',
     } as Chip)
   }
@@ -295,7 +295,7 @@ function showEventLogs() {
   if (!detail)
     return
 
-  dialogContent.value = detail.events
+  dialogContent.value = detail.events.map((event: string) => JSON.parse(event))
   dialogHeader.value = 'event_log'
   dialogVisible.value = true
 }
@@ -309,10 +309,11 @@ function showEventLogs() {
       </ScrollPanel>
       <Timeline v-else :value="dialogContent">
         <template #opposite="slotProps">
-          <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item[0])) }}</small>
+          <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
+            }}</small>
         </template>
         <template #content="slotProps">
-          <HumanEvent :event="slotProps.item[1]" />
+          <HumanEvent :event="slotProps.item.event" />
         </template>
       </Timeline>
     </Dialog>

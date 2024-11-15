@@ -1,6 +1,8 @@
 import { invoke } from '@tauri-apps/api/core'
+import { NetworkTypes } from 'easytier-frontend-lib'
 
-import type { NetworkConfig, NetworkInstanceRunningInfo } from '~/types/network'
+type NetworkConfig = NetworkTypes.NetworkConfig
+type NetworkInstanceRunningInfo = NetworkTypes.NetworkInstanceRunningInfo
 
 export async function parseNetworkConfig(cfg: NetworkConfig) {
   return invoke<string>('parse_network_config', { cfg })

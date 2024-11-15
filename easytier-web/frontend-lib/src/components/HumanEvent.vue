@@ -1,5 +1,8 @@
 <script setup lang="ts">
-import { EventType } from '~/types/network'
+import { useI18n } from 'vue-i18n';
+import { EventType } from '../types/network'
+import { computed } from 'vue';
+import { Fieldset } from 'primevue';
 
 const props = defineProps<{
   event: {

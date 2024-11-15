@@ -16,7 +16,7 @@ pub struct StorageToken {
 pub struct StorageInner {
     // some map for indexing
     pub token_clients_map: DashMap<String, DashSet<url::Url>>,
-    pub machine_client_url_map: DashMap<uuid::Uuid, url::Url>,
+    pub machine_client_url_map: DashMap<uuid::Uuid, DashSet<url::Url>>,
     pub db: Db,
 }
 
@@ -51,7 +51,9 @@ impl Storage {
 
         self.0
             .machine_client_url_map
-            .insert(stoken.machine_id, stoken.client_url.clone());
+            .entry(stoken.machine_id)
+            .or_insert_with(DashSet::new)
+            .insert(stoken.client_url.clone());
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
@@ -60,7 +62,12 @@ impl Storage {
             set.is_empty()
         });
 
-        self.0.machine_client_url_map.remove(&stoken.machine_id);
+        self.0
+            .machine_client_url_map
+            .remove_if(&stoken.machine_id, |_, set| {
+                set.remove(&stoken.client_url);
+                set.is_empty()
+            });
     }
 
     pub fn weak_ref(&self) -> WeakRefStorage {
@@ -71,7 +78,8 @@ impl Storage {
         self.0
             .machine_client_url_map
             .get(&machine_id)
-            .map(|url| url.clone())
+            .map(|url| url.iter().next().map(|url| url.clone()))
+            .flatten()
     }
 
     pub fn list_token_clients(&self, token: &str) -> Vec<url::Url> {
