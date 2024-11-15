@@ -43,7 +43,7 @@ message NetworkConfig {
 }
 
 message MyNodeInfo {
-  common.Ipv4Addr virtual_ipv4 = 1;
+  common.Ipv4Inet virtual_ipv4 = 1;
   string hostname = 2;
   string version = 3;
   peer_rpc.GetIpListResponse ips = 4;
@@ -55,13 +55,12 @@ message MyNodeInfo {
 message NetworkInstanceRunningInfo {
   string dev_name = 1;
   MyNodeInfo my_node_info = 2;
-  map<string, string> events = 3;
-  MyNodeInfo node_info = 4;
-  repeated cli.Route routes = 5;
-  repeated cli.PeerInfo peers = 6;
-  repeated cli.PeerRoutePair peer_route_pairs = 7;
-  bool running = 8;
-  optional string error_msg = 9;
+  repeated string events = 3;
+  repeated cli.Route routes = 4;
+  repeated cli.PeerInfo peers = 5;
+  repeated cli.PeerRoutePair peer_route_pairs = 6;
+  bool running = 7;
+  optional string error_msg = 8;
 }
 
 message NetworkInstanceRunningInfoMap {
@@ -97,7 +96,7 @@ message ValidateConfigResponse {
 
 message RunNetworkInstanceRequest {
   common.UUID inst_id = 1;
-  string config = 2;
+  NetworkConfig config = 2;
 }
 
 message RunNetworkInstanceResponse {

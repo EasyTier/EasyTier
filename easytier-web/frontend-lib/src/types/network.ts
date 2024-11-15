@@ -84,8 +84,7 @@ export interface NetworkInstance {
 export interface NetworkInstanceRunningInfo {
   dev_name: string
   my_node_info: NodeInfo
-  events: Record<string, any>
-  node_info: NodeInfo
+  events: Array<string>,
   routes: Route[]
   peers: PeerInfo[]
   peer_route_pairs: PeerRoutePair[]
@@ -97,6 +96,11 @@ export interface Ipv4Addr {
   addr: number
 }
 
+export interface Ipv4Inet {
+  address: Ipv4Addr
+  network_length: number
+}
+
 export interface Ipv6Addr {
   part1: number
   part2: number
@@ -104,8 +108,12 @@ export interface Ipv6Addr {
   part4: number
 }
 
+export interface Url {
+  url: string
+}
+
 export interface NodeInfo {
-  virtual_ipv4: string
+  virtual_ipv4: Ipv4Inet,
   hostname: string
   version: string
   ips: {
@@ -127,7 +135,7 @@ export interface NodeInfo {
     }[]
   }
   stun_info: StunInfo
-  listeners: string[]
+  listeners: Url[]
   vpn_portal_cfg?: string
 }
 
@@ -139,10 +147,7 @@ export interface StunInfo {
 
 export interface Route {
   peer_id: number
-  ipv4_addr: {
-    address: Ipv4Addr
-    network_length: number
-  } | string | null
+  ipv4_addr: Ipv4Inet | string | null
   next_hop_peer_id: number
   cost: number
   proxy_cidrs: string[]

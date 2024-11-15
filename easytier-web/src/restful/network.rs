@@ -9,7 +9,7 @@ use dashmap::DashSet;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
-use easytier::proto::{web::*};
+use easytier::proto::web::*;
 
 use crate::client_manager::session::Session;
 use crate::client_manager::ClientManager;
@@ -38,7 +38,7 @@ struct ValidateConfigJsonReq {
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RunNetworkJsonReq {
-    config: String,
+    config: NetworkConfig,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -145,7 +145,7 @@ impl NetworkApi {
                 BaseController::default(),
                 RunNetworkInstanceRequest {
                     inst_id: None,
-                    config: config.clone(),
+                    config: Some(config.clone()),
                 },
             )
             .await
@@ -155,8 +155,9 @@ impl NetworkApi {
             .db()
             .insert_or_update_user_network_config(
                 auth_session.user.as_ref().unwrap().id(),
+                machine_id,
                 resp.inst_id.clone().unwrap_or_default().into(),
-                config,
+                serde_json::to_string(&config).unwrap(),
             )
             .await
             .map_err(convert_db_error)?;
@@ -288,6 +289,36 @@ impl NetworkApi {
         Ok(Json(ListMachineJsonResp { machines }))
     }
 
+    async fn handle_get_network_config(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+    ) -> Result<Json<NetworkConfig>, HttpHandleError> {
+        let inst_id = inst_id.to_string();
+
+        let db_row = client_mgr
+            .db()
+            .list_network_configs(auth_session.user.unwrap().id(), Some(machine_id), false)
+            .await
+            .map_err(convert_db_error)?
+            .iter()
+            .find(|x| x.network_instance_id == inst_id)
+            .map(|x| x.network_config.clone())
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                other_error(format!("No such network instance: {}", inst_id)).into(),
+            ))?;
+
+        Ok(serde_json::from_str::<NetworkConfig>(&db_row)
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    other_error(format!("Failed to parse network config: {:?}", e)).into(),
+                )
+            })?
+            .into())
+    }
+
     pub fn build_route(&mut self) -> Router<AppStateInner> {
         Router::new()
             .route("/api/v1/machines", get(Self::handle_list_machines))
@@ -310,6 +341,10 @@ impl NetworkApi {
             .route(
                 "/api/v1/machines/:machine-id/networks/info/:inst-id",
                 get(Self::handle_collect_one_network_info),
+            )
+            .route(
+                "/api/v1/machines/:machine-id/networks/config/:inst-id",
+                get(Self::handle_get_network_config),
             )
     }
 }
