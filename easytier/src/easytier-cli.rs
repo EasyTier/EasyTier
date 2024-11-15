@@ -153,7 +153,6 @@ struct InstallArgs {
     #[arg(long, default_value = env!("CARGO_PKG_DESCRIPTION"), help = "service description")]
     description: String,
 
-    #[cfg(target_os = "windows")]
     #[arg(long)]
     display_name: Option<String>,
 
@@ -973,7 +972,6 @@ async fn main() -> Result<(), Error> {
                         work_directory: work_dir,
                         disable_autostart: install_args.disable_autostart,
                         description: Some(install_args.description),
-                        #[cfg(target_os = "windows")]
                         display_name: install_args.display_name,
                     };
                     service.install(&install_options)?;
