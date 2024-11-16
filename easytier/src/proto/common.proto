@@ -14,7 +14,7 @@ message FlagsInConfig {
   bool enable_exit_node = 7;
   bool no_tun = 8;
   bool use_smoltcp = 9;
-  string foreign_network_whitelist = 10;
+  string relay_network_whitelist = 10;
   bool disable_p2p = 11;
   bool relay_all_peer_rpc = 12;
   bool disable_udp_hole_punching = 13;
@@ -142,5 +142,5 @@ message StunInfo {
 
 message PeerFeatureFlag {
   bool is_public_server = 1;
-  bool no_relay_data = 2;
+  bool avoid_relay_data = 2;
 }

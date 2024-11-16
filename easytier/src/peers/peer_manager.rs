@@ -181,6 +181,16 @@ impl PeerManager {
             }
         }
 
+        if global_ctx
+            .check_network_in_whitelist(&global_ctx.get_network_name())
+            .is_err()
+        {
+            // if local network is not in whitelist, avoid relay data when exist any other route path
+            let mut f = global_ctx.get_feature_flags();
+            f.avoid_relay_data = true;
+            global_ctx.set_feature_flags(f);
+        }
+
         // TODO: remove these because we have impl pipeline processor.
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
         let rpc_tspt = Arc::new(RpcTransport {
@@ -919,9 +929,10 @@ mod tests {
         peers::{
             peer_manager::RouteAlgoType,
             peer_rpc::tests::register_service,
-            tests::{connect_peer_manager, wait_route_appear},
+            route_trait::NextHopPolicy,
+            tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         },
-        proto::common::{CompressionAlgoPb, NatType},
+        proto::common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
         tunnel::{common::tests::wait_for_condition, TunnelConnector, TunnelListener},
     };
 
@@ -1087,5 +1098,71 @@ mod tests {
         let mgr_d = create_mgr(false).await;
         connect_peer_manager(peer_mgr_b.clone(), mgr_d.clone()).await;
         wait_route_appear(mgr_d, peer_mgr_b).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_avoid_relay_data() {
+        // a->b->c
+        // a->d->e->c
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_c = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_d = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_e = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_d.clone()).await;
+        connect_peer_manager(peer_mgr_d.clone(), peer_mgr_e.clone()).await;
+        connect_peer_manager(peer_mgr_e.clone(), peer_mgr_c.clone()).await;
+
+        // when b's avoid_relay_data is false, a->c should route through b and cost is 2
+        wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(2))
+            .await
+            .unwrap();
+        let ret = peer_mgr_a
+            .get_route()
+            .get_next_hop_with_policy(peer_mgr_c.my_peer_id, NextHopPolicy::LeastCost)
+            .await;
+        assert_eq!(ret, Some(peer_mgr_b.my_peer_id));
+
+        // when b's avoid_relay_data is true, a->c should route through d and e, cost is 3
+        peer_mgr_b
+            .get_global_ctx()
+            .set_feature_flags(PeerFeatureFlag {
+                avoid_relay_data: true,
+                ..Default::default()
+            });
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(3))
+            .await
+            .expect(
+                format!(
+                    "route not appear, a route table: {}, table: {:#?}",
+                    peer_mgr_a.get_route().dump().await,
+                    peer_mgr_a.get_route().list_routes().await
+                )
+                .as_str(),
+            );
+
+        let ret = peer_mgr_a
+            .get_route()
+            .get_next_hop_with_policy(peer_mgr_c.my_peer_id, NextHopPolicy::LeastCost)
+            .await;
+        assert_eq!(ret, Some(peer_mgr_d.my_peer_id));
+
+        println!("route table: {:#?}", peer_mgr_a.list_routes().await);
+
+        // drop e, path should go back to through b
+        drop(peer_mgr_e);
+        wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(2))
+            .await
+            .unwrap();
+        let ret = peer_mgr_a
+            .get_route()
+            .get_next_hop_with_policy(peer_mgr_c.my_peer_id, NextHopPolicy::LeastCost)
+            .await;
+        assert_eq!(ret, Some(peer_mgr_b.my_peer_id));
     }
 }

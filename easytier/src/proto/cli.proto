@@ -46,14 +46,21 @@ message ListPeerResponse {
 message Route {
   uint32 peer_id = 1;
   common.Ipv4Inet ipv4_addr = 2;
+
   uint32 next_hop_peer_id = 3;
   int32 cost = 4;
+  int32 path_latency = 11;
+
   repeated string proxy_cidrs = 5;
   string hostname = 6;
   common.StunInfo stun_info = 7;
   string inst_id = 8;
   string version = 9;
   common.PeerFeatureFlag feature_flag = 10;
+
+  optional uint32 next_hop_peer_id_latency_first = 12;
+  optional int32 cost_latency_first = 13;
+  optional int32 path_latency_latency_first = 14;
 }
 
 message PeerRoutePair {

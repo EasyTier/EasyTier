@@ -250,6 +250,9 @@ struct Cli {
     )]
     manual_routes: Option<Vec<String>>,
 
+    // if not in relay_network_whitelist:
+    // for foreign virtual network, will refuse the incoming connection
+    // for local virtual network, will refuse relaying tun packet
     #[arg(
         long,
         help = t!("core_clap.relay_network_whitelist").to_string(),
@@ -512,7 +515,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
         if let Some(wl) = cli.relay_network_whitelist.as_ref() {
-            f.foreign_network_whitelist = wl.join(" ");
+            f.relay_network_whitelist = wl.join(" ");
         }
         f.disable_p2p = cli.disable_p2p;
         f.relay_all_peer_rpc = cli.relay_all_peer_rpc;

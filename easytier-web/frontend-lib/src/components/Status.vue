@@ -400,7 +400,7 @@ function showEventLogs() {
                   <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
                     {{ t('status.server') }}
                   </Tag>
-                  <Tag v-if="slotProps.data.route.no_relay_data" severity="warn" value="Warn">
+                  <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
                     {{ t('status.relay') }}
                   </Tag>
                 </div>
