@@ -95,7 +95,7 @@ function searchInetSuggestions(e: { query: string }) {
 
 const listenerSuggestions = ref([''])
 
-function searchListenerSuggestiong(e: { query: string }) {
+function searchListenerSuggestions(e: { query: string }) {
   const ret = []
 
   for (const proto in protos) {
@@ -242,7 +242,7 @@ function searchListenerSuggestiong(e: { query: string }) {
                   <AutoComplete id="listener_urls" v-model="curNetwork.listener_urls" :suggestions="listenerSuggestions"
                     class="w-full" dropdown :complete-on-focus="true"
                     :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" multiple
-                    @complete="searchListenerSuggestiong" />
+                    @complete="searchListenerSuggestions" />
                 </div>
               </div>
 

@@ -32,6 +32,12 @@ export default {
                     }
                 },
             },
+            zIndex: {
+                modal: 1100,        //dialog, drawer
+                overlay: 1200,      //select, popover
+                menu: 1300,         //overlay menus
+                tooltip: 1400       //tooltip
+            }
         });
 
         app.component('Config', Config);
