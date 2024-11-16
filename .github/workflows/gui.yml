@@ -37,38 +37,35 @@ jobs:
         include:
           - TARGET: aarch64-unknown-linux-musl
             OS: ubuntu-22.04
-            GUI_TARGET: aarch64-unknown-linux-gnu
             ARTIFACT_NAME: linux-aarch64
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-22.04
-            GUI_TARGET: x86_64-unknown-linux-gnu
             ARTIFACT_NAME: linux-x86_64
 
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
-            GUI_TARGET: x86_64-apple-darwin
             ARTIFACT_NAME: macos-x86_64
           - TARGET: aarch64-apple-darwin
             OS: macos-latest
-            GUI_TARGET: aarch64-apple-darwin
             ARTIFACT_NAME: macos-aarch64
 
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
-            GUI_TARGET: x86_64-pc-windows-msvc
             ARTIFACT_NAME: windows-x86_64
 
           - TARGET: aarch64-pc-windows-msvc
             OS: windows-latest
-            GUI_TARGET: aarch64-pc-windows-msvc
             ARTIFACT_NAME: windows-arm64
+
+          - TARGET: x86_64-win7-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-win7-x86_64
 
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
       TARGET: ${{ matrix.TARGET }}
       OS: ${{ matrix.OS }}
-      GUI_TARGET: ${{ matrix.GUI_TARGET }}
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
@@ -161,19 +158,18 @@ jobs:
       - name: copy correct DLLs
         if: ${{ matrix.OS == 'windows-latest' }}
         run: |
-          if [[ $GUI_TARGET =~ ^aarch64.*$ ]]; then
+          if [[ $TARGET =~ ^aarch64.*$ ]]; then
             cp ./easytier/third_party/arm64/*.dll ./easytier-gui/src-tauri/
           else
             cp ./easytier/third_party/*.dll ./easytier-gui/src-tauri/
           fi
 
       - name: Build GUI
-        if: ${{ matrix.GUI_TARGET != '' }}
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
 
       - name: Compress
         run: |
@@ -186,14 +182,14 @@ jobs:
           fi
           # copy gui bundle, gui is built without specific target
           if [[ $OS =~ ^windows.*$ ]]; then
-              mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
+              mv ./target/$TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
           elif [[ $OS =~ ^macos.*$ ]]; then
-              mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
+              mv ./target/$TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
           elif [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^mips.*$ ]]; then
-              mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
-              if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
+              mv ./target/$TARGET/release/bundle/deb/*.deb ./artifacts/objects/
+              if [[ $TARGET =~ ^x86_64.*$ ]]; then
                 # currently only x86 appimage is supported
-                mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
+                mv ./target/$TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
               fi
           fi
 
