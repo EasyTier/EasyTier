@@ -41,6 +41,7 @@ impl Greeting for GreetingService {
     }
 }
 
+use crate::proto::common::{CompressionAlgoPb, RpcCompressionInfo};
 use crate::proto::rpc_impl::client::Client;
 use crate::proto::rpc_impl::server::Server;
 
@@ -107,6 +108,7 @@ fn random_string(len: usize) -> String {
 
 #[tokio::test]
 async fn rpc_basic_test() {
+    // enable_log();
     let ctx = TestContext::new();
 
     let server = GreetingServer::new(GreetingService {
@@ -119,7 +121,7 @@ async fn rpc_basic_test() {
         .client
         .scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "".to_string());
 
-    // small size req and resp
+    // // small size req and resp
 
     let ctrl = RpcController::default();
     let input = SayHelloRequest {
@@ -127,6 +129,15 @@ async fn rpc_basic_test() {
     };
     let ret = out.say_hello(ctrl, input).await;
     assert_eq!(ret.unwrap().greeting, "Hello world!");
+
+    assert_eq!(1, ctx.client.peer_info_table().len());
+    let first_peer_info = ctx.client.peer_info_table().iter().next().unwrap().clone();
+    assert_eq!(
+        first_peer_info.compression_info.accepted_algo(),
+        CompressionAlgoPb::Zstd,
+    );
+
+    println!("{:?}", ctx.client.peer_info_table());
 
     let ctrl = RpcController::default();
     let input = SayGoodbyeRequest {
@@ -144,6 +155,15 @@ async fn rpc_basic_test() {
 
     assert_eq!(0, ctx.client.inflight_count());
     assert_eq!(0, ctx.server.inflight_count());
+
+    let first_peer_info = ctx.client.peer_info_table().iter().next().unwrap().clone();
+    assert_eq!(
+        first_peer_info.compression_info,
+        RpcCompressionInfo {
+            algo: CompressionAlgoPb::Zstd.into(),
+            accepted_algo: CompressionAlgoPb::Zstd.into(),
+        }
+    );
 }
 
 #[tokio::test]

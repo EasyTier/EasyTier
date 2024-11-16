@@ -162,6 +162,12 @@ impl RestfulServer {
         // service which will provide the auth session as a request extension.
         let backend = Backend::new(self.db.clone());
         let auth_layer = AuthManagerLayerBuilder::new(backend, session_layer).build();
+        let compression_layer = tower_http::compression::CompressionLayer::new()
+            .br(true)
+            .deflate(true)
+            .gzip(true)
+            .zstd(true)
+            .quality(tower_http::compression::CompressionLevel::Best);
 
         let app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))
@@ -172,7 +178,8 @@ impl RestfulServer {
             .with_state(self.client_mgr.clone())
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
-            .layer(tower_http::cors::CorsLayer::very_permissive());
+            .layer(tower_http::cors::CorsLayer::very_permissive())
+            .layer(compression_layer);
 
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();

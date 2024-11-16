@@ -120,7 +120,10 @@ core_clap:
   ipv6_listener:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
-    
+  compression:
+    en: "compression algorithm to use, support none, zstd. default is none"
+    zh-CN: "要使用的压缩算法，支持 none、zstd。默认为 none"
+
 core_app:
   panic_backtrace_save:
     en: "backtrace saved to easytier-panic.log"

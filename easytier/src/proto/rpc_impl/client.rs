@@ -12,8 +12,10 @@ use tokio_stream::StreamExt;
 
 use crate::common::PeerId;
 use crate::defer;
-use crate::proto::common::{RpcDescriptor, RpcPacket, RpcRequest, RpcResponse};
-use crate::proto::rpc_impl::packet::build_rpc_packet;
+use crate::proto::common::{
+    CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
+};
+use crate::proto::rpc_impl::packet::{build_rpc_packet, compress_packet, decompress_packet};
 use crate::proto::rpc_types::controller::Controller;
 use crate::proto::rpc_types::descriptor::MethodDescriptor;
 use crate::proto::rpc_types::{
@@ -48,12 +50,21 @@ struct InflightRequest {
     start_time: std::time::Instant,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct PeerInfo {
+    pub peer_id: PeerId,
+    pub compression_info: RpcCompressionInfo,
+    pub last_active: Option<std::time::Instant>,
+}
+
 type InflightRequestTable = Arc<DashMap<InflightRequestKey, InflightRequest>>;
+pub type PeerInfoTable = Arc<DashMap<PeerId, PeerInfo>>;
 
 pub struct Client {
     mpsc: Mutex<MpscTunnel<Box<dyn Tunnel>>>,
     transport: Mutex<Transport>,
     inflight_requests: InflightRequestTable,
+    peer_info: PeerInfoTable,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
@@ -64,6 +75,7 @@ impl Client {
             mpsc: Mutex::new(MpscTunnel::new(ring_a, None)),
             transport: Mutex::new(MpscTunnel::new(ring_b, None)),
             inflight_requests: Arc::new(DashMap::new()),
+            peer_info: Arc::new(DashMap::new()),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
         }
     }
@@ -78,6 +90,21 @@ impl Client {
 
     pub fn run(&self) {
         let mut tasks = self.tasks.lock().unwrap();
+
+        let peer_infos = self.peer_info.clone();
+        tasks.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let now = std::time::Instant::now();
+                peer_infos.retain(|_, v| {
+                    if let Some(last_active) = v.last_active {
+                        return now.duration_since(last_active)
+                            < std::time::Duration::from_secs(120);
+                    }
+                    true
+                });
+            }
+        });
 
         let mut rx = self.mpsc.lock().unwrap().get_stream();
         let inflight_requests = self.inflight_requests.clone();
@@ -111,6 +138,8 @@ impl Client {
                     continue;
                 };
 
+                tracing::trace!(?packet, "Received response packet");
+
                 let ret = inflight_request.merger.feed(packet);
                 match ret {
                     Ok(Some(rpc_packet)) => {
@@ -138,6 +167,7 @@ impl Client {
             to_peer_id: PeerId,
             zc_packet_sender: MpscTunnelSender,
             inflight_requests: InflightRequestTable,
+            peer_info: PeerInfoTable,
             _phan: PhantomData<F>,
         }
 
@@ -194,10 +224,22 @@ impl Client {
                 };
 
                 let rpc_req = RpcRequest {
-                    descriptor: Some(rpc_desc.clone()),
                     request: input.into(),
                     timeout_ms: ctrl.timeout_ms(),
+                    ..Default::default()
                 };
+
+                let peer_info = self
+                    .peer_info
+                    .get(&self.to_peer_id)
+                    .map(|v| v.clone())
+                    .unwrap_or_default();
+                let (buf, c_algo) = compress_packet(
+                    peer_info.compression_info.accepted_algo(),
+                    &rpc_req.encode_to_vec(),
+                )
+                .await
+                .unwrap();
 
                 let packets = build_rpc_packet(
                     self.from_peer_id,
@@ -205,12 +247,30 @@ impl Client {
                     rpc_desc,
                     transaction_id,
                     true,
-                    &rpc_req.encode_to_vec(),
+                    &buf,
                     ctrl.trace_id(),
+                    RpcCompressionInfo {
+                        algo: c_algo.into(),
+                        accepted_algo: CompressionAlgoPb::Zstd.into(),
+                    },
                 );
 
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);
-                let rpc_packet = timeout(timeout_dur, self.do_rpc(packets, &mut rx)).await??;
+                let mut rpc_packet = timeout(timeout_dur, self.do_rpc(packets, &mut rx)).await??;
+
+                if let Some(compression_info) = rpc_packet.compression_info {
+                    self.peer_info.insert(
+                        self.to_peer_id,
+                        PeerInfo {
+                            peer_id: self.to_peer_id,
+                            compression_info: compression_info.clone(),
+                            last_active: Some(std::time::Instant::now()),
+                        },
+                    );
+
+                    rpc_packet.body =
+                        decompress_packet(compression_info.algo(), &rpc_packet.body).await?;
+                }
 
                 assert_eq!(rpc_packet.transaction_id, transaction_id);
 
@@ -230,11 +290,16 @@ impl Client {
             to_peer_id,
             zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),
             inflight_requests: self.inflight_requests.clone(),
+            peer_info: self.peer_info.clone(),
             _phan: PhantomData,
         })
     }
 
     pub fn inflight_count(&self) -> usize {
         self.inflight_requests.len()
+    }
+
+    pub fn peer_info_table(&self) -> PeerInfoTable {
+        self.peer_info.clone()
     }
 }
