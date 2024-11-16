@@ -1192,6 +1192,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codepage"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48f68d061bc2828ae826206326e61251aca94c1e4a5305cf52d9138639c918b4"
+dependencies = [
+ "encoding_rs",
+]
+
+[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1866,6 +1875,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "service-manager",
  "smoltcp",
  "socket2",
  "stun_codec",
@@ -2061,6 +2071,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd0e20d5688ce3cab59eb3ef3a2083a5c77bf496cb798dc6fcdb75f323890c18"
 dependencies = [
  "encoding_index_tests",
+]
+
+[[package]]
+name = "encoding-utils"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87b881ab2524b96a5ce932056c7482ba6152e2226fed3936b3e592adeb95ca6d"
+dependencies = [
+ "codepage",
+ "encoding_rs",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6544,6 +6565,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "service-manager"
+version = "0.7.1"
+source = "git+https://github.com/chipsenkbeil/service-manager-rs.git?branch=main#13dae5e8160f91fdc9834d847165cc5ce0a72fb3"
+dependencies = [
+ "cfg-if",
+ "dirs 4.0.0",
+ "encoding-utils",
+ "encoding_rs",
+ "plist",
+ "which",
+ "xml-rs",
+]
+
+[[package]]
 name = "servo_arc"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9338,6 +9373,12 @@ dependencies = [
  "libc",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "xml-rs"
+version = "0.8.22"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af4e2e2f7cba5a093896c1e150fbfe177d1883e7448200efb81d40b9d339ef26"
 
 [[package]]
 name = "yansi"
