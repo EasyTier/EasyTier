@@ -13,7 +13,7 @@ onMounted(async () => {
 <!-- https://flowbite.com/docs/components/sidebar/#sidebar-with-navbar -->
 
 <template>
-  <Toast />
+  <Toast position="bottom-right" />
   <DynamicDialog />
 
   <RouterView />
