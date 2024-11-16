@@ -71,6 +71,9 @@ jobs:
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
+          - TARGET: x86_64-win7-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-win7-x86_64
 
           - TARGET: x86_64-unknown-freebsd
             OS: ubuntu-22.04
@@ -144,8 +147,8 @@ jobs:
 
             rustup set auto-self-update disable
 
-            rustup install 1.77
-            rustup default 1.77
+            rustup install 1.82
+            rustup default 1.82
 
             export CC=clang
             export CXX=clang++
