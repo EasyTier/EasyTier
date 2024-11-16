@@ -181,6 +181,8 @@ sys-locale = "0.3"
 ringbuf = "0.4.5"
 async-ringbuf = "0.3.1"
 
+service-manager = {git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main"}
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 
