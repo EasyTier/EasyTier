@@ -21,7 +21,7 @@ tower-sessions-sqlx-store = { version = "0.14.1", features = ["sqlite"] }
 tower-sessions = { version = "0.13.0", default-features = false, features = [
     "signed",
 ] }
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "compression-full"] }
 sqlx = { version = "0.8", features = ["sqlite"] }
 sea-orm = { version = "1.1", features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
 sea-orm-migration = { version = "1.1" }
