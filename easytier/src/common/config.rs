@@ -22,7 +22,7 @@ pub fn gen_default_flags() -> Flags {
         enable_exit_node: false,
         no_tun: false,
         use_smoltcp: false,
-        foreign_network_whitelist: "*".to_string(),
+        relay_network_whitelist: "*".to_string(),
         disable_p2p: false,
         relay_all_peer_rpc: false,
         disable_udp_hole_punching: false,

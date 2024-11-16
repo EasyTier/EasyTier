@@ -453,26 +453,14 @@ impl ForeignNetworkManager {
         }
     }
 
-    fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), Error> {
-        if self
-            .global_ctx
-            .get_flags()
-            .foreign_network_whitelist
-            .split(" ")
-            .map(wildmatch::WildMatch::new)
-            .any(|wl| wl.matches(network_name))
-        {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
-        }
-    }
-
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         tracing::info!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
 
         let relay_peer_rpc = self.global_ctx.get_flags().relay_all_peer_rpc;
-        let ret = self.check_network_in_whitelist(&peer_conn.get_network_identity().network_name);
+        let ret = self
+            .global_ctx
+            .check_network_in_whitelist(&peer_conn.get_network_identity().network_name)
+            .map_err(Into::into);
         if ret.is_err() && !relay_peer_rpc {
             return ret;
         }
@@ -686,7 +674,7 @@ mod tests {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
         let mut flag = pm_center.get_global_ctx().get_flags();
-        flag.foreign_network_whitelist = vec!["net1".to_string(), "net2*".to_string()].join(" ");
+        flag.relay_network_whitelist = vec!["net1".to_string(), "net2*".to_string()].join(" ");
         pm_center.get_global_ctx().config.set_flags(flag);
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
@@ -711,7 +699,7 @@ mod tests {
     async fn only_relay_peer_rpc() {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let mut flag = pm_center.get_global_ctx().get_flags();
-        flag.foreign_network_whitelist = "".to_string();
+        flag.relay_network_whitelist = "".to_string();
         flag.relay_all_peer_rpc = true;
         pm_center.get_global_ctx().config.set_flags(flag);
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());

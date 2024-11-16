@@ -424,10 +424,18 @@ impl CommandHandler {
             ipv4: String,
             hostname: String,
             proxy_cidrs: String,
+
             next_hop_ipv4: String,
             next_hop_hostname: String,
             next_hop_lat: f64,
-            cost: i32,
+            path_len: i32,
+            path_latency: i32,
+
+            next_hop_ipv4_lat_first: String,
+            next_hop_hostname_lat_first: String,
+            path_len_lat_first: i32,
+            path_latency_lat_first: i32,
+
             version: String,
         }
 
@@ -443,10 +451,18 @@ impl CommandHandler {
             ipv4: node_info.ipv4_addr.clone(),
             hostname: node_info.hostname.clone(),
             proxy_cidrs: node_info.proxy_cidrs.join(", "),
+
             next_hop_ipv4: "-".to_string(),
             next_hop_hostname: "Local".to_string(),
             next_hop_lat: 0.0,
-            cost: 0,
+            path_len: 0,
+            path_latency: 0,
+
+            next_hop_ipv4_lat_first: "-".to_string(),
+            next_hop_hostname_lat_first: "Local".to_string(),
+            path_len_lat_first: 0,
+            path_latency_lat_first: 0,
+
             version: node_info.version.clone(),
         });
         let peer_routes = self.list_peer_route_pair().await?;
@@ -458,16 +474,56 @@ impl CommandHandler {
                 continue;
             };
 
+            let next_hop_pair_latency_first = peer_routes.iter().find(|pair| {
+                pair.route.clone().unwrap_or_default().peer_id
+                    == p.route
+                        .clone()
+                        .unwrap_or_default()
+                        .next_hop_peer_id_latency_first
+                        .unwrap_or_default()
+            });
+
             let route = p.route.clone().unwrap_or_default();
             if route.cost == 1 {
                 items.push(RouteTableItem {
                     ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
                     hostname: route.hostname.clone(),
                     proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
+
                     next_hop_ipv4: "DIRECT".to_string(),
                     next_hop_hostname: "".to_string(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                    cost: route.cost,
+                    path_len: route.cost,
+                    path_latency: next_hop_pair.get_latency_ms().unwrap_or_default() as i32,
+
+                    next_hop_ipv4_lat_first: next_hop_pair_latency_first
+                        .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
+                        .unwrap_or_default()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
+                    next_hop_hostname_lat_first: next_hop_pair_latency_first
+                        .map(|pair| pair.route.clone().unwrap_or_default().hostname)
+                        .unwrap_or_default()
+                        .clone(),
+                    path_latency_lat_first: next_hop_pair_latency_first
+                        .map(|pair| {
+                            pair.route
+                                .clone()
+                                .unwrap_or_default()
+                                .path_latency_latency_first
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    path_len_lat_first: next_hop_pair_latency_first
+                        .map(|pair| {
+                            pair.route
+                                .clone()
+                                .unwrap_or_default()
+                                .cost_latency_first
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+
                     version: if route.version.is_empty() {
                         "unknown".to_string()
                     } else {
@@ -493,7 +549,37 @@ impl CommandHandler {
                         .hostname
                         .clone(),
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                    cost: route.cost,
+                    path_len: route.cost,
+                    path_latency: p.route.clone().unwrap_or_default().path_latency as i32,
+
+                    next_hop_ipv4_lat_first: next_hop_pair_latency_first
+                        .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
+                        .unwrap_or_default()
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
+                    next_hop_hostname_lat_first: next_hop_pair_latency_first
+                        .map(|pair| pair.route.clone().unwrap_or_default().hostname)
+                        .unwrap_or_default()
+                        .clone(),
+                    path_latency_lat_first: next_hop_pair_latency_first
+                        .map(|pair| {
+                            pair.route
+                                .clone()
+                                .unwrap_or_default()
+                                .path_latency_latency_first
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+                    path_len_lat_first: next_hop_pair_latency_first
+                        .map(|pair| {
+                            pair.route
+                                .clone()
+                                .unwrap_or_default()
+                                .cost_latency_first
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default(),
+
                     version: if route.version.is_empty() {
                         "unknown".to_string()
                     } else {

@@ -139,6 +139,20 @@ impl GlobalCtx {
         }
     }
 
+    pub fn check_network_in_whitelist(&self, network_name: &str) -> Result<(), anyhow::Error> {
+        if self
+            .get_flags()
+            .relay_network_whitelist
+            .split(" ")
+            .map(wildmatch::WildMatch::new)
+            .any(|wl| wl.matches(network_name))
+        {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
+        }
+    }
+
     pub fn get_ipv4(&self) -> Option<cidr::Ipv4Inet> {
         if let Some(ret) = self.cached_ipv4.load() {
             return Some(ret);

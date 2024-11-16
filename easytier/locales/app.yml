@@ -99,10 +99,12 @@ core_clap:
   relay_network_whitelist:
     en: |+
         only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
+        if local network (assigned with network_name) is not in the whitelist, the traffic can still be forwarded if no other route path is available.
         if this parameter is empty, forwarding is disabled. by default, all networks are allowed.
         e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)"
     zh-CN: |+
         仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
+        如果本地网络（使用 network_name 分配）不在白名单中，如果没有其他路由路径可用，流量仍然可以转发。
         如果该参数为空，则禁用转发。默认允许所有网络。
         例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）"
   disable_p2p:
