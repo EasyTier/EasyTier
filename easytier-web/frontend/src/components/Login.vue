@@ -47,7 +47,7 @@ const onRegister = async () => {
     }
 };
 
-const defaultApiHost = 'http://10.147.223.128:11211'
+const defaultApiHost = 'http://47.115.208.211:11211'
 const apiHost = ref<string>(defaultApiHost)
 const apiHostSuggestions = ref<Array<string>>([])
 const apiHostSearch = async (event: { query: string }) => {

@@ -33,3 +33,5 @@ easytier-panic.log
 
 # web
 node_modules
+
+.vite
