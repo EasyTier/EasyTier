@@ -230,7 +230,7 @@ impl MigrationTrait for Migration {
             .columns(vec![Users::Username, Users::Password])
             .values_panic(vec![
                 "user".into(),
-                "$argon2i$v=19$m=16,t=2,p=1$dHJ5dXZkYmZkYXM$UkrNqWz0BbSVBq4ykLSuJw".into(),
+                "$argon2i$v=19$m=16,t=2,p=1$aGVyRDBrcnRycnlaMDhkbw$449SEcv/qXf+0fnI9+fYVQ".into(), // user (md5summed)
             ])
             .to_owned();
         manager.exec_stmt(user).await?;
@@ -240,7 +240,7 @@ impl MigrationTrait for Migration {
             .columns(vec![Users::Username, Users::Password])
             .values_panic(vec![
                 "admin".into(),
-                "$argon2i$v=19$m=16,t=2,p=1$Ymd1Y2FlcnQ$x0q4oZinW9S1ZB9BcaHEpQ".into(),
+                "$argon2i$v=19$m=16,t=2,p=1$bW5idXl0cmY$61n+JxL4r3dwLPAEDlDdtg".into(), // admin (md5summed)
             ])
             .to_owned();
         manager.exec_stmt(admin).await?;

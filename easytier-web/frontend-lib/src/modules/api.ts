@@ -1,4 +1,5 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import { Md5 } from 'ts-md5'
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -79,6 +80,7 @@ export class ApiClient {
     // 注册
     public async register(data: RegisterData): Promise<RegisterResponse> {
         try {
+            data.credentials.password = Md5.hashStr(data.credentials.password);
             const response = await this.client.post<RegisterResponse>('/auth/register', data);
             console.log("register response:", response);
             return { success: true, message: 'Register success', };
@@ -93,6 +95,7 @@ export class ApiClient {
     // 登录
     public async login(data: Credential): Promise<LoginResponse> {
         try {
+            data.password = Md5.hashStr(data.password);
             const response = await this.client.post<any>('/auth/login', data);
             console.log("login response:", response);
             return { success: true, message: 'Login success', };
@@ -116,7 +119,7 @@ export class ApiClient {
     }
 
     public async change_password(new_password: string) {
-        await this.client.put('/auth/password', { new_password: new_password });
+        await this.client.put('/auth/password', { new_password: Md5.hashStr(new_password) });
     }
 
     public async check_login_status() {
