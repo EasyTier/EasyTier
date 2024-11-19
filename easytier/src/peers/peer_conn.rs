@@ -133,15 +133,23 @@ impl PeerConn {
 
         let mut locked = self.recv.lock().await;
         let recv = locked.as_mut().unwrap();
-        let Some(rsp) = recv.next().await else {
-            return Err(Error::WaitRespError(
-                "conn closed during wait handshake response".to_owned(),
-            ));
+        let rsp = match recv.next().await {
+            Some(Ok(rsp)) => rsp,
+            Some(Err(e)) => {
+                return Err(Error::WaitRespError(format!(
+                    "conn recv error during wait handshake response, err: {:?}",
+                    e
+                )))
+            }
+            None => {
+                return Err(Error::WaitRespError(
+                    "conn closed during wait handshake response".to_owned(),
+                ))
+            }
         };
 
         *need_retry = true;
 
-        let rsp = rsp?;
         let Some(peer_mgr_hdr) = rsp.peer_manager_header() else {
             return Err(Error::WaitRespError(format!(
                 "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -213,6 +221,9 @@ impl PeerConn {
             tracing::warn!("send handshake request error: {:?}", e);
             Error::WaitRespError("send handshake request error".to_owned())
         })?;
+
+        // yield to send the response packet
+        tokio::task::yield_now().await;
 
         Ok(())
     }

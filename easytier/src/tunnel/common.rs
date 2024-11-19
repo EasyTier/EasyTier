@@ -75,16 +75,10 @@ pin_project! {
         #[pin]
         reader: R,
         buf: BytesMut,
-        state: FrameReaderState,
         max_packet_size: usize,
         associate_data: Option<Box<dyn Any + Send + 'static>>,
+        error: Option<TunnelError>,
     }
-}
-
-// usize means the size remaining to read
-enum FrameReaderState {
-    ReadingHeader(usize),
-    ReadingBody(usize),
 }
 
 impl<R> FramedReader<R> {
@@ -100,9 +94,9 @@ impl<R> FramedReader<R> {
         FramedReader {
             reader,
             buf: BytesMut::with_capacity(max_packet_size),
-            state: FrameReaderState::ReadingHeader(4),
             max_packet_size,
             associate_data,
+            error: None,
         }
     }
 
@@ -146,9 +140,19 @@ where
         let mut self_mut = self.project();
 
         loop {
+            if let Some(e) = self_mut.error.as_ref() {
+                tracing::warn!("poll_next on a failed FramedReader, {:?}", e);
+                return Poll::Ready(None);
+            }
+
             while let Some(packet) =
                 Self::extract_one_packet(self_mut.buf, *self_mut.max_packet_size)
             {
+                if let Err(TunnelError::InvalidPacket(msg)) = packet.as_ref() {
+                    self_mut
+                        .error
+                        .replace(TunnelError::InvalidPacket(msg.clone()));
+                }
                 return Poll::Ready(Some(packet));
             }
 
