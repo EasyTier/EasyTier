@@ -132,7 +132,7 @@ impl StunClient {
     async fn wait_stun_response<'a, const N: usize>(
         &self,
         buf: &'a mut [u8; N],
-        tids: &Vec<u128>,
+        tids: &Vec<u32>,
         expected_ip_changed: bool,
         expected_port_changed: bool,
         stun_host: &SocketAddr,
@@ -170,7 +170,7 @@ impl StunClient {
 
             if msg.class() != MessageClass::SuccessResponse
                 || msg.method() != BINDING
-                || !tids.contains(&tid_to_u128(&msg.transaction_id()))
+                || !tids.contains(&tid_to_u32(&msg.transaction_id()))
             {
                 continue;
             }
@@ -239,7 +239,7 @@ impl StunClient {
             unsafe { std::ptr::write_bytes(buf.as_mut_ptr(), 0, buf.len()) };
 
             let mut message =
-                Message::<Attribute>::new(MessageClass::Request, BINDING, u128_to_tid(tid as u128));
+                Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(tid));
             message.add_attribute(ChangeRequest::new(change_ip, change_port));
 
             // Encodes the message
@@ -247,7 +247,7 @@ impl StunClient {
             let msg = encoder
                 .encode_into_bytes(message.clone())
                 .with_context(|| "encode stun message")?;
-            tids.push(tid as u128);
+            tids.push(tid);
             tracing::trace!(?message, ?msg, tid, "send stun request");
             self.socket
                 .send_to(msg.as_slice().into(), &stun_host)
@@ -818,6 +818,8 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 
 #[cfg(test)]
 mod tests {
+    use crate::tunnel::{udp::UdpTunnelListener, TunnelListener};
+
     use super::*;
 
     #[tokio::test]
@@ -835,5 +837,31 @@ mod tests {
 
         let port_mapping = collector.get_udp_port_mapping(3000).await;
         println!("{:#?}", port_mapping);
+    }
+
+    #[tokio::test]
+    async fn test_internal_stun_server() {
+        let mut udp_server1 = UdpTunnelListener::new("udp://0.0.0.0:55555".parse().unwrap());
+        let mut udp_server2 = UdpTunnelListener::new("udp://0.0.0.0:55535".parse().unwrap());
+
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async move {
+            udp_server1.listen().await.unwrap();
+            loop {
+                udp_server1.accept().await.unwrap();
+            }
+        });
+        tasks.spawn(async move {
+            udp_server2.listen().await.unwrap();
+            loop {
+                udp_server2.accept().await.unwrap();
+            }
+        });
+
+        let stun_servers = vec!["127.0.0.1:55555".to_string(), "127.0.0.1:55535".to_string()];
+        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let ret = detector.detect_nat_type(0).await;
+        println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
+        assert_eq!(ret.unwrap().nat_type(), NatType::PortRestricted);
     }
 }
