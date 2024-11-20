@@ -267,17 +267,18 @@ impl_encode!(ChangeRequestEncoder, ChangeRequest, |item: Self::Item| {
     ((ip << 1 | port) << 1) as u32
 });
 
-pub fn tid_to_u128(tid: &TransactionId) -> u128 {
-    let mut tid_buf = [0u8; 16];
+pub fn tid_to_u32(tid: &TransactionId) -> u32 {
+    let mut tid_buf = [0u8; 4];
     // copy bytes from msg_tid to tid_buf
-    tid_buf[..tid.as_bytes().len()].copy_from_slice(tid.as_bytes());
-    u128::from_le_bytes(tid_buf)
+    tid_buf[..].copy_from_slice(&tid.as_bytes()[8..12]);
+    u32::from_le_bytes(tid_buf)
 }
 
-pub fn u128_to_tid(tid: u128) -> TransactionId {
+pub fn u32_to_tid(tid: u32) -> TransactionId {
     let tid_buf = tid.to_le_bytes();
     let mut tid_arr = [0u8; 12];
-    tid_arr.copy_from_slice(&tid_buf[..12]);
+    tid_arr[..4].copy_from_slice(&0xdeadbeefu32.to_be_bytes());
+    tid_arr[8..12].copy_from_slice(&tid_buf);
     TransactionId::new(tid_arr)
 }
 
