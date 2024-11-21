@@ -72,6 +72,10 @@ jobs:
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
 
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-arm64
+
           - TARGET: x86_64-unknown-freebsd
             OS: ubuntu-22.04
             ARTIFACT_NAME: freebsd-13.2-x86_64
@@ -164,10 +168,14 @@ jobs:
         run: |
           mkdir -p ./artifacts/objects/
           # windows is the only OS using a different convention for executable file name
-          if [[ $OS =~ ^windows.*$ ]]; then
+          if [[ $OS =~ ^windows.*$ && $TARGET =~ ^x86_64.*$ ]]; then
               SUFFIX=.exe
               cp easytier/third_party/Packet.dll ./artifacts/objects/
               cp easytier/third_party/wintun.dll ./artifacts/objects/
+          elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^aarch64.*$ ]]; then
+              SUFFIX=.exe
+              cp easytier/third_party/arm64/Packet.dll ./artifacts/objects/
+              cp easytier/third_party/arm64/wintun.dll ./artifacts/objects/
           fi
           if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
             TAG=$GITHUB_REF_NAME
