@@ -1,343 +1,377 @@
 #!/bin/bash
 
-# This script copy from alist , Thank for it!
-
-SKIP_FOLDER_VERIFY=false
-SKIP_FOLDER_FIX=false
-
-COMMEND=$1
-shift
-
-# Check path
-if [[ "$#" -ge 1 && ! "$1" == --* ]]; then
-    INSTALL_PATH=$1
-    shift
-fi
-
-# Check other option
-while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --skip-folder-verify) SKIP_FOLDER_VERIFY=true ;;
-        --skip-folder-fix) SKIP_FOLDER_FIX=true ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+# 安装流程函数
+install_easytier() {
+    clear
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    echo -e "${GREEN_COLOR}      EasyTier 安装向导${RES}"
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    
+    # 获取版本信息
+    local latest_version=$(get_download_info | cut -d':' -f1)
+    local local_version=$(get_local_version)
+    
+    echo -e "\n${BLUE_COLOR}版本信息：${RES}"
+    echo "官方最新版本: ${latest_version:-获取失败}"
+    echo "本地安装版本: $local_version"
+    
+    # 1. 检查权限
+    check_permissions
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    # 2. 系统检测
+    echo -e "\n${BLUE_COLOR}正在检查系统环境...${RES}"
+    check_system
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    # 3. 检查依赖
+    echo -e "\n${BLUE_COLOR}正在检查依赖...${RES}"
+    check_dependencies
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    # 4. 安装确认
+    echo -e "\n${YELLOW_COLOR}安装信息：${RES}"
+    echo "安装路径: $INSTALL_PATH"
+    echo "系统架构: $ARCH"
+    echo -n "确认安装？[Y/n]: "
+    read confirm
+    case "$confirm" in
+        [Nn]*)
+            echo "安装已取消"
+            return 1
+            ;;
     esac
-    shift
-done
-
-if [ -z "$INSTALL_PATH" ]; then
-    INSTALL_PATH='/opt/easytier'
-fi
-
-if [[ "$INSTALL_PATH" == */ ]]; then
-    INSTALL_PATH=${INSTALL_PATH%?}
-fi
-
-if ! $SKIP_FOLDER_FIX && ! [[ "$INSTALL_PATH" == */easytier ]]; then
-    INSTALL_PATH="$INSTALL_PATH/easytier"
-fi
-
-echo INSTALL PATH : $INSTALL_PATH
-echo SKIP FOLDER FIX : $SKIP_FOLDER_FIX
-echo SKIP FOLDER VERIFY : $SKIP_FOLDER_VERIFY
-
-RED_COLOR='\e[1;31m'
-GREEN_COLOR='\e[1;32m'
-YELLOW_COLOR='\e[1;33m'
-BLUE_COLOR='\e[1;34m'
-PINK_COLOR='\e[1;35m'
-SHAN='\e[1;33;5m'
-RES='\e[0m'
-# clear
-
-# check if unzip is installed
-if ! command -v unzip >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Error: unzip is not installed${RES}\r\n"
-  exit 1
-fi
-
-# check if curl is installed
-if ! command -v curl >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Error: curl is not installed${RES}\r\n"
-  exit 1
-fi
-
-echo -e "\r\n${RED_COLOR}----------------------NOTICE----------------------${RES}\r\n"
-echo " This is a temporary script to install EasyTier "
-echo " EasyTier requires a dedicated empty folder to install"
-echo " EasyTier is a developing product and may have some issues "
-echo " Using EasyTier requires some basic skills "
-echo " You need to face the risks brought by using EasyTier at your own risk "
-echo -e "\r\n${RED_COLOR}-------------------------------------------------${RES}\r\n"
-
-# Get platform
-if command -v arch >/dev/null 2>&1; then
-  platform=$(arch)
-else
-  platform=$(uname -m)
-fi
-
-case "$platform" in
-  amd64 | x86_64)
-    ARCH="x86_64"
-    ;;
-  arm64 | aarch64 | *armv8*)
-    ARCH="aarch64"
-    ;;
-  *armv7*)
-    ARCH="armv7"
-    ;;
-  *arm*)
-    ARCH="arm"
-    ;;
-  mips)
-    ARCH="mips"
-    ;;
-  mipsel)
-    ARCH="mipsel"
-    ;;
-  *)
-    ARCH="UNKNOWN"
-    ;;
-esac
-
-# support hf
-if [[ "$ARCH" == "armv7" || "$ARCH" == "arm" ]]; then
-  if cat /proc/cpuinfo | grep Features | grep -i 'half' >/dev/null 2>&1; then
-    ARCH=${ARCH}hf
-  fi
-fi
-
-echo -e "\r\n${GREEN_COLOR}Your platform: ${ARCH} (${platform}) ${RES}\r\n" 1>&2
-
-GH_PROXY='https://ghp.ci/'
-
-if [ "$(id -u)" != "0" ]; then
-  echo -e "\r\n${RED_COLOR}This script requires run as Root !${RES}\r\n" 1>&2
-  exit 1
-elif [ "$ARCH" == "UNKNOWN" ]; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platfrom\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
-  exit 1
-elif ! command -v systemctl >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, your Linux do not support systemctl\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
-  exit 1
-fi
-
-CHECK() {
-  if ! $SKIP_FOLDER_VERIFY; then
-	if [ -f "$INSTALL_PATH/easytier-core" ]; then
-		echo "There is EasyTier in $INSTALL_PATH. Please choose other path or use \"update\""
-	    echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
-		exit 0
-	fi
-  fi
-  if [ ! -d "$INSTALL_PATH/" ]; then
-    mkdir -p $INSTALL_PATH
-  else
-    # Check weather path is empty
-    if ! $SKIP_FOLDER_VERIFY; then
-      if [ -n "$(ls -A $INSTALL_PATH)" ]; then
-        echo "EasyTier requires to be installed in an empty directory. Please choose a empty path"
-        echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
-        echo -e "Current path: $INSTALL_PATH ( use ${GREEN_COLOR}--skip-folder-fix${RES} to disable folder fix )"
-        exit 1
-      fi
-    fi
-  fi
-}
-
-INSTALL() {
-  # Get version number
-  RESPONSE=$(curl -s "https://api.github.com/repos/EasyTier/EasyTier/releases/latest")
-  LATEST_VERSION=$(echo "$RESPONSE" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-  LATEST_VERSION=$(echo -e "$LATEST_VERSION" | tr -d '[:space:]')
-
-  if [ -z "$LATEST_VERSION" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, failure to get latest version. Check your internel\r\nOr try ${GREEN_COLOR}install by band${RES}\r\n"
-    exit 1
-  fi
-
-  # Download
-  echo -e "\r\n${GREEN_COLOR}Downloading EasyTier $LATEST_VERSION ...${RES}"
-  rm -rf /tmp/easytier_tmp_install.zip
-  curl -L ${GH_PROXY}https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip -o /tmp/easytier_tmp_install.zip $CURL_BAR
-  # Unzip resource
-  echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
-  unzip -o /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
-  mkdir $INSTALL_PATH/config
-  mv $INSTALL_PATH/easytier-linux-${ARCH}/* $INSTALL_PATH/
-  rm -rf $INSTALL_PATH/easytier-linux-${ARCH}/
-  chmod +x $INSTALL_PATH/easytier-core $INSTALL_PATH/easytier-cli
-  if [ -f $INSTALL_PATH/easytier-core ] || [ -f $INSTALL_PATH/easytier-cli ]; then
-    echo -e "${GREEN_COLOR} Download successfully! ${RES}"
-  else
-    echo -e "${RED_COLOR} Download failed! ${RES}"
-    exit 1
-  fi
-}
-
-INIT() {
-  if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find EasyTier\r\n"
-    exit 1
-  fi
-
-  # Create default blank file config
-  cat >$INSTALL_PATH/config/default.conf <<EOF
-instance_name = "default"
-dhcp = true
-listeners = [
-    "tcp://0.0.0.0:11010",
-    "udp://0.0.0.0:11010",
-    "wg://0.0.0.0:11011",
-    "ws://0.0.0.0:11011/",
-    "wss://0.0.0.0:11012/",
-]
-exit_nodes = []
-peer = []
-rpc_portal = "0.0.0.0:15888"
-
-[network_identity]
-network_name = "default"
-network_secret = ""
-
-[flags]
-default_protocol = "udp"
-dev_name = ""
-enable_encryption = true
-enable_ipv6 = true
-mtu = 1380
-latency_first = false
-enable_exit_node = false
-no_tun = false
-use_smoltcp = false
-foreign_network_whitelist = "*"
-disable_p2p = false
-relay_all_peer_rpc = false
-EOF
-
-  # Create systemd
-  cat >/etc/systemd/system/easytier@.service <<EOF
-[Unit]
-Description=EasyTier Service
-Wants=network.target
-After=network.target network.service
-
-[Service]
-Type=simple
-WorkingDirectory=$INSTALL_PATH
-ExecStart=$INSTALL_PATH/easytier-core -c $INSTALL_PATH/config/%i.conf
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-#   # Create run script
-#   cat >$INSTALL_PATH/run.sh <<EOF
-# $INSTALL_PATH/easytier-core
-# EOF
-
-  # Startup
-  systemctl daemon-reload
-  systemctl enable easytier@default >/dev/null 2>&1
-  systemctl start easytier@default
-
-  # For issues from the previous version
-  rm -rf /etc/systemd/system/easytier.service
-  rm -rf /usr/bin/easytier-core
-  rm -rf /usr/bin/easytier-cli
-
-  # Add link
-  ln -s $INSTALL_PATH/easytier-core /usr/sbin/easytier-core
-  ln -s $INSTALL_PATH/easytier-cli /usr/sbin/easytier-cli
-}
-
-SUCCESS() {
-  clear
-  echo " Install EasyTier successfully!"
-  echo -e "\r\nDefault Port: ${GREEN_COLOR}11010(UDP+TCP)${RES}, Notice allowing in firewall!\r\n"
-  echo -e "Default Network Name: ${GREEN_COLOR}default${RES}, Please change it to your own network name!\r\n"
-
-  echo -e "Now EasyTier supports multiple config files. You can create config files in the ${GREEN_COLOR}${INSTALL_PATH}/config/${RES} folder"
-  echo -e "For more information, please check the documents in offical site"
-  echo -e "The management example of a single configuration file is as follows"
-
-  echo
-  echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
-  echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
-  echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
-  echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
-  echo
-}
-
-UNINSTALL() {
-  echo -e "\r\n${GREEN_COLOR}Uninstall EasyTier ...${RES}\r\n"
-  echo -e "${GREEN_COLOR}Stop process ...${RES}"
-  systemctl disable "easytier@*" >/dev/null 2>&1
-  systemctl stop "easytier@*" >/dev/null 2>&1
-  echo -e "${GREEN_COLOR}Delete files ...${RES}"
-  rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli /etc/systemd/system/easytier@.service /usr/sbin/easytier-cli /usr/sbin/easytier-cli
-  systemctl daemon-reload
-  echo -e "\r\n${GREEN_COLOR}EasyTier was removed successfully! ${RES}\r\n"
-}
-
-UPDATE() {
-  if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find EasyTier\r\n"
-    exit 1
-  else
-    echo
-    echo -e "${GREEN_COLOR}Stopping EasyTier process${RES}\r\n"
-    systemctl stop "easytier@*"
-    # Backup
-    rm -rf /tmp/easytier_tmp_update
-    mkdir -p  /tmp/easytier_tmp_update
-    cp -a $INSTALL_PATH/* /tmp/easytier_tmp_update/
+    
+    # 5. 执行安装
     INSTALL
-    if [ -f $INSTALL_PATH/easytier-core ]; then
-      echo -e "${GREEN_COLOR} Vrify successfully ${RES}"
-    else
-      echo -e "${RED_COLOR} Download failed, unable to update${RES}"
-      echo "Rollback all ..."
-      rm -rf $INSTALL_PATH/*
-      mv /tmp/easytier_tmp_update/* $INSTALL_PATH/
-      systemctl start "easytier@*"
-      exit 1
+    if [ $? -ne 0 ]; then
+        return 1
     fi
-    echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
-    systemctl start "easytier@*"
-    echo -e "\r\n${GREEN_COLOR} EasyTier was the latest stable version! ${RES}\r\n"
-  fi
+    
+    # 6. 初始化
+    echo -e "\n${BLUE_COLOR}正在初始化...${RES}"
+    INIT
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
+    # 7. 安装成功
+    SUCCESS
+    return 0
 }
 
-# CURL progress
-if curl --help | grep progress-bar >/dev/null 2>&1; then # $CURL_BAR
-  CURL_BAR="--progress-bar"
-fi
+# INSTALL 函数
+INSTALL() {
+    # 获取版本信息和包名
+    local download_info=$(get_download_info)
+    local version=$(echo "$download_info" | cut -d':' -f1)
+    local package_name=$(echo "$download_info" | cut -d':' -f2)
+    
+    echo -e "\n${BLUE_COLOR}开始安装...${RES}"
+    
+    # 下载文件
+    if ! download_file "$version" "$package_name" "/tmp/easytier_tmp_install.zip"; then
+        echo -e "${RED_COLOR}下载失败${RES}"
+        log_message "ERROR" "Download failed"
+        return 1
+    fi
+    
+    echo -e "\r\n${GREEN_COLOR}正在解压资源...${RES}"
+    
+    # 创建临时目录
+    local temp_dir=$(mktemp -d)
+    
+    # 解压文件到临时目录
+    if ! unzip -o /tmp/easytier_tmp_install.zip -d "$temp_dir/"; then
+        echo -e "${RED_COLOR}解压文件失败${RES}"
+        log_message "ERROR" "Failed to extract files"
+        rm -rf "$temp_dir"
+        return 1
+    fi
 
-# The temp directory must exist
-if [ ! -d "/tmp" ]; then
-  mkdir -p /tmp
-fi
+    # 创建安装目录
+    mkdir -p "$INSTALL_PATH"
+    mkdir -p "$INSTALL_PATH/config"
 
-echo $COMMEND
+    # 复制文件到安装目录
+    cp -f "$temp_dir"/*/easytier-* "$INSTALL_PATH/"
+    
+    # 设置执行权限
+    chmod +x "$INSTALL_PATH/easytier-core" "$INSTALL_PATH/easytier-cli"
+    
+    # 清理临时文件
+    rm -rf "$temp_dir"
+    rm -f /tmp/easytier_tmp_install.zip
 
-if [ "$COMMEND" = "uninstall" ]; then
-  UNINSTALL
-elif [ "$COMMEND" = "update" ]; then
-  UPDATE
-elif [ "$COMMEND" = "install" ]; then
-  CHECK
-  INSTALL
-  INIT
-  if [ -f "$INSTALL_PATH/easytier-core" ]; then
-    SUCCESS
-  else
-    echo -e "${RED_COLOR} Install fail, try install by hand${RES}"
-  fi
-else
-  echo -e "${RED_COLOR} Error Commend ${RES}\n\r"
-  echo " ALLOW:"
-  echo -e "\n\r${GREEN_COLOR} install, uninstall, update ${RES}"
-fi
+    # 验证安装
+    if [ -f "$INSTALL_PATH/easytier-core" ] && [ -f "$INSTALL_PATH/easytier-cli" ]; then
+        echo -e "${GREEN_COLOR}安装成功${RES}"
+        log_message "INFO" "Installation completed successfully"
+        return 0
+    else
+        echo -e "${RED_COLOR}安装失败${RES}"
+        log_message "ERROR" "Installation failed"
+        return 1
+    fi
+}
 
-rm -rf /tmp/easytier_tmp_*
+# INIT 函数
+INIT() {
+    log_message "INFO" "Starting initialization"
+    
+    if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
+        echo -e "\r\n${RED_COLOR}错误: 找不到 EasyTier${RES}"
+        log_message "ERROR" "EasyTier core not found"
+        return 1
+    fi
+
+    # 清理旧文件
+    rm -f /etc/systemd/system/easytier.service
+    rm -f /usr/bin/easytier-core
+    rm -f /usr/bin/easytier-cli
+
+    # 创建软链接
+    ln -sf "$INSTALL_PATH/easytier-core" /usr/sbin/easytier-core
+    ln -sf "$INSTALL_PATH/easytier-cli" /usr/sbin/easytier-cli
+
+    # 创建配置目录
+    mkdir -p "$INSTALL_PATH/config"
+
+    # 重载 systemd
+    systemctl daemon-reload
+    
+    log_message "INFO" "Initialization completed"
+    return 0
+}
+
+# SUCCESS 函数
+SUCCESS() {
+    log_message "INFO" "Installation successful"
+    
+    clear
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    echo -e "${GREEN_COLOR}      EasyTier 安装成功！${RES}"
+    echo -e "${GREEN_COLOR}=================================${RES}"
+
+    echo -e "\n${BLUE_COLOR}后续步骤：${RES}"
+    echo "1. 创建配置文件"
+    echo "2. 返回主菜单"
+    echo "0. 退出安装程序"
+
+    echo -n -e "\n请选择 [0-2]: "
+    read choice
+
+    case "$choice" in
+        1)
+            create_configuration
+            ;;
+        2)
+            return 0
+            ;;
+        0|"")
+            echo -e "\n${GREEN_COLOR}感谢使用 EasyTier！${RES}"
+            exit 0
+            ;;
+        *)
+            echo -e "${RED_COLOR}无效选项${RES}"
+            sleep 1
+            SUCCESS
+            ;;
+    esac
+}
+
+# 更新函数
+update_easytier() {
+    clear
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    echo -e "${GREEN_COLOR}      EasyTier 更新向导${RES}"
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    
+    # 获取版本信息
+    local latest_version=$(get_download_info | cut -d':' -f1)
+    local local_version=$(get_local_version)
+    
+    echo -e "\n${BLUE_COLOR}版本信息：${RES}"
+    echo "当前版本: $local_version"
+    echo "最新版本: $latest_version"
+    
+    if [ "$local_version" = "$latest_version" ]; then
+        echo -e "\n${GREEN_COLOR}已经是最新版本${RES}"
+        echo -e "\n按回车键继续..."
+        read
+        return 0
+    fi
+    
+    echo -n -e "\n是否更新？[Y/n]: "
+    read confirm
+    case "$confirm" in
+        [Nn]*)
+            echo "更新已取消"
+            return 1
+            ;;
+    esac
+    
+    # 执行更新
+    INSTALL
+    if [ $? -eq 0 ]; then
+        INIT
+        echo -e "\n${GREEN_COLOR}更新成功！${RES}"
+    else
+        echo -e "\n${RED_COLOR}更新失败${RES}"
+    fi
+    
+    echo -e "\n按回车键继续..."
+    read
+}
+
+# 卸载函数
+uninstall_easytier() {
+    clear
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    echo -e "${GREEN_COLOR}      EasyTier 卸载向导${RES}"
+    echo -e "${GREEN_COLOR}=================================${RES}"
+    
+    # 检查是否已安装
+    if [ ! -f "$INSTALL_PATH/easytier-core" ] && [ ! -f "/usr/sbin/easytier-core" ]; then
+        echo -e "\n${RED_COLOR}错误: EasyTier 未安装！${RES}"
+        echo -e "\n按回车键继续..."
+        read
+        return 1
+    fi
+
+    # 显示卸载选项
+    echo -e "\n${BLUE_COLOR}请选择卸载方式：${RES}"
+    echo "1. 完全卸载（删除所有文件，包括配置）"
+    echo "2. 仅卸载主程序（保留配置文件）"
+    echo "0. 返回主菜单"
+    
+    echo -n "请选择 [0-2]: "
+    read choice
+
+    case "$choice" in
+        1)
+            perform_full_uninstall
+            ;;
+        2)
+            perform_partial_uninstall
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            echo -e "${RED_COLOR}无效选项${RES}"
+            sleep 1
+            uninstall_easytier
+            ;;
+    esac
+}
+
+# 完全卸载
+perform_full_uninstall() {
+    echo -e "\n${YELLOW_COLOR}警告：这将删除所有 EasyTier 相关文件，包括：${RES}"
+    echo "- 主程序文件"
+    echo "- 所有配置文件"
+    echo "- 服务文件"
+    echo "- 系统链接"
+    echo -n -e "\n${RED_COLOR}确认完全卸载？[y/N]: ${RES}"
+    read confirm
+    case "$confirm" in
+        [Yy]*)
+            # 停止所有服务
+            echo -e "\n${BLUE_COLOR}正在停止所有服务...${RES}"
+            systemctl stop 'easytier@*'
+            systemctl disable 'easytier@*' >/dev/null 2>&1
+            
+            # 删除所有文件
+            echo -e "${BLUE_COLOR}正在删除文件...${RES}"
+            rm -rf "$INSTALL_PATH"
+            rm -f /etc/systemd/system/easytier@*.service
+            rm -f /usr/bin/easytier-core
+            rm -f /usr/bin/easytier-cli
+            rm -f /usr/sbin/easytier-core
+            rm -f /usr/sbin/easytier-cli
+            
+            # 重载 systemd
+            systemctl daemon-reload
+            
+            echo -e "\n${GREEN_COLOR}完全卸载成功！${RES}"
+            ;;
+        *)
+            echo "卸载已取消"
+            ;;
+    esac
+}
+
+# 部分卸载
+perform_partial_uninstall() {
+    echo -e "\n${YELLOW_COLOR}将保留配置文件，仅卸载主程序${RES}"
+    echo -n "确认卸载？[y/N]: "
+    read confirm
+    case "$confirm" in
+        [Yy]*)
+            # 停止所有服务
+            echo -e "\n${BLUE_COLOR}正在停止所有服务...${RES}"
+            systemctl stop 'easytier@*'
+            
+            # 备份配置
+            if [ -d "$INSTALL_PATH/config" ]; then
+                echo -e "${BLUE_COLOR}正在备份配置文件...${RES}"
+                local backup_dir="/tmp/easytier_config_backup_$(date +%Y%m%d_%H%M%S)"
+                cp -r "$INSTALL_PATH/config" "$backup_dir"
+            fi
+            
+            # 删除主程序文件
+            echo -e "${BLUE_COLOR}正在删除主程序...${RES}"
+            rm -f "$INSTALL_PATH/easytier-core"
+            rm -f "$INSTALL_PATH/easytier-cli"
+            rm -f /usr/bin/easytier-core
+            rm -f /usr/bin/easytier-cli
+            rm -f /usr/sbin/easytier-core
+            rm -f /usr/sbin/easytier-cli
+            
+            # 恢复配置
+            if [ -d "$backup_dir" ]; then
+                echo -e "${BLUE_COLOR}正在恢复配置文件...${RES}"
+                mkdir -p "$INSTALL_PATH/config"
+                cp -r "$backup_dir/"* "$INSTALL_PATH/config/"
+                rm -rf "$backup_dir"
+            fi
+            
+            echo -e "\n${GREEN_COLOR}主程序卸载成功！配置文件已保留在 $INSTALL_PATH/config${RES}"
+            ;;
+        *)
+            echo "卸载已取消"
+            ;;
+    esac
+}
+
+# 改进安装检查函数
+check_installation() {
+    local required_files=(
+        "$INSTALL_PATH/easytier-core"
+        "$INSTALL_PATH/easytier-cli"
+        "/usr/sbin/easytier-core"
+        "/usr/sbin/easytier-cli"
+    )
+    
+    local missing_files=()
+    for file in "${required_files[@]}"; do
+        if [ ! -f "$file" ]; then
+            missing_files+=("$file")
+        fi
+    done
+    
+    if [ ${#missing_files[@]} -ne 0 ]; then
+        echo -e "${RED_COLOR}安装不完整，缺少以下文件：${RES}"
+        printf '%s\n' "${missing_files[@]}"
+        return 1
+    fi
+    
+    return 0
+}
