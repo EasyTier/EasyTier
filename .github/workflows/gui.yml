@@ -58,6 +58,11 @@ jobs:
             GUI_TARGET: x86_64-pc-windows-msvc
             ARTIFACT_NAME: windows-x86_64
 
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-latest
+            GUI_TARGET: aarch64-pc-windows-msvc
+            ARTIFACT_NAME: windows-arm64
+
     runs-on: ${{ matrix.OS }}
     env:
       NAME: easytier
@@ -150,6 +155,15 @@ jobs:
           sudo apt install -f -o Dpkg::Options::="--force-overwrite" libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
+
+      - name: copy correct DLLs
+        if: ${{ matrix.OS == 'windows-latest' }}
+        run: |
+          if [[ $GUI_TARGET =~ ^aarch64.*$ ]]; then
+            cp ./easytier/third_party/arm64/*.dll ./easytier-gui/src-tauri/
+          else
+            cp ./easytier/third_party/*.dll ./easytier-gui/src-tauri/
+          fi
 
       - name: Build GUI
         if: ${{ matrix.GUI_TARGET != '' }}

@@ -35,3 +35,5 @@ easytier-panic.log
 node_modules
 
 .vite
+
+easytier-gui/src-tauri/*.dll
