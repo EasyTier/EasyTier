@@ -193,12 +193,13 @@ listeners = [
     "wss://0.0.0.0:11012/",
 ]
 exit_nodes = []
-peer = []
-rpc_portal = "0.0.0.0:15888"
+
+[[peer]]
+uri = "tcp://public.easytier.top:11010"
 
 [network_identity]
 network_name = "default"
-network_secret = ""
+network_secret = "default"
 
 [flags]
 default_protocol = "udp"
@@ -213,6 +214,8 @@ use_smoltcp = false
 foreign_network_whitelist = "*"
 disable_p2p = false
 relay_all_peer_rpc = false
+disable_udp_hole_punching = false
+
 EOF
 
   # Create systemd
@@ -221,11 +224,14 @@ EOF
 Description=EasyTier Service
 Wants=network.target
 After=network.target network.service
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_PATH
 ExecStart=$INSTALL_PATH/easytier-core -c $INSTALL_PATH/config/%i.conf
+Restart=always
+RestartSec=1s
 
 [Install]
 WantedBy=multi-user.target
