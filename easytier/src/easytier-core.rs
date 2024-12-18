@@ -783,12 +783,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         let config_server_url_s = cli.config_server.clone().unwrap();
         let config_server_url = match url::Url::parse(&config_server_url_s) {
             Ok(u) => u,
-            Err(_) => format!(
-                "udp://config-server.easytier.top:22020/{}",
-                config_server_url_s
-            )
-            .parse()
-            .unwrap(),
+            Err(_) => format!("udp://easytier.cn:22020/{}", config_server_url_s)
+                .parse()
+                .unwrap(),
         };
 
         let mut c_url = config_server_url.clone();
