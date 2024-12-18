@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 16;
+pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 32;
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
     let mut rng = rand::thread_rng();
@@ -285,9 +285,16 @@ impl UdpSocketArray {
     pub async fn send_with_all(&self, data: &[u8], addr: SocketAddr) -> Result<(), anyhow::Error> {
         tracing::info!(?addr, "sending hole punching packet");
 
-        for socket in self.sockets.iter() {
-            let socket = socket.value();
-            socket.send_to(data, addr).await?;
+        let sockets = self
+            .sockets
+            .iter()
+            .map(|s| s.value().clone())
+            .collect::<Vec<_>>();
+
+        for socket in sockets.iter() {
+            for _ in 0..3 {
+                socket.send_to(data, addr).await?;
+            }
         }
 
         Ok(())
@@ -558,12 +565,14 @@ pub(crate) async fn send_symmetric_hole_punch_packet(
         let port = ports[cur_port_idx % ports.len()];
         for pub_ip in public_ips {
             let addr = SocketAddr::V4(SocketAddrV4::new(*pub_ip, port));
-            let packet = new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
-            udp.send_to(&packet.into_bytes(), addr).await?;
+            for _ in 0..3 {
+                let packet = new_hole_punch_packet(transaction_id, HOLE_PUNCH_PACKET_BODY_LEN);
+                udp.send_to(&packet.into_bytes(), addr).await?;
+            }
             sent_packets += 1;
         }
         cur_port_idx = cur_port_idx.wrapping_add(1);
-        tokio::time::sleep(Duration::from_millis(3)).await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
     Ok(cur_port_idx % ports.len())
 }

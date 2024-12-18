@@ -152,6 +152,13 @@ jobs:
 
           sudo dpkg --add-architecture arm64
           sudo apt-get update
+          sudo apt-get install -y libgstreamer1.0-0:arm64
+          sudo apt-get install -y gstreamer1.0-plugins-base:arm64
+          sudo apt-get install -y gstreamer1.0-plugins-good:arm64
+          sudo apt-get install -y libgstreamer-gl1.0-0:arm64
+          sudo apt-get install -y libgstreamer-plugins-base1.0-0:arm64
+          sudo apt-get install -y libgstreamer-plugins-good1.0-0:arm64
+          sudo apt-get install -y libwebkit2gtk-4.1-0:arm64
           sudo apt install -f -o Dpkg::Options::="--force-overwrite" libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
