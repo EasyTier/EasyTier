@@ -26,7 +26,7 @@ use crate::{
     },
 };
 
-pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 32;
+pub(crate) const HOLE_PUNCH_PACKET_BODY_LEN: u16 = 16;
 
 fn generate_shuffled_port_vec() -> Vec<u16> {
     let mut rng = rand::thread_rng();
