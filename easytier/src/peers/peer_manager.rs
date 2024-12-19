@@ -79,7 +79,12 @@ impl PeerRpcManagerTransport for RpcTransport {
 
     async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
-        if !peers.need_relay_by_foreign_network(dst_peer_id).await? {
+        // NOTE: if route info is not exchanged, this will return error. treat it as need relay
+        if !peers
+            .need_relay_by_foreign_network(dst_peer_id)
+            .await
+            .unwrap_or(true)
+        {
             self.encryptor
                 .encrypt(&mut msg)
                 .with_context(|| "encrypt failed")?;
@@ -706,6 +711,9 @@ impl PeerManager {
                 );
                 Err(Error::RouteError(None))
             }
+        } else if foreign_network_client.has_next_hop(dst_peer_id) {
+            // check foreign network again. so in happy path we can avoid extra check
+            foreign_network_client.send_msg(msg, dst_peer_id).await
         } else {
             tracing::debug!(?dst_peer_id, "no gateway for peer");
             Err(Error::RouteError(None))

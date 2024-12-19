@@ -658,7 +658,7 @@ impl UdpTunnelConnector {
                         return;
                     }
                     _ = udp_recv_from_socket_forward_task(socket_clone,false, |zc_packet, addr| {
-                        tracing::debug!(?addr, "connector udp forward task done");
+                        tracing::trace!(?addr, "connector udp forward task done");
                         if let Err(e) = udp_conn.handle_packet_from_remote(zc_packet) {
                             tracing::trace!(?e, ?addr, "udp forward packet error");
                         }
