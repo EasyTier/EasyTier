@@ -1,0 +1,122 @@
+name: Build EasyTier-web
+
+on:
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-C target-feature=+crt-static"  # 添加静态链接标志
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'recursive'
+
+    - name: Setup pnpm
+      uses: pnpm/action-setup@v2
+      with:
+        version: 8
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'pnpm'
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+
+    - name: Install Linux Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev build-essential protobuf-compiler tree
+
+    # 构建前端
+    - name: Build Frontend
+      run: |
+        cd easytier-web
+        echo "=== Installing dependencies ==="
+        pnpm install
+        
+        echo "=== Building frontend-lib ==="
+        cd frontend-lib
+        pnpm build
+        
+        echo "=== Building frontend ==="
+        cd ../frontend
+        pnpm build
+
+    # 构建后端
+    - name: Build Backend
+      run: |
+        cd easytier-web
+        echo "=== Building backend ==="
+        cargo build --release --verbose
+        
+        echo "=== Testing binary ==="
+        if [ -f "target/release/easytier-web" ]; then
+          file target/release/easytier-web
+          ldd target/release/easytier-web || echo "No dynamic dependencies (static binary)"
+        fi
+
+    # 打包
+    - name: Package Build
+      run: |
+        cd easytier-web
+        echo "=== Creating release package ==="
+        rm -rf release
+        mkdir -p release
+        
+        # 复制二进制文件
+        cp target/release/easytier-web release/ || cp target/release/easytier_web release/easytier-web
+        
+        # 复制前端文件
+        cp -r frontend/dist release/
+        
+        # 复制配置文件和其他必要文件
+        cp -r config release/ || echo "No config directory found"
+        cp *.toml release/ || echo "No toml files found"
+        
+        # 创建示例配置文件
+        cat > release/config.example.toml << EOL
+        [server]
+        host = "127.0.0.1"
+        port = 8080
+        
+        [database]
+        path = "data/easytier.db"
+        
+        [static]
+        path = "dist"
+        EOL
+        
+        # 创建运行脚本
+        cat > release/run.sh << EOL
+        #!/bin/bash
+        ./easytier-web
+        EOL
+        chmod +x release/run.sh
+        
+        echo "=== Release directory contents ==="
+        ls -la release/
+        
+        echo "=== Creating archive ==="
+        tar -czvf easytier-web-linux.tar.gz -C release .
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: easytier-web-linux
+        path: easytier-web/easytier-web-linux.tar.gz
+        retention-days: 5
