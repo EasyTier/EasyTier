@@ -47,7 +47,7 @@ const onRegister = async () => {
     }
 };
 
-const defaultApiHost = 'http://easytier.cn:11211'
+const defaultApiHost = 'https://config-server.easytier.cn'
 const apiHost = ref<string>(defaultApiHost)
 const apiHostSuggestions = ref<Array<string>>([])
 const apiHostSearch = async (event: { query: string }) => {
