@@ -5,11 +5,11 @@ core_clap:
     en: |+
       config server address, allow format:
       full url: --config-server udp://127.0.0.1:22020/admin
-      only user name: --config-server admin
+      only user name: --config-server admin, will use official server
     zh-CN: |+
       配置服务器地址。允许格式：
       完整URL：--config-server udp://127.0.0.1:22020/admin
-      仅用户名：--config-server admin
+      仅用户名：--config-server admin，将使用官方的服务器
   config_file:
     en: "path to the config file, NOTE: if this is set, all other options will be ignored"
     zh-CN: "配置文件路径，注意：如果设置了这个选项，其他所有选项都将被忽略"
