@@ -1,0 +1,24 @@
+_version: 2
+
+cli:
+  db:
+    en: "path to the sqlite3 database file, used to save all the data"
+    zh-CN: "sqlite3 数据库文件路径, 用于保存所有数据"
+  console_log_level:
+    en: "The log level for the console logger. Possible values: trace, debug, info, warn, error"
+    zh-CN: "控制台日志级别。可能的值：trace, debug, info, warn, error"
+  file_log_level:
+    en: "The log level for the file logger. Possible values: trace, debug, info, warn, error"
+    zh-CN: "文件日志级别。可能的值：trace, debug, info, warn, error"
+  file_log_dir:
+    en: "The directory to save the log files, default is the current directory"
+    zh-CN: "保存日志文件的目录，默认为当前目录"
+  config_server_port:
+    en: "The port to listen for the config server, used by the easytier-core to connect to"
+    zh-CN: "配置服务器的监听端口，用于被 easytier-core 连接"
+  config_server_protocol:
+    en: "The protocol to listen for the config server, used by the easytier-core to connect to"
+    zh-CN: "配置服务器的监听协议，用于被 easytier-core 连接, 可能的值：udp, tcp"
+  api_server_port:
+    en: "The port to listen for the restful server, acting as ApiHost and used by the web frontend"
+    zh-CN: "restful 服务器的监听端口，作为 ApiHost 并被 web 前端使用"
