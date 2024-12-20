@@ -167,7 +167,7 @@ impl RestfulServer {
             .deflate(true)
             .gzip(true)
             .zstd(true)
-            .quality(tower_http::compression::CompressionLevel::Best);
+            .quality(tower_http::compression::CompressionLevel::Default);
 
         let app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))

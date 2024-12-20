@@ -2,6 +2,7 @@
 name = "easytier-web"
 version = "0.1.0"
 edition = "2021"
+description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
 [dependencies]
 easytier = { path = "../easytier" }
@@ -36,6 +37,8 @@ rusttype = "0.9.3"
 imageproc = "0.23.0"
 
 
+rust-i18n = "3"
+sys-locale = "0.3"
 clap = { version = "4.4.8", features = [
     "string",
     "unicode",
