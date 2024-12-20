@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { Card, InputText, Password, Button, AutoComplete } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
@@ -20,8 +20,60 @@ const registerPassword = ref('');
 const captcha = ref('');
 const captchaSrc = computed(() => api.value.captcha_url());
 
+interface ApiHost {
+    value: string;
+    usedAt: number;
+}
+
+const isValidHttpUrl = (s: string): boolean => {
+    let url;
+
+    try {
+        url = new URL(s);
+    } catch (_) {
+        return false;
+    }
+
+    return url.protocol === "http:" || url.protocol === "https:";
+}
+
+const cleanAndLoadApiHosts = (): Array<ApiHost> => {
+    const maxHosts = 10;
+    const apiHosts = localStorage.getItem('apiHosts');
+    if (apiHosts) {
+        const hosts: Array<ApiHost> = JSON.parse(apiHosts);
+        // sort by usedAt
+        hosts.sort((a, b) => b.usedAt - a.usedAt);
+
+        // only keep the first 10
+        if (hosts.length > maxHosts) {
+            hosts.splice(maxHosts);
+        }
+
+        localStorage.setItem('apiHosts', JSON.stringify(hosts));
+        return hosts;
+    } else {
+        return [];
+    }
+};
+
+const saveApiHost = (host: string) => {
+    console.log('Save API Host:', host);
+    if (!isValidHttpUrl(host)) {
+        console.error('Invalid API Host:', host);
+        return;
+    }
+
+    let hosts = cleanAndLoadApiHosts();
+    const newHost: ApiHost = { value: host, usedAt: Date.now() };
+    hosts = hosts.filter((h) => h.value !== host);
+    hosts.push(newHost);
+    localStorage.setItem('apiHosts', JSON.stringify(hosts));
+};
+
 const onSubmit = async () => {
     // Add your login logic here
+    saveApiHost(apiHost.value);
     const credential: Api.Credential = { username: username.value, password: password.value, };
     let ret = await api.value?.login(credential);
     if (ret.success) {
@@ -36,6 +88,7 @@ const onSubmit = async () => {
 };
 
 const onRegister = async () => {
+    saveApiHost(apiHost.value);
     const credential: Api.Credential = { username: registerUsername.value, password: registerPassword.value };
     const registerReq: Api.RegisterData = { credentials: credential, captcha: captcha.value };
     let ret = await api.value?.register(registerReq);
@@ -47,16 +100,35 @@ const onRegister = async () => {
     }
 };
 
+const getInitialApiHost = (): string => {
+    const hosts = cleanAndLoadApiHosts();
+    if (hosts.length > 0) {
+        return hosts[0].value;
+    } else {
+        return defaultApiHost;
+    }
+};
+
 const defaultApiHost = 'https://config-server.easytier.cn'
-const apiHost = ref<string>(defaultApiHost)
+const apiHost = ref<string>(getInitialApiHost())
 const apiHostSuggestions = ref<Array<string>>([])
 const apiHostSearch = async (event: { query: string }) => {
     apiHostSuggestions.value = [];
+    let hosts = cleanAndLoadApiHosts();
     if (event.query) {
         apiHostSuggestions.value.push(event.query);
     }
-    apiHostSuggestions.value.push(defaultApiHost);
+    hosts.forEach((host) => {
+        apiHostSuggestions.value.push(host.value);
+    });
 }
+
+onMounted(() => {
+    let hosts = cleanAndLoadApiHosts();
+    if (hosts.length === 0) {
+        saveApiHost(defaultApiHost);
+    }
+});
 
 </script>
 
@@ -87,7 +159,7 @@ const apiHostSearch = async (event: { query: string }) => {
                     </div>
                     <div class="flex items-center justify-between">
                         <Button label="Register" type="button" class="w-full"
-                            @click="$router.replace({ name: 'register' })" severity="secondary" />
+                            @click="saveApiHost(apiHost); $router.replace({ name: 'register' })" severity="secondary" />
                     </div>
                 </form>
 
@@ -111,7 +183,7 @@ const apiHostSearch = async (event: { query: string }) => {
                     </div>
                     <div class="flex items-center justify-between">
                         <Button label="Back to Login" type="button" class="w-full"
-                            @click="$router.replace({ name: 'login' })" severity="secondary" />
+                            @click="saveApiHost(apiHost); $router.replace({ name: 'login' })" severity="secondary" />
                     </div>
                 </form>
             </template>
