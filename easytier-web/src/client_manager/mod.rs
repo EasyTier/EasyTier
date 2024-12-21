@@ -1,13 +1,14 @@
 pub mod session;
 pub mod storage;
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, str::FromStr, sync::Arc};
 
 use dashmap::DashMap;
 use easytier::{
     common::scoped_task::ScopedTask, proto::web::HeartbeatRequest, tunnel::TunnelListener,
 };
 use session::Session;
+use sqlx::types::chrono;
 use storage::{Storage, StorageToken};
 
 use crate::db::Db;
@@ -93,7 +94,7 @@ impl ClientManager {
             .map(|item| item.value().clone())
     }
 
-    pub fn list_machine_by_token(&self, token: String) -> Vec<url::Url> {
+    pub async fn list_machine_by_token(&self, token: String) -> Vec<url::Url> {
         self.storage.list_token_clients(&token)
     }
 

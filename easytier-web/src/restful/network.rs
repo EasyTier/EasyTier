@@ -270,7 +270,7 @@ impl NetworkApi {
 
         let client_urls = DashSet::new();
         for token in tokens {
-            let urls = client_mgr.list_machine_by_token(token);
+            let urls = client_mgr.list_machine_by_token(token).await;
             for url in urls {
                 client_urls.insert(url);
             }

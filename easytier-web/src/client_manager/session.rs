@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, str::FromStr as _, sync::Arc};
 
 use easytier::{
     common::scoped_task::ScopedTask,
@@ -87,10 +87,20 @@ impl WebServerService for SessionRpcService {
                     .map(Into::into)
                     .unwrap_or(uuid::Uuid::new_v4()),
             });
-            if let Ok(storage) = Storage::try_from(data.storage.clone()) {
-                storage.add_client(data.storage_token.as_ref().unwrap().clone());
-            }
         }
+
+        if let Ok(storage) = Storage::try_from(data.storage.clone()) {
+            let Ok(report_time) = chrono::DateTime::<chrono::Local>::from_str(&req.report_time)
+            else {
+                tracing::error!("Failed to parse report time: {:?}", req.report_time);
+                return Ok(HeartbeatResponse {});
+            };
+            storage.update_client(
+                data.storage_token.as_ref().unwrap().clone(),
+                report_time.timestamp(),
+            );
+        }
+
         let _ = data.notifier.send(req);
         Ok(HeartbeatResponse {})
     }

@@ -121,7 +121,9 @@ impl RestfulServer {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let machines = client_mgr.list_machine_by_token(user.tokens[0].clone());
+        let machines = client_mgr
+            .list_machine_by_token(user.tokens[0].clone())
+            .await;
 
         Ok(GetSummaryJsonResp {
             device_count: machines.len() as u32,
