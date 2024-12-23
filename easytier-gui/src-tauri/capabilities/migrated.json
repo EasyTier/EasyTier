@@ -39,7 +39,7 @@
     "vpnservice:allow-prepare-vpn",
     "vpnservice:allow-start-vpn",
     "vpnservice:allow-stop-vpn",
-    "vpnservice:allow-register-listener",
+    "vpnservice:allow-registerListener",
     "os:default",
     "os:allow-os-type",
     "os:allow-arch",

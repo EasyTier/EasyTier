@@ -141,7 +141,6 @@ pub fn run() {
         process::exit(0);
     }
 
-    #[cfg(not(target_os = "android"))]
     utils::setup_panic_handler();
 
     let mut builder = tauri::Builder::default();

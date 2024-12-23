@@ -139,12 +139,17 @@ pub fn setup_panic_handler() {
 
         if let Some(payload_str) = payload_str {
             println!(
-                "panic occurred: payload:{}, location: {:?}",
+                "panic occurred: payload:{}, location: {:?}, backtrace: {:#?}",
                 payload_str,
-                info.location()
+                info.location(),
+                backtrace
             );
         } else {
-            println!("panic occurred: location: {:?}", info.location());
+            println!(
+                "panic occurred: location: {:?}, backtrace: {:#?}",
+                info.location(),
+                backtrace
+            );
         }
         println!("{}", rust_i18n::t!("core_app.panic_backtrace_save"));
         let _ = std::fs::File::create("easytier-panic.log")

@@ -3,7 +3,7 @@ const COMMANDS: &[&str] = &[
     "prepare_vpn",
     "start_vpn",
     "stop_vpn",
-    "register_listener",
+    "registerListener",
 ];
 
 fn main() {

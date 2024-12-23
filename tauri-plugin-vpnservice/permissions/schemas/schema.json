@@ -315,6 +315,16 @@
           "const": "deny-prepare-vpn"
         },
         {
+          "description": "Enables the registerListener command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-registerListener"
+        },
+        {
+          "description": "Denies the registerListener command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-registerListener"
+        },
+        {
           "description": "Enables the register_listener command without any pre-configured scope.",
           "type": "string",
           "const": "allow-register-listener"
