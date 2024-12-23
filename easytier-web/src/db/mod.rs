@@ -4,8 +4,8 @@ pub mod entity;
 
 use entity::user_running_network_configs;
 use sea_orm::{
-    sea_query::OnConflict, ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait as _,
-    QueryFilter as _, SqlxSqliteConnector, TransactionTrait as _,
+    prelude::Expr, sea_query::OnConflict, ActiveModelTrait, ColumnTrait as _, DatabaseConnection,
+    DbErr, EntityTrait, QueryFilter as _, SqlxSqliteConnector, TransactionTrait as _,
 };
 use sea_orm_migration::MigratorTrait as _;
 use sqlx::{migrate::MigrateDatabase as _, types::chrono, Sqlite, SqlitePool};
@@ -13,6 +13,12 @@ use sqlx::{migrate::MigrateDatabase as _, types::chrono, Sqlite, SqlitePool};
 use crate::migrator;
 
 type UserIdInDb = i32;
+
+pub enum ListNetworkProps {
+    All,
+    EnabledOnly,
+    DisabledOnly,
+}
 
 #[derive(Debug, Clone)]
 pub struct Db {
@@ -115,17 +121,51 @@ impl Db {
         Ok(())
     }
 
+    pub async fn update_network_config_state(
+        &self,
+        user_id: UserIdInDb,
+        network_inst_id: uuid::Uuid,
+        disabled: bool,
+    ) -> Result<entity::user_running_network_configs::Model, DbErr> {
+        use entity::user_running_network_configs as urnc;
+
+        urnc::Entity::update_many()
+            .filter(urnc::Column::UserId.eq(user_id))
+            .filter(urnc::Column::NetworkInstanceId.eq(network_inst_id.to_string()))
+            .col_expr(urnc::Column::Disabled, Expr::value(disabled))
+            .col_expr(
+                urnc::Column::UpdateTime,
+                Expr::value(chrono::Local::now().fixed_offset()),
+            )
+            .exec(self.orm_db())
+            .await?;
+
+        urnc::Entity::find()
+            .filter(urnc::Column::UserId.eq(user_id))
+            .filter(urnc::Column::NetworkInstanceId.eq(network_inst_id.to_string()))
+            .one(self.orm_db())
+            .await?
+            .ok_or(DbErr::RecordNotFound(format!(
+                "Network config not found for user {} and network instance {}",
+                user_id, network_inst_id
+            )))
+    }
+
     pub async fn list_network_configs(
         &self,
         user_id: UserIdInDb,
         device_id: Option<uuid::Uuid>,
-        only_enabled: bool,
+        props: ListNetworkProps,
     ) -> Result<Vec<user_running_network_configs::Model>, DbErr> {
         use entity::user_running_network_configs as urnc;
 
         let configs = urnc::Entity::find().filter(urnc::Column::UserId.eq(user_id));
-        let configs = if only_enabled {
-            configs.filter(urnc::Column::Disabled.eq(false))
+        let configs = if matches!(
+            props,
+            ListNetworkProps::EnabledOnly | ListNetworkProps::DisabledOnly
+        ) {
+            configs
+                .filter(urnc::Column::Disabled.eq(matches!(props, ListNetworkProps::DisabledOnly)))
         } else {
             configs
         };
@@ -138,6 +178,24 @@ impl Db {
         let configs = configs.all(self.orm_db()).await?;
 
         Ok(configs)
+    }
+
+    pub async fn get_network_config(
+        &self,
+        user_id: UserIdInDb,
+        device_id: &uuid::Uuid,
+        network_inst_id: &String,
+    ) -> Result<Option<user_running_network_configs::Model>, DbErr> {
+        use entity::user_running_network_configs as urnc;
+
+        let config = urnc::Entity::find()
+            .filter(urnc::Column::UserId.eq(user_id))
+            .filter(urnc::Column::DeviceId.eq(device_id.to_string()))
+            .filter(urnc::Column::NetworkInstanceId.eq(network_inst_id))
+            .one(self.orm_db())
+            .await?;
+
+        Ok(config)
     }
 
     pub async fn get_user_id<T: ToString>(
@@ -167,7 +225,7 @@ impl Db {
 mod tests {
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter as _};
 
-    use crate::db::{entity::user_running_network_configs, Db};
+    use crate::db::{entity::user_running_network_configs, Db, ListNetworkProps};
 
     #[tokio::test]
     async fn test_user_network_config_management() {
@@ -209,7 +267,7 @@ mod tests {
         assert_ne!(result.update_time, result2.update_time);
 
         assert_eq!(
-            db.list_network_configs(user_id, Some(device_id), true)
+            db.list_network_configs(user_id, Some(device_id), ListNetworkProps::All)
                 .await
                 .unwrap()
                 .len(),

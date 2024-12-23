@@ -93,9 +93,12 @@ async fn main() {
     let db = db::Db::new(cli.db).await.unwrap();
 
     let listener = UdpTunnelListener::new(
-        format!("udp://0.0.0.0:{}", cli.config_server_port)
-            .parse()
-            .unwrap(),
+        format!(
+            "{}://0.0.0.0:{}",
+            cli.config_server_protocol, cli.config_server_port
+        )
+        .parse()
+        .unwrap(),
     );
     let mut mgr = client_manager::ClientManager::new(db.clone());
     mgr.serve(listener).await.unwrap();

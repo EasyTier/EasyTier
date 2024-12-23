@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Toolbar, IftaLabel, Select, Button, ConfirmPopup, Dialog, useConfirm, useToast } from 'primevue';
 import { NetworkTypes, Status, Utils, Api, } from 'easytier-frontend-lib';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { watch, computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 const props = defineProps<{
@@ -33,9 +33,16 @@ const isEditing = ref(false);
 const showCreateNetworkDialog = ref(false);
 const newNetworkConfig = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAULT_NETWORK_CONFIG());
 
+const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
+
 const instanceIdList = computed(() => {
-    let insts = deviceInfo.value?.running_network_instances || [];
-    let options = insts.map((instance: string) => {
+    let insts = new Set(deviceInfo.value?.running_network_instances || []);
+    let t = listInstanceIdResponse.value;
+    if (t) {
+        t.running_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
+        t.disabled_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
+    }
+    let options = Array.from(insts).map((instance: string) => {
         return { uuid: instance };
     });
     return options;
@@ -50,6 +57,53 @@ const selectedInstanceId = computed({
         router.push({ name: 'deviceManagement', params: { deviceId: deviceId.value, instanceId: value.uuid } });
     }
 });
+
+const needShowNetworkStatus = computed(() => {
+    if (!selectedInstanceId.value) {
+        // nothing selected
+        return false;
+    }
+    if (networkIsDisabled.value) {
+        // network is disabled
+        return false;
+    }
+    return true;
+})
+
+const networkIsDisabled = computed(() => {
+    if (!selectedInstanceId.value) {
+        return false;
+    }
+    return listInstanceIdResponse.value?.disabled_inst_ids.map(Utils.UuidToStr).includes(selectedInstanceId.value?.uuid);
+});
+
+watch(selectedInstanceId, async (newVal, oldVal) => {
+    if (newVal?.uuid !== oldVal?.uuid && networkIsDisabled.value) {
+        await loadDisabledNetworkConfig();
+    }
+});
+
+const disabledNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefined);
+
+const loadDisabledNetworkConfig = async () => {
+    disabledNetworkConfig.value = undefined;
+
+    if (!deviceId.value || !selectedInstanceId.value) {
+        return;
+    }
+
+    let ret = await props.api?.get_network_config(deviceId.value, selectedInstanceId.value.uuid);
+    disabledNetworkConfig.value = ret;
+}
+
+const updateNetworkState = async (disabled: boolean) => {
+    if (!deviceId.value || !selectedInstanceId.value) {
+        return;
+    }
+
+    await props.api?.update_device_instance_state(deviceId.value, selectedInstanceId.value.uuid, disabled);
+    await loadNetworkInstanceIds();
+}
 
 const confirm = useConfirm();
 const confirmDeleteNetwork = (event: any) => {
@@ -128,6 +182,15 @@ const editNetwork = async () => {
     }
 }
 
+const loadNetworkInstanceIds = async () => {
+    if (!deviceId.value) {
+        return;
+    }
+
+    listInstanceIdResponse.value = await props.api?.list_deivce_instance_ids(deviceId.value);
+    console.debug("loadNetworkInstanceIds", listInstanceIdResponse.value);
+}
+
 const loadDeviceInfo = async () => {
     if (!deviceId.value || !instanceId.value) {
         return;
@@ -146,7 +209,7 @@ const loadDeviceInfo = async () => {
 
 let periodFunc = new Utils.PeriodicTask(async () => {
     try {
-        await loadDeviceInfo();
+        await Promise.all([loadNetworkInstanceIds(), loadDeviceInfo()]);
     } catch (e) {
         console.debug(e);
     }
@@ -188,8 +251,23 @@ onUnmounted(() => {
         </template>
     </Toolbar>
 
-    <Status v-bind:cur-network-inst="curNetworkInfo" v-if="!!selectedInstanceId">
-    </Status>
+    <!-- For running network, show the status -->
+    <div v-if="needShowNetworkStatus">
+        <Status v-bind:cur-network-inst="curNetworkInfo" v-if="needShowNetworkStatus">
+        </Status>
+        <center>
+            <Button @click="updateNetworkState(true)" label="Disable Network" severity="warn" />
+        </center>
+    </div>
+
+    <!-- For disabled network, show the config -->
+    <div v-if="networkIsDisabled">
+        <Config :cur-network="disabledNetworkConfig" @run-network="updateNetworkState(false)"
+            v-if="disabledNetworkConfig" />
+        <div v-else>
+            <div class="text-center text-xl"> Network is disabled, Loading config... </div>
+        </div>
+    </div>
 
     <div class="grid grid-cols-1 gap-4 place-content-center h-full" v-if="!selectedInstanceId">
         <div class="text-center text-xl"> Select or create a network instance to manage </div>
