@@ -15,6 +15,8 @@ use easytier::{
 };
 use tokio::sync::{broadcast, RwLock};
 
+use crate::db::ListNetworkProps;
+
 use super::storage::{Storage, StorageToken, WeakRefStorage};
 
 #[derive(Debug)]
@@ -206,7 +208,11 @@ impl Session {
 
             let local_configs = match storage
                 .db
-                .list_network_configs(user_id, Some(req.machine_id.unwrap().into()), true)
+                .list_network_configs(
+                    user_id,
+                    Some(req.machine_id.unwrap().into()),
+                    ListNetworkProps::EnabledOnly,
+                )
                 .await
             {
                 Ok(configs) => configs,

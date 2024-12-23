@@ -1,5 +1,6 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { Md5 } from 'ts-md5'
+import { UUID } from './utils';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -29,6 +30,11 @@ export interface RegisterData {
 
 export interface Summary {
     device_count: number;
+}
+
+export interface ListNetworkInstanceIdResponse {
+    running_inst_ids: Array<UUID>,
+    disabled_inst_ids: Array<UUID>,
 }
 
 export class ApiClient {
@@ -139,6 +145,17 @@ export class ApiClient {
     public async list_machines(): Promise<Array<any>> {
         const response = await this.client.get<any, Record<string, Array<any>>>('/machines');
         return response.machines;
+    }
+
+    public async list_deivce_instance_ids(machine_id: string): Promise<ListNetworkInstanceIdResponse> {
+        const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + machine_id + '/networks');
+        return response;
+    }
+
+    public async update_device_instance_state(machine_id: string, inst_id: string, disabled: boolean): Promise<undefined> {
+        await this.client.put<string>('/machines/' + machine_id + '/networks/' + inst_id, {
+            disabled: disabled,
+        });
     }
 
     public async get_network_info(machine_id: string, inst_id: string): Promise<any> {

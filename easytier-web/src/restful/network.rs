@@ -13,6 +13,7 @@ use easytier::proto::web::*;
 
 use crate::client_manager::session::Session;
 use crate::client_manager::ClientManager;
+use crate::db::ListNetworkProps;
 
 use super::users::AuthSession;
 use super::{
@@ -47,12 +48,20 @@ struct ColletNetworkInfoJsonReq {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct UpdateNetworkStateJsonReq {
+    disabled: bool,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RemoveNetworkJsonReq {
     inst_ids: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct ListNetworkInstanceIdsJsonResp(Vec<uuid::Uuid>);
+struct ListNetworkInstanceIdsJsonResp {
+    running_inst_ids: Vec<easytier::proto::common::Uuid>,
+    disabled_inst_ids: Vec<easytier::proto::common::Uuid>,
+}
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ListMachineItem {
@@ -190,7 +199,7 @@ impl NetworkApi {
         auth_session: AuthSession,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
-        Query(payload): Query<ColletNetworkInfoJsonReq>,
+        Json(payload): Json<ColletNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
         let result =
             Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
@@ -226,10 +235,28 @@ impl NetworkApi {
             .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
             .await
             .map_err(convert_rpc_error)?;
-        Ok(
-            ListNetworkInstanceIdsJsonResp(ret.inst_ids.into_iter().map(Into::into).collect())
-                .into(),
-        )
+
+        let running_inst_ids = ret.inst_ids.clone().into_iter().map(Into::into).collect();
+
+        // collect networks that are disabled
+        let disabled_inst_ids = client_mgr
+            .db()
+            .list_network_configs(
+                auth_session.user.unwrap().id(),
+                Some(machine_id),
+                ListNetworkProps::DisabledOnly,
+            )
+            .await
+            .map_err(convert_db_error)?
+            .iter()
+            .filter_map(|x| x.network_instance_id.clone().try_into().ok())
+            .collect::<Vec<_>>();
+
+        Ok(ListNetworkInstanceIdsJsonResp {
+            running_inst_ids,
+            disabled_inst_ids,
+        }
+        .into())
     }
 
     async fn handle_remove_network_instance(
@@ -289,6 +316,54 @@ impl NetworkApi {
         Ok(Json(ListMachineJsonResp { machines }))
     }
 
+    async fn handle_update_network_state(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path((machine_id, inst_id)): Path<(uuid::Uuid, Option<uuid::Uuid>)>,
+        Json(payload): Json<UpdateNetworkStateJsonReq>,
+    ) -> Result<(), HttpHandleError> {
+        let Some(inst_id) = inst_id else {
+            // not implement disable all
+            return Err((
+                StatusCode::NOT_IMPLEMENTED,
+                other_error(format!("Not implemented")).into(),
+            ))
+            .into();
+        };
+
+        let sess = Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
+        let cfg = client_mgr
+            .db()
+            .update_network_config_state(auth_session.user.unwrap().id(), inst_id, payload.disabled)
+            .await
+            .map_err(convert_db_error)?;
+
+        let c = sess.scoped_rpc_client();
+
+        if payload.disabled {
+            c.delete_network_instance(
+                BaseController::default(),
+                DeleteNetworkInstanceRequest {
+                    inst_ids: vec![inst_id.into()],
+                },
+            )
+            .await
+            .map_err(convert_rpc_error)?;
+        } else {
+            c.run_network_instance(
+                BaseController::default(),
+                RunNetworkInstanceRequest {
+                    inst_id: Some(inst_id.into()),
+                    config: Some(serde_json::from_str(&cfg.network_config).unwrap()),
+                },
+            )
+            .await
+            .map_err(convert_rpc_error)?;
+        }
+
+        Ok(())
+    }
+
     async fn handle_get_network_config(
         auth_session: AuthSession,
         State(client_mgr): AppState,
@@ -298,25 +373,24 @@ impl NetworkApi {
 
         let db_row = client_mgr
             .db()
-            .list_network_configs(auth_session.user.unwrap().id(), Some(machine_id), false)
+            .get_network_config(auth_session.user.unwrap().id(), &machine_id, &inst_id)
             .await
             .map_err(convert_db_error)?
-            .iter()
-            .find(|x| x.network_instance_id == inst_id)
-            .map(|x| x.network_config.clone())
             .ok_or((
                 StatusCode::NOT_FOUND,
                 other_error(format!("No such network instance: {}", inst_id)).into(),
             ))?;
 
-        Ok(serde_json::from_str::<NetworkConfig>(&db_row)
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    other_error(format!("Failed to parse network config: {:?}", e)).into(),
-                )
-            })?
-            .into())
+        Ok(
+            serde_json::from_str::<NetworkConfig>(&db_row.network_config)
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        other_error(format!("Failed to parse network config: {:?}", e)).into(),
+                    )
+                })?
+                .into(),
+        )
     }
 
     pub fn build_route(&mut self) -> Router<AppStateInner> {
@@ -332,7 +406,7 @@ impl NetworkApi {
             )
             .route(
                 "/api/v1/machines/:machine-id/networks/:inst-id",
-                delete(Self::handle_remove_network_instance),
+                delete(Self::handle_remove_network_instance).put(Self::handle_update_network_state),
             )
             .route(
                 "/api/v1/machines/:machine-id/networks/info",
