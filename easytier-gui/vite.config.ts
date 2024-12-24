@@ -1,9 +1,11 @@
+import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import process from 'node:process'
 import VueI18n from '@intlify/unplugin-vue-i18n/vite'
 import { PrimeVueResolver } from '@primevue/auto-import-resolver'
 import Vue from '@vitejs/plugin-vue'
-import { internalIpV4Sync } from 'internal-ip'
+import { containsCidr, parseCidr } from 'cidr-tools'
+import { gateway4sync } from 'default-gateway'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import VueMacros from 'unplugin-vue-macros/vite'
@@ -12,6 +14,20 @@ import VueRouter from 'unplugin-vue-router/vite'
 import { defineConfig } from 'vite'
 import VueDevTools from 'vite-plugin-vue-devtools'
 import Layouts from 'vite-plugin-vue-layouts'
+
+function findIp(gateway: string) {
+  // Look for the matching interface in all local interfaces
+  console.log('gateway', gateway)
+  for (const addresses of Object.values(networkInterfaces())) {
+    if (!addresses)
+      continue
+    for (const { cidr } of addresses) {
+      if (cidr && containsCidr(cidr, gateway)) {
+        return parseCidr(cidr).ip
+      }
+    }
+  }
+}
 
 const host = process.env.TAURI_DEV_HOST
 
@@ -99,10 +115,10 @@ export default defineConfig(async () => ({
     },
     hmr: host
       ? {
-          protocol: 'ws',
-          host: internalIpV4Sync(),
-          port: 1430,
-        }
+        protocol: 'ws',
+        host: findIp(gateway4sync().gateway),
+        port: 1430,
+      }
       : undefined,
   },
 }))

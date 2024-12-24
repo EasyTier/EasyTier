@@ -15,7 +15,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.0.0-rc", features = [] }
 
 [dependencies]
-tauri = { version = "2.1", features = [
+# wry 0.47 may crash on android, see https://github.com/EasyTier/EasyTier/issues/527
+tauri = { version = "=2.0.6", features = [
     "tray-icon",
     "image-png",
     "image-ico",

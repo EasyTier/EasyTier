@@ -69,6 +69,32 @@ Denies the prepare_vpn command without any pre-configured scope.
 <tr>
 <td>
 
+`vpnservice:allow-registerListener`
+
+</td>
+<td>
+
+Enables the registerListener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`vpnservice:deny-registerListener`
+
+</td>
+<td>
+
+Denies the registerListener command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `vpnservice:allow-register-listener`
 
 </td>
