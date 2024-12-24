@@ -287,6 +287,8 @@ async fn standalone_rpc_test() {
     server.registry().register(service, "test");
     server.serve().await.unwrap();
 
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
     let mut client = StandAloneClient::new(TcpTunnelConnector::new(
         "tcp://127.0.0.1:33455".parse().unwrap(),
     ));
