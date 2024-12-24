@@ -4,8 +4,8 @@ pub mod entity;
 
 use entity::user_running_network_configs;
 use sea_orm::{
-    prelude::Expr, sea_query::OnConflict, ActiveModelTrait, ColumnTrait as _, DatabaseConnection,
-    DbErr, EntityTrait, QueryFilter as _, SqlxSqliteConnector, TransactionTrait as _,
+    prelude::Expr, sea_query::OnConflict, ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait,
+    QueryFilter as _, SqlxSqliteConnector, TransactionTrait as _,
 };
 use sea_orm_migration::MigratorTrait as _;
 use sqlx::{migrate::MigrateDatabase as _, types::chrono, Sqlite, SqlitePool};
