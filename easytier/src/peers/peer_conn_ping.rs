@@ -289,29 +289,29 @@ impl PeerConnPinger {
                 "pingpong task recv pingpong_once result"
             );
 
-            if (counter > 5 && loss_rate_20 > 0.74) || (counter > 150 && loss_rate_1 > 0.20) {
-                let current_rx_packets = throughput.rx_packets();
-                let need_close = if last_rx_packets != current_rx_packets {
-                    // if we receive some packet from peers, we should relax the condition
-                    counter > 50 && loss_rate_1 > 0.5
+            let current_rx_packets = throughput.rx_packets();
+            if last_rx_packets != current_rx_packets {
+                // if we receive some packet from peers, reset the counter to avoid conn close.
+                // conn will close only if we have 5 continous round pingpong loss after no packet received.
+                counter = 0;
+            }
 
-                    // TODO: wait more time to see if the loss rate is still high after no rx
-                } else {
-                    true
-                };
+            tracing::debug!(
+                "counter: {}, loss_rate_1: {}, loss_rate_20: {}, cur_rx_packets: {}, last_rx: {}, node_id: {}",
+                counter, loss_rate_1, loss_rate_20, current_rx_packets, last_rx_packets, my_node_id
+            );
 
-                if need_close {
-                    tracing::warn!(
-                        ?ret,
-                        ?self,
-                        ?loss_rate_1,
-                        ?loss_rate_20,
-                        ?last_rx_packets,
-                        ?current_rx_packets,
-                        "pingpong loss rate too high, closing"
-                    );
-                    break;
-                }
+            if (counter > 5 && loss_rate_20 > 0.74) || (counter > 100 && loss_rate_1 > 0.35) {
+                tracing::warn!(
+                    ?ret,
+                    ?self,
+                    ?loss_rate_1,
+                    ?loss_rate_20,
+                    ?last_rx_packets,
+                    ?current_rx_packets,
+                    "pingpong loss rate too high, closing"
+                );
+                break;
             }
 
             last_rx_packets = throughput.rx_packets();
