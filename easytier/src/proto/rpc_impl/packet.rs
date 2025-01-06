@@ -159,7 +159,10 @@ pub fn build_rpc_packet(
         let cur_packet = RpcPacket {
             from_peer,
             to_peer,
-            descriptor: if cur_offset == 0 {
+            descriptor: if cur_offset == 0
+                || compression_info.algo == CompressionAlgoPb::None as i32
+            {
+                // old version must have descriptor on every piece
                 Some(rpc_desc.clone())
             } else {
                 None
