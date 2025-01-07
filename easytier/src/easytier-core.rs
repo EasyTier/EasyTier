@@ -185,7 +185,7 @@ struct Cli {
     #[arg(
         long,
         help = t!("core_clap.multi_thread").to_string(),
-        default_value = "false"
+        default_value = "true"
     )]
     multi_thread: bool,
 
