@@ -230,7 +230,10 @@ impl GlobalCtx {
     }
 
     pub fn add_running_listener(&self, url: url::Url) {
-        self.running_listeners.lock().unwrap().push(url);
+        let mut l = self.running_listeners.lock().unwrap();
+        if !l.contains(&url) {
+            l.push(url);
+        }
     }
 
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
