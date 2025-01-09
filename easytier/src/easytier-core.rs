@@ -125,6 +125,13 @@ struct Cli {
 
     #[arg(
         long,
+        help = t!("core_clap.mapped_listeners").to_string(),
+        num_args = 0..
+    )]
+    mapped_listeners: Vec<String>,
+
+    #[arg(
+        long,
         help = t!("core_clap.no_listener").to_string(),
         default_value = "false"
     )]
@@ -300,6 +307,12 @@ struct Cli {
         default_value = "none",
     )]
     compression: String,
+
+    #[arg(
+        long,
+        help = t!("core_clap.bind_device").to_string()
+    )]
+    bind_device: Option<bool>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -422,6 +435,23 @@ impl TryFrom<&Cli> for TomlConfigLoader {
                 .collect(),
         );
 
+        cfg.set_mapped_listeners(Some(
+            cli.mapped_listeners
+                .iter()
+                .map(|s| {
+                    s.parse()
+                        .with_context(|| format!("mapped listener is not a valid url: {}", s))
+                        .unwrap()
+                })
+                .map(|s: url::Url| {
+                    if s.port().is_none() {
+                        panic!("mapped listener port is missing: {}", s);
+                    }
+                    s
+                })
+                .collect(),
+        ));
+
         for n in cli.proxy_networks.iter() {
             cfg.add_proxy_cidr(
                 n.parse()
@@ -534,6 +564,9 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             ),
         }
         .into();
+        if let Some(bind_device) = cli.bind_device {
+            f.bind_device = bind_device;
+        }
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());

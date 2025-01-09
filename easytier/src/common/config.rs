@@ -29,6 +29,7 @@ pub fn gen_default_flags() -> Flags {
         ipv6_listener: "udp://[::]:0".to_string(),
         multi_thread: true,
         data_compress_algo: CompressionAlgoPb::None.into(),
+        bind_device: true,
     }
 }
 
@@ -71,6 +72,9 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_listeners(&self) -> Vec<url::Url>;
     fn set_listeners(&self, listeners: Vec<url::Url>);
+
+    fn get_mapped_listeners(&self) -> Vec<url::Url>;
+    fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
 
     fn get_rpc_portal(&self) -> Option<SocketAddr>;
     fn set_rpc_portal(&self, addr: SocketAddr);
@@ -183,6 +187,7 @@ struct Config {
     dhcp: Option<bool>,
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
+    mapped_listeners: Option<Vec<url::Url>>,
     exit_nodes: Option<Vec<Ipv4Addr>>,
 
     peer: Option<Vec<PeerConfig>>,
@@ -470,6 +475,19 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_listeners(&self, listeners: Vec<url::Url>) {
         self.config.lock().unwrap().listeners = Some(listeners);
+    }
+
+    fn get_mapped_listeners(&self) -> Vec<url::Url> {
+        self.config
+            .lock()
+            .unwrap()
+            .mapped_listeners
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
+        self.config.lock().unwrap().mapped_listeners = listeners;
     }
 
     fn get_rpc_portal(&self) -> Option<SocketAddr> {
