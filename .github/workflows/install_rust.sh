@@ -22,19 +22,6 @@ fi
 # we make cross-compilation
 if [[ $OS =~ ^ubuntu.*$ ]]; then
     sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools libappindicator3-dev
-    # for easytier-gui
-    if [[ $GUI_TARGET != '' && $GUI_TARGET =~ ^x86_64.*$ ]]; then
-        sudo apt install -qq libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libxdo-dev \
-            libssl-dev \
-            patchelf
-    fi
     #  curl -s musl.cc | grep mipsel
     case $TARGET in
     mipsel-unknown-linux-musl)
