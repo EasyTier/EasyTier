@@ -21,6 +21,7 @@ message FlagsInConfig {
   string ipv6_listener = 14;
   bool multi_thread = 15;
   CompressionAlgoPb data_compress_algo = 16;
+  bool bind_device = 17;
 }
 
 message RpcDescriptor {

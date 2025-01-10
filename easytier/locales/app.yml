@@ -134,6 +134,12 @@ core_clap:
   compression:
     en: "compression algorithm to use, support none, zstd. default is none"
     zh-CN: "要使用的压缩算法，支持 none、zstd。默认为 none"
+  mapped_listeners:
+    en: "manually specify the public address of the listener, other nodes can use this address to connect to this node. e.g.: tcp://123.123.123.123:11223, can specify multiple."
+    zh-CN: "手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。例如：tcp://123.123.123.123:11223，可以指定多个。"
+  bind_device:
+    en: "bind the connector socket to physical devices to avoid routing issues. e.g.: subnet proxy segment conflicts with a node's segment, after binding the physical device, it can communicate with the node normally."
+    zh-CN: "将连接器的套接字绑定到物理设备以避免路由问题。比如子网代理网段与某节点的网段冲突，绑定物理设备后可以与该节点正常通信。"
 
 core_app:
   panic_backtrace_save:

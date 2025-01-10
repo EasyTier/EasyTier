@@ -24,8 +24,10 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         let mut ret = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
         ret.listeners = self
             .global_ctx
-            .get_running_listeners()
+            .config
+            .get_mapped_listeners()
             .into_iter()
+            .chain(self.global_ctx.get_running_listeners().into_iter())
             .map(Into::into)
             .collect();
         Ok(ret)
