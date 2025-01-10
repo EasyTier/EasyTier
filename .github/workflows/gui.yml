@@ -177,8 +177,7 @@ jobs:
         if: ${{ contains(matrix.TARGET, 'win7') }}
         with:
           projectPath: ./easytier-gui
-          # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --release -Z build-std --target ${{ matrix.TARGET }}
+          args: --verbose -- -Z build-std --target ${{ matrix.TARGET }}
 
       - name: Compress
         run: |
