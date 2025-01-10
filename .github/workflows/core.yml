@@ -5,6 +5,12 @@ on:
     branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Test scenario tags'
+        required: false
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
