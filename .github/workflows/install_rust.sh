@@ -9,7 +9,7 @@ echo "TARGET: $TARGET"
 echo "GUI_TARGET: $GUI_TARGET"
 echo "OS: $OS"
 
-if [[ $TARGET =~ "^.*win7.*$" ]]; then
+if [[ $TARGET =~ ^.*win7.*$ ]]; then
     echo "Install For Win7"
     rustup set auto-self-update disable
     rustup toolchain install nightly
