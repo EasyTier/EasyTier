@@ -5,6 +5,14 @@
 # - GUI_TARGET
 # - OS
 
+if [[ $$TARGET == "x86_64-win7-windows-msvc" || $TARGET == "i686-win7-windows-msvc" ]]; then
+    rustup set auto-self-update disable
+    rustup toolchain install nightly
+    rustup component add rust-src --toolchain nightly
+    rustup default nightly
+    exit 0
+fi
+
 # dependencies are only needed on ubuntu as that's the only place where
 # we make cross-compilation
 if [[ $OS =~ ^ubuntu.*$ ]]; then

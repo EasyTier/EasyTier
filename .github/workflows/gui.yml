@@ -166,10 +166,19 @@ jobs:
 
       - name: Build GUI
         uses: tauri-apps/tauri-action@v0
+        if: ${{ ! contains(matrix.TARGET, 'win7') }}
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
           args: --verbose --target ${{ matrix.TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+
+      - name: Build GUI (Windows 7)
+        uses: tauri-apps/tauri-action@v0
+        if: ${{ contains(matrix.TARGET, 'win7') }}
+        with:
+          projectPath: ./easytier-gui
+          # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
+          args: --verbose --release -Z build-std --target ${{ matrix.TARGET }}
 
       - name: Compress
         run: |

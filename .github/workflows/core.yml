@@ -117,7 +117,10 @@ jobs:
         if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
         run: |
           bash ./.github/workflows/install_rust.sh
-          if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
+
+          if [[ $$TARGET == "x86_64-win7-windows-msvc" || $TARGET == "i686-win7-windows-msvc" ]]; then
+            cargo +nightly build --release -Z build-std --target $TARGET
+          elif [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
             cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips --package=easytier
           else
             cargo build --release --verbose --target $TARGET
