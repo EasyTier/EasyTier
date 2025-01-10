@@ -124,7 +124,7 @@ jobs:
         run: |
           bash ./.github/workflows/install_rust.sh
 
-          if [[ $$TARGET == "x86_64-win7-windows-msvc" || $TARGET == "i686-win7-windows-msvc" ]]; then
+          if [[ $TARGET =~ ^.*win7.*$ ]]; then
             cargo +nightly build --release -Z build-std=std,panic_abort --target $TARGET
           elif [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
             cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips --package=easytier
