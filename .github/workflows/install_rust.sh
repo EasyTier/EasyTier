@@ -5,7 +5,12 @@
 # - GUI_TARGET
 # - OS
 
-if [[ $$TARGET == "x86_64-win7-windows-msvc" || $TARGET == "i686-win7-windows-msvc" ]]; then
+echo "TARGET: $TARGET"
+echo "GUI_TARGET: $GUI_TARGET"
+echo "OS: $OS"
+
+if [[ $$TARGET =~ "^.*win7.*$" ]]; then
+    echo "Install For Win7"
     rustup set auto-self-update disable
     rustup toolchain install nightly
     rustup component add rust-src --toolchain nightly
