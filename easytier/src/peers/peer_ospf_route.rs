@@ -1739,7 +1739,6 @@ impl RouteSessionManager {
                         continue;
                     }
                     let _ = self.stop_session(*peer_id);
-                    assert_ne!(Some(*peer_id), cur_dst_peer_id_to_initiate);
                 }
             }
 
