@@ -297,12 +297,14 @@ impl ManualConnectorManager {
 
         connector.lock().await.set_ip_version(ip_version);
 
-        set_bind_addr_for_peer_connector(
-            connector.lock().await.as_mut(),
-            ip_version == IpVersion::V4,
-            &ip_collector,
-        )
-        .await;
+        if data.global_ctx.config.get_flags().bind_device {
+            set_bind_addr_for_peer_connector(
+                connector.lock().await.as_mut(),
+                ip_version == IpVersion::V4,
+                &ip_collector,
+            )
+            .await;
+        }
 
         data.global_ctx.issue_event(GlobalCtxEvent::Connecting(
             connector.lock().await.remote_url().clone(),
