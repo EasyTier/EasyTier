@@ -8,7 +8,7 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-**请访问 [EasyTier 官网](https://www.easytier.top/) 以查看完整的文档。**
+**请访问 [EasyTier 官网](https://www.easytier.cn/) 以查看完整的文档。**
 
 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
@@ -31,6 +31,7 @@
 - **高可用性**：支持多路径和在检测到高丢包率或网络错误时切换到健康路径。
 - **IPV6 支持**：支持利用 IPV6 组网。
 - **多协议类型**: 支持使用 WebSocket、QUIC 等协议进行节点间通信。
+- **Web 管理界面**：支持通过 [Web 界面](https://easytier.cn)管理节点。
 
 ## 安装
 
@@ -52,7 +53,7 @@
 
 4. **通过Docker Compose安装**
 
-    请访问 [EasyTier 官网](https://www.easytier.top/) 以查看完整的文档。
+    请访问 [EasyTier 官网](https://www.easytier.cn/) 以查看完整的文档。
 
 5. **使用一键脚本安装 (仅适用于 Linux)**
 
@@ -199,20 +200,20 @@ sudo easytier-core --ipv4 10.144.144.2 -n 10.1.1.0/24
 
 ### 无公网IP组网
 
-EasyTier 支持共享公网节点进行组网。目前已部署共享的公网节点 ``tcp://public.easytier.top:11010``。
+EasyTier 支持共享公网节点进行组网。目前已部署共享的公网节点 ``tcp://public.easytier.cn:11010``。
 
 使用共享节点时，需要每个入网节点提供相同的 ``--network-name`` 和 ``--network-secret`` 参数，作为网络的唯一标识。
 
 以双节点为例，节点 A 执行：
 
 ```sh
-sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e tcp://public.easytier.top:11010
+sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
 ```
 
 节点 B 执行
 
 ```sh
-sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e tcp://public.easytier.top:11010
+sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
 ```
 
 命令执行成功后，节点 A 即可通过虚拟 IP 10.144.144.2 访问节点 B。
@@ -289,7 +290,7 @@ connected_clients:
 也可以使用以下命令加入官方公共服务器集群，后续将实现公共服务器集群的节点间负载均衡：
 
 ```
-sudo easytier-core --network-name easytier --network-secret easytier -p tcp://public.easytier.top:11010
+sudo easytier-core --network-name easytier --network-secret easytier -p tcp://public.easytier.cn:11010
 ```
 
 ### 其他配置
@@ -299,9 +300,8 @@ sudo easytier-core --network-name easytier --network-secret easytier -p tcp://pu
 ## 路线图
 
 - [ ] 完善文档和用户指南。
-- [ ] 支持 TCP 打洞等特性。
+- [ ] 支持 TCP 打洞、KCP、FEC 等特性。
 - [ ] 支持 iOS。
-- [ ] 支持 Web 配置管理。
 
 ## 社区和贡献
 

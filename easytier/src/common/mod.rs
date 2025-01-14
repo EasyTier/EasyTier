@@ -1,6 +1,7 @@
 use std::{
     fmt::Debug,
     future,
+    io::Write as _,
     sync::{Arc, Mutex},
 };
 use tokio::task::JoinSet;
@@ -81,7 +82,17 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
 }
 
 pub fn get_machine_id() -> uuid::Uuid {
-    // TODO: load from local file
+    // a path same as the binary
+    let machine_id_file = std::env::current_exe()
+        .map(|x| x.with_file_name("et_machine_id"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("et_machine_id"));
+
+    // try load from local file
+    if let Ok(mid) = std::fs::read_to_string(&machine_id_file) {
+        if let Ok(mid) = uuid::Uuid::parse_str(mid.trim()) {
+            return mid;
+        }
+    }
 
     #[cfg(any(
         target_os = "linux",
@@ -95,7 +106,7 @@ pub fn get_machine_id() -> uuid::Uuid {
             crate::tunnel::generate_digest_from_str("", x.as_str(), &mut b);
             uuid::Uuid::from_bytes(b)
         })
-        .unwrap_or(uuid::Uuid::new_v4());
+        .ok();
 
     #[cfg(not(any(
         target_os = "linux",
@@ -103,9 +114,18 @@ pub fn get_machine_id() -> uuid::Uuid {
         target_os = "windows",
         target_os = "freebsd"
     )))]
+    let gen_mid = None;
+
+    if gen_mid.is_some() {
+        return gen_mid.unwrap();
+    }
+
     let gen_mid = uuid::Uuid::new_v4();
 
-    // TODO: save to local file
+    // try save to local file
+    if let Ok(mut file) = std::fs::File::create(machine_id_file) {
+        let _ = file.write_all(gen_mid.to_string().as_bytes());
+    }
 
     gen_mid
 }

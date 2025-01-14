@@ -28,6 +28,30 @@ impl TcpTunnelListener {
             listener: None,
         }
     }
+
+    async fn do_accept(&mut self) -> Result<Box<dyn Tunnel>, std::io::Error> {
+        let listener = self.listener.as_ref().unwrap();
+        let (stream, _) = listener.accept().await?;
+
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::warn!(?e, "set_nodelay fail in accept");
+        }
+
+        let info = TunnelInfo {
+            tunnel_type: "tcp".to_owned(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
+            ),
+        };
+
+        let (r, w) = stream.into_split();
+        Ok(Box::new(TunnelWrapper::new(
+            FramedReader::new(r, TCP_MTU_BYTES),
+            FramedWriter::new(w),
+            Some(info),
+        )))
+    }
 }
 
 #[async_trait]
@@ -57,27 +81,23 @@ impl TunnelListener for TcpTunnelListener {
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let listener = self.listener.as_ref().unwrap();
-        let (stream, _) = listener.accept().await?;
-
-        if let Err(e) = stream.set_nodelay(true) {
-            tracing::warn!(?e, "set_nodelay fail in accept");
+        loop {
+            match self.do_accept().await {
+                Ok(ret) => return Ok(ret),
+                Err(e) => {
+                    use std::io::ErrorKind::*;
+                    if matches!(
+                        e.kind(),
+                        NotConnected | ConnectionAborted | ConnectionRefused | ConnectionReset
+                    ) {
+                        tracing::warn!(?e, "accept fail with retryable error: {:?}", e);
+                        continue;
+                    }
+                    tracing::warn!(?e, "accept fail");
+                    return Err(e.into());
+                }
+            }
         }
-
-        let info = TunnelInfo {
-            tunnel_type: "tcp".to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
-            ),
-        };
-
-        let (r, w) = stream.into_split();
-        Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, TCP_MTU_BYTES),
-            FramedWriter::new(w),
-            Some(info),
-        )))
     }
 
     fn local_url(&self) -> url::Url {

@@ -163,7 +163,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 Err(e) => {
                     global_ctx.issue_event(GlobalCtxEvent::ListenerAddFailed(
                         l.local_url(),
-                        e.to_string(),
+                        format!("error: {:?}, retry listen later...", e),
                     ));
                     tracing::error!(?e, ?l, "listener listen error");
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -176,7 +176,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                     Err(e) => {
                         global_ctx.issue_event(GlobalCtxEvent::ListenerAcceptFailed(
                             l.local_url(),
-                            format!("error: {}, retry listen later...", e.to_string()),
+                            format!("error: {:?}, retry listen later...", e),
                         ));
                         tracing::error!(?e, ?l, "listener accept error");
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

@@ -31,6 +31,7 @@ EasyTier is a simple, safe and decentralized VPN networking solution implemented
 - **High Availability**: Supports multi-path and switches to healthy paths when high packet loss or network errors are detected.
 - **IPv6 Support**: Supports networking using IPv6.
 - **Multiple Protocol Types**: Supports communication between nodes using protocols such as WebSocket and QUIC.
+- **Web Management Interface**: Provides a [web-based management](https://easytier.cn/web) interface for easy configuration and monitoring.
 
 ## Installation
 
@@ -52,7 +53,7 @@ EasyTier is a simple, safe and decentralized VPN networking solution implemented
 
 4. **Install by Docker Compose**
 
-    Please visit the [EasyTier Official Website](https://www.easytier.top/en/) to view the full documentation.
+    Please visit the [EasyTier Official Website](https://www.easytier.cn/en/) to view the full documentation.
 
 5. **Install by script (For Linux Only)**
 
@@ -200,20 +201,20 @@ Subnet proxy information will automatically sync to each node in the virtual net
 
 ### Networking without Public IP
 
-EasyTier supports networking using shared public nodes. The currently deployed shared public node is ``tcp://public.easytier.top:11010``.
+EasyTier supports networking using shared public nodes. The currently deployed shared public node is ``tcp://public.easytier.cn:11010``.
 
 When using shared nodes, each node entering the network needs to provide the same ``--network-name`` and ``--network-secret`` parameters as the unique identifier of the network.
 
 Taking two nodes as an example, Node A executes:
 
 ```sh
-sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -e tcp://public.easytier.top:11010
+sudo easytier-core -i 10.144.144.1 --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
 ```
 
 Node B executes
 
 ```sh
-sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -e tcp://public.easytier.top:11010
+sudo easytier-core --ipv4 10.144.144.2 --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
 ```
 
 After the command is successfully executed, Node A can access Node B through the virtual IP 10.144.144.2.
@@ -286,7 +287,7 @@ Run you own public server cluster is exactly same as running an virtual network,
 You can also join the official public server cluster with following command:
 
 ```
-sudo easytier-core --network-name easytier --network-secret easytier -p tcp://public.easytier.top:11010
+sudo easytier-core --network-name easytier --network-secret easytier -p tcp://public.easytier.cn:11010
 ```
 
 
@@ -296,10 +297,8 @@ You can use ``easytier-core --help`` to view all configuration items
 
 ## Roadmap
 
-- [ ] Improve documentation and user guides.
-- [ ] Support features such as encryption, TCP hole punching, etc.
+- [ ] Support features such TCP hole punching, KCP, FEC etc.
 - [ ] Support iOS.
-- [ ] Support Web configuration management.
 
 ## Community and Contribution
 
