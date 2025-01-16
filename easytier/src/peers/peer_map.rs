@@ -70,11 +70,17 @@ impl PeerMap {
 
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         if dst_peer_id == self.my_peer_id {
-            return Ok(self
-                .packet_send
-                .send(msg)
-                .await
-                .with_context(|| "send msg to self failed")?);
+            let packet_send = self.packet_send.clone();
+            tokio::spawn(async move {
+                let ret = packet_send
+                    .send(msg)
+                    .await
+                    .with_context(|| "send msg to self failed");
+                if ret.is_err() {
+                    tracing::error!("send msg to self failed: {:?}", ret);
+                }
+            });
+            return Ok(());
         }
 
         match self.get_peer_by_id(dst_peer_id) {

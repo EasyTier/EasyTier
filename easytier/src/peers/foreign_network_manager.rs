@@ -37,11 +37,13 @@ use crate::{
 };
 
 use super::{
+    create_packet_recv_chan,
     peer_conn::PeerConn,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
     peer_rpc_service::DirectConnectorManagerRpcServer,
+    recv_packet_from_chan,
     route_trait::NextHopPolicy,
     PacketRecvChan, PacketRecvChanReceiver,
 };
@@ -79,7 +81,7 @@ impl ForeignNetworkEntry {
     ) -> Self {
         let foreign_global_ctx = Self::build_foreign_global_ctx(&network, global_ctx.clone());
 
-        let (packet_sender, packet_recv) = mpsc::channel(64);
+        let (packet_sender, packet_recv) = create_packet_recv_chan();
 
         let peer_map = Arc::new(PeerMap::new(
             packet_sender,
@@ -251,7 +253,7 @@ impl ForeignNetworkEntry {
         let network_name = self.network.network_name.clone();
 
         self.tasks.lock().await.spawn(async move {
-            while let Some(zc_packet) = recv.recv().await {
+            while let Ok(zc_packet) = recv_packet_from_chan(&mut recv).await {
                 let Some(hdr) = zc_packet.peer_manager_header() else {
                     tracing::warn!("invalid packet, skip");
                     continue;
@@ -622,7 +624,7 @@ mod tests {
         network: &str,
         secret: &str,
     ) -> Arc<PeerManager> {
-        let (s, _r) = tokio::sync::mpsc::channel(1000);
+        let (s, _r) = create_packet_recv_chan();
         let peer_mgr = Arc::new(PeerManager::new(
             RouteAlgoType::Ospf,
             get_mock_global_ctx_with_network(Some(NetworkIdentity::new(

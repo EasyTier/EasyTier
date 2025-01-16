@@ -30,6 +30,7 @@ use crate::{
     peers::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
+        recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface},
         PeerPacketFilter,
     },
@@ -43,11 +44,12 @@ use crate::{
     tunnel::{
         self,
         packet_def::{CompressorAlgo, PacketType, ZCPacket},
-        SinkItem, Tunnel, TunnelConnector,
+        Tunnel, TunnelConnector,
     },
 };
 
 use super::{
+    create_packet_recv_chan,
     encrypt::{Encryptor, NullCipher},
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
@@ -56,7 +58,7 @@ use super::{
     peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManager,
     route_trait::{ArcRoute, Route},
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChanReceiver,
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
 };
 
 struct RpcTransport {
@@ -116,7 +118,7 @@ pub struct PeerManager {
     my_peer_id: PeerId,
 
     global_ctx: ArcGlobalCtx,
-    nic_channel: mpsc::Sender<SinkItem>,
+    nic_channel: PacketRecvChan,
 
     tasks: Arc<Mutex<JoinSet<()>>>,
 
@@ -155,11 +157,11 @@ impl PeerManager {
     pub fn new(
         route_algo: RouteAlgoType,
         global_ctx: ArcGlobalCtx,
-        nic_channel: mpsc::Sender<SinkItem>,
+        nic_channel: PacketRecvChan,
     ) -> Self {
         let my_peer_id = rand::random();
 
-        let (packet_send, packet_recv) = mpsc::channel(128);
+        let (packet_send, packet_recv) = create_packet_recv_chan();
         let peers = Arc::new(PeerMap::new(
             packet_send.clone(),
             global_ctx.clone(),
@@ -417,7 +419,7 @@ impl PeerManager {
         let encryptor = self.encryptor.clone();
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
-            while let Some(ret) = recv.recv().await {
+            while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
                 let Err(mut ret) =
                     Self::try_handle_foreign_network_packet(ret, my_peer_id, &peers, &foreign_mgr)
                         .await
@@ -505,7 +507,7 @@ impl PeerManager {
     async fn init_packet_process_pipeline(&self) {
         // for tun/tap ip/eth packet.
         struct NicPacketProcessor {
-            nic_channel: mpsc::Sender<SinkItem>,
+            nic_channel: PacketRecvChan,
         }
         #[async_trait::async_trait]
         impl PeerPacketFilter for NicPacketProcessor {
@@ -875,7 +877,7 @@ impl PeerManager {
         self.global_ctx.clone()
     }
 
-    pub fn get_nic_channel(&self) -> mpsc::Sender<SinkItem> {
+    pub fn get_nic_channel(&self) -> PacketRecvChan {
         self.nic_channel.clone()
     }
 
@@ -935,6 +937,7 @@ mod tests {
         },
         instance::listeners::get_listener_by_url,
         peers::{
+            create_packet_recv_chan,
             peer_manager::RouteAlgoType,
             peer_rpc::tests::register_service,
             route_trait::NextHopPolicy,
@@ -1078,7 +1081,7 @@ mod tests {
     #[tokio::test]
     async fn communicate_between_enc_and_non_enc() {
         let create_mgr = |enable_encryption| async move {
-            let (s, _r) = tokio::sync::mpsc::channel(1000);
+            let (s, _r) = create_packet_recv_chan();
             let mock_global_ctx = get_mock_global_ctx();
             mock_global_ctx.config.set_flags(Flags {
                 enable_encryption,
