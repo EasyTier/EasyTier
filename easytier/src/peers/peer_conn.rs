@@ -413,6 +413,7 @@ mod tests {
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
     use crate::common::scoped_task::ScopedTask;
+    use crate::peers::create_packet_recv_chan;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
@@ -496,9 +497,7 @@ mod tests {
         );
 
         s_peer.set_close_event_sender(tokio::sync::mpsc::channel(1).0);
-        s_peer
-            .start_recv_loop(tokio::sync::mpsc::channel(200).0)
-            .await;
+        s_peer.start_recv_loop(create_packet_recv_chan().0).await;
         // do not start ping for s, s only reponde to ping from c
 
         assert!(c_ret.is_ok());
@@ -507,9 +506,7 @@ mod tests {
         let (close_send, mut close_recv) = tokio::sync::mpsc::channel(1);
         c_peer.set_close_event_sender(close_send);
         c_peer.start_pingpong();
-        c_peer
-            .start_recv_loop(tokio::sync::mpsc::channel(200).0)
-            .await;
+        c_peer.start_recv_loop(create_packet_recv_chan().0).await;
 
         let throughput = c_peer.throughput.clone();
         let _t = ScopedTask::from(tokio::spawn(async move {

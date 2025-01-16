@@ -23,7 +23,7 @@ use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
-use crate::peers::PacketRecvChanReceiver;
+use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
 use crate::proto::cli::VpnPortalRpc;
 use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::proto::peer_rpc::PeerCenterRpcServer;
@@ -137,7 +137,7 @@ impl Instance {
             global_ctx.config.dump()
         );
 
-        let (peer_packet_sender, peer_packet_receiver) = tokio::sync::mpsc::channel(100);
+        let (peer_packet_sender, peer_packet_receiver) = create_packet_recv_chan();
 
         let id = global_ctx.get_id();
 
@@ -230,7 +230,7 @@ impl Instance {
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
             let mut packet_recv = packet_recv.lock().await;
-            while let Some(packet) = packet_recv.recv().await {
+            while let Ok(packet) = recv_packet_from_chan(&mut packet_recv).await {
                 tracing::trace!("packet consumed by mock nic ctx: {:?}", packet);
             }
         });

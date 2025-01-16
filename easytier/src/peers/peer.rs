@@ -171,11 +171,11 @@ impl Drop for Peer {
 #[cfg(test)]
 mod tests {
 
-    use tokio::{sync::mpsc, time::timeout};
+    use tokio::time::timeout;
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, new_peer_id},
-        peers::peer_conn::PeerConn,
+        peers::{create_packet_recv_chan, peer_conn::PeerConn},
         tunnel::ring::create_ring_tunnel_pair,
     };
 
@@ -183,8 +183,8 @@ mod tests {
 
     #[tokio::test]
     async fn close_peer() {
-        let (local_packet_send, _local_packet_recv) = mpsc::channel(10);
-        let (remote_packet_send, _remote_packet_recv) = mpsc::channel(10);
+        let (local_packet_send, _local_packet_recv) = create_packet_recv_chan();
+        let (remote_packet_send, _remote_packet_recv) = create_packet_recv_chan();
         let global_ctx = get_mock_global_ctx();
         let local_peer = Peer::new(new_peer_id(), local_packet_send, global_ctx.clone());
         let remote_peer = Peer::new(new_peer_id(), remote_packet_send, global_ctx.clone());

@@ -12,7 +12,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
-    peers::{peer_manager::PeerManager, PacketRecvChanReceiver},
+    peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
     tunnel::{
         common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
         packet_def::{ZCPacket, ZCPacketType, TAIL_RESERVED_SIZE},
@@ -610,7 +610,7 @@ impl NicCtx {
         self.tasks.spawn(async move {
             // unlock until coroutine finished
             let mut channel = channel.lock().await;
-            while let Some(packet) = channel.recv().await {
+            while let Ok(packet) = recv_packet_from_chan(&mut channel).await {
                 tracing::trace!(
                     "[USER_PACKET] forward packet from peers to nic. packet: {:?}",
                     packet
