@@ -30,6 +30,9 @@ pub fn gen_default_flags() -> Flags {
         multi_thread: true,
         data_compress_algo: CompressionAlgoPb::None.into(),
         bind_device: true,
+        enable_kcp_proxy: false,
+        disable_kcp_input: true,
+        disable_relay_kcp: true,
     }
 }
 

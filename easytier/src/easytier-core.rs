@@ -313,6 +313,20 @@ struct Cli {
         help = t!("core_clap.bind_device").to_string()
     )]
     bind_device: Option<bool>,
+
+    #[arg(
+        long,
+        help = t!("core_clap.enable_kcp_proxy").to_string(),
+        default_value = "false"
+    )]
+    enable_kcp_proxy: bool,
+
+    #[arg(
+        long,
+        help = t!("core_clap.enable_kcp_proxy").to_string(),
+        default_value = "false"
+    )]
+    disable_kcp_input: bool,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -567,6 +581,8 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         if let Some(bind_device) = cli.bind_device {
             f.bind_device = bind_device;
         }
+        f.enable_kcp_proxy = cli.enable_kcp_proxy;
+        f.disable_kcp_input = cli.disable_kcp_input;
         cfg.set_flags(f);
 
         cfg.set_exit_nodes(cli.exit_nodes.clone());

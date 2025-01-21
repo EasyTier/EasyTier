@@ -185,6 +185,8 @@ service-manager = {git = "https://github.com/chipsenkbeil/service-manager-rs.git
 
 async-compression = { version = "0.4.17", default-features = false, features = ["zstd", "tokio"] }
 
+kcp-sys = { path = "/data/project/kcp-rust-native" }
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 
