@@ -364,6 +364,7 @@ pub async fn subnet_proxy_three_node_test(
     #[values("tcp", "udp", "wg")] proto: &str,
     #[values(true, false)] no_tun: bool,
     #[values(true, false)] relay_by_public_server: bool,
+    #[values(true, false)] enable_kcp_proxy: bool,
 ) {
     let insts = init_three_node_ex(
         proto,
@@ -380,6 +381,12 @@ pub async fn subnet_proxy_three_node_test(
                     "public".to_string(),
                     "public".to_string(),
                 ));
+            }
+
+            if cfg.get_inst_name() == "inst1" && enable_kcp_proxy {
+                let mut flags = cfg.get_flags();
+                flags.enable_kcp_proxy = true;
+                cfg.set_flags(flags);
             }
 
             cfg
