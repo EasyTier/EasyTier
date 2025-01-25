@@ -8,7 +8,7 @@ edition = "2021"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.77.0"
+rust-version = "1.84.0"
 license-file = "LICENSE"
 readme = "README.md"
 
@@ -163,12 +163,13 @@ indexmap = { version = "~1.9.3", optional = false, features = ["std"] }
 
 atomic-shim = "0.2.0"
 
-smoltcp = { version = "0.11.0", optional = true, default-features = false, features = [
+smoltcp = { version = "0.12.0", optional = true, default-features = false, features = [
     "std",
     "medium-ip",
     "proto-ipv4",
     "proto-ipv6",
     "socket-tcp",
+    "socket-tcp-cubic",
     "async",
 ] }
 parking_lot = { version = "0.12.0", optional = true }
@@ -184,6 +185,8 @@ async-ringbuf = "0.3.1"
 service-manager = {git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main"}
 
 async-compression = { version = "0.4.17", default-features = false, features = ["zstd", "tokio"] }
+
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys" }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"

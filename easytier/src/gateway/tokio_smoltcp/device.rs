@@ -43,7 +43,7 @@ pub struct BufferRxToken(Packet);
 impl RxToken for BufferRxToken {
     fn consume<R, F>(mut self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> R,
+        F: FnOnce(&[u8]) -> R,
     {
         let p = &mut self.0;
         let result = f(p);

@@ -124,6 +124,20 @@ jobs:
           # GitHub repo token to use to avoid rate limiter
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install GUI dependencies (x86 only)
+        if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
+        run: |
+          sudo apt install -qq libwebkit2gtk-4.1-dev \
+              build-essential \
+              curl \
+              wget \
+              file \
+              libgtk-3-dev \
+              librsvg2-dev \
+              libxdo-dev \
+              libssl-dev \
+              patchelf
+
       - name: Install GUI cross compile (aarch64 only)
         if: ${{ matrix.TARGET == 'aarch64-unknown-linux-musl' }}
         run: |

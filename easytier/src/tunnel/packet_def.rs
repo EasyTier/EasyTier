@@ -61,6 +61,8 @@ pub enum PacketType {
     RpcReq = 8,
     RpcResp = 9,
     ForeignNetworkPacket = 10,
+    KcpSrc = 11,
+    KcpDst = 12,
 }
 
 bitflags::bitflags! {
@@ -492,6 +494,10 @@ impl ZCPacket {
     // ref versions
     pub fn payload(&self) -> &[u8] {
         &self.inner[self.payload_offset()..]
+    }
+
+    pub fn payload_bytes(mut self) -> BytesMut {
+        self.inner.split_off(self.payload_offset())
     }
 
     pub fn peer_manager_header(&self) -> Option<&PeerManagerHeader> {

@@ -22,6 +22,13 @@ message FlagsInConfig {
   bool multi_thread = 15;
   CompressionAlgoPb data_compress_algo = 16;
   bool bind_device = 17;
+
+  // should we convert all tcp streams into kcp streams
+  bool enable_kcp_proxy = 18;
+  // does this peer allow kcp input
+  bool disable_kcp_input = 19;
+  // allow relay kcp packets (for public server, this can reduce the throughput)
+  bool disable_relay_kcp = 20;
 }
 
 message RpcDescriptor {

@@ -295,7 +295,7 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         };
         run_shell_cmd(
             format!(
-                "route ADD {} MASK {} 10.1.1.1 IF {} METRIC 255",
+                "route ADD {} MASK {} 10.1.1.1 IF {} METRIC 9000",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
                 idx

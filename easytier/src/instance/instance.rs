@@ -17,7 +17,8 @@ use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
-use crate::gateway::tcp_proxy::TcpProxy;
+use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxySrc};
+use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
@@ -40,7 +41,7 @@ use crate::gateway::socks5::Socks5Server;
 
 #[derive(Clone)]
 struct IpProxy {
-    tcp_proxy: Arc<TcpProxy>,
+    tcp_proxy: Arc<TcpProxy<NatDstTcpConnector>>,
     icmp_proxy: Arc<IcmpProxy>,
     udp_proxy: Arc<UdpProxy>,
     global_ctx: ArcGlobalCtx,
@@ -49,7 +50,7 @@ struct IpProxy {
 
 impl IpProxy {
     fn new(global_ctx: ArcGlobalCtx, peer_manager: Arc<PeerManager>) -> Result<Self, Error> {
-        let tcp_proxy = TcpProxy::new(global_ctx.clone(), peer_manager.clone());
+        let tcp_proxy = TcpProxy::new(peer_manager.clone(), NatDstTcpConnector {});
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
             .with_context(|| "create icmp proxy failed")?;
         let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
@@ -72,7 +73,7 @@ impl IpProxy {
         }
 
         self.started.store(true, Ordering::Relaxed);
-        self.tcp_proxy.start().await?;
+        self.tcp_proxy.start(true).await?;
         self.icmp_proxy.start().await?;
         self.udp_proxy.start().await?;
         Ok(())
@@ -115,6 +116,9 @@ pub struct Instance {
     udp_hole_puncher: Arc<Mutex<UdpHolePunchConnector>>,
 
     ip_proxy: Option<IpProxy>,
+
+    kcp_proxy_src: Option<KcpProxySrc>,
+    kcp_proxy_dst: Option<KcpProxyDst>,
 
     peer_center: Arc<PeerCenterInstance>,
 
@@ -193,6 +197,8 @@ impl Instance {
             udp_hole_puncher: Arc::new(Mutex::new(udp_hole_puncher)),
 
             ip_proxy: None,
+            kcp_proxy_src: None,
+            kcp_proxy_dst: None,
 
             peer_center,
 
@@ -382,6 +388,18 @@ impl Instance {
             self.get_peer_manager(),
         )?);
         self.run_ip_proxy().await?;
+
+        if self.global_ctx.get_flags().enable_kcp_proxy {
+            let src_proxy = KcpProxySrc::new(self.get_peer_manager()).await;
+            src_proxy.start().await;
+            self.kcp_proxy_src = Some(src_proxy);
+        }
+
+        if !self.global_ctx.get_flags().disable_kcp_input {
+            let mut dst_proxy = KcpProxyDst::new(self.get_peer_manager()).await;
+            dst_proxy.start().await;
+            self.kcp_proxy_dst = Some(dst_proxy);
+        }
 
         self.udp_hole_puncher.lock().await.run().await?;
 

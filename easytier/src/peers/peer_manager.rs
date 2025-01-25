@@ -675,7 +675,7 @@ impl PeerManager {
 
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
-            pipeline.try_process_packet_from_nic(data).await;
+            let _ = pipeline.try_process_packet_from_nic(data).await;
         }
     }
 
@@ -722,13 +722,7 @@ impl PeerManager {
         }
     }
 
-    pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
-        tracing::trace!(
-            "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
-            msg,
-            ipv4_addr
-        );
-
+    pub async fn get_msg_dst_peer(&self, ipv4_addr: &Ipv4Addr) -> (Vec<PeerId>, bool) {
         let mut is_exit_node = false;
         let mut dst_peers = vec![];
         let network_length = self
@@ -736,10 +730,10 @@ impl PeerManager {
             .get_ipv4()
             .map(|x| x.network_length())
             .unwrap_or(24);
-        let ipv4_inet = cidr::Ipv4Inet::new(ipv4_addr, network_length).unwrap();
+        let ipv4_inet = cidr::Ipv4Inet::new(*ipv4_addr, network_length).unwrap();
         if ipv4_addr.is_broadcast()
             || ipv4_addr.is_multicast()
-            || ipv4_addr == ipv4_inet.last_address()
+            || *ipv4_addr == ipv4_inet.last_address()
         {
             dst_peers.extend(
                 self.peers
@@ -760,10 +754,15 @@ impl PeerManager {
             }
         }
 
-        if dst_peers.is_empty() {
-            tracing::info!("no peer id for ipv4: {}", ipv4_addr);
-            return Ok(());
-        }
+        (dst_peers, is_exit_node)
+    }
+
+    pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+        tracing::trace!(
+            "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
+            msg,
+            ipv4_addr
+        );
 
         msg.fill_peer_manager_hdr(
             self.my_peer_id,
@@ -771,6 +770,24 @@ impl PeerManager {
             tunnel::packet_def::PacketType::Data as u8,
         );
         self.run_nic_packet_process_pipeline(&mut msg).await;
+        let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
+        if cur_to_peer_id != 0 {
+            return Self::send_msg_internal(
+                &self.peers,
+                &self.foreign_network_client,
+                msg,
+                cur_to_peer_id,
+            )
+            .await;
+        }
+
+        let (dst_peers, is_exit_node) = self.get_msg_dst_peer(&ipv4_addr).await;
+
+        if dst_peers.is_empty() {
+            tracing::info!("no peer id for ipv4: {}", ipv4_addr);
+            return Ok(());
+        }
+
         let compressor = DefaultCompressor {};
         compressor
             .compress(&mut msg, self.data_compress_algo)

@@ -33,7 +33,7 @@ pub trait PeerPacketFilter {
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait NicPacketFilter {
-    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket);
+    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket) -> bool;
 }
 
 type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
