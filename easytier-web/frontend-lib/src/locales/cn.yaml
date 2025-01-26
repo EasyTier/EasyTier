@@ -69,6 +69,29 @@ upload_bytes: 上传
 download_bytes: 下载
 loss_rate: 丢包率
 
+flags_switch: 功能开关
+
+latency_first: 开启延迟优先模式
+latency_first_help: 忽略中转跳数，选择总延迟最低的路径
+
+use_smoltcp: 使用用户态协议栈
+use_smoltcp_help: 使用用户态 TCP/IP 协议栈，避免操作系统防火墙问题导致无法子网代理。
+
+enable_kcp_proxy: 启用 KCP 代理
+enable_kcp_proxy_help: 将 TCP 流量转为 KCP 流量，降低传输延迟，提升传输速度。
+
+disable_kcp_input: 禁用 KCP 输入
+disable_kcp_input_help: 禁用 KCP 入站流量，其他开启 KCP 代理的节点无法连接到本节点。
+
+disable_p2p: 禁用 P2P
+disable_p2p_help: 禁用 P2P 模式，所有流量通过手动指定的服务器中转。
+
+bind_device: 仅使用物理网卡
+bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网建立连接。
+
+no_tun: 无 TUN 模式
+no_tun_help: 不使用 TUN 网卡，适合无管理员权限时使用。本节点仅允许被访问。访问其他节点需要使用 SOCK5
+
 status:
   version: 内核版本
   local: 本机
@@ -113,3 +136,4 @@ event:
   VpnPortalClientDisconnected: VPN门户客户端已断开连接
   DhcpIpv4Changed: DHCP IPv4地址更改
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
+

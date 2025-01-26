@@ -40,6 +40,13 @@ message NetworkConfig {
     optional bool latency_first = 19;
 
     optional string dev_name = 20;
+
+    optional bool use_smoltcp = 21;
+    optional bool enable_kcp_proxy = 22;
+    optional bool disable_kcp_input = 23;
+    optional bool disable_p2p = 24;
+    optional bool bind_device = 25;
+    optional bool no_tun = 26;
 }
 
 message MyNodeInfo {

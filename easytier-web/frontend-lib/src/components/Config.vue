@@ -120,6 +120,21 @@ function searchListenerSuggestions(e: { query: string }) {
   listenerSuggestions.value = ret
 }
 
+interface BoolFlag {
+  field: keyof NetworkConfig
+  help: string
+}
+
+const bool_flags: BoolFlag[] = [
+  { field: 'latency_first', help: 'latency_first_help' },
+  { field: 'use_smoltcp', help: 'use_smoltcp_help' },
+  { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
+  { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
+  { field: 'disable_p2p', help: 'disable_p2p_help' },
+  { field: 'bind_device', help: 'bind_device_help' },
+  { field: 'no_tun', help: 'no_tun_help' },
+]
+
 </script>
 
 <template>
@@ -188,11 +203,18 @@ function searchListenerSuggestions(e: { query: string }) {
 
           <Panel :header="t('advanced_settings')" toggleable collapsed>
             <div class="flex flex-col gap-y-2">
+
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <div class="flex items-center">
-                    <Checkbox v-model="curNetwork.latency_first" input-id="use_latency_first" :binary="true" />
-                    <label for="use_latency_first" class="ml-2"> {{ t('use_latency_first') }} </label>
+                  <label> {{ t('flags_switch') }} </label>
+                  <div class="flex flex-row flex-wrap">
+
+                    <div class="basis-64 flex" v-for="flag in bool_flags">
+                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
+                      <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
+                      <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
+                    </div>
+
                   </div>
                 </div>
               </div>

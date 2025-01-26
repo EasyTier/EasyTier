@@ -35,6 +35,13 @@ export interface NetworkConfig {
   latency_first: boolean
 
   dev_name: string
+
+  use_smoltcp?: boolean
+  enable_kcp_proxy?: boolean
+  disable_kcp_input?: boolean
+  disable_p2p?: boolean
+  bind_device?: boolean
+  no_tun?: boolean
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -67,8 +74,15 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'wg://0.0.0.0:11011',
     ],
     rpc_port: 0,
-    latency_first: true,
+    latency_first: false,
     dev_name: '',
+
+    use_smoltcp: false,
+    enable_kcp_proxy: false,
+    disable_kcp_input: false,
+    disable_p2p: false,
+    bind_device: true,
+    no_tun: false,
   }
 }
 
