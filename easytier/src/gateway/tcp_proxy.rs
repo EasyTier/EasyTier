@@ -700,6 +700,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
         }
     }
 
+    pub fn get_global_ctx(&self) -> &ArcGlobalCtx {
+        &self.global_ctx
+    }
+
     pub fn is_smoltcp_enabled(&self) -> bool {
         self.enable_smoltcp
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -782,5 +786,9 @@ impl<C: NatDstConnector> TcpProxy<C> {
         tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
 
         Some(())
+    }
+
+    pub fn get_peer_manager(&self) -> &Arc<PeerManager> {
+        &self.peer_manager
     }
 }

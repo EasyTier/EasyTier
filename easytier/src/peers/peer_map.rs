@@ -10,7 +10,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
         PeerId,
     },
-    proto::cli::PeerConnInfo,
+    proto::{cli::PeerConnInfo, common::PeerFeatureFlag},
     tunnel::{packet_def::ZCPacket, TunnelError},
 };
 
@@ -163,6 +163,16 @@ impl PeerMap {
             if peer_id.is_some() {
                 return peer_id;
             }
+        }
+        None
+    }
+
+    pub async fn get_peer_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag> {
+        for route in self.routes.read().await.iter() {
+            let feature_flag = route.get_feature_flag(peer_id).await;
+            if feature_flag.is_some() {
+                return feature_flag;
+            };
         }
         None
     }

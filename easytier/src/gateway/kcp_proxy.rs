@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
@@ -8,6 +8,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use kcp_sys::{
     endpoint::{KcpEndpoint, KcpPacketReceiver},
+    ffi_safe::KcpConfig,
     packet_def::KcpPacket,
     stream::KcpStream,
 };
@@ -28,6 +29,16 @@ use crate::{
     proto::peer_rpc::KcpConnData,
     tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket},
 };
+
+fn create_kcp_endpoint() -> KcpEndpoint {
+    let mut kcp_endpoint = KcpEndpoint::new();
+    kcp_endpoint.set_kcp_config_factory(Box::new(|conv| {
+        let mut cfg = KcpConfig::new_turbo(conv);
+        cfg.interval = Some(5);
+        cfg
+    }));
+    kcp_endpoint
+}
 
 struct KcpEndpointFilter {
     kcp_endpoint: Arc<KcpEndpoint>,
@@ -153,6 +164,20 @@ pub struct KcpProxySrc {
     tasks: JoinSet<()>,
 }
 
+impl TcpProxyForKcpSrc {
+    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
+        let peer_map: Arc<crate::peers::peer_map::PeerMap> =
+            self.0.get_peer_manager().get_peer_map();
+        let Some(dst_peer_id) = peer_map.get_peer_id_by_ipv4(dst_ip).await else {
+            return false;
+        };
+        let Some(feature_flag) = peer_map.get_peer_feature_flag(dst_peer_id).await else {
+            return false;
+        };
+        feature_flag.kcp_input
+    }
+}
+
 #[async_trait::async_trait]
 impl NicPacketFilter for TcpProxyForKcpSrc {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
@@ -161,7 +186,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
             return true;
         }
 
-        let Some(my_ipv4) = self.0.get_local_ip() else {
+        let Some(my_ipv4) = self.0.get_global_ctx().get_ipv4() else {
             return false;
         };
 
@@ -169,8 +194,9 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
         let ip_packet = Ipv4Packet::new(data).unwrap();
         if ip_packet.get_version() != 4
         // TODO: how to support net to net kcp proxy?
-            || ip_packet.get_source() != my_ipv4
+            || ip_packet.get_source() != my_ipv4.address()
             || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
+            || !self.check_dst_allow_kcp_input(&ip_packet.get_destination()).await
         {
             return false;
         }
@@ -183,7 +209,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
 
 impl KcpProxySrc {
     pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
-        let mut kcp_endpoint = KcpEndpoint::new();
+        let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
         let output_receiver = kcp_endpoint.output_receiver().unwrap();
@@ -238,7 +264,7 @@ pub struct KcpProxyDst {
 
 impl KcpProxyDst {
     pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
-        let mut kcp_endpoint = KcpEndpoint::new();
+        let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
         let mut tasks = JoinSet::new();
