@@ -8,6 +8,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use kcp_sys::{
     endpoint::{KcpEndpoint, KcpPacketReceiver},
+    ffi_safe::KcpConfig,
     packet_def::KcpPacket,
     stream::KcpStream,
 };
@@ -28,6 +29,16 @@ use crate::{
     proto::peer_rpc::KcpConnData,
     tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket},
 };
+
+fn create_kcp_endpoint() -> KcpEndpoint {
+    let mut kcp_endpoint = KcpEndpoint::new();
+    kcp_endpoint.set_kcp_config_factory(Box::new(|conv| {
+        let mut cfg = KcpConfig::new_turbo(conv);
+        cfg.interval = Some(5);
+        cfg
+    }));
+    kcp_endpoint
+}
 
 struct KcpEndpointFilter {
     kcp_endpoint: Arc<KcpEndpoint>,
@@ -161,7 +172,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
             return true;
         }
 
-        let Some(my_ipv4) = self.0.get_local_ip() else {
+        let Some(my_ipv4) = self.0.get_global_ctx().get_ipv4() else {
             return false;
         };
 
@@ -169,7 +180,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
         let ip_packet = Ipv4Packet::new(data).unwrap();
         if ip_packet.get_version() != 4
         // TODO: how to support net to net kcp proxy?
-            || ip_packet.get_source() != my_ipv4
+            || ip_packet.get_source() != my_ipv4.address()
             || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
         {
             return false;
@@ -183,7 +194,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
 
 impl KcpProxySrc {
     pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
-        let mut kcp_endpoint = KcpEndpoint::new();
+        let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
         let output_receiver = kcp_endpoint.output_receiver().unwrap();
@@ -238,7 +249,7 @@ pub struct KcpProxyDst {
 
 impl KcpProxyDst {
     pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
-        let mut kcp_endpoint = KcpEndpoint::new();
+        let mut kcp_endpoint = create_kcp_endpoint();
         kcp_endpoint.run().await;
 
         let mut tasks = JoinSet::new();
