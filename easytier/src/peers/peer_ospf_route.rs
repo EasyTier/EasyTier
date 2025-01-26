@@ -30,7 +30,7 @@ use crate::{
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
-        common::{Ipv4Inet, NatType, StunInfo},
+        common::{Ipv4Inet, NatType, PeerFeatureFlag, StunInfo},
         peer_rpc::{
             route_foreign_network_infos, ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey,
             OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
@@ -2042,6 +2042,8 @@ impl Route for PeerRoute {
             route.cost_latency_first = next_hop_peer_latency_first.map(|x| x.path_latency);
             route.path_latency_latency_first = next_hop_peer_latency_first.map(|x| x.path_latency);
 
+            route.feature_flag = item.feature_flag.clone();
+
             routes.push(route);
         }
         routes
@@ -2100,6 +2102,14 @@ impl Route for PeerRoute {
             .get(network_identity)
             .map(|x| x.clone())
             .unwrap_or_default()
+    }
+
+    async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag> {
+        self.service_impl
+            .route_table
+            .peer_infos
+            .get(&peer_id)
+            .and_then(|x| x.feature_flag.clone())
     }
 }
 

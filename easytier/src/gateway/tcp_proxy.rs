@@ -783,4 +783,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         Some(())
     }
+
+    pub fn get_peer_manager(&self) -> &Arc<PeerManager> {
+        &self.peer_manager
+    }
 }

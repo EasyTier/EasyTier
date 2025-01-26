@@ -101,6 +101,10 @@ impl GlobalCtx {
         let enable_exit_node = config_fs.get_flags().enable_exit_node;
         let no_tun = config_fs.get_flags().no_tun;
 
+        let mut feature_flags = PeerFeatureFlag::default();
+        feature_flags.kcp_input = !config_fs.get_flags().disable_kcp_input;
+        feature_flags.no_relay_kcp = config_fs.get_flags().disable_relay_kcp;
+
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -123,7 +127,7 @@ impl GlobalCtx {
             enable_exit_node,
             no_tun,
 
-            feature_flags: AtomicCell::new(PeerFeatureFlag::default()),
+            feature_flags: AtomicCell::new(feature_flags),
         }
     }
 

@@ -4,8 +4,11 @@ use dashmap::DashMap;
 
 use crate::{
     common::{global_ctx::NetworkIdentity, PeerId},
-    proto::peer_rpc::{
-        ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
+    proto::{
+        common::PeerFeatureFlag,
+        peer_rpc::{
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
+        },
     },
 };
 
@@ -93,6 +96,8 @@ pub trait Route {
     }
 
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {}
+
+    async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag>;
 
     async fn dump(&self) -> String {
         "this route implementation does not support dump".to_string()
