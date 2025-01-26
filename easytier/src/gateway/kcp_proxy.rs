@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
     time::Duration,
 };
@@ -164,6 +164,20 @@ pub struct KcpProxySrc {
     tasks: JoinSet<()>,
 }
 
+impl TcpProxyForKcpSrc {
+    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
+        let peer_map: Arc<crate::peers::peer_map::PeerMap> =
+            self.0.get_peer_manager().get_peer_map();
+        let Some(dst_peer_id) = peer_map.get_peer_id_by_ipv4(dst_ip).await else {
+            return false;
+        };
+        let Some(feature_flag) = peer_map.get_peer_feature_flag(dst_peer_id).await else {
+            return false;
+        };
+        feature_flag.kcp_input
+    }
+}
+
 #[async_trait::async_trait]
 impl NicPacketFilter for TcpProxyForKcpSrc {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
@@ -182,6 +196,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
         // TODO: how to support net to net kcp proxy?
             || ip_packet.get_source() != my_ipv4.address()
             || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
+            || !self.check_dst_allow_kcp_input(&ip_packet.get_destination()).await
         {
             return false;
         }
