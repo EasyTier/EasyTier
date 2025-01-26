@@ -525,6 +525,31 @@ impl NetworkConfig {
         if let Some(dev_name) = self.dev_name.clone() {
             flags.dev_name = dev_name;
         }
+
+        if let Some(use_smoltcp) = self.use_smoltcp {
+            flags.use_smoltcp = use_smoltcp;
+        }
+
+        if let Some(enable_kcp_proxy) = self.enable_kcp_proxy {
+            flags.enable_kcp_proxy = enable_kcp_proxy;
+        }
+
+        if let Some(disable_kcp_input) = self.disable_kcp_input {
+            flags.disable_kcp_input = disable_kcp_input;
+        }
+
+        if let Some(disable_p2p) = self.disable_p2p {
+            flags.disable_p2p = disable_p2p;
+        }
+
+        if let Some(bind_device) = self.bind_device {
+            flags.bind_device = bind_device;
+        }
+
+        if let Some(no_tun) = self.no_tun {
+            flags.no_tun = no_tun;
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
