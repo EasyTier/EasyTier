@@ -284,6 +284,7 @@ impl PunchSymToConeHoleClient {
                 BaseController {
                     timeout_ms: 4000,
                     trace_id: 0,
+                    ..Default::default()
                 },
                 req,
             )
@@ -314,6 +315,7 @@ impl PunchSymToConeHoleClient {
                 BaseController {
                     timeout_ms: 4000,
                     trace_id: 0,
+                    ..Default::default()
                 },
                 req,
             )

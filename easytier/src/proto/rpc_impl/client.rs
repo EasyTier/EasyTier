@@ -192,7 +192,7 @@ impl Client {
 
             async fn call(
                 &self,
-                ctrl: Self::Controller,
+                mut ctrl: Self::Controller,
                 method: <Self::Descriptor as ServiceDescriptor>::Method,
                 input: bytes::Bytes,
             ) -> Result<bytes::Bytes> {
@@ -224,7 +224,11 @@ impl Client {
                 };
 
                 let rpc_req = RpcRequest {
-                    request: input.into(),
+                    request: if let Some(raw_input) = ctrl.get_raw_input() {
+                        raw_input.into()
+                    } else {
+                        input.into()
+                    },
                     timeout_ms: ctrl.timeout_ms(),
                     ..Default::default()
                 };
@@ -280,7 +284,10 @@ impl Client {
                     return Err(err.into());
                 }
 
-                Ok(bytes::Bytes::from(rpc_resp.response))
+                let raw_output = Bytes::from(rpc_resp.response.clone());
+                ctrl.set_raw_output(raw_output.clone());
+
+                Ok(raw_output)
             }
         }
 

@@ -16,6 +16,8 @@ use petgraph::{
     graph::NodeIndex,
     Directed, Graph,
 };
+use prost::Message;
+use prost_reflect::{DynamicMessage, ReflectMessage};
 use serde::{Deserialize, Serialize};
 use tokio::{
     select,
@@ -283,6 +285,8 @@ type Error = SyncRouteInfoError;
 #[derive(Debug)]
 struct SyncedRouteInfo {
     peer_infos: DashMap<PeerId, RoutePeerInfo>,
+    // prost doesn't support unknown fields, so we use DynamicMessage to store raw infos and progate them to other peers.
+    raw_peer_infos: DashMap<PeerId, DynamicMessage>,
     conn_map: DashMap<PeerId, (BTreeSet<PeerId>, AtomicVersion)>,
     foreign_network: DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>,
 }
@@ -297,6 +301,7 @@ impl SyncedRouteInfo {
     fn remove_peer(&self, peer_id: PeerId) {
         tracing::warn!(?peer_id, "remove_peer from synced_route_info");
         self.peer_infos.remove(&peer_id);
+        self.raw_peer_infos.remove(&peer_id);
         self.conn_map.remove(&peer_id);
         self.foreign_network.retain(|k, _| k.peer_id != peer_id);
     }
@@ -369,8 +374,11 @@ impl SyncedRouteInfo {
         my_peer_route_id: u64,
         dst_peer_id: PeerId,
         peer_infos: &Vec<RoutePeerInfo>,
+        raw_peer_infos: &Vec<DynamicMessage>,
     ) -> Result<(), Error> {
-        for mut route_info in peer_infos.iter().map(Clone::clone) {
+        for (idx, route_info) in peer_infos.iter().enumerate() {
+            let mut route_info = route_info.clone();
+            let raw_route_info = &raw_peer_infos[idx];
             self.check_duplicate_peer_id(
                 my_peer_id,
                 my_peer_route_id,
@@ -391,10 +399,16 @@ impl SyncedRouteInfo {
                 .entry(route_info.peer_id)
                 .and_modify(|old_entry| {
                     if route_info.version > old_entry.version {
+                        self.raw_peer_infos
+                            .insert(route_info.peer_id, raw_route_info.clone());
                         *old_entry = route_info.clone();
                     }
                 })
-                .or_insert_with(|| route_info.clone());
+                .or_insert_with(|| {
+                    self.raw_peer_infos
+                        .insert(route_info.peer_id, raw_route_info.clone());
+                    route_info.clone()
+                });
         }
         Ok(())
     }
@@ -1047,6 +1061,7 @@ impl PeerRouteServiceImpl {
 
             synced_route_info: SyncedRouteInfo {
                 peer_infos: DashMap::new(),
+                raw_peer_infos: DashMap::new(),
                 conn_map: DashMap::new(),
                 foreign_network: DashMap::new(),
             },
@@ -1381,6 +1396,39 @@ impl PeerRouteServiceImpl {
         }
     }
 
+    fn build_sync_route_raw_req(
+        req: &SyncRouteInfoRequest,
+        raw_peer_infos: &DashMap<PeerId, DynamicMessage>,
+    ) -> DynamicMessage {
+        use prost_reflect::Value;
+
+        let mut req_dynamic_msg = DynamicMessage::new(SyncRouteInfoRequest::default().descriptor());
+        req_dynamic_msg.transcode_from(req).unwrap();
+
+        let peer_infos = req.peer_infos.as_ref().map(|x| &x.items);
+        if let Some(peer_infos) = peer_infos {
+            let mut peer_info_raws = Vec::new();
+            for peer_info in peer_infos.iter() {
+                if let Some(info) = raw_peer_infos.get(&peer_info.peer_id) {
+                    peer_info_raws.push(Value::Message(info.clone()));
+                } else {
+                    let mut p = DynamicMessage::new(RoutePeerInfo::default().descriptor());
+                    p.transcode_from(peer_info).unwrap();
+                    peer_info_raws.push(Value::Message(p));
+                }
+            }
+
+            let mut peer_infos = DynamicMessage::new(RoutePeerInfos::default().descriptor());
+            peer_infos.set_field_by_name("items", Value::List(peer_info_raws));
+
+            req_dynamic_msg.set_field_by_name("peer_infos", Value::Message(peer_infos));
+        }
+
+        tracing::trace!(?req_dynamic_msg, "build_sync_route_raw_req");
+
+        req_dynamic_msg
+    }
+
     async fn sync_route_with_peer(
         &self,
         dst_peer_id: PeerId,
@@ -1419,20 +1467,27 @@ impl PeerRouteServiceImpl {
                 self.global_ctx.get_network_name(),
             );
 
+        let sync_route_info_req = SyncRouteInfoRequest {
+            my_peer_id,
+            my_session_id: session.my_session_id.load(Ordering::Relaxed),
+            is_initiator: session.we_are_initiator.load(Ordering::Relaxed),
+            peer_infos: peer_infos.clone().map(|x| RoutePeerInfos { items: x }),
+            conn_bitmap: conn_bitmap.clone().map(Into::into),
+            foreign_network_infos: foreign_network.clone(),
+        };
+
         let mut ctrl = BaseController::default();
         ctrl.set_timeout_ms(3000);
-        let ret = rpc_stub
-            .sync_route_info(
-                ctrl,
-                SyncRouteInfoRequest {
-                    my_peer_id,
-                    my_session_id: session.my_session_id.load(Ordering::Relaxed),
-                    is_initiator: session.we_are_initiator.load(Ordering::Relaxed),
-                    peer_infos: peer_infos.clone().map(|x| RoutePeerInfos { items: x }),
-                    conn_bitmap: conn_bitmap.clone().map(Into::into),
-                    foreign_network_infos: foreign_network.clone(),
-                },
+        ctrl.set_raw_input(
+            Self::build_sync_route_raw_req(
+                &sync_route_info_req,
+                &self.synced_route_info.raw_peer_infos,
             )
+            .encode_to_vec()
+            .into(),
+        );
+        let ret = rpc_stub
+            .sync_route_info(ctrl, SyncRouteInfoRequest::default())
             .await;
 
         if let Err(e) = &ret {
@@ -1508,12 +1563,30 @@ impl Debug for RouteSessionManager {
     }
 }
 
+fn get_raw_peer_infos(req_raw_input: &mut bytes::Bytes) -> Option<Vec<DynamicMessage>> {
+    let sync_req_dynamic_msg =
+        DynamicMessage::decode(SyncRouteInfoRequest::default().descriptor(), req_raw_input)
+            .unwrap();
+
+    let peer_infos = sync_req_dynamic_msg.get_field_by_name("peer_infos")?;
+
+    let infos = peer_infos
+        .as_message()?
+        .get_field_by_name("items")?
+        .as_list()?
+        .iter()
+        .map(|x| x.as_message().unwrap().clone())
+        .collect();
+
+    Some(infos)
+}
+
 #[async_trait::async_trait]
 impl OspfRouteRpc for RouteSessionManager {
     type Controller = BaseController;
     async fn sync_route_info(
         &self,
-        _ctrl: BaseController,
+        ctrl: BaseController,
         request: SyncRouteInfoRequest,
     ) -> Result<SyncRouteInfoResponse, rpc_types::error::Error> {
         let from_peer_id = request.my_peer_id;
@@ -1522,6 +1595,13 @@ impl OspfRouteRpc for RouteSessionManager {
         let peer_infos = request.peer_infos.map(|x| x.items);
         let conn_bitmap = request.conn_bitmap.map(Into::into);
         let foreign_network = request.foreign_network_infos;
+        let raw_peer_infos = if peer_infos.is_some() {
+            let r = get_raw_peer_infos(&mut ctrl.get_raw_input().unwrap()).unwrap();
+            assert_eq!(r.len(), peer_infos.as_ref().unwrap().len());
+            Some(r)
+        } else {
+            None
+        };
 
         let ret = self
             .do_sync_route_info(
@@ -1529,6 +1609,7 @@ impl OspfRouteRpc for RouteSessionManager {
                 from_session_id,
                 is_initiator,
                 peer_infos,
+                raw_peer_infos,
                 conn_bitmap,
                 foreign_network,
             )
@@ -1783,6 +1864,7 @@ impl RouteSessionManager {
         from_session_id: SessionId,
         is_initiator: bool,
         peer_infos: Option<Vec<RoutePeerInfo>>,
+        raw_peer_infos: Option<Vec<DynamicMessage>>,
         conn_bitmap: Option<RouteConnBitmap>,
         foreign_network: Option<RouteForeignNetworkInfos>,
     ) -> Result<SyncRouteInfoResponse, Error> {
@@ -1805,6 +1887,7 @@ impl RouteSessionManager {
                 service_impl.my_peer_route_id,
                 from_peer_id,
                 peer_infos,
+                raw_peer_infos.as_ref().unwrap(),
             )?;
             session.update_dst_saved_peer_info_version(peer_infos);
             need_update_route_table = true;
@@ -2123,18 +2206,26 @@ mod tests {
         time::Duration,
     };
 
+    use dashmap::DashMap;
+    use prost_reflect::{DynamicMessage, ReflectMessage};
+
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, PeerId},
         connector::udp_hole_punch::tests::replace_stun_info_collector,
         peers::{
             create_packet_recv_chan,
             peer_manager::{PeerManager, RouteAlgoType},
+            peer_ospf_route::PeerRouteServiceImpl,
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface},
             tests::connect_peer_manager,
         },
-        proto::common::NatType,
+        proto::{
+            common::NatType,
+            peer_rpc::{RoutePeerInfo, RoutePeerInfos, SyncRouteInfoRequest},
+        },
         tunnel::common::tests::wait_for_condition,
     };
+    use prost::Message;
 
     use super::PeerRoute;
 
@@ -2553,5 +2644,32 @@ mod tests {
             Duration::from_secs(5),
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn test_raw_peer_info() {
+        let mut req = SyncRouteInfoRequest::default();
+        let raw_info_map: DashMap<PeerId, DynamicMessage> = DashMap::new();
+
+        req.peer_infos = Some(RoutePeerInfos {
+            items: vec![RoutePeerInfo {
+                peer_id: 1,
+                ..Default::default()
+            }],
+        });
+
+        let mut raw_req = DynamicMessage::new(RoutePeerInfo::default().descriptor());
+        raw_req
+            .transcode_from(&req.peer_infos.as_ref().unwrap().items[0])
+            .unwrap();
+        raw_info_map.insert(1, raw_req);
+
+        let out = PeerRouteServiceImpl::build_sync_route_raw_req(&req, &raw_info_map);
+
+        let out_bytes = out.encode_to_vec();
+
+        let req2 = SyncRouteInfoRequest::decode(out_bytes.as_slice()).unwrap();
+
+        assert_eq!(req, req2);
     }
 }

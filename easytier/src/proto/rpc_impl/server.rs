@@ -13,7 +13,7 @@ use crate::{
     common::{join_joinset_background, PeerId},
     proto::{
         common::{self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse},
-        rpc_types::error::Result,
+        rpc_types::{controller::Controller, error::Result},
     },
     tunnel::{
         mpsc::{MpscTunnel, MpscTunnelSender},
@@ -155,16 +155,19 @@ impl Server {
         };
         let rpc_request = RpcRequest::decode(Bytes::from(body))?;
         let timeout_duration = std::time::Duration::from_millis(rpc_request.timeout_ms as u64);
-        let ctrl = RpcController::default();
-        Ok(timeout(
+        let mut ctrl = RpcController::default();
+        let raw_req = Bytes::from(rpc_request.request);
+        ctrl.set_raw_input(raw_req.clone());
+        let ret = timeout(
             timeout_duration,
-            reg.call_method(
-                packet.descriptor.unwrap(),
-                ctrl,
-                Bytes::from(rpc_request.request),
-            ),
+            reg.call_method(packet.descriptor.unwrap(), ctrl.clone(), raw_req),
         )
-        .await??)
+        .await??;
+        if let Some(raw_output) = ctrl.get_raw_output() {
+            Ok(raw_output)
+        } else {
+            Ok(ret)
+        }
     }
 
     async fn handle_rpc(sender: MpscTunnelSender, packet: RpcPacket, reg: Arc<ServiceRegistry>) {

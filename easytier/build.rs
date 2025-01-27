@@ -141,7 +141,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={}", proto_file);
     }
 
-    prost_build::Config::new()
+    let mut config = prost_build::Config::new();
+    config
         .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
@@ -156,9 +157,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
-        .btree_map(["."])
-        .compile_protos(&proto_files, &["src/proto/"])
-        .unwrap();
+        .btree_map(["."]);
+
+    prost_reflect_build::Builder::new()
+        .file_descriptor_set_bytes("crate::proto::DESCRIPTOR_POOL_BYTES")
+        .compile_protos_with_config(config, &proto_files, &["src/proto/"])?;
 
     check_locale();
     Ok(())
