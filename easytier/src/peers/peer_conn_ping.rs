@@ -1,5 +1,4 @@
 use std::{
-    fmt::Debug,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc,
