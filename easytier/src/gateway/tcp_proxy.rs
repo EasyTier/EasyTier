@@ -549,7 +549,13 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let connector = self.connector.clone();
         let accept_task = async move {
             let conn_map = conn_map.clone();
-            while let Ok((tcp_stream, mut socket_addr)) = tcp_listener.accept().await {
+            loop {
+                let accept_ret = tcp_listener.accept().await;
+                let Ok((tcp_stream, mut socket_addr)) = accept_ret else {
+                    tracing::error!("nat tcp listener accept failed: {:?}", accept_ret.err());
+                    continue;
+                };
+
                 let my_ip = global_ctx
                     .get_ipv4()
                     .as_ref()
@@ -594,8 +600,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     entry_clone,
                 ));
             }
-            tracing::error!("nat tcp listener exited");
-            panic!("nat tcp listener exited");
         };
         self.tasks
             .lock()
