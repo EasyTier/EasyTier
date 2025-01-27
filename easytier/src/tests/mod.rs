@@ -167,7 +167,7 @@ async fn wait_proxy_route_appear(
 }
 
 fn set_link_status(net_ns: &str, up: bool) {
-    let _ = std::process::Command::new("ip")
+    let ret = std::process::Command::new("ip")
         .args([
             "netns",
             "exec",
@@ -180,4 +180,5 @@ fn set_link_status(net_ns: &str, up: bool) {
         ])
         .output()
         .unwrap();
+    tracing::info!("set link status: {:?}, net_ns: {}, up: {}", ret, net_ns, up);
 }

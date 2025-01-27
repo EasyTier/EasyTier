@@ -9,6 +9,16 @@ pub struct WindowLatency {
     count: AtomicU32,
 }
 
+impl std::fmt::Debug for WindowLatency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowLatency")
+            .field("count", &self.count)
+            .field("window_size", &self.latency_us_window_size)
+            .field("window_latency", &self.get_latency_us::<u32>())
+            .finish()
+    }
+}
+
 impl WindowLatency {
     pub fn new(window_size: u32) -> Self {
         Self {
@@ -48,7 +58,7 @@ impl WindowLatency {
     }
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Default, Copy, Clone, Debug)]
 pub struct Throughput {
     tx_bytes: u64,
     rx_bytes: u64,

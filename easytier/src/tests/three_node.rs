@@ -490,6 +490,11 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
     }
     inst4.run().await.unwrap();
 
+    tracing::info!("inst1 peer id: {:?}", insts[0].peer_id());
+    tracing::info!("inst2 peer id: {:?}", insts[1].peer_id());
+    tracing::info!("inst3 peer id: {:?}", insts[2].peer_id());
+    tracing::info!("inst4 peer id: {:?}", inst4.peer_id());
+
     let task = tokio::spawn(async move {
         for _ in 1..=2 {
             tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
@@ -521,7 +526,10 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .find(|r| r.peer_id == inst4.peer_id())
                         .is_none()
                 },
-                Duration::from_secs(15),
+                // 0 down
+                // [1, 6) send ping
+                // [3, 8) ping fail and close connection
+                Duration::from_millis(8300),
             )
             .await;
             set_link_status("net_d", true);
