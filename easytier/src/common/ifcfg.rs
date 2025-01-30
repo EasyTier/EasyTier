@@ -1,6 +1,8 @@
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
+use anyhow::Context;
 use async_trait::async_trait;
+use netconfig::{sys::InterfaceExt, Interface};
 use tokio::process::Command;
 
 use super::error::Error;
@@ -94,6 +96,22 @@ async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
         return Err(Error::ShellCommandError(stdout + &stderr));
     }
     Ok(())
+}
+
+fn get_route_obj(
+    name: &str,
+    address: Ipv4Addr,
+    cidr_prefix: u8,
+) -> Result<(net_route::Handle, net_route::Route), Error> {
+    use net_route::{Handle, Route};
+    let iface = Interface::try_from_name(name)
+        .map_err(|e| anyhow::anyhow!("failed to get interface {:?}", e))?;
+    let iface_index = iface
+        .index()
+        .map_err(|e| anyhow::anyhow!("failed to get interface index {:?}", e))?;
+    let handle = Handle::new()?;
+    let route = Route::new(IpAddr::V4(address), cidr_prefix).with_ifindex(iface_index);
+    Ok((handle, route))
 }
 
 pub struct MacIfConfiger {}
@@ -395,18 +413,102 @@ impl IfConfiguerTrait for WindowsIfConfiger {
     }
 }
 
+pub struct CommonIfConfiger {}
+#[async_trait]
+impl IfConfiguerTrait for CommonIfConfiger {
+    async fn add_ipv4_route(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let (handle, route) = get_route_obj(name, address, cidr_prefix)?;
+        let route = route.with_metric(65535);
+        handle
+            .add(&route)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to add route {:?}", e))?;
+        Ok(())
+    }
+
+    async fn remove_ipv4_route(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let (handle, route) = get_route_obj(name, address, cidr_prefix)?;
+        handle
+            .delete(&route)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to delete route {:?}", e))?;
+        Ok(())
+    }
+
+    async fn add_ipv4_ip(
+        &self,
+        name: &str,
+        address: Ipv4Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        use netconfig::ipnet::IpNet;
+        let iface = Interface::try_from_name(name)
+            .map_err(|e| anyhow::anyhow!("failed to get interface {:?}", e))?;
+        iface
+            .add_address(IpNet::new(IpAddr::V4(address), cidr_prefix).unwrap())
+            .map_err(|e| anyhow::anyhow!("failed to add address {:?}", e))?;
+        Ok(())
+    }
+
+    async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
+        let iface = Interface::try_from_name(name)
+            .map_err(|e| anyhow::anyhow!("failed to get interface {:?}", e))?;
+        iface
+            .set_up(up)
+            .map_err(|e| anyhow::anyhow!("failed to set link status {:?}", e))?;
+        Ok(())
+    }
+
+    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Addr>) -> Result<(), Error> {
+        use netconfig::ipnet::IpNet;
+        let iface = Interface::try_from_name(name)
+            .map_err(|e| anyhow::anyhow!("failed to get interface {:?}", e))?;
+        if ip.is_none() {
+            let addrs = iface
+                .addresses()
+                .map_err(|e| anyhow::anyhow!("failed to get address {:?}", e))?;
+            for addr in addrs {
+                iface
+                    .remove_address(addr)
+                    .map_err(|e| anyhow::anyhow!("failed to add address {:?}", e))?;
+            }
+        } else {
+            iface
+                .remove_address(IpNet::new(IpAddr::V4(ip.unwrap()), 0).unwrap())
+                .map_err(|e| anyhow::anyhow!("failed to add address {:?}", e))?;
+        }
+        Ok(())
+    }
+
+    async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        let iface = Interface::try_from_name(name)
+            .map_err(|e| anyhow::anyhow!("failed to get interface {:?}", e))?;
+        iface
+            .set_mtu(mtu)
+            .map_err(|e| anyhow::anyhow!("failed to set mtu {:?}", e))?;
+        Ok(())
+    }
+}
+
 pub struct DummyIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(target_os = "freebsd")]
 pub type IfConfiger = MacIfConfiger;
 
-#[cfg(target_os = "linux")]
-pub type IfConfiger = LinuxIfConfiger;
-
-#[cfg(target_os = "windows")]
-pub type IfConfiger = WindowsIfConfiger;
+#[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+pub type IfConfiger = CommonIfConfiger;
 
 #[cfg(not(any(
     target_os = "macos",

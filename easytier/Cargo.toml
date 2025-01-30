@@ -194,6 +194,9 @@ prost-reflect = { version = "0.14.5", features = [
     "text-format"
 ] }
 
+netconfig = "0.4.0"
+net-route = "0.4.5"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 
