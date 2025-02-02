@@ -97,6 +97,7 @@ jobs:
           echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
 
       - name: Cargo cache
+        if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
         uses: actions/cache@v4
         with:
           path: |
