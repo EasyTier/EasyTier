@@ -526,10 +526,10 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .find(|r| r.peer_id == inst4.peer_id())
                         .is_none()
                 },
-                // 0 down
-                // [1, 6) send ping
-                // [3, 8) ping fail and close connection
-                Duration::from_millis(8300),
+                // 0 down, assume last packet is recv in -0.01
+                // [2, 7) send ping
+                // [4, 9) ping fail and close connection
+                Duration::from_millis(9300),
             )
             .await;
             set_link_status("net_d", true);
