@@ -140,6 +140,12 @@ core_clap:
   bind_device:
     en: "bind the connector socket to physical devices to avoid routing issues. e.g.: subnet proxy segment conflicts with a node's segment, after binding the physical device, it can communicate with the node normally."
     zh-CN: "将连接器的套接字绑定到物理设备以避免路由问题。比如子网代理网段与某节点的网段冲突，绑定物理设备后可以与该节点正常通信。"
+  enable_kcp_proxy:
+    en: "proxy tcp streams with kcp, improving the latency and throughput on the network with udp packet loss."
+    zh-CN: "使用 KCP 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"
+  disable-kcp-input:
+    en: "do not allow other nodes to use kcp to proxy tcp streams to this node. when a node with kcp proxy enabled accesses this node, the original tcp connection is preserved."
+    zh-CN: "不允许其他节点使用 KCP 代理 TCP 流到此节点。开启 KCP 代理的节点访问此节点时，依然使用原始 TCP 连接。"
 
 core_app:
   panic_backtrace_save:

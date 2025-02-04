@@ -529,7 +529,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                 // 0 down, assume last packet is recv in -0.01
                 // [2, 7) send ping
                 // [4, 9) ping fail and close connection
-                Duration::from_millis(9300),
+                Duration::from_secs(11),
             )
             .await;
             set_link_status("net_d", true);
