@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use cidr::IpInet;
 use netlink_packet_core::{
     NetlinkDeserializable, NetlinkHeader, NetlinkMessage, NetlinkPayload, NetlinkSerializable,
-    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_REQUEST,
+    NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REQUEST,
 };
 use netlink_packet_route::{
     address::{AddressAttribute, AddressMessage},
@@ -70,8 +70,12 @@ fn send_netlink_req<T: NetlinkDeserializable + NetlinkSerializable + Debug>(
 
 fn send_netlink_req_and_wait_one_resp<T: NetlinkDeserializable + NetlinkSerializable + Debug>(
     req: T,
+    is_remove: bool,
 ) -> Result<(), Error> {
-    let socket = send_netlink_req(req, NLM_F_ACK | NLM_F_CREATE | NLM_F_REQUEST)?;
+    let socket = send_netlink_req(
+        req,
+        NLM_F_ACK | NLM_F_CREATE | NLM_F_REQUEST | if !is_remove { NLM_F_EXCL } else { 0 },
+    )?;
     let resp = socket.recv_from_full()?;
     let ret = NetlinkMessage::<T>::deserialize(&resp.0)
         .with_context(|| "Failed to deserialize netlink message")?;
@@ -184,9 +188,10 @@ impl NetlinkIfConfiger {
             .attributes
             .push(AddressAttribute::Address(std::net::IpAddr::V4(ip)));
 
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(RouteNetlinkMessage::DelAddress(
-            message,
-        ))
+        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
+            RouteNetlinkMessage::DelAddress(message),
+            true,
+        )
     }
 
     pub(crate) fn mtu_op<T: TryInto<Ioctl>>(
@@ -367,7 +372,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             .attributes
             .push(RouteAttribute::Destination(RouteAddress::Inet(address)));
 
-        send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::NewRoute(message))
+        send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::NewRoute(message), false)
     }
 
     async fn remove_ipv4_route(
@@ -383,7 +388,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             if other_route.destination == std::net::IpAddr::V4(address)
                 && other_route.prefix == cidr_prefix
             {
-                send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::DelRoute(msg))?;
+                send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::DelRoute(msg), true)?;
                 return Ok(());
             }
         }
@@ -424,9 +429,10 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             message.attributes.push(AddressAttribute::Broadcast(brd));
         };
 
-        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(RouteNetlinkMessage::NewAddress(
-            message,
-        ))
+        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
+            RouteNetlinkMessage::NewAddress(message),
+            false,
+        )
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
