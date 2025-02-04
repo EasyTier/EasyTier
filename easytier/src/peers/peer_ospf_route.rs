@@ -391,6 +391,13 @@ impl SyncedRouteInfo {
                 &route_info,
             )?;
 
+            let peer_id_raw = raw_route_info
+                .get_field_by_name("peer_id")
+                .unwrap()
+                .as_u32()
+                .unwrap();
+            assert_eq!(peer_id_raw, route_info.peer_id);
+
             // time between peers may not be synchronized, so update last_update to local now.
             // note only last_update with larger version will be updated to local saved peer info.
             route_info.last_update = Some(SystemTime::now().into());
@@ -1644,8 +1651,6 @@ impl RouteSessionManager {
     ) {
         let mut last_sync = Instant::now();
         loop {
-            let mut first_time = true;
-
             loop {
                 let Some(service_impl) = service_impl.clone().upgrade() else {
                     return;
@@ -1654,11 +1659,6 @@ impl RouteSessionManager {
                 let Some(peer_rpc) = peer_rpc.clone().upgrade() else {
                     return;
                 };
-
-                if first_time {
-                    first_time = false;
-                    service_impl.update_my_infos().await;
-                }
 
                 // if we are initiator, we should ensure the dst has the session.
                 let sync_as_initiator = if last_sync.elapsed().as_secs() > 10 {
@@ -2022,6 +2022,9 @@ impl PeerRoute {
         let Some(peer_rpc) = self.peer_rpc.upgrade() else {
             return;
         };
+
+        // make sure my_peer_id is in the peer_infos.
+        self.service_impl.update_my_infos().await;
 
         peer_rpc.rpc_server().registry().register(
             OspfRouteRpcServer::new(self.session_mgr.clone()),

@@ -562,6 +562,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             f.relay_network_whitelist = wl.join(" ");
         }
         f.disable_p2p = cli.disable_p2p;
+        f.disable_udp_hole_punching = cli.disable_udp_hole_punching;
         f.relay_all_peer_rpc = cli.relay_all_peer_rpc;
         if let Some(ipv6_listener) = cli.ipv6_listener.as_ref() {
             f.ipv6_listener = ipv6_listener
