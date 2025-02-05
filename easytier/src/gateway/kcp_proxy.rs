@@ -12,7 +12,12 @@ use kcp_sys::{
     packet_def::KcpPacket,
     stream::KcpStream,
 };
-use pnet::packet::{ip::IpNextHeaderProtocols, ipv4::Ipv4Packet};
+use pnet::packet::{
+    ip::IpNextHeaderProtocols,
+    ipv4::Ipv4Packet,
+    tcp::{TcpFlags, TcpPacket},
+    Packet as _,
+};
 use prost::Message;
 use tokio::{io::copy_bidirectional, task::JoinSet};
 
@@ -138,7 +143,6 @@ impl NatDstConnector for NatDstKcpConnector {
     }
 
     fn check_packet_from_peer_fast(&self, _cidr_set: &CidrSet, _global_ctx: &GlobalCtx) -> bool {
-        // if kcp is turned off, the filter will not be added to the pipeline
         true
     }
 
@@ -146,10 +150,11 @@ impl NatDstConnector for NatDstKcpConnector {
         &self,
         _cidr_set: &CidrSet,
         _global_ctx: &GlobalCtx,
-        _hdr: &PeerManagerHeader,
+        hdr: &PeerManagerHeader,
         _ipv4: &Ipv4Packet,
     ) -> bool {
-        true
+        // TODO: how to support net to net kcp proxy?
+        return hdr.from_peer_id == hdr.to_peer_id;
     }
 }
 
@@ -197,6 +202,19 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
             || ip_packet.get_source() != my_ipv4.address()
             || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
             || !self.check_dst_allow_kcp_input(&ip_packet.get_destination()).await
+        {
+            return false;
+        }
+
+        // if no connection is established, only allow SYN packet
+        let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
+        let is_syn = tcp_packet.get_flags() & TcpFlags::SYN != 0
+            && tcp_packet.get_flags() & TcpFlags::ACK == 0;
+        if !is_syn
+            && !self.0.is_tcp_proxy_connection(SocketAddr::new(
+                IpAddr::V4(my_ipv4.address()),
+                tcp_packet.get_source(),
+            ))
         {
             return false;
         }
