@@ -204,12 +204,15 @@ netlink-packet-core = { version = "0.7.0" }
 netlink-packet-utils = "0.5.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = [
-    "Win32_Networking_WinSock",
-    "Win32_NetworkManagement_IpHelper",
+windows = { version = "0.52.0", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_WindowsFirewall",
+    "Win32_System_Com",
+    "Win32_Networking",
+    "Win32_System_Ole",
+    "Win32_Networking_WinSock",
     "Win32_System_IO",
-] }
+]}
 encoding = "0.2"
 winreg = "0.52"
 windows-service = "0.7.0"
