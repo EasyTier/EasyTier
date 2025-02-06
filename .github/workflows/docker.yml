@@ -11,7 +11,7 @@ on:
       image_tag:
         description: 'Tag for this image build'
         type: string
-        default: 'v1.2.0'
+        default: 'v2.2.1'
         required: true
       mark_latest:
         description: 'Mark this image as latest'
