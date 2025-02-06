@@ -89,6 +89,7 @@ fn get_os_hostname() -> Result<String, String> {
 
 #[tauri::command]
 fn set_logging_level(level: String) -> Result<(), String> {
+    #[allow(static_mut_refs)]
     let sender = unsafe { LOGGER_LEVEL_SENDER.as_ref().unwrap() };
     sender.send(level).map_err(|e| e.to_string())?;
     Ok(())
@@ -188,7 +189,10 @@ pub fn run() {
             let Ok(Some(logger_reinit)) = utils::init_logger(config, true) else {
                 return Ok(());
             };
-            unsafe { LOGGER_LEVEL_SENDER.replace(logger_reinit) };
+            #[allow(static_mut_refs)]
+            unsafe {
+                LOGGER_LEVEL_SENDER.replace(logger_reinit)
+            };
 
             // for tray icon, menu need to be built in js
             #[cfg(not(target_os = "android"))]
