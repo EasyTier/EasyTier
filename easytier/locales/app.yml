@@ -143,7 +143,7 @@ core_clap:
   enable_kcp_proxy:
     en: "proxy tcp streams with kcp, improving the latency and throughput on the network with udp packet loss."
     zh-CN: "使用 KCP 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"
-  disable-kcp-input:
+  disable_kcp_input:
     en: "do not allow other nodes to use kcp to proxy tcp streams to this node. when a node with kcp proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 KCP 代理 TCP 流到此节点。开启 KCP 代理的节点访问此节点时，依然使用原始 TCP 连接。"
 
