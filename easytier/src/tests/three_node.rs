@@ -366,6 +366,7 @@ pub async fn subnet_proxy_three_node_test(
     #[values(true, false)] relay_by_public_server: bool,
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] disable_kcp_input: bool,
+    #[values(true, false)] dst_enable_kcp_proxy: bool,
 ) {
     let insts = init_three_node_ex(
         proto,
@@ -374,6 +375,7 @@ pub async fn subnet_proxy_three_node_test(
                 let mut flags = cfg.get_flags();
                 flags.no_tun = no_tun;
                 flags.disable_kcp_input = disable_kcp_input;
+                flags.enable_kcp_proxy = dst_enable_kcp_proxy;
                 cfg.set_flags(flags);
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap());
             }

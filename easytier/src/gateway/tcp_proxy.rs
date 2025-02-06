@@ -795,4 +795,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
     pub fn get_peer_manager(&self) -> &Arc<PeerManager> {
         &self.peer_manager
     }
+
+    pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {
+        self.syn_map.contains_key(&src) || self.addr_conn_map.contains_key(&src)
+    }
 }

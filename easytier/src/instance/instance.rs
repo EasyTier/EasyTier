@@ -382,13 +382,6 @@ impl Instance {
 
         self.run_rpc_server().await?;
 
-        // run after tun device created, so listener can bind to tun device, which may be required by win 10
-        self.ip_proxy = Some(IpProxy::new(
-            self.get_global_ctx(),
-            self.get_peer_manager(),
-        )?);
-        self.run_ip_proxy().await?;
-
         if self.global_ctx.get_flags().enable_kcp_proxy {
             let src_proxy = KcpProxySrc::new(self.get_peer_manager()).await;
             src_proxy.start().await;
@@ -400,6 +393,13 @@ impl Instance {
             dst_proxy.start().await;
             self.kcp_proxy_dst = Some(dst_proxy);
         }
+
+        // run after tun device created, so listener can bind to tun device, which may be required by win 10
+        self.ip_proxy = Some(IpProxy::new(
+            self.get_global_ctx(),
+            self.get_peer_manager(),
+        )?);
+        self.run_ip_proxy().await?;
 
         self.udp_hole_puncher.lock().await.run().await?;
 
