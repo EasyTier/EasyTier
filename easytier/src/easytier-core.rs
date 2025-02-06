@@ -323,7 +323,7 @@ struct Cli {
 
     #[arg(
         long,
-        help = t!("core_clap.enable_kcp_proxy").to_string(),
+        help = t!("core_clap.disable_kcp_input").to_string(),
         default_value = "false"
     )]
     disable_kcp_input: bool,
