@@ -377,16 +377,18 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
     async fn remove_ipv4_route(
         &self,
-        _name: &str,
+        name: &str,
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
         let routes = Self::list_routes()?;
+        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
 
         for msg in routes {
             let other_route: Route = msg.clone().into();
             if other_route.destination == std::net::IpAddr::V4(address)
                 && other_route.prefix == cidr_prefix
+                && other_route.ifindex == Some(ifidx)
             {
                 send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::DelRoute(msg), true)?;
                 return Ok(());
