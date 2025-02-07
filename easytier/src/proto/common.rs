@@ -101,7 +101,11 @@ impl From<cidr::Ipv4Inet> for Ipv4Inet {
 
 impl From<Ipv4Inet> for cidr::Ipv4Inet {
     fn from(value: Ipv4Inet) -> Self {
-        cidr::Ipv4Inet::new(value.address.unwrap().into(), value.network_length as u8).unwrap()
+        cidr::Ipv4Inet::new(
+            value.address.unwrap_or_default().into(),
+            value.network_length as u8,
+        )
+        .unwrap()
     }
 }
 
@@ -168,6 +172,9 @@ impl From<std::net::SocketAddr> for SocketAddr {
 
 impl From<SocketAddr> for std::net::SocketAddr {
     fn from(value: SocketAddr) -> Self {
+        if value.ip.is_none() {
+            return "0.0.0.0:0".parse().unwrap();
+        }
         match value.ip.unwrap() {
             socket_addr::Ip::Ipv4(ip) => std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
                 std::net::Ipv4Addr::from(ip),

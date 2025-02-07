@@ -1,13 +1,14 @@
 use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::Duration,
 };
 
 use anyhow::Context;
 use bytes::Bytes;
+use dashmap::DashMap;
 use kcp_sys::{
-    endpoint::{KcpEndpoint, KcpPacketReceiver},
+    endpoint::{ConnId, KcpEndpoint, KcpPacketReceiver},
     ffi_safe::KcpConfig,
     packet_def::KcpPacket,
     stream::KcpStream,
@@ -31,7 +32,14 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtx},
     },
     peers::{peer_manager::PeerManager, NicPacketFilter, PeerPacketFilter},
-    proto::peer_rpc::KcpConnData,
+    proto::{
+        cli::{
+            ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
+            TcpProxyEntryTransportType, TcpProxyRpc,
+        },
+        peer_rpc::KcpConnData,
+        rpc_types::{self, controller::BaseController},
+    },
     tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket},
 };
 
@@ -106,8 +114,9 @@ pub struct NatDstKcpConnector {
 impl NatDstConnector for NatDstKcpConnector {
     type DstStream = KcpStream;
 
-    async fn connect(&self, nat_dst: SocketAddr) -> Result<Self::DstStream> {
+    async fn connect(&self, src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
         let conn_data = KcpConnData {
+            src: Some(src.into()),
             dst: Some(nat_dst.into()),
         };
 
@@ -153,8 +162,11 @@ impl NatDstConnector for NatDstKcpConnector {
         hdr: &PeerManagerHeader,
         _ipv4: &Ipv4Packet,
     ) -> bool {
-        // TODO: how to support net to net kcp proxy?
         return hdr.from_peer_id == hdr.to_peer_id;
+    }
+
+    fn transport_type(&self) -> TcpProxyEntryTransportType {
+        TcpProxyEntryTransportType::Kcp
     }
 }
 
@@ -191,15 +203,10 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
             return true;
         }
 
-        let Some(my_ipv4) = self.0.get_global_ctx().get_ipv4() else {
-            return false;
-        };
-
         let data = zc_packet.payload();
         let ip_packet = Ipv4Packet::new(data).unwrap();
         if ip_packet.get_version() != 4
         // TODO: how to support net to net kcp proxy?
-            || ip_packet.get_source() != my_ipv4.address()
             || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
             || !self.check_dst_allow_kcp_input(&ip_packet.get_destination()).await
         {
@@ -212,7 +219,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
             && tcp_packet.get_flags() & TcpFlags::ACK == 0;
         if !is_syn
             && !self.0.is_tcp_proxy_connection(SocketAddr::new(
-                IpAddr::V4(my_ipv4.address()),
+                IpAddr::V4(ip_packet.get_source()),
                 tcp_packet.get_source(),
             ))
         {
@@ -272,11 +279,16 @@ impl KcpProxySrc {
             .await;
         self.tcp_proxy.0.start(false).await.unwrap();
     }
+
+    pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstKcpConnector>> {
+        self.tcp_proxy.0.clone()
+    }
 }
 
 pub struct KcpProxyDst {
     kcp_endpoint: Arc<KcpEndpoint>,
     peer_manager: Arc<PeerManager>,
+    proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
     tasks: JoinSet<()>,
 }
 
@@ -296,6 +308,7 @@ impl KcpProxyDst {
         Self {
             kcp_endpoint: Arc::new(kcp_endpoint),
             peer_manager,
+            proxy_entries: Arc::new(DashMap::new()),
             tasks,
         }
     }
@@ -304,6 +317,7 @@ impl KcpProxyDst {
     async fn handle_one_in_stream(
         mut kcp_stream: KcpStream,
         global_ctx: ArcGlobalCtx,
+        proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
     ) -> Result<()> {
         let mut conn_data = kcp_stream.conn_data().clone();
         let parsed_conn_data = KcpConnData::decode(&mut conn_data)
@@ -316,6 +330,21 @@ impl KcpProxyDst {
             ))?
             .into();
 
+        let conn_id = kcp_stream.conn_id();
+        proxy_entries.insert(
+            conn_id,
+            TcpProxyEntry {
+                src: parsed_conn_data.src,
+                dst: parsed_conn_data.dst,
+                start_time: chrono::Local::now().timestamp() as u64,
+                state: TcpProxyEntryState::ConnectingDst.into(),
+                transport_type: TcpProxyEntryTransportType::Kcp.into(),
+            },
+        );
+        crate::defer! {
+            proxy_entries.remove(&conn_id);
+        }
+
         if Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address())) {
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
@@ -324,7 +353,13 @@ impl KcpProxyDst {
 
         let _g = global_ctx.net_ns.guard();
         let connector = NatDstTcpConnector {};
-        let mut ret = connector.connect(dst_socket).await?;
+        let mut ret = connector
+            .connect("0.0.0.0:0".parse().unwrap(), dst_socket)
+            .await?;
+
+        if let Some(mut e) = proxy_entries.get_mut(&kcp_stream.conn_id()) {
+            e.state = TcpProxyEntryState::Connected.into();
+        }
 
         copy_bidirectional(&mut ret, &mut kcp_stream).await?;
         Ok(())
@@ -333,6 +368,7 @@ impl KcpProxyDst {
     async fn run_accept_task(&mut self) {
         let kcp_endpoint = self.kcp_endpoint.clone();
         let global_ctx = self.peer_manager.get_global_ctx().clone();
+        let proxy_entries = self.proxy_entries.clone();
         self.tasks.spawn(async move {
             while let Ok(conn) = kcp_endpoint.accept().await {
                 let stream = KcpStream::new(&kcp_endpoint, conn)
@@ -340,8 +376,9 @@ impl KcpProxyDst {
                     .unwrap();
 
                 let global_ctx = global_ctx.clone();
+                let proxy_entries = proxy_entries.clone();
                 tokio::spawn(async move {
-                    let _ = Self::handle_one_in_stream(stream, global_ctx).await;
+                    let _ = Self::handle_one_in_stream(stream, global_ctx, proxy_entries).await;
                 });
             }
         });
@@ -355,5 +392,32 @@ impl KcpProxyDst {
                 is_src: false,
             }))
             .await;
+    }
+}
+
+#[derive(Clone)]
+pub struct KcpProxyDstRpcService(Weak<DashMap<ConnId, TcpProxyEntry>>);
+
+impl KcpProxyDstRpcService {
+    pub fn new(kcp_proxy_dst: &KcpProxyDst) -> Self {
+        Self(Arc::downgrade(&kcp_proxy_dst.proxy_entries))
+    }
+}
+
+#[async_trait::async_trait]
+impl TcpProxyRpc for KcpProxyDstRpcService {
+    type Controller = BaseController;
+    async fn list_tcp_proxy_entry(
+        &self,
+        _: BaseController,
+        _request: ListTcpProxyEntryRequest, // Accept request of type HelloRequest
+    ) -> std::result::Result<ListTcpProxyEntryResponse, rpc_types::error::Error> {
+        let mut reply = ListTcpProxyEntryResponse::default();
+        if let Some(tcp_proxy) = self.0.upgrade() {
+            for item in tcp_proxy.iter() {
+                reply.entries.push(item.value().clone());
+            }
+        }
+        Ok(reply)
     }
 }

@@ -177,3 +177,39 @@ service VpnPortalRpc {
   rpc GetVpnPortalInfo(GetVpnPortalInfoRequest)
       returns (GetVpnPortalInfoResponse);
 }
+
+enum TcpProxyEntryTransportType {
+  TCP = 0;
+  KCP = 1;
+}
+
+enum TcpProxyEntryState {
+    Unknown = 0;
+    // receive syn packet but not start connecting to dst
+    SynReceived = 1;
+    // connecting to dst
+    ConnectingDst = 2;
+    // connected to dst
+    Connected = 3;
+    // connection closed
+    Closed = 4;
+}
+
+message TcpProxyEntry {
+  common.SocketAddr src = 1;
+  common.SocketAddr dst = 2;
+  uint64 start_time = 3;
+  TcpProxyEntryState state = 4;
+  TcpProxyEntryTransportType transport_type = 5;
+}
+
+message ListTcpProxyEntryRequest {}
+
+message ListTcpProxyEntryResponse {
+  repeated TcpProxyEntry entries = 1;
+}
+
+service TcpProxyRpc {
+  rpc ListTcpProxyEntry(ListTcpProxyEntryRequest)
+      returns (ListTcpProxyEntryResponse);
+}

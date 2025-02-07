@@ -17,8 +17,8 @@ use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
-use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxySrc};
-use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy};
+use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
+use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
@@ -380,8 +380,6 @@ impl Instance {
             self.check_dhcp_ip_conflict();
         }
 
-        self.run_rpc_server().await?;
-
         if self.global_ctx.get_flags().enable_kcp_proxy {
             let src_proxy = KcpProxySrc::new(self.get_peer_manager()).await;
             src_proxy.start().await;
@@ -418,6 +416,8 @@ impl Instance {
 
         #[cfg(feature = "socks5")]
         self.socks5_server.run().await?;
+
+        self.run_rpc_server().await?;
 
         Ok(())
     }
@@ -540,6 +540,26 @@ impl Instance {
             .register(PeerCenterRpcServer::new(peer_center.get_rpc_service()), "");
         s.registry()
             .register(VpnPortalRpcServer::new(vpn_portal_rpc), "");
+
+        if let Some(ip_proxy) = self.ip_proxy.as_ref() {
+            s.registry().register(
+                TcpProxyRpcServer::new(TcpProxyRpcService::new(ip_proxy.tcp_proxy.clone())),
+                "tcp",
+            );
+        }
+        if let Some(kcp_proxy) = self.kcp_proxy_src.as_ref() {
+            s.registry().register(
+                TcpProxyRpcServer::new(TcpProxyRpcService::new(kcp_proxy.get_tcp_proxy())),
+                "kcp_src",
+            );
+        }
+
+        if let Some(kcp_proxy) = self.kcp_proxy_dst.as_ref() {
+            s.registry().register(
+                TcpProxyRpcServer::new(KcpProxyDstRpcService::new(kcp_proxy)),
+                "kcp_dst",
+            );
+        }
 
         let _g = self.global_ctx.net_ns.guard();
         Ok(s.serve().await.with_context(|| "rpc server start failed")?)

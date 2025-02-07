@@ -207,5 +207,6 @@ message HandshakeRequest {
 }
 
 message KcpConnData {
+  common.SocketAddr src = 1;
   common.SocketAddr dst = 4;
 }
