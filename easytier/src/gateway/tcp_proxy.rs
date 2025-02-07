@@ -10,7 +10,7 @@ use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
@@ -24,6 +24,12 @@ use crate::common::join_joinset_background;
 
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
+use crate::proto::cli::{
+    ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
+    TcpProxyEntryTransportType, TcpProxyRpc,
+};
+use crate::proto::rpc_types;
+use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket};
 
 use super::CidrSet;
@@ -35,7 +41,7 @@ use super::tokio_smoltcp::{self, channel_device, Net, NetConfig};
 pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
     type DstStream: AsyncRead + AsyncWrite + Unpin + Send;
 
-    async fn connect(&self, dst: SocketAddr) -> Result<Self::DstStream>;
+    async fn connect(&self, src: SocketAddr, dst: SocketAddr) -> Result<Self::DstStream>;
     fn check_packet_from_peer_fast(&self, cidr_set: &CidrSet, global_ctx: &GlobalCtx) -> bool;
     fn check_packet_from_peer(
         &self,
@@ -44,6 +50,7 @@ pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
         hdr: &PeerManagerHeader,
         ipv4: &Ipv4Packet,
     ) -> bool;
+    fn transport_type(&self) -> TcpProxyEntryTransportType;
 }
 
 #[derive(Debug, Clone)]
@@ -53,7 +60,7 @@ pub struct NatDstTcpConnector;
 impl NatDstConnector for NatDstTcpConnector {
     type DstStream = TcpStream;
 
-    async fn connect(&self, nat_dst: SocketAddr) -> Result<Self::DstStream> {
+    async fn connect(&self, _src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
         let socket = TcpSocket::new_v4().unwrap();
         if let Err(e) = socket.set_nodelay(true) {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
@@ -90,19 +97,13 @@ impl NatDstConnector for NatDstTcpConnector {
 
         true
     }
+
+    fn transport_type(&self) -> TcpProxyEntryTransportType {
+        TcpProxyEntryTransportType::Tcp
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum NatDstEntryState {
-    // receive syn packet but not start connecting to dst
-    SynReceived,
-    // connecting to dst
-    ConnectingDst,
-    // connected to dst
-    Connected,
-    // connection closed
-    Closed,
-}
+type NatDstEntryState = TcpProxyEntryState;
 
 #[derive(Debug)]
 pub struct NatDstEntry {
@@ -110,6 +111,7 @@ pub struct NatDstEntry {
     src: SocketAddr,
     dst: SocketAddr,
     start_time: Instant,
+    start_time_local: chrono::DateTime<chrono::Local>,
     tasks: Mutex<JoinSet<()>>,
     state: AtomicCell<NatDstEntryState>,
 }
@@ -121,8 +123,19 @@ impl NatDstEntry {
             src,
             dst,
             start_time: Instant::now(),
+            start_time_local: chrono::Local::now(),
             tasks: Mutex::new(JoinSet::new()),
             state: AtomicCell::new(NatDstEntryState::SynReceived),
+        }
+    }
+
+    fn into_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
+        TcpProxyEntry {
+            src: Some(self.src.clone().into()),
+            dst: Some(self.dst.clone().into()),
+            start_time: self.start_time_local.timestamp() as u64,
+            state: self.state.load().into(),
+            transport_type: transport_type.into(),
         }
     }
 }
@@ -644,7 +657,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         };
 
         let _guard = global_ctx.net_ns.guard();
-        let Ok(dst_tcp_stream) = connector.connect(nat_dst).await else {
+        let Ok(dst_tcp_stream) = connector.connect(nat_entry.src, nat_dst).await else {
             tracing::error!("connect to dst failed: {:?}", nat_entry);
             nat_entry.state.store(NatDstEntryState::Closed);
             Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
@@ -801,5 +814,46 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
     pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {
         self.syn_map.contains_key(&src) || self.addr_conn_map.contains_key(&src)
+    }
+
+    pub fn list_proxy_entries(&self) -> Vec<TcpProxyEntry> {
+        let mut entries: Vec<TcpProxyEntry> = Vec::new();
+        let transport_type = self.connector.transport_type();
+        for entry in self.syn_map.iter() {
+            entries.push(entry.value().as_ref().into_pb(transport_type));
+        }
+        for entry in self.conn_map.iter() {
+            entries.push(entry.value().as_ref().into_pb(transport_type));
+        }
+        entries
+    }
+}
+
+#[derive(Clone)]
+pub struct TcpProxyRpcService<C: NatDstConnector> {
+    tcp_proxy: Weak<TcpProxy<C>>,
+}
+
+#[async_trait::async_trait]
+impl<C: NatDstConnector> TcpProxyRpc for TcpProxyRpcService<C> {
+    type Controller = BaseController;
+    async fn list_tcp_proxy_entry(
+        &self,
+        _: BaseController,
+        _request: ListTcpProxyEntryRequest, // Accept request of type HelloRequest
+    ) -> std::result::Result<ListTcpProxyEntryResponse, rpc_types::error::Error> {
+        let mut reply = ListTcpProxyEntryResponse::default();
+        if let Some(tcp_proxy) = self.tcp_proxy.upgrade() {
+            reply.entries = tcp_proxy.list_proxy_entries();
+        }
+        Ok(reply)
+    }
+}
+
+impl<C: NatDstConnector> TcpProxyRpcService<C> {
+    pub fn new(tcp_proxy: Arc<TcpProxy<C>>) -> Self {
+        Self {
+            tcp_proxy: Arc::downgrade(&tcp_proxy),
+        }
     }
 }

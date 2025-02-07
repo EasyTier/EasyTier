@@ -20,7 +20,8 @@ use easytier::{
             DumpRouteRequest, GetVpnPortalInfoRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListPeerRequest,
             ListPeerResponse, ListRouteRequest, ListRouteResponse, NodeInfo, PeerManageRpc,
-            PeerManageRpcClientFactory, ShowNodeInfoRequest, VpnPortalRpc,
+            PeerManageRpcClientFactory, ShowNodeInfoRequest, TcpProxyEntryState,
+            TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
             VpnPortalRpcClientFactory,
         },
         common::NatType,
@@ -58,6 +59,7 @@ enum SubCommand {
     VpnPortal,
     Node(NodeArgs),
     Service(ServiceArgs),
+    Proxy,
 }
 
 #[derive(Args, Debug)]
@@ -217,6 +219,19 @@ impl CommandHandler {
             .lock()
             .unwrap()
             .scoped_client::<VpnPortalRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get vpn portal client")?)
+    }
+
+    async fn get_tcp_proxy_client(
+        &self,
+        transport_type: &str,
+    ) -> Result<Box<dyn TcpProxyRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .unwrap()
+            .scoped_client::<TcpProxyRpcClientFactory<BaseController>>(transport_type.to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
     }
@@ -1087,6 +1102,55 @@ async fn main() -> Result<(), Error> {
                     service.stop()?;
                 }
             }
+        }
+        SubCommand::Proxy => {
+            let mut entries = vec![];
+            let client = handler.get_tcp_proxy_client("tcp").await?;
+            let ret = client
+                .list_tcp_proxy_entry(BaseController::default(), Default::default())
+                .await;
+            entries.extend(ret.unwrap_or_default().entries);
+
+            let client = handler.get_tcp_proxy_client("kcp_src").await?;
+            let ret = client
+                .list_tcp_proxy_entry(BaseController::default(), Default::default())
+                .await;
+            entries.extend(ret.unwrap_or_default().entries);
+
+            let client = handler.get_tcp_proxy_client("kcp_dst").await?;
+            let ret = client
+                .list_tcp_proxy_entry(BaseController::default(), Default::default())
+                .await;
+            entries.extend(ret.unwrap_or_default().entries);
+
+            #[derive(tabled::Tabled)]
+            struct TableItem {
+                src: String,
+                dst: String,
+                start_time: String,
+                state: String,
+                transport_type: String,
+            }
+
+            let table_rows = entries
+                .iter()
+                .map(|e| TableItem {
+                    src: SocketAddr::from(e.src.unwrap_or_default()).to_string(),
+                    dst: SocketAddr::from(e.dst.unwrap_or_default()).to_string(),
+                    start_time: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(
+                        (e.start_time * 1000) as i64,
+                    )
+                    .unwrap()
+                    .to_string(),
+                    state: format!("{:?}", TcpProxyEntryState::try_from(e.state).unwrap()),
+                    transport_type: format!(
+                        "{:?}",
+                        TcpProxyEntryTransportType::try_from(e.transport_type).unwrap()
+                    ),
+                })
+                .collect::<Vec<_>>();
+
+            println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
         }
     }
 

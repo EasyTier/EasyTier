@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use pnet::packet::{
     icmp::{self, echo_reply::MutableEchoReplyPacket, IcmpCode, IcmpTypes, MutableIcmpPacket},
     ip::IpNextHeaderProtocols,
@@ -212,7 +213,7 @@ impl IcmpProxy {
             Err(e) => {
                 tracing::warn!("create icmp socket failed: {:?}", e);
                 if !self.global_ctx.no_tun() {
-                    return Err(e);
+                    return Err(anyhow::anyhow!("create icmp socket failed: {:?}", e).into());
                 }
             }
         }
@@ -281,10 +282,15 @@ impl IcmpProxy {
         dst_ip: Ipv4Addr,
         icmp_packet: &icmp::echo_request::EchoRequestPacket,
     ) -> Result<(), Error> {
-        self.socket.lock().unwrap().as_ref().unwrap().send_to(
-            icmp_packet.packet(),
-            &SocketAddrV4::new(dst_ip.into(), 0).into(),
-        )?;
+        self.socket
+            .lock()
+            .unwrap()
+            .as_ref()
+            .with_context(|| "icmp socket not created")?
+            .send_to(
+                icmp_packet.packet(),
+                &SocketAddrV4::new(dst_ip.into(), 0).into(),
+            )?;
 
         Ok(())
     }

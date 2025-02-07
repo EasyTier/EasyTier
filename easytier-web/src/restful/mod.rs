@@ -6,11 +6,14 @@ mod users;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::http::StatusCode;
+use axum::routing::post;
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
+use easytier::common::config::ConfigLoader;
 use easytier::common::scoped_task::ScopedTask;
+use easytier::launcher::NetworkConfig;
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
@@ -46,6 +49,17 @@ struct ListSessionJsonResp(Vec<StorageToken>);
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GetSummaryJsonResp {
     device_count: u32,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct GenerateConfigRequest {
+    config: NetworkConfig,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct GenerateConfigResponse {
+    error: Option<String>,
+    toml_config: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -131,6 +145,24 @@ impl RestfulServer {
         .into())
     }
 
+    async fn handle_generate_config(
+        Json(req): Json<GenerateConfigRequest>,
+    ) -> Result<Json<GenerateConfigResponse>, HttpHandleError> {
+        let config = req.config.gen_config();
+        match config {
+            Ok(c) => Ok(GenerateConfigResponse {
+                error: None,
+                toml_config: Some(c.dump()),
+            }
+            .into()),
+            Err(e) => Ok(GenerateConfigResponse {
+                error: Some(format!("{:?}", e)),
+                toml_config: None,
+            }
+            .into()),
+        }
+    }
+
     pub async fn start(&mut self) -> Result<(), anyhow::Error> {
         let listener = TcpListener::bind(self.bind_addr).await?;
 
@@ -178,6 +210,10 @@ impl RestfulServer {
             .route_layer(login_required!(Backend))
             .merge(auth::router())
             .with_state(self.client_mgr.clone())
+            .route(
+                "/api/v1/generate-config",
+                post(Self::handle_generate_config),
+            )
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())

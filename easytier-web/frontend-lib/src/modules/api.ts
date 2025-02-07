@@ -1,6 +1,7 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { Md5 } from 'ts-md5'
 import { UUID } from './utils';
+import { NetworkConfig } from '../types/network';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -35,6 +36,15 @@ export interface Summary {
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<UUID>,
     disabled_inst_ids: Array<UUID>,
+}
+
+export interface GenerateConfigRequest {
+    config: NetworkConfig;
+}
+
+export interface GenerateConfigResponse {
+    toml_config?: string;
+    error?: string;
 }
 
 export class ApiClient {
@@ -192,6 +202,18 @@ export class ApiClient {
 
     public captcha_url() {
         return this.client.defaults.baseURL + '/auth/captcha';
+    }
+
+    public async generate_config(config: GenerateConfigRequest): Promise<GenerateConfigResponse> {
+        try {
+            const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', config);
+            return response;
+        } catch (error) {
+            if (error instanceof AxiosError) {
+                return { error: error.response?.data };
+            }
+            return { error: 'Unknown error: ' + error };
+        }
     }
 }
 

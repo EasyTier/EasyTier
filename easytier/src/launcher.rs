@@ -256,7 +256,7 @@ impl EasyTierLauncher {
                 fetch_node_info,
             ));
             if let Err(e) = ret {
-                error_msg.write().unwrap().replace(e.to_string());
+                error_msg.write().unwrap().replace(format!("{:?}", e));
             }
             instance_alive.store(false, std::sync::atomic::Ordering::Relaxed);
             notifier.notify_one();
