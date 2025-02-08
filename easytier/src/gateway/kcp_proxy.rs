@@ -206,9 +206,7 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
         let data = zc_packet.payload();
         let ip_packet = Ipv4Packet::new(data).unwrap();
         if ip_packet.get_version() != 4
-        // TODO: how to support net to net kcp proxy?
             || ip_packet.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
-            || !self.check_dst_allow_kcp_input(&ip_packet.get_destination()).await
         {
             return false;
         }
@@ -217,14 +215,32 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
         let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
         let is_syn = tcp_packet.get_flags() & TcpFlags::SYN != 0
             && tcp_packet.get_flags() & TcpFlags::ACK == 0;
-        if !is_syn
-            && !self.0.is_tcp_proxy_connection(SocketAddr::new(
+        if is_syn {
+            // only check dst feature flag when SYN packet
+            if !self
+                .check_dst_allow_kcp_input(&ip_packet.get_destination())
+                .await
+            {
+                return false;
+            }
+        } else {
+            // if not syn packet, only allow established connection
+            if !self.0.is_tcp_proxy_connection(SocketAddr::new(
                 IpAddr::V4(ip_packet.get_source()),
                 tcp_packet.get_source(),
-            ))
-        {
-            return false;
+            )) {
+                return false;
+            }
         }
+
+        if let Some(my_ipv4) = self.0.get_global_ctx().get_ipv4() {
+            // this is a net-to-net packet, only allow it when smoltcp is enabled
+            // because the syn-ack packet will not be through and handled by the tun device when
+            // the source ip is in the local network
+            if ip_packet.get_source() != my_ipv4.address() && !self.0.is_smoltcp_enabled() {
+                return false;
+            }
+        };
 
         zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.0.get_my_peer_id().into();
 

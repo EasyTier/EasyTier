@@ -100,8 +100,8 @@ core_clap:
     en: "do not create TUN device, can use subnet proxy to access node"
     zh-CN: "不创建TUN设备，可以使用子网代理访问节点"
   use_smoltcp:
-    en: "enable smoltcp stack for subnet proxy"
-    zh-CN: "为子网代理启用smoltcp堆栈"
+    en: "enable smoltcp stack for subnet proxy and kcp proxy"
+    zh-CN: "为子网代理和 KCP 代理启用smoltcp堆栈"
   manual_routes:
     en: "assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.: 192.168.0.0/16"
     zh-CN: "手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16"
