@@ -2,6 +2,7 @@ use parking_lot::Mutex;
 use smoltcp::{
     iface::{SocketHandle as InnerSocketHandle, SocketSet},
     socket::tcp,
+    time::Duration,
 };
 use std::{
     ops::{Deref, DerefMut},
@@ -53,6 +54,8 @@ impl SocketAlloctor {
         let tx_buffer = tcp::SocketBuffer::new(vec![0; self.buffer_size.tcp_tx_size]);
         let mut tcp = tcp::Socket::new(rx_buffer, tx_buffer);
         tcp.set_nagle_enabled(false);
+        tcp.set_keep_alive(Some(Duration::from_secs(10)));
+        tcp.set_timeout(Some(Duration::from_secs(60)));
 
         tcp
     }

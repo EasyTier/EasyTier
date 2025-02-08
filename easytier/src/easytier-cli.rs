@@ -51,14 +51,23 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum SubCommand {
+    #[command(about = "show peers info")]
     Peer(PeerArgs),
+    #[command(about = "manage connectors")]
     Connector(ConnectorArgs),
+    #[command(about = "do stun test")]
     Stun,
+    #[command(about = "show route info")]
     Route(RouteArgs),
+    #[command(about = "show global peers info")]
     PeerCenter,
+    #[command(about = "show vpn portal (wireguard) info")]
     VpnPortal,
+    #[command(about = "inspect self easytier-core status")]
     Node(NodeArgs),
+    #[command(about = "manage easytier-core as a system service")]
     Service(ServiceArgs),
+    #[command(about = "show tcp/kcp proxy status")]
     Proxy,
 }
 
@@ -116,7 +125,9 @@ enum ConnectorSubCommand {
 
 #[derive(Subcommand, Debug)]
 enum NodeSubCommand {
+    #[command(about = "show node info")]
     Info,
+    #[command(about = "show node config")]
     Config,
 }
 
@@ -137,10 +148,15 @@ struct ServiceArgs {
 
 #[derive(Subcommand, Debug)]
 enum ServiceSubCommand {
+    #[command(about = "register easytier-core as a system service")]
     Install(InstallArgs),
+    #[command(about = "unregister easytier-core system service")]
     Uninstall,
+    #[command(about = "check easytier-core system service status")]
     Status,
+    #[command(about = "start easytier-core system service")]
     Start,
+    #[command(about = "stop easytier-core system service")]
     Stop,
 }
 
@@ -155,13 +171,17 @@ struct InstallArgs {
     #[arg(long, default_value = "false")]
     disable_autostart: bool,
 
-    #[arg(long)]
+    #[arg(long, help = "path to easytier-core binary")]
     core_path: Option<PathBuf>,
 
     #[arg(long)]
     service_work_dir: Option<PathBuf>,
 
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        trailing_var_arg = true,
+        allow_hyphen_values = true,
+        help = "args to pass to easytier-core"
+    )]
     core_args: Option<Vec<OsString>>,
 }
 
@@ -662,12 +682,22 @@ impl Service {
             environment: None,
         };
         if self.status()? != ServiceStatus::NotInstalled {
-            return Err(anyhow::anyhow!("Service is already installed"));
+            return Err(anyhow::anyhow!(
+                "Service is already installed! Service Name: {}",
+                self.lable
+            ));
         }
 
         self.service_manager
-            .install(ctx)
-            .map_err(|e| anyhow::anyhow!("failed to install service: {}", e))
+            .install(ctx.clone())
+            .map_err(|e| anyhow::anyhow!("failed to install service: {:?}", e))?;
+
+        println!(
+            "Service installed successfully! Service Name: {}",
+            self.lable
+        );
+
+        Ok(())
     }
 
     pub fn uninstall(&self) -> Result<(), Error> {
@@ -784,7 +814,8 @@ impl Service {
         writeln!(unit_content, "Type=simple")?;
         writeln!(unit_content, "WorkingDirectory={work_dir}")?;
         writeln!(unit_content, "ExecStart={target_app} {args}")?;
-        writeln!(unit_content, "Restart=Always")?;
+        writeln!(unit_content, "Restart=always")?;
+        writeln!(unit_content, "RestartSec=1")?;
         writeln!(unit_content, "LimitNOFILE=infinity")?;
         writeln!(unit_content)?;
         writeln!(unit_content, "[Install]")?;
@@ -1141,6 +1172,8 @@ async fn main() -> Result<(), Error> {
                         (e.start_time * 1000) as i64,
                     )
                     .unwrap()
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
                     .to_string(),
                     state: format!("{:?}", TcpProxyEntryState::try_from(e.state).unwrap()),
                     transport_type: format!(
