@@ -160,17 +160,6 @@ let current_log_level = 'off'
 const setting_menu = ref()
 const setting_menu_items = ref([
   {
-    label: () => t('exchange_language'),
-    icon: 'pi pi-language',
-    command: async () => {
-      await I18nUtils.loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
-      await setTrayMenu([
-        await MenuItemExit(t('tray.exit')),
-        await MenuItemShow(t('tray.show')),
-      ])
-    },
-  },
-  {
     label: () => getAutoLaunchStatus() ? t('disable_auto_launch') : t('enable_auto_launch'),
     icon: 'pi pi-desktop',
     command: async () => {

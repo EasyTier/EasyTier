@@ -87,7 +87,7 @@ disable_p2p: 禁用 P2P
 disable_p2p_help: 禁用 P2P 模式，所有流量通过手动指定的服务器中转。
 
 bind_device: 仅使用物理网卡
-bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网建立连接。
+bind_device_help: 仅使用物理网卡，避免通过其他虚拟网建立连接。
 
 no_tun: 无 TUN 模式
 no_tun_help: 不使用 TUN 网卡，适合无管理员权限时使用。本节点仅允许被访问。访问其他节点需要使用 SOCK5

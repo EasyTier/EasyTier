@@ -29,6 +29,8 @@ function setI18nLanguage(lang: Locale) {
 }
 
 export async function loadLanguageAsync(lang: string): Promise<Locale> {
+  lang = 'cn';
+
   // If the same language
   if (i18n.global.locale.value === lang)
     return setI18nLanguage(lang)

@@ -1,7 +1,7 @@
 [package]
-name = "easytier-gui"
+name = "安防网控"
 version = "2.2.1"
-description = "EasyTier GUI"
+description = "安防网控"
 authors = ["you"]
 edition = "2021"
 

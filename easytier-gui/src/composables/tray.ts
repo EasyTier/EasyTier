@@ -21,8 +21,8 @@ export async function useTray(init: boolean = false) {
     tray = await TrayIcon.getById(DEFAULT_TRAY_NAME)
     if (!tray) {
       tray = await TrayIcon.new({
-        tooltip: `EasyTier\n${pkg.version}`,
-        title: `EasyTier\n${pkg.version}`,
+        tooltip: `安防网控\n${pkg.version}`,
+        title: `安防网控\n${pkg.version}`,
         id: DEFAULT_TRAY_NAME,
         menu: await Menu.new({
           id: 'main',
@@ -40,7 +40,7 @@ export async function useTray(init: boolean = false) {
   }
 
   if (init) {
-    tray.setTooltip(`EasyTier\n${pkg.version}`)
+    tray.setTooltip(`安防网控\n${pkg.version}`)
     tray.setMenuOnLeftClick(false)
     tray.setMenu(await Menu.new({
       id: 'main',
@@ -99,7 +99,7 @@ export async function setTrayTooltip(tooltip: string) {
     const tray = await useTray()
     if (!tray)
       return
-    tray.setTooltip(`EasyTier\n${pkg.version}\n${tooltip}`)
-    tray.setTitle(`EasyTier\n${pkg.version}\n${tooltip}`)
+    tray.setTooltip(`安防网控\n${pkg.version}\n${tooltip}`)
+    tray.setTitle(`安防网控\n${pkg.version}\n${tooltip}`)
   }
 }

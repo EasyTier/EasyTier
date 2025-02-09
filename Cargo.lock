@@ -1976,33 +1976,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "easytier-gui"
-version = "2.2.1"
-dependencies = [
- "anyhow",
- "chrono",
- "dashmap",
- "dunce",
- "easytier",
- "gethostname 0.5.0",
- "once_cell",
- "privilege",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-autostart",
- "tauri-plugin-clipboard-manager",
- "tauri-plugin-os",
- "tauri-plugin-positioner",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tauri-plugin-vpnservice",
- "tokio",
-]
-
-[[package]]
 name = "easytier-rpc-build"
 version = "0.1.0"
 dependencies = [
@@ -9774,4 +9747,31 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.87",
+]
+
+[[package]]
+name = "安防网控"
+version = "2.2.1"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "dashmap",
+ "dunce",
+ "easytier",
+ "gethostname 0.5.0",
+ "once_cell",
+ "privilege",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-autostart",
+ "tauri-plugin-clipboard-manager",
+ "tauri-plugin-os",
+ "tauri-plugin-positioner",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-vpnservice",
+ "tokio",
 ]
