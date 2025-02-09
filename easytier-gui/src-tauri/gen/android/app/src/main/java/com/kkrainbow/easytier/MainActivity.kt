@@ -1,3 +1,3 @@
-package com.kkrainbow.easytier
+package com.kkrainbow.anfang
 
 class MainActivity : TauriActivity()

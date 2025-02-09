@@ -58,9 +58,7 @@ function searchUrlSuggestions(e: { query: string }): string[] {
 const publicServerSuggestions = ref([''])
 
 function searchPresetPublicServers(e: { query: string }) {
-  const presetPublicServers = [
-    'tcp://public.easytier.top:11010',
-  ]
+  const presetPublicServers: string[] = [];
 
   const query = e.query
   // if query is sub string of presetPublicServers, add to suggestions

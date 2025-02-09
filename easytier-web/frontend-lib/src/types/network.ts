@@ -51,12 +51,12 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     dhcp: true,
     virtual_ipv4: '',
     network_length: 24,
-    network_name: 'easytier',
+    network_name: 'anfang',
     network_secret: '',
 
     networking_method: NetworkingMethod.PublicServer,
 
-    public_server_url: 'tcp://public.easytier.top:11010',
+    public_server_url: '',
     peer_urls: [],
 
     proxy_cidrs: [],

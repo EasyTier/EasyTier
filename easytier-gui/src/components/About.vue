@@ -13,7 +13,7 @@ onMounted(async () => {
 <template>
   <Card>
     <template #title>
-      Easytier - {{ t('about.version') }}: {{ etVersion }}
+      安防网控 - {{ t('about.version') }}: {{ etVersion }}
     </template>
     <template #content>
       <p class="mb-1">
@@ -23,5 +23,4 @@ onMounted(async () => {
   </Card>
 </template>
 
-<style scoped lang="postcss">
-</style>
+<style scoped lang="postcss"></style>

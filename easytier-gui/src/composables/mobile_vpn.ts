@@ -53,7 +53,7 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
   const start_ret = await start_vpn({
     ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
-    disallowedApplications: ['com.kkrainbow.easytier'],
+    disallowedApplications: ['com.kkrainbow.anfang'],
     mtu: 1300,
   })
   if (start_ret?.errorMsg?.length) {
