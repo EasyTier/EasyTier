@@ -12,7 +12,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
+use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
@@ -153,6 +153,20 @@ impl ProxyTcpStream {
             #[cfg(feature = "smoltcp")]
             Self::SmolTcpStream(_stream) => {
                 tracing::warn!("smol tcp stream set_nodelay not implemented");
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        match self {
+            Self::KernelTcpStream(stream) => {
+                stream.shutdown().await?;
+                Ok(())
+            }
+            #[cfg(feature = "smoltcp")]
+            Self::SmolTcpStream(stream) => {
+                stream.shutdown().await?;
                 Ok(())
             }
         }
@@ -692,7 +706,15 @@ impl<C: NatDstConnector> TcpProxy<C> {
             let ret = src_tcp_stream.copy_bidirectional(&mut dst_tcp_stream).await;
             tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "nat tcp connection closed");
             nat_entry_clone.state.store(NatDstEntryState::Closed);
+
+            let ret = src_tcp_stream.shutdown().await;
+            tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "src tcp stream shutdown");
+
+            let ret = dst_tcp_stream.shutdown().await;
+            tracing::info!(nat_entry = ?nat_entry_clone, ret = ?ret, "dst tcp stream shutdown");
+
             drop(src_tcp_stream);
+            drop(dst_tcp_stream);
 
             // sleep later so the fin packet can be processed
             tokio::time::sleep(Duration::from_secs(10)).await;
