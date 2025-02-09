@@ -8,13 +8,13 @@ import { exit } from '@tauri-apps/plugin-process'
 import { open } from '@tauri-apps/plugin-shell'
 import TieredMenu from 'primevue/tieredmenu'
 import { useToast } from 'primevue/usetoast'
-import { NetworkTypes, Config, Status, Utils, I18nUtils } from 'easytier-frontend-lib'
+import { NetworkTypes, Config, Status, Utils } from 'easytier-frontend-lib'
 
 import { isAutostart, setLoggingLevel } from '~/composables/network'
 import { useTray } from '~/composables/tray'
 import { getAutoLaunchStatusAsync as getAutoLaunchStatus, loadAutoLaunchStatusAsync } from '~/modules/auto_launch'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const visible = ref(false)
 const aboutVisible = ref(false)
 const tomlConfig = ref('')
