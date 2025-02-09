@@ -520,12 +520,13 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             }));
             wait_for_condition(
                 || async {
-                    insts[0]
+                    insts[2]
                         .get_peer_manager()
-                        .list_routes()
+                        .get_peer_map()
+                        .list_peers_with_conn()
                         .await
                         .iter()
-                        .find(|r| r.peer_id == inst4.peer_id())
+                        .find(|r| **r == inst4.peer_id())
                         .is_none()
                 },
                 // 0 down, assume last packet is recv in -0.01
@@ -534,6 +535,21 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                 Duration::from_secs(11),
             )
             .await;
+
+            wait_for_condition(
+                || async {
+                    insts[0]
+                        .get_peer_manager()
+                        .list_routes()
+                        .await
+                        .iter()
+                        .find(|r| r.peer_id == inst4.peer_id())
+                        .is_none()
+                },
+                Duration::from_secs(7),
+            )
+            .await;
+
             set_link_status("net_d", true);
         }
     });
