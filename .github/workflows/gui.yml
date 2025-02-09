@@ -35,23 +35,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-22.04
-            GUI_TARGET: aarch64-unknown-linux-gnu
-            ARTIFACT_NAME: linux-aarch64
-          - TARGET: x86_64-unknown-linux-musl
-            OS: ubuntu-22.04
-            GUI_TARGET: x86_64-unknown-linux-gnu
-            ARTIFACT_NAME: linux-x86_64
+          # - TARGET: aarch64-unknown-linux-musl
+          #   OS: ubuntu-22.04
+          #   GUI_TARGET: aarch64-unknown-linux-gnu
+          #   ARTIFACT_NAME: linux-aarch64
+          # - TARGET: x86_64-unknown-linux-musl
+          #   OS: ubuntu-22.04
+          #   GUI_TARGET: x86_64-unknown-linux-gnu
+          #   ARTIFACT_NAME: linux-x86_64
 
-          - TARGET: x86_64-apple-darwin
-            OS: macos-latest
-            GUI_TARGET: x86_64-apple-darwin
-            ARTIFACT_NAME: macos-x86_64
-          - TARGET: aarch64-apple-darwin
-            OS: macos-latest
-            GUI_TARGET: aarch64-apple-darwin
-            ARTIFACT_NAME: macos-aarch64
+          # - TARGET: x86_64-apple-darwin
+          #   OS: macos-latest
+          #   GUI_TARGET: x86_64-apple-darwin
+          #   ARTIFACT_NAME: macos-x86_64
+          # - TARGET: aarch64-apple-darwin
+          #   OS: macos-latest
+          #   GUI_TARGET: aarch64-apple-darwin
+          #   ARTIFACT_NAME: macos-aarch64
 
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest

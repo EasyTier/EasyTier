@@ -42,12 +42,12 @@ jobs:
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-x86_64
-          - TARGET: mips-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-mips
-          - TARGET: mipsel-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-mipsel
+          # - TARGET: mips-unknown-linux-musl
+          #   OS: ubuntu-22.04
+          #   ARTIFACT_NAME: linux-mips
+          # - TARGET: mipsel-unknown-linux-musl
+          #   OS: ubuntu-22.04
+          #   ARTIFACT_NAME: linux-mipsel
           - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-armv7hf
@@ -61,25 +61,25 @@ jobs:
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-arm
 
-          - TARGET: x86_64-apple-darwin
-            OS: macos-latest
-            ARTIFACT_NAME: macos-x86_64
-          - TARGET: aarch64-apple-darwin
-            OS: macos-latest
-            ARTIFACT_NAME: macos-aarch64
+          # - TARGET: x86_64-apple-darwin
+          #   OS: macos-latest
+          #   ARTIFACT_NAME: macos-x86_64
+          # - TARGET: aarch64-apple-darwin
+          #   OS: macos-latest
+          #   ARTIFACT_NAME: macos-aarch64
 
-          - TARGET: x86_64-pc-windows-msvc
-            OS: windows-latest
-            ARTIFACT_NAME: windows-x86_64
+          # - TARGET: x86_64-pc-windows-msvc
+          #   OS: windows-latest
+          #   ARTIFACT_NAME: windows-x86_64
 
-          - TARGET: aarch64-pc-windows-msvc
-            OS: windows-latest
-            ARTIFACT_NAME: windows-arm64
+          # - TARGET: aarch64-pc-windows-msvc
+          #   OS: windows-latest
+          #   ARTIFACT_NAME: windows-arm64
 
-          - TARGET: x86_64-unknown-freebsd
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: freebsd-13.2-x86_64
-            BSD_VERSION: 13.2
+          # - TARGET: x86_64-unknown-freebsd
+          #   OS: ubuntu-22.04
+          #   ARTIFACT_NAME: freebsd-13.2-x86_64
+          #   BSD_VERSION: 13.2
 
     runs-on: ${{ matrix.OS }}
     env:
