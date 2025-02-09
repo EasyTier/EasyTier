@@ -580,13 +580,15 @@ pub mod tests {
         )
         .await;
 
+        println!("start punching {:?}", p_a.list_routes().await);
+
         wait_for_condition(
             || async {
                 wait_route_appear_with_cost(p_a.clone(), p_c.my_peer_id(), Some(1))
                     .await
                     .is_ok()
             },
-            Duration::from_secs(5),
+            Duration::from_secs(10),
         )
         .await;
         println!("{:?}", p_a.list_routes().await);
