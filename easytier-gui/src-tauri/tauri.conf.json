@@ -16,14 +16,14 @@
     ],
     "createUpdaterArtifacts": false
   },
-  "productName": "easytier-gui",
+  "productName": "安防网控",
   "version": "2.2.1",
-  "identifier": "com.kkrainbow.easytier",
+  "identifier": "com.kkrainbow.anfang",
   "plugins": {},
   "app": {
     "windows": [
       {
-        "title": "easytier-gui",
+        "title": "安防网控",
         "width": 800,
         "height": 600
       }

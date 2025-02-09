@@ -8,6 +8,9 @@
         "windows": {
             "webviewInstallMode": {
                 "type": "embedBootstrapper"
+            },
+            "wix": {
+                "language": "zh-CN"
             }
         }
     }
