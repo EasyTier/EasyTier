@@ -39,6 +39,12 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: login github container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Download artifact
         id: download-artifact
         uses: dawidd6/action-download-artifact@v6
@@ -58,4 +64,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           file: .github/workflows/Dockerfile
-          tags: easytier/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
+          tags: |
+            easytier/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
+            ghcr.io/${{ github.actor }}/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},

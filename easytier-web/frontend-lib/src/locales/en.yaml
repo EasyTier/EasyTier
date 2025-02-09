@@ -68,6 +68,29 @@ upload_bytes: Upload
 download_bytes: Download
 loss_rate: Loss Rate
 
+flags_switch: Feature Switch
+
+latency_first: Enable Latency-First Mode
+latency_first_help: Ignore hop count and select the path with the lowest total latency
+
+use_smoltcp: Use User-Space Protocol Stack
+use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating system firewalls blocking subnet or KCP proxy functionality.
+
+enable_kcp_proxy: Enable KCP Proxy
+enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
+
+disable_kcp_input: Disable KCP Input
+disable_kcp_input_help: Disable inbound KCP traffic, while nodes with KCP proxy enabled continue to connect using TCP.
+
+disable_p2p: Disable P2P
+disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
+
+bind_device: Bind to Physical Device Only
+bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
+
+no_tun: No TUN Mode
+no_tun_help: Do not use a TUN interface, suitable for environments without administrator privileges. This node is only accessible; accessing other nodes requires SOCKS5.
+
 status:
   version: Version
   local: Local
