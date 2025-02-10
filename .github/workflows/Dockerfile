@@ -18,7 +18,7 @@ RUN mkdir -p /tmp/output; \
 
 FROM alpine:latest
 
-RUN apk add --no-cache tzdata
+RUN apk add --no-cache tzdata tini
 WORKDIR /app
 COPY --from=builder --chmod=755 /tmp/output/* /usr/local/bin
 
@@ -36,4 +36,4 @@ EXPOSE 11011/tcp
 # wss
 EXPOSE 11012/tcp
 
-ENTRYPOINT ["easytier-core"]
+ENTRYPOINT ["/sbin/tini", "--", "easytier-core"]
