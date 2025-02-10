@@ -66,4 +66,4 @@ jobs:
           file: .github/workflows/Dockerfile
           tags: |
             easytier/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
-            ghcr.io/${{ github.actor }}/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
+            ghcr.io/easytier/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
