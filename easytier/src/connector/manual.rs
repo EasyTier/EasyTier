@@ -240,38 +240,38 @@ impl ManualConnectorManager {
                                                     let  connector_http = TcpTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
-                                                    let (_, connector) = data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
                                                 if "udp"== query{
                                                     let  connector_http = UdpTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
-                                                    let (_, connector) = data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
                                                 if "ws"== query{
                                                     let  connector_http =  crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
-                                                    let (_, connector) = data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
                                                 if "wss"== query{
                                                     let  connector_http = crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
-                                                    let (_, connector) = data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
                                             },
                                             Err(e) => {
-                                                tracing::error!("解析新 URL 失败: {}", e);
+                                                tracing::error!("failed to resolve the new url: {}", e);
                                             }
                                         }
                                     },
                                     Err(e) => {
-                                        tracing::error!("获取重定向信息失败: {}", e);
+                                        tracing::error!("failed to get redirect information: {}", e);
                                     }
                                 }
                             } else {
@@ -279,7 +279,7 @@ impl ManualConnectorManager {
                                 dead_url_new = v.to_string();
                             }
                         } else {
-                            tracing::info!("没有找到对应的 value for dead_url: {}", dead_url_new);
+                            tracing::info!("no correspondence found value for dead_url: {}", dead_url_new);
                         }
 
                         let (_, connector) = data.connectors.remove(&dead_url_new).unwrap();
@@ -486,40 +486,41 @@ impl ManualConnectorManager {
             // .redirect(reqwest::redirect::Policy::limited(3))
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .map_err(|e| Error::InvalidUrl(format!("构建 HTTP 客户端失败: {}", e)))?;
+            .map_err(|e| Error::InvalidUrl(format!("building an http client failed: {}", e)))?;
 
         // 发送 HTTP 请求
         let response = client
             .get(original_url)
             .send()
             .await
-            .map_err(|e| Error::InvalidUrl(format!("发送 HTTP 请求失败: {}", e)))?;
+            .map_err(|e| Error::InvalidUrl(format!("sending http request failed: {}", e)))?;
 
         // 获取重定向的 Location 头
         if let Some(location) = response.headers().get("Location") {
             let new_url = location
                 .to_str()
-                .map_err(|e| Error::InvalidUrl(format!("转换 Location 头失败: {}", e)))?;
+                .map_err(|e| Error::InvalidUrl(format!("transformed Location failed: {}", e)))?;
             let parsed_url = Url::parse(new_url)
-                .map_err(|e| Error::InvalidUrl(format!("解析重定向 URL 失败: {}", e)))?;
+                .map_err(|e| Error::InvalidUrl(format!("resolve redirects url failed: {}", e)))?;
 
             // 提取主机和端口
             let host = parsed_url
                 .host_str()
-                .ok_or_else(|| Error::InvalidUrl("缺少主机".to_string()))?
+                .ok_or_else(|| Error::InvalidUrl("lack of hosts".to_string()))?
                 .to_string();
             let port = parsed_url
                 .port_or_known_default()
-                .ok_or_else(|| Error::InvalidUrl("缺少端口".to_string()))?;
+                .ok_or_else(|| Error::InvalidUrl("missing ports".to_string()))?;
             // 获取查询字符串，如果查询为空，则使用默认值 'type=tcp'
             let query = parsed_url.query()
                 .map(|q| q.to_string())  // 如果有查询字符串，返回其字符串形式
                 .unwrap_or_else(|| "type=tcp".to_string());  // 如果没有查询字符串，使用默认值
-            let parsed_url = Url::parse(&format!("http://localhost?{}", query)).map_err(|e| Error::InvalidUrl(format!("解析 query 字段失败: {}", e)))?;
-            let query_type = parsed_url.query_pairs().find(|(key, _)| key == "type").map(|(_, value)| value.to_string()).unwrap_or_else(|| "unknown".to_string()).replace('/', "");
+            let parsed_url = Url::parse(&format!("http://localhost?{}", query)).map_err(|e| Error::InvalidUrl(format!("parsing query failed: {}", e)))?;
+            let query_type = parsed_url.query_pairs().find(|(key, _)| key == "type").map(|(_, value)| value.to_string()).unwrap_or_else(|| "unknown".to_string()).replace('/', "").to_lowercase();
+
             Ok((host, port, query_type))
         } else {
-            Err(Error::InvalidUrl("未找到重定向地址".to_string()))
+            Err(Error::InvalidUrl("no redirect address found".to_string()))
         }
     }
 }
