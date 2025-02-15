@@ -15,8 +15,9 @@ use std::{
     net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     sync::Arc,
 };
+use std::time::Duration;
+use reqwest::Client;
 use url::Url;
-use crate::connector::manual::ManualConnectorManager;
 
 pub mod direct;
 pub mod manual;
@@ -151,7 +152,7 @@ pub async fn create_connector_by_url(
         "http" => {
             // 获取重定向后的 IP 与端口
             println!("handle http url：{}",url.clone().to_string());
-            let (ip, port, query_type) = ManualConnectorManager::get_redirected_url(url.as_str()).await?;
+            let (ip, port, query_type) = get_redirected_url(url.as_str()).await?;
             println!("redirect http url：ip：{}，port：{}，query_type:{}", ip.clone().to_string(), port.clone().to_string(), query_type.clone().to_string());
             // 组装新的 TCP URL
             // todo 这里可以递归调用，但是不会写。
@@ -242,6 +243,51 @@ pub async fn create_connector_by_url(
         }
         _ => {
             return Err(Error::InvalidUrl(url.into()));
+        }
+    }
+    
+    async fn get_redirected_url(original_url: &str) -> Result<(String, u16, String), Error> {
+        // 创建 HTTP 客户端，设置超时与重定向策略
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            // .redirect(reqwest::redirect::Policy::limited(3))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| Error::InvalidUrl(format!("构建 HTTP 客户端失败: {}", e)))?;
+
+        // 发送 HTTP 请求
+        let response = client
+            .get(original_url)
+            .send()
+            .await
+            .map_err(|e| Error::InvalidUrl(format!("发送 HTTP 请求失败: {}", e)))?;
+
+        // 获取重定向的 Location 头
+        if let Some(location) = response.headers().get("Location") {
+            let new_url = location
+                .to_str()
+                .map_err(|e| Error::InvalidUrl(format!("转换 Location 头失败: {}", e)))?;
+            let parsed_url = Url::parse(new_url)
+                .map_err(|e| Error::InvalidUrl(format!("解析重定向 URL 失败: {}", e)))?;
+
+            // 提取主机和端口
+            let host = parsed_url
+                .host_str()
+                .ok_or_else(|| Error::InvalidUrl("缺少主机".to_string()))?
+                .to_string();
+            let port = parsed_url
+                .port_or_known_default()
+                .ok_or_else(|| Error::InvalidUrl("缺少端口".to_string()))?;
+            // 获取查询字符串，如果查询为空，则使用默认值 'type=tcp'
+            let query = parsed_url.query()
+                .map(|q| q.to_string())  // 如果有查询字符串，返回其字符串形式
+                .unwrap_or_else(|| "type=tcp".to_string());  // 如果没有查询字符串，使用默认值
+            let parsed_url = Url::parse(&format!("http://localhost?{}", query)).map_err(|e| Error::InvalidUrl(format!("解析 query 字段失败: {}", e)))?;
+            let query_type = parsed_url.query_pairs().find(|(key, _)| key == "type").map(|(_, value)| value.to_string()).unwrap_or_else(|| "unknown".to_string()).replace('/', "");
+
+            Ok((host, port, query_type))
+        } else {
+            Err(Error::InvalidUrl("未找到重定向地址".to_string()))
         }
     }
 }
