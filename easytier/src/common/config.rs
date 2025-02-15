@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-
+use std::collections::HashMap;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
@@ -98,6 +98,9 @@ pub trait ConfigLoader: Send + Sync {
     fn set_socks5_portal(&self, addr: Option<url::Url>);
 
     fn dump(&self) -> String;
+
+    fn get_remote_url_original(&self) -> HashMap<String, String>;
+    fn set_remote_url_original(& self, new_map: HashMap<String, String>);
 }
 
 pub type NetworkSecretDigest = [u8; 32];
@@ -211,6 +214,10 @@ struct Config {
 
     #[serde(skip)]
     flags_struct: Option<Flags>,
+
+    #[serde(skip)]
+    remote_url_original: HashMap<String, String>,
+
 }
 
 #[derive(Debug, Clone)]
@@ -573,6 +580,15 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_socks5_portal(&self, addr: Option<url::Url>) {
         self.config.lock().unwrap().socks5_proxy = addr;
+    }
+
+    fn get_remote_url_original(&self) -> HashMap<String, String> {
+        self.config.lock().unwrap().remote_url_original.clone()
+
+    }
+
+    fn set_remote_url_original(&self, new_map: HashMap<String, String>) {
+        self.config.lock().unwrap().remote_url_original = new_map;
     }
 }
 
