@@ -28,6 +28,7 @@ name = "easytier"
 path = "src/lib.rs"
 
 [dependencies]
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
 git-version = "0.3.9"
 
 tracing = { version = "0.1", features = ["log"] }
@@ -182,8 +183,6 @@ sys-locale = "0.3"
 ringbuf = "0.4.5"
 async-ringbuf = "0.3.1"
 
-reqwest = { version = "0.11", features = ["blocking","json", "stream", "rustls-tls"] }  # 或 "native-tls"
-
 service-manager = {git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main"}
 
 async-compression = { version = "0.4.17", default-features = false, features = ["zstd", "tokio"] }
@@ -195,7 +194,6 @@ prost-reflect = { version = "0.14.5", features = [
     "derive",
     "text-format"
 ] }
-lazy_static = "1.5.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
@@ -255,7 +253,7 @@ full = [
     "tun",
     "socks5",
 ]
-mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
+mips = ["aes-gcm", "mimalloc", "websocket", "wireguard", "tun", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc-rust"]
