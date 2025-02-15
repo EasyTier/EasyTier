@@ -160,7 +160,7 @@ pub async fn create_connector_by_url(
                     // 处理 tcp 的逻辑
                     let new_url_str = format!("tcp://{}:{}", ip, port);
                     let new_url = Url::parse(&new_url_str).map_err(|e| Error::InvalidUrl(format!("failed to resolve the new url: {}", e)))?;
-                    println!("handle tcp type urls：{} to：{}",url.clone().to_string(), new_url.clone().to_string());
+                    println!("{}: 发现tcp协议服务器地址：{}重定向到{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), url.clone().to_string(), new_url.clone().to_string());
                     let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&new_url, "tcp")?;
                     remote_url_original.insert(new_url.clone().to_string(), url.clone().to_string());
                     global_ctx.config.set_remote_url_original(remote_url_original);
@@ -180,7 +180,7 @@ pub async fn create_connector_by_url(
                     // 处理 udp 的逻辑
                     let new_url_str = format!("udp://{}:{}", ip, port);
                     let new_url = Url::parse(&new_url_str).map_err(|e| Error::InvalidUrl(format!("failed to resolve the new url: {}", e)))?;
-                    println!("handle udp type urls：{} to：{}",url.clone().to_string(), new_url.clone().to_string());
+                    println!("{}: 发现udp协议服务器地址：{}重定向到{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), url.clone().to_string(), new_url.clone().to_string());
                     remote_url_original.insert(new_url.clone().to_string(), url.clone().to_string());
                     global_ctx.config.set_remote_url_original(remote_url_original);
                     let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&new_url, "udp")?;
@@ -198,7 +198,7 @@ pub async fn create_connector_by_url(
                 "ws" => {
                     let new_url_str = format!("ws://{}:{}", ip, port);
                     let new_url = Url::parse(&new_url_str).map_err(|e| Error::InvalidUrl(format!("解析新 URL 失败: {}", e)))?;
-                    println!("handle ws type urls：{} to：{}",url.clone().to_string(), new_url.clone().to_string());
+                    println!("{}: 发现ws协议服务器地址：{}重定向到{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), url.clone().to_string(), new_url.clone().to_string());
                     remote_url_original.insert(new_url.clone().to_string(), url.clone().to_string());
                     global_ctx.config.set_remote_url_original(remote_url_original);
                     use crate::tunnel::{FromUrl, IpVersion};
@@ -217,7 +217,7 @@ pub async fn create_connector_by_url(
                 "wss" => {
                     let new_url_str = format!("wss://{}:{}", ip, port);
                     let new_url = Url::parse(&new_url_str).map_err(|e| Error::InvalidUrl(format!("failed to resolve the new url: {}", e)))?;
-                    println!("handle wss type urls：{} to：{}",url.clone().to_string(), new_url.clone().to_string());
+                    println!("{}: 发现wss协议服务器地址：{}重定向到{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), url.clone().to_string(), new_url.clone().to_string());
                     remote_url_original.insert(new_url.clone().to_string(), url.clone().to_string());
                     global_ctx.config.set_remote_url_original(remote_url_original);
                     use crate::tunnel::{FromUrl, IpVersion};
@@ -235,7 +235,7 @@ pub async fn create_connector_by_url(
                 },
                 _ => {
                     // 默认情况，处理未知类型
-                    println!("unknown 302 type：{}", query_type);
+                    println!("{}: 未知类型的服务器地址：{} 请在重定向地址后面加 ?type=协议类型 （目前仅支持tcp udp ws wss）", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), query_type);
                     Err(Error::InvalidUrl(url.into()))
                 },
             }
