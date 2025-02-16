@@ -238,28 +238,28 @@ impl ManualConnectorManager {
                                                 remote_url_original_map.insert(dead_url_new.clone(), v.clone());
                                                 // 更新全局配置
                                                 data.global_ctx.config.set_remote_url_original(remote_url_original_map);
-                                                if "tcp"== query {
+                                                if new_url.starts_with("tcp://") {
                                                     let  connector_http = TcpTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
                                                     data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
-                                                if "udp"== query{
+                                                if new_url.starts_with("udp://") {
                                                     let  connector_http = UdpTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
                                                     data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
-                                                if "ws"== query{
+                                               if new_url.starts_with("ws://") {
                                                     let  connector_http =  crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
                                                     data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
-                                                if "wss"== query{
+                                               if new_url.starts_with("wss://") {
                                                     let  connector_http = crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
@@ -288,28 +288,28 @@ impl ManualConnectorManager {
                                                 remote_url_original_map.insert(dead_url_new.clone(), v.clone());
                                                 // 更新全局配置
                                                 data.global_ctx.config.set_remote_url_original(remote_url_original_map);
-                                                if new_url.starts_with("tcp") {
+                                                if new_url.starts_with("tcp://") {
                                                     let  connector_http = TcpTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
                                                     data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
-                                                if new_url.starts_with("udp") {
+                                                if new_url.starts_with("udp://") {
                                                     let  connector_http = UdpTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
                                                     data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
-                                                if new_url.starts_with("ws") {
+                                                if new_url.starts_with("ws://") {
                                                     let  connector_http =  crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
                                                     data.connectors.remove(&dead_url).unwrap();
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
-                                                if new_url.starts_with("wss"){
+                                                if new_url.starts_with("wss://"){
                                                     let  connector_http = crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
