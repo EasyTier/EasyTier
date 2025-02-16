@@ -35,6 +35,8 @@ use tokio::{
     task::JoinSet,
     time::timeout,
 };
+use trust_dns_resolver::AsyncResolver;
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use url::Url;
 
 use super::create_connector_by_url;
@@ -211,7 +213,7 @@ impl ManualConnectorManager {
                         let mut remote_url_original_map = data.global_ctx.config.get_remote_url_original();
                         // 如果存在与 dead_url 对应的映射，则进行 HTTP 判断
                         if let Some(v) = remote_url_original_map.get(&dead_url).cloned() {
-                            if v.contains("http") {
+                            if v.starts_with("http://") ||  v.starts_with("https://") {
                                 // 如果包含 "http"，执行重定向逻辑
                                 match Self::get_redirected_url(v.as_str()).await {
                                     Ok((ip, port, query )) => {
@@ -258,6 +260,56 @@ impl ManualConnectorManager {
                                                     data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
                                                 }
                                                 if "wss"== query{
+                                                    let  connector_http = crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
+                                                    let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
+                                                    // 移除原有的 connector
+                                                    data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
+                                                }
+                                            },
+                                            Err(e) => {
+                                                tracing::error!("failed to resolve the new url: {}", e);
+                                            }
+                                        }
+                                    },
+                                    Err(e) => {
+                                        tracing::error!("failed to get redirect information: {}", e);
+                                    }
+                                }
+                            }else if v.starts_with("txt://") {
+                                // 如果包含 "http"，执行重定向逻辑
+                                match Self::get_txt_records(v.clone()).await {
+                                    Ok((new_url )) => {
+                                        match Url::parse(&new_url) {
+                                            Ok(new_parsed_url) => {
+                                                dead_url_new = new_parsed_url.to_string();
+                                                // 先删除旧的 URL，再插入新的 URL
+                                                remote_url_original_map.remove(&dead_url);
+                                                remote_url_original_map.insert(dead_url_new.clone(), v.clone());
+                                                // 更新全局配置
+                                                data.global_ctx.config.set_remote_url_original(remote_url_original_map);
+                                                if new_url.starts_with("tcp") {
+                                                    let  connector_http = TcpTunnelConnector::new(new_parsed_url.clone());
+                                                    let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
+                                                    // 移除原有的 connector
+                                                    data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
+                                                }
+                                                if new_url.starts_with("udp") {
+                                                    let  connector_http = UdpTunnelConnector::new(new_parsed_url.clone());
+                                                    let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
+                                                    // 移除原有的 connector
+                                                    data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
+                                                }
+                                                if new_url.starts_with("ws") {
+                                                    let  connector_http =  crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
+                                                    let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
+                                                    // 移除原有的 connector
+                                                    data.connectors.remove(&dead_url).unwrap();
+                                                    data.connectors.insert(dead_url_new.clone(), connector_http_mutex.clone());
+                                                }
+                                                if new_url.starts_with("wss"){
                                                     let  connector_http = crate::tunnel::websocket::WSTunnelConnector::new(new_parsed_url.clone());
                                                     let connector_http_mutex: MutexConnector = Arc::new(Mutex::new(Box::new(connector_http)));
                                                     // 移除原有的 connector
@@ -521,6 +573,29 @@ impl ManualConnectorManager {
             Ok((host, port, query_type))
         } else {
             Err(Error::InvalidUrl("no redirect address found".to_string()))
+        }
+    }
+
+    pub async fn get_txt_records(original_url: String) -> Result<String, Error> {
+        // 创建异步 DNS 解析器（以 tokio 为例）
+        let resolver = AsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()).map_err(|_| Error::InvalidUrl("Failed to create an asynchronous dns resolver".to_string()))?;
+
+        // 异步查询 TXT 记录（注意这里的 .await）
+        let txt_records = resolver.txt_lookup(original_url.replace("txt://", "")).await
+            .map_err(|_| Error::InvalidUrl("Failed to get TXT records".to_string()))?;
+
+        // 提取 TXT 记录中的字符串
+        if let Some(txt_record) = txt_records.iter().next() {
+            let txt_str = txt_record.to_string();
+
+            // 判断是否是有效 URL
+            if Url::parse(&txt_str).is_ok() {
+                Ok(txt_str)
+            } else {
+                Err(Error::InvalidUrl("TXT record is not a valid URL".to_string()))
+            }
+        } else {
+            Err(Error::InvalidUrl("No TXT records found".to_string()))
         }
     }
 }

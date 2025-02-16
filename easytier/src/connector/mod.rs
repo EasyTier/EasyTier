@@ -17,6 +17,8 @@ use std::{
 };
 use std::time::Duration;
 use reqwest::Client;
+use trust_dns_resolver::{AsyncResolver};
+use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
 use url::Url;
 
 pub mod direct;
@@ -63,7 +65,7 @@ pub async fn create_connector_by_url(
     let url = url::Url::parse(new_url).map_err(|_| Error::InvalidUrl(new_url.to_owned()))?;
     
     let mut remote_url_original = HashMap::new();
-    remote_url_original.insert(url.clone().to_string(), old_url.to_string());
+    remote_url_original.insert(new_url.clone().to_string(), old_url.to_string());
     global_ctx.config.set_remote_url_original(remote_url_original);
     
     match url.scheme() {
@@ -152,8 +154,8 @@ pub async fn create_connector_by_url(
     }
 }
 
-pub async fn handle_url_type(original_url: &str) -> Result<(String), Error> {
-    if original_url.contains("http") {
+pub async fn handle_url_type(original_url: &str) -> Result<String, Error> {
+    if original_url.starts_with("https://") || original_url.starts_with("http://") {
         // 获取重定向后的 IP 与端口
         println!("handle http url：{}", original_url.to_string());
         let (host, port, query_type) = get_redirected_url(original_url).await?;
@@ -162,13 +164,13 @@ pub async fn handle_url_type(original_url: &str) -> Result<(String), Error> {
         let redirected_url =  build_new_url_type(host, port, query_type).await?;
         return Ok(redirected_url);
     }
-    if original_url.contains("txt") {
-        return Ok(original_url.to_string());
+    if original_url.starts_with("txt://") {
+        return Ok(get_txt_records(original_url.to_string()).await?);
     }
     Err(Error::InvalidUrl(original_url.into()))
 }
 
-pub async fn build_new_url_type(host: String, port: u16, query_type: String) -> Result<(String), Error> {
+pub async fn build_new_url_type(host: String, port: u16, query_type: String) -> Result<String, Error> {
       match query_type.as_str() {
         "tcp" => {
             // 处理 tcp 的逻辑
@@ -238,6 +240,29 @@ pub async fn get_redirected_url(original_url: &str) -> Result<(String, u16, Stri
         Ok((host, port, query_type))
     } else {
         Err(Error::InvalidUrl("no redirect address found".to_string()))
+    }
+}
+
+pub async fn get_txt_records(original_url: String) -> Result<String, Error> {
+    // 创建异步 DNS 解析器（以 tokio 为例）
+    let resolver = AsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()).map_err(|_| Error::InvalidUrl("Failed to create an asynchronous dns resolver".to_string()))?;
+
+    // 异步查询 TXT 记录（注意这里的 .await）
+    let txt_records = resolver.txt_lookup(original_url.replace("txt://", "")).await
+        .map_err(|_| Error::InvalidUrl("Failed to get TXT records".to_string()))?;
+
+    // 提取 TXT 记录中的字符串
+    if let Some(txt_record) = txt_records.iter().next() {
+        let txt_str = txt_record.to_string();
+
+        // 判断是否是有效 URL
+        if Url::parse(&txt_str).is_ok() {
+            Ok(txt_str)
+        } else {
+            Err(Error::InvalidUrl("TXT record is not a valid URL".to_string()))
+        }
+    } else {
+        Err(Error::InvalidUrl("No TXT records found".to_string()))
     }
 }
 
