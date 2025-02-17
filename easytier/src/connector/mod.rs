@@ -166,7 +166,7 @@ pub async fn create_connector_by_url(
         if original_url.starts_with("txt://") {
             return Ok(get_txt_records(original_url.to_string()).await?);
         }
-        Err(Error::InvalidUrl(original_url.into()))
+        return Ok(original_url.to_string());
     }
 
     pub async fn build_new_url_type(host: String, port: u16, query_type: String) -> Result<String, Error> {
