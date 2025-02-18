@@ -361,7 +361,9 @@ impl KcpProxyDst {
             proxy_entries.remove(&conn_id);
         }
 
-        if Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address())) {
+        if Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
+            && global_ctx.no_tun()
+        {
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
 
