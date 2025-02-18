@@ -19,6 +19,8 @@ pub mod direct;
 pub mod manual;
 pub mod udp_hole_punch;
 
+mod http_connector;
+
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
     is_ipv4: bool,
