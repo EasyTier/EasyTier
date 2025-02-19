@@ -201,9 +201,21 @@ where
     Ok(T::from_url(url.clone(), IpVersion::Both)?)
 }
 
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "tcp" => Some(11010),
+        "udp" => Some(11010),
+        "ws" => Some(11011),
+        "wss" => Some(11012),
+        "quic" => Some(11012),
+        "wg" => Some(11011),
+        _ => None,
+    }
+}
+
 impl FromUrl for SocketAddr {
     fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
-        let addrs = url.socket_addrs(|| None)?;
+        let addrs = url.socket_addrs(|| default_port(url.scheme()))?;
         tracing::debug!(?addrs, ?ip_version, ?url, "convert url to socket addrs");
         let addrs = addrs
             .into_iter()
