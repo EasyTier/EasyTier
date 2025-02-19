@@ -124,7 +124,7 @@ serde = { version = "1.0", features = ["derive"] }
 pnet = { version = "0.35.0", features = ["serde"] }
 serde_json = "1"
 
-clap = { version = "4.4.8", features = [
+clap = { version = "4.5.30", features = [
     "string",
     "unicode",
     "derive",
@@ -182,14 +182,12 @@ async-compression = { version = "0.4.17", default-features = false, features = [
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys" }
 
-prost-reflect = { version = "0.14.5", features = [
-    "serde",
+prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
-    "text-format"
 ] }
 
 # for http connector
-# reqwest = { version = "0.12.12", default-features = false, features = ["rustls-tls"] }
+http_req = { git = "https://github.com/EasyTier/http_req.git", default-features = false, features = ["rust-tls"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
