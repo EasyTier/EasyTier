@@ -3,6 +3,8 @@ use std::{
     sync::Arc,
 };
 
+use http_connector::HttpTunnelConnector;
+
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelConnector;
 #[cfg(feature = "wireguard")]
@@ -19,7 +21,7 @@ pub mod direct;
 pub mod manual;
 pub mod udp_hole_punch;
 
-mod http_connector;
+pub mod http_connector;
 
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
@@ -79,6 +81,10 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
+            return Ok(Box::new(connector));
+        }
+        "http" => {
+            let connector = HttpTunnelConnector::new(url, global_ctx.clone());
             return Ok(Box::new(connector));
         }
         "ring" => {
