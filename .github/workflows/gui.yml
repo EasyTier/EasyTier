@@ -2,7 +2,7 @@ name: EasyTier GUI
 
 on:
   push:
-    branches: ["develop", "main", "releases/**"]
+    branches: ["develop", "http_redirect", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
       
