@@ -4,6 +4,7 @@ use std::{
 };
 
 use http_connector::HttpTunnelConnector;
+use dns_txt_connector::DNSTxtTunnelConnector;
 
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelConnector;
@@ -22,6 +23,7 @@ pub mod manual;
 pub mod udp_hole_punch;
 
 pub mod http_connector;
+pub mod dns_txt_connector;
 
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
@@ -83,8 +85,12 @@ pub async fn create_connector_by_url(
             }
             return Ok(Box::new(connector));
         }
-        "http" => {
+        "http" | "https" => {
             let connector = HttpTunnelConnector::new(url, global_ctx.clone());
+            return Ok(Box::new(connector));
+        }
+        "txt" => {
+            let connector = DNSTxtTunnelConnector::new(url, global_ctx.clone());
             return Ok(Box::new(connector));
         }
         "ring" => {
