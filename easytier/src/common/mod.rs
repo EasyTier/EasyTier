@@ -4,7 +4,7 @@ use std::{
     io::Write as _,
     sync::{Arc, Mutex},
 };
-use tokio::task::JoinSet;
+use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
 
 pub mod compressor;
@@ -47,16 +47,13 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
     origin: String,
 ) {
     let js = Arc::downgrade(&js);
+    let o = origin.clone();
     tokio::spawn(
         async move {
-            loop {
+            while js.strong_count() > 0 {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if js.weak_count() == 0 {
-                    tracing::info!("joinset task exit");
-                    break;
-                }
 
-                future::poll_fn(|cx| {
+                let fut = future::poll_fn(|cx| {
                     let Some(js) = js.upgrade() else {
                         return std::task::Poll::Ready(());
                     };
@@ -64,15 +61,24 @@ pub fn join_joinset_background<T: Debug + Send + Sync + 'static>(
                     let mut js = js.lock().unwrap();
                     while !js.is_empty() {
                         let ret = js.poll_join_next(cx);
-                        if ret.is_pending() {
-                            return std::task::Poll::Pending;
+                        match ret {
+                            std::task::Poll::Ready(Some(_)) => {
+                                continue;
+                            }
+                            std::task::Poll::Ready(None) => {
+                                break;
+                            }
+                            std::task::Poll::Pending => {
+                                return std::task::Poll::Pending;
+                            }
                         }
                     }
-
                     std::task::Poll::Ready(())
-                })
-                .await;
+                });
+
+                let _ = timeout(std::time::Duration::from_secs(5), fut).await;
             }
+            tracing::debug!(?o, "joinset task exit");
         }
         .instrument(tracing::info_span!(
             "join_joinset_background",
@@ -167,5 +173,6 @@ mod tests {
         drop(js);
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert_eq!(weak_js.weak_count(), 0);
+        assert_eq!(weak_js.strong_count(), 0);
     }
 }
