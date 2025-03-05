@@ -1450,9 +1450,6 @@ impl PeerRouteServiceImpl {
         let my_peer_id = self.my_peer_id;
 
         let (peer_infos, conn_bitmap, foreign_network) = self.build_sync_request(&session);
-        tracing::trace!(?foreign_network, "building sync_route request. my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
-                       my_peer_id, dst_peer_id, peer_infos, conn_bitmap, self.synced_route_info, session);
-
         if peer_infos.is_none()
             && conn_bitmap.is_none()
             && foreign_network.is_none()
@@ -1461,6 +1458,9 @@ impl PeerRouteServiceImpl {
         {
             return true;
         }
+
+        tracing::debug!(?foreign_network, "sync_route request need send to peer. my_id {:?}, pper_id: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}",
+                       my_peer_id, dst_peer_id, peer_infos, conn_bitmap, self.synced_route_info, session);
 
         session
             .need_sync_initiator_info
@@ -1728,7 +1728,6 @@ impl RouteSessionManager {
         Ok(session)
     }
 
-    #[tracing::instrument(skip(self))]
     async fn maintain_sessions(&self, service_impl: Arc<PeerRouteServiceImpl>) -> bool {
         let mut cur_dst_peer_id_to_initiate = None;
         let mut next_sleep_ms = 0;
@@ -1763,8 +1762,6 @@ impl RouteSessionManager {
                 })
                 .map(|x| *x)
                 .collect::<Vec<_>>();
-
-            tracing::trace!(?service_impl.my_peer_id, ?peers, ?session_peers, ?initiator_candidates, "maintain_sessions begin");
 
             if initiator_candidates.is_empty() {
                 next_sleep_ms = 1000;

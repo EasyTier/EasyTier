@@ -84,9 +84,7 @@ impl PingIntervalController {
         self.throughput.rx_packets() > self.last_throughput.rx_packets()
     }
 
-    #[tracing::instrument]
     fn should_send_ping(&mut self) -> bool {
-        tracing::trace!(?self, "check should_send_ping");
         if self.loss_counter.load(Ordering::Relaxed) > 0 {
             self.backoff_idx = 0;
         } else if self.tx_increase() && !self.rx_increase() {
@@ -252,6 +250,13 @@ impl PeerConnPinger {
                     if !controller.should_send_ping() {
                         continue;
                     }
+
+                    tracing::debug!(
+                        "pingpong controller send pingpong task, seq: {}, node_id: {}, controller: {:?}",
+                        req_seq,
+                        my_node_id,
+                        controller  
+                    );
 
                     let mut sink = sink.clone();
                     let receiver = ctrl_resp_sender.subscribe();
