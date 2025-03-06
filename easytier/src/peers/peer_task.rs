@@ -83,12 +83,6 @@ where
                 }
             }
 
-            tracing::debug!(
-                ?peers_to_connect,
-                ?to_remove,
-                "got peers to connect and remove"
-            );
-
             for key in to_remove {
                 if let Some((_, task)) = peer_task_map.remove(&key) {
                     task.abort();
@@ -115,7 +109,6 @@ where
                         .insert(item.clone(), launcher.launch_task(&data, item).await.into());
                 }
             } else if peer_task_map.is_empty() {
-                tracing::debug!("all task done");
                 launcher.all_task_done(&data).await;
             }
 
