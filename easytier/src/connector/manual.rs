@@ -367,7 +367,7 @@ impl ManualConnectorManager {
         for ip_version in ip_versions {
             let ret = timeout(
                 // allow http connector to wait longer
-                std::time::Duration::from_secs(if dead_url.starts_with("http") { 20 } else { 1 }),
+                std::time::Duration::from_secs(if dead_url.starts_with("http") { 20 } else { 2 }),
                 Self::conn_reconnect_with_ip_version(
                     data.clone(),
                     dead_url.clone(),
