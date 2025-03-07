@@ -6,6 +6,7 @@ extern crate rust_i18n;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    sync::Arc,
 };
 
 use anyhow::Context;
@@ -19,12 +20,16 @@ use easytier::{
             TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
-        global_ctx::{EventBusSubscriber, GlobalCtxEvent},
+        global_ctx::{EventBusSubscriber, GlobalCtx, GlobalCtxEvent},
         scoped_task::ScopedTask,
+        stun::MockStunInfoCollector,
     },
+    connector::create_connector_by_url,
     launcher,
-    proto::{self, common::CompressionAlgoPb},
-    tunnel::udp::UdpTunnelConnector,
+    proto::{
+        self,
+        common::{CompressionAlgoPb, NatType},
+    },
     utils::{init_logger, setup_panic_handler},
     web_client,
 };
@@ -860,7 +865,15 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             panic!("empty token");
         }
 
-        let _wc = web_client::WebClient::new(UdpTunnelConnector::new(c_url), token.to_string());
+        let config = TomlConfigLoader::default();
+        let global_ctx = Arc::new(GlobalCtx::new(config));
+        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+            udp_nat_type: NatType::Unknown,
+        }));
+        let _wc = web_client::WebClient::new(
+            create_connector_by_url(c_url.as_str(), &global_ctx).await?,
+            token.to_string(),
+        );
         tokio::signal::ctrl_c().await.unwrap();
         return Ok(());
     }
