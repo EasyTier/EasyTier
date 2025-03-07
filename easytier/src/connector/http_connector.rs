@@ -88,7 +88,7 @@ impl HttpTunnelConnector {
             query.shuffle(&mut rand::thread_rng());
             if query.is_empty() {
                 return Err(Error::InvalidUrl(format!(
-                    "no valid connector url found in url: url: {}",
+                    "no valid connector url found in url: {}",
                     url
                 )));
             }
@@ -130,9 +130,10 @@ impl HttpTunnelConnector {
             return create_connector_by_url(line, &self.global_ctx).await;
         }
 
-        Err(Error::InvalidUrl(
-            "no valid connector url found".to_string(),
-        ))
+        Err(Error::InvalidUrl(format!(
+            "no valid connector url found, response body: {}",
+            body
+        )))
     }
 
     #[tracing::instrument(ret)]
@@ -155,7 +156,7 @@ impl HttpTunnelConnector {
 
             Request::new(&uri)
                 .redirect_policy(RedirectPolicy::Limit(0))
-                .timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(60))
                 .send(&mut *body_clone.write().unwrap())
                 .with_context(|| format!("sending http request failed. url: {}", uri))
         })
