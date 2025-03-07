@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 
 mod arch;
-mod connector;
 mod gateway;
 mod instance;
 mod peer_center;
 mod vpn_portal;
 
 pub mod common;
+pub mod connector;
 pub mod launcher;
 pub mod peers;
 pub mod proto;
