@@ -96,6 +96,9 @@ core_clap:
   enable_exit_node:
     en: "allow this node to be an exit node"
     zh-CN: "允许此节点成为出口节点"
+  proxy_forward_by_system:
+    en: "forward packet to proxy networks via system kernel, disable internal nat for network proxy"
+    zh-CN: "通过系统内核转发子网代理数据包，禁用内置NAT"
   no_tun:
     en: "do not create TUN device, can use subnet proxy to access node"
     zh-CN: "不创建TUN设备，可以使用子网代理访问节点"
