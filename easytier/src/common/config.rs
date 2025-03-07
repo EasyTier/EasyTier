@@ -20,6 +20,7 @@ pub fn gen_default_flags() -> Flags {
         mtu: 1380,
         latency_first: false,
         enable_exit_node: false,
+        proxy_forward_by_system: false,
         no_tun: false,
         use_smoltcp: false,
         relay_network_whitelist: "*".to_string(),

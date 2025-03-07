@@ -244,6 +244,13 @@ struct Cli {
 
     #[arg(
         long,
+        help = t!("core_clap.proxy_forward_by_system").to_string(),
+        default_value = "false"
+    )]
+    proxy_forward_by_system: bool,
+
+    #[arg(
+        long,
         help = t!("core_clap.no_tun").to_string(),
         default_value = "false"
     )]
@@ -560,6 +567,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             f.mtu = mtu as u32;
         }
         f.enable_exit_node = cli.enable_exit_node;
+        f.proxy_forward_by_system = cli.proxy_forward_by_system;
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
         if let Some(wl) = cli.relay_network_whitelist.as_ref() {
