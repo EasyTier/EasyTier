@@ -24,12 +24,13 @@ use easytier::{
         scoped_task::ScopedTask,
         stun::MockStunInfoCollector,
     },
-    connector::create_connector_by_url,
+    connector::{create_connector_by_url, dns_connector::DNSTunnelConnector},
     launcher,
     proto::{
         self,
         common::{CompressionAlgoPb, NatType},
     },
+    tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
     web_client,
 };
@@ -338,8 +339,6 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
     fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> anyhow::Result<Vec<String>> {
-        let proto_port_offset = vec![("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
-
         if no_listener || listeners.is_empty() {
             return Ok(vec![]);
         }
@@ -348,8 +347,8 @@ impl Cli {
         let mut listeners: Vec<String> = Vec::new();
         if origin_listners.len() == 1 {
             if let Ok(port) = origin_listners[0].parse::<u16>() {
-                for (proto, offset) in proto_port_offset {
-                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + offset));
+                for (proto, offset) in PROTO_PORT_OFFSET {
+                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
                 }
                 return Ok(listeners);
             }
@@ -364,7 +363,7 @@ impl Cli {
                     panic!("failed to parse listener: {}", l);
                 }
             } else {
-                let Some((proto, offset)) = proto_port_offset
+                let Some((proto, offset)) = PROTO_PORT_OFFSET
                     .iter()
                     .find(|(proto, _)| *proto == proto_port[0])
                 else {
@@ -875,6 +874,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             token.to_string(),
         );
         tokio::signal::ctrl_c().await.unwrap();
+        DNSTunnelConnector::new("".parse().unwrap(), global_ctx);
         return Ok(());
     }
 
