@@ -3139,9 +3139,10 @@ dependencies = [
 [[package]]
 name = "http_req"
 version = "0.13.1"
-source = "git+https://github.com/EasyTier/http_req.git#e6d9e93c43c940f56f45e91b0923bcea53a718ea"
+source = "git+https://github.com/EasyTier/http_req.git#b10aa9fc0db3067cc3d2174683a87250b80a1ea9"
 dependencies = [
  "base64 0.22.1",
+ "rand 0.8.5",
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
