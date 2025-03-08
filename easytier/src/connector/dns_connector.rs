@@ -243,8 +243,7 @@ impl super::TunnelConnector for DNSTunnelConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::global_ctx::{tests::get_mock_global_ctx, GlobalCtx};
-    use std::sync::Arc;
+    use crate::common::global_ctx::tests::get_mock_global_ctx;
 
     #[tokio::test]
     async fn test_txt() {
