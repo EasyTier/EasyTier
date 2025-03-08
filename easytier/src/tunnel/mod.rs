@@ -22,6 +22,9 @@ pub mod stats;
 pub mod tcp;
 pub mod udp;
 
+pub const PROTO_PORT_OFFSET: &[(&str, u16)] =
+    &[("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
+
 #[cfg(feature = "wireguard")]
 pub mod wireguard;
 

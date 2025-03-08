@@ -21,6 +21,7 @@ pub mod direct;
 pub mod manual;
 pub mod udp_hole_punch;
 
+pub mod dns_connector;
 pub mod http_connector;
 
 async fn set_bind_addr_for_peer_connector(
@@ -138,6 +139,10 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
+            return Ok(Box::new(connector));
+        }
+        "txt" | "srv" => {
+            let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
             return Ok(Box::new(connector));
         }
         _ => {
