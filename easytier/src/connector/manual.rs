@@ -339,7 +339,7 @@ impl ManualConnectorManager {
         let mut ip_versions = vec![];
         let u = url::Url::parse(&dead_url)
             .with_context(|| format!("failed to parse connector url {:?}", dead_url))?;
-        if u.scheme() == "ring" {
+        if u.scheme() == "ring" || u.scheme() == "txt" || u.scheme() == "srv" {
             ip_versions.push(IpVersion::Both);
         } else {
             let addrs = u.socket_addrs(|| Some(1000))?;
