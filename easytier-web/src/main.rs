@@ -12,6 +12,7 @@ use easytier::{
         constants::EASYTIER_VERSION,
     },
     tunnel::udp::UdpTunnelListener,
+    tunnel::tcp::TcpTunnelListener,
     utils::{init_logger, setup_panic_handler},
 };
 
@@ -92,7 +93,7 @@ async fn main() {
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
 
-    let listener = UdpTunnelListener::new(
+    let listener = TcpTunnelListener::new(
         format!(
             "{}://0.0.0.0:{}",
             cli.config_server_protocol, cli.config_server_port
