@@ -7,6 +7,7 @@ use std::{
 use anyhow::Context;
 use http_req::request::{RedirectPolicy, Request};
 use rand::seq::SliceRandom as _;
+use url::Url;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
@@ -73,10 +74,12 @@ impl HttpTunnelConnector {
     async fn handle_302_redirect(
         &mut self,
         new_url: url::Url,
+        url_str: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         // the url should be in following format:
         // 1: http(s)://easytier.cn/?url=tcp://10.147.22.22:11010 (scheme is http, domain is ignored, path is splitted into proto type and addr)
-        // 2: tcp://10.137.22.22:11010 (scheme is protocol type, the url is used to construct a connector directly)
+        // 2: http(s)://tcp://10.137.22.22:11010 (connector url is appended to the scheme)
+        // 3: tcp://10.137.22.22:11010 (scheme is protocol type, the url is used to construct a connector directly)
         tracing::info!("redirect to {}", new_url);
         let url = url::Url::parse(new_url.as_str())
             .with_context(|| format!("parsing redirect url failed. url: {}", new_url))?;
@@ -86,15 +89,22 @@ impl HttpTunnelConnector {
                 .filter_map(|x| url::Url::parse(&x.1).ok())
                 .collect::<Vec<_>>();
             query.shuffle(&mut rand::thread_rng());
-            if query.is_empty() {
-                return Err(Error::InvalidUrl(format!(
-                    "no valid connector url found in url: {}",
-                    url
-                )));
+            if !query.is_empty() {
+                tracing::info!("try to create connector by url: {}", query[0]);
+                self.redirect_type = HttpRedirectType::RedirectToQuery;
+                return create_connector_by_url(&query[0].to_string(), &self.global_ctx).await;
+            } else if let Some(new_url) = url_str
+                .strip_prefix(format!("{}://", url.scheme()).as_str())
+                .and_then(|x| Url::parse(x).ok())
+            {
+                // stripe the scheme and create connector by url
+                self.redirect_type = HttpRedirectType::RedirectToUrl;
+                return create_connector_by_url(new_url.as_str(), &self.global_ctx).await;
             }
-            tracing::info!("try to create connector by url: {}", query[0]);
-            self.redirect_type = HttpRedirectType::RedirectToQuery;
-            return create_connector_by_url(&query[0].to_string(), &self.global_ctx).await;
+            return Err(Error::InvalidUrl(format!(
+                "no valid connector url found in url: {}",
+                url
+            )));
         } else {
             self.redirect_type = HttpRedirectType::RedirectToUrl;
             return create_connector_by_url(new_url.as_str(), &self.global_ctx).await;
@@ -156,7 +166,7 @@ impl HttpTunnelConnector {
 
             Request::new(&uri)
                 .redirect_policy(RedirectPolicy::Limit(0))
-                .timeout(std::time::Duration::from_secs(60))
+                .timeout(std::time::Duration::from_secs(20))
                 .send(&mut *body_clone.write().unwrap())
                 .with_context(|| format!("sending http request failed. url: {}", uri))
         })
@@ -172,7 +182,7 @@ impl HttpTunnelConnector {
                 .ok_or_else(|| Error::InvalidUrl("no redirect address found".to_string()))?;
             let new_url = url::Url::parse(redirect_url.as_str())
                 .with_context(|| format!("parsing redirect url failed. url: {}", redirect_url))?;
-            return self.handle_302_redirect(new_url).await;
+            return self.handle_302_redirect(new_url, &redirect_url).await;
         } else if res.status_code().is_success() {
             return self.handle_200_success(&body).await;
         } else {

@@ -24,12 +24,13 @@ use easytier::{
         scoped_task::ScopedTask,
         stun::MockStunInfoCollector,
     },
-    connector::create_connector_by_url,
+    connector::{create_connector_by_url, dns_connector::DNSTunnelConnector},
     launcher,
     proto::{
         self,
         common::{CompressionAlgoPb, NatType},
     },
+    tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
     web_client,
 };
@@ -243,6 +244,13 @@ struct Cli {
 
     #[arg(
         long,
+        help = t!("core_clap.proxy_forward_by_system").to_string(),
+        default_value = "false"
+    )]
+    proxy_forward_by_system: bool,
+
+    #[arg(
+        long,
         help = t!("core_clap.no_tun").to_string(),
         default_value = "false"
     )]
@@ -338,8 +346,6 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
     fn parse_listeners(no_listener: bool, listeners: Vec<String>) -> anyhow::Result<Vec<String>> {
-        let proto_port_offset = vec![("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
-
         if no_listener || listeners.is_empty() {
             return Ok(vec![]);
         }
@@ -348,8 +354,8 @@ impl Cli {
         let mut listeners: Vec<String> = Vec::new();
         if origin_listners.len() == 1 {
             if let Ok(port) = origin_listners[0].parse::<u16>() {
-                for (proto, offset) in proto_port_offset {
-                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + offset));
+                for (proto, offset) in PROTO_PORT_OFFSET {
+                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
                 }
                 return Ok(listeners);
             }
@@ -364,7 +370,7 @@ impl Cli {
                     panic!("failed to parse listener: {}", l);
                 }
             } else {
-                let Some((proto, offset)) = proto_port_offset
+                let Some((proto, offset)) = PROTO_PORT_OFFSET
                     .iter()
                     .find(|(proto, _)| *proto == proto_port[0])
                 else {
@@ -561,6 +567,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             f.mtu = mtu as u32;
         }
         f.enable_exit_node = cli.enable_exit_node;
+        f.proxy_forward_by_system = cli.proxy_forward_by_system;
         f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
         f.use_smoltcp = cli.use_smoltcp;
         if let Some(wl) = cli.relay_network_whitelist.as_ref() {
@@ -870,11 +877,15 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
             udp_nat_type: NatType::Unknown,
         }));
+        let mut flags = global_ctx.get_flags();
+        flags.bind_device = false;
+        global_ctx.set_flags(flags);
         let _wc = web_client::WebClient::new(
             create_connector_by_url(c_url.as_str(), &global_ctx).await?,
             token.to_string(),
         );
         tokio::signal::ctrl_c().await.unwrap();
+        DNSTunnelConnector::new("".parse().unwrap(), global_ctx);
         return Ok(());
     }
 

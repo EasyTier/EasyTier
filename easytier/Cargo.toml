@@ -189,6 +189,9 @@ prost-reflect = { version = "0.14.5", default-features = false, features = [
 # for http connector
 http_req = { git = "https://github.com/EasyTier/http_req.git", default-features = false, features = ["rust-tls"] }
 
+# for dns connector
+hickory-resolver = "0.24.4"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 
