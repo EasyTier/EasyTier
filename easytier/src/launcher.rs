@@ -517,6 +517,29 @@ impl NetworkConfig {
                 })?,
             });
         }
+
+        if self.enable_manual_routes.unwrap_or_default() {
+            let mut routes = Vec::<cidr::Ipv4Cidr>::with_capacity(self.routes.len());
+            for route in self.routes.iter() {
+                routes.push(
+                    route.parse()
+                        .with_context(|| format!("failed to parse route: {}", route))?,
+                );
+            }
+            cfg.set_routes(Some(routes));
+        }
+
+        if self.exit_nodes.len() > 0 {
+            let mut exit_nodes = Vec::<std::net::Ipv4Addr>::with_capacity(self.exit_nodes.len());
+            for node in self.exit_nodes.iter() {
+                exit_nodes.push(
+                    node.parse()
+                        .with_context(|| format!("failed to parse exit node: {}", node))?,
+                );
+            }
+            cfg.set_exit_nodes(exit_nodes);
+        }
+
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;
@@ -548,6 +571,31 @@ impl NetworkConfig {
 
         if let Some(no_tun) = self.no_tun {
             flags.no_tun = no_tun;
+        }
+
+        if let Some(enable_exit_node) = self.enable_exit_node {
+            flags.enable_exit_node = enable_exit_node;
+        }
+
+        if let Some(relay_all_peer_rpc) = self.relay_all_peer_rpc {
+            flags.relay_all_peer_rpc = relay_all_peer_rpc;
+        }
+
+        if let Some(multi_thread) = self.multi_thread {
+            flags.multi_thread = multi_thread;
+        }
+
+        if let Some(proxy_forward_by_system) = self.proxy_forward_by_system {
+            flags.proxy_forward_by_system = proxy_forward_by_system;
+        }
+
+        if self.enable_relay_network_whitelist.unwrap_or_default() {
+            if self.relay_network_whitelist.len() > 0 {
+                flags.relay_network_whitelist = self.relay_network_whitelist.join(" ")
+            } else {
+                flags.relay_network_whitelist = "".to_string()
+            }
+
         }
 
         cfg.set_flags(flags);

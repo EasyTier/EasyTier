@@ -102,7 +102,7 @@ const selectedDeviceHostname = computed<string | undefined>(() => {
     </DataTable>
 
     <Drawer v-model:visible="deviceManageVisible" :header="`Manage ${selectedDeviceHostname}`" position="right"
-        class="w-1/2 min-w-96">
+        class="w-3/5 min-w-96">
         <RouterView v-slot="{ Component }">
             <component :is="Component" :api="api" :deviceList="deviceList" @update="loadDevices" />
         </RouterView>
