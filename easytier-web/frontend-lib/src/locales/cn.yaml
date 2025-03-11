@@ -92,6 +92,32 @@ bind_device_help: 仅使用物理网卡，避免 EasyTier 通过其他虚拟网�
 no_tun: 无 TUN 模式
 no_tun_help: 不使用 TUN 网卡，适合无管理员权限时使用。本节点仅允许被访问。访问其他节点需要使用 SOCK5
 
+enable_exit_node: 启用出口节点
+enable_exit_node_help: 允许此节点成为出口节点
+
+relay_all_peer_rpc: 转发RPC包
+relay_all_peer_rpc_help: |
+  允许转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。
+  这可以帮助白名单外网络中的对等节点建立P2P连接。
+
+multi_thread: 启用多线程
+multi_thread_help: 使用多线程运行时
+
+proxy_forward_by_system: 系统转发
+proxy_forward_by_system_help: 通过系统内核转发子网代理数据包，禁用内置NAT
+
+relay_network_whitelist: 网络白名单
+relay_network_whitelist_help: |
+  仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
+  如果该参数为空，则禁用转发。默认允许所有网络。
+  例如：'*'（所有网络），'def*'（以def为前缀的网络），'net1 net2'（只允许net1和net2）
+
+manual_routes: 自定义路由
+manual_routes_help: 手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16
+
+exit_nodes: 出口节点列表
+exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
+
 status:
   version: 内核版本
   local: 本机

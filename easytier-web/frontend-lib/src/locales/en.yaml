@@ -91,6 +91,33 @@ bind_device_help: Use only the physical network interface to prevent EasyTier fr
 no_tun: No TUN Mode
 no_tun_help: Do not use a TUN interface, suitable for environments without administrator privileges. This node is only accessible; accessing other nodes requires SOCKS5.
 
+enable_exit_node: Enable Exit Node
+enable_exit_node_help: Allow this node to be an exit node
+
+relay_all_peer_rpc: Relay RPC Packets
+relay_all_peer_rpc_help: |
+  Relay all peer rpc packets, even if the peer is not in the relay network whitelist.
+  This can help peers not in relay network whitelist to establish p2p connection.
+
+multi_thread: Multi Thread
+multi_thread_help: Use multi-thread runtime
+
+proxy_forward_by_system: System Forward
+proxy_forward_by_system_help: Forward packet to proxy networks via system kernel, disable internal nat for network proxy
+
+relay_network_whitelist: Network Whitelist
+relay_network_whitelist_help: |
+  Only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
+  If this parameter is empty, forwarding is disabled. By default, all networks are allowed.
+  e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)
+
+manual_routes: Manual Route
+manual_routes_help: |
+  Assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.:192.168.0.0/16
+
+exit_nodes: Exit Nodes
+exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
+
 status:
   version: Version
   local: Local

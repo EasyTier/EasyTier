@@ -52,3 +52,7 @@
 }
 
 }
+
+.v-popper__inner {
+  white-space: pre-wrap;
+}
