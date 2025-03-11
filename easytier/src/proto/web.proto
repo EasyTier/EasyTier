@@ -47,6 +47,16 @@ message NetworkConfig {
     optional bool disable_p2p = 24;
     optional bool bind_device = 25;
     optional bool no_tun = 26;
+
+    optional bool enable_exit_node = 27;
+    optional bool relay_all_peer_rpc = 28;
+    optional bool multi_thread = 29;
+    optional bool enable_relay_network_whitelist = 30;
+    repeated string relay_network_whitelist = 31;
+    optional bool enable_manual_routes = 32;
+    repeated string routes = 33;
+    repeated string exit_nodes = 34;
+    optional bool proxy_forward_by_system = 35;
 }
 
 message MyNodeInfo {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Toolbar, IftaLabel, Select, Button, ConfirmPopup, Dialog, useConfirm, useToast } from 'primevue';
+import {Toolbar, IftaLabel, Select, Button, ConfirmPopup, Dialog, useConfirm, useToast, Divider} from 'primevue';
 import { NetworkTypes, Status, Utils, Api, } from 'easytier-frontend-lib';
 import { watch, computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -251,10 +251,13 @@ onUnmounted(() => {
         </template>
     </Toolbar>
 
+    <Divider />
+
     <!-- For running network, show the status -->
     <div v-if="needShowNetworkStatus">
         <Status v-bind:cur-network-inst="curNetworkInfo" v-if="needShowNetworkStatus">
         </Status>
+        <Divider />
         <center>
             <Button @click="updateNetworkState(true)" label="Disable Network" severity="warn" />
         </center>
