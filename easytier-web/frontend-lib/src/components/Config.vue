@@ -154,6 +154,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'relay_all_peer_rpc', help: 'relay_all_peer_rpc_help' },
   { field: 'multi_thread', help: 'multi_thread_help' },
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
+  { field: 'disable_encryption', help: 'disable_encryption_help' },
 ]
 
 </script>
@@ -162,7 +163,7 @@ const bool_flags: BoolFlag[] = [
   <div class="frontend-lib">
     <div class="flex flex-col h-full">
       <div class="flex flex-col">
-        <div class="w-10/12 self-center ">
+        <div class="w-11/12 self-center ">
           <Panel :header="t('basic_settings')">
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">

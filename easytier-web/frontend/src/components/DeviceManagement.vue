@@ -27,6 +27,8 @@ const deviceInfo = computed<Utils.DeviceInfo | undefined | null>(() => {
     return deviceId.value ? props.deviceList?.find((device) => device.machine_id === deviceId.value) : null;
 });
 
+const configFile = ref();
+
 const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
 
 const isEditing = ref(false);
@@ -207,6 +209,54 @@ const loadDeviceInfo = async () => {
     } as NetworkTypes.NetworkInstance;
 }
 
+const exportConfig = async () => {
+  let ret = await props.api?.get_network_config(deviceId.value, instanceId.value);
+  delete ret.instance_id;
+  exportJsonFile(JSON.stringify(ret, null, 2),instanceId.value +'.json');
+}
+
+const importConfig = () => {
+  configFile.value.click();
+}
+
+const handleFileUpload = (event: Event) => {
+  const files = (event.target as HTMLInputElement).files;
+  const file = files ? files[0] : null;
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        let str = e.target?.result?.toString();
+        if(str){
+          const config = JSON.parse(str);
+          if(config === null || typeof config !== "object"){
+            throw new Error();
+          }
+          Object.assign(newNetworkConfig.value, config);
+          toast.add({ severity: 'success', summary: 'Import Success', detail: "Config file import success", life: 2000 });
+        }
+      } catch (error) {
+        toast.add({ severity: 'error', summary: 'Error', detail: 'Config file parse error.', life: 2000 });
+      }
+      configFile.value.value = null;
+    }
+    reader.readAsText(file);
+  }
+}
+
+const exportJsonFile = (context: string, name: string) => {
+  let url = window.URL.createObjectURL(new Blob([context], { type: 'application/json' }));
+  let link = document.createElement('a');
+  link.style.display = 'none';
+  link.href = url;
+  link.setAttribute('download', name);
+  document.body.appendChild(link);
+  link.click();
+
+  document.body.removeChild(link);
+  window.URL.revokeObjectURL(url);
+}
+
 let periodFunc = new Utils.PeriodicTask(async () => {
     try {
         await Promise.all([loadNetworkInstanceIds(), loadDeviceInfo()]);
@@ -226,9 +276,16 @@ onUnmounted(() => {
 </script>
 
 <template>
+    <input type="file" @change="handleFileUpload" class="hidden" accept="application/json" ref="configFile"/>
     <ConfirmPopup></ConfirmPopup>
     <Dialog v-model:visible="showCreateNetworkDialog" modal :header="!isEditing ? 'Create New Network' : 'Edit Network'"
         :style="{ width: '55rem' }">
+        <div class="flex flex-col">
+          <div class="w-11/12 self-center ">
+            <Button @click="importConfig" icon="pi pi-file-import" label="Import" iconPos="right" />
+            <Divider />
+          </div>
+        </div>
         <Config :cur-network="newNetworkConfig" @run-network="createNewNetwork"></Config>
     </Dialog>
 
@@ -245,6 +302,7 @@ onUnmounted(() => {
             <div class="gap-x-3 flex">
                 <Button @click="confirmDeleteNetwork($event)" icon="pi pi-minus" severity="danger" label="Delete"
                     iconPos="right" />
+                <Button @click="exportConfig" icon="pi pi-file-export" severity="help" label="Export" iconPos="right" />
                 <Button @click="editNetwork" icon="pi pi-pen-to-square" label="Edit" iconPos="right" severity="info" />
                 <Button @click="newNetwork" icon="pi pi-plus" label="Create" iconPos="right" />
             </div>

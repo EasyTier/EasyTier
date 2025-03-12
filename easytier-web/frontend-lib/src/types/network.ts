@@ -46,6 +46,7 @@ export interface NetworkConfig {
   relay_all_peer_rpc?: boolean
   multi_thread?: boolean
   proxy_forward_by_system?: boolean
+  disable_encryption?: boolean
 
   enable_relay_network_whitelist?: boolean
   relay_network_whitelist: string[]
@@ -99,6 +100,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     relay_all_peer_rpc: false,
     multi_thread: true,
     proxy_forward_by_system: false,
+    disable_encryption: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,

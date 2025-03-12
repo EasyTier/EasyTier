@@ -589,6 +589,10 @@ impl NetworkConfig {
             flags.proxy_forward_by_system = proxy_forward_by_system;
         }
 
+        if let Some(disable_encryption) = self.disable_encryption {
+            flags.enable_encryption = !disable_encryption;
+        }
+
         if self.enable_relay_network_whitelist.unwrap_or_default() {
             if self.relay_network_whitelist.len() > 0 {
                 flags.relay_network_whitelist = self.relay_network_whitelist.join(" ")
