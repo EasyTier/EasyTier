@@ -106,6 +106,9 @@ multi_thread_help: 使用多线程运行时
 proxy_forward_by_system: 系统转发
 proxy_forward_by_system_help: 通过系统内核转发子网代理数据包，禁用内置NAT
 
+disable_encryption: 禁用加密
+disable_encryption_help: 禁用对等节点通信的加密，默认为false，必须与对等节点相同
+
 relay_network_whitelist: 网络白名单
 relay_network_whitelist_help: |
   仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
@@ -114,6 +117,10 @@ relay_network_whitelist_help: |
 
 manual_routes: 自定义路由
 manual_routes_help: 手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16
+
+socks5: socks5服务器
+socks5_help: |
+  启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080
 
 exit_nodes: 出口节点列表
 exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定

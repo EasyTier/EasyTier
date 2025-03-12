@@ -540,6 +540,16 @@ impl NetworkConfig {
             cfg.set_exit_nodes(exit_nodes);
         }
 
+        if self.enable_socks5.unwrap_or_default() {
+            if let Some(socks5_port) = self.socks5_port {
+                cfg.set_socks5_portal(Some(
+                    format!("socks5://0.0.0.0:{}", socks5_port)
+                        .parse()
+                        .unwrap(),
+                ));
+            }
+        }
+
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;
@@ -587,6 +597,10 @@ impl NetworkConfig {
 
         if let Some(proxy_forward_by_system) = self.proxy_forward_by_system {
             flags.proxy_forward_by_system = proxy_forward_by_system;
+        }
+
+        if let Some(disable_encryption) = self.disable_encryption {
+            flags.enable_encryption = !disable_encryption;
         }
 
         if self.enable_relay_network_whitelist.unwrap_or_default() {
