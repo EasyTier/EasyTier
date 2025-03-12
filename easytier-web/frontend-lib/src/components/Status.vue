@@ -303,14 +303,15 @@ function showEventLogs() {
 
 <template>
   <div class="frontend-lib">
-    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-2/3 h-auto max-w-full">
+    <Dialog v-model:visible="dialogVisible" modal :header="t(dialogHeader)" class="w-2/3 h-auto max-w-full"
+      :baseZIndex="2000">
       <ScrollPanel v-if="dialogHeader === 'vpn_portal_config'">
         <pre>{{ dialogContent }}</pre>
       </ScrollPanel>
       <Timeline v-else :value="dialogContent">
         <template #opposite="slotProps">
           <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
-            }}</small>
+          }}</small>
         </template>
         <template #content="slotProps">
           <HumanEvent :event="slotProps.item.event" />
@@ -366,7 +367,7 @@ function showEventLogs() {
 
           <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
             <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
-                  class="mr-2 mt-2 text-sm" />
+              class="mr-2 mt-2 text-sm" />
           </div>
 
           <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
@@ -387,7 +388,7 @@ function showEventLogs() {
           <Column :header="t('hostname')">
             <template #body="slotProps">
               <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
-                   v-tooltip="slotProps.data.route.hostname">
+                v-tooltip="slotProps.data.route.hostname">
                 {{
                   slotProps.data.route.hostname }}
               </div>
