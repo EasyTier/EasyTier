@@ -118,6 +118,10 @@ manual_routes: Manual Route
 manual_routes_help: |
   Assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.:192.168.0.0/16
 
+socks5: Socks5 Server
+socks5_help: |
+  Enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080
+
 exit_nodes: Exit Nodes
 exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
 

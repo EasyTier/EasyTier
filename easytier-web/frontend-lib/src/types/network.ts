@@ -55,6 +55,9 @@ export interface NetworkConfig {
   routes: string[]
 
   exit_nodes: string[]
+
+  enable_socks5?: boolean
+  socks5_port: number
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -106,6 +109,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_manual_routes: false,
     routes: [],
     exit_nodes: [],
+    enable_socks5: false,
+    socks5_port: 1080,
   }
 }
 

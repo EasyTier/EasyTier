@@ -540,6 +540,16 @@ impl NetworkConfig {
             cfg.set_exit_nodes(exit_nodes);
         }
 
+        if self.enable_socks5.unwrap_or_default() {
+            if let Some(socks5_port) = self.socks5_port {
+                cfg.set_socks5_portal(Some(
+                    format!("socks5://0.0.0.0:{}", socks5_port)
+                        .parse()
+                        .unwrap(),
+                ));
+            }
+        }
+
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;

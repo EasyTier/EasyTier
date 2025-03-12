@@ -346,6 +346,23 @@ const bool_flags: BoolFlag[] = [
                 </div>
               </div>
 
+              <div class="flex flex-row gap-x-9 flex-wrap ">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex">
+                    <label for="socks5_port">{{ t('socks5') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('socks5_help')"></span>
+                  </div>
+                  <ToggleButton v-model="curNetwork.enable_socks5" on-icon="pi pi-check" off-icon="pi pi-times"
+                                :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                  <div v-if="curNetwork.enable_socks5" class="items-center flex flex-row gap-x-4">
+                    <div class="min-w-64 w-full">
+                      <InputNumber id="socks5_port" v-model="curNetwork.socks5_port" aria-describedby="rpc_port-help"
+                                   :format="false" :allow-empty="false" :min="0" :max="65535" class="w-full"/>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <div class="flex">

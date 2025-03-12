@@ -58,6 +58,8 @@ message NetworkConfig {
     repeated string exit_nodes = 34;
     optional bool proxy_forward_by_system = 35;
     optional bool disable_encryption = 36;
+    optional bool enable_socks5 = 37;
+    optional int32 socks5_port = 38;
 }
 
 message MyNodeInfo {

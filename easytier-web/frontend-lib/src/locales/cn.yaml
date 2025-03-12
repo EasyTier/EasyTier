@@ -118,6 +118,10 @@ relay_network_whitelist_help: |
 manual_routes: 自定义路由
 manual_routes_help: 手动分配路由CIDR，将禁用子网代理和从对等节点传播的wireguard路由。例如：192.168.0.0/16
 
+socks5: socks5服务器
+socks5_help: |
+  启用 socks5 服务器，允许 socks5 客户端访问虚拟网络. 格式: <端口>，例如：1080
+
 exit_nodes: 出口节点列表
 exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
 
