@@ -67,6 +67,19 @@ impl TcpListener {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.local_addr)
     }
+
+    pub fn relisten(&mut self) {
+        let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
+        let local_endpoint = socket.local_endpoint().unwrap();
+        socket.abort();
+        socket.listen(local_endpoint).unwrap();
+        self.reactor.notify();
+    }
+
+    pub fn is_listening(&self) -> bool {
+        let socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
+        socket.is_listening()
+    }
 }
 
 pub struct Incoming(TcpListener);
@@ -210,6 +223,9 @@ impl AsyncWrite for TcpStream {
     }
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
         let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
+        if !socket.may_send() {
+            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        }
         if socket.send_queue() == 0 {
             return Poll::Ready(Ok(()));
         }

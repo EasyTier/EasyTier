@@ -193,6 +193,10 @@ enum TcpProxyEntryState {
     Connected = 3;
     // connection closed
     Closed = 4;
+    // closing src
+    ClosingSrc = 5;
+    // closing dst
+    ClosingDst = 6;
 }
 
 message TcpProxyEntry {
