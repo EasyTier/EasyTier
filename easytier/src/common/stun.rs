@@ -8,6 +8,8 @@ use crate::proto::common::{NatType, StunInfo};
 use anyhow::Context;
 use chrono::Local;
 use crossbeam::atomic::AtomicCell;
+use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
 use rand::seq::IteratorRandom;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::{broadcast, Mutex};
@@ -21,6 +23,43 @@ use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 use crate::common::error::Error;
 
 use super::stun_codec_ext::*;
+
+pub fn get_default_resolver_config() -> ResolverConfig {
+    let mut default_resolve_config = ResolverConfig::new();
+    default_resolve_config.add_name_server(NameServerConfig::new(
+        "223.5.5.5:53".parse().unwrap(),
+        Protocol::Udp,
+    ));
+    default_resolve_config.add_name_server(NameServerConfig::new(
+        "180.184.1.1:53".parse().unwrap(),
+        Protocol::Udp,
+    ));
+    default_resolve_config
+}
+
+pub async fn resolve_txt_record(
+    domain_name: &str,
+    resolver: &TokioAsyncResolver,
+) -> Result<String, Error> {
+    let response = resolver.txt_lookup(domain_name).await.with_context(|| {
+        format!(
+            "txt_lookup failed, domain_name: {}",
+            domain_name.to_string()
+        )
+    })?;
+
+    let txt_record = response.iter().next().with_context(|| {
+        format!(
+            "no txt record found, domain_name: {}",
+            domain_name.to_string()
+        )
+    })?;
+
+    let txt_data = String::from_utf8_lossy(&txt_record.txt_data()[0]);
+    tracing::info!(?txt_data, ?domain_name, "get txt record");
+
+    Ok(txt_data.to_string())
+}
 
 struct HostResolverIter {
     hostnames: Vec<String>,
@@ -37,6 +76,14 @@ impl HostResolverIter {
         }
     }
 
+    async fn get_txt_record(domain_name: &str) -> Result<Vec<String>, Error> {
+        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or(
+            TokioAsyncResolver::tokio(get_default_resolver_config(), ResolverOpts::default()),
+        );
+        let txt_data = resolve_txt_record(domain_name, &resolver).await?;
+        Ok(txt_data.split(" ").map(|x| x.to_string()).collect())
+    }
+
     #[async_recursion::async_recursion]
     async fn next(&mut self) -> Option<SocketAddr> {
         if self.ips.is_empty() {
@@ -50,6 +97,29 @@ impl HostResolverIter {
             } else {
                 format!("{}:3478", host)
             };
+
+            if host.starts_with("txt:") {
+                let domain_name = host.trim_start_matches("txt:");
+                match Self::get_txt_record(domain_name).await {
+                    Ok(hosts) => {
+                        tracing::info!(
+                            ?domain_name,
+                            ?hosts,
+                            "get txt record success when resolve stun server"
+                        );
+                        // insert hosts to the head of hostnames
+                        self.hostnames.splice(0..0, hosts.into_iter());
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            ?domain_name,
+                            ?e,
+                            "get txt record failed when resolve stun server"
+                        );
+                    }
+                }
+                return self.next().await;
+            }
 
             match lookup_host(&host).await {
                 Ok(ips) => {
@@ -536,7 +606,7 @@ impl UdpNatTypeDetector {
         source_port: u16,
         stun_server: SocketAddr,
     ) -> Result<BindRequestResponse, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        let udp = Arc::new(UdpSocket::bind(format!("[::]:{}", source_port)).await?);
         let client_builder = StunClientBuilder::new(udp.clone());
         client_builder
             .new_stun_client(stun_server)
@@ -545,7 +615,7 @@ impl UdpNatTypeDetector {
     }
 
     pub async fn detect_nat_type(&self, source_port: u16) -> Result<UdpNatTypeDetectResult, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        let udp = Arc::new(UdpSocket::bind(format!("[::]:{}", source_port)).await?);
         self.detect_nat_type_with_socket(udp).await
     }
 
@@ -696,22 +766,10 @@ impl StunInfoCollector {
         // NOTICE: we may need to choose stun stun server based on geo location
         // stun server cross nation may return a external ip address with high latency and loss rate
         vec![
+            "txt:stun.easytier.cn",
             "stun.miwifi.com",
             "stun.chat.bilibili.com",
             "stun.hitv.com",
-            "stun.cdnbye.com",
-            "stun.douyucdn.cn:18000",
-            "fwa.lifesizecloud.com",
-            "global.turn.twilio.com",
-            "turn.cloudflare.com",
-            "stun.isp.net.au",
-            "stun.nextcloud.com",
-            "stun.freeswitch.org",
-            "stun.voip.blackberry.com",
-            "stunserver.stunprotocol.org",
-            "stun.sipnet.com",
-            "stun.radiojar.com",
-            "stun.sonetel.com",
         ]
         .iter()
         .map(|x| x.to_string())
@@ -818,7 +876,10 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::{udp::UdpTunnelListener, TunnelListener};
+    use crate::{
+        tests::enable_log,
+        tunnel::{udp::UdpTunnelListener, TunnelListener},
+    };
 
     use super::*;
 
@@ -859,6 +920,34 @@ mod tests {
         });
 
         let stun_servers = vec!["127.0.0.1:55555".to_string(), "127.0.0.1:55535".to_string()];
+        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let ret = detector.detect_nat_type(0).await;
+        println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
+        assert_eq!(ret.unwrap().nat_type(), NatType::PortRestricted);
+    }
+
+    #[tokio::test]
+    async fn test_txt_public_stun_server() {
+        let stun_servers = vec!["txt:stun.easytier.cn".to_string()];
+        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let ret = detector.detect_nat_type(0).await;
+        println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
+        assert_eq!(ret.unwrap().nat_type(), NatType::PortRestricted);
+    }
+
+    #[tokio::test]
+    async fn test_v6_stun() {
+        enable_log();
+        let mut udp_server = UdpTunnelListener::new("udp://[::]:55355".parse().unwrap());
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async move {
+            udp_server.listen().await.unwrap();
+            loop {
+                udp_server.accept().await.unwrap();
+            }
+        });
+        let stun_servers = vec!["::1:55355".to_string()];
+
         let detector = UdpNatTypeDetector::new(stun_servers, 1);
         let ret = detector.detect_nat_type(0).await;
         println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
