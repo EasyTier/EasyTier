@@ -27,11 +27,11 @@ const generateConfig = (config: NetworkTypes.NetworkConfig) => {
 
 <template>
     <div class="flex items-center justify-center m-5">
-        <div class="flex w-full">
-            <div class="w-1/2 p-4">
+        <div class="sm:block md:flex w-full">
+            <div class="sm:w-full md:w-1/2 p-4">
                 <Config :cur-network="newNetworkConfig" @run-network="generateConfig" />
             </div>
-            <div class="w-1/2 p-4 bg-gray-100">
+            <div class="sm:w-full md:w-1/2 p-4 bg-gray-100">
                 <pre class="whitespace-pre-wrap">{{ toml_config }}</pre>
             </div>
         </div>

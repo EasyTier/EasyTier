@@ -154,6 +154,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'relay_all_peer_rpc', help: 'relay_all_peer_rpc_help' },
   { field: 'multi_thread', help: 'multi_thread_help' },
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
+  { field: 'disable_encryption', help: 'disable_encryption_help' },
 ]
 
 </script>
@@ -162,7 +163,7 @@ const bool_flags: BoolFlag[] = [
   <div class="frontend-lib">
     <div class="flex flex-col h-full">
       <div class="flex flex-col">
-        <div class="w-10/12 self-center ">
+        <div class="w-11/12 self-center ">
           <Panel :header="t('basic_settings')">
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
@@ -340,6 +341,23 @@ const bool_flags: BoolFlag[] = [
                       <AutoComplete id="routes" v-model="curNetwork.routes"
                                     :placeholder="t('chips_placeholder', ['192.168.0.0/16'])" class="w-full" multiple fluid
                                     :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap ">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex">
+                    <label for="socks5_port">{{ t('socks5') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('socks5_help')"></span>
+                  </div>
+                  <ToggleButton v-model="curNetwork.enable_socks5" on-icon="pi pi-check" off-icon="pi pi-times"
+                                :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                  <div v-if="curNetwork.enable_socks5" class="items-center flex flex-row gap-x-4">
+                    <div class="min-w-64 w-full">
+                      <InputNumber id="socks5_port" v-model="curNetwork.socks5_port" aria-describedby="rpc_port-help"
+                                   :format="false" :allow-empty="false" :min="0" :max="65535" class="w-full"/>
                     </div>
                   </div>
                 </div>

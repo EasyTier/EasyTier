@@ -46,6 +46,7 @@ export interface NetworkConfig {
   relay_all_peer_rpc?: boolean
   multi_thread?: boolean
   proxy_forward_by_system?: boolean
+  disable_encryption?: boolean
 
   enable_relay_network_whitelist?: boolean
   relay_network_whitelist: string[]
@@ -54,6 +55,9 @@ export interface NetworkConfig {
   routes: string[]
 
   exit_nodes: string[]
+
+  enable_socks5?: boolean
+  socks5_port: number
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -99,11 +103,14 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     relay_all_peer_rpc: false,
     multi_thread: true,
     proxy_forward_by_system: false,
+    disable_encryption: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,
     routes: [],
     exit_nodes: [],
+    enable_socks5: false,
+    socks5_port: 1080,
   }
 }
 
