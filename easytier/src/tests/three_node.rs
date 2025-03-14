@@ -499,17 +499,20 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
 
     let task = tokio::spawn(async move {
         for _ in 1..=2 {
-            tokio::time::sleep(tokio::time::Duration::from_secs(8)).await;
             // inst4 should be in inst1's route list
-            let routes = insts[0].get_peer_manager().list_routes().await;
-            assert!(
-                routes
-                    .iter()
-                    .find(|r| r.peer_id == inst4.peer_id())
-                    .is_some(),
-                "inst4 should be in inst1's route list, {:?}",
-                routes
-            );
+            wait_for_condition(
+                || async {
+                    insts[0]
+                        .get_peer_manager()
+                        .list_routes()
+                        .await
+                        .iter()
+                        .find(|r| r.peer_id == inst4.peer_id())
+                        .is_some()
+                },
+                Duration::from_secs(8),
+            )
+            .await;
 
             set_link_status("net_d", false);
             let _t = ScopedTask::from(tokio::spawn(async move {
@@ -520,14 +523,25 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             }));
             wait_for_condition(
                 || async {
-                    insts[2]
+                    let ret = insts[2]
                         .get_peer_manager()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
                         .iter()
                         .find(|r| **r == inst4.peer_id())
-                        .is_none()
+                        .is_none();
+                    if !ret {
+                        println!(
+                            "conn info: {:?}",
+                            insts[2]
+                                .get_peer_manager()
+                                .get_peer_map()
+                                .list_peer_conns(inst4.peer_id())
+                                .await
+                        );
+                    }
+                    ret
                 },
                 // 0 down, assume last packet is recv in -0.01
                 // [2, 7) send ping
