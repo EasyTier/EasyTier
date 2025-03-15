@@ -210,9 +210,20 @@ const loadDeviceInfo = async () => {
 }
 
 const exportConfig = async () => {
-  let ret = await props.api?.get_network_config(deviceId.value, instanceId.value);
-  delete ret.instance_id;
-  exportJsonFile(JSON.stringify(ret, null, 2),instanceId.value +'.json');
+  if (!deviceId.value || !instanceId.value) {
+    toast.add({ severity: 'error', summary: 'Error', detail: 'No network instance selected', life: 2000 });
+    return;
+  }
+
+  try {
+    let ret = await props.api?.get_network_config(deviceId.value, instanceId.value);
+    delete ret.instance_id;
+    exportJsonFile(JSON.stringify(ret, null, 2),instanceId.value +'.json');
+  } catch (e: any) {
+    console.error(e);
+    toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to export network config, error: ' + JSON.stringify(e.response.data), life: 2000 });
+    return;
+  }
 }
 
 const importConfig = () => {
@@ -316,9 +327,9 @@ onUnmounted(() => {
         <Status v-bind:cur-network-inst="curNetworkInfo" v-if="needShowNetworkStatus">
         </Status>
         <Divider />
-        <center>
-            <Button @click="updateNetworkState(true)" label="Disable Network" severity="warn" />
-        </center>
+        <div class="text-center">
+          <Button @click="updateNetworkState(true)" label="Disable Network" severity="warn" />
+        </div>
     </div>
 
     <!-- For disabled network, show the config -->
