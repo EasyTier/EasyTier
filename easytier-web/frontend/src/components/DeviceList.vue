@@ -27,7 +27,7 @@ const loadDevices = async () => {
             public_ip: device.client_url,
             running_network_instances: device.info?.running_network_instances.map((instance: any) => Utils.UuidToStr(instance)),
             running_network_count: device.info?.running_network_instances.length,
-            report_time: device.info?.report_time,
+            report_time: new Date(device.info?.report_time).toLocaleString(),
             easytier_version: device.info?.easytier_version,
             machine_id: Utils.UuidToStr(device.info?.machine_id),
         });

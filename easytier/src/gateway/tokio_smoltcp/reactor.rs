@@ -91,6 +91,19 @@ async fn run(
             &mut device,
             &mut socket_allocator.sockets().lock(),
         );
+
+        // wake up all closed sockets (smoltcp seems have a bug that it doesn't wake up closed sockets)
+        for (_, socket) in socket_allocator.sockets().lock().iter_mut() {
+            match socket {
+                Socket::Tcp(tcp) => {
+                    if tcp.state() == smoltcp::socket::tcp::State::Closed {
+                        tcp.abort();
+                    }
+                }
+                #[allow(unreachable_patterns)]
+                _ => {}
+            }
+        }
     }
 
     Ok(())

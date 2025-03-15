@@ -1,7 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::Context;
@@ -10,7 +9,7 @@ use cidr::Ipv4Inet;
 use dashmap::DashMap;
 use futures::StreamExt;
 use pnet::packet::ipv4::Ipv4Packet;
-use tokio::{task::JoinSet, time::timeout};
+use tokio::task::JoinSet;
 use tracing::Level;
 
 use crate::{
@@ -96,18 +95,14 @@ impl WireGuardImpl {
         let mut map_key = None;
 
         loop {
-            let msg = match timeout(Duration::from_secs(120), stream.next()).await {
-                Ok(Some(Ok(msg))) => msg,
-                Ok(Some(Err(err))) => {
+            let msg = match stream.next().await {
+                Some(Ok(msg)) => msg,
+                Some(Err(err)) => {
                     tracing::error!(?err, "Failed to receive from wg client");
                     break;
                 }
-                Ok(None) => {
+                None => {
                     tracing::info!("Wireguard client disconnected");
-                    break;
-                }
-                Err(err) => {
-                    tracing::error!(?err, "Timeout while receiving from wg client");
                     break;
                 }
             };
