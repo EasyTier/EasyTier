@@ -894,12 +894,24 @@ impl StunInfoCollector {
         // for ipv6
         let stun_servers = self.stun_servers_v6.clone();
         let stored_ipv6 = self.public_ipv6.clone();
+        let redetect_notify = self.redetect_notify.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = stun_servers.read().unwrap().clone();
                 Self::get_public_ipv6(&servers)
                     .await
                     .map(|x| stored_ipv6.store(Some(x)));
+
+                let sleep_sec = if stored_ipv6.load().is_none() {
+                    60
+                } else {
+                    360
+                };
+
+                tokio::select! {
+                    _ = redetect_notify.notified() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(sleep_sec)) => {}
+                }
             }
         });
     }
