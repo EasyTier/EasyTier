@@ -50,8 +50,8 @@ async function main() {
         darkModeSelector: 'system',
         cssLayer: {
           name: 'primevue',
-          order: 'tailwind-base, primevue, tailwind-utilities'
-        }
+          order: 'tailwind-base, primevue, tailwind-utilities',
+        },
       },
     },
   })

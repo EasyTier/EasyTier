@@ -8,7 +8,7 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-**Please visit the [EasyTier Official Website](https://www.easytier.top/en/) to view the full documentation.**
+**Please visit the [EasyTier Official Website](https://easytier.cn/en/) to view the full documentation.**
 
 EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.
 
@@ -53,7 +53,7 @@ EasyTier is a simple, safe and decentralized VPN networking solution implemented
 
 4. **Install by Docker Compose**
 
-    Please visit the [EasyTier Official Website](https://www.easytier.cn/en/) to view the full documentation.
+    Please visit the [EasyTier Official Website](https://easytier.cn/en/) to view the full documentation.
 
 5. **Install by script (For Linux Only)**
 
