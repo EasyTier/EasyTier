@@ -1,7 +1,9 @@
 // try connect peers directly, with either its public ip or lan ip
 
 use std::{
-    net::SocketAddr,
+    collections::HashSet,
+    net::{Ipv6Addr, SocketAddr},
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -273,44 +275,27 @@ impl DirectConnectorManager {
         match listener_host {
             Some(SocketAddr::V4(s_addr)) => {
                 if s_addr.ip().is_unspecified() {
-                    ip_list.interface_ipv4s.iter().for_each(|ip| {
-                        let mut addr = (*listener).clone();
-                        if addr.set_host(Some(ip.to_string().as_str())).is_ok() {
-                            tasks.spawn(Self::try_connect_to_ip(
-                                data.clone(),
-                                dst_peer_id.clone(),
-                                addr.to_string(),
-                            ));
-                        } else {
-                            tracing::error!(
-                                ?ip,
-                                ?listener,
-                                ?dst_peer_id,
-                                "failed to set host for interface ipv4"
-                            );
-                        }
-                    });
-
-                    if let Some(public_ipv4) = ip_list.public_ipv4 {
-                        let mut addr = (*listener).clone();
-                        if addr
-                            .set_host(Some(public_ipv4.to_string().as_str()))
-                            .is_ok()
-                        {
-                            tasks.spawn(Self::try_connect_to_ip(
-                                data.clone(),
-                                dst_peer_id.clone(),
-                                addr.to_string(),
-                            ));
-                        } else {
-                            tracing::error!(
-                                ?public_ipv4,
-                                ?listener,
-                                ?dst_peer_id,
-                                "failed to set host for public ipv4"
-                            );
-                        }
-                    }
+                    ip_list
+                        .interface_ipv4s
+                        .iter()
+                        .chain(ip_list.public_ipv4.iter())
+                        .for_each(|ip| {
+                            let mut addr = (*listener).clone();
+                            if addr.set_host(Some(ip.to_string().as_str())).is_ok() {
+                                tasks.spawn(Self::try_connect_to_ip(
+                                    data.clone(),
+                                    dst_peer_id.clone(),
+                                    addr.to_string(),
+                                ));
+                            } else {
+                                tracing::error!(
+                                    ?ip,
+                                    ?listener,
+                                    ?dst_peer_id,
+                                    "failed to set host for interface ipv4"
+                                );
+                            }
+                        });
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
                     tasks.spawn(Self::try_connect_to_ip(
                         data.clone(),
@@ -322,26 +307,41 @@ impl DirectConnectorManager {
             Some(SocketAddr::V6(s_addr)) => {
                 if s_addr.ip().is_unspecified() {
                     // for ipv6, only try public ip
-                    if let Some(public_ipv6) = ip_list.public_ipv6 {
-                        let mut addr = (*listener).clone();
-                        if addr
-                            .set_host(Some(format!("[{}]", public_ipv6.to_string()).as_str()))
-                            .is_ok()
-                        {
-                            tasks.spawn(Self::try_connect_to_ip(
-                                data.clone(),
-                                dst_peer_id.clone(),
-                                addr.to_string(),
-                            ));
-                        } else {
-                            tracing::error!(
-                                ?public_ipv6,
-                                ?listener,
-                                ?dst_peer_id,
-                                "failed to set host for public ipv6"
-                            );
-                        }
-                    }
+                    ip_list
+                        .interface_ipv6s
+                        .iter()
+                        .chain(ip_list.public_ipv6.iter())
+                        .filter_map(|x| Ipv6Addr::from_str(&x.to_string()).ok())
+                        .filter(|x| {
+                            TESTING.load(Ordering::Relaxed)
+                                || (!x.is_loopback()
+                                    && !x.is_unspecified()
+                                    && !x.is_unique_local()
+                                    && !x.is_unicast_link_local()
+                                    && !x.is_multicast())
+                        })
+                        .collect::<HashSet<_>>()
+                        .iter()
+                        .for_each(|ip| {
+                            let mut addr = (*listener).clone();
+                            if addr
+                                .set_host(Some(format!("[{}]", ip.to_string()).as_str()))
+                                .is_ok()
+                            {
+                                tasks.spawn(Self::try_connect_to_ip(
+                                    data.clone(),
+                                    dst_peer_id.clone(),
+                                    addr.to_string(),
+                                ));
+                            } else {
+                                tracing::error!(
+                                    ?ip,
+                                    ?listener,
+                                    ?dst_peer_id,
+                                    "failed to set host for public ipv6"
+                                );
+                            }
+                        });
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
                     tasks.spawn(Self::try_connect_to_ip(
                         data.clone(),
@@ -421,8 +421,7 @@ mod tests {
 
     use crate::{
         connector::direct::{
-            DirectConnectorManager, DirectConnectorManagerData, DstBlackListItem,
-            DstListenerUrlBlackListItem,
+            DirectConnectorManager, DirectConnectorManagerData, DstListenerUrlBlackListItem,
         },
         instance::listeners::ListenerManager,
         peers::tests::{
@@ -481,9 +480,7 @@ mod tests {
         #[values("tcp", "udp", "wg")] proto: &str,
         #[values("true", "false")] ipv6: bool,
     ) {
-        if ipv6 && proto != "udp" {
-            return;
-        }
+        TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let p_a = create_mock_peer_manager().await;
         let p_b = create_mock_peer_manager().await;
@@ -499,14 +496,18 @@ mod tests {
         dm_a.run_as_client();
         dm_c.run_as_server();
 
+        let port = if proto == "wg" { 11040 } else { 11041 };
         if !ipv6 {
-            let port = if proto == "wg" { 11040 } else { 11041 };
             p_c.get_global_ctx().config.set_listeners(vec![format!(
                 "{}://0.0.0.0:{}",
                 proto, port
             )
             .parse()
             .unwrap()]);
+        } else {
+            p_c.get_global_ctx()
+                .config
+                .set_listeners(vec![format!("{}://[::]:{}", proto, port).parse().unwrap()]);
         }
         let mut f = p_c.get_global_ctx().config.get_flags();
         f.enable_ipv6 = ipv6;

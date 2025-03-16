@@ -6,7 +6,7 @@ use crate::{
         global_ctx::ArcGlobalCtx,
         stun::{get_default_resolver_config, resolve_txt_record},
     },
-    tunnel::{Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
+    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
 };
 use anyhow::Context;
 use dashmap::DashSet;
@@ -42,6 +42,7 @@ pub struct DNSTunnelConnector {
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
+    ip_version: IpVersion,
 
     default_resolve_config: ResolverConfig,
     default_resolve_opts: ResolverOpts,
@@ -53,6 +54,7 @@ impl DNSTunnelConnector {
             addr,
             bind_addrs: Vec::new(),
             global_ctx,
+            ip_version: IpVersion::Both,
 
             default_resolve_config: get_default_resolver_config(),
             default_resolve_opts: ResolverOpts::default(),
@@ -89,9 +91,9 @@ impl DNSTunnelConnector {
                 )
             })?;
 
-        let connector = create_connector_by_url(url.as_str(), &self.global_ctx).await;
-
-        connector
+        let mut connector = create_connector_by_url(url.as_str(), &self.global_ctx).await?;
+        connector.set_ip_version(self.ip_version);
+        Ok(connector)
     }
 
     fn handle_one_srv_record(record: &SRV, protocol: &str) -> Result<(url::Url, u64), Error> {
@@ -177,8 +179,9 @@ impl DNSTunnelConnector {
             )
         })?;
 
-        let connector = create_connector_by_url(url.as_str(), &self.global_ctx).await;
-        connector
+        let mut connector = create_connector_by_url(url.as_str(), &self.global_ctx).await?;
+        connector.set_ip_version(self.ip_version);
+        Ok(connector)
     }
 }
 
@@ -222,6 +225,10 @@ impl super::TunnelConnector for DNSTunnelConnector {
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
     }
 }
 

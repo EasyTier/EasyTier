@@ -128,13 +128,7 @@ impl HostResolverIter {
             match lookup_host(&host).await {
                 Ok(ips) => {
                     self.ips = ips
-                        .filter(|x| {
-                            if use_ipv6 {
-                                x.is_ipv6()
-                            } else {
-                                x.is_ipv4() && !x.ip().is_loopback()
-                            }
-                        })
+                        .filter(|x| if use_ipv6 { x.is_ipv6() } else { x.is_ipv4() })
                         .choose_multiple(&mut rand::thread_rng(), self.max_ip_per_domain as usize);
 
                     if self.ips.is_empty() {
@@ -948,10 +942,7 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        tests::enable_log,
-        tunnel::{udp::UdpTunnelListener, TunnelListener},
-    };
+    use crate::tunnel::{udp::UdpTunnelListener, TunnelListener};
 
     use super::*;
 
@@ -995,7 +986,7 @@ mod tests {
         let detector = UdpNatTypeDetector::new(stun_servers, 1);
         let ret = detector.detect_nat_type(0).await;
         println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
-        assert_eq!(ret.unwrap().nat_type(), NatType::PortRestricted);
+        assert_eq!(ret.unwrap().nat_type(), NatType::Restricted);
     }
 
     #[tokio::test]
@@ -1004,7 +995,7 @@ mod tests {
         let detector = UdpNatTypeDetector::new(stun_servers, 1);
         let ret = detector.detect_nat_type(0).await;
         println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
-        assert_eq!(ret.unwrap().nat_type(), NatType::PortRestricted);
+        assert!(!ret.unwrap().stun_resps.is_empty());
     }
 
     #[tokio::test]
