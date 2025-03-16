@@ -1,5 +1,6 @@
 use std::{fmt::Debug, sync::Arc};
 
+use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
@@ -47,6 +48,10 @@ pub fn get_listener_by_url(
             return Err(Error::InvalidUrl(l.to_string()));
         }
     })
+}
+
+pub fn is_url_host_ipv6(l: &url::Url) -> bool {
+    l.host_str().map_or(false, |h| h.contains(':'))
 }
 
 #[async_trait]
@@ -113,22 +118,26 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 continue;
             };
             let ctx = self.global_ctx.clone();
-            self.add_listener(move || get_listener_by_url(&l, ctx.clone()).unwrap(), true)
-                .await?;
-        }
 
-        if self.global_ctx.config.get_flags().enable_ipv6 {
-            let ipv6_listener = self.global_ctx.config.get_flags().ipv6_listener.clone();
-            let _ = self
-                .add_listener(
-                    move || {
-                        Box::new(UdpTunnelListener::new(
-                            ipv6_listener.clone().parse().unwrap(),
-                        ))
-                    },
+            let listener = l.clone();
+            self.add_listener(
+                move || get_listener_by_url(&listener, ctx.clone()).unwrap(),
+                true,
+            )
+            .await?;
+
+            if self.global_ctx.config.get_flags().enable_ipv6 && !is_url_host_ipv6(&l) {
+                let mut ipv6_listener = l.clone();
+                ipv6_listener
+                    .set_host(Some("[::]".to_string().as_str()))
+                    .with_context(|| format!("failed to set ipv6 host for listener: {}", l))?;
+                let ctx = self.global_ctx.clone();
+                self.add_listener(
+                    move || get_listener_by_url(&ipv6_listener, ctx.clone()).unwrap(),
                     false,
                 )
                 .await?;
+            }
         }
 
         Ok(())
@@ -161,11 +170,11 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                     global_ctx.issue_event(GlobalCtxEvent::ListenerAdded(l.local_url()));
                 }
                 Err(e) => {
+                    tracing::error!(?e, ?l, "listener listen error");
                     global_ctx.issue_event(GlobalCtxEvent::ListenerAddFailed(
                         l.local_url(),
                         format!("error: {:?}, retry listen later...", e),
                     ));
-                    tracing::error!(?e, ?l, "listener listen error");
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     continue;
                 }
@@ -217,6 +226,15 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
 
     pub async fn run(&mut self) -> Result<(), Error> {
         for listener in &self.listeners {
+            if listener.must_succ {
+                // try listen once
+                let mut l = (listener.creator_fn)();
+                let _g = self.net_ns.guard();
+                l.listen()
+                    .await
+                    .with_context(|| format!("failed to listen on {}", l.local_url()))?;
+            }
+
             self.tasks.spawn(Self::run_listener(
                 listener.creator_fn.clone(),
                 self.peer_manager.clone(),
