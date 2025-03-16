@@ -121,7 +121,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _request: ShowNodeInfoRequest, // Accept request of type HelloRequest
     ) -> Result<ShowNodeInfoResponse, rpc_types::error::Error> {
         Ok(ShowNodeInfoResponse {
-            node_info: Some(self.peer_manager.get_my_info()),
+            node_info: Some(self.peer_manager.get_my_info().await),
         })
     }
 }

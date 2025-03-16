@@ -273,18 +273,17 @@ impl DirectConnectorManager {
 
         tracing::debug!(?available_listeners, "got available listeners");
 
-        let mut listener = available_listeners.get(0).ok_or(anyhow::anyhow!(
-            "peer {} have no valid listener",
-            dst_peer_id
-        ))?;
+        if available_listeners.is_empty() {
+            return Err(anyhow::anyhow!("peer {} have no valid listener", dst_peer_id).into());
+        }
 
         // if have default listener, use it first
-        listener = available_listeners
+        let listener = available_listeners
             .iter()
             .find(|l| l.scheme() == data.global_ctx.get_flags().default_protocol)
-            .unwrap_or(listener);
+            .unwrap_or(available_listeners.get(0).unwrap());
 
-        let mut tasks = JoinSet::new();
+        let mut tasks = bounded_join_set::JoinSet::new(2);
 
         let listener_host = listener.socket_addrs(|| None).unwrap().pop();
         match listener_host {

@@ -924,7 +924,7 @@ impl PeerManager {
         self.foreign_network_client.clone()
     }
 
-    pub fn get_my_info(&self) -> cli::NodeInfo {
+    pub async fn get_my_info(&self) -> cli::NodeInfo {
         cli::NodeInfo {
             peer_id: self.my_peer_id,
             ipv4_addr: self
@@ -950,6 +950,7 @@ impl PeerManager {
             config: self.global_ctx.config.dump(),
             version: EASYTIER_VERSION.to_string(),
             feature_flag: Some(self.global_ctx.get_feature_flags()),
+            ip_list: Some(self.global_ctx.get_ip_collector().collect_ip_addrs().await),
         }
     }
 

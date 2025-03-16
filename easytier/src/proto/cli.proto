@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 import "common.proto";
+import "peer_rpc.proto";
 
 package cli;
 
@@ -79,6 +80,7 @@ message NodeInfo {
   string config = 8;
   string version = 9;
   common.PeerFeatureFlag feature_flag = 10;
+  peer_rpc.GetIpListResponse ip_list = 11;
 }
 
 message ShowNodeInfoRequest {}
