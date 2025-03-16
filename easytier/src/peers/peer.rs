@@ -178,6 +178,10 @@ impl Peer {
         }
         ret
     }
+
+    pub fn get_default_conn_id(&self) -> PeerConnId {
+        self.default_conn_id.load()
+    }
 }
 
 // pritn on drop

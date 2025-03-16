@@ -26,7 +26,6 @@ use crate::{
 
 use crate::proto::cli::PeerConnInfo;
 use anyhow::Context;
-use dashmap::{DashMap, DashSet};
 use rand::Rng;
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
@@ -81,7 +80,6 @@ struct DirectConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
     dst_listener_blacklist: timedmap::TimedMap<DstListenerUrlBlackListItem, ()>,
-    connected_connid_map: Arc<DashMap<PeerId, DashSet<String>>>,
 }
 
 impl DirectConnectorManagerData {
@@ -90,7 +88,6 @@ impl DirectConnectorManagerData {
             global_ctx,
             peer_manager,
             dst_listener_blacklist: timedmap::TimedMap::new(),
-            connected_connid_map: Arc::new(DashMap::new()),
         }
     }
 }
@@ -150,9 +147,10 @@ impl DirectConnectorManager {
                 loop {
                     let peers = data.peer_manager.list_peers().await;
                     let mut tasks = JoinSet::new();
-                    data.connected_connid_map.retain(|k, _| peers.contains(k));
                     for peer_id in peers {
-                        if peer_id == my_peer_id {
+                        if peer_id == my_peer_id
+                            || data.peer_manager.has_directly_connected_conn(peer_id)
+                        {
                             continue;
                         }
                         tasks.spawn(Self::do_try_direct_connect(data.clone(), peer_id));
@@ -178,7 +176,7 @@ impl DirectConnectorManager {
         let connector = create_connector_by_url(&addr, &data.global_ctx).await?;
         let (peer_id, conn_id) = timeout(
             std::time::Duration::from_secs(3),
-            data.peer_manager.try_connect(connector),
+            data.peer_manager.try_direct_connect(connector),
         )
         .await??;
 
@@ -195,11 +193,6 @@ impl DirectConnectorManager {
                 .await?;
             return Err(Error::InvalidUrl(addr));
         }
-
-        data.connected_connid_map
-            .entry(dst_peer_id)
-            .or_insert_with(DashSet::new)
-            .insert(conn_id.to_string());
 
         Ok(())
     }
@@ -400,22 +393,6 @@ impl DirectConnectorManager {
         dst_peer_id: PeerId,
     ) -> Result<(), Error> {
         let peer_manager = data.peer_manager.clone();
-        // check if we have direct connection with dst_peer_id
-        if let Some(c) = peer_manager.list_peer_conns(dst_peer_id).await {
-            // if we have direct connection with dst_peer_id, we don't need to try direct connect
-            let direct_connected = data
-                .connected_connid_map
-                .get(&dst_peer_id)
-                .map_or(false, |s| c.iter().any(|conn| s.contains(&conn.conn_id)));
-            if direct_connected {
-                return Ok(());
-            }
-        }
-
-        // old conn set is useless, just replace it with a new one
-        data.connected_connid_map
-            .insert(dst_peer_id, DashSet::new());
-
         tracing::debug!("try direct connect to peer: {}", dst_peer_id);
 
         let rpc_stub = peer_manager

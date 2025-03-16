@@ -63,7 +63,7 @@ pub trait TunnelHandlerForListener {
 impl TunnelHandlerForListener for PeerManager {
     #[tracing::instrument]
     async fn handle_tunnel(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
-        self.add_tunnel_as_server(tunnel).await
+        self.add_tunnel_as_server(tunnel, true).await
     }
 }
 

@@ -32,12 +32,23 @@ impl PeerManagerRpcService {
                 .await
                 .iter(),
         );
+        let peer_map = self.peer_manager.get_peer_map();
         let mut peer_infos = Vec::new();
         for peer in peers {
             let mut peer_info = PeerInfo::default();
             peer_info.peer_id = peer;
+            peer_info.default_conn_id = peer_map
+                .get_peer_default_conn_id(peer)
+                .await
+                .map(Into::into);
+            peer_info.directly_connected_conns = self
+                .peer_manager
+                .get_directly_connections(peer)
+                .into_iter()
+                .map(Into::into)
+                .collect();
 
-            if let Some(conns) = self.peer_manager.get_peer_map().list_peer_conns(peer).await {
+            if let Some(conns) = peer_map.list_peer_conns(peer).await {
                 peer_info.conns = conns;
             } else if let Some(conns) = self
                 .peer_manager

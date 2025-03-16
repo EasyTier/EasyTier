@@ -1009,7 +1009,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_v4_stun() {
-        enable_log();
         let mut udp_server = UdpTunnelListener::new("udp://0.0.0.0:55355".parse().unwrap());
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -1028,7 +1027,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_v6_stun() {
-        enable_log();
         let mut udp_server = UdpTunnelListener::new("udp://[::]:55355".parse().unwrap());
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {

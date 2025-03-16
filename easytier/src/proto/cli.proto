@@ -35,6 +35,8 @@ message PeerConnInfo {
 message PeerInfo {
   uint32 peer_id = 1;
   repeated PeerConnInfo conns = 2;
+  common.UUID default_conn_id = 3;
+  repeated common.UUID directly_connected_conns = 4;
 }
 
 message ListPeerRequest {}

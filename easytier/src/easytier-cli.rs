@@ -317,7 +317,11 @@ impl CommandHandler {
                     ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
                     hostname: route.hostname.clone(),
                     cost: cost_to_str(route.cost),
-                    lat_ms: float_to_str(p.get_latency_ms().unwrap_or(0.0), 3),
+                    lat_ms: if route.cost == 1 {
+                        float_to_str(p.get_latency_ms().unwrap_or(0.0), 3)
+                    } else {
+                        route.path_latency_latency_first().to_string()
+                    },
                     loss_rate: float_to_str(p.get_loss_rate().unwrap_or(0.0), 3),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),

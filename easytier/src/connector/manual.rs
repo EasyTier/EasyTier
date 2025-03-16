@@ -293,7 +293,6 @@ impl ManualConnectorManager {
         ip_version: IpVersion,
     ) -> Result<ReconnResult, Error> {
         let ip_collector = data.global_ctx.get_ip_collector();
-        let net_ns = data.net_ns.clone();
 
         connector.lock().await.set_ip_version(ip_version);
 
@@ -309,18 +308,11 @@ impl ManualConnectorManager {
         data.global_ctx.issue_event(GlobalCtxEvent::Connecting(
             connector.lock().await.remote_url().clone(),
         ));
-
-        let _g = net_ns.guard();
         tracing::info!("reconnect try connect... conn: {:?}", connector);
-        let tunnel = connector.lock().await.connect().await?;
-        tracing::info!("reconnect get tunnel succ: {:?}", tunnel);
-        assert_eq!(
-            dead_url,
-            tunnel.info().unwrap().remote_addr.unwrap().to_string(),
-            "info: {:?}",
-            tunnel.info()
-        );
-        let (peer_id, conn_id) = data.peer_manager.add_client_tunnel(tunnel).await?;
+        let (peer_id, conn_id) = data
+            .peer_manager
+            .try_direct_connect(connector.lock().await.as_mut())
+            .await?;
         tracing::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);
         Ok(ReconnResult {
             dead_url,
