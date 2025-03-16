@@ -338,27 +338,7 @@ impl DirectConnectorManager {
             }
             Some(SocketAddr::V6(s_addr)) => {
                 if s_addr.ip().is_unspecified() {
-                    ip_list.interface_ipv6s.iter().for_each(|ip| {
-                        let mut addr = (*listener).clone();
-                        if addr
-                            .set_host(Some(format!("[{}]", ip.to_string()).as_str()))
-                            .is_ok()
-                        {
-                            tasks.spawn(Self::try_connect_to_ip(
-                                data.clone(),
-                                dst_peer_id.clone(),
-                                addr.to_string(),
-                            ));
-                        } else {
-                            tracing::error!(
-                                ?ip,
-                                ?listener,
-                                ?dst_peer_id,
-                                "failed to set host for interface ipv6"
-                            );
-                        }
-                    });
-
+                    // for ipv6, only try public ip
                     if let Some(public_ipv6) = ip_list.public_ipv6 {
                         let mut addr = (*listener).clone();
                         if addr

@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -65,14 +65,16 @@ struct HostResolverIter {
     hostnames: Vec<String>,
     ips: Vec<SocketAddr>,
     max_ip_per_domain: u32,
+    use_ipv6: bool,
 }
 
 impl HostResolverIter {
-    fn new(hostnames: Vec<String>, max_ip_per_domain: u32) -> Self {
+    fn new(hostnames: Vec<String>, max_ip_per_domain: u32, use_ipv6: bool) -> Self {
         Self {
             hostnames,
             ips: vec![],
             max_ip_per_domain,
+            use_ipv6,
         }
     }
 
@@ -121,10 +123,18 @@ impl HostResolverIter {
                 return self.next().await;
             }
 
+            let use_ipv6 = self.use_ipv6;
+
             match lookup_host(&host).await {
                 Ok(ips) => {
                     self.ips = ips
-                        .filter(|x| x.is_ipv4())
+                        .filter(|x| {
+                            if use_ipv6 {
+                                x.is_ipv6()
+                            } else {
+                                x.is_ipv4() && !x.ip().is_loopback()
+                            }
+                        })
                         .choose_multiple(&mut rand::thread_rng(), self.max_ip_per_domain as usize);
 
                     if self.ips.is_empty() {
@@ -470,7 +480,7 @@ impl UdpNatTypeDetectResult {
         // find resp with distinct stun server
         self.stun_resps
             .iter()
-            .map(|x| x.stun_server_addr)
+            .map(|x| x.recv_from_addr)
             .collect::<BTreeSet<_>>()
             .len()
     }
@@ -606,7 +616,7 @@ impl UdpNatTypeDetector {
         source_port: u16,
         stun_server: SocketAddr,
     ) -> Result<BindRequestResponse, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("[::]:{}", source_port)).await?);
+        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
         let client_builder = StunClientBuilder::new(udp.clone());
         client_builder
             .new_stun_client(stun_server)
@@ -615,7 +625,7 @@ impl UdpNatTypeDetector {
     }
 
     pub async fn detect_nat_type(&self, source_port: u16) -> Result<UdpNatTypeDetectResult, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("[::]:{}", source_port)).await?);
+        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
         self.detect_nat_type_with_socket(udp).await
     }
 
@@ -625,8 +635,11 @@ impl UdpNatTypeDetector {
         udp: Arc<UdpSocket>,
     ) -> Result<UdpNatTypeDetectResult, Error> {
         let mut stun_servers = vec![];
-        let mut host_resolver =
-            HostResolverIter::new(self.stun_server_hosts.clone(), self.max_ip_per_domain);
+        let mut host_resolver = HostResolverIter::new(
+            self.stun_server_hosts.clone(),
+            self.max_ip_per_domain,
+            false,
+        );
         while let Some(addr) = host_resolver.next().await {
             stun_servers.push(addr);
         }
@@ -672,7 +685,9 @@ pub trait StunInfoCollectorTrait: Send + Sync {
 
 pub struct StunInfoCollector {
     stun_servers: Arc<RwLock<Vec<String>>>,
+    stun_servers_v6: Arc<RwLock<Vec<String>>>,
     udp_nat_test_result: Arc<RwLock<Option<UdpNatTypeDetectResult>>>,
+    public_ipv6: Arc<AtomicCell<Option<Ipv6Addr>>>,
     nat_test_result_time: Arc<AtomicCell<chrono::DateTime<Local>>>,
     redetect_notify: Arc<tokio::sync::Notify>,
     tasks: std::sync::Mutex<JoinSet<()>>,
@@ -691,7 +706,12 @@ impl StunInfoCollectorTrait for StunInfoCollector {
             udp_nat_type: result.nat_type() as i32,
             tcp_nat_type: 0,
             last_update_time: self.nat_test_result_time.load().timestamp(),
-            public_ip: result.public_ips().iter().map(|x| x.to_string()).collect(),
+            public_ip: result
+                .public_ips()
+                .iter()
+                .map(|x| x.to_string())
+                .chain(self.public_ipv6.load().map(|x| x.to_string()))
+                .collect(),
             min_port: result.min_port() as u32,
             max_port: result.max_port() as u32,
         }
@@ -710,7 +730,7 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 
         if stun_servers.is_empty() {
             let mut host_resolver =
-                HostResolverIter::new(self.stun_servers.read().unwrap().clone(), 2);
+                HostResolverIter::new(self.stun_servers.read().unwrap().clone(), 2, false);
             while let Some(addr) = host_resolver.next().await {
                 stun_servers.push(addr);
                 if stun_servers.len() >= 2 {
@@ -750,7 +770,9 @@ impl StunInfoCollector {
     pub fn new(stun_servers: Vec<String>) -> Self {
         Self {
             stun_servers: Arc::new(RwLock::new(stun_servers)),
+            stun_servers_v6: Arc::new(RwLock::new(Self::get_default_servers_v6())),
             udp_nat_test_result: Arc::new(RwLock::new(None)),
+            public_ipv6: Arc::new(AtomicCell::new(None)),
             nat_test_result_time: Arc::new(AtomicCell::new(Local::now())),
             redetect_notify: Arc::new(tokio::sync::Notify::new()),
             tasks: std::sync::Mutex::new(JoinSet::new()),
@@ -774,6 +796,32 @@ impl StunInfoCollector {
         .iter()
         .map(|x| x.to_string())
         .collect()
+    }
+
+    pub fn get_default_servers_v6() -> Vec<String> {
+        vec!["txt:stun-v6.easytier.cn"]
+            .iter()
+            .map(|x| x.to_string())
+            .collect()
+    }
+
+    async fn get_public_ipv6(servers: &Vec<String>) -> Option<Ipv6Addr> {
+        let mut ips = HostResolverIter::new(servers.to_vec(), 10, true);
+        while let Some(ip) = ips.next().await {
+            let udp = Arc::new(UdpSocket::bind(format!("[::]:0")).await.unwrap());
+            let ret = StunClientBuilder::new(udp.clone())
+                .new_stun_client(ip)
+                .bind_request(false, false)
+                .await;
+            tracing::debug!(?ret, "finish ipv6 udp nat type detect");
+            match ret.map(|x| x.mapped_socket_addr.map(|x| x.ip())) {
+                Ok(Some(IpAddr::V6(v6))) => {
+                    return Some(v6);
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     fn start_stun_routine(&self) {
@@ -840,6 +888,18 @@ impl StunInfoCollector {
                     _ = redetect_notify.notified() => {}
                     _ = tokio::time::sleep(Duration::from_secs(sleep_sec)) => {}
                 }
+            }
+        });
+
+        // for ipv6
+        let stun_servers = self.stun_servers_v6.clone();
+        let stored_ipv6 = self.public_ipv6.clone();
+        self.tasks.lock().unwrap().spawn(async move {
+            loop {
+                let servers = stun_servers.read().unwrap().clone();
+                Self::get_public_ipv6(&servers)
+                    .await
+                    .map(|x| stored_ipv6.store(Some(x)));
             }
         });
     }
@@ -936,6 +996,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_v4_stun() {
+        enable_log();
+        let mut udp_server = UdpTunnelListener::new("udp://0.0.0.0:55355".parse().unwrap());
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async move {
+            udp_server.listen().await.unwrap();
+            loop {
+                udp_server.accept().await.unwrap();
+            }
+        });
+        let stun_servers = vec!["127.0.0.1:55355".to_string()];
+
+        let detector = UdpNatTypeDetector::new(stun_servers, 1);
+        let ret = detector.detect_nat_type(0).await;
+        println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
+        assert_eq!(ret.unwrap().nat_type(), NatType::Restricted);
+    }
+
+    #[tokio::test]
     async fn test_v6_stun() {
         enable_log();
         let mut udp_server = UdpTunnelListener::new("udp://[::]:55355".parse().unwrap());
@@ -947,10 +1026,7 @@ mod tests {
             }
         });
         let stun_servers = vec!["::1:55355".to_string()];
-
-        let detector = UdpNatTypeDetector::new(stun_servers, 1);
-        let ret = detector.detect_nat_type(0).await;
-        println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
-        assert_eq!(ret.unwrap().nat_type(), NatType::PortRestricted);
+        let ret = StunInfoCollector::get_public_ipv6(&stun_servers).await;
+        println!("{:#?}", ret);
     }
 }
