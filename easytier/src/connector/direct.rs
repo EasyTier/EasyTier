@@ -26,6 +26,7 @@ use crate::{
 
 use crate::proto::cli::PeerConnInfo;
 use anyhow::Context;
+use dashmap::{DashMap, DashSet};
 use rand::Rng;
 use tokio::{task::JoinSet, time::timeout};
 use tracing::Instrument;
@@ -79,8 +80,8 @@ struct DstListenerUrlBlackListItem(PeerId, url::Url);
 struct DirectConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
-    dst_blacklist: timedmap::TimedMap<DstBlackListItem, ()>,
     dst_listener_blacklist: timedmap::TimedMap<DstListenerUrlBlackListItem, ()>,
+    connected_connid_map: Arc<DashMap<PeerId, DashSet<String>>>,
 }
 
 impl DirectConnectorManagerData {
@@ -88,8 +89,8 @@ impl DirectConnectorManagerData {
         Self {
             global_ctx,
             peer_manager,
-            dst_blacklist: timedmap::TimedMap::new(),
             dst_listener_blacklist: timedmap::TimedMap::new(),
+            connected_connid_map: Arc::new(DashMap::new()),
         }
     }
 }
@@ -149,6 +150,7 @@ impl DirectConnectorManager {
                 loop {
                     let peers = data.peer_manager.list_peers().await;
                     let mut tasks = JoinSet::new();
+                    data.connected_connid_map.retain(|k, _| peers.contains(k));
                     for peer_id in peers {
                         if peer_id == my_peer_id {
                             continue;
@@ -173,23 +175,12 @@ impl DirectConnectorManager {
         dst_peer_id: PeerId,
         addr: String,
     ) -> Result<(), Error> {
-        data.dst_blacklist.cleanup();
-        if data
-            .dst_blacklist
-            .contains(&DstBlackListItem(dst_peer_id.clone(), addr.clone()))
-        {
-            tracing::debug!("try_connect_to_ip failed, addr in blacklist: {}", addr);
-            return Err(Error::UrlInBlacklist);
-        }
-
         let connector = create_connector_by_url(&addr, &data.global_ctx).await?;
         let (peer_id, conn_id) = timeout(
-            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(3),
             data.peer_manager.try_connect(connector),
         )
         .await??;
-
-        // let (peer_id, conn_id) = data.peer_manager.try_connect(connector).await?;
 
         if peer_id != dst_peer_id && !TESTING.load(Ordering::Relaxed) {
             tracing::info!(
@@ -204,6 +195,12 @@ impl DirectConnectorManager {
                 .await?;
             return Err(Error::InvalidUrl(addr));
         }
+
+        data.connected_connid_map
+            .entry(dst_peer_id)
+            .or_insert_with(DashSet::new)
+            .insert(conn_id.to_string());
+
         Ok(())
     }
 
@@ -214,7 +211,7 @@ impl DirectConnectorManager {
         addr: String,
     ) -> Result<(), Error> {
         let mut rand_gen = rand::rngs::OsRng::default();
-        let backoff_ms = vec![1000, 2000, 4000];
+        let backoff_ms = vec![1000, 2000];
         let mut backoff_idx = 0;
 
         loop {
@@ -237,12 +234,6 @@ impl DirectConnectorManager {
                 backoff_idx += 1;
                 continue;
             } else {
-                data.dst_blacklist.insert(
-                    DstBlackListItem(dst_peer_id.clone(), addr.clone()),
-                    (),
-                    std::time::Duration::from_secs(DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC),
-                );
-
                 return ret;
             }
         }
@@ -411,11 +402,19 @@ impl DirectConnectorManager {
         let peer_manager = data.peer_manager.clone();
         // check if we have direct connection with dst_peer_id
         if let Some(c) = peer_manager.list_peer_conns(dst_peer_id).await {
-            // currently if we have any type of direct connection (udp or tcp), we will not try to connect
-            if !c.is_empty() {
+            // if we have direct connection with dst_peer_id, we don't need to try direct connect
+            let direct_connected = data
+                .connected_connid_map
+                .get(&dst_peer_id)
+                .map_or(false, |s| c.iter().any(|conn| s.contains(&conn.conn_id)));
+            if direct_connected {
                 return Ok(());
             }
         }
+
+        // old conn set is useless, just replace it with a new one
+        data.connected_connid_map
+            .insert(dst_peer_id, DashSet::new());
 
         tracing::debug!("try direct connect to peer: {}", dst_peer_id);
 
@@ -571,9 +570,5 @@ mod tests {
                 1,
                 "tcp://127.0.0.1:10222".parse().unwrap()
             )));
-
-        assert!(data
-            .dst_blacklist
-            .contains(&DstBlackListItem(1, ip_list.listeners[0].to_string())));
     }
 }
