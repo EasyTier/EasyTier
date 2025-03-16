@@ -8,7 +8,7 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-**请访问 [EasyTier 官网](https://www.easytier.cn/) 以查看完整的文档。**
+**请访问 [EasyTier 官网](https://easytier.cn/) 以查看完整的文档。**
 
 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
@@ -53,7 +53,7 @@
 
 4. **通过Docker Compose安装**
 
-    请访问 [EasyTier 官网](https://www.easytier.cn/) 以查看完整的文档。
+    请访问 [EasyTier 官网](https://easytier.cn/) 以查看完整的文档。
 
 5. **使用一键脚本安装 (仅适用于 Linux)**
 

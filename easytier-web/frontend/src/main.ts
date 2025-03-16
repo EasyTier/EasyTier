@@ -1,6 +1,6 @@
 import { createApp } from 'vue'
-import './style.css'
 import 'easytier-frontend-lib/style.css'
+import './style.css'
 import App from './App.vue'
 import EasytierFrontendLib from 'easytier-frontend-lib'
 import PrimeVue from 'primevue/config'

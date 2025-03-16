@@ -1,8 +1,6 @@
 @import 'primeicons/primeicons.css';
 @import 'floating-vue/dist/style.css';
 
-.frontend-lib {
-
 @layer tailwind-base, primevue, tailwind-utilities;
 
 @layer tailwind-base {
@@ -49,8 +47,6 @@
 ::-webkit-scrollbar-thumb {
   border-radius: 4px;
   background-color: #0000005d;
-}
-
 }
 
 .v-popper__inner {
