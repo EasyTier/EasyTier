@@ -1,6 +1,7 @@
 syntax = "proto3";
 
 import "common.proto";
+import "peer_rpc.proto";
 
 package cli;
 
@@ -34,6 +35,8 @@ message PeerConnInfo {
 message PeerInfo {
   uint32 peer_id = 1;
   repeated PeerConnInfo conns = 2;
+  common.UUID default_conn_id = 3;
+  repeated common.UUID directly_connected_conns = 4;
 }
 
 message ListPeerRequest {}
@@ -79,6 +82,7 @@ message NodeInfo {
   string config = 8;
   string version = 9;
   common.PeerFeatureFlag feature_flag = 10;
+  peer_rpc.GetIpListResponse ip_list = 11;
 }
 
 message ShowNodeInfoRequest {}

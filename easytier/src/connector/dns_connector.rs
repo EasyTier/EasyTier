@@ -1,13 +1,17 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx},
-    tunnel::{Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
+    common::{
+        error::Error,
+        global_ctx::ArcGlobalCtx,
+        stun::{get_default_resolver_config, resolve_txt_record},
+    },
+    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
 };
 use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::{
-    config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
+    config::{ResolverConfig, ResolverOpts},
     proto::rr::rdata::SRV,
     TokioAsyncResolver,
 };
@@ -38,6 +42,7 @@ pub struct DNSTunnelConnector {
     addr: url::Url,
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
+    ip_version: IpVersion,
 
     default_resolve_config: ResolverConfig,
     default_resolve_opts: ResolverOpts,
@@ -45,21 +50,13 @@ pub struct DNSTunnelConnector {
 
 impl DNSTunnelConnector {
     pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
-        let mut default_resolve_config = ResolverConfig::new();
-        default_resolve_config.add_name_server(NameServerConfig::new(
-            "223.5.5.5:53".parse().unwrap(),
-            Protocol::Udp,
-        ));
-        default_resolve_config.add_name_server(NameServerConfig::new(
-            "180.184.1.1:53".parse().unwrap(),
-            Protocol::Udp,
-        ));
         Self {
             addr,
             bind_addrs: Vec::new(),
             global_ctx,
+            ip_version: IpVersion::Both,
 
-            default_resolve_config,
+            default_resolve_config: get_default_resolver_config(),
             default_resolve_opts: ResolverOpts::default(),
         }
     }
@@ -69,26 +66,14 @@ impl DNSTunnelConnector {
         &self,
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
-        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or(
-            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()),
-        );
-
-        let response = resolver.txt_lookup(domain_name).await.with_context(|| {
-            format!(
-                "txt_lookup failed, domain_name: {}",
-                domain_name.to_string()
-            )
-        })?;
-
-        let txt_record = response.iter().next().with_context(|| {
-            format!(
-                "no txt record found, domain_name: {}",
-                domain_name.to_string()
-            )
-        })?;
-
-        let txt_data = String::from_utf8_lossy(&txt_record.txt_data()[0]);
-        tracing::info!(?txt_data, ?domain_name, "get txt record");
+        let resolver =
+            TokioAsyncResolver::tokio_from_system_conf().unwrap_or(TokioAsyncResolver::tokio(
+                self.default_resolve_config.clone(),
+                self.default_resolve_opts.clone(),
+            ));
+        let txt_data = resolve_txt_record(domain_name, &resolver)
+            .await
+            .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
 
         let candidate_urls = txt_data
             .split(" ")
@@ -106,9 +91,9 @@ impl DNSTunnelConnector {
                 )
             })?;
 
-        let connector = create_connector_by_url(url.as_str(), &self.global_ctx).await;
-
-        connector
+        let mut connector = create_connector_by_url(url.as_str(), &self.global_ctx).await?;
+        connector.set_ip_version(self.ip_version);
+        Ok(connector)
     }
 
     fn handle_one_srv_record(record: &SRV, protocol: &str) -> Result<(url::Url, u64), Error> {
@@ -141,9 +126,11 @@ impl DNSTunnelConnector {
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         tracing::info!("handle_srv_record: {}", domain_name);
 
-        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or(
-            TokioAsyncResolver::tokio(ResolverConfig::default(), ResolverOpts::default()),
-        );
+        let resolver =
+            TokioAsyncResolver::tokio_from_system_conf().unwrap_or(TokioAsyncResolver::tokio(
+                self.default_resolve_config.clone(),
+                self.default_resolve_opts.clone(),
+            ));
 
         let srv_domains = PROTO_PORT_OFFSET
             .iter()
@@ -192,8 +179,9 @@ impl DNSTunnelConnector {
             )
         })?;
 
-        let connector = create_connector_by_url(url.as_str(), &self.global_ctx).await;
-        connector
+        let mut connector = create_connector_by_url(url.as_str(), &self.global_ctx).await?;
+        connector.set_ip_version(self.ip_version);
+        Ok(connector)
     }
 }
 
@@ -237,6 +225,10 @@ impl super::TunnelConnector for DNSTunnelConnector {
 
     fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
         self.bind_addrs = addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
     }
 }
 

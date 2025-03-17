@@ -212,6 +212,11 @@ impl PeerMap {
         }
     }
 
+    pub async fn get_peer_default_conn_id(&self, peer_id: PeerId) -> Option<PeerConnId> {
+        self.get_peer_by_id(peer_id)
+            .map(|p| p.get_default_conn_id())
+    }
+
     pub async fn close_peer_conn(
         &self,
         peer_id: PeerId,

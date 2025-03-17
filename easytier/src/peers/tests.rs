@@ -45,7 +45,7 @@ pub async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerMana
     });
     let b_mgr_copy = server.clone();
     tokio::spawn(async move {
-        b_mgr_copy.add_tunnel_as_server(b_ring).await.unwrap();
+        b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
     });
 }
 

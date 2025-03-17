@@ -141,12 +141,27 @@ async fn respond_stun_packet(
         .encode_into_bytes(resp_msg.clone())
         .map_err(|e| anyhow::anyhow!("stun encode error: {:?}", e))?;
 
-    socket
-        .send_to(&rsp_buf, addr.clone())
-        .await
-        .with_context(|| "send stun response error")?;
+    let change_req = req_msg
+        .get_attribute::<ChangeRequest>()
+        .map(|r| r.ip() || r.port())
+        .unwrap_or(false);
 
-    tracing::debug!(?addr, ?req_msg, "udp respond stun packet done");
+    if !change_req {
+        socket
+            .send_to(&rsp_buf, addr.clone())
+            .await
+            .with_context(|| "send stun response error")?;
+    } else {
+        // send from a new udp socket
+        let socket = if addr.is_ipv4() {
+            UdpSocket::bind("0.0.0.0:0").await?
+        } else {
+            UdpSocket::bind("[::]:0").await?
+        };
+        socket.send_to(&rsp_buf, addr.clone()).await?;
+    }
+
+    tracing::debug!(?addr, ?req_msg, ?change_req, "udp respond stun packet done");
     Ok(())
 }
 
