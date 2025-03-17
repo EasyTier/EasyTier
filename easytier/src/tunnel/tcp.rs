@@ -150,9 +150,9 @@ impl TcpTunnelConnector {
         &mut self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        tracing::info!(addr = ?self.addr, "connect tcp start");
+        tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
         let stream = TcpStream::connect(addr).await?;
-        tracing::info!(addr = ?self.addr, "connect tcp succ");
+        tracing::info!(url = ?self.addr, ?addr, "connect tcp succ");
         return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
     }
 
@@ -190,7 +190,7 @@ impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let addr =
             check_scheme_and_get_socket_addr_ext::<SocketAddr>(&self.addr, "tcp", self.ip_version)?;
-        if self.bind_addrs.is_empty() || addr.is_ipv6() {
+        if self.bind_addrs.is_empty() {
             self.connect_with_default_bind(addr).await
         } else {
             self.connect_with_custom_bind(addr).await

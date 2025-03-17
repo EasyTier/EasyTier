@@ -1,8 +1,14 @@
 use std::{
-    ffi::OsString, fmt::Write, net::SocketAddr, path::PathBuf, sync::Mutex, time::Duration, vec,
+    ffi::OsString,
+    fmt::Write,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+    sync::Mutex,
+    time::Duration,
+    vec,
 };
 
-use anyhow::{Context, Ok};
+use anyhow::Context;
 use clap::{command, Args, Parser, Subcommand};
 use humansize::format_size;
 use service_manager::*;
@@ -311,7 +317,11 @@ impl CommandHandler {
                     ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
                     hostname: route.hostname.clone(),
                     cost: cost_to_str(route.cost),
-                    lat_ms: float_to_str(p.get_latency_ms().unwrap_or(0.0), 3),
+                    lat_ms: if route.cost == 1 {
+                        float_to_str(p.get_latency_ms().unwrap_or(0.0), 3)
+                    } else {
+                        route.path_latency_latency_first().to_string()
+                    },
                     loss_rate: float_to_str(p.get_loss_rate().unwrap_or(0.0), 3),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
@@ -1036,6 +1046,7 @@ async fn main() -> Result<(), Error> {
             match sub_cmd.sub_command {
                 Some(NodeSubCommand::Info) | None => {
                     let stun_info = node_info.stun_info.clone().unwrap_or_default();
+                    let ip_list = node_info.ip_list.clone().unwrap_or_default();
 
                     let mut builder = tabled::builder::Builder::default();
                     builder.push_record(vec!["Virtual IP", node_info.ipv4_addr.as_str()]);
@@ -1045,11 +1056,32 @@ async fn main() -> Result<(), Error> {
                         node_info.proxy_cidrs.join(", ").as_str(),
                     ]);
                     builder.push_record(vec!["Peer ID", node_info.peer_id.to_string().as_str()]);
-                    builder.push_record(vec!["Public IP", stun_info.public_ip.join(", ").as_str()]);
+                    stun_info.public_ip.iter().for_each(|ip| {
+                        let Ok(ip) = ip.parse::<IpAddr>() else {
+                            return;
+                        };
+                        if ip.is_ipv4() {
+                            builder.push_record(vec!["Public IPv4", ip.to_string().as_str()]);
+                        } else {
+                            builder.push_record(vec!["Public IPv6", ip.to_string().as_str()]);
+                        }
+                    });
                     builder.push_record(vec![
                         "UDP Stun Type",
                         format!("{:?}", stun_info.udp_nat_type()).as_str(),
                     ]);
+                    ip_list.interface_ipv4s.iter().for_each(|ip| {
+                        builder.push_record(vec![
+                            "Interface IPv4",
+                            format!("{}", ip.to_string()).as_str(),
+                        ]);
+                    });
+                    ip_list.interface_ipv6s.iter().for_each(|ip| {
+                        builder.push_record(vec![
+                            "Interface IPv6",
+                            format!("{}", ip.to_string()).as_str(),
+                        ]);
+                    });
                     for (idx, l) in node_info.listeners.iter().enumerate() {
                         if l.starts_with("ring") {
                             continue;

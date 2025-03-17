@@ -4,10 +4,14 @@ impl PeerRoutePair {
     pub fn get_latency_ms(&self) -> Option<f64> {
         let mut ret = u64::MAX;
         let p = self.peer.as_ref()?;
+        let default_conn_id = p.default_conn_id.map(|id| id.to_string());
         for conn in p.conns.iter() {
             let Some(stats) = &conn.stats else {
                 continue;
             };
+            if default_conn_id == Some(conn.conn_id.to_string()) {
+                return Some(f64::from(stats.latency_us as u32) / 1000.0);
+            }
             ret = ret.min(stats.latency_us);
         }
 

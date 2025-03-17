@@ -310,12 +310,6 @@ struct Cli {
 
     #[arg(
         long,
-        help = t!("core_clap.ipv6_listener").to_string()
-    )]
-    ipv6_listener: Option<String>,
-
-    #[arg(
-        long,
         help = t!("core_clap.compression").to_string(),
         default_value = "none",
     )]
@@ -576,11 +570,6 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         f.disable_p2p = cli.disable_p2p;
         f.disable_udp_hole_punching = cli.disable_udp_hole_punching;
         f.relay_all_peer_rpc = cli.relay_all_peer_rpc;
-        if let Some(ipv6_listener) = cli.ipv6_listener.as_ref() {
-            f.ipv6_listener = ipv6_listener
-                .parse()
-                .with_context(|| format!("failed to parse ipv6 listener: {}", ipv6_listener))?
-        }
         f.multi_thread = cli.multi_thread;
         f.data_compress_algo = match cli.compression.as_str() {
             "none" => CompressionAlgoPb::None,

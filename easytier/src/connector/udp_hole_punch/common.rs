@@ -388,7 +388,7 @@ impl UdpHolePunchListener {
                 tracing::warn!(?conn, "udp hole punching listener got peer connection");
                 let peer_mgr = peer_mgr.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = peer_mgr.add_tunnel_as_server(conn).await {
+                    if let Err(e) = peer_mgr.add_tunnel_as_server(conn, false).await {
                         tracing::error!(
                             ?e,
                             "failed to add tunnel as server in hole punch listener"

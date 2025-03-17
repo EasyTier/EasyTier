@@ -27,7 +27,6 @@ pub fn gen_default_flags() -> Flags {
         disable_p2p: false,
         relay_all_peer_rpc: false,
         disable_udp_hole_punching: false,
-        ipv6_listener: "udp://[::]:0".to_string(),
         multi_thread: true,
         data_compress_algo: CompressionAlgoPb::None.into(),
         bind_device: true,

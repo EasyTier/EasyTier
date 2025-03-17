@@ -126,7 +126,7 @@ pub trait TunnelListener: Send {
 }
 
 #[async_trait]
-#[auto_impl::auto_impl(Box)]
+#[auto_impl::auto_impl(Box, &mut)]
 pub trait TunnelConnector: Send {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError>;
     fn remote_url(&self) -> url::Url;

@@ -8,7 +8,7 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use tokio::{
     sync::{
@@ -23,7 +23,7 @@ use crate::{
         compressor::{Compressor as _, DefaultCompressor},
         constants::EASYTIER_VERSION,
         error::Error,
-        global_ctx::{ArcGlobalCtx, NetworkIdentity},
+        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
         stun::StunInfoCollectorTrait,
         PeerId,
     },
@@ -141,6 +141,9 @@ pub struct PeerManager {
     data_compress_algo: CompressorAlgo,
 
     exit_nodes: Vec<Ipv4Addr>,
+
+    // conns that are directly connected (which are not hole punched)
+    directly_connected_conn_map: Arc<DashMap<PeerId, DashSet<uuid::Uuid>>>,
 }
 
 impl Debug for PeerManager {
@@ -267,6 +270,8 @@ impl PeerManager {
             data_compress_algo,
 
             exit_nodes,
+
+            directly_connected_conn_map: Arc::new(DashMap::new()),
         }
     }
 
@@ -325,8 +330,48 @@ impl PeerManager {
         Ok((peer_id, conn_id))
     }
 
+    fn add_directly_connected_conn(&self, peer_id: PeerId, conn_id: uuid::Uuid) {
+        let _ = self
+            .directly_connected_conn_map
+            .entry(peer_id)
+            .or_insert_with(DashSet::new)
+            .insert(conn_id);
+    }
+
+    pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
+        self.directly_connected_conn_map
+            .get(&peer_id)
+            .map_or(false, |x| !x.is_empty())
+    }
+
+    async fn start_peer_conn_close_event_handler(&self) {
+        let dmap = self.directly_connected_conn_map.clone();
+        let mut event_recv = self.global_ctx.subscribe();
+        self.tasks.lock().await.spawn(async move {
+            while let Ok(event) = event_recv.recv().await {
+                match event {
+                    GlobalCtxEvent::PeerConnRemoved(info) => {
+                        if let Some(set) = dmap.get_mut(&info.peer_id) {
+                            let conn_id = info.conn_id.parse().unwrap();
+                            let old = set.remove(&conn_id);
+                            tracing::info!(
+                                ?old,
+                                ?info,
+                                "try remove conn id from directly connected map"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+
     #[tracing::instrument]
-    pub async fn try_connect<C>(&self, mut connector: C) -> Result<(PeerId, PeerConnId), Error>
+    pub async fn try_direct_connect<C>(
+        &self,
+        mut connector: C,
+    ) -> Result<(PeerId, PeerConnId), Error>
     where
         C: TunnelConnector + Debug,
     {
@@ -334,18 +379,28 @@ impl PeerManager {
         let t = ns
             .run_async(|| async move { connector.connect().await })
             .await?;
-        self.add_client_tunnel(t).await
+        let (peer_id, conn_id) = self.add_client_tunnel(t).await?;
+        self.add_directly_connected_conn(peer_id, conn_id);
+        Ok((peer_id, conn_id))
     }
 
     #[tracing::instrument]
-    pub async fn add_tunnel_as_server(&self, tunnel: Box<dyn Tunnel>) -> Result<(), Error> {
+    pub async fn add_tunnel_as_server(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+    ) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
         let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_server().await?;
         if peer.get_network_identity().network_name
             == self.global_ctx.get_network_identity().network_name
         {
+            let (peer_id, conn_id) = (peer.get_peer_id(), peer.get_conn_id());
             self.add_new_peer_conn(peer).await?;
+            if is_directly_connected {
+                self.add_directly_connected_conn(peer_id, conn_id);
+            }
         } else {
             self.foreign_network_manager.add_peer_conn(peer).await?;
         }
@@ -857,9 +912,11 @@ impl PeerManager {
 
     async fn run_clean_peer_without_conn_routine(&self) {
         let peer_map = self.peers.clone();
+        let dmap = self.directly_connected_conn_map.clone();
         self.tasks.lock().await.spawn(async move {
             loop {
                 peer_map.clean_peer_without_conn().await;
+                dmap.retain(|p, v| peer_map.has_peer(*p) && !v.is_empty());
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
@@ -876,6 +933,8 @@ impl PeerManager {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
+        self.start_peer_conn_close_event_handler().await;
+
         match &self.route_algo_inst {
             RouteAlgoInst::Ospf(route) => self.add_route(route.clone()).await,
             RouteAlgoInst::None => {}
@@ -924,7 +983,7 @@ impl PeerManager {
         self.foreign_network_client.clone()
     }
 
-    pub fn get_my_info(&self) -> cli::NodeInfo {
+    pub async fn get_my_info(&self) -> cli::NodeInfo {
         cli::NodeInfo {
             peer_id: self.my_peer_id,
             ipv4_addr: self
@@ -950,6 +1009,7 @@ impl PeerManager {
             config: self.global_ctx.config.dump(),
             version: EASYTIER_VERSION.to_string(),
             feature_flag: Some(self.global_ctx.get_feature_flags()),
+            ip_list: Some(self.global_ctx.get_ip_collector().collect_ip_addrs().await),
         }
     }
 
@@ -957,6 +1017,13 @@ impl PeerManager {
         while !self.tasks.lock().await.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
+    }
+
+    pub fn get_directly_connections(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
+        self.directly_connected_conn_map
+            .get(&peer_id)
+            .map(|x| x.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -1026,7 +1093,7 @@ mod tests {
 
         tokio::spawn(async move {
             client.set_bind_addrs(vec![]);
-            client_mgr.try_connect(client).await.unwrap();
+            client_mgr.try_direct_connect(client).await.unwrap();
         });
 
         server_mgr

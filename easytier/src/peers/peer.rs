@@ -11,7 +11,7 @@ use super::{
     peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
-use crate::proto::cli::PeerConnInfo;
+use crate::{common::scoped_task::ScopedTask, proto::cli::PeerConnInfo};
 use crate::{
     common::{
         error::Error,
@@ -36,7 +36,8 @@ pub struct Peer {
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
-    default_conn_id: AtomicCell<PeerConnId>,
+    default_conn_id: Arc<AtomicCell<PeerConnId>>,
+    default_conn_id_clear_task: ScopedTask<()>,
 }
 
 impl Peer {
@@ -88,6 +89,19 @@ impl Peer {
             )),
         );
 
+        let default_conn_id = Arc::new(AtomicCell::new(PeerConnId::default()));
+
+        let conns_copy = conns.clone();
+        let default_conn_id_copy = default_conn_id.clone();
+        let default_conn_id_clear_task = ScopedTask::from(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if conns_copy.len() > 1 {
+                    default_conn_id_copy.store(PeerConnId::default());
+                }
+            }
+        }));
+
         Peer {
             peer_node_id,
             conns: conns.clone(),
@@ -98,7 +112,8 @@ impl Peer {
             close_event_listener,
 
             shutdown_notifier,
-            default_conn_id: AtomicCell::new(PeerConnId::default()),
+            default_conn_id,
+            default_conn_id_clear_task,
         }
     }
 
@@ -117,14 +132,19 @@ impl Peer {
             return Some(conn.clone());
         }
 
-        let conn = self.conns.iter().next();
-        if conn.is_none() {
-            return None;
+        // find a conn with the smallest latency
+        let mut min_latency = std::u64::MAX;
+        for conn in self.conns.iter() {
+            let latency = conn.value().get_stats().latency_us;
+            if latency < min_latency {
+                min_latency = latency;
+                self.default_conn_id.store(conn.get_conn_id());
+            }
         }
 
-        let conn = conn.unwrap().clone();
-        self.default_conn_id.store(conn.get_conn_id());
-        Some(conn)
+        self.conns
+            .get(&self.default_conn_id.load())
+            .map(|conn| conn.clone())
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
@@ -157,6 +177,10 @@ impl Peer {
             ret.push(conn.get_conn_info());
         }
         ret
+    }
+
+    pub fn get_default_conn_id(&self) -> PeerConnId {
+        self.default_conn_id.load()
     }
 }
 
