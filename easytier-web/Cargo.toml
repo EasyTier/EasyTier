@@ -1,6 +1,6 @@
 [package]
 name = "easytier-web"
-version = "2.2.2"
+version = "2.2.3"
 edition = "2021"
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 
@@ -24,7 +24,11 @@ tower-sessions = { version = "0.13.0", default-features = false, features = [
 ] }
 tower-http = { version = "0.6", features = ["cors", "compression-full"] }
 sqlx = { version = "0.8", features = ["sqlite"] }
-sea-orm = { version = "1.1", features = [ "sqlx-sqlite", "runtime-tokio-rustls", "macros" ] }
+sea-orm = { version = "1.1", features = [
+    "sqlx-sqlite",
+    "runtime-tokio-rustls",
+    "macros",
+] }
 sea-orm-migration = { version = "1.1" }
 
 
@@ -32,7 +36,7 @@ sea-orm-migration = { version = "1.1" }
 rust-embed = { version = "8.5.0", features = ["debug-embed"] }
 base64 = "0.22"
 rand = "0.8"
-image = {version="0.24", default-features = false, features = ["png"]}
+image = { version = "0.24", default-features = false, features = ["png"] }
 rusttype = "0.9.3"
 imageproc = "0.23.0"
 
