@@ -434,7 +434,7 @@ impl PunchSymToConeHoleClient {
         let public_ips: Vec<Ipv4Addr> = stun_info
             .public_ip
             .iter()
-            .map(|x| x.parse().unwrap())
+            .filter_map(|x| x.parse().ok())
             .collect();
         if public_ips.is_empty() {
             return Err(anyhow::anyhow!("failed to get public ips"));
