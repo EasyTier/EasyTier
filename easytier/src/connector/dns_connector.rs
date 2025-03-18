@@ -242,6 +242,7 @@ mod tests {
         let url = "txt://txt.easytier.cn";
         let global_ctx = get_mock_global_ctx();
         let mut connector = DNSTunnelConnector::new(url.parse().unwrap(), global_ctx);
+        connector.set_ip_version(IpVersion::V4);
         let ret = connector.connect().await.unwrap();
         println!("{:?}", ret.info());
     }
@@ -251,6 +252,7 @@ mod tests {
         let url = "srv://easytier.cn";
         let global_ctx = get_mock_global_ctx();
         let mut connector = DNSTunnelConnector::new(url.parse().unwrap(), global_ctx);
+        connector.set_ip_version(IpVersion::V4);
         let ret = connector.connect().await.unwrap();
         println!("{:?}", ret.info());
     }
