@@ -106,7 +106,7 @@ impl ManualConnectorManager {
     }
 
     pub async fn add_connector_by_url(&self, url: &str) -> Result<(), Error> {
-        self.add_connector(create_connector_by_url(url, &self.global_ctx).await?);
+        self.add_connector(create_connector_by_url(url, &self.global_ctx, IpVersion::Both).await?);
         Ok(())
     }
 
