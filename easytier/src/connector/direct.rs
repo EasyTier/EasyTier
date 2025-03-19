@@ -24,6 +24,7 @@ use crate::{
         },
         rpc_types::controller::BaseController,
     },
+    tunnel::IpVersion,
 };
 
 use crate::proto::cli::PeerConnInfo;
@@ -175,7 +176,7 @@ impl DirectConnectorManager {
         dst_peer_id: PeerId,
         addr: String,
     ) -> Result<(), Error> {
-        let connector = create_connector_by_url(&addr, &data.global_ctx).await?;
+        let connector = create_connector_by_url(&addr, &data.global_ctx, IpVersion::Both).await?;
         let (peer_id, conn_id) = timeout(
             std::time::Duration::from_secs(3),
             data.peer_manager.try_direct_connect(connector),
@@ -271,7 +272,7 @@ impl DirectConnectorManager {
 
         let mut tasks = bounded_join_set::JoinSet::new(2);
 
-        let listener_host = listener.socket_addrs(|| None).unwrap().pop();
+        let listener_host = listener.socket_addrs(|| None)?.pop();
         match listener_host {
             Some(SocketAddr::V4(s_addr)) => {
                 if s_addr.ip().is_unspecified() {

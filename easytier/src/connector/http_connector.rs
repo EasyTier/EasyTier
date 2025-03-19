@@ -92,14 +92,24 @@ impl HttpTunnelConnector {
             if !query.is_empty() {
                 tracing::info!("try to create connector by url: {}", query[0]);
                 self.redirect_type = HttpRedirectType::RedirectToQuery;
-                return create_connector_by_url(&query[0].to_string(), &self.global_ctx).await;
+                return create_connector_by_url(
+                    &query[0].to_string(),
+                    &self.global_ctx,
+                    self.ip_version,
+                )
+                .await;
             } else if let Some(new_url) = url_str
                 .strip_prefix(format!("{}://", url.scheme()).as_str())
                 .and_then(|x| Url::parse(x).ok())
             {
                 // stripe the scheme and create connector by url
                 self.redirect_type = HttpRedirectType::RedirectToUrl;
-                return create_connector_by_url(new_url.as_str(), &self.global_ctx).await;
+                return create_connector_by_url(
+                    new_url.as_str(),
+                    &self.global_ctx,
+                    self.ip_version,
+                )
+                .await;
             }
             return Err(Error::InvalidUrl(format!(
                 "no valid connector url found in url: {}",
@@ -107,7 +117,8 @@ impl HttpTunnelConnector {
             )));
         } else {
             self.redirect_type = HttpRedirectType::RedirectToUrl;
-            return create_connector_by_url(new_url.as_str(), &self.global_ctx).await;
+            return create_connector_by_url(new_url.as_str(), &self.global_ctx, self.ip_version)
+                .await;
         }
     }
 
@@ -137,7 +148,7 @@ impl HttpTunnelConnector {
                 continue;
             }
             self.redirect_type = HttpRedirectType::BodyUrls;
-            return create_connector_by_url(line, &self.global_ctx).await;
+            return create_connector_by_url(line, &self.global_ctx, self.ip_version).await;
         }
 
         Err(Error::InvalidUrl(format!(

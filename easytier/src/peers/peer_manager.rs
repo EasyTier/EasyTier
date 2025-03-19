@@ -1130,6 +1130,7 @@ mod tests {
         let connector1 = create_connector_by_url(
             format!("{}://127.0.0.1:31013", proto1).as_str(),
             &peer_mgr_a.get_global_ctx(),
+            crate::tunnel::IpVersion::Both,
         )
         .await
         .unwrap();
@@ -1148,6 +1149,7 @@ mod tests {
         let connector2 = create_connector_by_url(
             format!("{}://127.0.0.1:31014", proto2).as_str(),
             &peer_mgr_b.get_global_ctx(),
+            crate::tunnel::IpVersion::Both,
         )
         .await
         .unwrap();

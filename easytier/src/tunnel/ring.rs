@@ -231,7 +231,11 @@ fn get_tunnel_for_server(conn: Arc<Connection>) -> impl Tunnel {
 
 impl RingTunnelListener {
     fn get_addr(&self) -> Result<uuid::Uuid, TunnelError> {
-        check_scheme_and_get_socket_addr::<Uuid>(&self.listerner_addr, "ring")
+        check_scheme_and_get_socket_addr::<Uuid>(
+            &self.listerner_addr,
+            "ring",
+            super::IpVersion::Both,
+        )
     }
 }
 
@@ -284,7 +288,11 @@ impl RingTunnelConnector {
 #[async_trait]
 impl TunnelConnector for RingTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let remote_addr = check_scheme_and_get_socket_addr::<Uuid>(&self.remote_addr, "ring")?;
+        let remote_addr = check_scheme_and_get_socket_addr::<Uuid>(
+            &self.remote_addr,
+            "ring",
+            super::IpVersion::Both,
+        )?;
         let entry = CONNECTION_MAP
             .lock()
             .await

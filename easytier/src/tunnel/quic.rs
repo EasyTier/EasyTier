@@ -84,7 +84,8 @@ impl QUICTunnelListener {
 #[async_trait::async_trait]
 impl TunnelListener for QUICTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic")?;
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)?;
         let (endpoint, server_cert) = make_server_endpoint(addr).unwrap();
         self.endpoint = Some(endpoint);
         self.server_cert = Some(server_cert);

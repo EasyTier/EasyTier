@@ -30,7 +30,7 @@ use easytier::{
         self,
         common::{CompressionAlgoPb, NatType},
     },
-    tunnel::PROTO_PORT_OFFSET,
+    tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
     web_client,
 };
@@ -870,7 +870,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         flags.bind_device = false;
         global_ctx.set_flags(flags);
         let _wc = web_client::WebClient::new(
-            create_connector_by_url(c_url.as_str(), &global_ctx).await?,
+            create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
             token.to_string(),
         );
         tokio::signal::ctrl_c().await.unwrap();

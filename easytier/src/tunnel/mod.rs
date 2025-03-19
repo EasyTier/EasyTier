@@ -193,6 +193,7 @@ where
 pub(crate) fn check_scheme_and_get_socket_addr<T>(
     url: &url::Url,
     scheme: &str,
+    ip_version: IpVersion,
 ) -> Result<T, TunnelError>
 where
     T: FromUrl,
@@ -201,7 +202,7 @@ where
         return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
     }
 
-    Ok(T::from_url(url.clone(), IpVersion::Both)?)
+    Ok(T::from_url(url.clone(), ip_version)?)
 }
 
 fn default_port(scheme: &str) -> Option<u16> {
