@@ -612,6 +612,10 @@ impl NetworkConfig {
 
         }
 
+        if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
+            flags.disable_udp_hole_punching = disable_udp_hole_punching;
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
