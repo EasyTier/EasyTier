@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button } from 'primevue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password } from 'primevue'
 import { DEFAULT_NETWORK_CONFIG, NetworkConfig, NetworkingMethod } from '../types/network'
 import { defineProps, defineEmits, ref, } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -197,8 +197,8 @@ const bool_flags: BoolFlag[] = [
                 </div>
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_secret">{{ t('network_secret') }}</label>
-                  <InputText id="network_secret" v-model="curNetwork.network_secret"
-                    aria-describedby="network_secret-help" />
+                  <Password id="network_secret" v-model="curNetwork.network_secret"
+                    aria-describedby="network_secret-help" toggleMask :feedback="false"/>
                 </div>
               </div>
 
