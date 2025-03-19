@@ -36,7 +36,7 @@ if [[ $OS =~ ^ubuntu.*$ ]]; then
 
     if [ -n "$MUSL_URI" ]; then
         mkdir -p ./musl_gcc
-        wget -c https://musl.cc/${MUSL_URI}-cross.tgz -P ./musl_gcc/
+        wget --inet4-only -c https://musl.cc/${MUSL_URI}-cross.tgz -P ./musl_gcc/
         tar zxf ./musl_gcc/${MUSL_URI}-cross.tgz -C ./musl_gcc/
         sudo ln -s $(pwd)/musl_gcc/${MUSL_URI}-cross/bin/*gcc /usr/bin/
         sudo ln -s $(pwd)/musl_gcc/${MUSL_URI}-cross/${MUSL_URI}/include/ /usr/include/musl-cross
