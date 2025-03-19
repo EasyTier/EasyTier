@@ -109,6 +109,9 @@ proxy_forward_by_system_help: 通过系统内核转发子网代理数据包，�
 disable_encryption: 禁用加密
 disable_encryption_help: 禁用对等节点通信的加密，默认为false，必须与对等节点相同
 
+disable_udp_hole_punching: 禁用UDP打洞
+disable_udp_hole_punching_help: 禁用UDP打洞功能
+
 relay_network_whitelist: 网络白名单
 relay_network_whitelist_help: |
   仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。
