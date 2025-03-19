@@ -95,7 +95,7 @@ impl Session {
 
                     easytier_version: EASYTIER_VERSION.to_string(),
                     hostname: hostname.clone(),
-                    report_time: chrono::Local::now().to_string(),
+                    report_time: chrono::Local::now().to_rfc3339(),
 
                     running_network_instances: controller
                         .list_network_instance_ids()
