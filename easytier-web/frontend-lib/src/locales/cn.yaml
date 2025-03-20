@@ -128,6 +128,16 @@ socks5_help: |
 exit_nodes: 出口节点列表
 exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
 
+mtu: MTU
+mtu_help: |
+  TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
+mtu_placeholder: 留空为默认值1380
+
+mapped_listeners: 监听映射
+mapped_listeners_help: |
+  手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。
+  例如：tcp://123.123.123.123:11223，可以指定多个。
+
 status:
   version: 内核版本
   local: 本机

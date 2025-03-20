@@ -128,6 +128,16 @@ socks5_help: |
 exit_nodes: Exit Nodes
 exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
 
+mtu: MTU
+mtu_help: |
+  MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
+mtu_placeholder: Leave blank as default value 1380
+
+mapped_listeners: Map Listeners
+mapped_listeners_help: |
+  Manually specify the public address of the listener, other nodes can use this address to connect to this node.
+  e.g.: tcp://123.123.123.123:11223, can specify multiple.
+
 status:
   version: Version
   local: Local

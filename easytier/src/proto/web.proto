@@ -61,6 +61,8 @@ message NetworkConfig {
     optional bool enable_socks5 = 37;
     optional int32 socks5_port = 38;
     optional bool disable_udp_hole_punching = 39;
+    optional int32 mtu = 40;
+    repeated string mapped_listeners = 41;
 }
 
 message MyNodeInfo {

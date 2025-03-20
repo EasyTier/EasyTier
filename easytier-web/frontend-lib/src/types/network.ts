@@ -59,6 +59,9 @@ export interface NetworkConfig {
 
   enable_socks5?: boolean
   socks5_port: number
+
+  mtu: number | null
+  mapped_listeners: string[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -113,6 +116,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     exit_nodes: [],
     enable_socks5: false,
     socks5_port: 1080,
+    mtu: null,
+    mapped_listeners: [],
   }
 }
 
