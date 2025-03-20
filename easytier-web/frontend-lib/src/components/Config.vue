@@ -313,6 +313,18 @@ const bool_flags: BoolFlag[] = [
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex">
+                    <label for="mtu">{{ t('mtu') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                          v-tooltip="t('mtu_help')"></span>
+                  </div>
+                  <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help"
+                               :format="false" :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid/>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
                     <label for="relay_network_whitelist">{{ t('relay_network_whitelist') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center"
                           v-tooltip="t('relay_network_whitelist_help')"></span>
@@ -373,6 +385,18 @@ const bool_flags: BoolFlag[] = [
                   <AutoComplete id="exit_nodes" v-model="curNetwork.exit_nodes"
                                 :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
                                 :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="mapped_listeners">{{ t('mapped_listeners') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
+                  </div>
+                  <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
+                                :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full"
+                                multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
                 </div>
               </div>
 
