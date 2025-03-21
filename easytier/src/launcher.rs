@@ -550,6 +550,25 @@ impl NetworkConfig {
             }
         }
 
+        if self.mapped_listeners.len() > 0 {
+            cfg.set_mapped_listeners(Some(
+                self.mapped_listeners
+                    .iter()
+                    .map(|s| {
+                        s.parse()
+                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
+                            .unwrap()
+                    })
+                    .map(|s: url::Url| {
+                        if s.port().is_none() {
+                            panic!("mapped listener port is missing: {}", s);
+                        }
+                        s
+                    })
+                    .collect(),
+            ));
+        }
+
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;
@@ -605,11 +624,18 @@ impl NetworkConfig {
 
         if self.enable_relay_network_whitelist.unwrap_or_default() {
             if self.relay_network_whitelist.len() > 0 {
-                flags.relay_network_whitelist = self.relay_network_whitelist.join(" ")
+                flags.relay_network_whitelist = self.relay_network_whitelist.join(" ");
             } else {
-                flags.relay_network_whitelist = "".to_string()
+                flags.relay_network_whitelist = "".to_string();
             }
+        }
 
+        if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
+            flags.disable_udp_hole_punching = disable_udp_hole_punching;
+        }
+
+        if let Some(mtu) = self.mtu {
+            flags.mtu = mtu as u32;
         }
 
         cfg.set_flags(flags);

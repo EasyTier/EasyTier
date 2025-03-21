@@ -58,7 +58,8 @@ impl TcpTunnelListener {
 impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
-        let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", IpVersion::Both)?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),

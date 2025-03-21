@@ -473,7 +473,11 @@ impl UdpTunnelListener {
 #[async_trait]
 impl TunnelListener for UdpTunnelListener {
     async fn listen(&mut self) -> Result<(), super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "udp")?;
+        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
+            &self.addr,
+            "udp",
+            IpVersion::Both,
+        )?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -957,6 +961,7 @@ mod tests {
             let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
                 &format!("udp://{}:11111", ip.to_string()).parse().unwrap(),
                 "udp",
+                IpVersion::Both,
             )
             .unwrap();
             let socket2_socket = socket2::Socket::new(

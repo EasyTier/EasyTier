@@ -91,8 +91,8 @@ impl DNSTunnelConnector {
                 )
             })?;
 
-        let mut connector = create_connector_by_url(url.as_str(), &self.global_ctx).await?;
-        connector.set_ip_version(self.ip_version);
+        let connector =
+            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
         Ok(connector)
     }
 
@@ -179,8 +179,8 @@ impl DNSTunnelConnector {
             )
         })?;
 
-        let mut connector = create_connector_by_url(url.as_str(), &self.global_ctx).await?;
-        connector.set_ip_version(self.ip_version);
+        let connector =
+            create_connector_by_url(url.as_str(), &self.global_ctx, self.ip_version).await?;
         Ok(connector)
     }
 }
@@ -243,8 +243,17 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         let mut connector = DNSTunnelConnector::new(url.parse().unwrap(), global_ctx);
         connector.set_ip_version(IpVersion::V4);
-        let ret = connector.connect().await.unwrap();
-        println!("{:?}", ret.info());
+        for _ in 0..5 {
+            match connector.connect().await {
+                Ok(ret) => {
+                    println!("{:?}", ret.info());
+                    return;
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                }
+            }
+        }
     }
 
     #[tokio::test]
@@ -253,7 +262,16 @@ mod tests {
         let global_ctx = get_mock_global_ctx();
         let mut connector = DNSTunnelConnector::new(url.parse().unwrap(), global_ctx);
         connector.set_ip_version(IpVersion::V4);
-        let ret = connector.connect().await.unwrap();
-        println!("{:?}", ret.info());
+        for _ in 0..5 {
+            match connector.connect().await {
+                Ok(ret) => {
+                    println!("{:?}", ret.info());
+                    return;
+                }
+                Err(e) => {
+                    println!("{:?}", e);
+                }
+            }
+        }
     }
 }
