@@ -220,7 +220,7 @@ impl IPCollector {
         return self.cached_ip_list.read().await.deref().clone();
     }
 
-    pub async fn collect_interfaces(net_ns: NetNS) -> Vec<NetworkInterface> {
+    pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
         let _g = net_ns.guard();
         let ifaces = pnet::datalink::interfaces();
         let mut ret = vec![];
@@ -229,7 +229,7 @@ impl IPCollector {
                 iface: iface.clone(),
             };
 
-            if !f.filter_iface().await {
+            if filter && !f.filter_iface().await {
                 continue;
             }
 
@@ -243,21 +243,36 @@ impl IPCollector {
     async fn do_collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
         let mut ret = GetIpListResponse::default();
 
-        let ifaces = Self::collect_interfaces(net_ns.clone()).await;
+        let ifaces = Self::collect_interfaces(net_ns.clone(), true).await;
         let _g = net_ns.guard();
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
-                if ip.is_loopback() || ip.is_multicast() {
-                    continue;
-                }
                 match ip {
                     std::net::IpAddr::V4(v4) => {
+                        if ip.is_loopback() || ip.is_multicast() {
+                            continue;
+                        }
                         ret.interface_ipv4s.push(v4.into());
                     }
+                    _ => {}
+                }
+            }
+        }
+
+        let ifaces = Self::collect_interfaces(net_ns.clone(), false).await;
+        let _g = net_ns.guard();
+        for iface in ifaces {
+            for ip in iface.ips {
+                let ip: std::net::IpAddr = ip.ip();
+                match ip {
                     std::net::IpAddr::V6(v6) => {
+                        if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
+                            continue;
+                        }
                         ret.interface_ipv6s.push(v6.into());
                     }
+                    _ => {}
                 }
             }
         }
