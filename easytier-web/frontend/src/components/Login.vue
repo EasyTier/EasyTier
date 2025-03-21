@@ -4,6 +4,7 @@ import { Card, InputText, Password, Button, AutoComplete } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
 import { Api } from 'easytier-frontend-lib';
+import {getInitialApiHost, cleanAndLoadApiHosts, saveApiHost} from "../modules/api-host"
 
 defineProps<{
     isRegistering: boolean;
@@ -20,56 +21,6 @@ const registerPassword = ref('');
 const captcha = ref('');
 const captchaSrc = computed(() => api.value.captcha_url());
 
-interface ApiHost {
-    value: string;
-    usedAt: number;
-}
-
-const isValidHttpUrl = (s: string): boolean => {
-    let url;
-
-    try {
-        url = new URL(s);
-    } catch (_) {
-        return false;
-    }
-
-    return url.protocol === "http:" || url.protocol === "https:";
-}
-
-const cleanAndLoadApiHosts = (): Array<ApiHost> => {
-    const maxHosts = 10;
-    const apiHosts = localStorage.getItem('apiHosts');
-    if (apiHosts) {
-        const hosts: Array<ApiHost> = JSON.parse(apiHosts);
-        // sort by usedAt
-        hosts.sort((a, b) => b.usedAt - a.usedAt);
-
-        // only keep the first 10
-        if (hosts.length > maxHosts) {
-            hosts.splice(maxHosts);
-        }
-
-        localStorage.setItem('apiHosts', JSON.stringify(hosts));
-        return hosts;
-    } else {
-        return [];
-    }
-};
-
-const saveApiHost = (host: string) => {
-    console.log('Save API Host:', host);
-    if (!isValidHttpUrl(host)) {
-        console.error('Invalid API Host:', host);
-        return;
-    }
-
-    let hosts = cleanAndLoadApiHosts();
-    const newHost: ApiHost = { value: host, usedAt: Date.now() };
-    hosts = hosts.filter((h) => h.value !== host);
-    hosts.push(newHost);
-    localStorage.setItem('apiHosts', JSON.stringify(hosts));
-};
 
 const onSubmit = async () => {
     // Add your login logic here
@@ -100,16 +51,6 @@ const onRegister = async () => {
     }
 };
 
-const getInitialApiHost = (): string => {
-    const hosts = cleanAndLoadApiHosts();
-    if (hosts.length > 0) {
-        return hosts[0].value;
-    } else {
-        return defaultApiHost;
-    }
-};
-
-const defaultApiHost = 'https://config-server.easytier.cn'
 const apiHost = ref<string>(getInitialApiHost())
 const apiHostSuggestions = ref<Array<string>>([])
 const apiHostSearch = async (event: { query: string }) => {
@@ -124,10 +65,7 @@ const apiHostSearch = async (event: { query: string }) => {
 }
 
 onMounted(() => {
-    let hosts = cleanAndLoadApiHosts();
-    if (hosts.length === 0) {
-        saveApiHost(defaultApiHost);
-    }
+
 });
 
 </script>
