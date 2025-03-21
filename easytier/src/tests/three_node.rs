@@ -4,13 +4,14 @@ use std::{
     time::Duration,
 };
 
+use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet};
 
 use super::*;
 
 use crate::{
     common::{
-        config::{ConfigLoader, NetworkIdentity, TomlConfigLoader},
+        config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
     },
     instance::instance::Instance,
@@ -887,6 +888,74 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     wait_for_condition(
         || async { ping_test("net_b", "10.144.145.2", None).await },
         Duration::from_secs(5),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn port_forward_test() {
+    prepare_linux_namespaces();
+
+    let _insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                cfg.set_port_forwards(vec![
+                    // test port forward to other virtual node
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23456".parse().unwrap(),
+                        dst_addr: "10.144.144.3:23456".parse().unwrap(),
+                        proto: "tcp".to_string(),
+                    },
+                    // test port forward to subnet proxy
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23457".parse().unwrap(),
+                        dst_addr: "10.1.2.4:23457".parse().unwrap(),
+                        proto: "tcp".to_string(),
+                    },
+                ]);
+            } else if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap());
+            }
+            let mut flags = cfg.get_flags();
+            flags.no_tun = true;
+            cfg.set_flags(flags);
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
+
+    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23456".parse().unwrap());
+    let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23456".parse().unwrap());
+
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    _tunnel_pingpong_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+        buf,
+    )
+    .await;
+
+    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23457".parse().unwrap());
+    let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23457".parse().unwrap());
+
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    _tunnel_pingpong_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_d".into())),
+        NetNS::new(Some("net_a".into())),
+        buf,
     )
     .await;
 }

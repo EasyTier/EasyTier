@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    common::join_joinset_background,
     gateway::{
         fast_socks5::{
             server::{
@@ -12,19 +13,26 @@ use crate::{
             },
             util::stream::tcp_connect_with_timeout,
         },
+        ip_reassembler::compose_ipv4_packet,
         tokio_smoltcp::TcpStream,
     },
-    tunnel::packet_def::PacketType,
+    tunnel::packet_def::{PacketType, ZCPacket},
 };
 use anyhow::Context;
+use dashmap::DashMap;
 use dashmap::DashSet;
-use pnet::packet::{ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, Packet};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    select,
+use pnet::packet::{
+    ip::IpNextHeaderProtocols,
+    ipv4::Ipv4Packet,
+    tcp::TcpPacket,
+    udp::{MutableUdpPacket, UdpPacket},
+    Packet,
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     net::TcpListener,
+    net::UdpSocket,
+    select,
     sync::{mpsc, Mutex},
     task::JoinSet,
     time::timeout,
@@ -34,7 +42,6 @@ use crate::{
     common::{error::Error, global_ctx::GlobalCtx},
     gateway::tokio_smoltcp::{channel_device, Net, NetConfig},
     peers::{peer_manager::PeerManager, PeerPacketFilter},
-    tunnel::packet_def::ZCPacket,
 };
 
 enum SocksTcpStream {
@@ -102,13 +109,79 @@ impl AsyncWrite for SocksTcpStream {
     }
 }
 
+enum Socks5EntryData {
+    Tcp(TcpListener), // hold a binded socket to hold the tcp port
+}
+
+const UDP_ENTRY: u8 = 1;
+const TCP_ENTRY: u8 = 2;
+
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
 struct Socks5Entry {
     src: SocketAddr,
     dst: SocketAddr,
+    entry_type: u8,
 }
 
-type Socks5EntrySet = Arc<DashSet<Socks5Entry>>;
+type Socks5EntrySet = Arc<DashMap<Socks5Entry, Socks5EntryData>>;
+
+struct SmolTcpConnector {
+    net: Arc<Net>,
+    entries: Socks5EntrySet,
+    current_entry: std::sync::Mutex<Option<Socks5Entry>>,
+}
+
+#[async_trait::async_trait]
+impl AsyncTcpConnector for SmolTcpConnector {
+    type S = SocksTcpStream;
+
+    async fn tcp_connect(
+        &self,
+        addr: SocketAddr,
+        timeout_s: u64,
+    ) -> crate::gateway::fast_socks5::Result<SocksTcpStream> {
+        let tmp_listener = TcpListener::bind("0.0.0.0:0").await?;
+        let local_addr = self.net.get_address();
+        let port = tmp_listener.local_addr()?.port();
+
+        let entry = Socks5Entry {
+            src: SocketAddr::new(local_addr, port),
+            dst: addr,
+            entry_type: TCP_ENTRY,
+        };
+        *self.current_entry.lock().unwrap() = Some(entry.clone());
+        self.entries
+            .insert(entry, Socks5EntryData::Tcp(tmp_listener));
+
+        if addr.ip() == local_addr {
+            let modified_addr =
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
+
+            Ok(SocksTcpStream::TcpStream(
+                tcp_connect_with_timeout(modified_addr, timeout_s).await?,
+            ))
+        } else {
+            let remote_socket = timeout(
+                Duration::from_secs(timeout_s),
+                self.net.tcp_connect(addr, port),
+            )
+            .await
+            .with_context(|| "connect to remote timeout")?;
+
+            Ok(SocksTcpStream::SmolTcpStream(remote_socket.map_err(
+                |e| super::fast_socks5::SocksError::Other(e.into()),
+            )?))
+        }
+    }
+}
+
+impl Drop for SmolTcpConnector {
+    fn drop(&mut self) {
+        if let Some(entry) = self.current_entry.lock().unwrap().take() {
+            self.entries.remove(&entry);
+        }
+    }
+}
 
 struct Socks5ServerNet {
     ipv4_addr: cidr::Ipv4Inet,
@@ -197,69 +270,14 @@ impl Socks5ServerNet {
         config.set_skip_auth(false);
         config.set_allow_no_auth(true);
 
-        struct SmolTcpConnector(
-            Arc<Net>,
-            Socks5EntrySet,
-            std::sync::Mutex<Option<Socks5Entry>>,
-        );
-
-        #[async_trait::async_trait]
-        impl AsyncTcpConnector for SmolTcpConnector {
-            type S = SocksTcpStream;
-
-            async fn tcp_connect(
-                &self,
-                addr: SocketAddr,
-                timeout_s: u64,
-            ) -> crate::gateway::fast_socks5::Result<SocksTcpStream> {
-                let local_addr = self.0.get_address();
-                let port = self.0.get_port();
-
-                let entry = Socks5Entry {
-                    src: SocketAddr::new(local_addr, port),
-                    dst: addr,
-                };
-                *self.2.lock().unwrap() = Some(entry.clone());
-                self.1.insert(entry);
-
-                if addr.ip() == local_addr {
-                    let modified_addr =
-                        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
-
-                    Ok(SocksTcpStream::TcpStream(
-                        tcp_connect_with_timeout(modified_addr, timeout_s).await?,
-                    ))
-                } else {
-                    let remote_socket = timeout(
-                        Duration::from_secs(timeout_s),
-                        self.0.tcp_connect(addr, port),
-                    )
-                    .await
-                    .with_context(|| "connect to remote timeout")?;
-
-                    Ok(SocksTcpStream::SmolTcpStream(remote_socket.map_err(
-                        |e| super::fast_socks5::SocksError::Other(e.into()),
-                    )?))
-                }
-            }
-        }
-
-        impl Drop for SmolTcpConnector {
-            fn drop(&mut self) {
-                if let Some(entry) = self.2.lock().unwrap().take() {
-                    self.1.remove(&entry);
-                }
-            }
-        }
-
         let socket = Socks5Socket::new(
             stream,
             Arc::new(config),
-            SmolTcpConnector(
-                self.smoltcp_net.clone(),
-                self.entries.clone(),
-                std::sync::Mutex::new(None),
-            ),
+            SmolTcpConnector {
+                net: self.smoltcp_net.clone(),
+                entries: self.entries.clone(),
+                current_entry: std::sync::Mutex::new(None),
+            },
         );
 
         self.forward_tasks.lock().unwrap().spawn(async move {
@@ -280,7 +298,7 @@ pub struct Socks5Server {
     peer_manager: Arc<PeerManager>,
     auth: Option<SimpleUserPassword>,
 
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
     packet_sender: mpsc::Sender<ZCPacket>,
     packet_recv: Arc<Mutex<mpsc::Receiver<ZCPacket>>>,
 
@@ -307,9 +325,10 @@ impl PeerPacketFilter for Socks5Server {
         let entry = Socks5Entry {
             dst: SocketAddr::new(ipv4.get_source().into(), tcp_packet.get_source()),
             src: SocketAddr::new(ipv4.get_destination().into(), tcp_packet.get_destination()),
+            entry_type: TCP_ENTRY,
         };
 
-        if !self.entries.contains(&entry) {
+        if !self.entries.contains_key(&entry) {
             return Some(packet);
         }
 
@@ -330,12 +349,12 @@ impl Socks5Server {
             peer_manager,
             auth,
 
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             packet_recv: Arc::new(Mutex::new(packet_recv)),
             packet_sender,
 
             net: Arc::new(Mutex::new(None)),
-            entries: Arc::new(DashSet::new()),
+            entries: Arc::new(DashMap::new()),
         })
     }
 
@@ -345,7 +364,7 @@ impl Socks5Server {
         let peer_manager = self.peer_manager.clone();
         let packet_recv = self.packet_recv.clone();
         let entries = self.entries.clone();
-        self.tasks.lock().await.spawn(async move {
+        self.tasks.lock().unwrap().spawn(async move {
             let mut prev_ipv4 = None;
             loop {
                 let mut event_recv = global_ctx.subscribe();
@@ -399,7 +418,7 @@ impl Socks5Server {
         self.run_net_update_task().await;
 
         let net = self.net.clone();
-        self.tasks.lock().await.spawn(async move {
+        self.tasks.lock().unwrap().spawn(async move {
             loop {
                 match listener.accept().await {
                     Ok((socket, _addr)) => {
@@ -410,6 +429,91 @@ impl Socks5Server {
                     }
                     Err(err) => tracing::error!("accept error = {:?}", err),
                 }
+            }
+        });
+
+        join_joinset_background(self.tasks.clone(), "socks5 server".to_string());
+
+        Ok(())
+    }
+
+    async fn handle_port_forward_connection(
+        mut incoming_socket: tokio::net::TcpStream,
+        connector: SmolTcpConnector,
+        dst_addr: SocketAddr,
+    ) {
+        let outgoing_socket = match connector.tcp_connect(dst_addr, 10).await {
+            Ok(socket) => socket,
+            Err(e) => {
+                tracing::error!("port forward: failed to connect to destination: {:?}", e);
+                return;
+            }
+        };
+
+        let mut outgoing_socket = outgoing_socket;
+        match tokio::io::copy_bidirectional(&mut incoming_socket, &mut outgoing_socket).await {
+            Ok((from_client, from_server)) => {
+                tracing::info!(
+                    "port forward connection finished: client->server: {} bytes, server->client: {} bytes",
+                    from_client, from_server
+                );
+            }
+            Err(e) => {
+                tracing::error!("port forward connection error: {:?}", e);
+            }
+        }
+    }
+
+    pub async fn add_tcp_port_forward(
+        &self,
+        bind_addr: SocketAddr,
+        dst_addr: SocketAddr,
+    ) -> Result<(), Error> {
+        let listener = {
+            let _g = self.global_ctx.net_ns.guard();
+            TcpListener::bind(bind_addr).await?
+        };
+
+        let net = self.net.clone();
+        let entries = self.entries.clone();
+        let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
+        let forward_tasks = tasks.clone();
+
+        self.tasks.lock().unwrap().spawn(async move {
+            loop {
+                let (incoming_socket, _addr) = match listener.accept().await {
+                    Ok(result) => result,
+                    Err(err) => {
+                        tracing::error!("port forward accept error = {:?}", err);
+                        continue;
+                    }
+                };
+
+                tracing::info!(
+                    "port forward: accept new connection from {:?} to {:?}",
+                    bind_addr,
+                    dst_addr
+                );
+
+                let net_guard = net.lock().await;
+                let Some(net) = net_guard.as_ref() else {
+                    continue;
+                };
+
+                let connector = SmolTcpConnector {
+                    net: net.smoltcp_net.clone(),
+                    entries: entries.clone(),
+                    current_entry: std::sync::Mutex::new(None),
+                };
+
+                forward_tasks
+                    .lock()
+                    .unwrap()
+                    .spawn(Self::handle_port_forward_connection(
+                        incoming_socket,
+                        connector,
+                        dst_addr,
+                    ));
             }
         });
 
