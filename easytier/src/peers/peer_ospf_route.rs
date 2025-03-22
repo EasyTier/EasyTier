@@ -1199,6 +1199,7 @@ impl PeerRouteServiceImpl {
             let network_identity = NetworkIdentity {
                 network_name: key.network_name.clone(),
                 network_secret: None,
+                network_secret_cmd: None,
                 network_secret_digest: Some(
                     entry
                         .network_secret_digest

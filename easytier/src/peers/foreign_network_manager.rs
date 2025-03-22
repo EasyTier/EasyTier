@@ -642,6 +642,7 @@ mod tests {
             get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
                 network.to_string(),
                 secret.to_string(),
+                None,
             ))),
             s,
         ));

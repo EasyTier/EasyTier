@@ -19,6 +19,9 @@ core_clap:
   network_secret:
     en: "network secret to verify this node belongs to the vpn network"
     zh-CN: "网络密钥，用于验证此节点属于VPN网络"
+  network_secret_cmd:
+    en: "get network secret by executing os command"
+    zh-CN: "通过执行系统命令获取网络密钥"
   ipv4:
     en: "ipv4 address of this vpn node, if empty, this node will only forward packets and no TUN device will be created"
     zh-CN: "此VPN节点的IPv4地址，如果为空，则此节点将仅转发数据包，不会创建TUN设备"

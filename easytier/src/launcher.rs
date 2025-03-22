@@ -420,6 +420,7 @@ impl NetworkConfig {
         cfg.set_network_identity(NetworkIdentity::new(
             self.network_name.clone().unwrap_or_default(),
             self.network_secret.clone().unwrap_or_default(),
+            None,
         ));
 
         if !cfg.get_dhcp() {
@@ -522,7 +523,8 @@ impl NetworkConfig {
             let mut routes = Vec::<cidr::Ipv4Cidr>::with_capacity(self.routes.len());
             for route in self.routes.iter() {
                 routes.push(
-                    route.parse()
+                    route
+                        .parse()
                         .with_context(|| format!("failed to parse route: {}", route))?,
                 );
             }
@@ -543,9 +545,7 @@ impl NetworkConfig {
         if self.enable_socks5.unwrap_or_default() {
             if let Some(socks5_port) = self.socks5_port {
                 cfg.set_socks5_portal(Some(
-                    format!("socks5://0.0.0.0:{}", socks5_port)
-                        .parse()
-                        .unwrap(),
+                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
                 ));
             }
         }
