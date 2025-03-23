@@ -160,6 +160,7 @@ const createNewNetwork = async () => {
 
 const newNetwork = () => {
     newNetworkConfig.value = NetworkTypes.DEFAULT_NETWORK_CONFIG();
+    newNetworkConfig.value.hostname = deviceInfo.value?.hostname;
     isEditing.value = false;
     showCreateNetworkDialog.value = true;
 }

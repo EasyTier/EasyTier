@@ -73,7 +73,7 @@ impl Session {
         let mid = get_machine_id();
         let inst_id = uuid::Uuid::new_v4();
         let token = controller.upgrade().unwrap().token();
-        let hostname = gethostname::gethostname().to_string_lossy().to_string();
+        let hostname = controller.upgrade().unwrap().hostname();
 
         let ctx_clone = ctx.clone();
         let mut tick = interval(std::time::Duration::from_secs(1));
