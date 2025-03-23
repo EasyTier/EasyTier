@@ -892,9 +892,13 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     .await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn port_forward_test() {
+pub async fn port_forward_test(
+    #[values(true, false)] no_tun: bool,
+    #[values(64, 1900)] buf_size: u64,
+) {
     prepare_linux_namespaces();
 
     let _insts = init_three_node_ex(
@@ -914,12 +918,24 @@ pub async fn port_forward_test() {
                         dst_addr: "10.1.2.4:23457".parse().unwrap(),
                         proto: "tcp".to_string(),
                     },
+                    // test udp port forward to other virtual node
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23458".parse().unwrap(),
+                        dst_addr: "10.144.144.3:23458".parse().unwrap(),
+                        proto: "udp".to_string(),
+                    },
+                    // test udp port forward to subnet proxy
+                    PortForwardConfig {
+                        bind_addr: "0.0.0.0:23459".parse().unwrap(),
+                        dst_addr: "10.1.2.4:23459".parse().unwrap(),
+                        proto: "udp".to_string(),
+                    },
                 ]);
             } else if cfg.get_inst_name() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap());
             }
             let mut flags = cfg.get_flags();
-            flags.no_tun = true;
+            flags.no_tun = no_tun;
             cfg.set_flags(flags);
             cfg
         },
@@ -927,12 +943,15 @@ pub async fn port_forward_test() {
     )
     .await;
 
-    use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener, udp::UdpTunnelConnector,
+        udp::UdpTunnelListener,
+    };
 
     let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23456".parse().unwrap());
     let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23456".parse().unwrap());
 
-    let mut buf = vec![0; 32];
+    let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
 
     _tunnel_pingpong_netns(
@@ -947,12 +966,42 @@ pub async fn port_forward_test() {
     let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:23457".parse().unwrap());
     let tcp_connector = TcpTunnelConnector::new("tcp://127.0.0.1:23457".parse().unwrap());
 
-    let mut buf = vec![0; 32];
+    let mut buf = vec![0; buf_size as usize];
     rand::thread_rng().fill(&mut buf[..]);
 
     _tunnel_pingpong_netns(
         tcp_listener,
         tcp_connector,
+        NetNS::new(Some("net_d".into())),
+        NetNS::new(Some("net_a".into())),
+        buf,
+    )
+    .await;
+
+    let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:23458".parse().unwrap());
+    let udp_connector = UdpTunnelConnector::new("udp://127.0.0.1:23458".parse().unwrap());
+
+    let mut buf = vec![0; buf_size as usize];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    _tunnel_pingpong_netns(
+        udp_listener,
+        udp_connector,
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+        buf,
+    )
+    .await;
+
+    let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:23459".parse().unwrap());
+    let udp_connector = UdpTunnelConnector::new("udp://127.0.0.1:23459".parse().unwrap());
+
+    let mut buf = vec![0; buf_size as usize];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    _tunnel_pingpong_netns(
+        udp_listener,
+        udp_connector,
         NetNS::new(Some("net_d".into())),
         NetNS::new(Some("net_a".into())),
         buf,
