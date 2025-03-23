@@ -128,7 +128,7 @@ mod tests {
         mgr.serve(Box::new(listener)).await.unwrap();
 
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());
-        let _c = WebClient::new(connector, "test");
+        let _c = WebClient::new(connector, "test", "test");
 
         wait_for_condition(
             || async { mgr.client_sessions.len() == 1 },

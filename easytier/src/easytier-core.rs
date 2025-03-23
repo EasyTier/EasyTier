@@ -869,9 +869,18 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         let mut flags = global_ctx.get_flags();
         flags.bind_device = false;
         global_ctx.set_flags(flags);
+        let hostname = match cli.hostname {
+            None => {
+                gethostname::gethostname().to_string_lossy().to_string()
+            }
+            Some(hostname) => {
+                hostname.to_string()
+            }
+        };
         let _wc = web_client::WebClient::new(
             create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
             token.to_string(),
+            hostname
         );
         tokio::signal::ctrl_c().await.unwrap();
         DNSTunnelConnector::new("".parse().unwrap(), global_ctx);
