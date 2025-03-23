@@ -384,6 +384,7 @@ pub async fn subnet_proxy_three_node_test(
                 cfg.set_network_identity(NetworkIdentity::new(
                     "public".to_string(),
                     "public".to_string(),
+                    None,
                 ));
             }
 
@@ -627,8 +628,11 @@ pub async fn foreign_network_forward_nic_data() {
     prepare_linux_namespaces();
 
     let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
-    center_node_config
-        .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    center_node_config.set_network_identity(NetworkIdentity::new(
+        "center".to_string(),
+        "".to_string(),
+        None,
+    ));
     let mut center_inst = Instance::new(center_node_config);
 
     let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1"));
@@ -836,8 +840,11 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
 
     let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
     if is_foreign {
-        center_node_config
-            .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+        center_node_config.set_network_identity(NetworkIdentity::new(
+            "center".to_string(),
+            "".to_string(),
+            None,
+        ));
     }
     let mut center_inst = Instance::new(center_node_config);
 

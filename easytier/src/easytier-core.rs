@@ -77,6 +77,12 @@ struct Cli {
     network_secret: String,
 
     #[arg(
+        long,
+        help = t!("core_clap.network_secret_cmd").to_string(),
+    )]
+    network_secret_cmd: Option<String>,
+
+    #[arg(
         short,
         long,
         help = t!("core_clap.ipv4").to_string()
@@ -427,6 +433,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         cfg.set_network_identity(NetworkIdentity::new(
             cli.network_name.clone(),
             cli.network_secret.clone(),
+            cli.network_secret_cmd.clone(),
         ));
 
         cfg.set_dhcp(cli.dhcp);

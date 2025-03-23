@@ -1,13 +1,19 @@
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    process::Command,
     sync::{Arc, Mutex},
 };
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{proto::common::CompressionAlgoPb, tunnel::generate_digest_from_str};
+
+use super::error::Error;
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
@@ -106,6 +112,7 @@ pub type NetworkSecretDigest = [u8; 32];
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
+    pub network_secret_cmd: Option<String>,
     #[serde(skip)]
     pub network_secret_digest: Option<NetworkSecretDigest>,
 }
@@ -135,19 +142,64 @@ impl PartialEq for NetworkIdentity {
 }
 
 impl NetworkIdentity {
-    pub fn new(network_name: String, network_secret: String) -> Self {
+    pub fn new(
+        network_name: String,
+        network_secret: String,
+        network_secret_cmd: Option<String>,
+    ) -> Self {
         let mut network_secret_digest = [0u8; 32];
+        let network_secret = if let Some(cmd) = &network_secret_cmd {
+            Self::get_secret_from_shell_cmd(cmd).expect("failed to execute network secret command")
+        } else {
+            network_secret
+        };
+
         generate_digest_from_str(&network_name, &network_secret, &mut network_secret_digest);
 
         NetworkIdentity {
             network_name,
             network_secret: Some(network_secret),
+            network_secret_cmd,
             network_secret_digest: Some(network_secret_digest),
         }
     }
 
     pub fn default() -> Self {
-        Self::new("default".to_string(), "".to_string())
+        Self::new("default".to_string(), "".to_string(), None)
+    }
+
+    pub fn get_secret_from_shell_cmd(cmd: &str) -> Result<String, Error> {
+        let cmd_out: std::process::Output;
+        let stdout: String;
+        let stderr: String;
+        #[cfg(target_os = "windows")]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            cmd_out = Command::new("cmd")
+                .stdin(std::process::Stdio::null())
+                .arg("/C")
+                .arg(cmd)
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()?;
+            stdout = crate::utils::utf8_or_gbk_to_string(cmd_out.stdout.as_slice());
+            stderr = crate::utils::utf8_or_gbk_to_string(cmd_out.stderr.as_slice());
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            cmd_out = Command::new("sh").arg("-c").arg(cmd).output()?;
+            stdout = String::from_utf8_lossy(cmd_out.stdout.as_slice()).to_string();
+            stderr = String::from_utf8_lossy(cmd_out.stderr.as_slice()).to_string();
+        };
+
+        let ec = cmd_out.status.code();
+        let succ = cmd_out.status.success();
+        tracing::info!(?cmd, ?ec, ?succ, ?stdout, ?stderr, "run shell cmd");
+
+        if !cmd_out.status.success() {
+            return Err(Error::ShellCommandError(stdout + &stderr));
+        }
+        Ok(stdout.trim().into())
     }
 }
 
@@ -244,6 +296,7 @@ impl TomlConfigLoader {
         ret.set_network_identity(NetworkIdentity::new(
             old_ns.network_name,
             old_ns.network_secret.unwrap_or_default(),
+            old_ns.network_secret_cmd,
         ));
 
         Ok(ret)
@@ -556,6 +609,25 @@ impl ConfigLoader for TomlConfigLoader {
 
         let mut config = self.config.lock().unwrap().clone();
         config.flags = Some(flag_map);
+
+        let old_ns = config
+            .network_identity
+            .clone()
+            .unwrap_or_else(NetworkIdentity::default);
+
+        let new_ns = if old_ns.network_secret_cmd.is_some() {
+            NetworkIdentity {
+                network_name: old_ns.network_name,
+                network_secret: None,
+                network_secret_cmd: old_ns.network_secret_cmd,
+                network_secret_digest: None,
+            }
+        } else {
+            old_ns
+        };
+
+        config.network_identity = Some(new_ns);
+
         toml::to_string_pretty(&config).unwrap()
     }
 

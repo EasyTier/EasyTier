@@ -30,8 +30,11 @@ pub async fn create_mock_peer_manager() -> Arc<PeerManager> {
 
 pub async fn create_mock_peer_manager_with_name(network_name: String) -> Arc<PeerManager> {
     let (s, _r) = create_packet_recv_chan();
-    let g =
-        get_mock_global_ctx_with_network(Some(NetworkIdentity::new(network_name, "".to_string())));
+    let g = get_mock_global_ctx_with_network(Some(NetworkIdentity::new(
+        network_name,
+        "".to_string(),
+        None,
+    )));
     let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, g, s));
     peer_mgr.run().await.unwrap();
     peer_mgr
