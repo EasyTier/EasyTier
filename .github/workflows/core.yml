@@ -31,6 +31,47 @@ jobs:
           skip_after_successful_duplicate: 'true'
           cancel_others: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/workflows/install_rust.sh"]'
+  build_web:
+    runs-on: ubuntu-latest
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 21
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install frontend dependencies
+        run: |
+          pnpm -r install
+          pnpm -r --filter "./easytier-web/*"  build
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: |
+            easytier-web/frontend/dist/*
   build:
     strategy:
       fail-fast: false
@@ -87,7 +128,9 @@ jobs:
       TARGET: ${{ matrix.TARGET }}
       OS: ${{ matrix.OS }}
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
-    needs: pre_job
+    needs:
+      - pre_job
+      - build_web
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v3
@@ -95,6 +138,12 @@ jobs:
       - name: Set current ref as env variable
         run: |
           echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
+
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: easytier-web/frontend/dist/
 
       - name: Cargo cache
         if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
@@ -213,6 +262,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - pre_job
+      - build_web
       - build
     steps:
       - name: Mark result as failed
