@@ -109,7 +109,7 @@ fi
 
 echo -e "\r\n${GREEN_COLOR}Your platform: ${ARCH} (${platform}) ${RES}\r\n" 1>&2
 
-GH_PROXY='https://ghp.ci/'
+GH_PROXY='https://ghfast.top/'
 
 if [ "$(id -u)" != "0" ]; then
   echo -e "\r\n${RED_COLOR}This script requires run as Root !${RES}\r\n" 1>&2

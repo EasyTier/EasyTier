@@ -43,8 +43,8 @@ async fn set_bind_addr_for_peer_connector(
         connector.set_bind_addrs(bind_addrs);
     } else {
         let mut bind_addrs = vec![];
-        for ipv6 in ips.interface_ipv6s {
-            let socket_addr = SocketAddrV6::new(ipv6.into(), 0, 0, 0).into();
+        for ipv6 in ips.interface_ipv6s.iter().chain(ips.public_ipv6.iter()) {
+            let socket_addr = SocketAddrV6::new(std::net::Ipv6Addr::from(*ipv6), 0, 0, 0).into();
             bind_addrs.push(socket_addr);
         }
         connector.set_bind_addrs(bind_addrs);
@@ -96,7 +96,8 @@ pub async fn create_connector_by_url(
         }
         #[cfg(feature = "quic")]
         "quic" => {
-            let dst_addr = check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic", ip_version)?;
+            let dst_addr =
+                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic", ip_version)?;
             let mut connector = QUICTunnelConnector::new(url);
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
