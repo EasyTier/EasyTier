@@ -20,6 +20,8 @@ mod client_manager;
 mod db;
 mod migrator;
 mod restful;
+
+#[cfg(feature = "embed")]
 mod web;
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -72,14 +74,16 @@ struct Cli {
     )]
     api_server_port: u16,
 
+    #[cfg(feature = "embed")]
     #[arg(
         long,
         short='l',
-        default_value = "8080",
+        default_value = "11210",
         help = t!("cli.web_server_port").to_string(),
     )]
     web_server_port: u16,
 
+    #[cfg(feature = "embed")]
     #[arg(
         long,
         help = t!("cli.no_web").to_string(),
@@ -137,14 +141,16 @@ async fn main() {
     .await
     .unwrap();
 
+    restful_server.start().await.unwrap();
+
+    #[cfg(feature = "embed")]
     let mut web_server = web::WebServer::new(
         format!("0.0.0.0:{}", cli.web_server_port).parse().unwrap()
     )
     .await
     .unwrap();
 
-    restful_server.start().await.unwrap();
-
+    #[cfg(feature = "embed")]
     if !cli.no_web {
         web_server.start().await.unwrap();
     }

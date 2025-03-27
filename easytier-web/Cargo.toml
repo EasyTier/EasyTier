@@ -18,7 +18,7 @@ axum = { version = "0.7", features = ["macros"] }
 axum-login = { version = "0.16" }
 password-auth = { version = "1.0.0" }
 axum-messages = "0.7.0"
-axum-embed = { version = "0.1.0" }
+axum-embed = { version = "0.1.0", optional = true }
 tower-sessions-sqlx-store = { version = "0.14.1", features = ["sqlite"] }
 tower-sessions = { version = "0.13.0", default-features = false, features = [
     "signed",
@@ -60,3 +60,7 @@ uuid = { version = "1.5.0", features = [
 ] }
 
 chrono = { version = "0.4.37", features = ["serde"] }
+
+[features]
+default = []
+embed = ["dep:axum-embed"]

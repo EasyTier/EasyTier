@@ -170,23 +170,27 @@ jobs:
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
             cargo +nightly build -r --verbose --target $TARGET -Z build-std=std,panic_abort --no-default-features --features mips --package=easytier
           else
+            if [[ $OS =~ ^windows.*$ ]]; then
+              SUFFIX=.exe
+            fi
+            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
+            mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
             cargo build --release --verbose --target $TARGET
           fi
 
       # Copied and slightly modified from @lmq8267 (https://github.com/lmq8267)
       - name: Build Core & Cli (X86_64 FreeBSD)
-        uses: cross-platform-actions/action@v0.23.0
+        uses: vmactions/freebsd-vm@v1
         if: ${{ endsWith(matrix.TARGET, 'freebsd') }}
         env:
           TARGET: ${{ matrix.TARGET }}
         with:
-          operating_system: freebsd
-          environment_variables: TARGET
-          architecture: x86-64
-          version: ${{ matrix.BSD_VERSION }}
-          shell: bash
-          memory: 5G
-          cpu_count: 4
+          envs: TARGET
+          release: ${{ matrix.BSD_VERSION }}
+          arch: x86_64
+          usesh: true
+          mem: 6144
+          cpu: 4
           run: |
             uname -a
             echo $SHELL
@@ -195,9 +199,9 @@ jobs:
             whoami
             env | sort
 
-            sudo pkg install -y git protobuf llvm-devel
+            pkg install -y git protobuf llvm-devel sudo curl
             curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-            source $HOME/.cargo/env
+            . $HOME/.cargo/env
 
             rustup set auto-self-update disable
 
@@ -208,6 +212,8 @@ jobs:
             export CXX=clang++
             export CARGO_TERM_COLOR=always
 
+            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
+            mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
             cargo build --release --verbose --target $TARGET
 
       - name: Install UPX
@@ -245,6 +251,7 @@ jobs:
           mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
           if [[ ! $TARGET =~ ^mips.*$ ]]; then
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./artifacts/objects/
+            mv ./target/$TARGET/release/easytier-web-embed"$SUFFIX" ./artifacts/objects/
           fi
 
           mv ./artifacts/objects/* ./artifacts/
