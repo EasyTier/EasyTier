@@ -1,7 +1,7 @@
 use parking_lot::Mutex;
 use smoltcp::{
     iface::{SocketHandle as InnerSocketHandle, SocketSet},
-    socket::tcp,
+    socket::{tcp, udp},
     time::Duration,
 };
 use std::{
@@ -14,6 +14,11 @@ use std::{
 pub struct BufferSize {
     pub tcp_rx_size: usize,
     pub tcp_tx_size: usize,
+
+    pub udp_rx_size: usize,
+    pub udp_tx_size: usize,
+    pub udp_rx_meta_size: usize,
+    pub udp_tx_meta_size: usize,
 }
 
 impl Default for BufferSize {
@@ -21,6 +26,11 @@ impl Default for BufferSize {
         BufferSize {
             tcp_rx_size: 8192,
             tcp_tx_size: 8192,
+
+            udp_rx_size: 8192,
+            udp_tx_size: 8192,
+            udp_rx_meta_size: 32,
+            udp_tx_meta_size: 32,
         }
     }
 }
@@ -58,6 +68,26 @@ impl SocketAlloctor {
         tcp.set_timeout(Some(Duration::from_secs(60)));
 
         tcp
+    }
+
+    pub fn new_udp_socket(&self) -> SocketHandle {
+        let mut set = self.sockets.lock();
+        let handle = set.add(self.alloc_udp_socket());
+        SocketHandle::new(handle, self.sockets.clone())
+    }
+
+    fn alloc_udp_socket(&self) -> udp::Socket<'static> {
+        let rx_buffer = udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY; self.buffer_size.udp_rx_meta_size],
+            vec![0; self.buffer_size.udp_rx_size],
+        );
+        let tx_buffer = udp::PacketBuffer::new(
+            vec![udp::PacketMetadata::EMPTY; self.buffer_size.udp_tx_meta_size],
+            vec![0; self.buffer_size.udp_tx_size],
+        );
+        let udp = udp::Socket::new(rx_buffer, tx_buffer);
+
+        udp
     }
 }
 

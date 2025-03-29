@@ -162,7 +162,13 @@ smoltcp = { version = "0.12.0", optional = true, default-features = false, featu
     "medium-ip",
     "proto-ipv4",
     "proto-ipv6",
+    "proto-ipv4-fragmentation",
+    "fragmentation-buffer-size-8192",
+    "assembler-max-segment-count-16",
+    "reassembly-buffer-size-8192",
+    "reassembly-buffer-count-16",
     "socket-tcp",
+    "socket-udp",
     "socket-tcp-cubic",
     "async",
 ] }
@@ -176,9 +182,12 @@ sys-locale = "0.3"
 ringbuf = "0.4.5"
 async-ringbuf = "0.3.1"
 
-service-manager = {git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main"}
+service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main" }
 
-async-compression = { version = "0.4.17", default-features = false, features = ["zstd", "tokio"] }
+async-compression = { version = "0.4.17", default-features = false, features = [
+    "zstd",
+    "tokio",
+] }
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys" }
 
@@ -187,7 +196,9 @@ prost-reflect = { version = "0.14.5", default-features = false, features = [
 ] }
 
 # for http connector
-http_req = { git = "https://github.com/EasyTier/http_req.git", default-features = false, features = ["rust-tls"] }
+http_req = { git = "https://github.com/EasyTier/http_req.git", default-features = false, features = [
+    "rust-tls",
+] }
 
 # for dns connector
 hickory-resolver = "0.24.4"
@@ -212,7 +223,7 @@ windows = { version = "0.52.0", features = [
     "Win32_System_Ole",
     "Win32_Networking_WinSock",
     "Win32_System_IO",
-]}
+] }
 encoding = "0.2"
 winreg = "0.52"
 windows-service = "0.7.0"
@@ -222,7 +233,9 @@ tonic-build = "0.12"
 globwalk = "0.8.1"
 regex = "1"
 prost-build = "0.13.2"
-rpc_build = { package = "easytier-rpc-build", version = "0.1.0", features = ["internal-namespace"] }
+rpc_build = { package = "easytier-rpc-build", version = "0.1.0", features = [
+    "internal-namespace",
+] }
 prost-reflect-build = { version = "0.14.0" }
 
 [target.'cfg(windows)'.build-dependencies]

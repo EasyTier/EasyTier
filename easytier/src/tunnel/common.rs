@@ -454,6 +454,7 @@ pub mod tests {
                 let Ok(msg) = item else {
                     continue;
                 };
+                tracing::debug!(?msg, "recv a msg, try echo back");
                 if let Err(_) = send.send(msg).await {
                     break;
                 }

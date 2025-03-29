@@ -20,7 +20,7 @@ use smoltcp::{
     time::{Duration, Instant},
     wire::{HardwareAddress, IpAddress, IpCidr},
 };
-pub use socket::{TcpListener, TcpStream};
+pub use socket::{TcpListener, TcpStream, UdpSocket};
 pub use socket_allocator::BufferSize;
 use tokio::sync::Notify;
 
@@ -158,6 +158,13 @@ impl Net {
         )
         .await
     }
+
+    /// This function will create a new UDP socket and attempt to bind it to the `addr` provided.
+    pub async fn udp_bind(&self, addr: SocketAddr) -> io::Result<UdpSocket> {
+        let addr = self.set_address(addr);
+        UdpSocket::new(self.reactor.clone(), addr.into()).await
+    }
+
     fn set_address(&self, mut addr: SocketAddr) -> SocketAddr {
         if addr.ip().is_unspecified() {
             addr.set_ip(match self.ip_addr.address() {

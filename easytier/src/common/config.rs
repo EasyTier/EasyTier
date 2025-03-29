@@ -97,6 +97,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_socks5_portal(&self) -> Option<url::Url>;
     fn set_socks5_portal(&self, addr: Option<url::Url>);
 
+    fn get_port_forwards(&self) -> Vec<PortForwardConfig>;
+    fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
+
     fn dump(&self) -> String;
 }
 
@@ -181,6 +184,13 @@ pub struct VpnPortalConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct PortForwardConfig {
+    pub bind_addr: SocketAddr,
+    pub dst_addr: SocketAddr,
+    pub proto: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
@@ -206,6 +216,8 @@ struct Config {
     routes: Option<Vec<cidr::Ipv4Cidr>>,
 
     socks5_proxy: Option<url::Url>,
+
+    port_forward: Option<Vec<PortForwardConfig>>,
 
     flags: Option<serde_json::Map<String, serde_json::Value>>,
 
@@ -534,6 +546,30 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().exit_nodes = Some(nodes);
     }
 
+    fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>> {
+        self.config.lock().unwrap().routes.clone()
+    }
+
+    fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>) {
+        self.config.lock().unwrap().routes = routes;
+    }
+
+    fn get_socks5_portal(&self) -> Option<url::Url> {
+        self.config.lock().unwrap().socks5_proxy.clone()
+    }
+
+    fn set_socks5_portal(&self, addr: Option<url::Url>) {
+        self.config.lock().unwrap().socks5_proxy = addr;
+    }
+
+    fn get_port_forwards(&self) -> Vec<PortForwardConfig> {
+        self.config.lock().unwrap().port_forward.clone().unwrap_or_default()
+    }
+
+    fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>) {
+        self.config.lock().unwrap().port_forward = Some(forwards);
+    }
+
     fn dump(&self) -> String {
         let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
@@ -557,22 +593,6 @@ impl ConfigLoader for TomlConfigLoader {
         let mut config = self.config.lock().unwrap().clone();
         config.flags = Some(flag_map);
         toml::to_string_pretty(&config).unwrap()
-    }
-
-    fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>> {
-        self.config.lock().unwrap().routes.clone()
-    }
-
-    fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>) {
-        self.config.lock().unwrap().routes = routes;
-    }
-
-    fn get_socks5_portal(&self) -> Option<url::Url> {
-        self.config.lock().unwrap().socks5_proxy.clone()
-    }
-
-    fn set_socks5_portal(&self, addr: Option<url::Url>) {
-        self.config.lock().unwrap().socks5_proxy = addr;
     }
 }
 
@@ -614,6 +634,11 @@ dir = "/tmp/easytier"
 
 [console_logger]
 level = "warn"
+
+[[port_forward]]
+bind_addr = "0.0.0.0:11011"
+dst_addr = "192.168.94.33:11011"
+proto = "tcp"
 "#;
         let ret = TomlConfigLoader::new_from_str(config_str);
         if let Err(e) = &ret {
@@ -634,6 +659,14 @@ level = "warn"
                 .collect::<Vec<String>>()
         );
 
+        assert_eq!(
+            vec![PortForwardConfig {
+                bind_addr: "0.0.0.0:11011".parse().unwrap(),
+                dst_addr: "192.168.94.33:11011".parse().unwrap(),
+                proto: "tcp".to_string(),
+            }],
+            ret.get_port_forwards()
+        );
         println!("{}", ret.dump());
     }
 }
