@@ -7,7 +7,10 @@ use std::{
 use crossbeam::atomic::AtomicCell;
 
 use crate::{
-    common::{join_joinset_background, scoped_task::ScopedTask},
+    common::{
+        config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background,
+        scoped_task::ScopedTask,
+    },
     gateway::{
         fast_socks5::{
             server::{
@@ -485,43 +488,51 @@ impl Socks5Server {
     }
 
     pub async fn run(self: &Arc<Self>) -> Result<(), Error> {
-        let Some(proxy_url) = self.global_ctx.config.get_socks5_portal() else {
-            return Ok(());
-        };
+        let mut need_start = false;
+        if let Some(proxy_url) = self.global_ctx.config.get_socks5_portal() {
+            let bind_addr = format!(
+                "{}:{}",
+                proxy_url.host_str().unwrap(),
+                proxy_url.port().unwrap()
+            );
 
-        let bind_addr = format!(
-            "{}:{}",
-            proxy_url.host_str().unwrap(),
-            proxy_url.port().unwrap()
-        );
+            let listener = {
+                let _g = self.global_ctx.net_ns.guard();
+                TcpListener::bind(bind_addr.parse::<SocketAddr>().unwrap()).await?
+            };
 
-        let listener = {
-            let _g = self.global_ctx.net_ns.guard();
-            TcpListener::bind(bind_addr.parse::<SocketAddr>().unwrap()).await?
-        };
-
-        self.peer_manager
-            .add_packet_process_pipeline(Box::new(self.clone()))
-            .await;
-
-        self.run_net_update_task().await;
-
-        let net = self.net.clone();
-        self.tasks.lock().unwrap().spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((socket, _addr)) => {
-                        tracing::info!("accept a new connection, {:?}", socket);
-                        if let Some(net) = net.lock().await.as_ref() {
-                            net.handle_tcp_stream(socket);
+            let net = self.net.clone();
+            self.tasks.lock().unwrap().spawn(async move {
+                loop {
+                    match listener.accept().await {
+                        Ok((socket, _addr)) => {
+                            tracing::info!("accept a new connection, {:?}", socket);
+                            if let Some(net) = net.lock().await.as_ref() {
+                                net.handle_tcp_stream(socket);
+                            }
                         }
+                        Err(err) => tracing::error!("accept error = {:?}", err),
                     }
-                    Err(err) => tracing::error!("accept error = {:?}", err),
                 }
-            }
-        });
+            });
 
-        join_joinset_background(self.tasks.clone(), "socks5 server".to_string());
+            join_joinset_background(self.tasks.clone(), "socks5 server".to_string());
+
+            need_start = true;
+        };
+
+        for port_forward in self.global_ctx.config.get_port_forwards() {
+            self.add_port_forward(port_forward).await?;
+            need_start = true;
+        }
+
+        if need_start {
+            self.peer_manager
+                .add_packet_process_pipeline(Box::new(self.clone()))
+                .await;
+
+            self.run_net_update_task().await;
+        }
 
         Ok(())
     }
@@ -551,6 +562,29 @@ impl Socks5Server {
                 tracing::error!("port forward connection error: {:?}", e);
             }
         }
+    }
+
+    pub async fn add_port_forward(&self, cfg: PortForwardConfig) -> Result<(), Error> {
+        match cfg.proto.to_lowercase().as_str() {
+            "tcp" => {
+                self.add_tcp_port_forward(cfg.bind_addr, cfg.dst_addr)
+                    .await?;
+            }
+            "udp" => {
+                self.add_udp_port_forward(cfg.bind_addr, cfg.dst_addr)
+                    .await?;
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "unsupported protocol: {}, only support udp / tcp",
+                    cfg.proto
+                )
+                .into());
+            }
+        }
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::PortForwardAdded(cfg.clone().into()));
+        Ok(())
     }
 
     pub async fn add_tcp_port_forward(
@@ -586,6 +620,7 @@ impl Socks5Server {
 
                 let net_guard = net.lock().await;
                 let Some(net) = net_guard.as_ref() else {
+                    tracing::error!("net is not ready");
                     continue;
                 };
 

@@ -7,7 +7,10 @@ use std::{
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::{proto::common::CompressionAlgoPb, tunnel::generate_digest_from_str};
+use crate::{
+    proto::common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
+    tunnel::generate_digest_from_str,
+};
 
 pub type Flags = crate::proto::common::FlagsInConfig;
 
@@ -188,6 +191,34 @@ pub struct PortForwardConfig {
     pub bind_addr: SocketAddr,
     pub dst_addr: SocketAddr,
     pub proto: String,
+}
+
+impl From<PortForwardConfigPb> for PortForwardConfig {
+    fn from(config: PortForwardConfigPb) -> Self {
+        PortForwardConfig {
+            bind_addr: config.bind_addr.unwrap_or_default().into(),
+            dst_addr: config.dst_addr.unwrap_or_default().into(),
+            proto: match SocketType::try_from(config.socket_type) {
+                Ok(SocketType::Tcp) => "tcp".to_string(),
+                Ok(SocketType::Udp) => "udp".to_string(),
+                _ => "tcp".to_string(),
+            },
+        }
+    }
+}
+
+impl Into<PortForwardConfigPb> for PortForwardConfig {
+    fn into(self) -> PortForwardConfigPb {
+        PortForwardConfigPb {
+            bind_addr: Some(self.bind_addr.into()),
+            dst_addr: Some(self.dst_addr.into()),
+            socket_type: match self.proto.to_lowercase().as_str() {
+                "tcp" => SocketType::Tcp as i32,
+                "udp" => SocketType::Udp as i32,
+                _ => SocketType::Tcp as i32,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -563,7 +594,12 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn get_port_forwards(&self) -> Vec<PortForwardConfig> {
-        self.config.lock().unwrap().port_forward.clone().unwrap_or_default()
+        self.config
+            .lock()
+            .unwrap()
+            .port_forward
+            .clone()
+            .unwrap_or_default()
     }
 
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>) {

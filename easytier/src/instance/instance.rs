@@ -418,26 +418,6 @@ impl Instance {
 
         #[cfg(feature = "socks5")]
         self.socks5_server.run().await?;
-        for port_forward in self.global_ctx.config.get_port_forwards() {
-            match port_forward.proto.as_str() {
-                "tcp" => {
-                    self.socks5_server
-                        .add_tcp_port_forward(port_forward.bind_addr, port_forward.dst_addr)
-                        .await?;
-                }
-                "udp" => {
-                    self.socks5_server
-                        .add_udp_port_forward(port_forward.bind_addr, port_forward.dst_addr)
-                        .await?;
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "current only support tcp or udp port forward"
-                    )
-                    .into());
-                }
-            }
-        }
 
         self.run_rpc_server().await?;
 
