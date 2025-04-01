@@ -5,7 +5,7 @@ extern crate rust_i18n;
 
 use std::sync::Arc;
 
-use clap::{command, Parser};
+use clap::Parser;
 use easytier::{
     common::{
         config::{ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, TomlConfigLoader},
@@ -20,6 +20,9 @@ mod client_manager;
 mod db;
 mod migrator;
 mod restful;
+
+#[cfg(feature = "embed")]
+mod web;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -70,6 +73,23 @@ struct Cli {
         help = t!("cli.api_server_port").to_string(),
     )]
     api_server_port: u16,
+
+    #[cfg(feature = "embed")]
+    #[arg(
+        long,
+        short='l',
+        default_value = "11210",
+        help = t!("cli.web_server_port").to_string(),
+    )]
+    web_server_port: u16,
+
+    #[cfg(feature = "embed")]
+    #[arg(
+        long,
+        help = t!("cli.no_web").to_string(),
+        default_value = "false"
+    )]
+    no_web: bool,
 }
 
 pub fn get_listener_by_url(
@@ -120,6 +140,20 @@ async fn main() {
     )
     .await
     .unwrap();
+
     restful_server.start().await.unwrap();
+
+    #[cfg(feature = "embed")]
+    let mut web_server = web::WebServer::new(
+        format!("0.0.0.0:{}", cli.web_server_port).parse().unwrap()
+    )
+    .await
+    .unwrap();
+
+    #[cfg(feature = "embed")]
+    if !cli.no_web {
+        web_server.start().await.unwrap();
+    }
+
     tokio::signal::ctrl_c().await.unwrap();
 }

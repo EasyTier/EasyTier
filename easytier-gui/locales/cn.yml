@@ -113,3 +113,4 @@ event:
   VpnPortalClientDisconnected: VPN门户客户端已断开连接
   DhcpIpv4Changed: DHCP IPv4地址更改
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
+  PortForwardAdded: 端口转发添加

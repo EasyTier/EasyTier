@@ -190,6 +190,12 @@ impl From<SocketAddr> for std::net::SocketAddr {
     }
 }
 
+impl ToString for SocketAddr {
+    fn to_string(&self) -> String {
+        std::net::SocketAddr::from(self.clone()).to_string()
+    }
+}
+
 impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
     type Error = anyhow::Error;
 

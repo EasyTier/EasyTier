@@ -17,7 +17,7 @@ use easytier::{
     common::{
         config::{
             ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, NetworkIdentity, PeerConfig,
-            TomlConfigLoader, VpnPortalConfig,
+            PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtx, GlobalCtxEvent},
@@ -334,6 +334,13 @@ struct Cli {
         default_value = "false"
     )]
     disable_kcp_input: bool,
+
+    #[arg(
+        long,
+        help = t!("core_clap.port_forward").to_string(),
+        num_args = 1..
+    )]
+    port_forward: Vec<url::Url>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -549,6 +556,40 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             ));
         }
 
+        #[cfg(feature = "socks5")]
+        for port_forward in cli.port_forward.iter() {
+            let example_str = ", example: udp://0.0.0.0:12345/10.126.126.1:12345";
+
+            let bind_addr = format!(
+                "{}:{}",
+                port_forward.host_str().expect("local bind host is missing"),
+                port_forward.port().expect("local bind port is missing")
+            )
+            .parse()
+            .expect(format!("failed to parse local bind addr {}", example_str).as_str());
+
+            let dst_addr = format!(
+                "{}",
+                port_forward
+                    .path_segments()
+                    .expect(format!("remote destination addr is missing {}", example_str).as_str())
+                    .next()
+                    .expect(format!("remote destination addr is missing {}", example_str).as_str())
+            )
+            .parse()
+            .expect(format!("failed to parse remote destination addr {}", example_str).as_str());
+
+            let port_forward_item = PortForwardConfig {
+                bind_addr,
+                dst_addr,
+                proto: port_forward.scheme().to_string(),
+            };
+
+            let mut old = cfg.get_port_forwards();
+            old.push(port_forward_item);
+            cfg.set_port_forwards(old);
+        }
+
         let mut f = cfg.get_flags();
         if cli.default_protocol.is_some() {
             f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
@@ -710,6 +751,15 @@ pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<(
                 GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
                     print_event(format!("dhcp ip conflict. ip: {:?}", ip));
                 }
+
+                GlobalCtxEvent::PortForwardAdded(cfg) => {
+                    print_event(format!(
+                        "port forward added. local: {}, remote: {}, proto: {}",
+                        cfg.bind_addr.unwrap().to_string(),
+                        cfg.dst_addr.unwrap().to_string(),
+                        cfg.socket_type().as_str_name()
+                    ));
+                }
             }
         }
     })
@@ -870,17 +920,13 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         flags.bind_device = false;
         global_ctx.set_flags(flags);
         let hostname = match cli.hostname {
-            None => {
-                gethostname::gethostname().to_string_lossy().to_string()
-            }
-            Some(hostname) => {
-                hostname.to_string()
-            }
+            None => gethostname::gethostname().to_string_lossy().to_string(),
+            Some(hostname) => hostname.to_string(),
         };
         let _wc = web_client::WebClient::new(
             create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
             token.to_string(),
-            hostname
+            hostname,
         );
         tokio::signal::ctrl_c().await.unwrap();
         DNSTunnelConnector::new("".parse().unwrap(), global_ctx);
