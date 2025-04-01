@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::proto::cli::PeerConnInfo;
-use crate::proto::common::PeerFeatureFlag;
+use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crossbeam::atomic::AtomicCell;
 
 use super::{
@@ -42,6 +42,8 @@ pub enum GlobalCtxEvent {
 
     DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
+
+    PortForwardAdded(PortForwardConfigPb),
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;

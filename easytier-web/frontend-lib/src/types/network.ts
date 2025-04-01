@@ -264,4 +264,6 @@ export enum EventType {
 
   DhcpIpv4Changed = 'DhcpIpv4Changed', // ipv4 | null, ipv4 | null
   DhcpIpv4Conflicted = 'DhcpIpv4Conflicted', // ipv4 | null
+
+  PortForwardAdded = 'PortForwardAdded', // PortForwardConfigPb
 }

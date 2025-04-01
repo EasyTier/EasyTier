@@ -182,3 +182,4 @@ event:
   VpnPortalClientDisconnected: VpnPortalClientDisconnected
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
+  PortForwardAdded: PortForwardAdded
