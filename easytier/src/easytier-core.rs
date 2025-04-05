@@ -51,6 +51,7 @@ struct Cli {
     #[arg(
         short = 'w',
         long,
+        env = "ET_CONFIG_SERVER",
         help = t!("core_clap.config_server").to_string()
     )]
     config_server: Option<String>,
@@ -58,12 +59,14 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_CONFIG_FILE",
         help = t!("core_clap.config_file").to_string()
     )]
     config_file: Option<PathBuf>,
 
     #[arg(
         long,
+        env = "ET_NETWORK_NAME",
         help = t!("core_clap.network_name").to_string(),
         default_value = "default"
     )]
@@ -71,6 +74,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_NETWORK_SECRET",
         help = t!("core_clap.network_secret").to_string(),
         default_value = ""
     )]
@@ -79,6 +83,7 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_IPV4",
         help = t!("core_clap.ipv4").to_string()
     )]
     ipv4: Option<String>,
@@ -86,6 +91,7 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_DHCP",
         help = t!("core_clap.dhcp").to_string()
     )]
     dhcp: bool,
@@ -93,6 +99,8 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_PEERS",
+        value_delimiter = ',',
         help = t!("core_clap.peers").to_string(),
         num_args = 0..
     )]
@@ -101,6 +109,7 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_EXTERNAL_NODE",
         help = t!("core_clap.external_node").to_string()
     )]
     external_node: Option<String>,
@@ -108,6 +117,8 @@ struct Cli {
     #[arg(
         short = 'n',
         long,
+        env = "ET_PROXY_NETWORKS",
+        value_delimiter = ',',
         help = t!("core_clap.proxy_networks").to_string()
     )]
     proxy_networks: Vec<String>,
@@ -115,6 +126,7 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_RPC_PORTAL",
         help = t!("core_clap.rpc_portal").to_string(),
         default_value = "0"
     )]
@@ -123,6 +135,8 @@ struct Cli {
     #[arg(
         short,
         long,
+        env = "ET_LISTENERS",
+        value_delimiter = ',',
         help = t!("core_clap.listeners").to_string(),
         default_values_t = ["11010".to_string()],
         num_args = 0..
@@ -131,6 +145,8 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_MAPPED_LISTENERS",
+        value_delimiter = ',',
         help = t!("core_clap.mapped_listeners").to_string(),
         num_args = 0..
     )]
@@ -138,6 +154,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_NO_LISTENER",
         help = t!("core_clap.no_listener").to_string(),
         default_value = "false"
     )]
@@ -145,24 +162,28 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_CONSOLE_LOG_LEVEL",
         help = t!("core_clap.console_log_level").to_string()
     )]
     console_log_level: Option<String>,
 
     #[arg(
         long,
+        env = "ET_FILE_LOG_LEVEL",
         help = t!("core_clap.file_log_level").to_string()
     )]
     file_log_level: Option<String>,
 
     #[arg(
         long,
+        env = "ET_FILE_LOG_DIR",
         help = t!("core_clap.file_log_dir").to_string()
     )]
     file_log_dir: Option<String>,
 
     #[arg(
         long,
+        env = "ET_HOSTNAME",
         help = t!("core_clap.hostname").to_string()
     )]
     hostname: Option<String>,
@@ -170,6 +191,7 @@ struct Cli {
     #[arg(
         short = 'm',
         long,
+        env = "ET_INSTANCE_NAME",
         help = t!("core_clap.instance_name").to_string(),
         default_value = "default"
     )]
@@ -177,12 +199,14 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_VPN_PORTAL",
         help = t!("core_clap.vpn_portal").to_string()
     )]
     vpn_portal: Option<String>,
 
     #[arg(
         long,
+        env = "ET_DEFAULT_PROTOCOL",
         help = t!("core_clap.default_protocol").to_string()
     )]
     default_protocol: Option<String>,
@@ -190,6 +214,7 @@ struct Cli {
     #[arg(
         short = 'u',
         long,
+        env = "ET_DISABLE_ENCRYPTION",
         help = t!("core_clap.disable_encryption").to_string(),
         default_value = "false"
     )]
@@ -197,6 +222,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_MULTI_THREAD",
         help = t!("core_clap.multi_thread").to_string(),
         default_value = "true"
     )]
@@ -204,6 +230,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_DISABLE_IPV6",
         help = t!("core_clap.disable_ipv6").to_string(),
         default_value = "false"
     )]
@@ -211,18 +238,21 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_DEV_NAME",
         help = t!("core_clap.dev_name").to_string()
     )]
     dev_name: Option<String>,
 
     #[arg(
         long,
+        env = "ET_MTU",
         help = t!("core_clap.mtu").to_string()
     )]
     mtu: Option<u16>,
 
     #[arg(
         long,
+        env = "ET_LATENCY_FIRST",
         help = t!("core_clap.latency_first").to_string(),
         default_value = "false"
     )]
@@ -230,6 +260,8 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_EXIT_NODES",
+        value_delimiter = ',',
         help = t!("core_clap.exit_nodes").to_string(),
         num_args = 0..
     )]
@@ -237,6 +269,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_ENABLE_EXIT_NODE",
         help = t!("core_clap.enable_exit_node").to_string(),
         default_value = "false"
     )]
@@ -244,6 +277,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_PROXY_FORWARD_BY_SYSTEM",
         help = t!("core_clap.proxy_forward_by_system").to_string(),
         default_value = "false"
     )]
@@ -251,6 +285,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_NO_TUN",
         help = t!("core_clap.no_tun").to_string(),
         default_value = "false"
     )]
@@ -258,6 +293,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_USE_SMOLTCP",
         help = t!("core_clap.use_smoltcp").to_string(),
         default_value = "false"
     )]
@@ -265,6 +301,8 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_MANUAL_ROUTES",
+        value_delimiter = ',',
         help = t!("core_clap.manual_routes").to_string(),
         num_args = 0..
     )]
@@ -275,6 +313,8 @@ struct Cli {
     // for local virtual network, will refuse relaying tun packet
     #[arg(
         long,
+        env = "ET_RELAY_NETWORK_WHITELIST",
+        value_delimiter = ',',
         help = t!("core_clap.relay_network_whitelist").to_string(),
         num_args = 0..
     )]
@@ -282,6 +322,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_DISABLE_P2P",
         help = t!("core_clap.disable_p2p").to_string(),
         default_value = "false"
     )]
@@ -289,6 +330,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_DISABLE_UDP_HOLE_PUNCHING",
         help = t!("core_clap.disable_udp_hole_punching").to_string(),
         default_value = "false"
     )]
@@ -296,6 +338,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_RELAY_ALL_PEER_RPC",
         help = t!("core_clap.relay_all_peer_rpc").to_string(),
         default_value = "false"
     )]
@@ -304,12 +347,14 @@ struct Cli {
     #[cfg(feature = "socks5")]
     #[arg(
         long,
+        env = "ET_SOCKS5",
         help = t!("core_clap.socks5").to_string()
     )]
     socks5: Option<u16>,
 
     #[arg(
         long,
+        env = "ET_COMPRESSION",
         help = t!("core_clap.compression").to_string(),
         default_value = "none",
     )]
@@ -317,12 +362,14 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_BIND_DEVICE",
         help = t!("core_clap.bind_device").to_string()
     )]
     bind_device: Option<bool>,
 
     #[arg(
         long,
+        env = "ET_ENABLE_KCP_PROXY",
         help = t!("core_clap.enable_kcp_proxy").to_string(),
         default_value = "false"
     )]
@@ -330,6 +377,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_DISABLE_KCP_INPUT",
         help = t!("core_clap.disable_kcp_input").to_string(),
         default_value = "false"
     )]
@@ -337,6 +385,7 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_PORT_FORWARD",
         help = t!("core_clap.port_forward").to_string(),
         num_args = 1..
     )]
