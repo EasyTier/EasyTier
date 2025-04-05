@@ -93,7 +93,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    rpc_port: 0,
+    rpc_port: 15888,
     latency_first: false,
     dev_name: '',
 

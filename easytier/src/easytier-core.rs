@@ -116,7 +116,7 @@ struct Cli {
         short,
         long,
         help = t!("core_clap.rpc_portal").to_string(),
-        default_value = "0"
+        default_value = "15888"
     )]
     rpc_portal: String,
 
