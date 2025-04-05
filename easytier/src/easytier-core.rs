@@ -467,25 +467,38 @@ impl TryFrom<&Cli> for TomlConfigLoader {
     type Error = anyhow::Error;
 
     fn try_from(cli: &Cli) -> Result<Self, Self::Error> {
-        if let Some(config_file) = &cli.config_file {
-            println!(
-                "NOTICE: loading config file: {:?}, will ignore all command line flags\n",
-                config_file
-            );
-            return Ok(TomlConfigLoader::new(config_file)
-                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))?);
+        let cfg = if let Some(config_file) = &cli.config_file {
+            TomlConfigLoader::new(config_file)
+                .with_context(|| format!("failed to load config file: {:?}", cli.config_file))?
+        } else {
+            TomlConfigLoader::default()
+        };
+
+        if cli.hostname.is_some() {
+            cfg.set_hostname(cli.hostname.clone());
         }
 
-        let cfg = TomlConfigLoader::default();
+        if cli.network_name != "default" || cli.network_secret != "" {
+            let old_ns = cfg.get_network_identity();
+            let network_name = if cli.network_name != "default" {
+                &cli.network_name
+            } else {
+                &old_ns.network_name
+            };
+            let network_secret = if cli.network_secret != "" {
+                &cli.network_secret
+            } else {
+                &old_ns.network_secret.unwrap_or_default()
+            };
+            cfg.set_network_identity(NetworkIdentity::new(
+                network_name.clone(),
+                network_secret.clone(),
+            ));
+        }
 
-        cfg.set_hostname(cli.hostname.clone());
-
-        cfg.set_network_identity(NetworkIdentity::new(
-            cli.network_name.clone(),
-            cli.network_secret.clone(),
-        ));
-
-        cfg.set_dhcp(cli.dhcp);
+        if cli.dhcp {
+            cfg.set_dhcp(cli.dhcp);
+        }
 
         if let Some(ipv4) = &cli.ipv4 {
             cfg.set_ipv4(Some(ipv4.parse().with_context(|| {
@@ -493,39 +506,45 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             })?))
         }
 
-        let mut peers = Vec::<PeerConfig>::with_capacity(cli.peers.len());
-        for p in &cli.peers {
-            peers.push(PeerConfig {
-                uri: p
-                    .parse()
-                    .with_context(|| format!("failed to parse peer uri: {}", p))?,
-            });
+        if !cli.peers.is_empty() {
+            let mut peers = Vec::<PeerConfig>::with_capacity(cli.peers.len());
+            for p in &cli.peers {
+                peers.push(PeerConfig {
+                    uri: p
+                        .parse()
+                        .with_context(|| format!("failed to parse peer uri: {}", p))?,
+                });
+            }
+            cfg.set_peers(peers);
         }
-        cfg.set_peers(peers);
 
-        cfg.set_listeners(
-            Cli::parse_listeners(cli.no_listener, cli.listeners.clone())?
-                .into_iter()
-                .map(|s| s.parse().unwrap())
-                .collect(),
-        );
+        if cli.no_listener || !cli.listeners.is_empty() {
+            cfg.set_listeners(
+                Cli::parse_listeners(cli.no_listener, cli.listeners.clone())?
+                    .into_iter()
+                    .map(|s| s.parse().unwrap())
+                    .collect(),
+            );
+        }
 
-        cfg.set_mapped_listeners(Some(
-            cli.mapped_listeners
-                .iter()
-                .map(|s| {
-                    s.parse()
-                        .with_context(|| format!("mapped listener is not a valid url: {}", s))
-                        .unwrap()
-                })
-                .map(|s: url::Url| {
-                    if s.port().is_none() {
-                        panic!("mapped listener port is missing: {}", s);
-                    }
-                    s
-                })
-                .collect(),
-        ));
+        if !cli.mapped_listeners.is_empty() {
+            cfg.set_mapped_listeners(Some(
+                cli.mapped_listeners
+                    .iter()
+                    .map(|s| {
+                        s.parse()
+                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
+                            .unwrap()
+                    })
+                    .map(|s: url::Url| {
+                        if s.port().is_none() {
+                            panic!("mapped listener port is missing: {}", s);
+                        }
+                        s
+                    })
+                    .collect(),
+            ));
+        }
 
         for n in cli.proxy_networks.iter() {
             cfg.add_proxy_cidr(
@@ -534,10 +553,12 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             );
         }
 
-        cfg.set_rpc_portal(
-            Cli::parse_rpc_portal(cli.rpc_portal.clone())
-                .with_context(|| format!("failed to parse rpc portal: {}", cli.rpc_portal))?,
-        );
+        if cli.rpc_portal != "0" {
+            cfg.set_rpc_portal(
+                Cli::parse_rpc_portal(cli.rpc_portal.clone())
+                    .with_context(|| format!("failed to parse rpc portal: {}", cli.rpc_portal))?,
+            );
+        }
 
         if let Some(external_nodes) = cli.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
@@ -563,7 +584,9 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             });
         }
 
-        cfg.set_inst_name(cli.instance_name.clone());
+        if cli.instance_name != "default" {
+            cfg.set_inst_name(cli.instance_name.clone());
+        }
 
         if let Some(vpn_portal) = cli.vpn_portal.as_ref() {
             let url: url::Url = vpn_portal
@@ -643,41 +666,51 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         if cli.default_protocol.is_some() {
             f.default_protocol = cli.default_protocol.as_ref().unwrap().clone();
         }
-        f.enable_encryption = !cli.disable_encryption;
-        f.enable_ipv6 = !cli.disable_ipv6;
-        f.latency_first = cli.latency_first;
-        f.dev_name = cli.dev_name.clone().unwrap_or_default();
+        if cli.disable_encryption {
+            f.enable_encryption = !cli.disable_encryption;
+        }
+        if cli.disable_ipv6 {
+            f.enable_ipv6 = !cli.disable_ipv6;
+        }
+        f.latency_first = cli.latency_first || f.latency_first;
+        if cli.dev_name.is_some() {
+            f.dev_name = cli.dev_name.clone().unwrap_or_default();
+        }
         if let Some(mtu) = cli.mtu {
             f.mtu = mtu as u32;
         }
-        f.enable_exit_node = cli.enable_exit_node;
-        f.proxy_forward_by_system = cli.proxy_forward_by_system;
-        f.no_tun = cli.no_tun || cfg!(not(feature = "tun"));
-        f.use_smoltcp = cli.use_smoltcp;
+        f.enable_exit_node = cli.enable_exit_node || f.enable_exit_node;
+        f.proxy_forward_by_system = cli.proxy_forward_by_system || f.proxy_forward_by_system;
+        f.no_tun = cli.no_tun || cfg!(not(feature = "tun")) || f.no_tun;
+        f.use_smoltcp = cli.use_smoltcp || f.use_smoltcp;
         if let Some(wl) = cli.relay_network_whitelist.as_ref() {
             f.relay_network_whitelist = wl.join(" ");
         }
-        f.disable_p2p = cli.disable_p2p;
-        f.disable_udp_hole_punching = cli.disable_udp_hole_punching;
-        f.relay_all_peer_rpc = cli.relay_all_peer_rpc;
-        f.multi_thread = cli.multi_thread;
-        f.data_compress_algo = match cli.compression.as_str() {
-            "none" => CompressionAlgoPb::None,
-            "zstd" => CompressionAlgoPb::Zstd,
-            _ => panic!(
-                "unknown compression algorithm: {}, supported: none, zstd",
-                cli.compression
-            ),
+        f.disable_p2p = cli.disable_p2p || f.disable_p2p;
+        f.disable_udp_hole_punching = cli.disable_udp_hole_punching || f.disable_udp_hole_punching;
+        f.relay_all_peer_rpc = cli.relay_all_peer_rpc || f.relay_all_peer_rpc;
+        f.multi_thread = cli.multi_thread || f.multi_thread;
+        if cli.compression != "none" {
+            f.data_compress_algo = match cli.compression.as_str() {
+                "none" => CompressionAlgoPb::None,
+                "zstd" => CompressionAlgoPb::Zstd,
+                _ => panic!(
+                    "unknown compression algorithm: {}, supported: none, zstd",
+                    cli.compression
+                ),
+            }
+            .into();
         }
-        .into();
         if let Some(bind_device) = cli.bind_device {
             f.bind_device = bind_device;
         }
-        f.enable_kcp_proxy = cli.enable_kcp_proxy;
-        f.disable_kcp_input = cli.disable_kcp_input;
+        f.enable_kcp_proxy = cli.enable_kcp_proxy || f.enable_kcp_proxy;
+        f.disable_kcp_input = cli.disable_kcp_input || f.disable_kcp_input;
         cfg.set_flags(f);
 
-        cfg.set_exit_nodes(cli.exit_nodes.clone());
+        if !cli.exit_nodes.is_empty() {
+            cfg.set_exit_nodes(cli.exit_nodes.clone());
+        }
 
         Ok(cfg)
     }
