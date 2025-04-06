@@ -76,6 +76,7 @@ jobs:
       - name: Install GUI dependencies (x86 only)
         if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
         run: |
+          sudo apt update
           sudo apt install -qq libwebkit2gtk-4.1-dev \
               build-essential \
               curl \
