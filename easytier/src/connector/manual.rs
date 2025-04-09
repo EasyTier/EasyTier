@@ -3,7 +3,10 @@ use std::{collections::BTreeSet, sync::Arc};
 use anyhow::Context;
 use dashmap::{DashMap, DashSet};
 use tokio::{
-    sync::{broadcast::Receiver, mpsc, Mutex},
+    sync::{
+        broadcast::{error::RecvError, Receiver},
+        mpsc, Mutex,
+    },
     task::JoinSet,
     time::timeout,
 };
@@ -179,8 +182,37 @@ impl ManualConnectorManager {
         mut event_recv: Receiver<GlobalCtxEvent>,
     ) {
         loop {
-            let event = event_recv.recv().await.expect("event_recv got error");
-            Self::handle_event(&event, &data).await;
+            match event_recv.recv().await {
+                Ok(event) => {
+                    Self::handle_event(&event, &data).await;
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!("event_recv lagged: {}, rebuild alive conn list", n);
+                    event_recv = event_recv.resubscribe();
+                    data.alive_conn_urls.clear();
+                    for x in data
+                        .peer_manager
+                        .get_peer_map()
+                        .get_alive_conns()
+                        .iter()
+                        .map(|x| {
+                            x.tunnel
+                                .clone()
+                                .unwrap_or_default()
+                                .remote_addr
+                                .unwrap_or_default()
+                                .to_string()
+                        })
+                    {
+                        data.alive_conn_urls.insert(x);
+                    }
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    tracing::warn!("event_recv closed, exit");
+                    break;
+                }
+            }
         }
     }
 
@@ -271,7 +303,6 @@ impl ManualConnectorManager {
 
     async fn collect_dead_conns(data: Arc<ConnectorManagerData>) -> BTreeSet<String> {
         Self::handle_remove_connector(data.clone());
-
         let all_urls: BTreeSet<String> = data
             .connectors
             .iter()
