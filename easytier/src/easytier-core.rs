@@ -12,7 +12,6 @@ use std::{
 
 use anyhow::Context;
 use clap::Parser;
-use tokio::net::TcpSocket;
 
 use easytier::{
     common::{
@@ -162,7 +161,7 @@ struct Cli {
         short,
         long,
         help = t!("core_clap.rpc_portal").to_string(),
-        default_value = "15888"
+        default_value = "0"
     )]
     rpc_portal: String,
 
@@ -437,22 +436,8 @@ impl Cli {
         Ok(listeners)
     }
 
-    fn check_tcp_available(port: u16) -> Option<SocketAddr> {
-        let s = format!("0.0.0.0:{}", port).parse::<SocketAddr>().unwrap();
-        TcpSocket::new_v4().unwrap().bind(s).map(|_| s).ok()
-    }
-
     fn parse_rpc_portal(rpc_portal: String) -> anyhow::Result<SocketAddr> {
         if let Ok(port) = rpc_portal.parse::<u16>() {
-            if port == 0 {
-                // check tcp 15888 first
-                for i in 15888..15900 {
-                    if let Some(s) = Cli::check_tcp_available(i) {
-                        return Ok(s);
-                    }
-                }
-                return Ok("0.0.0.0:0".parse().unwrap());
-            }
             return Ok(format!("0.0.0.0:{}", port).parse().unwrap());
         }
 
