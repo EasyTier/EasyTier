@@ -347,21 +347,43 @@ impl PeerManager {
     async fn start_peer_conn_close_event_handler(&self) {
         let dmap = self.directly_connected_conn_map.clone();
         let mut event_recv = self.global_ctx.subscribe();
+        let peer_map = self.peers.clone();
+        use tokio::sync::broadcast::error::RecvError;
         self.tasks.lock().await.spawn(async move {
-            while let Ok(event) = event_recv.recv().await {
-                match event {
-                    GlobalCtxEvent::PeerConnRemoved(info) => {
-                        if let Some(set) = dmap.get_mut(&info.peer_id) {
-                            let conn_id = info.conn_id.parse().unwrap();
-                            let old = set.remove(&conn_id);
-                            tracing::info!(
-                                ?old,
-                                ?info,
-                                "try remove conn id from directly connected map"
-                            );
+            loop {
+                match event_recv.recv().await {
+                    Err(RecvError::Closed) => {
+                        tracing::error!("peer conn close event handler exit");
+                        break;
+                    }
+                    Err(RecvError::Lagged(_)) => {
+                        tracing::warn!("peer conn close event handler lagged");
+                        event_recv = event_recv.resubscribe();
+                        let alive_conns = peer_map.get_alive_conns();
+                        for p in dmap.iter_mut() {
+                            p.retain(|x| alive_conns.contains_key(&(*p.key(), *x)));
+                        }
+                        dmap.retain(|_, v| !v.is_empty());
+                    }
+                    Ok(event) => {
+                        if let GlobalCtxEvent::PeerConnRemoved(info) = event {
+                            let mut need_remove = false;
+                            if let Some(set) = dmap.get_mut(&info.peer_id) {
+                                let conn_id = info.conn_id.parse().unwrap();
+                                let old = set.remove(&conn_id);
+                                tracing::info!(
+                                    ?old,
+                                    ?info,
+                                    "try remove conn id from directly connected map"
+                                );
+                                need_remove = set.is_empty();
+                            }
+
+                            if need_remove {
+                                dmap.remove(&info.peer_id);
+                            }
                         }
                     }
-                    _ => {}
                 }
             }
         });

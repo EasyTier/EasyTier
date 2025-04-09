@@ -65,7 +65,7 @@ impl Stream for TunStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<StreamItem>> {
         let mut self_mut = self.project();
         let mut g = ready!(self_mut.l.poll_lock(cx));
-        reserve_buf(&mut self_mut.cur_buf, 2500, 32 * 1024);
+        reserve_buf(&mut self_mut.cur_buf, 2500, 4 * 1024);
         if self_mut.cur_buf.len() == 0 {
             unsafe {
                 self_mut.cur_buf.set_len(*self_mut.payload_offset);

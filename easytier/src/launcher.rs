@@ -42,7 +42,7 @@ struct EasyTierData {
 
 impl Default for EasyTierData {
     fn default() -> Self {
-        let (tx, _) = broadcast::channel(100);
+        let (tx, _) = broadcast::channel(16);
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
@@ -144,8 +144,19 @@ impl EasyTierLauncher {
         let data_c = data.clone();
         tasks.spawn(async move {
             let mut receiver = global_ctx.subscribe();
-            while let Ok(event) = receiver.recv().await {
-                Self::handle_easytier_event(event, &data_c).await;
+            loop {
+                match receiver.recv().await {
+                    Ok(event) => {
+                        Self::handle_easytier_event(event.clone(), &data_c).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // do nothing currently
+                        receiver = receiver.resubscribe();
+                    }
+                }
             }
         });
 
@@ -522,7 +533,8 @@ impl NetworkConfig {
             let mut routes = Vec::<cidr::Ipv4Cidr>::with_capacity(self.routes.len());
             for route in self.routes.iter() {
                 routes.push(
-                    route.parse()
+                    route
+                        .parse()
                         .with_context(|| format!("failed to parse route: {}", route))?,
                 );
             }
@@ -543,9 +555,7 @@ impl NetworkConfig {
         if self.enable_socks5.unwrap_or_default() {
             if let Some(socks5_port) = self.socks5_port {
                 cfg.set_socks5_portal(Some(
-                    format!("socks5://0.0.0.0:{}", socks5_port)
-                        .parse()
-                        .unwrap(),
+                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
                 ));
             }
         }

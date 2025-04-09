@@ -27,6 +27,7 @@ pub struct PeerMap {
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
+    alive_conns: Arc<DashMap<(PeerId, PeerConnId), PeerConnInfo>>,
 }
 
 impl PeerMap {
@@ -37,6 +38,7 @@ impl PeerMap {
             peer_map: DashMap::new(),
             packet_send,
             routes: RwLock::new(Vec::new()),
+            alive_conns: Arc::new(DashMap::new()),
         }
     }
 
@@ -48,6 +50,7 @@ impl PeerMap {
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
+        self.maintain_alive_conns(&peer_conn);
         let peer_id = peer_conn.get_peer_id();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
@@ -58,6 +61,30 @@ impl PeerMap {
             let peer = self.peer_map.get(&peer_id).unwrap().clone();
             peer.add_peer_conn(peer_conn).await;
         }
+    }
+
+    fn maintain_alive_conns(&self, peer_conn: &PeerConn) {
+        let close_notifier = peer_conn.get_close_notifier();
+        let alive_conns_weak = Arc::downgrade(&self.alive_conns);
+        let conn_id = close_notifier.get_conn_id();
+        let conn_info = peer_conn.get_conn_info();
+        self.alive_conns
+            .insert((conn_info.peer_id, conn_id.clone()), conn_info.clone());
+        tokio::spawn(async move {
+            if let Some(mut waiter) = close_notifier.get_waiter().await {
+                let _ = waiter.recv().await;
+            }
+            let mut alive_conn_count = 0;
+            if let Some(alive_conns) = alive_conns_weak.upgrade() {
+                alive_conns.remove(&(conn_info.peer_id, conn_id)).unwrap();
+                alive_conn_count = alive_conns.len();
+            }
+            tracing::debug!(
+                ?conn_id,
+                "peer conn is closed, current alive conns: {}",
+                alive_conn_count
+            );
+        });
     }
 
     fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
@@ -283,6 +310,13 @@ impl PeerMap {
             ))))?;
 
         Ok(!self.has_peer(gateway_id))
+    }
+
+    pub fn get_alive_conns(&self) -> DashMap<(PeerId, PeerConnId), PeerConnInfo> {
+        self.alive_conns
+            .iter()
+            .map(|v| (v.key().clone(), v.value().clone()))
+            .collect()
     }
 }
 
