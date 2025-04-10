@@ -5,7 +5,7 @@ import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/net
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Panel, } from 'primevue';
+import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 
 const props = defineProps<{
   curNetworkInst: NetworkInstance | null,
@@ -311,7 +311,7 @@ function showEventLogs() {
       <Timeline v-else :value="dialogContent">
         <template #opposite="slotProps">
           <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
-          }}</small>
+            }}</small>
         </template>
         <template #content="slotProps">
           <HumanEvent :event="slotProps.item.event" />
@@ -319,101 +319,107 @@ function showEventLogs() {
       </Timeline>
     </Dialog>
 
-    <Panel v-if="curNetworkInst?.error_msg">
-      <template #header>
+    <Card v-if="curNetworkInst?.error_msg">
+      <template #title>
         Run Network Error
       </template>
-      <div class="flex flex-col gap-y-5">
-        <div class="text-red-500">
-          {{ curNetworkInst.error_msg }}
+      <template #content>
+        <div class="flex flex-col gap-y-5">
+          <div class="text-red-500">
+            {{ curNetworkInst.error_msg }}
+          </div>
         </div>
-      </div>
-    </Panel>
+      </template>
+    </Card>
 
     <template v-else>
-      <Panel>
-        <template #header>
+      <Card>
+        <template #title>
           {{ t('my_node_info') }}
         </template>
-        <div class="flex w-full flex-col gap-y-5">
-          <div class="m-0 flex flex-row justify-center gap-x-5">
-            <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid green">
-              <div class="font-bold">
-                {{ t('peer_count') }}
+        <template #content>
+          <div class="flex w-full flex-col gap-y-5">
+            <div class="m-0 flex flex-row justify-center gap-x-5">
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid green">
+                <div class="font-bold">
+                  {{ t('peer_count') }}
+                </div>
+                <div class="text-5xl mt-1">
+                  {{ peerCount }}
+                </div>
               </div>
-              <div class="text-5xl mt-1">
-                {{ peerCount }}
+
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid purple">
+                <div class="font-bold">
+                  {{ t('upload') }}
+                </div>
+                <div class="text-xl mt-2">
+                  {{ txRate }}/s
+                </div>
+              </div>
+
+              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid fuchsia">
+                <div class="font-bold">
+                  {{ t('download') }}
+                </div>
+                <div class="text-xl mt-2">
+                  {{ rxRate }}/s
+                </div>
               </div>
             </div>
 
-            <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid purple">
-              <div class="font-bold">
-                {{ t('upload') }}
-              </div>
-              <div class="text-xl mt-2">
-                {{ txRate }}/s
-              </div>
+            <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
+              <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
+                class="mr-2 mt-2 text-sm" />
             </div>
 
-            <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid fuchsia">
-              <div class="font-bold">
-                {{ t('download') }}
-              </div>
-              <div class="text-xl mt-2">
-                {{ rxRate }}/s
-              </div>
+            <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
+              <Button severity="info" :label="t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
+              <Button severity="info" :label="t('show_event_log')" @click="showEventLogs" />
             </div>
           </div>
-
-          <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
-            <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
-              class="mr-2 mt-2 text-sm" />
-          </div>
-
-          <div v-if="myNodeInfo" class="m-0 flex flex-row justify-center gap-x-5 text-sm">
-            <Button severity="info" :label="t('show_vpn_portal_config')" @click="showVpnPortalConfig" />
-            <Button severity="info" :label="t('show_event_log')" @click="showEventLogs" />
-          </div>
-        </div>
-      </Panel>
+        </template>
+      </Card>
 
       <Divider />
 
-      <Panel>
-        <template #header>
+      <Card>
+        <template #title>
           {{ t('peer_info') }}
         </template>
-        <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
-          <Column :field="ipFormat" :header="t('virtual_ipv4')" />
-          <Column :header="t('hostname')">
-            <template #body="slotProps">
-              <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
-                v-tooltip="slotProps.data.route.hostname">
-                {{
-                  slotProps.data.route.hostname }}
-              </div>
-              <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
-                <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
-                  {{ t('status.server') }}
-                </Tag>
-                <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
-                  {{ t('status.relay') }}
-                </Tag>
-              </div>
-            </template>
-          </Column>
-          <Column :field="routeCost" :header="t('route_cost')" />
-          <Column :field="latencyMs" :header="t('latency')" />
-          <Column :field="txBytes" :header="t('upload_bytes')" />
-          <Column :field="rxBytes" :header="t('download_bytes')" />
-          <Column :field="lossRate" :header="t('loss_rate')" />
-          <Column :header="t('status.version')">
-            <template #body="slotProps">
-              <span>{{ version(slotProps.data) }}</span>
-            </template>
-          </Column>
-        </DataTable>
-      </Panel>
+        <template #content>
+          <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
+            <Column :field="ipFormat" :header="t('virtual_ipv4')" />
+            <Column :header="t('hostname')">
+              <template #body="slotProps">
+                <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
+                  v-tooltip="slotProps.data.route.hostname">
+                  {{
+                    slotProps.data.route.hostname }}
+                </div>
+                <div v-else v-tooltip="slotProps.data.route.hostname" class="space-x-1">
+                  <Tag v-if="slotProps.data.route.feature_flag.is_public_server" severity="info" value="Info">
+                    {{ t('status.server') }}
+                  </Tag>
+                  <Tag v-if="slotProps.data.route.feature_flag.avoid_relay_data" severity="warn" value="Warn">
+                    {{ t('status.relay') }}
+                  </Tag>
+                </div>
+              </template>
+            </Column>
+            <Column :field="routeCost" :header="t('route_cost')" />
+            <Column :field="latencyMs" :header="t('latency')" />
+            <Column :field="txBytes" :header="t('upload_bytes')" />
+            <Column :field="rxBytes" :header="t('download_bytes')" />
+            <Column :field="lossRate" :header="t('loss_rate')" />
+            <Column :header="t('status.version')">
+              <template #body="slotProps">
+                <span>{{ version(slotProps.data) }}</span>
+              </template>
+            </Column>
+          </DataTable>
+        </template>
+      </Card>
     </template>
   </div>
 </template>

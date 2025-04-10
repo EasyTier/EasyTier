@@ -18,14 +18,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@primevue/themes": "^4.2.1",
+    "@primevue/themes": "4.3.3",
     "@vueuse/core": "^11.1.0",
     "aura": "link:@primevue\\themes\\aura",
     "axios": "^1.7.7",
     "floating-vue": "^5.2",
     "ip-num": "1.5.1",
     "primeicons": "^7.0.0",
-    "primevue": "^4.2.1",
+    "primevue": "4.3.3",
     "tailwindcss-primeui": "^0.3.4",
     "ts-md5": "^1.3.1",
     "uuid": "^11.0.2",
