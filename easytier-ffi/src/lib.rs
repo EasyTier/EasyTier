@@ -26,6 +26,21 @@ fn set_error_msg(msg: &str) {
 }
 
 #[no_mangle]
+pub extern "C" fn get_error_msg(out: *mut *const std::ffi::c_char) {
+    let msg_buf = ERROR_MSG.lock().unwrap();
+    if msg_buf[0] == 0 {
+        unsafe {
+            *out = std::ptr::null();
+        }
+        return;
+    }
+    let cstr = std::ffi::CString::new(&msg_buf[..]).unwrap();
+    unsafe {
+        *out = cstr.into_raw();
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn free_string(s: *const std::ffi::c_char) {
     if s.is_null() {
         return;
