@@ -1,9 +1,50 @@
 #!/bin/bash
 
+RED_COLOR='\e[1;31m'
+GREEN_COLOR='\e[1;32m'
+YELLOW_COLOR='\e[1;33m'
+BLUE_COLOR='\e[1;34m'
+PINK_COLOR='\e[1;35m'
+SHAN='\e[1;33;5m'
+RES='\e[0m'
+
+HELP() {
+  echo -e "\r\n${GREEN_COLOR}EasyTier Installation Script Help${RES}\r\n"
+  echo "Usage: ./install.sh [command] [options]"
+  echo
+  echo "Commands:"
+  echo "  install    Install EasyTier"
+  echo "  uninstall  Uninstall EasyTier"
+  echo "  update     Update EasyTier to the latest version"
+  echo "  help       Show this help message"
+  echo
+  echo "Options:"
+  echo "  --skip-folder-verify  Skip folder verification during installation"
+  echo "  --skip-folder-fix     Skip automatic folder path fixing"
+  echo "  --no-gh-proxy        Disable GitHub proxy"
+  echo "  --gh-proxy URL       Set custom GitHub proxy URL"
+  echo
+  echo "Examples:"
+  echo "  ./install.sh install /opt/easytier"
+  echo "  ./install.sh install --skip-folder-verify"
+  echo "  ./install.sh install --no-gh-proxy"
+  echo "  ./install.sh install --gh-proxy https://your-proxy.com/"
+  echo "  ./install.sh update"
+  echo "  ./install.sh uninstall"
+}
+
+# Show help if no arguments or help command is used
+if [ $# -eq 0 ] || [ "$1" = "help" ]; then
+  HELP
+  exit 0
+fi
+
 # This script copy from alist , Thank for it!
 
 SKIP_FOLDER_VERIFY=false
 SKIP_FOLDER_FIX=false
+NO_GH_PROXY=false
+GH_PROXY='https://ghfast.top/'
 
 COMMEND=$1
 shift
@@ -19,6 +60,16 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         --skip-folder-verify) SKIP_FOLDER_VERIFY=true ;;
         --skip-folder-fix) SKIP_FOLDER_FIX=true ;;
+        --no-gh-proxy) NO_GH_PROXY=true ;;
+        --gh-proxy) 
+            if [ -n "$2" ]; then
+                GH_PROXY=$2
+                shift
+            else
+                echo "Error: --gh-proxy requires a URL"
+                exit 1
+            fi
+            ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
     shift
@@ -40,13 +91,6 @@ echo INSTALL PATH : $INSTALL_PATH
 echo SKIP FOLDER FIX : $SKIP_FOLDER_FIX
 echo SKIP FOLDER VERIFY : $SKIP_FOLDER_VERIFY
 
-RED_COLOR='\e[1;31m'
-GREEN_COLOR='\e[1;32m'
-YELLOW_COLOR='\e[1;33m'
-BLUE_COLOR='\e[1;34m'
-PINK_COLOR='\e[1;35m'
-SHAN='\e[1;33;5m'
-RES='\e[0m'
 # clear
 
 # check if unzip is installed
@@ -109,8 +153,6 @@ fi
 
 echo -e "\r\n${GREEN_COLOR}Your platform: ${ARCH} (${platform}) ${RES}\r\n" 1>&2
 
-GH_PROXY='https://ghfast.top/'
-
 if [ "$(id -u)" != "0" ]; then
   echo -e "\r\n${RED_COLOR}This script requires run as Root !${RES}\r\n" 1>&2
   exit 1
@@ -159,7 +201,11 @@ INSTALL() {
   # Download
   echo -e "\r\n${GREEN_COLOR}Downloading EasyTier $LATEST_VERSION ...${RES}"
   rm -rf /tmp/easytier_tmp_install.zip
-  curl -L ${GH_PROXY}https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip -o /tmp/easytier_tmp_install.zip $CURL_BAR
+  BASE_URL="https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip"
+  DOWNLOAD_URL=$($NO_GH_PROXY && echo "$BASE_URL" || echo "${GH_PROXY}${BASE_URL}")
+  echo -e "Download URL: ${GREEN_COLOR}${DOWNLOAD_URL}${RES}"
+  curl -L ${DOWNLOAD_URL} -o /tmp/easytier_tmp_install.zip $CURL_BAR
+
   # Unzip resource
   echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
   unzip -o /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
@@ -341,9 +387,9 @@ elif [ "$COMMEND" = "install" ]; then
     echo -e "${RED_COLOR} Install fail, try install by hand${RES}"
   fi
 else
-  echo -e "${RED_COLOR} Error Commend ${RES}\n\r"
+  echo -e "${RED_COLOR} Error Command ${RES}\n\r"
   echo " ALLOW:"
-  echo -e "\n\r${GREEN_COLOR} install, uninstall, update ${RES}"
+  echo -e "\n\r${GREEN_COLOR} install, uninstall, update, help ${RES}"
 fi
 
 rm -rf /tmp/easytier_tmp_*
