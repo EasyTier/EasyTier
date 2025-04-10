@@ -129,6 +129,7 @@ clap = { version = "4.5.30", features = [
     "unicode",
     "derive",
     "wrap_help",
+    "env",
 ] }
 
 async-recursion = "1.0.5"
