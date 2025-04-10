@@ -26,6 +26,16 @@ fn set_error_msg(msg: &str) {
 }
 
 #[no_mangle]
+pub extern "C" fn free_string(s: *const std::ffi::c_char) {
+    if s.is_null() {
+        return;
+    }
+    unsafe {
+        let _ = std::ffi::CString::from_raw(s as *mut std::ffi::c_char);
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn parse_config(cfg_str: *const std::ffi::c_char) -> std::ffi::c_int {
     let cfg_str = unsafe {
         assert!(!cfg_str.is_null());
