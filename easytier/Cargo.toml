@@ -136,7 +136,7 @@ async-recursion = "1.0.5"
 network-interface = "2.0"
 
 # for ospf route
-petgraph = "0.7.1"
+petgraph = "0.8.1"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
@@ -204,6 +204,14 @@ http_req = { git = "https://github.com/EasyTier/http_req.git", default-features 
 hickory-resolver = "0.24.4"
 
 bounded_join_set = "0.3.0"
+
+jemallocator = { version = "0.5.4", optional = true }
+jemalloc-ctl = { version = "0.5.4", optional = true }
+jemalloc-sys = { version = "0.5.4", features = [
+    "stats",
+    "profiling",
+    "unprefixed_malloc_on_supported_platforms",
+], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
@@ -280,3 +288,4 @@ websocket = [
 ]
 smoltcp = ["dep:smoltcp", "dep:parking_lot"]
 socks5 = ["dep:smoltcp"]
+jemalloc = ["dep:jemallocator", "dep:jemalloc-ctl", "dep:jemalloc-sys"]

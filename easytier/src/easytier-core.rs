@@ -6,12 +6,12 @@ extern crate rust_i18n;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    process::ExitCode,
     sync::Arc,
 };
 
 use anyhow::Context;
 use clap::Parser;
-use tokio::net::TcpSocket;
 
 use easytier::{
     common::{
@@ -38,12 +38,57 @@ use easytier::{
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 use mimalloc_rust::GlobalMiMalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 #[global_allocator]
 static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
+
+#[cfg(feature = "jemalloc")]
+use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
+
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
+fn set_prof_active(_active: bool) {
+    #[cfg(feature = "jemalloc")]
+    {
+        const PROF_ACTIVE: &'static [u8] = b"prof.active\0";
+        let name = PROF_ACTIVE.name();
+        name.write(_active).expect("Should succeed to set prof");
+    }
+}
+
+fn dump_profile(_cur_allocated: usize) {
+    #[cfg(feature = "jemalloc")]
+    {
+        const PROF_DUMP: &'static [u8] = b"prof.dump\0";
+        static mut PROF_DUMP_FILE_NAME: [u8; 128] = [0; 128];
+        let file_name_str = format!(
+            "profile-{}-{}.out",
+            _cur_allocated,
+            chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
+        );
+        // copy file name to PROF_DUMP
+        let file_name = file_name_str.as_bytes();
+        let len = file_name.len();
+        if len > 127 {
+            panic!("file name too long");
+        }
+        unsafe {
+            PROF_DUMP_FILE_NAME[..len].copy_from_slice(file_name);
+            // set the last byte to 0
+            PROF_DUMP_FILE_NAME[len] = 0;
+
+            let name = PROF_DUMP.name();
+            name.write(&PROF_DUMP_FILE_NAME[..len + 1])
+                .expect("Should succeed to dump profile");
+            println!("dump profile to: {}", file_name_str);
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
@@ -116,7 +161,7 @@ struct Cli {
         short,
         long,
         help = t!("core_clap.rpc_portal").to_string(),
-        default_value = "15888"
+        default_value = "0"
     )]
     rpc_portal: String,
 
@@ -391,22 +436,8 @@ impl Cli {
         Ok(listeners)
     }
 
-    fn check_tcp_available(port: u16) -> Option<SocketAddr> {
-        let s = format!("0.0.0.0:{}", port).parse::<SocketAddr>().unwrap();
-        TcpSocket::new_v4().unwrap().bind(s).map(|_| s).ok()
-    }
-
     fn parse_rpc_portal(rpc_portal: String) -> anyhow::Result<SocketAddr> {
         if let Ok(port) = rpc_portal.parse::<u16>() {
-            if port == 0 {
-                // check tcp 15888 first
-                for i in 15888..15900 {
-                    if let Some(s) = Cli::check_tcp_available(i) {
-                        return Ok(s);
-                    }
-                }
-                return Ok("0.0.0.0:0".parse().unwrap());
-            }
             return Ok(format!("0.0.0.0:{}", port).parse().unwrap());
         }
 
@@ -652,114 +683,118 @@ fn peer_conn_info_to_string(p: proto::cli::PeerConnInfo) -> String {
 #[tracing::instrument]
 pub fn handle_event(mut events: EventBusSubscriber) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        while let Ok(e) = events.recv().await {
-            match e {
-                GlobalCtxEvent::PeerAdded(p) => {
-                    print_event(format!("new peer added. peer_id: {}", p));
-                }
-
-                GlobalCtxEvent::PeerRemoved(p) => {
-                    print_event(format!("peer removed. peer_id: {}", p));
-                }
-
-                GlobalCtxEvent::PeerConnAdded(p) => {
-                    print_event(format!(
-                        "new peer connection added. conn_info: {}",
-                        peer_conn_info_to_string(p)
-                    ));
-                }
-
-                GlobalCtxEvent::PeerConnRemoved(p) => {
-                    print_event(format!(
-                        "peer connection removed. conn_info: {}",
-                        peer_conn_info_to_string(p)
-                    ));
-                }
-
-                GlobalCtxEvent::ListenerAddFailed(p, msg) => {
-                    print_event(format!(
-                        "listener add failed. listener: {}, msg: {}",
-                        p, msg
-                    ));
-                }
-
-                GlobalCtxEvent::ListenerAcceptFailed(p, msg) => {
-                    print_event(format!(
-                        "listener accept failed. listener: {}, msg: {}",
-                        p, msg
-                    ));
-                }
-
-                GlobalCtxEvent::ListenerAdded(p) => {
-                    if p.scheme() == "ring" {
-                        continue;
+        loop {
+            if let Ok(e) = events.recv().await {
+                match e {
+                    GlobalCtxEvent::PeerAdded(p) => {
+                        print_event(format!("new peer added. peer_id: {}", p));
                     }
-                    print_event(format!("new listener added. listener: {}", p));
-                }
 
-                GlobalCtxEvent::ConnectionAccepted(local, remote) => {
-                    print_event(format!(
-                        "new connection accepted. local: {}, remote: {}",
-                        local, remote
-                    ));
-                }
+                    GlobalCtxEvent::PeerRemoved(p) => {
+                        print_event(format!("peer removed. peer_id: {}", p));
+                    }
 
-                GlobalCtxEvent::ConnectionError(local, remote, err) => {
-                    print_event(format!(
-                        "connection error. local: {}, remote: {}, err: {}",
-                        local, remote, err
-                    ));
-                }
+                    GlobalCtxEvent::PeerConnAdded(p) => {
+                        print_event(format!(
+                            "new peer connection added. conn_info: {}",
+                            peer_conn_info_to_string(p)
+                        ));
+                    }
 
-                GlobalCtxEvent::TunDeviceReady(dev) => {
-                    print_event(format!("tun device ready. dev: {}", dev));
-                }
+                    GlobalCtxEvent::PeerConnRemoved(p) => {
+                        print_event(format!(
+                            "peer connection removed. conn_info: {}",
+                            peer_conn_info_to_string(p)
+                        ));
+                    }
 
-                GlobalCtxEvent::TunDeviceError(err) => {
-                    print_event(format!("tun device error. err: {}", err));
-                }
+                    GlobalCtxEvent::ListenerAddFailed(p, msg) => {
+                        print_event(format!(
+                            "listener add failed. listener: {}, msg: {}",
+                            p, msg
+                        ));
+                    }
 
-                GlobalCtxEvent::Connecting(dst) => {
-                    print_event(format!("connecting to peer. dst: {}", dst));
-                }
+                    GlobalCtxEvent::ListenerAcceptFailed(p, msg) => {
+                        print_event(format!(
+                            "listener accept failed. listener: {}, msg: {}",
+                            p, msg
+                        ));
+                    }
 
-                GlobalCtxEvent::ConnectError(dst, ip_version, err) => {
-                    print_event(format!(
-                        "connect to peer error. dst: {}, ip_version: {}, err: {}",
-                        dst, ip_version, err
-                    ));
-                }
+                    GlobalCtxEvent::ListenerAdded(p) => {
+                        if p.scheme() == "ring" {
+                            continue;
+                        }
+                        print_event(format!("new listener added. listener: {}", p));
+                    }
 
-                GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {
-                    print_event(format!(
-                        "vpn portal client connected. portal: {}, client_addr: {}",
-                        portal, client_addr
-                    ));
-                }
+                    GlobalCtxEvent::ConnectionAccepted(local, remote) => {
+                        print_event(format!(
+                            "new connection accepted. local: {}, remote: {}",
+                            local, remote
+                        ));
+                    }
 
-                GlobalCtxEvent::VpnPortalClientDisconnected(portal, client_addr) => {
-                    print_event(format!(
-                        "vpn portal client disconnected. portal: {}, client_addr: {}",
-                        portal, client_addr
-                    ));
-                }
+                    GlobalCtxEvent::ConnectionError(local, remote, err) => {
+                        print_event(format!(
+                            "connection error. local: {}, remote: {}, err: {}",
+                            local, remote, err
+                        ));
+                    }
 
-                GlobalCtxEvent::DhcpIpv4Changed(old, new) => {
-                    print_event(format!("dhcp ip changed. old: {:?}, new: {:?}", old, new));
-                }
+                    GlobalCtxEvent::TunDeviceReady(dev) => {
+                        print_event(format!("tun device ready. dev: {}", dev));
+                    }
 
-                GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
-                    print_event(format!("dhcp ip conflict. ip: {:?}", ip));
-                }
+                    GlobalCtxEvent::TunDeviceError(err) => {
+                        print_event(format!("tun device error. err: {}", err));
+                    }
 
-                GlobalCtxEvent::PortForwardAdded(cfg) => {
-                    print_event(format!(
-                        "port forward added. local: {}, remote: {}, proto: {}",
-                        cfg.bind_addr.unwrap().to_string(),
-                        cfg.dst_addr.unwrap().to_string(),
-                        cfg.socket_type().as_str_name()
-                    ));
+                    GlobalCtxEvent::Connecting(dst) => {
+                        print_event(format!("connecting to peer. dst: {}", dst));
+                    }
+
+                    GlobalCtxEvent::ConnectError(dst, ip_version, err) => {
+                        print_event(format!(
+                            "connect to peer error. dst: {}, ip_version: {}, err: {}",
+                            dst, ip_version, err
+                        ));
+                    }
+
+                    GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {
+                        print_event(format!(
+                            "vpn portal client connected. portal: {}, client_addr: {}",
+                            portal, client_addr
+                        ));
+                    }
+
+                    GlobalCtxEvent::VpnPortalClientDisconnected(portal, client_addr) => {
+                        print_event(format!(
+                            "vpn portal client disconnected. portal: {}, client_addr: {}",
+                            portal, client_addr
+                        ));
+                    }
+
+                    GlobalCtxEvent::DhcpIpv4Changed(old, new) => {
+                        print_event(format!("dhcp ip changed. old: {:?}, new: {:?}", old, new));
+                    }
+
+                    GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
+                        print_event(format!("dhcp ip conflict. ip: {:?}", ip));
+                    }
+
+                    GlobalCtxEvent::PortForwardAdded(cfg) => {
+                        print_event(format!(
+                            "port forward added. local: {}, remote: {}, proto: {}",
+                            cfg.bind_addr.unwrap().to_string(),
+                            cfg.dst_addr.unwrap().to_string(),
+                            cfg.socket_type().as_str_name()
+                        ));
+                    }
                 }
+            } else {
+                events = events.resubscribe();
             }
         }
     })
@@ -940,14 +975,61 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     let mut l = launcher::NetworkInstance::new(cfg).set_fetch_node_info(false);
     let _t = ScopedTask::from(handle_event(l.start().unwrap()));
-    if let Some(e) = l.wait().await {
-        anyhow::bail!("launcher error: {}", e);
+    tokio::select! {
+        e = l.wait() => {
+            if let Some(e) = e {
+                eprintln!("launcher error: {}", e);
+            }
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("ctrl-c received, exiting...");
+        }
     }
     Ok(())
 }
 
+fn memory_monitor() {
+    #[cfg(feature = "jemalloc")]
+    {
+        let mut last_peak_size = 0;
+        let e = epoch::mib().unwrap();
+        let allocated_stats = stats::allocated::mib().unwrap();
+
+        loop {
+            e.advance().unwrap();
+            let new_heap_size = allocated_stats.read().unwrap();
+
+            println!(
+                "heap size: {} bytes, time: {}",
+                new_heap_size,
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+            );
+
+            // dump every 75MB
+            if last_peak_size > 0
+                && new_heap_size > last_peak_size
+                && new_heap_size - last_peak_size > 75 * 1024 * 1024
+            {
+                println!(
+                    "heap size increased: {} bytes, time: {}",
+                    new_heap_size - last_peak_size,
+                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+                );
+                dump_profile(new_heap_size);
+                last_peak_size = new_heap_size;
+            }
+
+            if last_peak_size == 0 {
+                last_peak_size = new_heap_size;
+            }
+
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() {
+async fn main() -> ExitCode {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     setup_panic_handler();
@@ -968,10 +1050,21 @@ async fn main() {
         }
     };
 
+    set_prof_active(true);
+    let _monitor = std::thread::spawn(memory_monitor);
+
     let cli = Cli::parse();
+    let mut ret_code = 0;
 
     if let Err(e) = run_main(cli).await {
         eprintln!("error: {:?}", e);
-        std::process::exit(1);
+        ret_code = 1;
     }
+
+    println!("Stopping easytier...");
+
+    dump_profile(0);
+    set_prof_active(false);
+
+    ExitCode::from(ret_code)
 }

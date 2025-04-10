@@ -1,5 +1,6 @@
 use std::{
     collections::VecDeque,
+    net::SocketAddr,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
 
@@ -42,7 +43,7 @@ struct EasyTierData {
 
 impl Default for EasyTierData {
     fn default() -> Self {
-        let (tx, _) = broadcast::channel(100);
+        let (tx, _) = broadcast::channel(16);
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
@@ -144,8 +145,19 @@ impl EasyTierLauncher {
         let data_c = data.clone();
         tasks.spawn(async move {
             let mut receiver = global_ctx.subscribe();
-            while let Ok(event) = receiver.recv().await {
-                Self::handle_easytier_event(event, &data_c).await;
+            loop {
+                match receiver.recv().await {
+                    Ok(event) => {
+                        Self::handle_easytier_event(event.clone(), &data_c).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // do nothing currently
+                        receiver = receiver.resubscribe();
+                    }
+                }
             }
         });
 
@@ -202,6 +214,27 @@ impl EasyTierLauncher {
         Ok(())
     }
 
+    fn check_tcp_available(port: u16) -> bool {
+        let s = format!("0.0.0.0:{}", port).parse::<SocketAddr>().unwrap();
+        std::net::TcpListener::bind(s).is_ok()
+    }
+
+    fn select_proper_rpc_port(cfg: &TomlConfigLoader) {
+        let Some(mut f) = cfg.get_rpc_portal() else {
+            return;
+        };
+
+        if f.port() == 0 {
+            for i in 15888..15900 {
+                if Self::check_tcp_available(i) {
+                    f.set_port(i);
+                    cfg.set_rpc_portal(f);
+                    break;
+                }
+            }
+        }
+    }
+
     pub fn start<F>(&mut self, cfg_generator: F)
     where
         F: FnOnce() -> Result<TomlConfigLoader, anyhow::Error> + Send + Sync,
@@ -216,6 +249,8 @@ impl EasyTierLauncher {
         };
 
         self.running_cfg = cfg.dump();
+
+        Self::select_proper_rpc_port(&cfg);
 
         let stop_flag = self.stop_flag.clone();
 
@@ -522,7 +557,8 @@ impl NetworkConfig {
             let mut routes = Vec::<cidr::Ipv4Cidr>::with_capacity(self.routes.len());
             for route in self.routes.iter() {
                 routes.push(
-                    route.parse()
+                    route
+                        .parse()
                         .with_context(|| format!("failed to parse route: {}", route))?,
                 );
             }
@@ -543,9 +579,7 @@ impl NetworkConfig {
         if self.enable_socks5.unwrap_or_default() {
             if let Some(socks5_port) = self.socks5_port {
                 cfg.set_socks5_portal(Some(
-                    format!("socks5://0.0.0.0:{}", socks5_port)
-                        .parse()
-                        .unwrap(),
+                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
                 ));
             }
         }

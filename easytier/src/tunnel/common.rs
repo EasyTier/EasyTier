@@ -159,7 +159,7 @@ where
             reserve_buf(
                 &mut self_mut.buf,
                 *self_mut.max_packet_size,
-                *self_mut.max_packet_size * 32,
+                *self_mut.max_packet_size * 2,
             );
 
             let cap = self_mut.buf.capacity() - self_mut.buf.len();

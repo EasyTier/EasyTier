@@ -233,7 +233,7 @@ async fn subnet_proxy_test_udp() {
     let udp_connector = UdpTunnelConnector::new("udp://10.1.2.4:22233".parse().unwrap());
 
     // NOTE: this should not excced udp tunnel max buffer size
-    let mut buf = vec![0; 20 * 1024];
+    let mut buf = vec![0; 7 * 1024];
     rand::thread_rng().fill(&mut buf[..]);
 
     _tunnel_pingpong_netns(
@@ -266,7 +266,7 @@ async fn subnet_proxy_test_udp() {
     let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:22234".parse().unwrap());
     let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:22234".parse().unwrap());
     // NOTE: this should not excced udp tunnel max buffer size
-    let mut buf = vec![0; 20 * 1024];
+    let mut buf = vec![0; 7 * 1024];
     rand::thread_rng().fill(&mut buf[..]);
 
     _tunnel_pingpong_netns(

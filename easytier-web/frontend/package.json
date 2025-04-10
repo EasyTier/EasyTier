@@ -9,11 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@primevue/themes": "^4.2.1",
+    "@primevue/themes": "4.3.3",
     "aura": "link:@primevue/themes/aura",
     "axios": "^1.7.7",
     "easytier-frontend-lib": "workspace:*",
-    "primevue": "^4.2.1",
+    "primevue": "4.3.3",
     "tailwindcss-primeui": "^0.3.4",
     "vue": "^3.5.12",
     "vue-router": "4"

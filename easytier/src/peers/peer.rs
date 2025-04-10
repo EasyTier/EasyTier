@@ -118,9 +118,21 @@ impl Peer {
     }
 
     pub async fn add_peer_conn(&self, mut conn: PeerConn) {
-        conn.set_close_event_sender(self.close_event_sender.clone());
+        let close_event_sender = self.close_event_sender.clone();
+        let close_notifier = conn.get_close_notifier();
+        tokio::spawn(async move {
+            let conn_id = close_notifier.get_conn_id();
+            if let Some(mut waiter) = close_notifier.get_waiter().await {
+                let _ = waiter.recv().await;
+            }
+            if let Err(e) = close_event_sender.send(conn_id).await {
+                tracing::warn!(?conn_id, "failed to send close event: {}", e);
+            }
+        });
+
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
+
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerConnAdded(conn.get_conn_info()));
         self.conns.insert(conn.get_conn_id(), Arc::new(conn));

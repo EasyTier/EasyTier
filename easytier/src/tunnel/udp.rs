@@ -234,7 +234,7 @@ where
 {
     let mut buf = BytesMut::new();
     loop {
-        reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 16);
+        reserve_buf(&mut buf, UDP_DATA_MTU, UDP_DATA_MTU * 4);
         let (dg_size, addr) = match socket.recv_buf_from(&mut buf).await {
             Ok(v) => v,
             Err(e) => {
