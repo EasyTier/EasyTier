@@ -1994,6 +1994,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "easytier-ffi"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "easytier",
+ "once_cell",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "easytier-gui"
 version = "2.2.4"
 dependencies = [
