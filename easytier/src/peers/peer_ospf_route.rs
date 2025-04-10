@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fmt::Debug,
+    hash::RandomState,
     net::Ipv4Addr,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -667,7 +668,7 @@ impl RouteTable {
             if *cost == 0 {
                 continue;
             }
-            let mut all_paths = all_simple_paths::<Vec<_>, _>(
+            let mut all_paths = all_simple_paths::<Vec<_>, _, RandomState>(
                 graph,
                 *idx_map.get(&my_peer_id).unwrap(),
                 *node_idx,
