@@ -63,7 +63,36 @@ EasyTier is a simple, safe and decentralized VPN networking solution implemented
     wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh" && bash /tmp/easytier.sh install
     ```
 
-    You can also uninstall/update Easytier by the command "uninstall" or "update" of this script
+    The script supports the following commands and options:
+
+    Commands:
+    - `install`: Install EasyTier
+    - `uninstall`: Uninstall EasyTier
+    - `update`: Update EasyTier to the latest version
+    - `help`: Show help message
+
+    Options:
+    - `--skip-folder-verify`: Skip folder verification during installation
+    - `--skip-folder-fix`: Skip automatic folder path fixing
+    - `--no-gh-proxy`: Disable GitHub proxy
+    - `--gh-proxy`: Set custom GitHub proxy URL (default: https://ghfast.top/)
+
+    Examples:
+    ```sh
+    # Show help
+    bash /tmp/easytier.sh help
+
+    # Install with options
+    bash /tmp/easytier.sh install --skip-folder-verify
+    bash /tmp/easytier.sh install --no-gh-proxy
+    bash /tmp/easytier.sh install --gh-proxy https://your-proxy.com/
+
+    # Update EasyTier
+    bash /tmp/easytier.sh update
+
+    # Uninstall EasyTier
+    bash /tmp/easytier.sh uninstall
+    ```
 
 6. **Install by Homebrew (For MacOS Only)**
 
