@@ -30,7 +30,7 @@ fn set_error_msg(msg: &str) {
 #[no_mangle]
 pub extern "C" fn get_error_msg(out: *mut *const std::ffi::c_char) {
     let msg_buf = ERROR_MSG.lock().unwrap();
-    if msg_buf[0] == 0 {
+    if msg_buf.is_empty() {
         unsafe {
             *out = std::ptr::null();
         }
