@@ -60,7 +60,7 @@ pub extern "C" fn parse_config(cfg_str: *const std::ffi::c_char) -> std::ffi::c_
     };
 
     if let Err(e) = TomlConfigLoader::new_from_str(&cfg_str) {
-        //set_error_msg(&format!("failed to parse config: {}", e));
+        set_error_msg(&format!("failed to parse config: {}", e));
         return -1;
     }
 
