@@ -9,7 +9,8 @@ use easytier::{
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
 
-static ERROR_MSG: Mutex<[u8; 256]> = Mutex::new([0; 256]);
+static ERROR_MSG: once_cell::sync::Lazy<Mutex<[u8; 256]>> =
+    once_cell::sync::Lazy::new(|| Mutex::new([0; 256]));
 
 #[repr(C)]
 pub struct KeyValuePair {
@@ -160,4 +161,30 @@ pub extern "C" fn collect_network_infos(
     }
 
     index as std::ffi::c_int
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_config() {
+        let cfg_str = r#"
+            inst_name = "test"
+            network = "test_network"
+            fdsafdsa
+        "#;
+        let cstr = std::ffi::CString::new(cfg_str).unwrap();
+        assert_eq!(parse_config(cstr.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_run_network_instance() {
+        let cfg_str = r#"
+            inst_name = "test"
+            network = "test_network"
+        "#;
+        let cstr = std::ffi::CString::new(cfg_str).unwrap();
+        assert_eq!(run_network_instance(cstr.as_ptr()), 0);
+    }
 }
