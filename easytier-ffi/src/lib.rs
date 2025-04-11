@@ -22,9 +22,8 @@ fn set_error_msg(msg: &str) {
     let bytes = msg.as_bytes();
     let mut msg_buf = ERROR_MSG.lock().unwrap();
     let len = bytes.len();
-    msg_buf.resize(len + 1, 0);
+    msg_buf.resize(len, 0);
     msg_buf[..len].copy_from_slice(bytes);
-    msg_buf[len] = 0; // null-terminate
 }
 
 #[no_mangle]
