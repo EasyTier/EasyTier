@@ -9,8 +9,8 @@ use easytier::{
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
 
-static ERROR_MSG: once_cell::sync::Lazy<Mutex<[u8; 256]>> =
-    once_cell::sync::Lazy::new(|| Mutex::new([0; 256]));
+static ERROR_MSG: once_cell::sync::Lazy<Mutex<Vec<u8>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
 
 #[repr(C)]
 pub struct KeyValuePair {
@@ -21,7 +21,8 @@ pub struct KeyValuePair {
 fn set_error_msg(msg: &str) {
     let bytes = msg.as_bytes();
     let mut msg_buf = ERROR_MSG.lock().unwrap();
-    let len = bytes.len().min(msg_buf.len());
+    let len = bytes.len();
+    msg_buf.resize(len + 1, 0);
     msg_buf[..len].copy_from_slice(bytes);
     msg_buf[len] = 0; // null-terminate
 }
@@ -61,7 +62,7 @@ pub extern "C" fn parse_config(cfg_str: *const std::ffi::c_char) -> std::ffi::c_
     };
 
     if let Err(e) = TomlConfigLoader::new_from_str(&cfg_str) {
-        set_error_msg(&format!("failed to parse config: {}", e));
+        set_error_msg(&format!("failed to parse config: {:?}", e));
         return -1;
     }
 
