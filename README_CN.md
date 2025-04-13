@@ -61,7 +61,36 @@
     wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh" && bash /tmp/easytier.sh install
     ```
 
-    使用本脚本安装的 Easytier 可以使用脚本的 uninstall/update 对其卸载/升级
+    脚本支持以下命令和选项：
+
+    命令：
+    - `install`: 安装 EasyTier
+    - `uninstall`: 卸载 EasyTier
+    - `update`: 更新 EasyTier 到最新版本
+    - `help`: 显示帮助信息
+
+    选项：
+    - `--skip-folder-verify`: 跳过安装过程中的文件夹验证
+    - `--skip-folder-fix`: 跳过自动修复文件夹路径
+    - `--no-gh-proxy`: 禁用 GitHub 代理
+    - `--gh-proxy`: 设置自定义 GitHub 代理 URL (默认值: https://ghfast.top/)
+
+    示例：
+    ```sh
+    # 查看帮助
+    bash /tmp/easytier.sh help
+
+    # 安装（带选项）
+    bash /tmp/easytier.sh install --skip-folder-verify
+    bash /tmp/easytier.sh install --no-gh-proxy
+    bash /tmp/easytier.sh install --gh-proxy https://your-proxy.com/
+
+    # 更新 EasyTier
+    bash /tmp/easytier.sh update
+
+    # 卸载 EasyTier
+    bash /tmp/easytier.sh uninstall
+    ```
 
 6. **使用 Homebrew 安装 (仅适用于 MacOS)**
 
