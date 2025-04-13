@@ -182,7 +182,6 @@ struct Cli {
         env = "ET_LISTENERS",
         value_delimiter = ',',
         help = t!("core_clap.listeners").to_string(),
-        default_values_t = ["11010".to_string()],
         num_args = 0..
     )]
     listeners: Vec<String>,
@@ -554,6 +553,13 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         if cli.no_listener || !cli.listeners.is_empty() {
             cfg.set_listeners(
                 Cli::parse_listeners(cli.no_listener, cli.listeners.clone())?
+                    .into_iter()
+                    .map(|s| s.parse().unwrap())
+                    .collect(),
+            );
+        } else if cfg.get_listeners() == None {
+            cfg.set_listeners(
+                Cli::parse_listeners(false, vec!["11010".to_string()])?
                     .into_iter()
                     .map(|s| s.parse().unwrap())
                     .collect(),

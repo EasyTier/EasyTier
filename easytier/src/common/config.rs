@@ -76,7 +76,7 @@ pub trait ConfigLoader: Send + Sync {
     fn get_peers(&self) -> Vec<PeerConfig>;
     fn set_peers(&self, peers: Vec<PeerConfig>);
 
-    fn get_listeners(&self) -> Vec<url::Url>;
+    fn get_listeners(&self) -> Option<Vec<url::Url>>;
     fn set_listeners(&self, listeners: Vec<url::Url>);
 
     fn get_mapped_listeners(&self) -> Vec<url::Url>;
@@ -510,13 +510,8 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().peer = Some(peers);
     }
 
-    fn get_listeners(&self) -> Vec<url::Url> {
-        self.config
-            .lock()
-            .unwrap()
-            .listeners
-            .clone()
-            .unwrap_or_default()
+    fn get_listeners(&self) -> Option<Vec<url::Url>> {
+        self.config.lock().unwrap().listeners.clone()
     }
 
     fn set_listeners(&self, listeners: Vec<url::Url>) {
