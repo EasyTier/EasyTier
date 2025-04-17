@@ -90,6 +90,7 @@ fn dump_profile(_cur_allocated: usize) {
     }
 }
 
+
 #[derive(Parser, Debug)]
 #[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
@@ -414,6 +415,13 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_COMPRESSION_LEVEL",
+        help = t!("core_clap.compression_level").to_string(),
+    )]
+    compression_level: Option<u32>,
+
+    #[arg(
+        long,
         env = "ET_BIND_DEVICE",
         help = t!("core_clap.bind_device").to_string()
     )]
@@ -716,7 +724,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             cfg.set_port_forwards(old);
         }
 
-        let mut f = cfg.get_flags();
+        let mut f: proto::common::FlagsInConfig = cfg.get_flags();
         if let Some(default_protocol) = &cli.default_protocol {
             f.default_protocol = default_protocol.clone()
         };
@@ -752,12 +760,21 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             f.data_compress_algo = match compression.as_str() {
                 "none" => CompressionAlgoPb::None,
                 "zstd" => CompressionAlgoPb::Zstd,
+                "brotli" => CompressionAlgoPb::Brotli,
+                "lz4" => CompressionAlgoPb::Lz4,
+                "gzip" => CompressionAlgoPb::Gzip,
+                "deflate" => CompressionAlgoPb::Deflate,
+                "bzip2" => CompressionAlgoPb::Bzip2,
+                "lzma" => CompressionAlgoPb::Lzma,
+                "xz" => CompressionAlgoPb::Xz,
+                "zlib" => CompressionAlgoPb::Zlib,
                 _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
+                    "unknown compression algorithm: {}, supported: none, zstd, brotli, lz4, gzip, deflate, bzip2, lzma, xz, zlib",
                     compression
                 ),
             }
             .into();
+            f.data_compress_level = cli.compression_level.unwrap_or(f.data_compress_level);
         }
         f.bind_device = cli.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = cli.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);

@@ -21,15 +21,16 @@ message FlagsInConfig {
   // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345 instead
   bool multi_thread = 15;
   CompressionAlgoPb data_compress_algo = 16;
-  bool bind_device = 17;
+  uint32 data_compress_level = 17;
+  bool bind_device = 18;
 
   // should we convert all tcp streams into kcp streams
-  bool enable_kcp_proxy = 18;
+  bool enable_kcp_proxy = 19;
   // does this peer allow kcp input
-  bool disable_kcp_input = 19;
+  bool disable_kcp_input = 20;
   // allow relay kcp packets (for public server, this can reduce the throughput)
-  bool disable_relay_kcp = 20;
-  bool proxy_forward_by_system = 21;
+  bool disable_relay_kcp = 21;
+  bool proxy_forward_by_system = 22;
 }
 
 message RpcDescriptor {
@@ -59,6 +60,14 @@ enum CompressionAlgoPb {
   Invalid = 0;
   None = 1;
   Zstd = 2;
+  Brotli = 3;
+  Lz4 = 4;
+  Gzip = 5;
+  Deflate = 6;
+  Bzip2 = 7;
+  Lzma = 8;
+  Xz = 9;
+  Zlib = 10;
 }
 
 message RpcCompressionInfo {

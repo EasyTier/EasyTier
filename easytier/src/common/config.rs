@@ -32,6 +32,7 @@ pub fn gen_default_flags() -> Flags {
         disable_udp_hole_punching: false,
         multi_thread: true,
         data_compress_algo: CompressionAlgoPb::None.into(),
+        data_compress_level: 0,
         bind_device: true,
         enable_kcp_proxy: false,
         disable_kcp_input: false,

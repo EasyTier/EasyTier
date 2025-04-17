@@ -225,30 +225,76 @@ pub struct AesGcmTail {
 }
 pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
 
-#[derive(AsBytes, FromZeroes, Clone, Debug, Copy)]
-#[repr(u8)]
-pub enum CompressorAlgo {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompressorAlgoEx {
     None = 0,
-    ZstdDefault = 1,
+    Zstd = 1,
+    Brotli = 2,
+    Lz4 = 3,
+    Gzip = 4,
+    Deflate = 5,
+    Bzip2 = 6,
+    Lzma = 7,
+    Xz = 8,
+    Zlib = 9,
+}
+
+impl CompressorAlgoEx {
+    pub fn parse(&self) -> u8 {
+        match *self {
+            CompressorAlgoEx::None => 0,
+            CompressorAlgoEx::Zstd => 1,
+            CompressorAlgoEx::Brotli => 2,
+            CompressorAlgoEx::Lz4 => 3,
+            CompressorAlgoEx::Gzip => 4,
+            CompressorAlgoEx::Deflate => 5,
+            CompressorAlgoEx::Bzip2 => 6,
+            CompressorAlgoEx::Lzma => 7,
+            CompressorAlgoEx::Xz => 8,
+            CompressorAlgoEx::Zlib => 9,
+        }
+    }
+    pub fn is_none(&self) -> bool {
+        matches!(self, CompressorAlgoEx::None)
+    }
 }
 
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
 pub struct CompressorTail {
-    pub algo: u8,
+    pub algo: u16,
 }
 pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 
 impl CompressorTail {
-    pub fn get_algo(&self) -> Option<CompressorAlgo> {
-        match self.algo {
-            1 => Some(CompressorAlgo::ZstdDefault),
-            _ => None,
+    pub fn get_algo(&self) -> CompressorAlgoEx {
+        match self.algo >> 8 {
+            1 => CompressorAlgoEx::Zstd,
+            2 => CompressorAlgoEx::Brotli,
+            3 => CompressorAlgoEx::Lz4,
+            4 => CompressorAlgoEx::Gzip,
+            5 => CompressorAlgoEx::Deflate,
+            6 => CompressorAlgoEx::Bzip2,
+            7 => CompressorAlgoEx::Lzma,
+            8 => CompressorAlgoEx::Xz,
+            9 => CompressorAlgoEx::Zlib,
+            _ => CompressorAlgoEx::None,
         }
     }
-
-    pub fn new(algo: CompressorAlgo) -> Self {
-        Self { algo: algo as u8 }
+    pub fn new(algo: CompressorAlgoEx) -> Self {
+        let algo_u16 = match algo {
+            CompressorAlgoEx::None => 0,
+            CompressorAlgoEx::Zstd => 1 << 8,
+            CompressorAlgoEx::Brotli => 2 << 8,
+            CompressorAlgoEx::Lz4 => 3 << 8,
+            CompressorAlgoEx::Gzip => 4 << 8,
+            CompressorAlgoEx::Deflate => 5 << 8,
+            CompressorAlgoEx::Bzip2 => 6 << 8,
+            CompressorAlgoEx::Lzma => 7 << 8,
+            CompressorAlgoEx::Xz => 8 << 8,
+            CompressorAlgoEx::Zlib => 9 << 8,
+        };
+        Self { algo: algo_u16 }
     }
 }
 

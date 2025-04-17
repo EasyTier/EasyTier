@@ -43,7 +43,7 @@ use crate::{
     },
     tunnel::{
         self,
-        packet_def::{CompressorAlgo, PacketType, ZCPacket},
+        packet_def::{CompressorAlgoEx, PacketType, ZCPacket},
         Tunnel, TunnelConnector,
     },
 };
@@ -138,7 +138,7 @@ pub struct PeerManager {
     foreign_network_client: Arc<ForeignNetworkClient>,
 
     encryptor: Arc<Box<dyn Encryptor>>,
-    data_compress_algo: CompressorAlgo,
+    data_compress_algo: CompressorAlgoEx,
 
     exit_nodes: Vec<Ipv4Addr>,
 
@@ -846,13 +846,13 @@ impl PeerManager {
     }
 
     pub async fn try_compress_and_encrypt(
-        compress_algo: CompressorAlgo,
+        compress_algo: CompressorAlgoEx,
         encryptor: &Box<dyn Encryptor>,
         msg: &mut ZCPacket,
     ) -> Result<(), Error> {
         let compressor = DefaultCompressor {};
         compressor
-            .compress(msg, compress_algo)
+            .compress(msg, compress_algo, 0)
             .await
             .with_context(|| "compress failed")?;
         encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
@@ -1211,7 +1211,8 @@ mod tests {
             let mock_global_ctx = get_mock_global_ctx();
             mock_global_ctx.config.set_flags(Flags {
                 enable_encryption,
-                data_compress_algo: CompressionAlgoPb::Zstd.into(),
+                data_compress_algo: CompressionAlgoPb::Brotli.into(),
+                data_compress_level: 11,
                 ..Default::default()
             });
             let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, mock_global_ctx, s));
