@@ -1,4 +1,4 @@
-use std::{fmt::Debug, sync::Arc};
+use std::{fmt::Debug, net::IpAddr, str::FromStr, sync::Arc};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -52,6 +52,14 @@ pub fn get_listener_by_url(
 
 pub fn is_url_host_ipv6(l: &url::Url) -> bool {
     l.host_str().map_or(false, |h| h.contains(':'))
+}
+
+pub fn is_url_host_unspecified(l: &url::Url) -> bool {
+    if let Ok(ip) = IpAddr::from_str(l.host_str().unwrap_or_default()) {
+        ip.is_unspecified()
+    } else {
+        false
+    }
 }
 
 #[async_trait]
@@ -126,7 +134,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             )
             .await?;
 
-            if self.global_ctx.config.get_flags().enable_ipv6 && !is_url_host_ipv6(&l) {
+            if self.global_ctx.config.get_flags().enable_ipv6
+                && !is_url_host_ipv6(&l)
+                && is_url_host_unspecified(&l)
+            {
                 let mut ipv6_listener = l.clone();
                 ipv6_listener
                     .set_host(Some("[::]".to_string().as_str()))
