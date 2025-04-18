@@ -262,13 +262,13 @@ impl CompressorAlgoEx {
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
 pub struct CompressorTail {
-    pub algo: u16,
+    pub algo: u8,
 }
 pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 
 impl CompressorTail {
     pub fn get_algo(&self) -> CompressorAlgoEx {
-        match self.algo >> 8 {
+        match self.algo{
             1 => CompressorAlgoEx::Zstd,
             2 => CompressorAlgoEx::Brotli,
             3 => CompressorAlgoEx::Lz4,
@@ -284,15 +284,15 @@ impl CompressorTail {
     pub fn new(algo: CompressorAlgoEx) -> Self {
         let algo_u16 = match algo {
             CompressorAlgoEx::None => 0,
-            CompressorAlgoEx::Zstd => 1 << 8,
-            CompressorAlgoEx::Brotli => 2 << 8,
-            CompressorAlgoEx::Lz4 => 3 << 8,
-            CompressorAlgoEx::Gzip => 4 << 8,
-            CompressorAlgoEx::Deflate => 5 << 8,
-            CompressorAlgoEx::Bzip2 => 6 << 8,
-            CompressorAlgoEx::Lzma => 7 << 8,
-            CompressorAlgoEx::Xz => 8 << 8,
-            CompressorAlgoEx::Zlib => 9 << 8,
+            CompressorAlgoEx::Zstd => 1,
+            CompressorAlgoEx::Brotli => 2,
+            CompressorAlgoEx::Lz4 => 3,
+            CompressorAlgoEx::Gzip => 4,
+            CompressorAlgoEx::Deflate => 5,
+            CompressorAlgoEx::Bzip2 => 6 ,
+            CompressorAlgoEx::Lzma => 7,
+            CompressorAlgoEx::Xz => 8,
+            CompressorAlgoEx::Zlib => 9,
         };
         Self { algo: algo_u16 }
     }
