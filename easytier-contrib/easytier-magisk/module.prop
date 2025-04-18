@@ -1,7 +1,7 @@
 id=easytier_magisk
 name=easytier_magisk版
-version=v1.0
+version=v2.2.4
 versionCode=1
 author=EasyTier
 description=easytier_magisk版模块 作者:EasyTier https://github.com/EasyTier/EasyTier
-updateJson=https://raw.githubusercontent.com/EasyTier/EasyTier/refs/heads/main/easytier-magisk/magisk_update.json
+updateJson=https://raw.githubusercontent.com/EasyTier/EasyTier/refs/heads/main/easytier-contrib/easytier-magisk/magisk_update.json

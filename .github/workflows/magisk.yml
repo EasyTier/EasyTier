@@ -1,0 +1,39 @@
+name: Build Magisk Module
+
+on:
+  push:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  download_binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Linux aarch64 Artifact
+        uses: dawidd6/action-download-artifact@v2
+        with:
+          workflow: core.yml                  
+          name: easytier-linux-aarch64        
+          repo: EasyTier/EasyTier             
+          path: artifacts/                    # 下载到 artifacts/ 目录
+
+  build_module:
+    needs: download_binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Build Script
+        run: |
+          chmod +x build.sh
+          ./easytier-contrib/easytier-magisk/build.sh
+
+      - name: Upload Magisk Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: Easytier-Magisk
+          path: easytier_magisk_*.zip                # 匹配构建生成的 ZIP 文件
