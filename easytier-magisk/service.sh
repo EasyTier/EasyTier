@@ -1,13 +1,11 @@
 #!/data/adb/magisk/busybox sh
 MODDIR=${0%/*}
 # MODDIR="$(dirname $(readlink -f "$0"))"
-if [ ! -f ${MODDIR}/log ]; do 
-    mkdir -p ${MODDIR}/log
-done
+mkdir -p ${MODDIR}/log
 chmod 755 ${MODDIR}/*
-echo $MODDIR
+
 echo $MODDIR >> ${MODDIR}/log/start.log
-echo "Easytier 服务启动"
+
 echo "Easytier 服务启动" >> ${MODDIR}/log/start.log
 
 # 启动
