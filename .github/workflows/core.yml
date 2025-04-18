@@ -305,4 +305,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Easytier-Magisk
-          path: easytier_magisk_*.zip                # 匹配构建生成的 ZIP 文件
+          path: easytier_magisk_*.zip                # 匹配生成的 ZIP 文件
