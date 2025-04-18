@@ -275,3 +275,34 @@ jobs:
       - name: Mark result as failed
         if: needs.build.result != 'success'
         run: exit 1
+
+
+  build_module:
+    needs: 
+      - pre_job
+      - build_web
+      - build
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    runs-on: ubuntu-latest
+    steps:
+            # 下载 aarch64 架构的二进制文件
+      - name: Download Linux aarch64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-linux-aarch64
+          path: binaries/
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Build Script
+        working-directory: ./easytier-contrib/easytier-magisk
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload Magisk Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: Easytier-Magisk
+          path: easytier_magisk_*.zip                # 匹配构建生成的 ZIP 文件
