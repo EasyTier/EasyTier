@@ -277,7 +277,7 @@ jobs:
         run: exit 1
 
 
-  build_module:
+  magisk_build:
     needs: 
       - pre_job
       - build_web
@@ -290,13 +290,13 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: easytier-linux-aarch64
-          path: binaries/
+          path: ./easytier-contrib/easytier-magisk/
 
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Run Build Script
-        working-directory: ./easytier-contrib/easytier-magisk
+        working-directory: ./easytier-contrib/easytier-magisk/
         run: |
           chmod +x build.sh
           ./build.sh
@@ -305,4 +305,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Easytier-Magisk
-          path: easytier_magisk_*.zip                # 匹配生成的 ZIP 文件
+          path: ./easytier-contrib/easytier-magisk/easytier_magisk_*.zip                # 匹配生成的 ZIP 文件
+          if-no-files-found: ignore
