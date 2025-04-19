@@ -107,6 +107,11 @@ pub extern "C" fn retain_network_instance(
     inst_names: *const *const std::ffi::c_char,
     length: usize,
 ) -> std::ffi::c_int {
+    if length == 0 {
+        INSTANCE_MAP.clear();
+        return 0;
+    }
+
     let inst_names = unsafe {
         assert!(!inst_names.is_null());
         std::slice::from_raw_parts(inst_names, length)
@@ -130,6 +135,10 @@ pub extern "C" fn collect_network_infos(
     infos: *mut KeyValuePair,
     max_length: usize,
 ) -> std::ffi::c_int {
+    if max_length == 0 {
+        return 0;
+    }
+
     let infos = unsafe {
         assert!(!infos.is_null());
         std::slice::from_raw_parts_mut(infos, max_length)
