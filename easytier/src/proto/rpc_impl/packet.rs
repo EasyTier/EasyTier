@@ -6,7 +6,7 @@ use crate::{
         common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,
     },
-    tunnel::packet_def::{CompressorAlgo, PacketType, ZCPacket},
+    tunnel::packet_def::{CompressorAlgoEx, PacketType, ZCPacket},
 };
 
 use super::RpcTransactId;
@@ -20,8 +20,9 @@ pub async fn compress_packet(
     let compressor = DefaultCompressor::new();
     let algo = accepted_compression_algo
         .try_into()
-        .unwrap_or(CompressorAlgo::None);
-    let compressed = compressor.compress_raw(&content, algo).await?;
+        .unwrap_or(CompressorAlgoEx::None);
+    // TODO: compress level
+    let compressed = compressor.compress_raw(&content, algo, 0).await?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {

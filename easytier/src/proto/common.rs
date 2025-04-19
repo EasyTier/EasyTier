@@ -2,7 +2,7 @@ use std::{fmt::Display, str::FromStr};
 
 use anyhow::Context;
 
-use crate::tunnel::packet_def::CompressorAlgo;
+use crate::tunnel::packet_def::CompressorAlgoEx;
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
@@ -196,25 +196,41 @@ impl ToString for SocketAddr {
     }
 }
 
-impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
+impl TryFrom<CompressionAlgoPb> for CompressorAlgoEx {
     type Error = anyhow::Error;
 
     fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
         match value {
-            CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
-            CompressionAlgoPb::None => Ok(CompressorAlgo::None),
+            CompressionAlgoPb::Zstd => Ok(CompressorAlgoEx::Zstd),
+            CompressionAlgoPb::Brotli => Ok(CompressorAlgoEx::Brotli),
+            CompressionAlgoPb::Lz4 => Ok(CompressorAlgoEx::Lz4),
+            CompressionAlgoPb::Gzip => Ok(CompressorAlgoEx::Gzip),
+            CompressionAlgoPb::Deflate => Ok(CompressorAlgoEx::Deflate),
+            CompressionAlgoPb::Bzip2 => Ok(CompressorAlgoEx::Bzip2),
+            CompressionAlgoPb::Lzma => Ok(CompressorAlgoEx::Lzma),
+            CompressionAlgoPb::Xz => Ok(CompressorAlgoEx::Xz),
+            CompressionAlgoPb::Zlib => Ok(CompressorAlgoEx::Zlib),
+            CompressionAlgoPb::None => Ok(CompressorAlgoEx::None),
             _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
         }
     }
 }
 
-impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
+impl TryFrom<CompressorAlgoEx> for CompressionAlgoPb {
     type Error = anyhow::Error;
 
-    fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
+    fn try_from(value: CompressorAlgoEx) -> Result<Self, Self::Error> {
         match value {
-            CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
-            CompressorAlgo::None => Ok(CompressionAlgoPb::None),
+            CompressorAlgoEx::Zstd => Ok(CompressionAlgoPb::Zstd),
+            CompressorAlgoEx::Brotli => Ok(CompressionAlgoPb::Brotli),
+            CompressorAlgoEx::Lz4 => Ok(CompressionAlgoPb::Lz4),
+            CompressorAlgoEx::Gzip => Ok(CompressionAlgoPb::Gzip),
+            CompressorAlgoEx::Deflate => Ok(CompressionAlgoPb::Deflate),
+            CompressorAlgoEx::Bzip2 => Ok(CompressionAlgoPb::Bzip2),
+            CompressorAlgoEx::Lzma => Ok(CompressionAlgoPb::Lzma),
+            CompressorAlgoEx::Xz => Ok(CompressionAlgoPb::Xz),
+            CompressorAlgoEx::Zlib => Ok(CompressionAlgoPb::Zlib),
+            CompressorAlgoEx::None => Ok(CompressionAlgoPb::None),
         }
     }
 }

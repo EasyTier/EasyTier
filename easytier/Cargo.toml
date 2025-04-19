@@ -185,8 +185,16 @@ async-ringbuf = "0.3.1"
 
 service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main" }
 
-async-compression = { version = "0.4.17", default-features = false, features = [
+async-compression = { version = "0.4.22", default-features = false, features = [
     "zstd",
+    "brotli",
+    "lz4",
+    "gzip",
+    "deflate",
+    "bzip2",
+    "lzma",
+    "xz",
+    "zlib",
     "tokio",
 ] }
 
