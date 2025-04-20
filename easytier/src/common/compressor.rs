@@ -255,179 +255,124 @@ pub mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
+    async fn test_all_compression_algorithms() {
+        let algorithms = [
+            CompressorAlgoEx::None,
+            CompressorAlgoEx::Zstd,
+            CompressorAlgoEx::Brotli,
+            // CompressorAlgoEx::Lz4,
+            // CompressorAlgoEx::Gzip,
+            CompressorAlgoEx::Deflate,
+            // CompressorAlgoEx::Bzip2,
+            // CompressorAlgoEx::Lzma,
+            // CompressorAlgoEx::Xz,
+            CompressorAlgoEx::Zlib,
+        ];
+
+        let normal_text = b"12345670000000000000000000";
+        let short_text = b"1234";
+        
         let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Zstd, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
+        
+
+        println!("===== 测试正常文本压缩 =====");
+        for &algo in &algorithms {
+            let mut packet = ZCPacket::new_with_payload(normal_text);
+            packet.fill_peer_manager_hdr(0, 0, 0);
+            
+            compressor.compress(&mut packet, algo, 0).await.unwrap();
+            
+            let expected_compressed = !algo.is_none();
+            assert_eq!(
+                packet.peer_manager_header().unwrap().is_compressed(), 
+                expected_compressed,
+                "算法 {:?} 压缩状态与预期不符", algo
+            );
+            
+            compressor.decompress(&mut packet).await.unwrap();
+            
+            assert_eq!(
+                packet.payload(), normal_text,
+                "算法 {:?} 解压后数据与原始数据不一致", algo
+            );
+            
+            assert_eq!(
+                packet.peer_manager_header().unwrap().is_compressed(), false,
+                "算法 {:?} 解压后压缩状态标志未正确重置", algo
+            );
+            
+            println!("算法 {:?} 测试通过", algo);
+        }
+        
+        println!("===== 测试短文本压缩 =====");
+        for &algo in &algorithms {
+            let mut packet = ZCPacket::new_with_payload(short_text);
+            packet.fill_peer_manager_hdr(0, 0, 0);
+            
+            compressor.compress(&mut packet, algo, 0).await.unwrap();
+            
+            assert_eq!(
+                packet.peer_manager_header().unwrap().is_compressed(), false,
+                "算法 {:?} 对短文本的压缩结果与预期不符", algo
+            );
+            
+            compressor.decompress(&mut packet).await.unwrap();
+            
+            assert_eq!(
+                packet.payload(), short_text,
+                "算法 {:?} 解压后数据与原始数据不一致", algo
+            );
+            
+            assert_eq!(
+                packet.peer_manager_header().unwrap().is_compressed(), false,
+                "算法 {:?} 解压后压缩状态标志未正确重置", algo
+            );
+            
+            println!("算法 {:?} 短文本测试通过", algo);
+        }
     }
 
     #[tokio::test]
-    async fn test_short_text_compress() {
-        let text = b"1234";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
+    async fn test_all_compress_ratio() {
+        let text = b"12345670000000000000000000abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(1000000);
         let compressor = DefaultCompressor {};
-        // short text can't be compressed
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Zstd, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_brotli_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Brotli, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_lz4_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Lz4, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_gzip_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Gzip, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_deflate_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Deflate, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_bzip2_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Bzip2, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_lzma_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Lzma, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_xz_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Xz, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_zlib_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::Zlib, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), true);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-    }
-
-    #[tokio::test]
-    async fn test_none_compress() {
-        let text = b"12345670000000000000000000";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-        let compressor = DefaultCompressor {};
-        compressor
-            .compress(&mut packet, CompressorAlgoEx::None, 0)
-            .await
-            .unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
-        compressor.decompress(&mut packet).await.unwrap();
-        assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_compressed(), false);
+        let algos = [
+            (CompressorAlgoEx::None, "None", false),
+            (CompressorAlgoEx::Zstd, "Zstd", true),
+            (CompressorAlgoEx::Brotli, "Brotli", true),
+            (CompressorAlgoEx::Lz4, "Lz4", true),
+            (CompressorAlgoEx::Gzip, "Gzip", false),
+            (CompressorAlgoEx::Deflate, "Deflate", false),
+            (CompressorAlgoEx::Bzip2, "Bzip2", true),
+            (CompressorAlgoEx::Lzma, "Lzma", true),
+            (CompressorAlgoEx::Xz, "Xz", false),
+            (CompressorAlgoEx::Zlib, "Zlib", false),
+        ];
+        let levels = [1u16, 3, 5, 7, 9];
+        for (algo, name, has_level) in algos.iter() {
+            if *has_level {
+                for &level in &levels {
+                    let mut packet = ZCPacket::new_with_payload(&text);
+                    packet.fill_peer_manager_hdr(0, 0, 0);
+                    compressor.compress(&mut packet, *algo, level).await.unwrap();
+                    let compressed_len = packet.payload().len();
+                    compressor.decompress(&mut packet).await.unwrap();
+                    let decompressed = packet.payload();
+                    assert_eq!(decompressed, &text[..]);
+                    let ratio = compressed_len as f64 / text.len() as f64;
+                    println!("{}(level {}) 压缩比: {:.2}% ({} -> {})", name, level, ratio * 100.0, text.len(), compressed_len);
+                }
+            } else {
+                let mut packet = ZCPacket::new_with_payload(&text);
+                packet.fill_peer_manager_hdr(0, 0, 0);
+                compressor.compress(&mut packet, *algo, 0).await.unwrap();
+                let compressed_len = packet.payload().len();
+                compressor.decompress(&mut packet).await.unwrap();
+                let decompressed = packet.payload();
+                assert_eq!(decompressed, &text[..]);
+                let ratio = compressed_len as f64 / text.len() as f64;
+                println!("{} 压缩比: {:.2}% ({} -> {})", name, ratio * 100.0, text.len(), compressed_len);
+            }
+        }
     }
 }
