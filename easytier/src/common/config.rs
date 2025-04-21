@@ -274,20 +274,23 @@ impl TomlConfigLoader {
 
         config.flags_struct = Some(Self::gen_flags(config.flags.clone().unwrap_or_default()));
 
-        Ok(TomlConfigLoader {
+        let config = TomlConfigLoader {
             config: Arc::new(Mutex::new(config)),
-        })
+        };
+
+        let old_ns = config.get_network_identity();
+        config.set_network_identity(NetworkIdentity::new(
+            old_ns.network_name,
+            old_ns.network_secret.unwrap_or_default(),
+        ));
+
+        Ok(config)
     }
 
     pub fn new(config_path: &PathBuf) -> Result<Self, anyhow::Error> {
         let config_str = std::fs::read_to_string(config_path)
             .with_context(|| format!("failed to read config file: {:?}", config_path))?;
         let ret = Self::new_from_str(&config_str)?;
-        let old_ns = ret.get_network_identity();
-        ret.set_network_identity(NetworkIdentity::new(
-            old_ns.network_name,
-            old_ns.network_secret.unwrap_or_default(),
-        ));
 
         Ok(ret)
     }
