@@ -285,25 +285,32 @@ jobs:
     if: needs.pre_job.outputs.should_skip != 'true' && always()
     runs-on: ubuntu-latest
     steps:
-            # 下载 aarch64 架构的二进制文件
+      - name: Checkout Code
+        uses: actions/checkout@v4  # 必须先检出代码才能获取模块配置
+
+      # 下载二进制文件到独立目录
       - name: Download Linux aarch64 binaries
         uses: actions/download-artifact@v4
         with:
           name: easytier-linux-aarch64
-          path: ./easytier-contrib/easytier-magisk/
+          path: ./downloaded-binaries/  # 独立目录避免冲突
 
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Run Build Script
-        working-directory: ./easytier-contrib/easytier-magisk/
+      # 将二进制文件复制到 Magisk 模块目录
+      - name: Prepare binaries
         run: |
-          chmod +x build.sh
-          ./build.sh
+          mkdir -p ./easytier-contrib/easytier-magisk/
+          cp ./downloaded-binaries/easytier-core ./easytier-contrib/easytier-magisk/
+          cp ./downloaded-binaries/easytier-cli ./easytier-contrib/easytier-magisk/
+          cp ./downloaded-binaries/easytier-web ./easytier-contrib/easytier-magisk/
 
+
+      # 上传生成的模块
       - name: Upload Magisk Module
         uses: actions/upload-artifact@v4
         with:
           name: Easytier-Magisk
-          path: ./easytier-contrib/easytier-magisk/easytier_magisk_*.zip                # 匹配生成的 ZIP 文件
-          if-no-files-found: ignore
+          path: |
+            ./easytier-contrib/easytier-magisk
+            !./easytier-contrib/easytier-magisk/build.sh
+            !./easytier-contrib/easytier-magisk/magisk_update.json
+          if-no-files-found: error
