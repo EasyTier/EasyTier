@@ -112,10 +112,12 @@ jobs:
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
-
           - TARGET: aarch64-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-arm64
+          - TARGET: i686-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-i686
 
           - TARGET: x86_64-unknown-freebsd
             OS: ubuntu-22.04
@@ -229,12 +231,13 @@ jobs:
           # windows is the only OS using a different convention for executable file name
           if [[ $OS =~ ^windows.*$ && $TARGET =~ ^x86_64.*$ ]]; then
               SUFFIX=.exe
-              cp easytier/third_party/Packet.dll ./artifacts/objects/
-              cp easytier/third_party/wintun.dll ./artifacts/objects/
+              cp easytier/third_party/*.dll ./artifacts/objects/
+          elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^i686.*$ ]]; then
+              SUFFIX=.exe
+              cp easytier/third_party/i686/*.dll ./artifacts/objects/
           elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^aarch64.*$ ]]; then
               SUFFIX=.exe
-              cp easytier/third_party/arm64/Packet.dll ./artifacts/objects/
-              cp easytier/third_party/arm64/wintun.dll ./artifacts/objects/
+              cp easytier/third_party/arm64/*.dll ./artifacts/objects/
           fi
           if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
             TAG=$GITHUB_REF_NAME
