@@ -239,6 +239,7 @@ listeners = [
     "wss://0.0.0.0:11012/",
 ]
 exit_nodes = []
+rpc_portal = "127.0.0.1:15888"
 
 [[peer]]
 uri = "tcp://public.easytier.top:11010"
