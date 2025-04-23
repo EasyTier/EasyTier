@@ -1,8 +1,22 @@
-use async_compression::tokio::write::{
-    ZstdDecoder, ZstdEncoder, BrotliDecoder, BrotliEncoder, Lz4Decoder, Lz4Encoder,
-    GzipDecoder, GzipEncoder, DeflateDecoder, DeflateEncoder, BzDecoder, BzEncoder,
-    LzmaDecoder, LzmaEncoder, XzDecoder, XzEncoder, ZlibDecoder, ZlibEncoder
-};
+#[cfg(feature = "zstd")]
+use async_compression::tokio::write::{ZstdDecoder, ZstdEncoder};
+#[cfg(feature = "brotli")]
+use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
+#[cfg(feature = "lz4")]
+use async_compression::tokio::write::{Lz4Decoder, Lz4Encoder};
+#[cfg(feature = "gzip")]
+use async_compression::tokio::write::{GzipDecoder, GzipEncoder};
+#[cfg(feature = "deflate")]
+use async_compression::tokio::write::{DeflateDecoder, DeflateEncoder};
+#[cfg(feature = "bzip2")]
+use async_compression::tokio::write::{BzDecoder, BzEncoder};
+#[cfg(feature = "lzma")]
+use async_compression::tokio::write::{LzmaDecoder, LzmaEncoder};
+#[cfg(feature = "xz")]
+use async_compression::tokio::write::{XzDecoder, XzEncoder};
+#[cfg(feature = "zlib")]
+use async_compression::tokio::write::{ZlibDecoder, ZlibEncoder};
+
 use tokio::io::AsyncWriteExt;
 
 use zerocopy::{AsBytes as _, FromBytes as _};
@@ -36,6 +50,7 @@ impl DefaultCompressor {
         compress_level: i32,
     ) -> Result<Vec<u8>, Error> {
         let buf = match compress_algo {
+            #[cfg(feature = "zstd")]
             CompressorAlgoEx::Zstd => {
                 let quality = if compress_level == 0 { 3 } else { compress_level };
                 let mut o = ZstdEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
@@ -43,6 +58,7 @@ impl DefaultCompressor {
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "brotli")]
             CompressorAlgoEx::Brotli => {
                 let quality = if compress_level == 0 { 11 } else { compress_level };
                 let mut o = BrotliEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
@@ -50,6 +66,7 @@ impl DefaultCompressor {
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "lz4")]
             CompressorAlgoEx::Lz4 => {
                 let quality = if compress_level == 0 { 12 } else { compress_level };
                 let mut o = Lz4Encoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
@@ -57,18 +74,21 @@ impl DefaultCompressor {
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "gzip")]
             CompressorAlgoEx::Gzip => {
                 let mut o = GzipEncoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "deflate")]
             CompressorAlgoEx::Deflate => {
                 let mut o = DeflateEncoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "bzip2")]
             CompressorAlgoEx::Bzip2 => {
                 let quality = if compress_level == 0 { 9 } else { compress_level };
                 let mut o = BzEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
@@ -76,6 +96,7 @@ impl DefaultCompressor {
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "lzma")]
             CompressorAlgoEx::Lzma => {
                 let quality = if compress_level == 0 { 9 } else { compress_level };
                 let mut o = LzmaEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
@@ -83,12 +104,14 @@ impl DefaultCompressor {
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "xz")]
             CompressorAlgoEx::Xz => {
                 let mut o = XzEncoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "zlib")]
             CompressorAlgoEx::Zlib => {
                 let mut o = ZlibEncoder::new(Vec::new());
                 o.write_all(data).await?;
@@ -96,6 +119,8 @@ impl DefaultCompressor {
                 o.into_inner()
             }
             CompressorAlgoEx::None => data.to_vec(),
+            #[allow(unreachable_patterns)]
+            _ => return Err(anyhow::anyhow!("This compression algorithm is not enabled. Please enable the corresponding feature in Cargo.toml!")),
         };
         Ok(buf)
     }
@@ -106,54 +131,63 @@ impl DefaultCompressor {
         compress_algo: CompressorAlgoEx
     ) -> Result<Vec<u8>, Error> {
         let buf = match compress_algo {
+            #[cfg(feature = "zstd")]
             CompressorAlgoEx::Zstd => {
                 let mut o = ZstdDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "brotli")]
             CompressorAlgoEx::Brotli => {
                 let mut o = BrotliDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "lz4")]
             CompressorAlgoEx::Lz4 => {
                 let mut o = Lz4Decoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "gzip")]
             CompressorAlgoEx::Gzip => {
                 let mut o = GzipDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "deflate")]
             CompressorAlgoEx::Deflate => {
                 let mut o = DeflateDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "bzip2")]
             CompressorAlgoEx::Bzip2 => {
                 let mut o = BzDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "lzma")]
             CompressorAlgoEx::Lzma => {
                 let mut o = LzmaDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "xz")]
             CompressorAlgoEx::Xz => {
                 let mut o = XzDecoder::new(Vec::new());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
+            #[cfg(feature = "zlib")]
             CompressorAlgoEx::Zlib => {
                 let mut o = ZlibDecoder::new(Vec::new());
                 o.write_all(data).await?;
@@ -161,6 +195,8 @@ impl DefaultCompressor {
                 o.into_inner()
             }
             CompressorAlgoEx::None => data.to_vec(),
+            #[allow(unreachable_patterns)]
+            _ => return Err(anyhow::anyhow!("This decompression algorithm is not enabled. Please enable the corresponding feature in Cargo.toml!")),
         };
         Ok(buf)
     }
