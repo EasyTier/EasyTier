@@ -185,7 +185,7 @@ async-ringbuf = "0.3.1"
 
 service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main" }
 
-async-compression = { version = "0.4.22", default-features = false, features = [
+async-compression = { version = "0.4.23", default-features = false, features = [
     "zstd",
     "brotli",
     "lz4",
@@ -271,7 +271,7 @@ tokio-socks = "0.5.2"
 
 
 [features]
-default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun", "socks5"]
+default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun", "socks5", "zstd"]
 full = [
     "quic",
     "websocket",
@@ -281,6 +281,7 @@ full = [
     "smoltcp",
     "tun",
     "socks5",
+    "compression-all",
 ]
 mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
@@ -298,3 +299,13 @@ websocket = [
 smoltcp = ["dep:smoltcp", "dep:parking_lot"]
 socks5 = ["dep:smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-ctl", "dep:jemalloc-sys"]
+zstd = ["async-compression/zstd"]
+brotli = ["async-compression/brotli"]
+lz4 = ["async-compression/lz4"]
+gzip = ["async-compression/gzip"]
+deflate = ["async-compression/deflate"]
+bzip2 = ["async-compression/bzip2"]
+lzma = ["async-compression/lzma"]
+xz = ["async-compression/xz"]
+zlib = ["async-compression/zlib"]
+compression-all = ["zstd", "brotli", "lz4", "gzip", "deflate", "bzip2", "lzma", "xz", "zlib"]
