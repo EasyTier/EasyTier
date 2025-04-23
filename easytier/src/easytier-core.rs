@@ -418,7 +418,7 @@ struct Cli {
         env = "ET_COMPRESSION_LEVEL",
         help = t!("core_clap.compression_level").to_string(),
     )]
-    compression_level: Option<u32>,
+    compression_level: Option<i32>,
 
     #[arg(
         long,

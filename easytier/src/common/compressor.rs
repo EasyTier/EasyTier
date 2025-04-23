@@ -17,7 +17,7 @@ pub trait Compressor {
         &self,
         packet: &mut ZCPacket,
         compress_algo: CompressorAlgoEx,
-        compress_level: u16,
+        compress_level: i32,
     ) -> Result<(), Error>;
     async fn decompress(&self, packet: &mut ZCPacket) -> Result<(), Error>;
 }
@@ -33,25 +33,25 @@ impl DefaultCompressor {
         &self,
         data: &[u8],
         compress_algo: CompressorAlgoEx,
-        compress_level: u16,
+        compress_level: i32,
     ) -> Result<Vec<u8>, Error> {
         let buf = match compress_algo {
             CompressorAlgoEx::Zstd => {
-                let quality = if compress_level == 0 { 3 } else { compress_level as i32 };
+                let quality = if compress_level == 0 { 3 } else { compress_level };
                 let mut o = ZstdEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
             CompressorAlgoEx::Brotli => {
-                let quality = if compress_level == 0 { 11 } else { compress_level as i32 };
+                let quality = if compress_level == 0 { 11 } else { compress_level };
                 let mut o = BrotliEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
             CompressorAlgoEx::Lz4 => {
-                let quality = if compress_level == 0 { 12 } else { compress_level as i32 };
+                let quality = if compress_level == 0 { 12 } else { compress_level };
                 let mut o = Lz4Encoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
                 o.write_all(data).await?;
                 o.shutdown().await?;
@@ -70,14 +70,14 @@ impl DefaultCompressor {
                 o.into_inner()
             }
             CompressorAlgoEx::Bzip2 => {
-                let quality = if compress_level == 0 { 9 } else { compress_level as i32 };
+                let quality = if compress_level == 0 { 9 } else { compress_level };
                 let mut o = BzEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
             CompressorAlgoEx::Lzma => {
-                let quality = if compress_level == 0 { 9 } else { compress_level as i32 };
+                let quality = if compress_level == 0 { 9 } else { compress_level };
                 let mut o = LzmaEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
                 o.write_all(data).await?;
                 o.shutdown().await?;
@@ -172,7 +172,7 @@ impl Compressor for DefaultCompressor {
         &self,
         zc_packet: &mut ZCPacket,
         compress_algo: CompressorAlgoEx,
-        compress_level: u16,
+        compress_level: i32,
     ) -> Result<(), Error> {
         if compress_algo.is_none() {
             return Ok(());
