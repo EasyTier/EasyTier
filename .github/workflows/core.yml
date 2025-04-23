@@ -173,7 +173,7 @@ jobs:
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
             fi
-            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
+            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed,easytier/default
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
             cargo build --release --verbose --target $TARGET
           fi
@@ -212,7 +212,7 @@ jobs:
             export CXX=clang++
             export CARGO_TERM_COLOR=always
 
-            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
+            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed,easytier/default
             mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
             cargo build --release --verbose --target $TARGET
 
