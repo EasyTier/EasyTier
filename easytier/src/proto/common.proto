@@ -21,7 +21,7 @@ message FlagsInConfig {
   // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345 instead
   bool multi_thread = 15;
   CompressionAlgoPb data_compress_algo = 16;
-  uint32 data_compress_level = 17;
+  int32 data_compress_level = 17;
   bool bind_device = 18;
 
   // should we convert all tcp streams into kcp streams
