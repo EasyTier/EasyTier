@@ -16,3 +16,5 @@ panic = "unwind"
 panic = "abort"
 lto = true
 codegen-units = 1
+opt-level = 'z'
+strip = true
