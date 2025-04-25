@@ -43,7 +43,7 @@ use crate::{
     },
     tunnel::{
         self,
-        packet_def::{CompressorAlgoEx, PacketType, ZCPacket},
+        packet_def::{CompressorAlgo, PacketType, ZCPacket},
         Tunnel, TunnelConnector,
     },
 };
@@ -138,7 +138,7 @@ pub struct PeerManager {
     foreign_network_client: Arc<ForeignNetworkClient>,
 
     encryptor: Arc<Box<dyn Encryptor>>,
-    data_compress_algo: CompressorAlgoEx,
+    data_compress_algo: CompressorAlgo,
 
     exit_nodes: Vec<Ipv4Addr>,
 
@@ -846,7 +846,7 @@ impl PeerManager {
     }
 
     pub async fn try_compress_and_encrypt(
-        compress_algo: CompressorAlgoEx,
+        compress_algo: CompressorAlgo,
         encryptor: &Box<dyn Encryptor>,
         msg: &mut ZCPacket,
     ) -> Result<(), Error> {

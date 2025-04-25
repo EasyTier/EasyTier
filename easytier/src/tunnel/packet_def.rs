@@ -226,7 +226,7 @@ pub struct AesGcmTail {
 pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompressorAlgoEx {
+pub enum CompressorAlgo {
     None = 0,
     Zstd = 1,
     Brotli = 2,
@@ -239,23 +239,23 @@ pub enum CompressorAlgoEx {
     Zlib = 9,
 }
 
-impl CompressorAlgoEx {
+impl CompressorAlgo {
     pub fn parse(&self) -> u8 {
         match *self {
-            CompressorAlgoEx::None => 0,
-            CompressorAlgoEx::Zstd => 1,
-            CompressorAlgoEx::Brotli => 2,
-            CompressorAlgoEx::Lz4 => 3,
-            CompressorAlgoEx::Gzip => 4,
-            CompressorAlgoEx::Deflate => 5,
-            CompressorAlgoEx::Bzip2 => 6,
-            CompressorAlgoEx::Lzma => 7,
-            CompressorAlgoEx::Xz => 8,
-            CompressorAlgoEx::Zlib => 9,
+            CompressorAlgo::None => 0,
+            CompressorAlgo::Zstd => 1,
+            CompressorAlgo::Brotli => 2,
+            CompressorAlgo::Lz4 => 3,
+            CompressorAlgo::Gzip => 4,
+            CompressorAlgo::Deflate => 5,
+            CompressorAlgo::Bzip2 => 6,
+            CompressorAlgo::Lzma => 7,
+            CompressorAlgo::Xz => 8,
+            CompressorAlgo::Zlib => 9,
         }
     }
     pub fn is_none(&self) -> bool {
-        matches!(self, CompressorAlgoEx::None)
+        matches!(self, CompressorAlgo::None)
     }
 }
 
@@ -267,32 +267,32 @@ pub struct CompressorTail {
 pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 
 impl CompressorTail {
-    pub fn get_algo(&self) -> CompressorAlgoEx {
+    pub fn get_algo(&self) -> CompressorAlgo {
         match self.algo{
-            1 => CompressorAlgoEx::Zstd,
-            2 => CompressorAlgoEx::Brotli,
-            3 => CompressorAlgoEx::Lz4,
-            4 => CompressorAlgoEx::Gzip,
-            5 => CompressorAlgoEx::Deflate,
-            6 => CompressorAlgoEx::Bzip2,
-            7 => CompressorAlgoEx::Lzma,
-            8 => CompressorAlgoEx::Xz,
-            9 => CompressorAlgoEx::Zlib,
-            _ => CompressorAlgoEx::None,
+            1 => CompressorAlgo::Zstd,
+            2 => CompressorAlgo::Brotli,
+            3 => CompressorAlgo::Lz4,
+            4 => CompressorAlgo::Gzip,
+            5 => CompressorAlgo::Deflate,
+            6 => CompressorAlgo::Bzip2,
+            7 => CompressorAlgo::Lzma,
+            8 => CompressorAlgo::Xz,
+            9 => CompressorAlgo::Zlib,
+            _ => CompressorAlgo::None,
         }
     }
-    pub fn new(algo: CompressorAlgoEx) -> Self {
+    pub fn new(algo: CompressorAlgo) -> Self {
         let algo_u16 = match algo {
-            CompressorAlgoEx::None => 0,
-            CompressorAlgoEx::Zstd => 1,
-            CompressorAlgoEx::Brotli => 2,
-            CompressorAlgoEx::Lz4 => 3,
-            CompressorAlgoEx::Gzip => 4,
-            CompressorAlgoEx::Deflate => 5,
-            CompressorAlgoEx::Bzip2 => 6 ,
-            CompressorAlgoEx::Lzma => 7,
-            CompressorAlgoEx::Xz => 8,
-            CompressorAlgoEx::Zlib => 9,
+            CompressorAlgo::None => 0,
+            CompressorAlgo::Zstd => 1,
+            CompressorAlgo::Brotli => 2,
+            CompressorAlgo::Lz4 => 3,
+            CompressorAlgo::Gzip => 4,
+            CompressorAlgo::Deflate => 5,
+            CompressorAlgo::Bzip2 => 6 ,
+            CompressorAlgo::Lzma => 7,
+            CompressorAlgo::Xz => 8,
+            CompressorAlgo::Zlib => 9,
         };
         Self { algo: algo_u16 }
     }
