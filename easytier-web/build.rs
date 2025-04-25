@@ -4,6 +4,4 @@ fn main() {
     if !std::env::var("TARGET").unwrap_or_default().contains("aarch64"){
         thunk::thunk();
     }
-
-    tauri_build::build();
 }
