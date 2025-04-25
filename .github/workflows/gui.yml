@@ -191,7 +191,7 @@ jobs:
           fi
 
       - name: Set RUSTFLAGS for i686
-        if: ${{ matrix.GUI_TARGET =~ ^x86_64.*$ || matrix.GUI_TARGET =~ ^i686.*$ }}
+        if: ${{ contains(matrix.GUI_TARGET, 'x86_64') || contains(matrix.GUI_TARGET, 'i686') }}
         run: |
           export RUSTFLAGS=-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\i686\\win7.obj
           echo $RUSTFLAGS >> $GITHUB_ENV
