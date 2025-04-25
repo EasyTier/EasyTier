@@ -289,20 +289,21 @@ impl Compressor for DefaultCompressor {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[tokio::test]
     async fn test_all_compression_algorithms() {
         let algorithms = [
-            CompressorAlgoEx::None,
-            CompressorAlgoEx::Zstd,
-            CompressorAlgoEx::Brotli,
+            CompressorAlgo::None,
+            CompressorAlgo::Zstd,
+            CompressorAlgo::Brotli,
             // CompressorAlgoEx::Lz4,
             // CompressorAlgoEx::Gzip,
-            CompressorAlgoEx::Deflate,
+            CompressorAlgo::Deflate,
             // CompressorAlgoEx::Bzip2,
             // CompressorAlgoEx::Lzma,
             // CompressorAlgoEx::Xz,
-            CompressorAlgoEx::Zlib,
+            CompressorAlgo::Zlib,
         ];
 
         let normal_text = b"12345670000000000000000000";
@@ -370,45 +371,108 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_all_compress_ratio() {
-        let text = b"12345670000000000000000000abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(1000000);
-        let compressor = DefaultCompressor {};
-        let algos = [
-            (CompressorAlgoEx::None, "None", false),
-            (CompressorAlgoEx::Zstd, "Zstd", true),
-            (CompressorAlgoEx::Brotli, "Brotli", true),
-            (CompressorAlgoEx::Lz4, "Lz4", true),
-            (CompressorAlgoEx::Gzip, "Gzip", false),
-            (CompressorAlgoEx::Deflate, "Deflate", false),
-            (CompressorAlgoEx::Bzip2, "Bzip2", true),
-            (CompressorAlgoEx::Lzma, "Lzma", true),
-            (CompressorAlgoEx::Xz, "Xz", false),
-            (CompressorAlgoEx::Zlib, "Zlib", false),
+        // 定义不同类型的测试数据
+        let test_sizes = [
+            ("小数据(100KB)", 100 * 1024),
+            ("中数据(10MB)", 10 * 1024 * 1024),
+            ("大数据(50MB)", 50 * 1024 * 1024),
         ];
-        let levels = [1u16, 3, 5, 7, 9];
-        for (algo, name, has_level) in algos.iter() {
-            if *has_level {
-                for &level in &levels {
+        
+        // 所有压缩算法及其支持的压缩级别
+        let algos = [
+            (CompressorAlgo::None, "None", false),
+            (CompressorAlgo::Zstd, "Zstd", true),
+            (CompressorAlgo::Brotli, "Brotli", true),
+            (CompressorAlgo::Lz4, "Lz4", true),
+            (CompressorAlgo::Gzip, "Gzip", false),
+            (CompressorAlgo::Deflate, "Deflate", false),
+            (CompressorAlgo::Bzip2, "Bzip2", true),
+            (CompressorAlgo::Lzma, "Lzma", true),
+            (CompressorAlgo::Xz, "Xz", false),
+            (CompressorAlgo::Zlib, "Zlib", false),
+        ];
+        
+        let levels = [1i32, 3, 5, 7, 9];
+        let compressor = DefaultCompressor {};
+        
+        // 表头
+        println!("\n======= 压缩算法性能测试报告 =======");
+        println!("算法\t级别\t数据大小\t原始大小\t压缩后大小\t压缩率\t压缩耗时(ms)\t解压耗时(ms)");
+        println!("----------------------------------------------------------------------------------");
+
+        for (size_name, size) in test_sizes {
+            // 生成随机文本数据
+            let text = b"12345670000000000000000000abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".repeat(size / 100);
+            
+            println!("\n--- {} ---", size_name);
+            
+            for (algo, name, has_level) in algos.iter() {
+                if *has_level {
+                    for &level in &levels {
+                        let mut packet = ZCPacket::new_with_payload(&text);
+                        packet.fill_peer_manager_hdr(0, 0, 0);
+                        
+                        // 测量压缩时间
+                        let compress_start = Instant::now();
+                        compressor.compress(&mut packet, *algo, level).await.unwrap();
+                        let compress_time = compress_start.elapsed().as_millis();
+                        
+                        let compressed_len = packet.payload().len();
+                        
+                        // 测量解压时间
+                        let decompress_start: Instant = Instant::now();
+                        compressor.decompress(&mut packet).await.unwrap();
+                        let decompress_time = decompress_start.elapsed().as_millis();
+                        
+                        let decompressed = packet.payload();
+                        assert_eq!(decompressed, &text[..], "数据解压后不一致");
+                        
+                        // 计算压缩率
+                        let ratio = compressed_len as f64 / text.len() as f64 * 100.0;
+                        // let space_saving = 100.0 - ratio;
+                        
+                        // 结果输出
+                        println!(
+                            "{}\t{}\t{}\t{}B\t{}B\t{:.2}%\t{}ms\t{}ms", 
+                            name, level, size_name, text.len(), compressed_len, 
+                            ratio, compress_time, decompress_time
+                        );
+                    }
+                } else {
                     let mut packet = ZCPacket::new_with_payload(&text);
                     packet.fill_peer_manager_hdr(0, 0, 0);
-                    compressor.compress(&mut packet, *algo, level).await.unwrap();
+                    
+                    // 测量压缩时间
+                    let compress_start = Instant::now();
+                    compressor.compress(&mut packet, *algo, 0).await.unwrap();
+                    let compress_time = compress_start.elapsed().as_millis();
+                    
                     let compressed_len = packet.payload().len();
+                    
+                    // 测量解压时间
+                    let decompress_start = Instant::now();
                     compressor.decompress(&mut packet).await.unwrap();
+                    let decompress_time = decompress_start.elapsed().as_millis();
+                    
                     let decompressed = packet.payload();
-                    assert_eq!(decompressed, &text[..]);
-                    let ratio = compressed_len as f64 / text.len() as f64;
-                    println!("{}(level {}) 压缩比: {:.2}% ({} -> {})", name, level, ratio * 100.0, text.len(), compressed_len);
+                    assert_eq!(decompressed, &text[..], "数据解压后不一致");
+                    
+                    // 计算压缩率
+                    let ratio = compressed_len as f64 / text.len() as f64 * 100.0;
+                    // let space_saving = 100.0 - ratio;
+                    
+                    // 结果输出
+                    println!(
+                        "{}\t-\t{}\t{}B\t{}B\t{:.2}%\t{}ms\t{}ms", 
+                        name, size_name, text.len(), compressed_len, 
+                        ratio, compress_time, decompress_time
+                    );
                 }
-            } else {
-                let mut packet = ZCPacket::new_with_payload(&text);
-                packet.fill_peer_manager_hdr(0, 0, 0);
-                compressor.compress(&mut packet, *algo, 0).await.unwrap();
-                let compressed_len = packet.payload().len();
-                compressor.decompress(&mut packet).await.unwrap();
-                let decompressed = packet.payload();
-                assert_eq!(decompressed, &text[..]);
-                let ratio = compressed_len as f64 / text.len() as f64;
-                println!("{} 压缩比: {:.2}% ({} -> {})", name, ratio * 100.0, text.len(), compressed_len);
             }
         }
+        
+        println!("\n======= 测试完成 =======");
+        println!("* 压缩率越低越好，表示压缩效果越好");
+        println!("* 耗时越短越好，表示性能越高");
     }
 }
