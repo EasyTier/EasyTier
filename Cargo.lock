@@ -1969,6 +1969,7 @@ dependencies = [
  "tabled",
  "tachyonix",
  "thiserror 1.0.63",
+ "thunk-rs",
  "time",
  "timedmap",
  "tokio",
@@ -8150,6 +8151,12 @@ dependencies = [
  "cfg-if",
  "once_cell",
 ]
+
+[[package]]
+name = "thunk-rs"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cbc000e786a7ea2cfa3a85ef77cf86bfdadeaa2b215ec4751df66442fa4632a"
 
 [[package]]
 name = "tiff"
