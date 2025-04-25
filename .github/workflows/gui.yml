@@ -190,20 +190,16 @@ jobs:
             cp ./easytier/third_party/*.dll ./easytier-gui/src-tauri/
           fi
 
+      - name: Set RUSTFLAGS for i686
+        run: |
+          if [[ $TARGET =~ ^i686.*$ ]]; then
+            RUSTFLAGS=-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')/easytier/third_party/i686/win7.obj
+            echo $RUSTFLAGS
+          fi
+    
       - name: Build GUI
         if: ${{ matrix.GUI_TARGET != '' }}
         uses: tauri-apps/tauri-action@v0
-        env:
-          RUSTFLAGS: ${
-            {
-              (contains(matrix.TARGET, 'i686') && 
-              format('-Clink-args={0}', 
-                github.workspace
-                  .replace('/d/a/', 'D:\\a\\')
-                  .replace(/\//g, '\\') + '\\easytier\\third_party\\i686\\win7.obj'
-              )) || ''
-            }
-          }
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
