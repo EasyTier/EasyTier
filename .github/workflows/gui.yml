@@ -191,7 +191,7 @@ jobs:
           fi
           if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
             echo RUSTFLAGS="-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\win7.obj" >> $GITHUB_ENV
-          eiif [[ $GUI_TARGET =~ ^i686.*$ ]]; then
+          elif [[ $GUI_TARGET =~ ^i686.*$ ]]; then
             echo RUSTFLAGS="-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\i686\\win7.obj" >> $GITHUB_ENV
           fi
     

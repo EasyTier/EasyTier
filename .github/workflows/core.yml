@@ -176,7 +176,7 @@ jobs:
               SUFFIX=.exe
               if [[ $TARGET =~ ^x86_64.*$ ]]; then
                 export RUSTFLAGS="-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\win7.obj"
-              eifi [[ $TARGET =~ ^i686.*$ ]]; then
+              elfi [[ $TARGET =~ ^i686.*$ ]]; then
                 export RUSTFLAGS="-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\i686\\win7.obj"
               fi
               echo $RUSTFLAGS
