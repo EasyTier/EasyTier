@@ -176,7 +176,7 @@ jobs:
               SUFFIX=.exe
             fi
             if [[ $TARGET =~ ^i686.*$ ]]; then
-              RUSTFLAGS=-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')/easytier/third_party/i686/win7.obj
+              export RUSTFLAGS=-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\i686\\win7.obj
               echo $RUSTFLAGS
             fi
             cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
