@@ -205,6 +205,12 @@ http_req = { git = "https://github.com/EasyTier/http_req.git", default-features 
 hickory-resolver = "0.25.2"
 hickory-proto = "0.25.2"
 
+# for magic dns
+hickory-client = "0.25.2"
+hickory-server = { version = "0.25.2", features = ["resolver"] }
+derive_builder = "0.20.2"
+humantime-serde = "1.1.1"
+
 bounded_join_set = "0.3.0"
 
 jemallocator = { version = "0.5.4", optional = true }
@@ -264,6 +270,7 @@ thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = f
 serial_test = "3.0.0"
 rstest = "0.18.2"
 futures-util = "0.3.30"
+maplit = "1.0.2"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
