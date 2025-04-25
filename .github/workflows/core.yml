@@ -175,7 +175,7 @@ jobs:
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
               if [[ $TARGET =~ ^x86_64.*$ || $TARGET =~ ^i686.*$ ]]; then
-                RUSTFLAGS="-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\i686\\win7.obj"
+                export RUSTFLAGS="-Clink-args=$(echo "$GITHUB_WORKSPACE" | sed 's/\/d\/a\//D:\\a\\/g' | sed 's/\//\\/g')\\easytier\\third_party\\i686\\win7.obj"
                 echo $RUSTFLAGS
               fi
             fi
