@@ -127,12 +127,6 @@ fn check_locale() {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-	// enable thunk-rs when target os is windows and arch is i686
-	#[cfg(target_os = "windows")]
-    if !std::env::var("TARGET").unwrap_or_default().contains("aarch64"){
-        thunk::thunk();
-    }
-
     #[cfg(target_os = "windows")]
     WindowsBuild::check_for_win();
 
