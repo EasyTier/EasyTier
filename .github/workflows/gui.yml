@@ -196,15 +196,14 @@ jobs:
         env:
           RUSTFLAGS: ${
             {
-              (matrix.TARGET =~ '^x86_64.*$' || matrix.TARGET =~ '^i686.*$') 
-              && format('-Clink-args={0}', 
+              (contains(matrix.TARGET, 'i686') && 
+              format('-Clink-args={0}', 
                 github.workspace
                   .replace('/d/a/', 'D:\\a\\')
                   .replace(/\//g, '\\') + '\\easytier\\third_party\\i686\\win7.obj'
-              )
-            || ''
+              )) || ''
+            }
           }
-        }
         with:
           projectPath: ./easytier-gui
           # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
