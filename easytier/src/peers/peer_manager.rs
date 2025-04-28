@@ -40,6 +40,7 @@ use crate::{
             ListGlobalForeignNetworkResponse,
         },
         peer_rpc::{ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey},
+        common::CompressionLevelPb,
     },
     tunnel::{
         self,
@@ -852,7 +853,7 @@ impl PeerManager {
     ) -> Result<(), Error> {
         let compressor = DefaultCompressor {};
         compressor
-            .compress(msg, compress_algo, 0)
+            .compress(msg, compress_algo, CompressionLevelPb::Default.into())
             .await
             .with_context(|| "compress failed")?;
         encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
@@ -1067,7 +1068,7 @@ mod tests {
             route_trait::NextHopPolicy,
             tests::{connect_peer_manager, wait_route_appear, wait_route_appear_with_cost},
         },
-        proto::common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
+        proto::common::{CompressionAlgoPb, CompressionLevelPb, NatType, PeerFeatureFlag},
         tunnel::{common::tests::wait_for_condition, TunnelConnector, TunnelListener},
     };
 
@@ -1212,7 +1213,7 @@ mod tests {
             mock_global_ctx.config.set_flags(Flags {
                 enable_encryption,
                 data_compress_algo: CompressionAlgoPb::Brotli.into(),
-                data_compress_level: 11,
+                data_compress_level: CompressionLevelPb::Default.into(),
                 ..Default::default()
             });
             let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, mock_global_ctx, s));

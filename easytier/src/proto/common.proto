@@ -29,7 +29,7 @@ message FlagsInConfig {
   // allow relay kcp packets (for public server, this can reduce the throughput)
   bool disable_relay_kcp = 20;
   bool proxy_forward_by_system = 21;
-  int32 data_compress_level = 22;
+  CompressionLevelPb data_compress_level = 22;
 }
 
 message RpcDescriptor {
@@ -67,6 +67,12 @@ enum CompressionAlgoPb {
   Lzma = 8;
   Xz = 9;
   Zlib = 10;
+}
+
+enum CompressionLevelPb {
+  Fastest = 0;
+  Default = 1;
+  Best = 2;
 }
 
 message RpcCompressionInfo {

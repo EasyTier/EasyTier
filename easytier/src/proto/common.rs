@@ -234,3 +234,16 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
         }
     }
 }
+
+impl TryFrom<CompressionLevelPb> for async_compression::Level {
+    type Error = anyhow::Error;
+
+    fn try_from(value: CompressionLevelPb) -> Result<Self, Self::Error> {
+        match value {
+            CompressionLevelPb::Default => Ok(async_compression::Level::Default),
+            CompressionLevelPb::Fastest => Ok(async_compression::Level::Fastest),
+            CompressionLevelPb::Best => Ok(async_compression::Level::Best),
+            // CompressionLevelPb::Precise(level) => Ok(async_compression::Level::Precise(level)),
+        }
+    }
+}

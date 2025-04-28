@@ -139,23 +139,15 @@ core_clap:
     zh-CN: "要使用的压缩算法，支持 none、zstd、brotli、lz4、gzip、deflate、bzip2、lzma、xz、zlib。默认为 none"
   compression_level:
     en: |
-      Compression level to use. Default is 0=Best.
-      - zstd: 0-22 (default 3)
-      - brotli: 0-11 (default 11)
-      - bzip2: 0-9 (default 9)
-      - deflate/gzip/zlib: 0
-      - lzma/xz: 0-9 (default 5)
-      - lz4: 0-12 (default 12)
-      Some algorithms may ignore this value.
+      Select the compression level. The default is "default".
+      - fastest: Highest speed
+      - default: Balanced
+      - best: Best compression ratio
     zh-CN: |
-      要使用的压缩级别。默认为0=最佳。
-      - zstd：0-22（默认3）
-      - brotli：0-11（默认11）
-      - bzip2：0-9（默认9）
-      - deflate/gzip/zlib：0
-      - lzma/xz：0-9（默认5）
-      - lz4：0-12（默认12）
-      部分算法可能会忽略该值。
+      要使用的压缩级别。默认为default
+      - fastest: 速度最快
+      - default: 默认均衡
+      - best: 体积最佳
   mapped_listeners:
     en: "manually specify the public address of the listener, other nodes can use this address to connect to this node. e.g.: tcp://123.123.123.123:11223, can specify multiple."
     zh-CN: "手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。例如：tcp://123.123.123.123:11223，可以指定多个。"
