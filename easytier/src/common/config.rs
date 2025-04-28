@@ -8,7 +8,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    proto::common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
+    proto::common::{CompressionAlgoPb, CompressionLevelPb, PortForwardConfigPb, SocketType},
     tunnel::generate_digest_from_str,
 };
 
@@ -32,7 +32,7 @@ pub fn gen_default_flags() -> Flags {
         disable_udp_hole_punching: false,
         multi_thread: true,
         data_compress_algo: CompressionAlgoPb::None.into(),
-        data_compress_level: 0,
+        data_compress_level: CompressionLevelPb::Default.into(),
         bind_device: true,
         enable_kcp_proxy: false,
         disable_kcp_input: false,

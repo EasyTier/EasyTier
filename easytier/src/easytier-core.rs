@@ -28,7 +28,7 @@ use easytier::{
     launcher,
     proto::{
         self,
-        common::{CompressionAlgoPb, NatType},
+        common::{CompressionAlgoPb, CompressionLevelPb, NatType},
     },
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
@@ -417,8 +417,9 @@ struct Cli {
         long,
         env = "ET_COMPRESSION_LEVEL",
         help = t!("core_clap.compression_level").to_string(),
+        default_value = "Default"
     )]
-    compression_level: Option<i32>,
+    compression_level: Option<String>,
 
     #[arg(
         long,
@@ -774,7 +775,18 @@ impl TryFrom<&Cli> for TomlConfigLoader {
                 ),
             }
             .into();
-            f.data_compress_level = cli.compression_level.unwrap_or(f.data_compress_level);
+            if let Some(compression_level) = &cli.compression_level {
+                f.data_compress_level = match compression_level.as_str() {
+                    "fastest" => CompressionLevelPb::Fastest,
+                    "default" => CompressionLevelPb::Default,
+                    "best" => CompressionLevelPb::Best,
+                    _ => panic!(
+                        "unknown compression level: {}, supported: fastest, default, best",
+                        compression_level
+                    ),
+                }
+                .into();
+            }
         }
         f.bind_device = cli.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = cli.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);

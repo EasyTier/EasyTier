@@ -22,7 +22,7 @@ use tokio::io::AsyncWriteExt;
 use zerocopy::{AsBytes as _, FromBytes as _};
 
 use crate::tunnel::packet_def::{CompressorAlgo, CompressorTail, ZCPacket, COMPRESSOR_TAIL_SIZE};
-
+use crate::proto::common::CompressionLevelPb;
 type Error = anyhow::Error;
 
 #[async_trait::async_trait]
@@ -31,7 +31,7 @@ pub trait Compressor {
         &self,
         packet: &mut ZCPacket,
         compress_algo: CompressorAlgo,
-        compress_level: i32,
+        compress_level: CompressionLevelPb,
     ) -> Result<(), Error>;
     async fn decompress(&self, packet: &mut ZCPacket) -> Result<(), Error>;
 }
@@ -47,29 +47,26 @@ impl DefaultCompressor {
         &self,
         data: &[u8],
         compress_algo: CompressorAlgo,
-        compress_level: i32,
+        compress_level: CompressionLevelPb,
     ) -> Result<Vec<u8>, Error> {
         let buf = match compress_algo {
             #[cfg(feature = "zstd")]
             CompressorAlgo::Zstd => {
-                let quality = if compress_level == 0 { 3 } else { compress_level };
-                let mut o = ZstdEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
+                let mut o = ZstdEncoder::with_quality(Vec::new(), compress_level.try_into().unwrap());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
             #[cfg(feature = "brotli")]
             CompressorAlgo::Brotli => {
-                let quality = if compress_level == 0 { 11 } else { compress_level };
-                let mut o = BrotliEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
+                let mut o = BrotliEncoder::with_quality(Vec::new(), compress_level.try_into().unwrap());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
             #[cfg(feature = "lz4")]
             CompressorAlgo::Lz4 => {
-                let quality = if compress_level == 0 { 12 } else { compress_level };
-                let mut o = Lz4Encoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
+                let mut o = Lz4Encoder::with_quality(Vec::new(), compress_level.try_into().unwrap());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
@@ -90,16 +87,14 @@ impl DefaultCompressor {
             }
             #[cfg(feature = "bzip2")]
             CompressorAlgo::Bzip2 => {
-                let quality = if compress_level == 0 { 9 } else { compress_level };
-                let mut o = BzEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
+                let mut o = BzEncoder::with_quality(Vec::new(), compress_level.try_into().unwrap());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
             }
             #[cfg(feature = "lzma")]
             CompressorAlgo::Lzma => {
-                let quality = if compress_level == 0 { 9 } else { compress_level };
-                let mut o = LzmaEncoder::with_quality(Vec::new(), async_compression::Level::Precise(quality));
+                let mut o = LzmaEncoder::with_quality(Vec::new(), compress_level.try_into().unwrap());
                 o.write_all(data).await?;
                 o.shutdown().await?;
                 o.into_inner()
@@ -208,7 +203,7 @@ impl Compressor for DefaultCompressor {
         &self,
         zc_packet: &mut ZCPacket,
         compress_algo: CompressorAlgo,
-        compress_level: i32,
+        compress_level: CompressionLevelPb,
     ) -> Result<(), Error> {
         if compress_algo.is_none() {
             return Ok(());
@@ -221,7 +216,7 @@ impl Compressor for DefaultCompressor {
 
         let tail = CompressorTail::new(compress_algo);
         let buf = self
-            .compress_raw(zc_packet.payload(), compress_algo, compress_level)
+            .compress_raw(zc_packet.payload(), compress_algo, compress_level.try_into().unwrap())
             .await?;
 
         if buf.len() + COMPRESSOR_TAIL_SIZE > pm_header.len.get() as usize {
@@ -317,7 +312,7 @@ pub mod tests {
             let mut packet = ZCPacket::new_with_payload(normal_text);
             packet.fill_peer_manager_hdr(0, 0, 0);
             
-            compressor.compress(&mut packet, algo, 0).await.unwrap();
+            compressor.compress(&mut packet, algo, CompressionLevelPb::Default).await.unwrap();
             
             let expected_compressed = !algo.is_none();
             assert_eq!(
@@ -346,7 +341,7 @@ pub mod tests {
             let mut packet = ZCPacket::new_with_payload(short_text);
             packet.fill_peer_manager_hdr(0, 0, 0);
             
-            compressor.compress(&mut packet, algo, 0).await.unwrap();
+            compressor.compress(&mut packet, algo, CompressionLevelPb::Default).await.unwrap();
             
             assert_eq!(
                 packet.peer_manager_header().unwrap().is_compressed(), false,
@@ -392,7 +387,11 @@ pub mod tests {
             (CompressorAlgo::Zlib, "Zlib", false),
         ];
         
-        let levels = [1i32, 3, 5, 7, 9];
+        let levels = [
+            CompressionLevelPb::Fastest,
+            CompressionLevelPb::Default,
+            CompressionLevelPb::Best,
+        ];
         let compressor = DefaultCompressor {};
         
         // 表头
@@ -433,7 +432,7 @@ pub mod tests {
                         
                         // 结果输出
                         println!(
-                            "{}\t{}\t{}\t{}B\t{}B\t{:.2}%\t{}ms\t{}ms", 
+                            "{}\t{:?}\t{}\t{}B\t{}B\t{:.2}%\t{}ms\t{}ms", 
                             name, level, size_name, text.len(), compressed_len, 
                             ratio, compress_time, decompress_time
                         );
@@ -444,7 +443,7 @@ pub mod tests {
                     
                     // 测量压缩时间
                     let compress_start = Instant::now();
-                    compressor.compress(&mut packet, *algo, 0).await.unwrap();
+                    compressor.compress(&mut packet, *algo, CompressionLevelPb::Default).await.unwrap();
                     let compress_time = compress_start.elapsed().as_millis();
                     
                     let compressed_len = packet.payload().len();
