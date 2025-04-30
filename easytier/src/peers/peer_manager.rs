@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     net::Ipv4Addr,
     sync::{Arc, Weak},
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use anyhow::Context;
@@ -734,6 +734,10 @@ impl PeerManager {
 
     pub async fn list_routes(&self) -> Vec<cli::Route> {
         self.get_route().list_routes().await
+    }
+
+    pub async fn get_route_peer_info_last_update_time(&self) -> Instant {
+        self.get_route().get_peer_info_last_update_time().await
     }
 
     pub async fn dump_route(&self) -> String {
