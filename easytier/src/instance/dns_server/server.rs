@@ -1,11 +1,11 @@
-use anyhow::Result;
-use hickory_proto::op::{Edns, MessageType};
+use anyhow::{Context, Result};
+use hickory_proto::op::Edns;
 use hickory_proto::rr;
 use hickory_proto::rr::LowerName;
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
 use hickory_resolver::system_conf::read_system_conf;
-use hickory_server::authority::{AuthorityObject, Catalog, UpdateRequest, ZoneType};
+use hickory_server::authority::{AuthorityObject, Catalog, ZoneType};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use hickory_server::store::forwarder::ForwardConfig;
 use hickory_server::store::{forwarder::ForwardAuthority, in_memory::InMemoryAuthority};
@@ -19,9 +19,7 @@ use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::common::stun::get_default_resolver_config;
 
-use super::config::{GeneralConfig, RunConfig};
-
-static ET_DNS_ZONE: &str = "et.net.";
+use super::config::{GeneralConfig, Record, RunConfig};
 
 pub struct Server {
     server: ServerFuture<CatalogRequestHandler>,
@@ -46,25 +44,6 @@ impl CatalogRequestHandler {
 
         Self { catalog }
     }
-
-    fn is_et_zone_query(&self, request: &Request) -> bool {
-        if request.message_type() != MessageType::Query {
-            return false;
-        }
-
-        let Ok(zone) = request.zone() else {
-            return false;
-        };
-
-        if !zone
-            .name()
-            .zone_of(&LowerName::from_str(ET_DNS_ZONE).unwrap())
-        {
-            return false;
-        }
-
-        true
-    }
 }
 
 #[async_trait::async_trait]
@@ -82,6 +61,16 @@ impl RequestHandler for CatalogRequestHandler {
     }
 }
 
+pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAuthority> {
+    let zone = rr::Name::from_str(domain)?;
+    let mut authority = InMemoryAuthority::empty(zone.clone(), ZoneType::Primary, false);
+    for record in records.iter() {
+        let r = record.try_into()?;
+        authority.upsert_mut(r, 0);
+    }
+    Ok(authority)
+}
+
 impl Server {
     pub fn new(config: RunConfig) -> Self {
         Self::try_new(config).unwrap()
@@ -91,12 +80,8 @@ impl Server {
         let mut catalog = Catalog::new();
         for (domain, records) in config.zones().iter() {
             let zone = rr::Name::from_str(domain.as_str())?;
-            let mut authorities = InMemoryAuthority::empty(zone.clone(), ZoneType::Primary, false);
-            for record in records.iter() {
-                let r = record.try_into()?;
-                authorities.upsert_mut(r, 0);
-            }
-            catalog.upsert(zone.clone().into(), vec![Arc::new(authorities)]);
+            let authroty = build_authority(domain, records)?;
+            catalog.upsert(zone.clone().into(), vec![Arc::new(authroty)]);
         }
 
         // use forwarder authority for the root zone
@@ -138,11 +123,53 @@ impl Server {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        if let Some(address) = self.general_config.listen_udp() {
-            let socket = UdpSocket::bind(address).await?;
-            self.udp_local_addr = Some(socket.local_addr()?);
-            self.server.register_socket(socket);
-        }
+        let Some(address) = self.general_config.listen_udp() else {
+            return Ok(());
+        };
+        let bind_addr = SocketAddr::from_str(address)
+            .with_context(|| format!("DNS Server failed to parse address {}", address))?;
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )
+        .with_context(|| {
+            format!(
+                "DNS Server failed to create UDP socket for address {}",
+                address.to_string()
+            )
+        })?;
+        socket2::SockRef::from(&socket)
+            .set_reuse_address(true)
+            .with_context(|| {
+                format!(
+                    "DNS Server failed to set reuse address on socket {}",
+                    address.to_string()
+                )
+            })?;
+        socket2::SockRef::from(&socket)
+            .set_reuse_port(true)
+            .with_context(|| {
+                format!(
+                    "DNS Server failed to set reuse port on socket {}",
+                    address.to_string()
+                )
+            })?;
+        socket.bind(&bind_addr.into()).with_context(|| {
+            format!("DNS Server failed to bind socket to address {}", bind_addr)
+        })?;
+        socket
+            .set_nonblocking(true)
+            .with_context(|| format!("DNS Server failed to set socket to non-blocking"))?;
+        let socket = UdpSocket::from_std(socket.into()).with_context(|| {
+            format!(
+                "DNS Server failed to convert socket to UdpSocket for address {}",
+                address.to_string()
+            )
+        })?;
+        self.udp_local_addr = Some(socket.local_addr()?);
+        self.server.register_socket(socket);
+
         Ok(())
     }
 
@@ -151,11 +178,8 @@ impl Server {
         Ok(())
     }
 
-    pub async fn upsert(&self, name: LowerName, authority: Box<dyn AuthorityObject>) {
-        self.catalog
-            .write()
-            .await
-            .upsert(name, vec![authority.into()]);
+    pub async fn upsert(&self, name: LowerName, authority: Arc<dyn AuthorityObject>) {
+        self.catalog.write().await.upsert(name, vec![authority]);
     }
 
     pub async fn remove(&self, name: &LowerName) -> Option<Vec<Arc<dyn AuthorityObject>>> {
