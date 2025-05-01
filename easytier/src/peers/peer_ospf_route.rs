@@ -1030,6 +1030,8 @@ struct PeerRouteServiceImpl {
     cached_local_conn_map: std::sync::Mutex<RouteConnBitmap>,
 
     last_update_my_foreign_network: AtomicCell<Option<std::time::Instant>>,
+
+    peer_info_last_update: AtomicCell<std::time::Instant>,
 }
 
 impl Debug for PeerRouteServiceImpl {
@@ -1076,6 +1078,8 @@ impl PeerRouteServiceImpl {
             cached_local_conn_map: std::sync::Mutex::new(RouteConnBitmap::new()),
 
             last_update_my_foreign_network: AtomicCell::new(None),
+
+            peer_info_last_update: AtomicCell::new(std::time::Instant::now()),
         }
     }
 
@@ -1225,6 +1229,8 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_route_table_and_cached_local_conn_bitmap(&self) {
+        self.update_peer_info_last_update();
+
         // update route table first because we want to filter out unreachable peers.
         self.update_route_table();
 
@@ -1346,6 +1352,9 @@ impl PeerRouteServiceImpl {
         let my_foreign_network_updated = self.update_my_foreign_network().await;
         if my_conn_info_updated || my_peer_info_updated {
             self.update_foreign_network_owner_map();
+        }
+        if my_peer_info_updated {
+            self.update_peer_info_last_update();
         }
         my_peer_info_updated || my_conn_info_updated || my_foreign_network_updated
     }
@@ -1546,6 +1555,14 @@ impl PeerRouteServiceImpl {
             }
         }
         return false;
+    }
+
+    fn update_peer_info_last_update(&self) {
+        self.peer_info_last_update.store(std::time::Instant::now());
+    }
+
+    fn get_peer_info_last_update(&self) -> std::time::Instant {
+        self.peer_info_last_update.load()
     }
 }
 
@@ -2194,6 +2211,10 @@ impl Route for PeerRoute {
             .peer_infos
             .get(&peer_id)
             .and_then(|x| x.feature_flag.clone())
+    }
+
+    async fn get_peer_info_last_update_time(&self) -> Instant {
+        self.service_impl.get_peer_info_last_update()
     }
 }
 
