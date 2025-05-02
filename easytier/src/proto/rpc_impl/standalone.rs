@@ -9,6 +9,7 @@ use tokio::task::JoinSet;
 use crate::{
     common::join_joinset_background,
     proto::{
+        common::TunnelInfo,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{__rt::RpcClientFactory, error::Error},
     },
@@ -17,11 +18,22 @@ use crate::{
 
 use super::service_registry::ServiceRegistry;
 
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(Arc, Box)]
+pub trait RpcServerHook: Send + Sync {
+    async fn on_new_client(&self, tunnel_info: Option<TunnelInfo>) {}
+    async fn on_client_disconnected(&self, tunnel_info: Option<TunnelInfo>) {}
+}
+
+struct DefaultHook;
+impl RpcServerHook for DefaultHook {}
+
 pub struct StandAloneServer<L> {
     registry: Arc<ServiceRegistry>,
     listener: Option<L>,
     inflight_server: Arc<AtomicU32>,
     tasks: Arc<Mutex<JoinSet<()>>>,
+    hook: Option<Arc<dyn RpcServerHook>>,
 }
 
 impl<L: TunnelListener + 'static> StandAloneServer<L> {
@@ -31,7 +43,13 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
             listener: Some(listener),
             inflight_server: Arc::new(AtomicU32::new(0)),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
+
+            hook: None,
         }
+    }
+
+    pub fn set_hook(&mut self, hook: Arc<dyn RpcServerHook>) {
+        self.hook = Some(hook);
     }
 
     pub fn registry(&self) -> &ServiceRegistry {
@@ -43,16 +61,17 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
         inflight: Arc<AtomicU32>,
         registry: Arc<ServiceRegistry>,
         tasks: Arc<Mutex<JoinSet<()>>>,
+        hook: Arc<dyn RpcServerHook>,
     ) -> Result<(), Error> {
-        listener
-            .listen()
-            .await
-            .with_context(|| "failed to listen")?;
-
         loop {
             let tunnel = listener.accept().await?;
+            let tunnel_info = tunnel.info();
             let registry = registry.clone();
             let inflight_server = inflight.clone();
+            let hook = hook.clone();
+
+            hook.on_new_client(tunnel_info.clone()).await;
+
             inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tasks.lock().unwrap().spawn(async move {
                 let server =
@@ -60,6 +79,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
                 server.rpc_server().registry().replace_registry(&registry);
                 server.run_with_tunnel(tunnel);
                 server.wait().await;
+                hook.on_client_disconnected(tunnel_info.clone()).await;
                 inflight_server.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             });
         }
@@ -68,6 +88,13 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
     pub async fn serve(&mut self) -> Result<(), Error> {
         let tasks = self.tasks.clone();
         let mut listener = self.listener.take().unwrap();
+        let hook = self.hook.take().unwrap_or_else(|| Arc::new(DefaultHook));
+
+        listener
+            .listen()
+            .await
+            .with_context(|| "failed to listen")?;
+
         let registry = self.registry.clone();
 
         join_joinset_background(tasks.clone(), "standalone server tasks".to_string());
@@ -81,6 +108,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
                     inflight_server.clone(),
                     registry.clone(),
                     tasks.clone(),
+                    hook.clone(),
                 )
                 .await;
                 if let Err(e) = ret {
@@ -145,5 +173,11 @@ impl<C: TunnelConnector> StandAloneClient<C> {
             .unwrap()
             .rpc_client()
             .scoped_client::<F>(1, 1, domain_name))
+    }
+
+    pub async fn wait(&mut self) {
+        if let Some(client) = self.client.take() {
+            client.wait().await;
+        }
     }
 }

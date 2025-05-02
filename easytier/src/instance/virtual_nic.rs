@@ -556,6 +556,11 @@ impl NicCtx {
         }
     }
 
+    pub async fn ifname(&self) -> Option<String> {
+        let nic = self.nic.lock().await;
+        nic.ifname.as_ref().map(|s| s.to_owned())
+    }
+
     async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
         let nic = self.nic.lock().await;
         nic.link_up().await?;

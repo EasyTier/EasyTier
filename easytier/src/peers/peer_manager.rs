@@ -771,6 +771,16 @@ impl PeerManager {
         }
     }
 
+    pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
+        let mut pipelines = self.nic_packet_process_pipeline.write().await;
+        if let Some(pos) = pipelines.iter().position(|x| x.id() == id) {
+            pipelines.remove(pos);
+            Ok(())
+        } else {
+            Err(Error::NotFound)
+        }
+    }
+
     fn get_next_hop_policy(is_first_latency: bool) -> NextHopPolicy {
         if is_first_latency {
             NextHopPolicy::LeastCost
