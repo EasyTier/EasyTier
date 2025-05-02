@@ -857,7 +857,7 @@ impl PeerManager {
     ) -> Result<(), Error> {
         let compressor = DefaultCompressor {};
         compressor
-            .compress(msg, compress_algo, CompressionLevelPb::Default.into())
+            .compress(msg, compress_algo, CompressionLevelPb::Default.try_into().unwrap())
             .await
             .with_context(|| "compress failed")?;
         encryptor.encrypt(msg).with_context(|| "encrypt failed")?;

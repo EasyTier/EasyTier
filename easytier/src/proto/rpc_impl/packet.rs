@@ -21,7 +21,7 @@ pub async fn compress_packet(
     let algo = accepted_compression_algo
         .try_into()
         .unwrap_or(CompressorAlgo::None);
-    let compressed = compressor.compress_raw(&content, algo, CompressionLevelPb::Default.into()).await?;
+    let compressed = compressor.compress_raw(&content, algo, CompressionLevelPb::Default.try_into().unwrap()).await?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {
