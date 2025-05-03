@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::AtomicU32, Arc, Mutex},
+    sync::{atomic::AtomicU32, Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -21,8 +21,8 @@ use super::service_registry::ServiceRegistry;
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc, Box)]
 pub trait RpcServerHook: Send + Sync {
-    async fn on_new_client(&self, tunnel_info: Option<TunnelInfo>) {}
-    async fn on_client_disconnected(&self, tunnel_info: Option<TunnelInfo>) {}
+    async fn on_new_client(&self, _tunnel_info: Option<TunnelInfo>) {}
+    async fn on_client_disconnected(&self, _tunnel_info: Option<TunnelInfo>) {}
 }
 
 struct DefaultHook;
@@ -32,7 +32,7 @@ pub struct StandAloneServer<L> {
     registry: Arc<ServiceRegistry>,
     listener: Option<L>,
     inflight_server: Arc<AtomicU32>,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: JoinSet<()>,
     hook: Option<Arc<dyn RpcServerHook>>,
 }
 
@@ -42,7 +42,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
             registry: Arc::new(ServiceRegistry::new()),
             listener: Some(listener),
             inflight_server: Arc::new(AtomicU32::new(0)),
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: JoinSet::new(),
 
             hook: None,
         }
@@ -60,9 +60,11 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
         listener: &mut L,
         inflight: Arc<AtomicU32>,
         registry: Arc<ServiceRegistry>,
-        tasks: Arc<Mutex<JoinSet<()>>>,
         hook: Arc<dyn RpcServerHook>,
     ) -> Result<(), Error> {
+        let tasks = Arc::new(Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone(), "standalone serve_loop".to_string());
+
         loop {
             let tunnel = listener.accept().await?;
             let tunnel_info = tunnel.info();
@@ -86,7 +88,6 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
     }
 
     pub async fn serve(&mut self) -> Result<(), Error> {
-        let tasks = self.tasks.clone();
         let mut listener = self.listener.take().unwrap();
         let hook = self.hook.take().unwrap_or_else(|| Arc::new(DefaultHook));
 
@@ -97,17 +98,14 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
 
         let registry = self.registry.clone();
 
-        join_joinset_background(tasks.clone(), "standalone server tasks".to_string());
-
         let inflight_server = self.inflight_server.clone();
 
-        self.tasks.lock().unwrap().spawn(async move {
+        self.tasks.spawn(async move {
             loop {
                 let ret = Self::serve_loop(
                     &mut listener,
                     inflight_server.clone(),
                     registry.clone(),
-                    tasks.clone(),
                     hook.clone(),
                 )
                 .await;
@@ -179,5 +177,29 @@ impl<C: TunnelConnector> StandAloneClient<C> {
         if let Some(client) = self.client.take() {
             client.wait().await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        proto::rpc_impl::standalone::StandAloneServer,
+        tunnel::{
+            tcp::{TcpTunnelConnector, TcpTunnelListener},
+            TunnelConnector as _,
+        },
+    };
+
+    #[tokio::test]
+    async fn standalone_exit_on_drop() {
+        let addr: url::Url = "tcp://0.0.0.0:53884".parse().unwrap();
+        let tunnel = TcpTunnelListener::new(addr.clone());
+        let mut server = StandAloneServer::new(tunnel);
+        server.serve().await.unwrap();
+        drop(server);
+
+        // tcp should closed
+        let mut connector = TcpTunnelConnector::new(addr);
+        connector.connect().await.unwrap_err();
     }
 }

@@ -1974,6 +1974,7 @@ dependencies = [
  "machine-uid",
  "maplit",
  "mimalloc-rust",
+ "multimap",
  "netlink-packet-core",
  "netlink-packet-route 0.21.0",
  "netlink-packet-utils",
@@ -4405,6 +4406,9 @@ name = "multimap"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "defc4c55412d89136f966bbb339008b474350e5e6e78d2714439c386b3137a03"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "nalgebra"

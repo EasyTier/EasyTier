@@ -32,7 +32,7 @@ use super::{server::PeerCenterServer, Digest, Error};
 
 struct PeerCenterBase {
     peer_mgr: Arc<PeerManager>,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
     lock: Arc<Mutex<()>>,
 }
 
@@ -139,7 +139,7 @@ impl PeerCenterBase {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         PeerCenterBase {
             peer_mgr,
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
             lock: Arc::new(Mutex::new(())),
         }
     }

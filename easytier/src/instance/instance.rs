@@ -130,8 +130,6 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
-    magic_dns_server: Arc<DnsRunner>,
-
     rpc_server: Option<StandAloneServer<TcpTunnelListener>>,
 
     global_ctx: ArcGlobalCtx,
@@ -182,8 +180,6 @@ impl Instance {
         #[cfg(feature = "socks5")]
         let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
-        let magic_dns_server = Arc::new(DnsRunner::new(peer_manager.clone(), None));
-
         let rpc_server = global_ctx.config.get_rpc_portal().and_then(|s| {
             Some(StandAloneServer::new(TcpTunnelListener::new(
                 format!("tcp://{}", s).parse().unwrap(),
@@ -213,8 +209,6 @@ impl Instance {
 
             #[cfg(feature = "socks5")]
             socks5_server,
-
-            magic_dns_server,
 
             rpc_server,
 
@@ -431,8 +425,6 @@ impl Instance {
                     .map(|x| Arc::downgrade(&x.get_kcp_endpoint())),
             )
             .await?;
-
-        self.magic_dns_server.run().await?;
 
         self.run_rpc_server().await?;
 

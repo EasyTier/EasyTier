@@ -1,10 +1,14 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use tokio::task::JoinSet;
 
 use crate::{
     peers::peer_manager::PeerManager,
     proto::{
+        cli::Route,
         magic_dns::{
             HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,
             UpdateDnsRecordRequest,
@@ -17,21 +21,21 @@ use crate::{
 
 use super::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_INSTANCE_ADDR};
 
-pub struct MagicDnsServerInstanceData {
+pub struct MagicDnsClientInstance {
     rpc_client: StandAloneClient<TcpTunnelConnector>,
     rpc_stub: Option<Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>>,
     peer_mgr: Arc<PeerManager>,
     tasks: JoinSet<()>,
 }
 
-impl MagicDnsServerInstanceData {
+impl MagicDnsClientInstance {
     pub async fn new(peer_mgr: Arc<PeerManager>) -> Result<Self, anyhow::Error> {
         let tcp_connector = TcpTunnelConnector::new(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
         let mut rpc_client = StandAloneClient::new(tcp_connector);
         let rpc_stub = rpc_client
             .scoped_client::<MagicDnsServerRpcClientFactory<BaseController>>("".to_string())
             .await?;
-        Ok(MagicDnsServerInstanceData {
+        Ok(MagicDnsClientInstance {
             rpc_client,
             rpc_stub: Some(rpc_stub),
             peer_mgr,
@@ -43,22 +47,33 @@ impl MagicDnsServerInstanceData {
         peer_mgr: Arc<PeerManager>,
         rpc_stub: Box<dyn MagicDnsServerRpc<Controller = BaseController> + Send>,
     ) -> Result<(), anyhow::Error> {
-        let mut prev_last_update = peer_mgr.get_route_peer_info_last_update_time().await;
+        let mut prev_last_update = None;
         rpc_stub
             .handshake(BaseController::default(), HandshakeRequest::default())
             .await?;
         loop {
             let last_update = peer_mgr.get_route_peer_info_last_update_time().await;
-            if last_update == prev_last_update {
+            if Some(last_update) == prev_last_update {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
-            prev_last_update = last_update;
-            let routes = peer_mgr.list_routes().await;
+            prev_last_update = Some(last_update);
+            let mut routes = peer_mgr.list_routes().await;
+            // add self as a route
+            let ctx = peer_mgr.get_global_ctx();
+            routes.push(Route {
+                hostname: ctx.get_hostname(),
+                ipv4_addr: ctx.get_ipv4().map(Into::into),
+                ..Default::default()
+            });
             let req = UpdateDnsRecordRequest {
                 routes,
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
             };
+            tracing::debug!(
+                "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
+                req
+            );
             rpc_stub
                 .update_dns_record(BaseController::default(), req)
                 .await?;

@@ -7,6 +7,7 @@
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
 use std::{
+    collections::BTreeMap,
     net::Ipv4Addr,
     str::FromStr,
     sync::{Arc, Mutex},
@@ -15,7 +16,9 @@ use std::{
 
 use anyhow::Context;
 use cidr::Ipv4Inet;
+use dashmap::DashMap;
 use hickory_proto::rr::LowerName;
+use multimap::MultiMap;
 use pnet::packet::{
     icmp::{self, IcmpTypes, MutableIcmpPacket},
     ip::IpNextHeaderProtocols,
@@ -40,11 +43,12 @@ use crate::{
         cli::Route,
         common::{TunnelInfo, Void},
         magic_dns::{
-            GetDnsRecordResponse, HandshakeRequest, HandshakeResponse, MagicDnsServerRpc,
-            UpdateDnsRecordRequest,
+            dns_record::{self},
+            DnsRecord, DnsRecordA, DnsRecordList, GetDnsRecordResponse, HandshakeRequest,
+            HandshakeResponse, MagicDnsServerRpc, MagicDnsServerRpcServer, UpdateDnsRecordRequest,
         },
         rpc_impl::standalone::{RpcServerHook, StandAloneServer},
-        rpc_types::controller::BaseController,
+        rpc_types::controller::{BaseController, Controller},
     },
     tunnel::{packet_def::ZCPacket, tcp::TcpTunnelListener},
 };
@@ -52,24 +56,26 @@ use crate::{
 use super::{
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
-    DEFAULT_ET_DNS_ZONE, MAGIC_DNS_INSTANCE_ADDR,
+    MAGIC_DNS_INSTANCE_ADDR,
 };
 
 static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
 pub(super) struct MagicDnsServerInstanceData {
-    et_zone: String,
     dns_server: Server,
     tun_dev: String,
     tun_ip: Ipv4Addr,
     fake_ip: Ipv4Addr,
     my_peer_id: PeerId,
+
+    // zone -> (tunnel remote addr -> route)
+    route_infos: DashMap<String, MultiMap<url::Url, Route>>,
 }
 
 impl MagicDnsServerInstanceData {
-    pub async fn update_dns_records(
+    pub async fn update_dns_records<'a, T: Iterator<Item = &'a Route>>(
         &self,
-        routes: &[Route],
+        routes: T,
         zone: &str,
     ) -> Result<(), anyhow::Error> {
         let mut records: Vec<Record> = vec![];
@@ -117,6 +123,16 @@ impl MagicDnsServerInstanceData {
 
         Ok(())
     }
+
+    pub async fn update(&self) {
+        for item in self.route_infos.iter() {
+            let zone = item.key();
+            let route_iter = item.value().iter().map(|x| x.1);
+            if let Err(e) = self.update_dns_records(route_iter, zone).await {
+                tracing::error!("Failed to update DNS records for zone {}: {:?}", zone, e);
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -135,16 +151,44 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         ctrl: Self::Controller,
         input: UpdateDnsRecordRequest,
     ) -> crate::proto::rpc_types::error::Result<Void> {
-        self.update_dns_records(&input.routes, &input.zone).await?;
+        let Some(tunnel_info) = ctrl.get_tunnel_info() else {
+            return Err(anyhow::anyhow!("No tunnel info").into());
+        };
+        let Some(remote_addr) = &tunnel_info.remote_addr else {
+            return Err(anyhow::anyhow!("No remote addr").into());
+        };
+        let zone = input.zone.clone();
+        self.route_infos
+            .entry(zone.clone())
+            .or_default()
+            .insert_many(remote_addr.clone().into(), input.routes);
+
+        self.update().await;
         Ok(Default::default())
     }
 
     async fn get_dns_record(
         &self,
-        ctrl: Self::Controller,
-        input: Void,
+        _ctrl: Self::Controller,
+        _input: Void,
     ) -> crate::proto::rpc_types::error::Result<GetDnsRecordResponse> {
-        Ok(Default::default())
+        let mut ret = BTreeMap::new();
+        for item in self.route_infos.iter() {
+            let zone = item.key();
+            let routes = item.value();
+            let mut dns_records = DnsRecordList::default();
+            for route in routes.iter().map(|x| x.1) {
+                dns_records.records.push(DnsRecord {
+                    record: Some(dns_record::Record::A(DnsRecordA {
+                        name: format!("{}.{}", route.hostname, zone),
+                        value: route.ipv4_addr.unwrap_or_default().address,
+                        ttl: 1,
+                    })),
+                });
+            }
+            ret.insert(zone.clone(), dns_records);
+        }
+        Ok(GetDnsRecordResponse { records: ret })
     }
 }
 
@@ -244,6 +288,18 @@ impl RpcServerHook for MagicDnsServerInstanceData {
 
     async fn on_client_disconnected(&self, tunnel_info: Option<TunnelInfo>) {
         println!("Client disconnected: {:?}", tunnel_info);
+        let Some(tunnel_info) = tunnel_info else {
+            return;
+        };
+        let Some(remote_addr) = tunnel_info.remote_addr else {
+            return;
+        };
+        let remote_addr = remote_addr.into();
+        for mut item in self.route_infos.iter_mut() {
+            item.value_mut().remove(&remote_addr);
+        }
+        self.route_infos.retain(|_, v| !v.is_empty());
+        self.update().await;
     }
 }
 
@@ -252,7 +308,7 @@ pub struct MagicDnsServerInstance {
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     peer_mgr: Arc<PeerManager>,
     tun_inet: Ipv4Inet,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
 }
 
 impl MagicDnsServerInstance {
@@ -274,6 +330,7 @@ impl MagicDnsServerInstance {
                     .build()
                     .unwrap(),
             )
+            .excluded_forward_nameservers(vec![fake_ip.into()])
             .build()
             .unwrap();
         let mut dns_server = Server::new(dns_config);
@@ -285,13 +342,16 @@ impl MagicDnsServerInstance {
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
-            et_zone: DEFAULT_ET_DNS_ZONE.to_string(),
             dns_server,
             tun_dev,
             tun_ip: tun_inet.address(),
             fake_ip,
             my_peer_id: peer_mgr.my_peer_id(),
+            route_infos: DashMap::new(),
         });
+        rpc_server
+            .registry()
+            .register(MagicDnsServerRpcServer::new(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
         peer_mgr
@@ -303,7 +363,7 @@ impl MagicDnsServerInstance {
             data,
             peer_mgr,
             tun_inet,
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
         })
     }
 
@@ -319,5 +379,11 @@ impl MagicDnsServerInstance {
             .peer_mgr
             .remove_nic_packet_process_pipeline(NIC_PIPELINE_NAME.to_string())
             .await;
+    }
+}
+
+impl Drop for MagicDnsServerInstance {
+    fn drop(&mut self) {
+        println!("MagicDnsServerInstance dropped");
     }
 }

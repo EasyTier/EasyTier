@@ -120,7 +120,7 @@ pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     nic_channel: PacketRecvChan,
 
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
 
     packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
 
@@ -249,7 +249,7 @@ impl PeerManager {
             global_ctx,
             nic_channel,
 
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
 
             packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
 

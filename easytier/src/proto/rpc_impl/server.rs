@@ -85,7 +85,7 @@ impl Server {
 
         let packet_merges = self.packet_mergers.clone();
         let reg = self.registry.clone();
-        let t = tasks.clone();
+        let t = Arc::downgrade(&tasks);
         let tunnel_info = mpsc.tunnel_info();
         tasks.lock().unwrap().spawn(async move {
             let mut mpsc = mpsc;
@@ -124,6 +124,10 @@ impl Server {
                 match ret {
                     Ok(Some(packet)) => {
                         packet_merges.remove(&key);
+                        let Some(t) = t.upgrade() else {
+                            tracing::error!("tasks is dropped");
+                            return;
+                        };
                         t.lock().unwrap().spawn(Self::handle_rpc(
                             mpsc.get_sink(),
                             packet,
