@@ -40,7 +40,6 @@ use crate::{
             ListGlobalForeignNetworkResponse,
         },
         peer_rpc::{ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey},
-        common::CompressionLevelPb,
     },
     tunnel::{
         self,
@@ -140,6 +139,7 @@ pub struct PeerManager {
 
     encryptor: Arc<Box<dyn Encryptor>>,
     data_compress_algo: CompressorAlgo,
+    data_compress_level: async_compression::Level,
 
     exit_nodes: Vec<Ipv4Addr>,
 
@@ -242,6 +242,12 @@ impl PeerManager {
             .try_into()
             .expect("invalid data compress algo, maybe some features not enabled");
 
+        let data_compress_level = global_ctx
+        .get_flags()
+        .data_compress_level()
+        .try_into()
+        .expect("invalid data compress level");
+
         let exit_nodes = global_ctx.config.get_exit_nodes();
 
         PeerManager {
@@ -269,7 +275,7 @@ impl PeerManager {
 
             encryptor,
             data_compress_algo,
-
+            data_compress_level,
             exit_nodes,
 
             directly_connected_conn_map: Arc::new(DashMap::new()),
@@ -496,6 +502,7 @@ impl PeerManager {
         let foreign_mgr = self.foreign_network_manager.clone();
         let encryptor = self.encryptor.clone();
         let compress_algo = self.data_compress_algo;
+        let compress_level = self.data_compress_level;
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
@@ -532,7 +539,7 @@ impl PeerManager {
                             || hdr.packet_type == PacketType::KcpSrc as u8
                             || hdr.packet_type == PacketType::KcpDst as u8)
                     {
-                        let _ = Self::try_compress_and_encrypt(compress_algo, &encryptor, &mut ret)
+                        let _ = Self::try_compress_and_encrypt(compress_algo, compress_level, &encryptor, &mut ret)
                             .await;
                     }
 
@@ -852,12 +859,13 @@ impl PeerManager {
 
     pub async fn try_compress_and_encrypt(
         compress_algo: CompressorAlgo,
+        compress_level: async_compression::Level,
         encryptor: &Box<dyn Encryptor>,
         msg: &mut ZCPacket,
     ) -> Result<(), Error> {
         let compressor = DefaultCompressor {};
         compressor
-            .compress(msg, compress_algo, CompressionLevelPb::Default.try_into().unwrap())
+            .compress(msg, compress_algo, compress_level)
             .await
             .with_context(|| "compress failed")?;
         encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
@@ -895,7 +903,7 @@ impl PeerManager {
             return Ok(());
         }
 
-        Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
+        Self::try_compress_and_encrypt(self.data_compress_algo, self.data_compress_level, &self.encryptor, &mut msg).await?;
 
         let is_latency_first = self.global_ctx.get_flags().latency_first;
         msg.mut_peer_manager_header()
