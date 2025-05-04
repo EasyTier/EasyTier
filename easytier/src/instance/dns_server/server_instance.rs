@@ -63,7 +63,7 @@ static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
 pub(super) struct MagicDnsServerInstanceData {
     dns_server: Server,
-    tun_dev: String,
+    tun_dev: Option<String>,
     tun_ip: Ipv4Addr,
     fake_ip: Ipv4Addr,
     my_peer_id: PeerId,
@@ -119,7 +119,7 @@ impl MagicDnsServerInstanceData {
             )
             .await;
 
-        tracing::trace!("Updated DNS records for zone {}: {:?}", zone, records);
+        tracing::debug!("Updated DNS records for zone {}: {:?}", zone, records);
 
         Ok(())
     }
@@ -127,7 +127,7 @@ impl MagicDnsServerInstanceData {
     pub async fn update(&self) {
         for item in self.route_infos.iter() {
             let zone = item.key();
-            let route_iter = item.value().iter().map(|x| x.1);
+            let route_iter = item.value().flat_iter().map(|x| x.1);
             if let Err(e) = self.update_dns_records(route_iter, zone).await {
                 tracing::error!("Failed to update DNS records for zone {}: {:?}", zone, e);
             }
@@ -314,7 +314,7 @@ pub struct MagicDnsServerInstance {
 impl MagicDnsServerInstance {
     pub async fn new(
         peer_mgr: Arc<PeerManager>,
-        tun_dev: String,
+        tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Result<Self, anyhow::Error> {
@@ -336,9 +336,11 @@ impl MagicDnsServerInstance {
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
-        if !tun_inet.contains(&fake_ip) {
+        if !tun_inet.contains(&fake_ip) && tun_dev.is_some() {
             let ifcfg = IfConfiger {};
-            ifcfg.add_ipv4_route(&tun_dev, fake_ip, 32).await?;
+            ifcfg
+                .add_ipv4_route(tun_dev.as_ref().unwrap(), fake_ip, 32)
+                .await?;
         }
 
         let data = Arc::new(MagicDnsServerInstanceData {
@@ -368,10 +370,10 @@ impl MagicDnsServerInstance {
     }
 
     pub async fn clean_env(&self) {
-        if !self.tun_inet.contains(&self.data.fake_ip) {
+        if !self.tun_inet.contains(&self.data.fake_ip) && self.data.tun_dev.is_some() {
             let ifcfg = IfConfiger {};
             let _ = ifcfg
-                .remove_ipv4_route(&self.data.tun_dev, self.data.fake_ip, 32)
+                .remove_ipv4_route(&self.data.tun_dev.as_ref().unwrap(), self.data.fake_ip, 32)
                 .await;
         }
 

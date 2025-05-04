@@ -74,9 +74,10 @@ async fn test_magic_dns_server_instance() {
     let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
     let tun_name = virtual_nic.ifname().await.unwrap();
     let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-    let dns_server_inst = MagicDnsServerInstance::new(peer_mgr.clone(), tun_name, tun_ip, fake_ip)
-        .await
-        .unwrap();
+    let dns_server_inst =
+        MagicDnsServerInstance::new(peer_mgr.clone(), Some(tun_name), tun_ip, fake_ip)
+            .await
+            .unwrap();
 
     let routes = vec![Route {
         hostname: "test1".to_string(),
@@ -100,7 +101,7 @@ async fn test_magic_dns_runner() {
     let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
     let tun_name = virtual_nic.ifname().await.unwrap();
     let fake_ip = Ipv4Addr::from_str("100.100.100.101").unwrap();
-    let mut dns_runner = DnsRunner::new(peer_mgr, tun_name, tun_ip, fake_ip);
+    let mut dns_runner = DnsRunner::new(peer_mgr, Some(tun_name), tun_ip, fake_ip);
 
     let cancel_token = CancellationToken::new();
     let cancel_token_clone = cancel_token.clone();
@@ -114,7 +115,7 @@ async fn test_magic_dns_runner() {
     let tun_ip2 = Ipv4Inet::from_str("10.144.144.20/24").unwrap();
     let (peer_mgr, virtual_nic) = prepare_env("test2", tun_ip2).await;
     let tun_name2 = virtual_nic.ifname().await.unwrap();
-    let mut dns_runner2 = DnsRunner::new(peer_mgr, tun_name2, tun_ip2, fake_ip);
+    let mut dns_runner2 = DnsRunner::new(peer_mgr, Some(tun_name2), tun_ip2, fake_ip);
     let cancel_token2 = CancellationToken::new();
     let cancel_token2_clone = cancel_token2.clone();
     let t2 = tokio::spawn(async move {

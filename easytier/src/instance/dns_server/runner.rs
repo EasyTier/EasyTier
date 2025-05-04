@@ -12,7 +12,7 @@ pub struct DnsRunner {
     client: Option<MagicDnsClientInstance>,
     server: Option<MagicDnsServerInstance>,
     peer_mgr: Arc<PeerManager>,
-    tun_dev: String,
+    tun_dev: Option<String>,
     tun_inet: Ipv4Inet,
     fake_ip: Ipv4Addr,
 }
@@ -20,7 +20,7 @@ pub struct DnsRunner {
 impl DnsRunner {
     pub fn new(
         peer_mgr: Arc<PeerManager>,
-        tun_dev: String,
+        tun_dev: Option<String>,
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Self {
