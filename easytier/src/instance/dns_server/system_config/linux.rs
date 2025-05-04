@@ -81,7 +81,7 @@ pub fn nm_is_using_resolved() -> Result<()> {
     );
 
     // 获取 Mode 属性
-    let (value,): (String,) = proxy
+    let (value,): (dbus::arg::Variant<Box<dyn dbus::arg::RefArg + 'static>>,) = proxy
         .method_call(
             "org.freedesktop.DBus.Properties",
             "Get",
@@ -90,9 +90,9 @@ pub fn nm_is_using_resolved() -> Result<()> {
         .context("Failed to get NM mode property")?;
 
     // 检查 Mode 是否为 "systemd-resolved"
-    if value != "systemd-resolved" {
+    if value.0.as_str() != Some("systemd-resolved") {
         return Err(anyhow::anyhow!(
-            "NetworkManager is not using systemd-resolved, found: {}",
+            "NetworkManager is not using systemd-resolved, found: {:?}",
             value
         )
         .into());
