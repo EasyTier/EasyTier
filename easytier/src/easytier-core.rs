@@ -417,7 +417,7 @@ struct Cli {
         long,
         env = "ET_COMPRESSION_LEVEL",
         help = t!("core_clap.compression_level").to_string(),
-        default_value = "default"
+        default_missing_value = "default"
     )]
     compression_level: Option<String>,
 
