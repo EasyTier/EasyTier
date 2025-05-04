@@ -225,11 +225,38 @@ pub struct AesGcmTail {
 }
 pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
 
-#[derive(AsBytes, FromZeroes, Clone, Debug, Copy)]
-#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressorAlgo {
     None = 0,
-    ZstdDefault = 1,
+    Zstd = 1,
+    Brotli = 2,
+    Lz4 = 3,
+    Gzip = 4,
+    Deflate = 5,
+    Bzip2 = 6,
+    Lzma = 7,
+    Xz = 8,
+    Zlib = 9,
+}
+
+impl CompressorAlgo {
+    pub fn parse(&self) -> u8 {
+        match *self {
+            CompressorAlgo::None => 0,
+            CompressorAlgo::Zstd => 1,
+            CompressorAlgo::Brotli => 2,
+            CompressorAlgo::Lz4 => 3,
+            CompressorAlgo::Gzip => 4,
+            CompressorAlgo::Deflate => 5,
+            CompressorAlgo::Bzip2 => 6,
+            CompressorAlgo::Lzma => 7,
+            CompressorAlgo::Xz => 8,
+            CompressorAlgo::Zlib => 9,
+        }
+    }
+    pub fn is_none(&self) -> bool {
+        matches!(self, CompressorAlgo::None)
+    }
 }
 
 #[repr(C, packed)]
@@ -240,15 +267,34 @@ pub struct CompressorTail {
 pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 
 impl CompressorTail {
-    pub fn get_algo(&self) -> Option<CompressorAlgo> {
-        match self.algo {
-            1 => Some(CompressorAlgo::ZstdDefault),
-            _ => None,
+    pub fn get_algo(&self) -> CompressorAlgo {
+        match self.algo{
+            1 => CompressorAlgo::Zstd,
+            2 => CompressorAlgo::Brotli,
+            3 => CompressorAlgo::Lz4,
+            4 => CompressorAlgo::Gzip,
+            5 => CompressorAlgo::Deflate,
+            6 => CompressorAlgo::Bzip2,
+            7 => CompressorAlgo::Lzma,
+            8 => CompressorAlgo::Xz,
+            9 => CompressorAlgo::Zlib,
+            _ => CompressorAlgo::None,
         }
     }
-
     pub fn new(algo: CompressorAlgo) -> Self {
-        Self { algo: algo as u8 }
+        let algo_u16 = match algo {
+            CompressorAlgo::None => 0,
+            CompressorAlgo::Zstd => 1,
+            CompressorAlgo::Brotli => 2,
+            CompressorAlgo::Lz4 => 3,
+            CompressorAlgo::Gzip => 4,
+            CompressorAlgo::Deflate => 5,
+            CompressorAlgo::Bzip2 => 6 ,
+            CompressorAlgo::Lzma => 7,
+            CompressorAlgo::Xz => 8,
+            CompressorAlgo::Zlib => 9,
+        };
+        Self { algo: algo_u16 }
     }
 }
 

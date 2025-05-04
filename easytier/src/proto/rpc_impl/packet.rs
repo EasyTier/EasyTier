@@ -3,7 +3,7 @@ use prost::Message as _;
 use crate::{
     common::{compressor::DefaultCompressor, PeerId},
     proto::{
-        common::{CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
+        common::{CompressionAlgoPb, CompressionLevelPb, RpcCompressionInfo, RpcDescriptor, RpcPacket},
         rpc_types::error::Error,
     },
     tunnel::packet_def::{CompressorAlgo, PacketType, ZCPacket},
@@ -21,7 +21,7 @@ pub async fn compress_packet(
     let algo = accepted_compression_algo
         .try_into()
         .unwrap_or(CompressorAlgo::None);
-    let compressed = compressor.compress_raw(&content, algo).await?;
+    let compressed = compressor.compress_raw(&content, algo, CompressionLevelPb::Default.try_into().unwrap()).await?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {

@@ -201,7 +201,15 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
 
     fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
         match value {
-            CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
+            CompressionAlgoPb::Zstd => Ok(CompressorAlgo::Zstd),
+            CompressionAlgoPb::Brotli => Ok(CompressorAlgo::Brotli),
+            CompressionAlgoPb::Lz4 => Ok(CompressorAlgo::Lz4),
+            CompressionAlgoPb::Gzip => Ok(CompressorAlgo::Gzip),
+            CompressionAlgoPb::Deflate => Ok(CompressorAlgo::Deflate),
+            CompressionAlgoPb::Bzip2 => Ok(CompressorAlgo::Bzip2),
+            CompressionAlgoPb::Lzma => Ok(CompressorAlgo::Lzma),
+            CompressionAlgoPb::Xz => Ok(CompressorAlgo::Xz),
+            CompressionAlgoPb::Zlib => Ok(CompressorAlgo::Zlib),
             CompressionAlgoPb::None => Ok(CompressorAlgo::None),
             _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
         }
@@ -213,8 +221,29 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
 
     fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
         match value {
-            CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
+            CompressorAlgo::Zstd => Ok(CompressionAlgoPb::Zstd),
+            CompressorAlgo::Brotli => Ok(CompressionAlgoPb::Brotli),
+            CompressorAlgo::Lz4 => Ok(CompressionAlgoPb::Lz4),
+            CompressorAlgo::Gzip => Ok(CompressionAlgoPb::Gzip),
+            CompressorAlgo::Deflate => Ok(CompressionAlgoPb::Deflate),
+            CompressorAlgo::Bzip2 => Ok(CompressionAlgoPb::Bzip2),
+            CompressorAlgo::Lzma => Ok(CompressionAlgoPb::Lzma),
+            CompressorAlgo::Xz => Ok(CompressionAlgoPb::Xz),
+            CompressorAlgo::Zlib => Ok(CompressionAlgoPb::Zlib),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
+        }
+    }
+}
+
+impl TryFrom<CompressionLevelPb> for async_compression::Level {
+    type Error = anyhow::Error;
+
+    fn try_from(value: CompressionLevelPb) -> Result<Self, Self::Error> {
+        match value {
+            CompressionLevelPb::Default => Ok(async_compression::Level::Default),
+            CompressionLevelPb::Fastest => Ok(async_compression::Level::Fastest),
+            CompressionLevelPb::Best => Ok(async_compression::Level::Best),
+            // CompressionLevelPb::Precise(level) => Ok(async_compression::Level::Precise(level)),
         }
     }
 }
