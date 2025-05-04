@@ -5,6 +5,7 @@ pub(crate) mod server;
 pub mod client_instance;
 pub mod runner;
 pub mod server_instance;
+pub mod system_config;
 
 #[cfg(test)]
 mod tests;

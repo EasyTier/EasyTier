@@ -211,6 +211,10 @@ hickory-server = { version = "0.25.2", features = ["resolver"] }
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.0"
+resolv-conf = "0.7.3"
+dbus = "0.9.7"
+version-compare = "0.2.0"
+which = "7.0.3"
 
 bounded_join_set = "0.3.0"
 
