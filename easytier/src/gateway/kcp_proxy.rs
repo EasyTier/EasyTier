@@ -106,8 +106,8 @@ async fn handle_kcp_output(
 
 #[derive(Debug, Clone)]
 pub struct NatDstKcpConnector {
-    kcp_endpoint: Arc<KcpEndpoint>,
-    peer_mgr: Arc<PeerManager>,
+    pub(crate) kcp_endpoint: Arc<KcpEndpoint>,
+    pub(crate) peer_mgr: Arc<PeerManager>,
 }
 
 #[async_trait::async_trait]
@@ -298,6 +298,10 @@ impl KcpProxySrc {
 
     pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstKcpConnector>> {
         self.tcp_proxy.0.clone()
+    }
+
+    pub fn get_kcp_endpoint(&self) -> Arc<KcpEndpoint> {
+        self.kcp_endpoint.clone()
     }
 }
 
