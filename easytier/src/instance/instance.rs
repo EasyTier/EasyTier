@@ -536,8 +536,6 @@ impl Instance {
             )
             .await?;
 
-        self.magic_dns_server.run().await?;
-
         self.run_rpc_server().await?;
 
         Ok(())
