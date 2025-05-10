@@ -417,7 +417,13 @@ impl Instance {
         }
 
         #[cfg(feature = "socks5")]
-        self.socks5_server.run().await?;
+        self.socks5_server
+            .run(
+                self.kcp_proxy_src
+                    .as_ref()
+                    .map(|x| Arc::downgrade(&x.get_kcp_endpoint())),
+            )
+            .await?;
 
         self.run_rpc_server().await?;
 

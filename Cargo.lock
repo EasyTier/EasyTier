@@ -2029,6 +2029,7 @@ dependencies = [
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",
  "tauri-plugin-vpnservice",
+ "thunk-rs",
  "tokio",
 ]
 
@@ -2079,6 +2080,7 @@ dependencies = [
  "sqlx",
  "sys-locale",
  "thiserror 1.0.63",
+ "thunk-rs",
  "tokio",
  "tower-http",
  "tower-sessions",
@@ -8155,8 +8157,7 @@ dependencies = [
 [[package]]
 name = "thunk-rs"
 version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cbc000e786a7ea2cfa3a85ef77cf86bfdadeaa2b215ec4751df66442fa4632a"
+source = "git+https://github.com/easytier/thunk.git#5e8371a3100dbc18dda952a2036c6bd6fb0504db"
 
 [[package]]
 name = "tiff"

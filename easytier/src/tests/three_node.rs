@@ -175,6 +175,16 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     )
     .await;
 
+    wait_for_condition(
+        || async {
+            let routes = inst3.get_peer_manager().list_routes().await;
+            println!("routes: {:?}", routes);
+            routes.len() == 2
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
     vec![inst1, inst2, inst3]
 }
 
@@ -898,6 +908,7 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
 pub async fn port_forward_test(
     #[values(true, false)] no_tun: bool,
     #[values(64, 1900)] buf_size: u64,
+    #[values(true, false)] enable_kcp: bool,
 ) {
     prepare_linux_namespaces();
 
@@ -936,6 +947,7 @@ pub async fn port_forward_test(
             }
             let mut flags = cfg.get_flags();
             flags.no_tun = no_tun;
+            flags.enable_kcp_proxy = enable_kcp;
             cfg.set_flags(flags);
             cfg
         },
