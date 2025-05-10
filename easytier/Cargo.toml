@@ -202,7 +202,8 @@ http_req = { git = "https://github.com/EasyTier/http_req.git", default-features 
 ] }
 
 # for dns connector
-hickory-resolver = "0.24.4"
+hickory-resolver = "0.25.2"
+hickory-proto = "0.25.2"
 
 bounded_join_set = "0.3.0"
 

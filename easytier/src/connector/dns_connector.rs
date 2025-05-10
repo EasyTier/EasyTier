@@ -11,9 +11,7 @@ use crate::{
 use anyhow::Context;
 use dashmap::DashSet;
 use hickory_resolver::{
-    config::{ResolverConfig, ResolverOpts},
-    proto::rr::rdata::SRV,
-    TokioAsyncResolver,
+    name_server::TokioConnectionProvider, proto::rr::rdata::SRV, TokioResolver,
 };
 use rand::{seq::SliceRandom, Rng as _};
 
@@ -43,9 +41,6 @@ pub struct DNSTunnelConnector {
     bind_addrs: Vec<SocketAddr>,
     global_ctx: ArcGlobalCtx,
     ip_version: IpVersion,
-
-    default_resolve_config: ResolverConfig,
-    default_resolve_opts: ResolverOpts,
 }
 
 impl DNSTunnelConnector {
@@ -55,9 +50,6 @@ impl DNSTunnelConnector {
             bind_addrs: Vec::new(),
             global_ctx,
             ip_version: IpVersion::Both,
-
-            default_resolve_config: get_default_resolver_config(),
-            default_resolve_opts: ResolverOpts::default(),
         }
     }
 
@@ -66,11 +58,13 @@ impl DNSTunnelConnector {
         &self,
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
-        let resolver =
-            TokioAsyncResolver::tokio_from_system_conf().unwrap_or(TokioAsyncResolver::tokio(
-                self.default_resolve_config.clone(),
-                self.default_resolve_opts.clone(),
-            ));
+        let resolver = TokioResolver::builder_tokio()
+            .unwrap_or(TokioResolver::builder_with_config(
+                get_default_resolver_config(),
+                TokioConnectionProvider::default(),
+            ))
+            .build();
+
         let txt_data = resolve_txt_record(domain_name, &resolver)
             .await
             .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
@@ -126,11 +120,12 @@ impl DNSTunnelConnector {
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         tracing::info!("handle_srv_record: {}", domain_name);
 
-        let resolver =
-            TokioAsyncResolver::tokio_from_system_conf().unwrap_or(TokioAsyncResolver::tokio(
-                self.default_resolve_config.clone(),
-                self.default_resolve_opts.clone(),
-            ));
+        let resolver = TokioResolver::builder_tokio()
+            .unwrap_or(TokioResolver::builder_with_config(
+                get_default_resolver_config(),
+                TokioConnectionProvider::default(),
+            ))
+            .build();
 
         let srv_domains = PROTO_PORT_OFFSET
             .iter()
