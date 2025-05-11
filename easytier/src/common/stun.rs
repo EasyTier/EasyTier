@@ -8,8 +8,10 @@ use crate::proto::common::{NatType, StunInfo};
 use anyhow::Context;
 use chrono::Local;
 use crossbeam::atomic::AtomicCell;
-use hickory_resolver::config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts};
-use hickory_resolver::TokioAsyncResolver;
+use hickory_proto::xfer::Protocol;
+use hickory_resolver::config::{NameServerConfig, ResolverConfig};
+use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::TokioResolver;
 use rand::seq::IteratorRandom;
 use tokio::net::{lookup_host, UdpSocket};
 use tokio::sync::{broadcast, Mutex};
@@ -39,7 +41,7 @@ pub fn get_default_resolver_config() -> ResolverConfig {
 
 pub async fn resolve_txt_record(
     domain_name: &str,
-    resolver: &TokioAsyncResolver,
+    resolver: &TokioResolver,
 ) -> Result<String, Error> {
     let response = resolver.txt_lookup(domain_name).await.with_context(|| {
         format!(
@@ -79,9 +81,12 @@ impl HostResolverIter {
     }
 
     async fn get_txt_record(domain_name: &str) -> Result<Vec<String>, Error> {
-        let resolver = TokioAsyncResolver::tokio_from_system_conf().unwrap_or(
-            TokioAsyncResolver::tokio(get_default_resolver_config(), ResolverOpts::default()),
-        );
+        let resolver = TokioResolver::builder_tokio()
+            .unwrap_or(TokioResolver::builder_with_config(
+                get_default_resolver_config(),
+                TokioConnectionProvider::default(),
+            ))
+            .build();
         let txt_data = resolve_txt_record(domain_name, &resolver).await?;
         Ok(txt_data.split(" ").map(|x| x.to_string()).collect())
     }
