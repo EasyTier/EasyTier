@@ -43,6 +43,7 @@ message HandshakeResponse {}
 
 service MagicDnsServerRpc {
     rpc Handshake(HandshakeRequest) returns (HandshakeResponse) {}
+    rpc Heartbeat(common.Void) returns (common.Void) {}
     rpc UpdateDnsRecord(UpdateDnsRecordRequest) returns (common.Void) {}
     rpc GetDnsRecord(common.Void) returns (GetDnsRecordResponse) {}
 }

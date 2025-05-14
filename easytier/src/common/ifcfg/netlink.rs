@@ -350,6 +350,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         name: &str,
         address: Ipv4Addr,
         cidr_prefix: u8,
+        cost: Option<i32>,
     ) -> Result<(), Error> {
         let mut message = RouteMessage::default();
 
@@ -359,7 +360,9 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         message.header.kind = RouteType::Unicast;
         message.header.address_family = AddressFamily::Inet;
         // metric
-        message.attributes.push(RouteAttribute::Priority(65535));
+        message
+            .attributes
+            .push(RouteAttribute::Priority(cost.unwrap_or(65535)));
         // output interface
         message
             .attributes

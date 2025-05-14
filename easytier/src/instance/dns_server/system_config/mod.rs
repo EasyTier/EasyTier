@@ -1,2 +1,5 @@
+#[cfg(target_os = "linux")]
 mod linux;
-mod windows;
+
+#[cfg(target_os = "windows")]
+pub mod windows;

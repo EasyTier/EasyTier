@@ -12,13 +12,15 @@ impl IfConfiguerTrait for MacIfConfiger {
         name: &str,
         address: Ipv4Addr,
         cidr_prefix: u8,
+        cost: Option<i32>,
     ) -> Result<(), Error> {
         run_shell_cmd(
             format!(
-                "route -n add {} -netmask {} -interface {} -hopcount 7",
+                "route -n add {} -netmask {} -interface {} -hopcount {}",
                 address,
                 cidr_to_subnet_mask(cidr_prefix),
-                name
+                name,
+                cost.unwrap_or(7)
             )
             .as_str(),
         )

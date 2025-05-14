@@ -190,6 +190,14 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         }
         Ok(GetDnsRecordResponse { records: ret })
     }
+
+    async fn heartbeat(
+        &self,
+        _ctrl: Self::Controller,
+        _input: Void,
+    ) -> crate::proto::rpc_types::error::Result<Void> {
+        Ok(Default::default())
+    }
 }
 
 #[async_trait::async_trait]
@@ -322,11 +330,13 @@ impl MagicDnsServerInstance {
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
 
+        let bind_addr = tun_inet.address();
+
         let dns_config = RunConfigBuilder::default()
             .general(
                 GeneralConfigBuilder::default()
-                    .listen_udp(format!("{}:0", tun_inet.address()))
-                    .listen_tcp(format!("{}:0", tun_inet.address()))
+                    .listen_udp(format!("{}:0", bind_addr))
+                    .listen_tcp(format!("{}:0", bind_addr))
                     .build()
                     .unwrap(),
             )
@@ -337,9 +347,14 @@ impl MagicDnsServerInstance {
         dns_server.run().await?;
 
         if !tun_inet.contains(&fake_ip) && tun_dev.is_some() {
+            let cost = if cfg!(target_os = "windows") {
+                Some(4)
+            } else {
+                None
+            };
             let ifcfg = IfConfiger {};
             ifcfg
-                .add_ipv4_route(tun_dev.as_ref().unwrap(), fake_ip, 32)
+                .add_ipv4_route(tun_dev.as_ref().unwrap(), fake_ip, 32, cost)
                 .await?;
         }
 

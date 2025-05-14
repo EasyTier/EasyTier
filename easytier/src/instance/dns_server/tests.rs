@@ -24,7 +24,7 @@ use crate::proto::cli::Route;
 use crate::proto::common::NatType;
 use crate::tests::enable_log;
 
-async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
+pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
     let ctx = get_mock_global_ctx();
     ctx.set_hostname(dns_name.to_owned());
     ctx.set_ipv4(Some(tun_ip));
@@ -40,7 +40,7 @@ async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, Nic
     (peer_mgr, virtual_nic)
 }
 
-async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &str) {
+pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &str) {
     let stream = UdpClientStream::builder(
         SocketAddr::new(fake_ip.clone().into(), 53),
         TokioRuntimeProvider::default(),

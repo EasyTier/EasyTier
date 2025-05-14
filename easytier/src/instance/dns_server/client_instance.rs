@@ -6,6 +6,7 @@ use crate::{
     peers::peer_manager::PeerManager,
     proto::{
         cli::Route,
+        common::Void,
         magic_dns::{
             HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,
             UpdateDnsRecordRequest,
@@ -49,6 +50,10 @@ impl MagicDnsClientInstance {
             .handshake(BaseController::default(), HandshakeRequest::default())
             .await?;
         loop {
+            rpc_stub
+                .heartbeat(BaseController::default(), Void::default())
+                .await?;
+
             let last_update = peer_mgr.get_route_peer_info_last_update_time().await;
             if Some(last_update) == prev_last_update {
                 tokio::time::sleep(Duration::from_millis(500)).await;

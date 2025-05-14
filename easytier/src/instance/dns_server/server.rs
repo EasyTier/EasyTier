@@ -159,14 +159,6 @@ impl Server {
                     address.to_string()
                 )
             })?;
-        socket2::SockRef::from(&socket)
-            .set_reuse_port(true)
-            .with_context(|| {
-                format!(
-                    "DNS Server failed to set reuse port on socket {}",
-                    address.to_string()
-                )
-            })?;
         socket.bind(&bind_addr.into()).with_context(|| {
             format!("DNS Server failed to bind socket to address {}", bind_addr)
         })?;
