@@ -22,7 +22,6 @@ use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::create_packet_recv_chan;
 use crate::proto::cli::Route;
 use crate::proto::common::NatType;
-use crate::tests::enable_log;
 
 pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
     let ctx = get_mock_global_ctx();
@@ -95,8 +94,6 @@ async fn test_magic_dns_server_instance() {
 
 #[tokio::test]
 async fn test_magic_dns_runner() {
-    enable_log();
-
     let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
     let (peer_mgr, virtual_nic) = prepare_env("test1", tun_ip).await;
     let tun_name = virtual_nic.ifname().await.unwrap();

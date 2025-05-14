@@ -4321,8 +4321,7 @@ dependencies = [
 [[package]]
 name = "mimalloc-rust"
 version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5eb726c8298efb4010b2c46d8050e4be36cf807b9d9e98cb112f830914fc9bbe"
+source = "git+https://github.com/EasyTier/mimalloc-rust#eb61c4d50fef4eb5fbd5db83e4ea83153646b482"
 dependencies = [
  "cty",
  "mimalloc-rust-sys",
@@ -4330,9 +4329,8 @@ dependencies = [
 
 [[package]]
 name = "mimalloc-rust-sys"
-version = "1.7.9-source"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6413e13241a9809f291568133eca6694572cf528c1a6175502d090adce5dd5db"
+version = "2.1.2-source"
+source = "git+https://github.com/EasyTier/mimalloc-rust#eb61c4d50fef4eb5fbd5db83e4ea83153646b482"
 dependencies = [
  "cc",
  "cty",

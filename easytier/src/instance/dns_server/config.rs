@@ -14,6 +14,7 @@ pub struct RunConfig {
     zones: Zone,
 
     #[builder(default = Vec::new())]
+    #[serde(default)]
     excluded_forward_nameservers: Vec<IpAddr>,
 }
 
@@ -149,6 +150,7 @@ type = "A"
 name = "@"
 value = "100.100.100.100"
 ttl = "61s"
+
 "#;
 
         let config = toml::from_str::<RunConfig>(text)?;
