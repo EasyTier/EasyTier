@@ -362,7 +362,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         // metric
         message
             .attributes
-            .push(RouteAttribute::Priority(cost.unwrap_or(65535)));
+            .push(RouteAttribute::Priority(cost.unwrap_or(65535) as u32));
         // output interface
         message
             .attributes
@@ -553,7 +553,7 @@ mod tests {
         ifcfg.set_link_status(DUMMY_IFACE_NAME, true).await.unwrap();
 
         ifcfg
-            .add_ipv4_route(DUMMY_IFACE_NAME, "10.5.5.0".parse().unwrap(), 24)
+            .add_ipv4_route(DUMMY_IFACE_NAME, "10.5.5.0".parse().unwrap(), 24, None)
             .await
             .unwrap();
 

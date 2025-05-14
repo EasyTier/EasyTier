@@ -2,16 +2,11 @@
 
 use crate::defer;
 use anyhow::{Context, Result};
-use bytes::Bytes;
 use dbus::blocking::stdintf::org_freedesktop_dbus::Properties as _;
-use futures::future::BoxFuture;
-use hickory_proto::rr::rdata::naptr::verify_flags;
-use std::collections::HashMap;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::Path;
 use std::process::Command;
-use std::sync::{Mutex, Once};
 use std::time::Duration;
 use version_compare::Cmp;
 
@@ -23,9 +18,6 @@ use version_compare::Cmp;
 // 常量定义
 const RESOLV_CONF: &str = "/etc/resolv.conf";
 const PING_TIMEOUT: Duration = Duration::from_secs(1);
-
-// 初始化单例
-static PUBLISH_ONCE: Once = Once::new();
 
 // 错误类型定义
 #[derive(Debug)]
@@ -145,17 +137,10 @@ fn new_os_config_env() -> OSConfigEnv {
 }
 
 // 创建DNS配置器
-fn new_os_configurator(interface_name: String) -> Result<()> {
+fn new_os_configurator(_interface_name: String) -> Result<()> {
     let env = new_os_config_env();
 
     let mode = dns_mode(&env).context("Failed to detect DNS mode")?;
-
-    PUBLISH_ONCE.call_once(|| {
-        // 发布指标逻辑
-        let sanitized_mode = mode.replace("-", "_");
-        let metric_name = format!("dns_manager_linux_mode_{}", sanitized_mode);
-        // clientmetric::gauge(&metric_name, 1);
-    });
 
     tracing::info!("dns: using {} mode", mode);
 

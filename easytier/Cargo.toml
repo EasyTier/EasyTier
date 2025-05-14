@@ -233,7 +233,7 @@ netlink-packet-core = { version = "0.7.0" }
 netlink-packet-utils = "0.5.2"
 # for magic dns
 resolv-conf = "0.7.3"
-dbus = "0.9.7"
+dbus = { version = "0.9.7", features = ["vendored"] }
 which = "7.0.3"
 
 [target.'cfg(windows)'.dependencies]
