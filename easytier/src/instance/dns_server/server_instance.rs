@@ -128,12 +128,12 @@ impl MagicDnsServerInstanceData {
         }
     }
 
-    fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
+    fn do_system_config(&self, _zone: &str) -> Result<(), anyhow::Error> {
         #[cfg(target_os = "windows")]
         {
             use super::system_config::windows::WindowsDNSManager;
             let cfg = WindowsDNSManager::new(self.tun_dev.as_ref().unwrap())?;
-            cfg.set_primary_dns(&[self.fake_ip.clone().into()], &[zone.to_string()])?;
+            cfg.set_primary_dns(&[self.fake_ip.clone().into()], &[_zone.to_string()])?;
         }
 
         Ok(())
