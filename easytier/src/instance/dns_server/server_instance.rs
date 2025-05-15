@@ -397,6 +397,14 @@ impl MagicDnsServerInstance {
             .remove_nic_packet_process_pipeline(NIC_PIPELINE_NAME.to_string())
             .await;
     }
+
+    async fn start_system_config_task(&self) {
+        #[cfg(target_os = "windows")]
+        self.tasks.lock().unwrap().spawn(async move {
+            use super::system_config::linux;
+            let configer;
+        });
+    }
 }
 
 impl Drop for MagicDnsServerInstance {

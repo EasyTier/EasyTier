@@ -308,8 +308,10 @@ impl Instance {
         tun_dev: Option<String>,
         tun_ip: Ipv4Inet,
     ) -> Option<DnsRunner> {
-        let _ctx = peer_mgr.get_global_ctx();
-        // TODO: if not enabled, return None
+        let ctx = peer_mgr.get_global_ctx();
+        if !ctx.config.get_flags().accept_dns {
+            return None;
+        }
 
         let runner = DnsRunner::new(
             peer_mgr,
