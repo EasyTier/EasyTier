@@ -142,6 +142,12 @@ impl WindowsDNSManager {
             interface_control: InterfaceControl::new(&interface_guid),
         })
     }
+
+    pub fn set_primary_dns(&self, resolvers: &[IpAddr], domains: &[String]) -> io::Result<()> {
+        self.interface_control.set_primary_dns(resolvers, domains)?;
+        self.interface_control.flush_dns()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

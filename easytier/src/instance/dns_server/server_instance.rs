@@ -37,6 +37,7 @@ use crate::{
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
+        DEFAULT_ET_DNS_ZONE,
     },
     peers::{peer_manager::PeerManager, NicPacketFilter},
     proto::{
@@ -132,6 +133,20 @@ impl MagicDnsServerInstanceData {
                 tracing::error!("Failed to update DNS records for zone {}: {:?}", zone, e);
             }
         }
+    }
+
+    fn do_system_config(&self) -> Result<(), anyhow::Error> {
+        #[cfg(target_os = "windows")]
+        {
+            use super::system_config::windows::WindowsDNSManager;
+            let cfg = WindowsDNSManager::new(self.tun_dev.as_ref().unwrap())?;
+            cfg.set_primary_dns(
+                &[self.fake_ip.clone().into()],
+                &[DEFAULT_ET_DNS_ZONE.to_string()],
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -316,7 +331,6 @@ pub struct MagicDnsServerInstance {
     pub(super) data: Arc<MagicDnsServerInstanceData>,
     peer_mgr: Arc<PeerManager>,
     tun_inet: Ipv4Inet,
-    tasks: Mutex<JoinSet<()>>,
 }
 
 impl MagicDnsServerInstance {
@@ -375,12 +389,16 @@ impl MagicDnsServerInstance {
             .add_nic_packet_process_pipeline(Box::new(data.clone()))
             .await;
 
+        let data_clone = data.clone();
+        tokio::task::spawn_blocking(move || data_clone.do_system_config())
+            .await
+            .context("Failed to configure system")??;
+
         Ok(Self {
             rpc_server,
             data,
             peer_mgr,
             tun_inet,
-            tasks: Mutex::new(JoinSet::new()),
         })
     }
 
@@ -396,14 +414,6 @@ impl MagicDnsServerInstance {
             .peer_mgr
             .remove_nic_packet_process_pipeline(NIC_PIPELINE_NAME.to_string())
             .await;
-    }
-
-    async fn start_system_config_task(&self) {
-        #[cfg(target_os = "windows")]
-        self.tasks.lock().unwrap().spawn(async move {
-            use super::system_config::linux;
-            let configer;
-        });
     }
 }
 
