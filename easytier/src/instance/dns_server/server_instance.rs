@@ -128,15 +128,12 @@ impl MagicDnsServerInstanceData {
         }
     }
 
-    fn do_system_config(&self) -> Result<(), anyhow::Error> {
+    fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
         #[cfg(target_os = "windows")]
         {
             use super::system_config::windows::WindowsDNSManager;
             let cfg = WindowsDNSManager::new(self.tun_dev.as_ref().unwrap())?;
-            cfg.set_primary_dns(
-                &[self.fake_ip.clone().into()],
-                &[DEFAULT_ET_DNS_ZONE.to_string()],
-            )?;
+            cfg.set_primary_dns(&[self.fake_ip.clone().into()], &[zone.to_string()])?;
         }
 
         Ok(())
@@ -383,7 +380,7 @@ impl MagicDnsServerInstance {
             .await;
 
         let data_clone = data.clone();
-        tokio::task::spawn_blocking(move || data_clone.do_system_config())
+        tokio::task::spawn_blocking(move || data_clone.do_system_config(DEFAULT_ET_DNS_ZONE))
             .await
             .context("Failed to configure system")??;
 
