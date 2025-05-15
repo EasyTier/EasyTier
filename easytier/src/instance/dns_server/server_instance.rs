@@ -6,13 +6,7 @@
 // magic dns client will establish a long live tcp connection to the magic dns server, and when the server stops or crashes,
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
-use std::{
-    collections::BTreeMap,
-    net::Ipv4Addr,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{collections::BTreeMap, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use cidr::Ipv4Inet;
@@ -27,7 +21,6 @@ use pnet::packet::{
     udp::{self, MutableUdpPacket},
     MutablePacket,
 };
-use tokio::task::JoinSet;
 
 use crate::{
     common::{
