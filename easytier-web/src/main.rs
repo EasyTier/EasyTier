@@ -78,7 +78,7 @@ struct Cli {
     #[arg(
         long,
         short='l',
-        default_value = "11210",
+        default_value = "11211",
         help = t!("cli.web_server_port").to_string(),
     )]
     web_server_port: u16,
@@ -92,9 +92,7 @@ struct Cli {
     no_web: bool,
 }
 
-pub fn get_listener_by_url(
-    l: &url::Url,
-) -> Result<Box<dyn TunnelListener>, Error> {
+pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.scheme() {
         "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
         "udp" => Box::new(UdpTunnelListener::new(l.clone())),
@@ -126,17 +124,30 @@ async fn main() {
     let db = db::Db::new(cli.db).await.unwrap();
 
     let listener = get_listener_by_url(
-        &format!("{}://0.0.0.0:{}", cli.config_server_protocol, cli.config_server_port).parse().unwrap(),
+        &format!(
+            "{}://0.0.0.0:{}",
+            cli.config_server_protocol, cli.config_server_port
+        )
+        .parse()
+        .unwrap(),
     )
     .unwrap();
     let mut mgr = client_manager::ClientManager::new(db.clone());
     mgr.serve(listener).await.unwrap();
     let mgr = Arc::new(mgr);
 
+    #[cfg(feature = "embed")]
+    let restful_also_serve_web =
+        !cli.no_web && (cli.web_server_port == 0 || cli.web_server_port == cli.api_server_port);
+
+    #[cfg(not(feature = "embed"))]
+    let restful_also_serve_web = false;
+
     let mut restful_server = restful::RestfulServer::new(
         format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
         mgr.clone(),
         db,
+        restful_also_serve_web,
     )
     .await
     .unwrap();
@@ -144,14 +155,13 @@ async fn main() {
     restful_server.start().await.unwrap();
 
     #[cfg(feature = "embed")]
-    let mut web_server = web::WebServer::new(
-        format!("0.0.0.0:{}", cli.web_server_port).parse().unwrap()
-    )
-    .await
-    .unwrap();
+    let mut web_server =
+        web::WebServer::new(format!("0.0.0.0:{}", cli.web_server_port).parse().unwrap())
+            .await
+            .unwrap();
 
     #[cfg(feature = "embed")]
-    if !cli.no_web {
+    if !cli.no_web && !restful_also_serve_web {
         web_server.start().await.unwrap();
     }
 
