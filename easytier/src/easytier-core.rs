@@ -445,6 +445,13 @@ struct Cli {
         num_args = 1..
     )]
     port_forward: Vec<url::Url>,
+
+    #[arg(
+        long,
+        env = "ET_ACCEPT_DNS",
+        help = t!("core_clap.accept_dns").to_string(),
+    )]
+    accept_dns: Option<bool>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -762,6 +769,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         f.bind_device = cli.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = cli.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = cli.disable_kcp_input.unwrap_or(f.disable_kcp_input);
+        f.accept_dns = cli.accept_dns.unwrap_or(f.accept_dns);
         cfg.set_flags(f);
 
         if !cli.exit_nodes.is_empty() {

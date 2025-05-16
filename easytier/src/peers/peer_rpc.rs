@@ -26,7 +26,7 @@ pub trait PeerRpcManagerTransport: Send + Sync + 'static {
 pub struct PeerRpcManager {
     tspt: Arc<Box<dyn PeerRpcManagerTransport>>,
     bidirect_rpc: BidirectRpcManager,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
 }
 
 impl std::fmt::Debug for PeerRpcManager {
@@ -43,7 +43,7 @@ impl PeerRpcManager {
             tspt: Arc::new(Box::new(tspt)),
             bidirect_rpc: BidirectRpcManager::new(),
 
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
         }
     }
 

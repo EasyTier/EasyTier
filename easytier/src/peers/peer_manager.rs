@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     net::Ipv4Addr,
     sync::{Arc, Weak},
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use anyhow::Context;
@@ -120,7 +120,7 @@ pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     nic_channel: PacketRecvChan,
 
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
 
     packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
 
@@ -249,7 +249,7 @@ impl PeerManager {
             global_ctx,
             nic_channel,
 
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
 
             packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
 
@@ -735,6 +735,10 @@ impl PeerManager {
         self.get_route().list_routes().await
     }
 
+    pub async fn get_route_peer_info_last_update_time(&self) -> Instant {
+        self.get_route().get_peer_info_last_update_time().await
+    }
+
     pub async fn dump_route(&self) -> String {
         self.get_route().dump().await
     }
@@ -764,6 +768,16 @@ impl PeerManager {
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
             let _ = pipeline.try_process_packet_from_nic(data).await;
+        }
+    }
+
+    pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
+        let mut pipelines = self.nic_packet_process_pipeline.write().await;
+        if let Some(pos) = pipelines.iter().position(|x| x.id() == id) {
+            pipelines.remove(pos);
+            Ok(())
+        } else {
+            Err(Error::NotFound)
         }
     }
 

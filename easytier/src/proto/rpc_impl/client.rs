@@ -65,7 +65,7 @@ pub struct Client {
     transport: Mutex<Transport>,
     inflight_requests: InflightRequestTable,
     peer_info: PeerInfoTable,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: Mutex<JoinSet<()>>,
 }
 
 impl Client {
@@ -76,7 +76,7 @@ impl Client {
             transport: Mutex::new(MpscTunnel::new(ring_b, None)),
             inflight_requests: Arc::new(DashMap::new()),
             peer_info: Arc::new(DashMap::new()),
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: Mutex::new(JoinSet::new()),
         }
     }
 
