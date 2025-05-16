@@ -6,8 +6,6 @@ use winreg::RegKey;
 
 use crate::common::ifcfg::RegistryManager;
 
-use super::{OSConfig, SystemConfig};
-
 pub fn is_windows_10_or_better() -> io::Result<bool> {
     let hklm = winreg::enums::HKEY_LOCAL_MACHINE;
     let key_path = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
@@ -148,23 +146,6 @@ impl WindowsDNSManager {
     pub fn set_primary_dns(&self, resolvers: &[IpAddr], domains: &[String]) -> io::Result<()> {
         self.interface_control.set_primary_dns(resolvers, domains)?;
         self.interface_control.flush_dns()?;
-        Ok(())
-    }
-}
-
-impl SystemConfig for WindowsDNSManager {
-    fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
-        self.set_primary_dns(
-            &cfg.nameservers
-                .iter()
-                .map(|s| s.parse::<IpAddr>().unwrap())
-                .collect::<Vec<_>>(),
-            &cfg.match_domains,
-        )?;
-        Ok(())
-    }
-
-    fn close(&self) -> io::Result<()> {
         Ok(())
     }
 }
