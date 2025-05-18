@@ -668,6 +668,10 @@ impl NetworkConfig {
             flags.disable_udp_hole_punching = disable_udp_hole_punching;
         }
 
+        if let Some(enable_magic_dns) = self.enable_magic_dns {
+            flags.accept_dns = enable_magic_dns;
+        }
+
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
         }
