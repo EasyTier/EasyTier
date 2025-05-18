@@ -80,7 +80,13 @@ impl IpProxy {
 
         self.started.store(true, Ordering::Relaxed);
         self.tcp_proxy.start(true).await?;
-        self.icmp_proxy.start().await?;
+        if let Err(e) = self.icmp_proxy.start().await {
+            tracing::error!("start icmp proxy failed: {:?}", e);
+            if cfg!(not(target_os = "android")) {
+                // android may not support icmp proxy
+                return Err(e);
+            }
+        }
         self.udp_proxy.start().await?;
         Ok(())
     }

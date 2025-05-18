@@ -45,3 +45,11 @@
   border-radius: 4px;
   background-color: #0000005d;
 }
+
+.p-password {
+  width: 100%;
+}
+
+.p-password>input {
+  width: 100%;
+}
