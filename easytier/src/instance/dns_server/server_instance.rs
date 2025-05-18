@@ -50,6 +50,7 @@ use crate::{
 use super::{
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
+    system_config::{OSConfig, SystemConfig},
     MAGIC_DNS_INSTANCE_ADDR,
 };
 
@@ -64,6 +65,8 @@ pub(super) struct MagicDnsServerInstanceData {
 
     // zone -> (tunnel remote addr -> route)
     route_infos: DashMap<String, MultiMap<url::Url, Route>>,
+
+    system_config: Option<Box<dyn SystemConfig>>,
 }
 
 impl MagicDnsServerInstanceData {
@@ -128,14 +131,14 @@ impl MagicDnsServerInstanceData {
         }
     }
 
-    fn do_system_config(&self, _zone: &str) -> Result<(), anyhow::Error> {
-        #[cfg(target_os = "windows")]
-        {
-            use super::system_config::windows::WindowsDNSManager;
-            let cfg = WindowsDNSManager::new(self.tun_dev.as_ref().unwrap())?;
-            cfg.set_primary_dns(&[self.fake_ip.clone().into()], &[_zone.to_string()])?;
+    fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
+        if let Some(c) = &self.system_config {
+            c.set_dns(&OSConfig {
+                nameservers: vec![self.fake_ip.to_string()],
+                search_domains: vec![zone.to_string()],
+                match_domains: vec![zone.to_string()],
+            })?;
         }
-
         Ok(())
     }
 }
@@ -323,6 +326,26 @@ pub struct MagicDnsServerInstance {
     tun_inet: Ipv4Inet,
 }
 
+fn get_system_config(
+    _tun_name: Option<&str>,
+) -> Result<Option<Box<dyn SystemConfig>>, anyhow::Error> {
+    #[cfg(target_os = "windows")]
+    {
+        use super::system_config::windows::WindowsDNSManager;
+        let tun_name = _tun_name.ok_or_else(|| anyhow::anyhow!("No tun name"))?;
+        return Ok(Some(Box::new(WindowsDNSManager::new(tun_name)?)));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use super::system_config::darwin::DarwinConfigurator;
+        return Ok(Some(Box::new(DarwinConfigurator::new())));
+    }
+
+    #[allow(unreachable_code)]
+    Ok(None)
+}
+
 impl MagicDnsServerInstance {
     pub async fn new(
         peer_mgr: Arc<PeerManager>,
@@ -364,12 +387,14 @@ impl MagicDnsServerInstance {
 
         let data = Arc::new(MagicDnsServerInstanceData {
             dns_server,
-            tun_dev,
+            tun_dev: tun_dev.clone(),
             tun_ip: tun_inet.address(),
             fake_ip,
             my_peer_id: peer_mgr.my_peer_id(),
             route_infos: DashMap::new(),
+            system_config: get_system_config(tun_dev.as_deref())?,
         });
+
         rpc_server
             .registry()
             .register(MagicDnsServerRpcServer::new(data.clone()), "");
@@ -393,6 +418,13 @@ impl MagicDnsServerInstance {
     }
 
     pub async fn clean_env(&self) {
+        if let Some(configer) = &self.data.system_config {
+            let ret = configer.close();
+            if let Err(e) = ret {
+                tracing::error!("Failed to close system config: {:?}", e);
+            }
+        }
+
         if !self.tun_inet.contains(&self.data.fake_ip) && self.data.tun_dev.is_some() {
             let ifcfg = IfConfiger {};
             let _ = ifcfg
