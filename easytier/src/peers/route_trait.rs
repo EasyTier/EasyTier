@@ -99,8 +99,6 @@ pub trait Route {
 
     async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag>;
 
-    async fn get_peer_info_last_update_time(&self) -> std::time::Instant;
-
     async fn dump(&self) -> String {
         "this route implementation does not support dump".to_string()
     }

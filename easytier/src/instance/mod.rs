@@ -1,4 +1,3 @@
-pub mod dns_server;
 pub mod instance;
 pub mod listeners;
 
