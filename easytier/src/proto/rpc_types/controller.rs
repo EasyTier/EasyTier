@@ -2,6 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 
+use crate::proto::common::TunnelInfo;
+
 // Controller must impl clone and all cloned controllers share the same data
 pub trait Controller: Send + Sync + Clone + 'static {
     fn timeout_ms(&self) -> i32 {
@@ -18,6 +20,11 @@ pub trait Controller: Send + Sync + Clone + 'static {
 
     fn set_raw_input(&mut self, _raw_input: Bytes) {}
     fn get_raw_input(&self) -> Option<Bytes> {
+        None
+    }
+
+    fn set_tunnel_info(&mut self, _tunnel_info: Option<TunnelInfo>) {}
+    fn get_tunnel_info(&self) -> Option<&TunnelInfo> {
         None
     }
 
@@ -38,6 +45,7 @@ pub struct BaseController {
     pub timeout_ms: i32,
     pub trace_id: i32,
     pub raw_data: Arc<Mutex<BaseControllerRawData>>,
+    pub tunnel_info: Option<TunnelInfo>,
 }
 
 impl Controller for BaseController {
@@ -72,6 +80,14 @@ impl Controller for BaseController {
     fn get_raw_output(&self) -> Option<Bytes> {
         self.raw_data.lock().unwrap().raw_output.clone()
     }
+
+    fn get_tunnel_info(&self) -> Option<&TunnelInfo> {
+        self.tunnel_info.as_ref()
+    }
+
+    fn set_tunnel_info(&mut self, tunnel_info: Option<TunnelInfo>) {
+        self.tunnel_info = tunnel_info;
+    }
 }
 
 impl Default for BaseController {
@@ -83,6 +99,7 @@ impl Default for BaseController {
                 raw_input: None,
                 raw_output: None,
             })),
+            tunnel_info: None,
         }
     }
 }

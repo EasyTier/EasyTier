@@ -1,3 +1,5 @@
+use std::{fs::OpenOptions, str::FromStr};
+
 use anyhow::Context;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
@@ -123,11 +125,24 @@ pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
     }
 }
 
+thread_local! {
+    static PANIC_COUNT : std::cell::RefCell<u32> = std::cell::RefCell::new(0);
+}
+
 pub fn setup_panic_handler() {
     use std::backtrace;
     use std::io::Write;
     std::panic::set_hook(Box::new(|info| {
-        let backtrace = backtrace::Backtrace::force_capture();
+        PANIC_COUNT.with(|c| {
+            let mut count = c.borrow_mut();
+            *count += 1;
+        });
+        let panic_count = PANIC_COUNT.with(|c| *c.borrow());
+        if panic_count > 1 {
+            println!("panic happened more than once, exit immediately");
+            std::process::exit(1);
+        }
+
         let payload = info.payload();
         let payload_str: Option<&str> = if let Some(s) = payload.downcast_ref::<&str>() {
             Some(s)
@@ -136,24 +151,62 @@ pub fn setup_panic_handler() {
         } else {
             None
         };
+        let payload_str = payload_str.unwrap_or("<unknown panic info>");
+        // The current implementation always returns `Some`.
+        let location = info.location().unwrap();
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("<unnamed>");
 
-        if let Some(payload_str) = payload_str {
-            println!(
-                "panic occurred: payload:{}, location: {:?}, backtrace: {:#?}",
-                payload_str,
-                info.location(),
-                backtrace
-            );
-        } else {
-            println!(
-                "panic occurred: location: {:?}, backtrace: {:#?}",
-                info.location(),
-                backtrace
-            );
+        let tmp_path = std::env::temp_dir().join("easytier-panic.log");
+        let candidate_path = vec![
+            std::path::PathBuf::from_str("easytier-panic.log").ok(),
+            Some(tmp_path),
+        ];
+        let mut file = None;
+        let mut file_path = None;
+        for path in candidate_path.iter().filter_map(|p| p.clone()) {
+            file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path.clone())
+                .ok();
+            if file.is_some() {
+                file_path = Some(path);
+                break;
+            }
         }
+
         println!("{}", rust_i18n::t!("core_app.panic_backtrace_save"));
-        let _ = std::fs::File::create("easytier-panic.log")
-            .and_then(|mut f| f.write_all(format!("{:?}\n{:#?}", info, backtrace).as_bytes()));
+
+        // write str to stderr & file
+        let write_err = |s: String| {
+            let mut stderr = std::io::stderr();
+            let content = format!("{}: {}", chrono::Local::now(), s);
+            let _ = writeln!(stderr, "{}", content);
+            if let Some(mut f) = file.as_ref() {
+                let _ = writeln!(f, "{}", content);
+            }
+        };
+
+        write_err(format!("panic occurred, if this is a bug, please report this issue on github (https://github.com/easytier/easytier/issues)"));
+        write_err(format!("easytier version: {}", crate::VERSION));
+        write_err(format!("os version: {}", std::env::consts::OS));
+        write_err(format!("arch: {}", std::env::consts::ARCH));
+        write_err(format!(
+            "panic is recorded in: {}",
+            file_path
+                .and_then(|p| p.to_str().map(|x| x.to_string()))
+                .unwrap_or("<no file>".to_string())
+        ));
+        write_err(format!("thread: {}", thread));
+        write_err(format!("time: {}", chrono::Local::now()));
+        write_err(format!("location: {}", location));
+        write_err(format!("panic info: {}", payload_str));
+
+        // backtrace is risky, so use it last
+        let backtrace = backtrace::Backtrace::force_capture();
+        write_err(format!("backtrace: {:?}", backtrace));
+
         std::process::exit(1);
     }));
 }

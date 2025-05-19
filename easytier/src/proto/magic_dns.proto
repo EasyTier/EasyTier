@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+import "common.proto";
+import "cli.proto";
+
+package magic_dns;
+
+message DnsRecordA {
+    string name = 1;
+    common.Ipv4Addr value = 2;
+    int32 ttl = 3;
+}
+
+message DnsRecordSOA {
+    string name = 1;
+    string value = 2;
+}
+
+message DnsRecord {
+    oneof record {
+        DnsRecordA a = 1;
+        DnsRecordSOA soa = 2;
+    }
+}
+
+message DnsRecordList {
+    repeated DnsRecord records = 1;
+}
+
+message UpdateDnsRecordRequest {
+    string zone = 1;
+    repeated cli.Route routes = 2;
+}
+
+message GetDnsRecordResponse {
+    map<string, DnsRecordList> records = 1;
+}
+
+message HandshakeRequest {}
+
+message HandshakeResponse {}
+
+service MagicDnsServerRpc {
+    rpc Handshake(HandshakeRequest) returns (HandshakeResponse) {}
+    rpc Heartbeat(common.Void) returns (common.Void) {}
+    rpc UpdateDnsRecord(UpdateDnsRecordRequest) returns (common.Void) {}
+    rpc GetDnsRecord(common.Void) returns (GetDnsRecordResponse) {}
+}

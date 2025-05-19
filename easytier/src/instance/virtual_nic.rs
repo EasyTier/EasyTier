@@ -34,6 +34,9 @@ use tokio_util::bytes::Bytes;
 use tun::{AbstractDevice, AsyncDevice, Configuration, Layer};
 use zerocopy::{NativeEndian, NetworkEndian};
 
+#[cfg(target_os = "windows")]
+use crate::common::ifcfg::RegistryManager;
+
 pin_project! {
     pub struct TunStream {
         #[pin]
@@ -243,81 +246,6 @@ pub struct VirtualNic {
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
 
-#[cfg(target_os = "windows")]
-pub fn checkreg(dev_name: &str) -> io::Result<()> {
-    use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let profiles_key = hklm.open_subkey_with_flags(
-        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
-        KEY_ALL_ACCESS,
-    )?;
-    let unmanaged_key = hklm.open_subkey_with_flags(
-        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Signatures\\Unmanaged",
-        KEY_ALL_ACCESS,
-    )?;
-    // collect subkeys to delete
-    let mut keys_to_delete = Vec::new();
-    let mut keys_to_delete_unmanaged = Vec::new();
-    for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
-        let subkey = profiles_key.open_subkey(&subkey_name)?;
-        // check if ProfileName contains "et"
-        match subkey.get_value::<String, _>("ProfileName") {
-            Ok(profile_name) => {
-                if profile_name.contains("et_")
-                    || (!dev_name.is_empty() && dev_name == profile_name)
-                {
-                    keys_to_delete.push(subkey_name);
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to read ProfileName for subkey {}: {}",
-                    subkey_name,
-                    e
-                );
-            }
-        }
-    }
-    for subkey_name in unmanaged_key.enum_keys().filter_map(Result::ok) {
-        let subkey = unmanaged_key.open_subkey(&subkey_name)?;
-        // check if ProfileName contains "et"
-        match subkey.get_value::<String, _>("Description") {
-            Ok(profile_name) => {
-                if profile_name.contains("et_")
-                    || (!dev_name.is_empty() && dev_name == profile_name)
-                {
-                    keys_to_delete_unmanaged.push(subkey_name);
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to read ProfileName for subkey {}: {}",
-                    subkey_name,
-                    e
-                );
-            }
-        }
-    }
-    // delete collected subkeys
-    if !keys_to_delete.is_empty() {
-        for subkey_name in keys_to_delete {
-            match profiles_key.delete_subkey_all(&subkey_name) {
-                Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
-                Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
-            }
-        }
-    }
-    if !keys_to_delete_unmanaged.is_empty() {
-        for subkey_name in keys_to_delete_unmanaged {
-            match unmanaged_key.delete_subkey_all(&subkey_name) {
-                Ok(_) => tracing::trace!("Successfully deleted subkey: {}", subkey_name),
-                Err(e) => tracing::error!("Failed to delete subkey {}: {}", subkey_name, e),
-            }
-        }
-    }
-    Ok(())
-}
-
 impl VirtualNic {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
@@ -358,7 +286,7 @@ impl VirtualNic {
                 }
             }
 
-            match checkreg(&dev_name) {
+            match RegistryManager::reg_delete_obsoleted_items(&dev_name) {
                 Ok(_) => tracing::trace!("delete successful!"),
                 Err(e) => tracing::error!("An error occurred: {}", e),
             }
@@ -433,6 +361,30 @@ impl VirtualNic {
         let ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
 
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(guid) = RegistryManager::find_interface_guid(&ifname) {
+                if let Err(e) = RegistryManager::disable_dynamic_updates(&guid) {
+                    tracing::error!(
+                        "Failed to disable dhcp for interface {} {}: {}",
+                        ifname,
+                        guid,
+                        e
+                    );
+                }
+
+                // Disable NetBIOS over TCP/IP
+                if let Err(e) = RegistryManager::disable_netbios(&guid) {
+                    tracing::error!(
+                        "Failed to disable netbios for interface {} {}: {}",
+                        ifname,
+                        guid,
+                        e
+                    );
+                }
+            }
+        }
+
         let dev = AsyncDevice::new(dev)?;
 
         let flags = self.global_ctx.config.get_flags();
@@ -476,7 +428,7 @@ impl VirtualNic {
     pub async fn add_route(&self, address: Ipv4Addr, cidr: u8) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
-            .add_ipv4_route(self.ifname(), address, cidr)
+            .add_ipv4_route(self.ifname(), address, cidr, None)
             .await?;
         Ok(())
     }
@@ -498,38 +450,6 @@ impl VirtualNic {
     pub fn get_ifcfg(&self) -> impl IfConfiguerTrait {
         IfConfiger {}
     }
-}
-
-#[cfg(target_os = "windows")]
-pub fn reg_change_catrgory_in_profile(dev_name: &str) -> io::Result<()> {
-    use winreg::{enums::HKEY_LOCAL_MACHINE, enums::KEY_ALL_ACCESS, RegKey};
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    let profiles_key = hklm.open_subkey_with_flags(
-        "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\NetworkList\\Profiles",
-        KEY_ALL_ACCESS,
-    )?;
-
-    for subkey_name in profiles_key.enum_keys().filter_map(Result::ok) {
-        let subkey = profiles_key.open_subkey_with_flags(&subkey_name, KEY_ALL_ACCESS)?;
-        match subkey.get_value::<String, _>("ProfileName") {
-            Ok(profile_name) => {
-                if !dev_name.is_empty() && dev_name == profile_name {
-                    match subkey.set_value("Category", &1u32) {
-                        Ok(_) => tracing::trace!("Successfully set Category in registry"),
-                        Err(e) => tracing::error!("Failed to set Category in registry: {}", e),
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!(
-                    "Failed to read ProfileName for subkey {}: {}",
-                    subkey_name,
-                    e
-                );
-            }
-        }
-    }
-    Ok(())
 }
 
 pub struct NicCtx {
@@ -556,7 +476,12 @@ impl NicCtx {
         }
     }
 
-    async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
+    pub async fn ifname(&self) -> Option<String> {
+        let nic = self.nic.lock().await;
+        nic.ifname.as_ref().map(|s| s.to_owned())
+    }
+
+    pub async fn assign_ipv4_to_tun_device(&self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
         let nic = self.nic.lock().await;
         nic.link_up().await?;
         nic.remove_ip(None).await?;
@@ -700,6 +625,7 @@ impl NicCtx {
                             ifname.as_str(),
                             cidr.first_address(),
                             cidr.network_length(),
+                            None,
                         )
                         .await;
 
@@ -728,7 +654,7 @@ impl NicCtx {
                     #[cfg(target_os = "windows")]
                     {
                         let dev_name = self.global_ctx.get_flags().dev_name;
-                        let _ = reg_change_catrgory_in_profile(&dev_name);
+                        let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
                     self.global_ctx

@@ -2,7 +2,7 @@ use hickory_proto::rr;
 use hickory_proto::rr::RData;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -12,6 +12,10 @@ pub struct RunConfig {
 
     #[builder(default = HashMap::new())]
     zones: Zone,
+
+    #[builder(default = Vec::new())]
+    #[serde(default)]
+    excluded_forward_nameservers: Vec<IpAddr>,
 }
 
 impl RunConfig {
@@ -21,6 +25,10 @@ impl RunConfig {
 
     pub fn zones(&self) -> &Zone {
         &self.zones
+    }
+
+    pub fn excluded_forward_nameservers(&self) -> &Vec<IpAddr> {
+        &self.excluded_forward_nameservers
     }
 }
 
@@ -142,6 +150,7 @@ type = "A"
 name = "@"
 value = "100.100.100.100"
 ttl = "61s"
+
 "#;
 
         let config = toml::from_str::<RunConfig>(text)?;
