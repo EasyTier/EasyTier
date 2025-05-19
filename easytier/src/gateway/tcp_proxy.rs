@@ -351,9 +351,10 @@ impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
 #[async_trait::async_trait]
 impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        let Some(my_ipv4) = self.get_local_ip() else {
+        let Some(my_ipv4_inet) = self.get_local_inet() else {
             return false;
         };
+        let my_ipv4 = my_ipv4_inet.address();
 
         let data = zc_packet.payload();
         let ip_packet = Ipv4Packet::new(data).unwrap();
@@ -377,7 +378,7 @@ impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
 
         // for kcp proxy, the src ip of nat entry will be converted from my ip to fake ip
         // here we need to convert it back
-        if !self.is_smoltcp_enabled() && dst_addr.ip() == Self::get_fake_local_ipv4(my_ipv4) {
+        if !self.is_smoltcp_enabled() && dst_addr.ip() == Self::get_fake_local_ipv4(&my_ipv4_inet) {
             dst_addr.set_ip(IpAddr::V4(my_ipv4));
             need_transform_dst = true;
         }
@@ -620,13 +621,15 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     continue;
                 };
 
-                let my_ip = global_ctx
-                    .get_ipv4()
+                let my_ip_inet = global_ctx.get_ipv4();
+                let my_ip = my_ip_inet
                     .as_ref()
                     .map(Ipv4Inet::address)
                     .unwrap_or(Ipv4Addr::UNSPECIFIED);
 
-                if socket_addr.ip() == Self::get_fake_local_ipv4(my_ip) {
+                if my_ip_inet.is_some()
+                    && socket_addr.ip() == Self::get_fake_local_ipv4(&my_ip_inet.unwrap())
+                {
                     socket_addr.set_ip(IpAddr::V4(my_ip));
                 }
 
@@ -768,13 +771,14 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn get_local_ip(&self) -> Option<Ipv4Addr> {
+        self.get_local_inet().map(|inet| inet.address())
+    }
+
+    pub fn get_local_inet(&self) -> Option<Ipv4Inet> {
         if self.is_smoltcp_enabled() {
-            Some(Ipv4Addr::new(192, 88, 99, 254))
+            Some(Ipv4Inet::new(Ipv4Addr::new(192, 88, 99, 254), 24).unwrap())
         } else {
-            self.global_ctx
-                .get_ipv4()
-                .as_ref()
-                .map(cidr::Ipv4Inet::address)
+            self.global_ctx.get_ipv4().as_ref().cloned()
         }
     }
 
@@ -787,9 +791,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn get_fake_local_ipv4(local_ip: Ipv4Addr) -> Ipv4Addr {
-        let octets = local_ip.octets();
-        Ipv4Addr::new(octets[0], octets[1], octets[2], 0)
+    pub fn get_fake_local_ipv4(local_ip: &Ipv4Inet) -> Ipv4Addr {
+        local_ip.first_address()
     }
 
     async fn try_handle_peer_packet(&self, packet: &mut ZCPacket) -> Option<()> {
@@ -800,7 +803,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
             return None;
         }
 
-        let ipv4_addr = self.get_local_ip()?;
+        let ipv4_inet = self.get_local_inet()?;
+        let ipv4_addr = ipv4_inet.address();
         let hdr = packet.peer_manager_header().unwrap().clone();
 
         if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
@@ -849,7 +853,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let mut ip_packet = MutableIpv4Packet::new(payload_bytes).unwrap();
         if !self.is_smoltcp_enabled() && source_ip == ipv4_addr {
             // modify the source so the response packet can be handled by tun device
-            ip_packet.set_source(Self::get_fake_local_ipv4(ipv4_addr));
+            ip_packet.set_source(Self::get_fake_local_ipv4(&ipv4_inet));
         }
         ip_packet.set_destination(ipv4_addr);
         let source = ip_packet.get_source();

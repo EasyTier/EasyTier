@@ -128,6 +128,13 @@ export const useNetworkStore = defineStore('networkStore', {
       }
       this.saveAutoStartInstIdsToLocalStorage()
     },
+
+    isNoTunEnabled(instanceId: string): boolean {
+      const cfg = this.networkList.find((cfg) => cfg.instance_id === instanceId)
+      if (!cfg)
+        return false
+      return cfg.no_tun ?? false
+    },
   },
 })
 

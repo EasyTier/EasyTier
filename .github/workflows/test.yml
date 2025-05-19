@@ -47,6 +47,7 @@ jobs:
 
       - name: Setup system for test
         run: |
+          sudo modprobe br_netfilter
           sudo sysctl net.bridge.bridge-nf-call-iptables=0
           sudo sysctl net.bridge.bridge-nf-call-ip6tables=0
           sudo sysctl net.ipv6.conf.lo.disable_ipv6=0

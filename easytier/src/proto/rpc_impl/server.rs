@@ -12,7 +12,10 @@ use tokio_stream::StreamExt;
 use crate::{
     common::{join_joinset_background, PeerId},
     proto::{
-        common::{self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse},
+        common::{
+            self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
+            TunnelInfo,
+        },
         rpc_types::{controller::Controller, error::Result},
     },
     tunnel::{
@@ -82,7 +85,8 @@ impl Server {
 
         let packet_merges = self.packet_mergers.clone();
         let reg = self.registry.clone();
-        let t = tasks.clone();
+        let t = Arc::downgrade(&tasks);
+        let tunnel_info = mpsc.tunnel_info();
         tasks.lock().unwrap().spawn(async move {
             let mut mpsc = mpsc;
             let mut rx = mpsc.get_stream();
@@ -120,10 +124,15 @@ impl Server {
                 match ret {
                     Ok(Some(packet)) => {
                         packet_merges.remove(&key);
+                        let Some(t) = t.upgrade() else {
+                            tracing::error!("tasks is dropped");
+                            return;
+                        };
                         t.lock().unwrap().spawn(Self::handle_rpc(
                             mpsc.get_sink(),
                             packet,
                             reg.clone(),
+                            tunnel_info.clone(),
                         ));
                     }
                     Ok(None) => {}
@@ -143,7 +152,11 @@ impl Server {
         });
     }
 
-    async fn handle_rpc_request(packet: RpcPacket, reg: Arc<ServiceRegistry>) -> Result<Bytes> {
+    async fn handle_rpc_request(
+        packet: RpcPacket,
+        reg: Arc<ServiceRegistry>,
+        tunnel_info: Option<TunnelInfo>,
+    ) -> Result<Bytes> {
         let body = if let Some(compression_info) = packet.compression_info {
             decompress_packet(
                 compression_info.algo.try_into().unwrap_or_default(),
@@ -158,6 +171,7 @@ impl Server {
         let mut ctrl = RpcController::default();
         let raw_req = Bytes::from(rpc_request.request);
         ctrl.set_raw_input(raw_req.clone());
+        ctrl.set_tunnel_info(tunnel_info);
         let ret = timeout(
             timeout_duration,
             reg.call_method(packet.descriptor.unwrap(), ctrl.clone(), raw_req),
@@ -170,7 +184,12 @@ impl Server {
         }
     }
 
-    async fn handle_rpc(sender: MpscTunnelSender, packet: RpcPacket, reg: Arc<ServiceRegistry>) {
+    async fn handle_rpc(
+        sender: MpscTunnelSender,
+        packet: RpcPacket,
+        reg: Arc<ServiceRegistry>,
+        tunnel_info: Option<TunnelInfo>,
+    ) {
         let from_peer = packet.from_peer;
         let to_peer = packet.to_peer;
         let transaction_id = packet.transaction_id;
@@ -181,7 +200,7 @@ impl Server {
         let now = std::time::Instant::now();
 
         let compression_info = packet.compression_info.clone();
-        let resp_bytes = Self::handle_rpc_request(packet, reg).await;
+        let resp_bytes = Self::handle_rpc_request(packet, reg, tunnel_info).await;
 
         match &resp_bytes {
             Ok(r) => {

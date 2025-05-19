@@ -1558,6 +1558,7 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_peer_info_last_update(&self) {
+        tracing::debug!(?self, "update_peer_info_last_update");
         self.peer_info_last_update.store(std::time::Instant::now());
     }
 

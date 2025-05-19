@@ -807,7 +807,10 @@ impl StunInfoCollector {
     async fn get_public_ipv6(servers: &Vec<String>) -> Option<Ipv6Addr> {
         let mut ips = HostResolverIter::new(servers.to_vec(), 10, true);
         while let Some(ip) = ips.next().await {
-            let udp = Arc::new(UdpSocket::bind(format!("[::]:0")).await.unwrap());
+            let Ok(udp_socket) = UdpSocket::bind(format!("[::]:0")).await else {
+                break;
+            };
+            let udp = Arc::new(udp_socket);
             let ret = StunClientBuilder::new(udp.clone())
                 .new_stun_client(ip)
                 .bind_request(false, false)

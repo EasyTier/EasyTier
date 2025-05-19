@@ -7,7 +7,9 @@ use std::sync::{Arc, Weak};
 use anyhow::Context;
 use cidr::Ipv4Inet;
 
+use tokio::task::JoinHandle;
 use tokio::{sync::Mutex, task::JoinSet};
+use tokio_util::sync::CancellationToken;
 
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
@@ -35,6 +37,7 @@ use crate::tunnel::tcp::TcpTunnelListener;
 use crate::vpn_portal::{self, VpnPortal};
 
 use super::dns_server::runner::DnsRunner;
+use super::dns_server::MAGIC_DNS_FAKE_IP;
 use super::listeners::ListenerManager;
 
 #[cfg(feature = "socks5")]
@@ -77,7 +80,13 @@ impl IpProxy {
 
         self.started.store(true, Ordering::Relaxed);
         self.tcp_proxy.start(true).await?;
-        self.icmp_proxy.start().await?;
+        if let Err(e) = self.icmp_proxy.start().await {
+            tracing::error!("start icmp proxy failed: {:?}", e);
+            if cfg!(not(target_os = "android")) {
+                // android may not support icmp proxy
+                return Err(e);
+            }
+        }
         self.udp_proxy.start().await?;
         Ok(())
     }
@@ -102,7 +111,49 @@ impl NicCtx {
     }
 }
 
-type ArcNicCtx = Arc<Mutex<Option<Box<dyn Any + 'static + Send>>>>;
+struct MagicDnsContainer {
+    dns_runner_task: JoinHandle<()>,
+    dns_runner_cancel_token: CancellationToken,
+}
+
+// nic container will be cleared when dhcp ip changed
+pub(crate) struct NicCtxContainer {
+    nic_ctx: Option<Box<dyn Any + 'static + Send>>,
+    magic_dns: Option<MagicDnsContainer>,
+}
+
+impl NicCtxContainer {
+    fn new(nic_ctx: NicCtx, dns_runner: Option<DnsRunner>) -> Self {
+        if let Some(mut dns_runner) = dns_runner {
+            let token = CancellationToken::new();
+            let token_clone = token.clone();
+            let task = tokio::spawn(async move {
+                let _ = dns_runner.run(token_clone).await;
+            });
+            Self {
+                nic_ctx: Some(Box::new(nic_ctx)),
+                magic_dns: Some(MagicDnsContainer {
+                    dns_runner_task: task,
+                    dns_runner_cancel_token: token,
+                }),
+            }
+        } else {
+            Self {
+                nic_ctx: Some(Box::new(nic_ctx)),
+                magic_dns: None,
+            }
+        }
+    }
+
+    fn new_with_any<T: 'static + Send>(ctx: T) -> Self {
+        Self {
+            nic_ctx: Some(Box::new(ctx)),
+            magic_dns: None,
+        }
+    }
+}
+
+type ArcNicCtx = Arc<Mutex<Option<NicCtxContainer>>>;
 
 pub struct Instance {
     inst_name: String,
@@ -240,7 +291,14 @@ impl Instance {
         arc_nic_ctx: ArcNicCtx,
         packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
     ) {
-        let _ = arc_nic_ctx.lock().await.take();
+        if let Some(old_ctx) = arc_nic_ctx.lock().await.take() {
+            if let Some(dns_runner) = old_ctx.magic_dns {
+                dns_runner.dns_runner_cancel_token.cancel();
+                tracing::debug!("cancelling dns runner task");
+                let ret = dns_runner.dns_runner_task.await;
+                tracing::debug!("dns runner task cancelled, ret: {:?}", ret);
+            }
+        };
 
         let mut tasks = JoinSet::new();
         tasks.spawn(async move {
@@ -249,14 +307,40 @@ impl Instance {
                 tracing::trace!("packet consumed by mock nic ctx: {:?}", packet);
             }
         });
-        arc_nic_ctx.lock().await.replace(Box::new(tasks));
+        arc_nic_ctx
+            .lock()
+            .await
+            .replace(NicCtxContainer::new_with_any(tasks));
 
         tracing::debug!("nic ctx cleared.");
     }
 
-    async fn use_new_nic_ctx(arc_nic_ctx: ArcNicCtx, nic_ctx: NicCtx) {
+    fn create_magic_dns_runner(
+        peer_mgr: Arc<PeerManager>,
+        tun_dev: Option<String>,
+        tun_ip: Ipv4Inet,
+    ) -> Option<DnsRunner> {
+        let ctx = peer_mgr.get_global_ctx();
+        if !ctx.config.get_flags().accept_dns {
+            return None;
+        }
+
+        let runner = DnsRunner::new(
+            peer_mgr,
+            tun_dev,
+            tun_ip,
+            MAGIC_DNS_FAKE_IP.parse().unwrap(),
+        );
+        Some(runner)
+    }
+
+    async fn use_new_nic_ctx(
+        arc_nic_ctx: ArcNicCtx,
+        nic_ctx: NicCtx,
+        magic_dns: Option<DnsRunner>,
+    ) {
         let mut g = arc_nic_ctx.lock().await;
-        *g = Some(Box::new(nic_ctx));
+        *g = Some(NicCtxContainer::new(nic_ctx, magic_dns));
         tracing::debug!("nic ctx updated.");
     }
 
@@ -346,7 +430,17 @@ impl Instance {
                             global_ctx_c.set_ipv4(None);
                             continue;
                         }
-                        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
+                        let ifname = new_nic_ctx.ifname().await;
+                        Self::use_new_nic_ctx(
+                            nic_ctx.clone(),
+                            new_nic_ctx,
+                            Self::create_magic_dns_runner(
+                                peer_manager_c.clone(),
+                                ifname,
+                                ip.clone(),
+                            ),
+                        )
+                        .await;
                     }
 
                     current_dhcp_ip = Some(ip);
@@ -381,7 +475,17 @@ impl Instance {
                     self.peer_packet_receiver.clone(),
                 );
                 new_nic_ctx.run(ipv4_addr).await?;
-                Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx).await;
+                let ifname = new_nic_ctx.ifname().await;
+                Self::use_new_nic_ctx(
+                    self.nic_ctx.clone(),
+                    new_nic_ctx,
+                    Self::create_magic_dns_runner(
+                        self.peer_manager.clone(),
+                        ifname,
+                        ipv4_addr.clone(),
+                    ),
+                )
+                .await;
             }
         }
 
@@ -424,7 +528,13 @@ impl Instance {
         }
 
         #[cfg(feature = "socks5")]
-        self.socks5_server.run().await?;
+        self.socks5_server
+            .run(
+                self.kcp_proxy_src
+                    .as_ref()
+                    .map(|x| Arc::downgrade(&x.get_kcp_endpoint())),
+            )
+            .await?;
 
         self.magic_dns_server.run().await?;
 
@@ -614,7 +724,13 @@ impl Instance {
             .run_for_android(fd)
             .await
             .with_context(|| "add ip failed")?;
-        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
+
+        let magic_dns_runner = if let Some(ipv4) = global_ctx.get_ipv4() {
+            Self::create_magic_dns_runner(peer_manager.clone(), None, ipv4)
+        } else {
+            None
+        };
+        Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
         Ok(())
     }
 }

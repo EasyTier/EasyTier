@@ -3,7 +3,7 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.2.4"
+version = "2.3.0"
 edition = "2021"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
@@ -153,7 +153,7 @@ humansize = "2.1.3"
 
 base64 = "0.22"
 
-mimalloc-rust = { version = "0.2.1", optional = true }
+mimalloc-rust = { git = "https://github.com/EasyTier/mimalloc-rust", optional = true }
 
 # mips
 atomic-shim = "0.2.0"
@@ -209,15 +209,16 @@ http_req = { git = "https://github.com/EasyTier/http_req.git", default-features 
     "rust-tls",
 ] }
 
-# for dns connector
-hickory-resolver = "0.25.1"
+# for dns connectorhickory-resolver = "0.25.2"
+hickory-proto = "0.25.2"
 
 # for magic dns
-hickory-proto = "0.25.1"
-hickory-client = "0.25.1"
-hickory-server = { version = "0.25.1", features = ["resolver"] }
+hickory-client = "0.25.2"
+hickory-server = { version = "0.25.2", features = ["resolver"] }
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
+multimap = "0.10.0"
+version-compare = "0.2.0"
 
 bounded_join_set = "0.3.0"
 
@@ -237,6 +238,10 @@ netlink-sys = "0.8.7"
 netlink-packet-route = "0.21.0"
 netlink-packet-core = { version = "0.7.0" }
 netlink-packet-utils = "0.5.2"
+# for magic dns
+resolv-conf = "0.7.3"
+dbus = { version = "0.9.7", features = ["vendored"] }
+which = "7.0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52.0", features = [
