@@ -21,7 +21,6 @@ pub trait IfConfiguerTrait: Send + Sync {
         _name: &str,
         _address: Ipv4Addr,
         _cidr_prefix: u8,
-        _cost: Option<i32>,
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -126,6 +125,3 @@ pub type IfConfiger = windows::WindowsIfConfiger;
     target_os = "freebsd",
 )))]
 pub type IfConfiger = DummyIfConfiger;
-
-#[cfg(target_os = "windows")]
-pub use windows::RegistryManager;

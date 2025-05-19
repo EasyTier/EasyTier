@@ -5,7 +5,7 @@ use std::{pin::Pin, time::Duration};
 use anyhow::Context;
 use tokio::time::timeout;
 
-use crate::{common::scoped_task::ScopedTask, proto::common::TunnelInfo};
+use crate::common::scoped_task::ScopedTask;
 
 use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 
@@ -132,10 +132,6 @@ impl<T: Tunnel> MpscTunnel<T> {
     pub fn close(&mut self) {
         self.tx.take();
         self.task.abort();
-    }
-
-    pub fn tunnel_info(&self) -> Option<TunnelInfo> {
-        self.tunnel.info()
     }
 }
 

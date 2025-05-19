@@ -4,7 +4,6 @@ pub mod rpc_types;
 pub mod cli;
 pub mod common;
 pub mod error;
-pub mod magic_dns;
 pub mod peer_rpc;
 pub mod web;
 

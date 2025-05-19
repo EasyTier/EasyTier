@@ -63,8 +63,6 @@ message NetworkConfig {
     optional bool disable_udp_hole_punching = 39;
     optional int32 mtu = 40;
     repeated string mapped_listeners = 41;
-
-    optional bool enable_magic_dns = 42;
 }
 
 message MyNodeInfo {

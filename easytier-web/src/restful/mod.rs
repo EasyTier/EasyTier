@@ -29,12 +29,6 @@ use crate::client_manager::storage::StorageToken;
 use crate::client_manager::ClientManager;
 use crate::db::Db;
 
-/// Embed assets for web dashboard, build frontend first
-#[cfg(feature = "embed")]
-#[derive(rust_embed::RustEmbed, Clone)]
-#[folder = "frontend/dist/"]
-struct Assets;
-
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
@@ -44,8 +38,6 @@ pub struct RestfulServer {
     delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
 
     network_api: NetworkApi,
-
-    enable_web_embed: bool,
 }
 
 type AppStateInner = Arc<ClientManager>;
@@ -95,7 +87,6 @@ impl RestfulServer {
         bind_addr: SocketAddr,
         client_mgr: Arc<ClientManager>,
         db: Db,
-        enable_web_embed: bool,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -108,7 +99,6 @@ impl RestfulServer {
             serve_task: None,
             delete_task: None,
             network_api,
-            enable_web_embed,
         })
     }
 
@@ -228,15 +218,6 @@ impl RestfulServer {
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())
             .layer(compression_layer);
-
-        #[cfg(feature = "embed")]
-        let app = if self.enable_web_embed {
-            use axum_embed::ServeEmbed;
-            let service = ServeEmbed::<Assets>::new();
-            app.fallback_service(service)
-        } else {
-            app
-        };
 
         let task = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();

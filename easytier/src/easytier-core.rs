@@ -28,7 +28,7 @@ use easytier::{
     launcher,
     proto::{
         self,
-        common::{CompressionAlgoPb, NatType},
+        common::{CompressionAlgoPb, CompressionLevelPb, NatType},
     },
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
@@ -89,6 +89,7 @@ fn dump_profile(_cur_allocated: usize) {
         }
     }
 }
+
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
@@ -414,6 +415,14 @@ struct Cli {
 
     #[arg(
         long,
+        env = "ET_COMPRESSION_LEVEL",
+        help = t!("core_clap.compression_level").to_string(),
+        default_missing_value = "default"
+    )]
+    compression_level: Option<String>,
+
+    #[arg(
+        long,
         env = "ET_BIND_DEVICE",
         help = t!("core_clap.bind_device").to_string()
     )]
@@ -445,13 +454,6 @@ struct Cli {
         num_args = 1..
     )]
     port_forward: Vec<url::Url>,
-
-    #[arg(
-        long,
-        env = "ET_ACCEPT_DNS",
-        help = t!("core_clap.accept_dns").to_string(),
-    )]
-    accept_dns: Option<bool>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -723,7 +725,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             cfg.set_port_forwards(old);
         }
 
-        let mut f = cfg.get_flags();
+        let mut f: proto::common::FlagsInConfig = cfg.get_flags();
         if let Some(default_protocol) = &cli.default_protocol {
             f.default_protocol = default_protocol.clone()
         };
@@ -759,17 +761,36 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             f.data_compress_algo = match compression.as_str() {
                 "none" => CompressionAlgoPb::None,
                 "zstd" => CompressionAlgoPb::Zstd,
+                "brotli" => CompressionAlgoPb::Brotli,
+                "lz4" => CompressionAlgoPb::Lz4,
+                "gzip" => CompressionAlgoPb::Gzip,
+                "deflate" => CompressionAlgoPb::Deflate,
+                "bzip2" => CompressionAlgoPb::Bzip2,
+                "lzma" => CompressionAlgoPb::Lzma,
+                "xz" => CompressionAlgoPb::Xz,
+                "zlib" => CompressionAlgoPb::Zlib,
                 _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
+                    "unknown compression algorithm: {}, supported: none, zstd, brotli, lz4, gzip, deflate, bzip2, lzma, xz, zlib",
                     compression
                 ),
             }
             .into();
+            if let Some(compression_level) = &cli.compression_level {
+                f.data_compress_level = match compression_level.as_str() {
+                    "fastest" => CompressionLevelPb::Fastest,
+                    "default" => CompressionLevelPb::Default,
+                    "best" => CompressionLevelPb::Best,
+                    _ => panic!(
+                        "unknown compression level: {}, supported: fastest, default, best",
+                        compression_level
+                    ),
+                }
+                .into();
+            }
         }
         f.bind_device = cli.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = cli.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = cli.disable_kcp_input.unwrap_or(f.disable_kcp_input);
-        f.accept_dns = cli.accept_dns.unwrap_or(f.accept_dns);
         cfg.set_flags(f);
 
         if !cli.exit_nodes.is_empty() {
