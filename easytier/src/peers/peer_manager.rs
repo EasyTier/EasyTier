@@ -120,7 +120,7 @@ pub struct PeerManager {
     global_ctx: ArcGlobalCtx,
     nic_channel: PacketRecvChan,
 
-    tasks: Mutex<JoinSet<()>>,
+    tasks: Arc<Mutex<JoinSet<()>>>,
 
     packet_recv: Arc<Mutex<Option<PacketRecvChanReceiver>>>,
 
@@ -256,7 +256,7 @@ impl PeerManager {
             global_ctx,
             nic_channel,
 
-            tasks: Mutex::new(JoinSet::new()),
+            tasks: Arc::new(Mutex::new(JoinSet::new())),
 
             packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
 
@@ -776,16 +776,6 @@ impl PeerManager {
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
             let _ = pipeline.try_process_packet_from_nic(data).await;
-        }
-    }
-
-    pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
-        let mut pipelines = self.nic_packet_process_pipeline.write().await;
-        if let Some(pos) = pipelines.iter().position(|x| x.id() == id) {
-            pipelines.remove(pos);
-            Ok(())
-        } else {
-            Err(Error::NotFound)
         }
     }
 

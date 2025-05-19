@@ -63,7 +63,7 @@ pub struct GlobalCtx {
 
     ip_collector: Arc<IPCollector>,
 
-    hostname: Mutex<String>,
+    hostname: String,
 
     stun_info_collection: Box<dyn StunInfoCollectorTrait>,
 
@@ -122,7 +122,7 @@ impl GlobalCtx {
 
             ip_collector: Arc::new(IPCollector::new(net_ns, stun_info_collection.clone())),
 
-            hostname: Mutex::new(hostname),
+            hostname,
 
             stun_info_collection: Box::new(stun_info_collection),
 
@@ -219,11 +219,7 @@ impl GlobalCtx {
     }
 
     pub fn get_hostname(&self) -> String {
-        return self.hostname.lock().unwrap().clone();
-    }
-
-    pub fn set_hostname(&self, hostname: String) {
-        *self.hostname.lock().unwrap() = hostname;
+        return self.hostname.clone();
     }
 
     pub fn get_stun_info_collector(&self) -> impl StunInfoCollectorTrait + '_ {
@@ -304,10 +300,7 @@ impl GlobalCtx {
 
 #[cfg(test)]
 pub mod tests {
-    use crate::{
-        common::{config::TomlConfigLoader, new_peer_id, stun::MockStunInfoCollector},
-        proto::common::NatType,
-    };
+    use crate::common::{config::TomlConfigLoader, new_peer_id};
 
     use super::*;
 
@@ -347,12 +340,7 @@ pub mod tests {
         let config_fs = TomlConfigLoader::default();
         config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
         config_fs.set_network_identity(network_identy.unwrap_or(NetworkIdentity::default()));
-
-        let ctx = Arc::new(GlobalCtx::new(config_fs));
-        ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }));
-        ctx
+        std::sync::Arc::new(GlobalCtx::new(config_fs))
     }
 
     pub fn get_mock_global_ctx() -> ArcGlobalCtx {

@@ -1,6 +1,6 @@
 [package]
 name = "easytier-gui"
-version = "2.3.0"
+version = "2.2.4"
 description = "EasyTier GUI"
 authors = ["you"]
 edition = "2021"
@@ -60,4 +60,4 @@ tauri-plugin-autostart = "2.0"
 custom-protocol = ["tauri/custom-protocol"]
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-tauri-plugin-single-instance = "2.2.3"
+tauri-plugin-single-instance = "2.0.0-rc.0"

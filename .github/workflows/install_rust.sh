@@ -45,8 +45,8 @@ fi
 
 # see https://github.com/rust-lang/rustup/issues/3709
 rustup set auto-self-update disable
-rustup install 1.86
-rustup default 1.86
+rustup install 1.84
+rustup default 1.84
 
 # mips/mipsel cannot add target from rustup, need compile by ourselves
 if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then

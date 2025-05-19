@@ -29,9 +29,7 @@ message FlagsInConfig {
   // allow relay kcp packets (for public server, this can reduce the throughput)
   bool disable_relay_kcp = 20;
   bool proxy_forward_by_system = 21;
-  // enable magic dns or not
-  bool accept_dns = 22;
-  CompressionLevelPb data_compress_level = 23;
+  CompressionLevelPb data_compress_level = 22;
 }
 
 message RpcDescriptor {

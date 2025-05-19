@@ -14,10 +14,8 @@ use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::net::{TcpListener, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-use tokio::task::JoinSet;
 
 use crate::common::stun::get_default_resolver_config;
 
@@ -28,8 +26,6 @@ pub struct Server {
     catalog: Arc<RwLock<Catalog>>,
     general_config: GeneralConfig,
     udp_local_addr: Option<SocketAddr>,
-    tcp_local_addr: Option<SocketAddr>,
-    tasks: JoinSet<()>,
 }
 
 struct CatalogRequestHandler {
@@ -97,11 +93,6 @@ impl Server {
                 .name_servers()
                 .iter()
                 .cloned()
-                .filter(|x| {
-                    !config
-                        .excluded_forward_nameservers()
-                        .contains(&x.socket_addr.ip())
-                })
                 .collect::<Vec<_>>()
                 .into(),
             options: Some(system_conf.1),
@@ -124,21 +115,18 @@ impl Server {
             catalog,
             general_config: config.general().clone(),
             udp_local_addr: None,
-            tcp_local_addr: None,
-            tasks: JoinSet::new(),
         })
     }
 
-    pub fn udp_local_addr(&self) -> Option<SocketAddr> {
+    pub fn udp_local_addr(&mut self) -> Option<SocketAddr> {
         self.udp_local_addr
     }
 
-    pub fn tcp_local_addr(&self) -> Option<SocketAddr> {
-        self.tcp_local_addr
-    }
-
-    pub async fn register_udp_socket(&mut self, address: String) -> Result<SocketAddr> {
-        let bind_addr = SocketAddr::from_str(&address)
+    pub async fn run(&mut self) -> Result<()> {
+        let Some(address) = self.general_config.listen_udp() else {
+            return Ok(());
+        };
+        let bind_addr = SocketAddr::from_str(address)
             .with_context(|| format!("DNS Server failed to parse address {}", address))?;
         let socket = socket2::Socket::new(
             socket2::Domain::IPV4,
@@ -159,6 +147,14 @@ impl Server {
                     address.to_string()
                 )
             })?;
+        socket2::SockRef::from(&socket)
+            .set_reuse_port(true)
+            .with_context(|| {
+                format!(
+                    "DNS Server failed to set reuse port on socket {}",
+                    address.to_string()
+                )
+            })?;
         socket.bind(&bind_addr.into()).with_context(|| {
             format!("DNS Server failed to bind socket to address {}", bind_addr)
         })?;
@@ -171,29 +167,8 @@ impl Server {
                 address.to_string()
             )
         })?;
-
-        let local_addr = socket
-            .local_addr()
-            .with_context(|| format!("DNS Server failed to get local address"))?;
+        self.udp_local_addr = Some(socket.local_addr()?);
         self.server.register_socket(socket);
-
-        Ok(local_addr)
-    }
-
-    pub async fn run(&mut self) -> Result<()> {
-        if let Some(address) = self.general_config.listen_tcp() {
-            let tcp_listener = TcpListener::bind(address.clone())
-                .await
-                .with_context(|| format!("DNS Server failed to bind TCP address {}", address))?;
-            self.tcp_local_addr = Some(tcp_listener.local_addr()?);
-            self.server
-                .register_listener(tcp_listener, Duration::from_secs(5));
-        }
-
-        if let Some(address) = self.general_config.listen_udp() {
-            let local_addr = self.register_udp_socket(address.clone()).await?;
-            self.udp_local_addr = Some(local_addr);
-        };
 
         Ok(())
     }

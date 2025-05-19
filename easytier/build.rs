@@ -129,10 +129,7 @@ fn check_locale() {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // enable thunk-rs when target os is windows and arch is x86_64 or i686
     #[cfg(target_os = "windows")]
-    if !std::env::var("TARGET")
-        .unwrap_or_default()
-        .contains("aarch64")
-    {
+    if !std::env::var("TARGET").unwrap_or_default().contains("aarch64"){
         thunk::thunk();
     }
 
@@ -146,7 +143,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "src/proto/tests.proto",
         "src/proto/cli.proto",
         "src/proto/web.proto",
-        "src/proto/magic_dns.proto",
     ];
 
     for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
