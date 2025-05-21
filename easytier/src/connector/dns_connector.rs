@@ -2,17 +2,15 @@ use std::{net::SocketAddr, sync::Arc};
 
 use crate::{
     common::{
+        dns::{resolve_txt_record, RESOLVER},
         error::Error,
         global_ctx::ArcGlobalCtx,
-        stun::{get_default_resolver_config, resolve_txt_record},
     },
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
 };
 use anyhow::Context;
 use dashmap::DashSet;
-use hickory_resolver::{
-    name_server::TokioConnectionProvider, proto::rr::rdata::SRV, TokioResolver,
-};
+use hickory_resolver::proto::rr::rdata::SRV;
 use rand::{seq::SliceRandom, Rng as _};
 
 use crate::proto::common::TunnelInfo;
@@ -58,14 +56,7 @@ impl DNSTunnelConnector {
         &self,
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
-        let resolver = TokioResolver::builder_tokio()
-            .unwrap_or(TokioResolver::builder_with_config(
-                get_default_resolver_config(),
-                TokioConnectionProvider::default(),
-            ))
-            .build();
-
-        let txt_data = resolve_txt_record(domain_name, &resolver)
+        let txt_data = resolve_txt_record(domain_name)
             .await
             .with_context(|| format!("resolve txt record failed, domain_name: {}", domain_name))?;
 
@@ -120,13 +111,6 @@ impl DNSTunnelConnector {
     ) -> Result<Box<dyn TunnelConnector>, Error> {
         tracing::info!("handle_srv_record: {}", domain_name);
 
-        let resolver = TokioResolver::builder_tokio()
-            .unwrap_or(TokioResolver::builder_with_config(
-                get_default_resolver_config(),
-                TokioConnectionProvider::default(),
-            ))
-            .build();
-
         let srv_domains = PROTO_PORT_OFFSET
             .iter()
             .map(|(p, _)| (format!("_easytier._{}.{}", p, domain_name), *p)) // _easytier._udp.{domain_name}
@@ -136,7 +120,7 @@ impl DNSTunnelConnector {
         let srv_lookup_tasks = srv_domains
             .iter()
             .map(|(srv_domain, protocol)| {
-                let resolver = resolver.clone();
+                let resolver = RESOLVER.clone();
                 let responses = responses.clone();
                 async move {
                     let response = resolver.srv_lookup(srv_domain).await.with_context(|| {

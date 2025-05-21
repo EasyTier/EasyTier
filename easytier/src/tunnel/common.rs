@@ -401,8 +401,8 @@ pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
     mut futures: FuturesUnordered<Fut>,
 ) -> Result<Ret, TunnelError>
 where
-    Fut: Future<Output = Result<Ret, E>> + Send + Sync,
-    E: std::error::Error + Into<TunnelError> + Send + Sync + 'static,
+    Fut: Future<Output = Result<Ret, E>> + Send,
+    E: std::error::Error + Into<TunnelError> + Send + 'static,
 {
     // return last error
     let mut last_err = None;
