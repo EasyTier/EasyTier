@@ -157,8 +157,10 @@ if [ "$(id -u)" != "0" ]; then
   echo -e "\r\n${RED_COLOR}This script requires run as Root !${RES}\r\n" 1>&2
   exit 1
 elif [ "$ARCH" == "UNKNOWN" ]; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platform\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
+  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platform\r\nTry ${GREEN_COLOR}install by hand${RES}\r\n"
   exit 1
+fi
+
 # Detect init system
 if command -v systemctl >/dev/null 2>&1; then
   INIT_SYSTEM="systemd"
@@ -421,10 +423,16 @@ UPDATE() {
         systemctl start "easytier@*"
       else
         rc-service easytier start
+      fi
       exit 1
     fi
     echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
-    systemctl start "easytier@*"
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+      systemctl start "easytier@*"
+    else
+      rc-service easytier start
+    fi
+    echo -e "\r\n${GREEN_COLOR} EasyTier was updated successfully! ${RES}\r\n"
     echo -e "\r\n${GREEN_COLOR} EasyTier was the latest stable version! ${RES}\r\n"
   fi
 }
