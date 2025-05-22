@@ -157,12 +157,18 @@ if [ "$(id -u)" != "0" ]; then
   echo -e "\r\n${RED_COLOR}This script requires run as Root !${RES}\r\n" 1>&2
   exit 1
 elif [ "$ARCH" == "UNKNOWN" ]; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platfrom\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
+  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platform\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
   exit 1
-elif ! command -v systemctl >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, your Linux do not support systemctl\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
+# Detect init system
+if command -v systemctl >/dev/null 2>&1; then
+  INIT_SYSTEM="systemd"
+elif command -v rc-update >/dev/null 2>&1; then
+  INIT_SYSTEM="openrc"
+else
+  echo -e "\r\n${RED_COLOR}Error: Unsupported init system (neither systemd nor OpenRC found)${RES}\r\n"
   exit 1
 fi
+
 
 CHECK() {
   if ! $SKIP_FOLDER_VERIFY; then
@@ -194,7 +200,7 @@ INSTALL() {
   LATEST_VERSION=$(echo -e "$LATEST_VERSION" | tr -d '[:space:]')
 
   if [ -z "$LATEST_VERSION" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, failure to get latest version. Check your internel\r\nOr try ${GREEN_COLOR}install by band${RES}\r\n"
+    echo -e "\r\n${RED_COLOR}Opus${RES}, failure to get latest version. Check your internet\r\nOr try ${GREEN_COLOR}install by hand${RES}\r\n"
     exit 1
   fi
 
@@ -265,8 +271,41 @@ disable_udp_hole_punching = false
 
 EOF
 
+  # Create init script
+  if [ "$INIT_SYSTEM" = "openrc" ]; then
+    cat >/etc/init.d/easytier <<EOF
+#!/sbin/openrc-run
+
+name="EasyTier"
+description="EasyTier Service"
+command="$INSTALL_PATH/easytier-core"
+command_args="-c $INSTALL_PATH/config/\$1.conf"
+command_background=true
+
+pidfile="/run/\${RC_SVCNAME}.pid"
+
+depend() {
+  need net
+}
+
+start() {
+  ebegin "Starting $name"
+  start-stop-daemon --start --exec \$command -- \$command_args
+  eend $?
+}
+
+stop() {
+  ebegin "Stopping $name"
+  start-stop-daemon --stop --exec \$command
+  eend $?
+}
+EOF
+    chmod +x /etc/init.d/easytier
+  fi
+
   # Create systemd
-  cat >/etc/systemd/system/easytier@.service <<EOF
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    cat >/etc/systemd/system/easytier@.service <<EOF
 [Unit]
 Description=EasyTier Service
 Wants=network.target
@@ -290,9 +329,14 @@ EOF
 # EOF
 
   # Startup
-  systemctl daemon-reload
-  systemctl enable easytier@default >/dev/null 2>&1
-  systemctl start easytier@default
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl daemon-reload
+    systemctl enable easytier@default >/dev/null 2>&1
+    systemctl start easytier@default
+  else
+    rc-update add easytier default
+    rc-service easytier start
+  fi
 
   # For issues from the previous version
   rm -rf /etc/systemd/system/easytier.service
@@ -311,25 +355,40 @@ SUCCESS() {
   echo -e "Default Network Name: ${GREEN_COLOR}default${RES}, Please change it to your own network name!\r\n"
 
   echo -e "Now EasyTier supports multiple config files. You can create config files in the ${GREEN_COLOR}${INSTALL_PATH}/config/${RES} folder"
-  echo -e "For more information, please check the documents in offical site"
+  echo -e "For more information, please check the documents in official site"
   echo -e "The management example of a single configuration file is as follows"
 
   echo
-  echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
-  echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
-  echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
-  echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
+    echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
+    echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
+    echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
+  else
+    echo -e "Status: ${GREEN_COLOR}rc-service easytier status${RES}"
+    echo -e "Start: ${GREEN_COLOR}rc-service easytier start${RES}"
+    echo -e "Restart: ${GREEN_COLOR}rc-service easytier restart${RES}"
+    echo -e "Stop: ${GREEN_COLOR}rc-service easytier stop${RES}"
+  fi
   echo
 }
 
 UNINSTALL() {
   echo -e "\r\n${GREEN_COLOR}Uninstall EasyTier ...${RES}\r\n"
   echo -e "${GREEN_COLOR}Stop process ...${RES}"
-  systemctl disable "easytier@*" >/dev/null 2>&1
-  systemctl stop "easytier@*" >/dev/null 2>&1
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl disable "easytier@*" >/dev/null 2>&1
+    systemctl stop "easytier@*" >/dev/null 2>&1
+  else
+    rc-update del easytier
+    rc-service easytier stop
+  fi
   echo -e "${GREEN_COLOR}Delete files ...${RES}"
-  rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli /etc/systemd/system/easytier@.service /usr/sbin/easytier-cli /usr/sbin/easytier-cli
-  systemctl daemon-reload
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli /etc/systemd/system/easytier@.service /usr/sbin/easytier-cli /usr/sbin/easytier-cli
+    systemctl daemon-reload
+  else
+    rm -rf $INSTALL_PATH /etc/init.d/easytier /usr/bin/easytier-core /usr/bin/easytier-cli /usr/sbin/easytier-cli /usr/sbin/easytier-cli
   echo -e "\r\n${GREEN_COLOR}EasyTier was removed successfully! ${RES}\r\n"
 }
 
@@ -340,20 +399,27 @@ UPDATE() {
   else
     echo
     echo -e "${GREEN_COLOR}Stopping EasyTier process${RES}\r\n"
-    systemctl stop "easytier@*"
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+      systemctl stop "easytier@*"
+    else
+      rc-service easytier stop
+    fi
     # Backup
     rm -rf /tmp/easytier_tmp_update
     mkdir -p  /tmp/easytier_tmp_update
     cp -a $INSTALL_PATH/* /tmp/easytier_tmp_update/
     INSTALL
     if [ -f $INSTALL_PATH/easytier-core ]; then
-      echo -e "${GREEN_COLOR} Vrify successfully ${RES}"
+      echo -e "${GREEN_COLOR} Verify successfully ${RES}"
     else
       echo -e "${RED_COLOR} Download failed, unable to update${RES}"
       echo "Rollback all ..."
       rm -rf $INSTALL_PATH/*
       mv /tmp/easytier_tmp_update/* $INSTALL_PATH/
-      systemctl start "easytier@*"
+      if [ "$INIT_SYSTEM" = "systemd" ]; then
+        systemctl start "easytier@*"
+      else
+        rc-service easytier start
       exit 1
     fi
     echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
