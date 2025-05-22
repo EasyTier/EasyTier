@@ -282,7 +282,8 @@ EOF
 name="EasyTier"
 description="EasyTier Service"
 command="$INSTALL_PATH/easytier-core"
-command_args="-c $INSTALL_PATH/config/\$1.conf"
+command_args="-c $INSTALL_PATH/config/default.conf"
+command_user="nobody:nobody"
 command_background=true
 
 pidfile="/run/\${RC_SVCNAME}.pid"
@@ -291,17 +292,7 @@ depend() {
   need net
 }
 
-start() {
-  ebegin "Starting $name"
-  start-stop-daemon --start --exec \$command -- \$command_args
-  eend $?
-}
 
-stop() {
-  ebegin "Stopping $name"
-  start-stop-daemon --stop --exec \$command
-  eend $?
-}
 EOF
     chmod +x /etc/init.d/easytier
   fi
