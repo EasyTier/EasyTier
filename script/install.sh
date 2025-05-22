@@ -389,6 +389,7 @@ UNINSTALL() {
     systemctl daemon-reload
   else
     rm -rf $INSTALL_PATH /etc/init.d/easytier /usr/bin/easytier-core /usr/bin/easytier-cli /usr/sbin/easytier-cli /usr/sbin/easytier-cli
+  fi
   echo -e "\r\n${GREEN_COLOR}EasyTier was removed successfully! ${RES}\r\n"
 }
 
