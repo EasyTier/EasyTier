@@ -174,12 +174,13 @@ fi
 
 CHECK() {
   if ! $SKIP_FOLDER_VERIFY; then
-	if [ -f "$INSTALL_PATH/easytier-core" ]; then
-		echo "There is EasyTier in $INSTALL_PATH. Please choose other path or use \"update\""
-	    echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
-		exit 0
-	fi
+    if [ -f "$INSTALL_PATH/easytier-core" ]; then
+      echo "There is EasyTier in $INSTALL_PATH. Please choose other path or use \"update\""
+        echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
+      exit 0
+    fi
   fi
+
   if [ ! -d "$INSTALL_PATH/" ]; then
     mkdir -p $INSTALL_PATH
   else
@@ -324,6 +325,7 @@ RestartSec=1s
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
 
 #   # Create run script
 #   cat >$INSTALL_PATH/run.sh <<EOF
