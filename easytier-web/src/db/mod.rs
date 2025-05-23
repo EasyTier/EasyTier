@@ -12,7 +12,7 @@ use sqlx::{migrate::MigrateDatabase as _, types::chrono, Sqlite, SqlitePool};
 
 use crate::migrator;
 
-type UserIdInDb = i32;
+pub type UserIdInDb = i32;
 
 pub enum ListNetworkProps {
     All,
