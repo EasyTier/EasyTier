@@ -10,7 +10,7 @@ use easytier::{
 use session::Session;
 use storage::{Storage, StorageToken};
 
-use crate::db::Db;
+use crate::db::{Db, UserIdInDb};
 
 #[derive(Debug)]
 pub struct ClientManager {
@@ -86,15 +86,21 @@ impl ClientManager {
         ret
     }
 
-    pub fn get_session_by_machine_id(&self, machine_id: &uuid::Uuid) -> Option<Arc<Session>> {
-        let c_url = self.storage.get_client_url_by_machine_id(machine_id)?;
+    pub fn get_session_by_machine_id(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: &uuid::Uuid,
+    ) -> Option<Arc<Session>> {
+        let c_url = self
+            .storage
+            .get_client_url_by_machine_id(user_id, machine_id)?;
         self.client_sessions
             .get(&c_url)
             .map(|item| item.value().clone())
     }
 
-    pub async fn list_machine_by_token(&self, token: String) -> Vec<url::Url> {
-        self.storage.list_token_clients(&token)
+    pub async fn list_machine_by_user_id(&self, user_id: UserIdInDb) -> Vec<url::Url> {
+        self.storage.list_user_clients(user_id)
     }
 
     pub async fn get_heartbeat_requests(&self, client_url: &url::Url) -> Option<HeartbeatRequest> {
