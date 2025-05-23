@@ -69,13 +69,9 @@ struct SessionRpcService {
     data: SharedSessionData,
 }
 
-#[async_trait::async_trait]
-impl WebServerService for SessionRpcService {
-    type Controller = BaseController;
-
-    async fn heartbeat(
+impl SessionRpcService {
+    async fn handle_heartbeat(
         &self,
-        _: BaseController,
         req: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
         let mut data = self.data.write().await;
@@ -130,6 +126,25 @@ impl WebServerService for SessionRpcService {
 
         let _ = data.notifier.send(req);
         Ok(HeartbeatResponse {})
+    }
+}
+
+#[async_trait::async_trait]
+impl WebServerService for SessionRpcService {
+    type Controller = BaseController;
+
+    async fn heartbeat(
+        &self,
+        _: BaseController,
+        req: HeartbeatRequest,
+    ) -> rpc_types::error::Result<HeartbeatResponse> {
+        let ret = self.handle_heartbeat(req).await;
+        if ret.is_err() {
+            tracing::warn!("Failed to handle heartbeat: {:?}", ret);
+            // sleep for a while to avoid client busy loop
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        ret
     }
 }
 
