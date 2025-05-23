@@ -124,6 +124,7 @@ mod tests {
         },
         web_client::WebClient,
     };
+    use sqlx::Executor;
 
     use crate::{client_manager::ClientManager, db::Db};
 
@@ -132,6 +133,12 @@ mod tests {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:54333".parse().unwrap());
         let mut mgr = ClientManager::new(Db::memory_db().await);
         mgr.serve(Box::new(listener)).await.unwrap();
+
+        mgr.db()
+            .inner()
+            .execute("INSERT INTO users (username, password) VALUES ('test', 'test')")
+            .await
+            .unwrap();
 
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());
         let _c = WebClient::new(connector, "test", "test");
