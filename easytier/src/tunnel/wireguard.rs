@@ -548,7 +548,8 @@ impl WgTunnelListener {
 impl TunnelListener for WgTunnelListener {
     async fn listen(&mut self) -> Result<(), super::TunnelError> {
         let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "wg", IpVersion::Both)?;
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "wg", IpVersion::Both)
+                .await?;
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::DGRAM,
@@ -705,7 +706,8 @@ impl super::TunnelConnector for WgTunnelConnector {
             &self.addr,
             "wg",
             self.ip_version,
-        )?;
+        )
+        .await?;
 
         if addr.is_ipv6() {
             return self.connect_with_ipv6(addr).await;
