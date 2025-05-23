@@ -121,7 +121,7 @@ impl WSTunnelListener {
 #[async_trait::async_trait]
 impl TunnelListener for WSTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both)?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::STREAM,
@@ -182,7 +182,7 @@ impl WSTunnelConnector {
         tcp_socket: TcpSocket,
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let is_wss = is_wss(&addr)?;
-        let socket_addr = SocketAddr::from_url(addr.clone(), ip_version)?;
+        let socket_addr = SocketAddr::from_url(addr.clone(), ip_version).await?;
         let domain = addr.domain();
         let host = socket_addr.ip();
         let stream = tcp_socket.connect(socket_addr).await?;
@@ -205,12 +205,8 @@ impl WSTunnelConnector {
             let tls_conn =
                 tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
             let domain_or_ip = match domain {
-                None => {
-                    host.to_string()
-                }
-                Some(domain) => {
-                    domain.to_string()
-                }
+                None => host.to_string(),
+                Some(domain) => domain.to_string(),
             };
             let stream = tls_conn
                 .connect(domain_or_ip.try_into().unwrap(), stream)
@@ -274,7 +270,7 @@ impl WSTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for WSTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version)?;
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
         } else {

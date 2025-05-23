@@ -19,7 +19,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::task::JoinSet;
 
-use crate::common::stun::get_default_resolver_config;
+use crate::common::dns::get_default_resolver_config;
 
 use super::config::{GeneralConfig, Record, RunConfig};
 

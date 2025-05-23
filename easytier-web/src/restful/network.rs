@@ -5,7 +5,6 @@ use axum::http::StatusCode;
 use axum::routing::{delete, post};
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::AuthUser;
-use dashmap::DashSet;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
@@ -13,7 +12,7 @@ use easytier::proto::web::*;
 
 use crate::client_manager::session::Session;
 use crate::client_manager::ClientManager;
-use crate::db::ListNetworkProps;
+use crate::db::{ListNetworkProps, UserIdInDb};
 
 use super::users::AuthSession;
 use super::{
@@ -81,12 +80,24 @@ impl NetworkApi {
         Self {}
     }
 
+    fn get_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, (StatusCode, Json<Error>)> {
+        let Some(user_id) = auth_session.user.as_ref().map(|x| x.id()) else {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                other_error(format!("No user id found")).into(),
+            ));
+        };
+        Ok(user_id)
+    }
+
     async fn get_session_by_machine_id(
         auth_session: &AuthSession,
         client_mgr: &ClientManager,
         machine_id: &uuid::Uuid,
     ) -> Result<Arc<Session>, HttpHandleError> {
-        let Some(result) = client_mgr.get_session_by_machine_id(machine_id) else {
+        let user_id = Self::get_user_id(auth_session)?;
+
+        let Some(result) = client_mgr.get_session_by_machine_id(user_id, machine_id) else {
             return Err((
                 StatusCode::NOT_FOUND,
                 other_error(format!("No such session: {}", machine_id)).into(),
@@ -289,23 +300,13 @@ impl NetworkApi {
         auth_session: AuthSession,
         State(client_mgr): AppState,
     ) -> Result<Json<ListMachineJsonResp>, HttpHandleError> {
-        let tokens = auth_session
-            .user
-            .as_ref()
-            .map(|x| x.tokens.clone())
-            .unwrap_or_default();
+        let user_id = Self::get_user_id(&auth_session)?;
 
-        let client_urls = DashSet::new();
-        for token in tokens {
-            let urls = client_mgr.list_machine_by_token(token).await;
-            for url in urls {
-                client_urls.insert(url);
-            }
-        }
+        let client_urls = client_mgr.list_machine_by_user_id(user_id).await;
 
         let mut machines = vec![];
         for item in client_urls.iter() {
-            let client_url = item.key().clone();
+            let client_url = item.clone();
             let session = client_mgr.get_heartbeat_requests(&client_url).await;
             machines.push(ListMachineItem {
                 client_url: Some(client_url),

@@ -1,5 +1,6 @@
 use std::{fmt::Debug, str::FromStr as _, sync::Arc};
 
+use anyhow::Context;
 use easytier::{
     common::scoped_task::ScopedTask,
     proto::{
@@ -78,30 +79,54 @@ impl WebServerService for SessionRpcService {
         req: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
         let mut data = self.data.write().await;
+
+        let Ok(storage) = Storage::try_from(data.storage.clone()) else {
+            tracing::error!("Failed to get storage");
+            return Ok(HeartbeatResponse {});
+        };
+
+        let machine_id: uuid::Uuid =
+            req.machine_id
+                .clone()
+                .map(Into::into)
+                .ok_or(anyhow::anyhow!(
+                    "Machine id is not set correctly, expect uuid but got: {:?}",
+                    req.machine_id
+                ))?;
+
+        let user_id = storage
+            .db()
+            .get_user_id_by_token(req.user_token.clone())
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to get user id by token from db: {:?}",
+                    req.user_token
+                )
+            })?
+            .ok_or(anyhow::anyhow!(
+                "User not found by token: {:?}",
+                req.user_token
+            ))?;
+
         if data.req.replace(req.clone()).is_none() {
             assert!(data.storage_token.is_none());
             data.storage_token = Some(StorageToken {
                 token: req.user_token.clone().into(),
                 client_url: data.client_url.clone(),
-                machine_id: req
-                    .machine_id
-                    .clone()
-                    .map(Into::into)
-                    .unwrap_or(uuid::Uuid::new_v4()),
+                machine_id,
+                user_id,
             });
         }
 
-        if let Ok(storage) = Storage::try_from(data.storage.clone()) {
-            let Ok(report_time) = chrono::DateTime::<chrono::Local>::from_str(&req.report_time)
-            else {
-                tracing::error!("Failed to parse report time: {:?}", req.report_time);
-                return Ok(HeartbeatResponse {});
-            };
-            storage.update_client(
-                data.storage_token.as_ref().unwrap().clone(),
-                report_time.timestamp(),
-            );
-        }
+        let Ok(report_time) = chrono::DateTime::<chrono::Local>::from_str(&req.report_time) else {
+            tracing::error!("Failed to parse report time: {:?}", req.report_time);
+            return Ok(HeartbeatResponse {});
+        };
+        storage.update_client(
+            data.storage_token.as_ref().unwrap().clone(),
+            report_time.timestamp(),
+        );
 
         let _ = data.notifier.send(req);
         Ok(HeartbeatResponse {})

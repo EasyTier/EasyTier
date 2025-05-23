@@ -477,7 +477,8 @@ impl TunnelListener for UdpTunnelListener {
             &self.addr,
             "udp",
             IpVersion::Both,
-        )?;
+        )
+        .await?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -781,7 +782,8 @@ impl super::TunnelConnector for UdpTunnelConnector {
             &self.addr,
             "udp",
             self.ip_version,
-        )?;
+        )
+        .await?;
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
         } else {
@@ -963,6 +965,7 @@ mod tests {
                 "udp",
                 IpVersion::Both,
             )
+            .await
             .unwrap();
             let socket2_socket = socket2::Socket::new(
                 socket2::Domain::for_address(addr),

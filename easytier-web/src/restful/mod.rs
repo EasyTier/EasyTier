@@ -9,7 +9,7 @@ use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
-use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
+use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
 use easytier::common::config::ConfigLoader;
 use easytier::common::scoped_task::ScopedTask;
@@ -24,7 +24,6 @@ use tower_sessions::Expiry;
 use tower_sessions_sqlx_store::SqliteStore;
 use users::{AuthSession, Backend};
 
-use crate::client_manager::session::Session;
 use crate::client_manager::storage::StorageToken;
 use crate::client_manager::ClientManager;
 use crate::db::Db;
@@ -112,17 +111,6 @@ impl RestfulServer {
         })
     }
 
-    async fn get_session_by_machine_id(
-        client_mgr: &ClientManager,
-        machine_id: &uuid::Uuid,
-    ) -> Result<Arc<Session>, HttpHandleError> {
-        let Some(result) = client_mgr.get_session_by_machine_id(machine_id) else {
-            return Err((StatusCode::NOT_FOUND, other_error("No such session").into()));
-        };
-
-        Ok(result)
-    }
-
     async fn handle_list_all_sessions(
         auth_session: AuthSession,
         State(client_mgr): AppState,
@@ -145,9 +133,7 @@ impl RestfulServer {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let machines = client_mgr
-            .list_machine_by_token(user.tokens[0].clone())
-            .await;
+        let machines = client_mgr.list_machine_by_user_id(user.id().clone()).await;
 
         Ok(GetSummaryJsonResp {
             device_count: machines.len() as u32,

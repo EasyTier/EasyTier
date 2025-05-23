@@ -230,12 +230,13 @@ fn get_tunnel_for_server(conn: Arc<Connection>) -> impl Tunnel {
 }
 
 impl RingTunnelListener {
-    fn get_addr(&self) -> Result<uuid::Uuid, TunnelError> {
+    async fn get_addr(&self) -> Result<uuid::Uuid, TunnelError> {
         check_scheme_and_get_socket_addr::<Uuid>(
             &self.listerner_addr,
             "ring",
             super::IpVersion::Both,
         )
+        .await
     }
 }
 
@@ -246,13 +247,13 @@ impl TunnelListener for RingTunnelListener {
         CONNECTION_MAP
             .lock()
             .await
-            .insert(self.get_addr()?, self.conn_sender.clone());
+            .insert(self.get_addr().await?, self.conn_sender.clone());
         Ok(())
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         tracing::info!("waiting accept new conn of key: {}", self.listerner_addr);
-        let my_addr = self.get_addr()?;
+        let my_addr = self.get_addr().await?;
         if let Some(conn) = self.conn_receiver.recv().await {
             if conn.server.id == my_addr {
                 tracing::info!("accept new conn of key: {}", self.listerner_addr);
@@ -292,7 +293,8 @@ impl TunnelConnector for RingTunnelConnector {
             &self.remote_addr,
             "ring",
             super::IpVersion::Both,
-        )?;
+        )
+        .await?;
         let entry = CONNECTION_MAP
             .lock()
             .await
