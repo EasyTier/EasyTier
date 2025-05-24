@@ -1,0 +1,15 @@
+#!/command/with-contenv sh
+    EASYTIER_BIN=${BASE_PATH}/easytier/easytier-core
+    CONFIG_FILE="/config.yaml"
+    if [ -s "$CONFIG_FILE" ]; then
+        echo "Using /config.yaml to start ..."
+        "$EASYTIER_BIN" -c "$CONFIG_FILE"
+    else 
+       if [ -n "${COMMAND}" ] && [ "${COMMAND}" != " " ]; then
+            echo "Using $COMMAND to start ..."
+            "$EASYTIER_BIN" $COMMAND
+       else
+           echo "Error: Neither config file nor COMMAND is available. Exiting." >&2
+           exit 1
+       fi          
+    fi
