@@ -12,25 +12,25 @@ use std::{
 };
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::{
-        peer_manager::PeerManager, peer_rpc::PeerRpcManager,
+        peer_conn::PeerConnId, peer_manager::PeerManager, peer_rpc::PeerRpcManager,
         peer_rpc_service::DirectConnectorManagerRpcServer,
     },
     proto::{
         peer_rpc::{
             DirectConnectorRpc, DirectConnectorRpcClientFactory, DirectConnectorRpcServer,
-            GetIpListRequest, GetIpListResponse,
+            GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
         },
         rpc_types::controller::BaseController,
     },
-    tunnel::IpVersion,
+    tunnel::{udp::UdpTunnelConnector, IpVersion},
 };
 
 use crate::proto::cli::PeerConnInfo;
 use anyhow::Context;
 use rand::Rng;
-use tokio::{task::JoinSet, time::timeout};
+use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use tracing::Instrument;
 use url::Host;
 
@@ -171,17 +171,119 @@ impl DirectConnectorManager {
         );
     }
 
+    async fn remote_send_v6_hole_punch_packet(
+        peer_manager: Arc<PeerManager>,
+        dst_peer_id: PeerId,
+        local_socket: &UdpSocket,
+        remote_url: &url::Url,
+    ) -> Result<(), Error> {
+        let global_ctx = peer_manager.get_global_ctx();
+        let listener_port = remote_url.port().ok_or(anyhow::anyhow!(
+            "failed to parse port from remote url: {}",
+            remote_url
+        ))?;
+        let connector_ip = global_ctx
+            .get_stun_info_collector()
+            .get_stun_info()
+            .public_ip
+            .iter()
+            .find(|x| x.contains(":"))
+            .ok_or(anyhow::anyhow!(
+                "failed to get public ipv6 address from stun info"
+            ))?
+            .parse::<std::net::Ipv6Addr>()
+            .with_context(|| {
+                format!(
+                    "failed to parse public ipv6 address from stun info: {:?}",
+                    global_ctx.get_stun_info_collector().get_stun_info()
+                )
+            })?;
+        let connector_addr = SocketAddr::new(
+            std::net::IpAddr::V6(connector_ip),
+            local_socket.local_addr()?.port(),
+        );
+
+        let rpc_stub = peer_manager
+            .get_peer_rpc_mgr()
+            .rpc_client()
+            .scoped_client::<DirectConnectorRpcClientFactory<BaseController>>(
+                peer_manager.my_peer_id(),
+                dst_peer_id,
+                global_ctx.get_network_name(),
+            );
+
+        rpc_stub
+            .send_v6_hole_punch_packet(
+                BaseController::default(),
+                SendV6HolePunchPacketRequest {
+                    listener_port: listener_port as u32,
+                    connector_addr: Some(connector_addr.into()),
+                },
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "do rpc, send v6 hole punch packet to peer {} at {}",
+                    dst_peer_id, remote_url
+                )
+            })?;
+
+        Ok(())
+    }
+
+    async fn connect_to_public_ipv6(
+        data: Arc<DirectConnectorManagerData>,
+        dst_peer_id: PeerId,
+        remote_url: &url::Url,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let local_socket = Arc::new(
+            UdpSocket::bind("[::]:0")
+                .await
+                .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
+        );
+
+        // ask remote to send v6 hole punch packet
+        // and no matter what the result is, continue to connect
+        let _ = Self::remote_send_v6_hole_punch_packet(
+            data.peer_manager.clone(),
+            dst_peer_id,
+            &local_socket,
+            &remote_url,
+        )
+        .await;
+
+        let udp_connector = UdpTunnelConnector::new(remote_url.clone());
+        let remote_addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
+            &remote_url,
+            "udp",
+            IpVersion::V6,
+        )
+        .await?;
+        let ret = udp_connector
+            .try_connect_with_socket(local_socket, remote_addr)
+            .await?;
+
+        // NOTICE: this is added as non-direct conn but it's fine.
+        data.peer_manager.add_client_tunnel(ret).await
+    }
+
     async fn do_try_connect_to_ip(
         data: Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         addr: String,
     ) -> Result<(), Error> {
         let connector = create_connector_by_url(&addr, &data.global_ctx, IpVersion::Both).await?;
-        let (peer_id, conn_id) = timeout(
-            std::time::Duration::from_secs(3),
-            data.peer_manager.try_direct_connect(connector),
-        )
-        .await??;
+        let remote_url = connector.remote_url();
+        let (peer_id, conn_id) =
+            if remote_url.scheme() == "udp" && matches!(remote_url.host(), Some(Host::Ipv6(_))) {
+                Self::connect_to_public_ipv6(data.clone(), dst_peer_id, &remote_url).await?
+            } else {
+                timeout(
+                    std::time::Duration::from_secs(3),
+                    data.peer_manager.try_direct_connect(connector),
+                )
+                .await??
+            };
 
         if peer_id != dst_peer_id && !TESTING.load(Ordering::Relaxed) {
             tracing::info!(

@@ -8,7 +8,7 @@ use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
 
 use super::{
-    check_scheme_and_get_socket_addr, check_scheme_and_get_socket_addr_ext,
+    check_scheme_and_get_socket_addr,
     common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
 };
@@ -191,7 +191,7 @@ impl TcpTunnelConnector {
 impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let addr =
-            check_scheme_and_get_socket_addr_ext::<SocketAddr>(&self.addr, "tcp", self.ip_version)
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", self.ip_version)
                 .await?;
         if self.bind_addrs.is_empty() {
             self.connect_with_default_bind(addr).await

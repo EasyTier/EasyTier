@@ -5,7 +5,6 @@
 use std::{error::Error, net::SocketAddr, sync::Arc};
 
 use crate::tunnel::{
-    check_scheme_and_get_socket_addr_ext,
     common::{FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
@@ -151,7 +150,7 @@ impl QUICTunnelConnector {
 impl TunnelConnector for QUICTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let addr =
-            check_scheme_and_get_socket_addr_ext::<SocketAddr>(&self.addr, "quic", self.ip_version)
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
                 .await?;
         let local_addr = if addr.is_ipv4() {
             "0.0.0.0:0"

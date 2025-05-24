@@ -128,7 +128,7 @@ fn is_stun_packet(b: &[u8]) -> bool {
     b[4..8] == [0x21, 0x12, 0xA4, 0x42] && b[0] & 0xC0 == 0
 }
 
-async fn send_v6_hole_punch_packet(
+pub async fn send_v6_hole_punch_packet(
     listener_port: u16,
     dst_addr: SocketAddrV6,
 ) -> Result<(), TunnelError> {
@@ -838,7 +838,7 @@ impl UdpTunnelConnector {
 #[async_trait]
 impl super::TunnelConnector for UdpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr_ext::<SocketAddr>(
+        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
             &self.addr,
             "udp",
             self.ip_version,
@@ -874,7 +874,6 @@ mod tests {
     use super::*;
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx,
-        tests::enable_log,
         tunnel::{
             check_scheme_and_get_socket_addr,
             common::{
