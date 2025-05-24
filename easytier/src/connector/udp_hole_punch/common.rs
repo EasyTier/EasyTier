@@ -523,16 +523,7 @@ impl PunchHoleServerCommon {
                 .max_by_key(|listener| listener.last_active_time.load())?
         };
 
-        if listener.mapped_addr.ip().is_unspecified() {
-            tracing::info!("listener mapped addr is unspecified, trying to get mapped addr");
-            listener.mapped_addr = self
-                .get_global_ctx()
-                .get_stun_info_collector()
-                .get_udp_port_mapping(listener.mapped_addr.port())
-                .await
-                .ok()?;
-        }
-
+        assert!(!listener.mapped_addr.ip().is_unspecified());
         Some((listener.get_socket().await, listener.mapped_addr))
     }
 
