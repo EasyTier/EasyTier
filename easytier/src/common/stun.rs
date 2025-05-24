@@ -890,7 +890,7 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
             last_update_time: std::time::Instant::now().elapsed().as_secs() as i64,
             min_port: 100,
             max_port: 200,
-            public_ip: vec!["127.0.0.1".to_string()],
+            public_ip: vec!["127.0.0.1".to_string(), "::1".to_string()],
         }
     }
 

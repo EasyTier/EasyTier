@@ -177,21 +177,6 @@ pub(crate) trait FromUrl {
         Self: Sized;
 }
 
-pub(crate) async fn check_scheme_and_get_socket_addr_ext<T>(
-    url: &url::Url,
-    scheme: &str,
-    ip_version: IpVersion,
-) -> Result<T, TunnelError>
-where
-    T: FromUrl,
-{
-    if url.scheme() != scheme {
-        return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
-    }
-
-    Ok(T::from_url(url.clone(), ip_version).await?)
-}
-
 pub(crate) async fn check_scheme_and_get_socket_addr<T>(
     url: &url::Url,
     scheme: &str,

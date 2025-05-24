@@ -702,7 +702,7 @@ impl WgTunnelConnector {
 impl super::TunnelConnector for WgTunnelConnector {
     #[tracing::instrument]
     async fn connect(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
-        let addr = super::check_scheme_and_get_socket_addr_ext::<SocketAddr>(
+        let addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
             &self.addr,
             "wg",
             self.ip_version,
