@@ -389,6 +389,15 @@ impl PeerManager {
         });
     }
 
+    pub async fn add_direct_tunnel(
+        &self,
+        t: Box<dyn Tunnel>,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let (peer_id, conn_id) = self.add_client_tunnel(t).await?;
+        self.add_directly_connected_conn(peer_id, conn_id);
+        Ok((peer_id, conn_id))
+    }
+
     #[tracing::instrument]
     pub async fn try_direct_connect<C>(
         &self,
@@ -401,9 +410,7 @@ impl PeerManager {
         let t = ns
             .run_async(|| async move { connector.connect().await })
             .await?;
-        let (peer_id, conn_id) = self.add_client_tunnel(t).await?;
-        self.add_directly_connected_conn(peer_id, conn_id);
-        Ok((peer_id, conn_id))
+        self.add_direct_tunnel(t).await
     }
 
     #[tracing::instrument]

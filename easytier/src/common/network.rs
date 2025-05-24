@@ -179,18 +179,16 @@ impl IPCollector {
                 Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
             let net_ns = self.net_ns.clone();
             let stun_info_collector = self.stun_info_collector.clone();
-            task.spawn(async move {
-                loop {
-                    let ip_addrs = Self::do_collect_local_ip_addrs(net_ns.clone()).await;
-                    *cached_ip_list.write().await = ip_addrs;
-                    tokio::time::sleep(std::time::Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC))
-                        .await;
-                }
-            });
-
             let cached_ip_list = self.cached_ip_list.clone();
             task.spawn(async move {
+                let mut last_fetch_iface_time = std::time::Instant::now();
                 loop {
+                    if last_fetch_iface_time.elapsed().as_secs() > CACHED_IP_LIST_TIMEOUT_SEC {
+                        let ifaces = Self::do_collect_local_ip_addrs(net_ns.clone()).await;
+                        *cached_ip_list.write().await = ifaces;
+                        last_fetch_iface_time = std::time::Instant::now();
+                    }
+
                     let stun_info = stun_info_collector.get_stun_info();
                     for ip in stun_info.public_ip.iter() {
                         let Ok(ip_addr) = ip.parse::<IpAddr>() else {
@@ -199,13 +197,19 @@ impl IPCollector {
 
                         match ip_addr {
                             IpAddr::V4(v) => {
-                                cached_ip_list.write().await.public_ipv4 = Some(v.into())
+                                cached_ip_list.write().await.public_ipv4.replace(v.into());
                             }
                             IpAddr::V6(v) => {
-                                cached_ip_list.write().await.public_ipv6 = Some(v.into())
+                                cached_ip_list.write().await.public_ipv6.replace(v.into());
                             }
                         }
                     }
+
+                    tracing::debug!(
+                        "got public ip: {:?}, {:?}",
+                        cached_ip_list.read().await.public_ipv4,
+                        cached_ip_list.read().await.public_ipv6
+                    );
 
                     let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_none() {
                         CACHED_IP_LIST_TIMEOUT_SEC
@@ -217,7 +221,7 @@ impl IPCollector {
             });
         }
 
-        return self.cached_ip_list.read().await.deref().clone();
+        self.cached_ip_list.read().await.deref().clone()
     }
 
     pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {

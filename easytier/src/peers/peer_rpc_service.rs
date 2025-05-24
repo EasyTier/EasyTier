@@ -36,6 +36,12 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
             .chain(self.global_ctx.get_running_listeners().into_iter())
             .map(Into::into)
             .collect();
+        tracing::trace!(
+            "get_ip_list: public_ipv4: {:?}, public_ipv6: {:?}, listeners: {:?}",
+            ret.public_ipv4,
+            ret.public_ipv6,
+            ret.listeners
+        );
         Ok(ret)
     }
 
@@ -52,6 +58,12 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
         else {
             return Err(anyhow::anyhow!("connector_addr is not a v6 address").into());
         };
+
+        tracing::info!(
+            "Sending v6 hole punch packet to {} from listener port {}",
+            connector_addr,
+            listener_port
+        );
 
         // send 3 packets to the connector
         for _ in 0..3 {

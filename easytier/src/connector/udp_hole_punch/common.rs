@@ -495,6 +495,7 @@ impl PunchHoleServerCommon {
             .udp_nat_type
     }
 
+    #[async_recursion::async_recursion]
     pub(crate) async fn select_listener(
         &self,
         use_new_listener: bool,
@@ -515,15 +516,28 @@ impl PunchHoleServerCommon {
         let mut locked = all_listener_sockets.lock().await;
 
         let listener = if use_last {
-            locked.last_mut()?
+            Some(locked.last_mut()?)
         } else {
             // use the listener that is active most recently
             locked
                 .iter_mut()
-                .max_by_key(|listener| listener.last_active_time.load())?
+                .filter(|l| !l.mapped_addr.ip().is_unspecified())
+                .max_by_key(|listener| listener.last_active_time.load())
         };
 
-        assert!(!listener.mapped_addr.ip().is_unspecified());
+        if listener.is_none() || listener.as_ref().unwrap().mapped_addr.ip().is_unspecified() {
+            tracing::warn!(
+                ?use_new_listener,
+                "no available udp hole punching listener with mapped address"
+            );
+            if !use_new_listener {
+                return self.select_listener(true).await;
+            } else {
+                return None;
+            }
+        }
+
+        let listener = listener.unwrap();
         Some((listener.get_socket().await, listener.mapped_addr))
     }
 

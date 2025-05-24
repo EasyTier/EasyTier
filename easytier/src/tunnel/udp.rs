@@ -489,6 +489,8 @@ impl UdpTunnelListenerData {
             if let Err(e) = conn.handle_packet_from_remote(zc_packet) {
                 tracing::trace!(?e, "udp forward packet error");
             }
+        } else {
+            tracing::trace!(?header, "udp forward packet ignore hole punch packet");
         }
     }
 
