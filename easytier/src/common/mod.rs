@@ -11,6 +11,7 @@ pub mod compressor;
 pub mod config;
 pub mod constants;
 pub mod defer;
+pub mod dns;
 pub mod error;
 pub mod global_ctx;
 pub mod ifcfg;

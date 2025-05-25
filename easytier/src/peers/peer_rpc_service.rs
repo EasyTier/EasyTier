@@ -1,9 +1,15 @@
+use std::net::SocketAddr;
+
 use crate::{
     common::global_ctx::ArcGlobalCtx,
     proto::{
-        peer_rpc::{DirectConnectorRpc, GetIpListRequest, GetIpListResponse},
+        common::Void,
+        peer_rpc::{
+            DirectConnectorRpc, GetIpListRequest, GetIpListResponse, SendV6HolePunchPacketRequest,
+        },
         rpc_types::{self, controller::BaseController},
     },
+    tunnel::udp,
 };
 
 #[derive(Clone)]
@@ -30,7 +36,41 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
             .chain(self.global_ctx.get_running_listeners().into_iter())
             .map(Into::into)
             .collect();
+        tracing::trace!(
+            "get_ip_list: public_ipv4: {:?}, public_ipv6: {:?}, listeners: {:?}",
+            ret.public_ipv4,
+            ret.public_ipv6,
+            ret.listeners
+        );
         Ok(ret)
+    }
+
+    async fn send_v6_hole_punch_packet(
+        &self,
+        _: BaseController,
+        req: SendV6HolePunchPacketRequest,
+    ) -> rpc_types::error::Result<Void> {
+        let listener_port = req.listener_port as u16;
+        let SocketAddr::V6(connector_addr) = req
+            .connector_addr
+            .ok_or(anyhow::anyhow!("connector_addr is required"))?
+            .into()
+        else {
+            return Err(anyhow::anyhow!("connector_addr is not a v6 address").into());
+        };
+
+        tracing::info!(
+            "Sending v6 hole punch packet to {} from listener port {}",
+            connector_addr,
+            listener_port
+        );
+
+        // send 3 packets to the connector
+        for _ in 0..3 {
+            udp::send_v6_hole_punch_packet(listener_port, connector_addr).await?;
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+        Ok(Default::default())
     }
 }
 

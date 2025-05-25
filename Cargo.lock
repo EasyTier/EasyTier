@@ -825,15 +825,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bounded_join_set"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae18fd8f4a623bcf416b5bc8f1e0905534d9911597ed17cc57ab9b6eed65454d"
-dependencies = [
- "tokio",
-]
-
-[[package]]
 name = "brotli"
 version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1994,7 +1985,6 @@ dependencies = [
  "base64 0.22.1",
  "bitflags 2.8.0",
  "boringtun-easytier",
- "bounded_join_set",
  "bytecodec",
  "byteorder",
  "bytes",

@@ -221,8 +221,6 @@ humantime-serde = "1.1.1"
 multimap = "0.10.0"
 version-compare = "0.2.0"
 
-bounded_join_set = "0.3.0"
-
 jemallocator = { version = "0.5.4", optional = true }
 jemalloc-ctl = { version = "0.5.4", optional = true }
 jemalloc-sys = { version = "0.5.4", features = [

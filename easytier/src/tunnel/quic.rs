@@ -5,7 +5,6 @@
 use std::{error::Error, net::SocketAddr, sync::Arc};
 
 use crate::tunnel::{
-    check_scheme_and_get_socket_addr_ext,
     common::{FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
@@ -85,7 +84,8 @@ impl QUICTunnelListener {
 impl TunnelListener for QUICTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)?;
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
+                .await?;
         let (endpoint, server_cert) = make_server_endpoint(addr).unwrap();
         self.endpoint = Some(endpoint);
         self.server_cert = Some(server_cert);
@@ -149,11 +149,9 @@ impl QUICTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for QUICTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr = check_scheme_and_get_socket_addr_ext::<SocketAddr>(
-            &self.addr,
-            "quic",
-            self.ip_version,
-        )?;
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
+                .await?;
         let local_addr = if addr.is_ipv4() {
             "0.0.0.0:0"
         } else {

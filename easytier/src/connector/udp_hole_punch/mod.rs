@@ -143,7 +143,7 @@ impl UdpHolePunchRpc for UdpHolePunchServer {
 }
 
 #[derive(Debug)]
-struct BackOff {
+pub struct BackOff {
     backoffs_ms: Vec<u64>,
     current_idx: usize,
 }

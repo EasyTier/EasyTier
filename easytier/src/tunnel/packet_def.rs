@@ -28,6 +28,15 @@ pub enum UdpPacketType {
     Data = 3,
     Fin = 4,
     HolePunch = 5,
+    V6HolePunch = 6, // when receiving v6 hole punch packet, the packet contains a socket addr of other peer, we
+                     // will send a hole punch packet to that peer. we only accept this packet from lookback interface.
+}
+
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct V6HolePunchPacket {
+    pub dst_ipv6: [u8; 16],
+    pub dst_port: U16<DefaultEndian>,
 }
 
 #[repr(C, packed)]

@@ -2,7 +2,7 @@ use std::sync::{Arc, Weak};
 
 use dashmap::DashMap;
 
-use crate::db::Db;
+use crate::db::{Db, UserIdInDb};
 
 // use this to maintain Storage
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -10,21 +10,19 @@ pub struct StorageToken {
     pub token: String,
     pub client_url: url::Url,
     pub machine_id: uuid::Uuid,
+    pub user_id: UserIdInDb,
 }
 
 #[derive(Debug, Clone)]
 struct ClientInfo {
-    client_url: url::Url,
-    machine_id: uuid::Uuid,
-    token: String,
+    storage_token: StorageToken,
     report_time: i64,
 }
 
 #[derive(Debug)]
 pub struct StorageInner {
     // some map for indexing
-    token_clients_map: DashMap<String, DashMap<uuid::Uuid, ClientInfo>>,
-    machine_client_url_map: DashMap<uuid::Uuid, ClientInfo>,
+    user_clients_map: DashMap<UserIdInDb, DashMap<uuid::Uuid, ClientInfo>>,
     pub db: Db,
 }
 
@@ -43,8 +41,7 @@ impl TryFrom<WeakRefStorage> for Storage {
 impl Storage {
     pub fn new(db: Db) -> Self {
         Storage(Arc::new(StorageInner {
-            token_clients_map: DashMap::new(),
-            machine_client_url_map: DashMap::new(),
+            user_clients_map: DashMap::new(),
             db,
         }))
     }
@@ -54,17 +51,22 @@ impl Storage {
         machine_id: &uuid::Uuid,
         client_url: &url::Url,
     ) {
-        map.remove_if(&machine_id, |_, v| v.client_url == *client_url);
+        map.remove_if(&machine_id, |_, v| {
+            v.storage_token.client_url == *client_url
+        });
     }
 
     fn update_mid_to_client_info_map(
         map: &DashMap<uuid::Uuid, ClientInfo>,
         client_info: &ClientInfo,
     ) {
-        map.entry(client_info.machine_id)
+        map.entry(client_info.storage_token.machine_id)
             .and_modify(|e| {
                 if e.report_time < client_info.report_time {
-                    assert_eq!(e.machine_id, client_info.machine_id);
+                    assert_eq!(
+                        e.storage_token.machine_id,
+                        client_info.storage_token.machine_id
+                    );
                     *e = client_info.clone();
                 }
             })
@@ -74,53 +76,51 @@ impl Storage {
     pub fn update_client(&self, stoken: StorageToken, report_time: i64) {
         let inner = self
             .0
-            .token_clients_map
-            .entry(stoken.token.clone())
+            .user_clients_map
+            .entry(stoken.user_id)
             .or_insert_with(DashMap::new);
 
         let client_info = ClientInfo {
-            client_url: stoken.client_url.clone(),
-            machine_id: stoken.machine_id,
-            token: stoken.token.clone(),
+            storage_token: stoken.clone(),
             report_time,
         };
 
         Self::update_mid_to_client_info_map(&inner, &client_info);
-        Self::update_mid_to_client_info_map(&self.0.machine_client_url_map, &client_info);
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
-        self.0.token_clients_map.remove_if(&stoken.token, |_, set| {
-            Self::remove_mid_to_client_info_map(set, &stoken.machine_id, &stoken.client_url);
-            set.is_empty()
-        });
-
-        Self::remove_mid_to_client_info_map(
-            &self.0.machine_client_url_map,
-            &stoken.machine_id,
-            &stoken.client_url,
-        );
+        self.0
+            .user_clients_map
+            .remove_if(&stoken.user_id, |_, set| {
+                Self::remove_mid_to_client_info_map(set, &stoken.machine_id, &stoken.client_url);
+                set.is_empty()
+            });
     }
 
     pub fn weak_ref(&self) -> WeakRefStorage {
         Arc::downgrade(&self.0)
     }
 
-    pub fn get_client_url_by_machine_id(&self, machine_id: &uuid::Uuid) -> Option<url::Url> {
-        self.0
-            .machine_client_url_map
-            .get(&machine_id)
-            .map(|info| info.client_url.clone())
+    pub fn get_client_url_by_machine_id(
+        &self,
+        user_id: UserIdInDb,
+        machine_id: &uuid::Uuid,
+    ) -> Option<url::Url> {
+        self.0.user_clients_map.get(&user_id).and_then(|info_map| {
+            info_map
+                .get(machine_id)
+                .map(|info| info.storage_token.client_url.clone())
+        })
     }
 
-    pub fn list_token_clients(&self, token: &str) -> Vec<url::Url> {
+    pub fn list_user_clients(&self, user_id: UserIdInDb) -> Vec<url::Url> {
         self.0
-            .token_clients_map
-            .get(token)
+            .user_clients_map
+            .get(&user_id)
             .map(|info_map| {
                 info_map
                     .iter()
-                    .map(|info| info.value().client_url.clone())
+                    .map(|info| info.value().storage_token.client_url.clone())
                     .collect()
             })
             .unwrap_or_default()

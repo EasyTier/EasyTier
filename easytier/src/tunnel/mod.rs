@@ -8,6 +8,7 @@ use std::fmt::Debug;
 
 use tokio::time::error::Elapsed;
 
+use crate::common::dns::socket_addrs;
 use crate::proto::common::TunnelInfo;
 
 use self::packet_def::ZCPacket;
@@ -169,13 +170,14 @@ impl std::fmt::Debug for dyn TunnelListener {
     }
 }
 
+#[async_trait::async_trait]
 pub(crate) trait FromUrl {
-    fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError>
+    async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError>
     where
         Self: Sized;
 }
 
-pub(crate) fn check_scheme_and_get_socket_addr_ext<T>(
+pub(crate) async fn check_scheme_and_get_socket_addr<T>(
     url: &url::Url,
     scheme: &str,
     ip_version: IpVersion,
@@ -187,22 +189,7 @@ where
         return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
     }
 
-    Ok(T::from_url(url.clone(), ip_version)?)
-}
-
-pub(crate) fn check_scheme_and_get_socket_addr<T>(
-    url: &url::Url,
-    scheme: &str,
-    ip_version: IpVersion,
-) -> Result<T, TunnelError>
-where
-    T: FromUrl,
-{
-    if url.scheme() != scheme {
-        return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
-    }
-
-    Ok(T::from_url(url.clone(), ip_version)?)
+    Ok(T::from_url(url.clone(), ip_version).await?)
 }
 
 fn default_port(scheme: &str) -> Option<u16> {
@@ -217,9 +204,17 @@ fn default_port(scheme: &str) -> Option<u16> {
     }
 }
 
+#[async_trait::async_trait]
 impl FromUrl for SocketAddr {
-    fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
-        let addrs = url.socket_addrs(|| default_port(url.scheme()))?;
+    async fn from_url(url: url::Url, ip_version: IpVersion) -> Result<Self, TunnelError> {
+        let addrs = socket_addrs(&url, || default_port(url.scheme()))
+            .await
+            .map_err(|e| {
+                TunnelError::InvalidAddr(format!(
+                    "failed to resolve socket addr, url: {}, error: {}",
+                    url, e
+                ))
+            })?;
         tracing::debug!(?addrs, ?ip_version, ?url, "convert url to socket addrs");
         let addrs = addrs
             .into_iter()
@@ -239,8 +234,9 @@ impl FromUrl for SocketAddr {
     }
 }
 
+#[async_trait::async_trait]
 impl FromUrl for uuid::Uuid {
-    fn from_url(url: url::Url, _ip_version: IpVersion) -> Result<Self, TunnelError> {
+    async fn from_url(url: url::Url, _ip_version: IpVersion) -> Result<Self, TunnelError> {
         let o = url.host_str().unwrap();
         let o = uuid::Uuid::parse_str(o).map_err(|e| TunnelError::InvalidAddr(e.to_string()))?;
         Ok(o)
