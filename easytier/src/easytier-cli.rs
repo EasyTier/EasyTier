@@ -88,7 +88,7 @@ enum SubCommand {
     Proxy,
 }
 
-#[derive(clap::ValueEnum, Debug, Clone)]
+#[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
 enum OutputFormat {
     Table,
     Json,
@@ -389,7 +389,7 @@ impl CommandHandler<'_> {
         let mut items: Vec<PeerTableItem> = vec![];
         let peer_routes = self.list_peer_route_pair().await?;
         if self.verbose {
-            println!("{:#?}", peer_routes);
+            println!("{}", serde_json::to_string_pretty(&peer_routes)?);
             return Ok(());
         }
 
@@ -427,8 +427,9 @@ impl CommandHandler<'_> {
             .list_foreign_network(BaseController::default(), request)
             .await?;
         let network_map = response;
-        if self.verbose {
-            println!("{:#?}", network_map);
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            let json = serde_json::to_string_pretty(&network_map.foreign_networks)?;
+            println!("{}", json);
             return Ok(());
         }
 
@@ -468,8 +469,11 @@ impl CommandHandler<'_> {
         let response = client
             .list_global_foreign_network(BaseController::default(), request)
             .await?;
-        if self.verbose {
-            println!("{:#?}", response);
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response.foreign_networks)?
+            );
             return Ok(());
         }
 
@@ -514,6 +518,23 @@ impl CommandHandler<'_> {
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
+        let peer_routes = self.list_peer_route_pair().await?;
+
+        if self.verbose {
+            #[derive(serde::Serialize)]
+            struct VerboseItem {
+                node_info: NodeInfo,
+                peer_routes: Vec<PeerRoutePair>,
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&VerboseItem {
+                    node_info,
+                    peer_routes
+                })?
+            );
+            return Ok(());
+        }
 
         items.push(RouteTableItem {
             ipv4: node_info.ipv4_addr.clone(),
@@ -533,7 +554,6 @@ impl CommandHandler<'_> {
 
             version: node_info.version.clone(),
         });
-        let peer_routes = self.list_peer_route_pair().await?;
         for p in peer_routes.iter() {
             let Some(next_hop_pair) = peer_routes.iter().find(|pair| {
                 pair.route.clone().unwrap_or_default().peer_id
@@ -668,6 +688,10 @@ impl CommandHandler<'_> {
         let response = client
             .list_connector(BaseController::default(), request)
             .await?;
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&response.connectors)?);
+            return Ok(());
+        }
         println!("response: {:#?}", response);
         Ok(())
     }
@@ -1010,7 +1034,14 @@ async fn main() -> Result<(), Error> {
                 loop {
                     let ret = collector.get_stun_info();
                     if ret.udp_nat_type != NatType::Unknown as i32 {
-                        println!("stun info: {:#?}", ret);
+                        if cli.output_format == OutputFormat::Json {
+                            match serde_json::to_string_pretty(&ret) {
+                                Ok(json) => println!("{}", json),
+                                Err(e) => eprintln!("Error serializing to JSON: {}", e),
+                            }
+                        } else {
+                            println!("stun info: {:#?}", ret);
+                        }
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1238,6 +1269,11 @@ async fn main() -> Result<(), Error> {
                 .list_tcp_proxy_entry(BaseController::default(), Default::default())
                 .await;
             entries.extend(ret.unwrap_or_default().entries);
+
+            if cli.verbose {
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+                return Ok(());
+            }
 
             #[derive(tabled::Tabled, serde::Serialize)]
             struct TableItem {
