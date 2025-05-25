@@ -3,12 +3,14 @@ use std::{
     fmt::Write,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    str::FromStr,
     sync::Mutex,
     time::Duration,
     vec,
 };
 
 use anyhow::Context;
+use cidr::Ipv4Inet;
 use clap::{command, Args, Parser, Subcommand};
 use humansize::format_size;
 use service_manager::*;
@@ -51,6 +53,15 @@ struct Cli {
     #[arg(short, long, default_value = "false", help = "verbose output")]
     verbose: bool,
 
+    #[arg(
+        short = 'o',
+        long = "output",
+        value_enum,
+        default_value = "table",
+        help = "output format"
+    )]
+    output_format: OutputFormat,
+
     #[command(subcommand)]
     sub_command: SubCommand,
 }
@@ -77,23 +88,23 @@ enum SubCommand {
     Proxy,
 }
 
+#[derive(clap::ValueEnum, Debug, Clone)]
+enum OutputFormat {
+    Table,
+    Json,
+}
+
 #[derive(Args, Debug)]
 struct PeerArgs {
     #[command(subcommand)]
     sub_command: Option<PeerSubCommand>,
 }
 
-#[derive(Args, Debug)]
-struct PeerListArgs {
-    #[arg(short, long)]
-    verbose: bool,
-}
-
 #[derive(Subcommand, Debug)]
 enum PeerSubCommand {
     Add,
     Remove,
-    List(PeerListArgs),
+    List,
     ListForeign,
     ListGlobalForeign,
 }
@@ -193,14 +204,15 @@ struct InstallArgs {
 
 type Error = anyhow::Error;
 
-struct CommandHandler {
+struct CommandHandler<'a> {
     client: Mutex<RpcClient>,
     verbose: bool,
+    output_format: &'a OutputFormat,
 }
 
 type RpcClient = StandAloneClient<TcpTunnelConnector>;
 
-impl CommandHandler {
+impl CommandHandler<'_> {
     async fn get_peer_manager_client(
         &self,
     ) -> Result<Box<dyn PeerManageRpc<Controller = BaseController>>, Error> {
@@ -294,9 +306,12 @@ impl CommandHandler {
         println!("remove peer");
     }
 
-    async fn handle_peer_list(&self, _args: &PeerArgs) -> Result<(), Error> {
-        #[derive(tabled::Tabled)]
+    async fn handle_peer_list(&self) -> Result<(), Error> {
+        #[derive(tabled::Tabled, serde::Serialize)]
         struct PeerTableItem {
+            #[tabled(rename = "ipv4")]
+            cidr: String,
+            #[tabled(skip)]
             ipv4: String,
             hostname: String,
             cost: String,
@@ -314,7 +329,12 @@ impl CommandHandler {
             fn from(p: PeerRoutePair) -> Self {
                 let route = p.route.clone().unwrap_or_default();
                 PeerTableItem {
-                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                    cidr: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                    ipv4: route
+                        .ipv4_addr
+                        .map(|ip: easytier::proto::common::Ipv4Inet| ip.address.unwrap_or_default())
+                        .map(|ip| ip.to_string())
+                        .unwrap_or_default(),
                     hostname: route.hostname.clone(),
                     cost: cost_to_str(route.cost),
                     lat_ms: if route.cost == 1 {
@@ -344,7 +364,10 @@ impl CommandHandler {
         impl From<NodeInfo> for PeerTableItem {
             fn from(p: NodeInfo) -> Self {
                 PeerTableItem {
-                    ipv4: p.ipv4_addr.clone(),
+                    cidr: p.ipv4_addr.clone(),
+                    ipv4: Ipv4Inet::from_str(&p.ipv4_addr)
+                        .map(|ip| ip.address().to_string())
+                        .unwrap_or_default(),
                     hostname: p.hostname.clone(),
                     cost: "Local".to_string(),
                     lat_ms: "-".to_string(),
@@ -382,7 +405,15 @@ impl CommandHandler {
             items.push(p.into());
         }
 
-        println!("{}", tabled::Table::new(items).with(Style::modern()));
+        match self.output_format {
+            OutputFormat::Table => {
+                println!("{}", tabled::Table::new(items).with(Style::modern()));
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&items)?;
+                println!("{}", json);
+            }
+        }
 
         Ok(())
     }
@@ -464,7 +495,7 @@ impl CommandHandler {
     }
 
     async fn handle_route_list(&self) -> Result<(), Error> {
-        #[derive(tabled::Tabled)]
+        #[derive(tabled::Tabled, serde::Serialize)]
         struct RouteTableItem {
             ipv4: String,
             hostname: String,
@@ -634,7 +665,15 @@ impl CommandHandler {
             }
         }
 
-        println!("{}", tabled::Table::new(items).with(Style::modern()));
+        match self.output_format {
+            OutputFormat::Table => {
+                println!("{}", tabled::Table::new(items).with(Style::modern()));
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&items)?;
+                println!("{}", json);
+            }
+        }
 
         Ok(())
     }
@@ -924,6 +963,7 @@ async fn main() -> Result<(), Error> {
     let handler = CommandHandler {
         client: Mutex::new(client),
         verbose: cli.verbose,
+        output_format: &cli.output_format,
     };
 
     match cli.sub_command {
@@ -934,12 +974,8 @@ async fn main() -> Result<(), Error> {
             Some(PeerSubCommand::Remove) => {
                 println!("remove peer");
             }
-            Some(PeerSubCommand::List(arg)) => {
-                if arg.verbose {
-                    println!("{:#?}", handler.list_peer_route_pair().await?);
-                } else {
-                    handler.handle_peer_list(&peer_args).await?;
-                }
+            Some(PeerSubCommand::List) => {
+                handler.handle_peer_list().await?;
             }
             Some(PeerSubCommand::ListForeign) => {
                 handler.handle_foreign_network_list().await?;
@@ -948,7 +984,7 @@ async fn main() -> Result<(), Error> {
                 handler.handle_global_foreign_network_list().await?;
             }
             None => {
-                handler.handle_peer_list(&peer_args).await?;
+                handler.handle_peer_list().await?;
             }
         },
         SubCommand::Connector(conn_args) => match conn_args.sub_command {
@@ -993,27 +1029,51 @@ async fn main() -> Result<(), Error> {
                 )
                 .await?;
 
-            #[derive(tabled::Tabled)]
+            #[derive(tabled::Tabled, serde::Serialize)]
             struct PeerCenterTableItem {
                 node_id: String,
-                direct_peers: String,
+                #[tabled(rename = "direct_peers")]
+                #[serde(skip_serializing)]
+                direct_peers_str: String,
+                #[tabled(skip)]
+                direct_peers: Vec<DirectPeerItem>,
+            }
+
+            #[derive(serde::Serialize)]
+            struct DirectPeerItem {
+                node_id: String,
+                latency_ms: i32,
             }
 
             let mut table_rows = vec![];
             for (k, v) in resp.global_peer_map.iter() {
                 let node_id = k;
-                let direct_peers = v
+                let direct_peers_strs = v
                     .direct_peers
                     .iter()
                     .map(|(k, v)| format!("{}: {:?}ms", k, v.latency_ms,))
                     .collect::<Vec<_>>();
+                let direct_peers: Vec<_> = v.direct_peers
+                    .iter()
+                    .map(|(k, v)| DirectPeerItem {
+                        node_id: k.to_string(),
+                        latency_ms: v.latency_ms,
+                    })
+                    .collect();
                 table_rows.push(PeerCenterTableItem {
                     node_id: node_id.to_string(),
-                    direct_peers: direct_peers.join("\n"),
+                    direct_peers_str: direct_peers_strs.join("\n"),
+                    direct_peers,
                 });
             }
 
-            println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
+            match cli.output_format {
+                OutputFormat::Json => {
+                    let json = serde_json::to_string_pretty(&table_rows)?;
+                    println!("{}", json);
+                }
+                OutputFormat::Table => {}
+            }
         }
         SubCommand::VpnPortal => {
             let vpn_portal_client = handler.get_vpn_portal_client().await?;
@@ -1186,7 +1246,7 @@ async fn main() -> Result<(), Error> {
                 .await;
             entries.extend(ret.unwrap_or_default().entries);
 
-            #[derive(tabled::Tabled)]
+            #[derive(tabled::Tabled, serde::Serialize)]
             struct TableItem {
                 src: String,
                 dst: String,
@@ -1215,7 +1275,15 @@ async fn main() -> Result<(), Error> {
                 })
                 .collect::<Vec<_>>();
 
-            println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
+            match cli.output_format {
+                OutputFormat::Json => {
+                    let json = serde_json::to_string_pretty(&table_rows)?;
+                    println!("{}", json);
+                }
+                OutputFormat::Table => {
+                    println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
+                }
+            }
         }
     }
 
