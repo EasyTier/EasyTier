@@ -1129,6 +1129,11 @@ async fn main() -> Result<(), Error> {
                 .ok_or(anyhow::anyhow!("node info not found"))?;
             match sub_cmd.sub_command {
                 Some(NodeSubCommand::Info) | None => {
+                    if cli.verbose || cli.output_format == OutputFormat::Json {
+                        println!("{}", serde_json::to_string_pretty(&node_info)?);
+                        return Ok(());
+                    }
+
                     let stun_info = node_info.stun_info.clone().unwrap_or_default();
                     let ip_list = node_info.ip_list.clone().unwrap_or_default();
 
