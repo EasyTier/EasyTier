@@ -1072,7 +1072,9 @@ async fn main() -> Result<(), Error> {
                     let json = serde_json::to_string_pretty(&table_rows)?;
                     println!("{}", json);
                 }
-                OutputFormat::Table => {}
+                OutputFormat::Table => {
+                    println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
+                }
             }
         }
         SubCommand::VpnPortal => {
