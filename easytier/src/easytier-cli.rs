@@ -405,15 +405,7 @@ impl CommandHandler<'_> {
             items.push(p.into());
         }
 
-        match self.output_format {
-            OutputFormat::Table => {
-                println!("{}", tabled::Table::new(items).with(Style::modern()));
-            }
-            OutputFormat::Json => {
-                let json = serde_json::to_string_pretty(&items)?;
-                println!("{}", json);
-            }
-        }
+        print_output(&items, self.output_format)?;
 
         Ok(())
     }
@@ -665,15 +657,7 @@ impl CommandHandler<'_> {
             }
         }
 
-        match self.output_format {
-            OutputFormat::Table => {
-                println!("{}", tabled::Table::new(items).with(Style::modern()));
-            }
-            OutputFormat::Json => {
-                let json = serde_json::to_string_pretty(&items)?;
-                println!("{}", json);
-            }
-        }
+        print_output(&items, self.output_format)?;
 
         Ok(())
     }
@@ -951,6 +935,21 @@ impl Service {
     }
 }
 
+fn print_output<T>(items: &[T], format: &OutputFormat) -> Result<(), Error>
+where
+    T: tabled::Tabled + serde::Serialize,
+{
+    match format {
+        OutputFormat::Table => {
+            println!("{}", tabled::Table::new(items).with(Style::modern()));
+        }
+        OutputFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(items)?);
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
@@ -1067,15 +1066,7 @@ async fn main() -> Result<(), Error> {
                 });
             }
 
-            match cli.output_format {
-                OutputFormat::Json => {
-                    let json = serde_json::to_string_pretty(&table_rows)?;
-                    println!("{}", json);
-                }
-                OutputFormat::Table => {
-                    println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
-                }
-            }
+            print_output(&table_rows, &cli.output_format)?;
         }
         SubCommand::VpnPortal => {
             let vpn_portal_client = handler.get_vpn_portal_client().await?;
@@ -1277,15 +1268,7 @@ async fn main() -> Result<(), Error> {
                 })
                 .collect::<Vec<_>>();
 
-            match cli.output_format {
-                OutputFormat::Json => {
-                    let json = serde_json::to_string_pretty(&table_rows)?;
-                    println!("{}", json);
-                }
-                OutputFormat::Table => {
-                    println!("{}", tabled::Table::new(table_rows).with(Style::modern()));
-                }
-            }
+            print_output(&table_rows, &cli.output_format)?;
         }
     }
 
