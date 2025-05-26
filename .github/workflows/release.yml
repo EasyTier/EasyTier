@@ -21,7 +21,7 @@ on:
       version:
         description: 'Version for this release'
         type: string
-        default: 'v2.3.0'
+        default: 'v2.3.1'
         required: true
       make_latest:
         description: 'Mark this release as latest'
@@ -57,7 +57,7 @@ jobs:
           repo: EasyTier/EasyTier
           path: release_assets_nozip
 
-      - name: Download GUI Artifact
+      - name: Download Mobile Artifact
         uses: dawidd6/action-download-artifact@v6
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
@@ -78,7 +78,14 @@ jobs:
           ls -l -R ./
           chmod -R 755 .
           for x in `ls`; do
-            zip ../zipped_assets/$x-${VERSION}.zip $x/*;
+            if [ "$x" = "Easytier-Magisk" ]; then
+              # for Easytier-Magisk, make sure files are in the root of the zip
+              cd $x;
+              zip -r ../../zipped_assets/$x-${VERSION}.zip .;
+              cd ..;
+            else
+              zip -r ../zipped_assets/$x-${VERSION}.zip $x;
+            fi
           done
 
       - name: Release

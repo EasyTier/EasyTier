@@ -1,20 +1,27 @@
 #!/data/adb/magisk/busybox sh
 MODDIR=${0%/*}
 # MODDIR="$(dirname $(readlink -f "$0"))"
-mkdir -p ${MODDIR}/log
 chmod 755 ${MODDIR}/*
 
-echo $MODDIR >> ${MODDIR}/log/start.log
+# 等待系统启动成功
+while [ "$(getprop sys.boot_completed)" != "1" ]; do
+  sleep 5s
+done
 
-echo "Easytier 服务启动" >> ${MODDIR}/log/start.log
+# 防止系统挂起
+echo "PowerManagerService.noSuspend" > /sys/power/wake_lock
 
-# 启动
-nohup ${MODDIR}/easytier-core -c ${MODDIR}/config/config.conf >> ${MODDIR}/log/start.log 2>&1 &
+# 修改模块描述
+sed -i 's/$(description=)$[^"]*/\1[状态]关闭中/' "$MODDIR/module.prop"
+
+# 等待 3 秒
+sleep 3s
+
+"${MODDIR}/easytier_core.sh" &
 
 # 检查是否启用模块
 while [ ! -f ${MODDIR}/disable ]; do 
     sleep 2
 done
-PID=$(ps -ef|grep "${MODDIR}/easytier-core -c ${MODDIR}/config/config.conf" | awk '{print $2}')
-kill $PID
-echo "Easytier 服务停止" >> ${MODDIR}/log/start.log
+
+pkill easytier-core

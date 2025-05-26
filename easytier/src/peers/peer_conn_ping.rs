@@ -55,7 +55,7 @@ impl std::fmt::Debug for PingIntervalController {
 
 impl PingIntervalController {
     fn new(throughput: Arc<Throughput>, loss_counter: Arc<AtomicU32>) -> Self {
-        let last_throughput = *throughput;
+        let last_throughput = (*throughput).clone();
 
         Self {
             throughput,
@@ -92,7 +92,7 @@ impl PingIntervalController {
             self.backoff_idx = 0;
         }
 
-        self.last_throughput = *self.throughput;
+        self.last_throughput = (*self.throughput).clone();
 
         if (self.logic_time - self.last_send_logic_time) < (1 << self.backoff_idx) {
             return false;
