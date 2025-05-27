@@ -12,7 +12,7 @@ use easytier::{
         constants::EASYTIER_VERSION,
         error::Error,
     },
-    tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener},
+    tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, websocket::WSTunnelListener, TunnelListener},
     utils::{init_logger, setup_panic_handler},
 };
 
@@ -27,7 +27,7 @@ mod web;
 rust_i18n::i18n!("locales", fallback = "en");
 
 #[derive(Parser, Debug)]
-#[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
+#[command(name = "easytier-web", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
     #[arg(short, long, default_value = "et.db", help = t!("cli.db").to_string())]
     db: String,
@@ -95,6 +95,7 @@ pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Erro
     Ok(match l.scheme() {
         "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
         "udp" => Box::new(UdpTunnelListener::new(l.clone())),
+        "ws" => Box::new(WSTunnelListener::new(l.clone())),
         _ => {
             return Err(Error::InvalidUrl(l.to_string()));
         }
