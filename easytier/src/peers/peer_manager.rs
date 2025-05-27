@@ -320,13 +320,6 @@ impl PeerManager {
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
-        if self.global_ctx.config.get_flags().private_mode
-            && peer.get_network_identity().network_name != self.global_ctx.get_network_identity().network_name
-        {
-            return Err(Error::SecretKeyError(
-                "private mode is turned on, network identity not match".to_string(),
-            ));
-        }
         if peer.get_network_identity().network_name
             == self.global_ctx.get_network_identity().network_name
         {
@@ -429,6 +422,13 @@ impl PeerManager {
         tracing::info!("add tunnel as server start");
         let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
         peer.do_handshake_as_server().await?;
+        if self.global_ctx.config.get_flags().private_mode
+            && peer.get_network_identity().network_name != self.global_ctx.get_network_identity().network_name
+        {
+            return Err(Error::SecretKeyError(
+                "private mode is turned on, network identity not match".to_string(),
+            ));
+        }
         if peer.get_network_identity().network_name
             == self.global_ctx.get_network_identity().network_name
         {
