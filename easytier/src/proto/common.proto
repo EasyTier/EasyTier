@@ -33,6 +33,8 @@ message FlagsInConfig {
 
   // enable magic dns or not
   bool accept_dns = 22;
+  // enable private mode
+  bool private_mode = 23;
 }
 
 message RpcDescriptor {

@@ -320,6 +320,13 @@ impl PeerManager {
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
+        if self.global_ctx.config.get_flags().private_mode
+            && peer.get_network_identity().network_name != self.global_ctx.get_network_identity().network_name
+        {
+            return Err(Error::SecretKeyError(
+                "private mode is turned on, network identity not match".to_string(),
+            ));
+        }
         if peer.get_network_identity().network_name
             == self.global_ctx.get_network_identity().network_name
         {
