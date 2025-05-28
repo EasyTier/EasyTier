@@ -6,21 +6,23 @@ rustflags = ["-C", "linker-flavor=ld.lld"]
 linker = "aarch64-linux-gnu-gcc"
 
 [target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"
+linker = "aarch64-unknown-linux-musl-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.mipsel-unknown-linux-musl]
-linker = "mipsel-linux-muslsf-gcc"
+linker = "mipsel-unknown-linux-muslsf-gcc"
 rustflags = [
     "-C",
     "target-feature=+crt-static",
     "-L",
-    "./musl_gcc/mipsel-linux-muslsf-cross/mipsel-linux-muslsf/lib",
+    "./musl_gcc/mipsel-unknown-linux-muslsf/mipsel-unknown-linux-muslsf/lib",
     "-L",
-    "./musl_gcc/mipsel-linux-muslsf-cross/lib/gcc/mipsel-linux-muslsf/11.2.1",
+    "./musl_gcc/mipsel-unknown-linux-muslsf/mipsel-unknown-linux-muslsf/sysroot/usr/lib",
+    "-L",
+    "./musl_gcc/mipsel-unknown-linux-muslsf/lib/gcc/mipsel-unknown-linux-muslsf/15.1.0",
     "-l",
     "atomic",
     "-l",
@@ -28,14 +30,16 @@ rustflags = [
 ]
 
 [target.mips-unknown-linux-musl]
-linker = "mips-linux-muslsf-gcc"
+linker = "mips-unknown-linux-muslsf-gcc"
 rustflags = [
     "-C",
     "target-feature=+crt-static",
     "-L",
-    "./musl_gcc/mips-linux-muslsf-cross/mips-linux-muslsf/lib",
+    "./musl_gcc/mips-unknown-linux-muslsf/mips-unknown-linux-muslsf/lib",
     "-L",
-    "./musl_gcc/mips-linux-muslsf-cross/lib/gcc/mips-linux-muslsf/11.2.1",
+    "./musl_gcc/mips-unknown-linux-muslsf/mips-unknown-linux-muslsf/sysroot/usr/lib",
+    "-L",
+    "./musl_gcc/mips-unknown-linux-muslsf/lib/gcc/mips-unknown-linux-muslsf/15.1.0",
     "-l",
     "atomic",
     "-l",
@@ -43,35 +47,39 @@ rustflags = [
 ]
 
 [target.armv7-unknown-linux-musleabihf]
-linker = "armv7l-linux-musleabihf-gcc"
+linker = "armv7-unknown-linux-musleabihf-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.armv7-unknown-linux-musleabi]
-linker = "armv7m-linux-musleabi-gcc"
+linker = "armv7-unknown-linux-musleabi-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
 [target.arm-unknown-linux-musleabihf]
-linker = "arm-linux-musleabihf-gcc"
+linker = "arm-unknown-linux-musleabihf-gcc"
 rustflags = [
     "-C",
     "target-feature=+crt-static",
     "-L",
-    "./musl_gcc/arm-linux-musleabihf-cross/arm-linux-musleabihf/lib",
+    "./musl_gcc/arm-unknown-linux-musleabihf/arm-unknown-linux-musleabihf/lib",
     "-L",
-    "./musl_gcc/arm-linux-musleabihf-cross/lib/gcc/arm-linux-musleabihf/11.2.1",
+    "./musl_gcc/arm-unknown-linux-musleabihf/lib/gcc/arm-unknown-linux-musleabihf/15.1.0",
     "-l",
     "atomic",
+    "-l",
+    "gcc",
 ]
 
 [target.arm-unknown-linux-musleabi]
-linker = "arm-linux-musleabi-gcc"
+linker = "arm-unknown-linux-musleabi-gcc"
 rustflags = [
     "-C",
     "target-feature=+crt-static",
     "-L",
-    "./musl_gcc/arm-linux-musleabi-cross/arm-linux-musleabi/lib",
+    "./musl_gcc/arm-unknown-linux-musleabi/arm-unknown-linux-musleabi/lib",
     "-L",
-    "./musl_gcc/arm-linux-musleabi-cross/lib/gcc/arm-linux-musleabi/11.2.1",
+    "./musl_gcc/arm-unknown-linux-musleabi/lib/gcc/arm-unknown-linux-musleabi/15.1.0",
     "-l",
     "atomic",
+    "-l",
+    "gcc",
 ]
