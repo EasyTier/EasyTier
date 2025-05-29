@@ -157,6 +157,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'disable_encryption', help: 'disable_encryption_help' },
   { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
+  { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
 
 </script>

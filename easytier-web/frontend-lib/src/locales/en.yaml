@@ -115,6 +115,10 @@ enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
 
+enable_private_mode: Enable Private Mode
+enable_private_mode_help: |
+  Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
+
 relay_network_whitelist: Network Whitelist
 relay_network_whitelist_help: |
   Only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.

@@ -676,6 +676,10 @@ impl NetworkConfig {
             flags.mtu = mtu as u32;
         }
 
+        if let Some(enable_private_mode) = self.enable_private_mode {
+            flags.private_mode = enable_private_mode;
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
