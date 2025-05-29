@@ -8,38 +8,22 @@
 # dependencies are only needed on ubuntu as that's the only place where
 # we make cross-compilation
 if [[ $OS =~ ^ubuntu.*$ ]]; then
-    sudo apt-get update && sudo apt-get install -qq crossbuild-essential-arm64 crossbuild-essential-armhf musl-tools libappindicator3-dev llvm clang
-    #  curl -s musl.cc | grep mipsel
-    case $TARGET in
-    mipsel-unknown-linux-musl)
-        MUSL_URI=mipsel-linux-muslsf
-        ;;
-    mips-unknown-linux-musl)
-        MUSL_URI=mips-linux-muslsf
-        ;;
-    aarch64-unknown-linux-musl)
-        MUSL_URI=aarch64-linux-musl
-        ;;
-    armv7-unknown-linux-musleabihf)
-        MUSL_URI=armv7l-linux-musleabihf
-        ;;
-    armv7-unknown-linux-musleabi)
-        MUSL_URI=armv7m-linux-musleabi
-        ;;
-    arm-unknown-linux-musleabihf)
-        MUSL_URI=arm-linux-musleabihf
-        ;;
-    arm-unknown-linux-musleabi)
-        MUSL_URI=arm-linux-musleabi
-        ;;
-    esac
-
-    if [ -n "$MUSL_URI" ]; then
+    sudo apt-get update && sudo apt-get install -qq musl-tools libappindicator3-dev llvm clang
+    # https://github.com/cross-tools/musl-cross/releases
+    # if "musl" is a substring of TARGET, we assume that we are using musl
+    MUSL_TARGET=$TARGET
+    # if target is mips or mipsel, we should use soft-float version of musl
+    if [[ $TARGET =~ ^mips.*$ || $TARGET =~ ^mipsel.*$ ]]; then
+        MUSL_TARGET=${TARGET}sf
+    fi
+    if [[ $MUSL_TARGET =~ musl ]]; then
         mkdir -p ./musl_gcc
-        wget --inet4-only -c https://musl.cc/${MUSL_URI}-cross.tgz -P ./musl_gcc/
-        tar zxf ./musl_gcc/${MUSL_URI}-cross.tgz -C ./musl_gcc/
-        sudo ln -s $(pwd)/musl_gcc/${MUSL_URI}-cross/bin/*gcc /usr/bin/
-        sudo ln -s $(pwd)/musl_gcc/${MUSL_URI}-cross/${MUSL_URI}/include/ /usr/include/musl-cross
+        wget --inet4-only -c https://github.com/cross-tools/musl-cross/releases/download/20250520/${MUSL_TARGET}.tar.xz -P ./musl_gcc/
+        tar xf ./musl_gcc/${MUSL_TARGET}.tar.xz -C ./musl_gcc/
+        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/bin/*gcc /usr/bin/
+        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/include/ /usr/include/musl-cross
+        sudo ln -sf $(pwd)/musl_gcc/${MUSL_TARGET}/${MUSL_TARGET}/sysroot/ ./musl_gcc/sysroot
+        sudo chmod -R a+rwx ./musl_gcc
     fi
 fi
 
@@ -50,7 +34,7 @@ rustup default 1.86
 
 # mips/mipsel cannot add target from rustup, need compile by ourselves
 if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-    cd "$PWD/musl_gcc/${MUSL_URI}-cross/lib/gcc/${MUSL_URI}/11.2.1" || exit 255
+    cd "$PWD/musl_gcc/${MUSL_TARGET}/lib/gcc/${MUSL_TARGET}/15.1.0" || exit 255
     # for panic-abort
     cp libgcc_eh.a libunwind.a
 
