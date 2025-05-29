@@ -434,7 +434,7 @@ impl Instance {
                                 ip.clone(),
                             ),
                         )
-                        .await;
+                            .await;
                     }
 
                     current_dhcp_ip = Some(ip);
@@ -479,7 +479,7 @@ impl Instance {
                         ipv4_addr.clone(),
                     ),
                 )
-                .await;
+                    .await;
             }
         }
 
