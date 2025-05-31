@@ -1,4 +1,5 @@
-use std::panic;
+use std::{panic, thread};
+use std::ffi::c_void;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
@@ -9,6 +10,7 @@ use easytier::{
 
 #[cfg(target_env = "ohos")]
 use ohos_hilog_binding::{hilog_error, set_global_options, LogOptions};
+use easytier::launcher::{PROTECT_FN};
 
 #[cfg(target_env = "ohos")]
 static INITIALIZED: std::sync::Once = std::sync::Once::new();
@@ -49,8 +51,15 @@ pub extern "C" fn init_panic_hook() {
         }
     );
     INITIALIZED.call_once(|| {
-            panic::set_hook(Box::new(panic_hook));
-        });
+        panic::set_hook(Box::new(panic_hook));
+    });
+}
+
+#[cfg(target_env = "ohos")]
+#[no_mangle]
+pub extern "C" fn init_protect_fn(func: extern "C" fn(i32) -> bool) {
+    let mut guard = PROTECT_FN.lock().unwrap();
+    *guard = Some(func);
 }
 
 #[no_mangle]

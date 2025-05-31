@@ -1157,7 +1157,6 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "easytier",
- "lazy_static",
  "napi-build-ohos 1.0.4",
  "napi-derive-ohos",
  "napi-ohos",

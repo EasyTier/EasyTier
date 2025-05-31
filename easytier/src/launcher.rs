@@ -1,9 +1,3 @@
-use std::{
-    collections::VecDeque,
-    net::SocketAddr,
-    sync::{atomic::AtomicBool, Arc, RwLock},
-};
-
 use crate::{
     common::{
         config::{
@@ -20,7 +14,24 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use lazy_static::lazy_static;
+use std::sync::Mutex;
+use std::{collections::VecDeque, net::SocketAddr, sync::{atomic::AtomicBool, Arc, RwLock}};
 use tokio::{sync::broadcast, task::JoinSet};
+
+#[cfg(target_env = "ohos")]
+lazy_static! {
+    pub static ref PROTECT_FN: Mutex<Option<extern "C" fn(i32) -> bool>> = 
+            Mutex::new(None);
+}
+
+#[cfg(target_env = "ohos")]
+pub fn protect_socket(socket_fd: i32) {
+    let protect_fn = PROTECT_FN.lock().unwrap();
+    if let Some(callback) = protect_fn.as_ref() {
+        callback(socket_fd);
+    }
+}
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -202,7 +213,7 @@ impl EasyTierLauncher {
             });
         }
 
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
         Self::run_routine_for_android(&instance, &data, &mut tasks).await;
 
         instance.run().await?;

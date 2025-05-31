@@ -13,6 +13,7 @@ use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
 
 use std::net::SocketAddr;
+use std::os::fd::AsRawFd;
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
@@ -31,7 +32,7 @@ use crate::{
         ring::RingTunnel,
     },
 };
-
+use crate::launcher::protect_socket;
 use super::{
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
@@ -810,8 +811,10 @@ impl UdpTunnelConnector {
         } else {
             UdpSocket::bind("[::]:0").await?
         };
-
-        return self.try_connect_with_socket(Arc::new(socket), addr).await;
+        if cfg!(target_env = "ohos") { 
+            protect_socket(socket.as_raw_fd());
+        }
+        self.try_connect_with_socket(Arc::new(socket), addr).await
     }
 
     async fn connect_with_custom_bind(

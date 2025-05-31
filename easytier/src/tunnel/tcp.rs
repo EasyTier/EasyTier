@@ -1,9 +1,10 @@
-use std::net::SocketAddr;
-
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::os::fd::AsRawFd;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-
+use url::Host;
+use crate::launcher::protect_socket;
 use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
 
@@ -154,8 +155,11 @@ impl TcpTunnelConnector {
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
         let stream = TcpStream::connect(addr).await?;
+        if cfg!(target_env = "ohos") { 
+            protect_socket(stream.as_raw_fd());
+        }
         tracing::info!(url = ?self.addr, ?addr, "connect tcp succ");
-        return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
+        get_tunnel_with_tcp_stream(stream, self.addr.clone().into())
     }
 
     async fn connect_with_custom_bind(

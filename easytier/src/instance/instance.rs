@@ -82,7 +82,7 @@ impl IpProxy {
         self.tcp_proxy.start(true).await?;
         if let Err(e) = self.icmp_proxy.start().await {
             tracing::error!("start icmp proxy failed: {:?}", e);
-            if cfg!(not(target_os = "android")) {
+            if cfg!(not(any(target_os = "android", target_env = "ohos"))) {
                 // android may not support icmp proxy
                 return Err(e);
             }
@@ -407,7 +407,7 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(not(target_os = "android"))]
+                    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
@@ -461,7 +461,7 @@ impl Instance {
         Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
         if !self.global_ctx.config.get_flags().no_tun {
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
             if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
                 let mut new_nic_ctx = NicCtx::new(
                     self.global_ctx.clone(),
