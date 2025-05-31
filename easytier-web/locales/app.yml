@@ -28,3 +28,6 @@ cli:
   no_web:
     en: "Do not run the web dashboard server"
     zh-CN: "不运行 web dashboard 服务器"
+  api_host:
+    en: "The URL of the API server, used by the web frontend to connect to"
+    zh-CN: "API 服务器的 URL，用于 web 前端连接"
