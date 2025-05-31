@@ -1,3 +1,4 @@
+use std::panic;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
@@ -5,6 +6,12 @@ use easytier::{
     common::config::{ConfigLoader as _, TomlConfigLoader},
     launcher::NetworkInstance,
 };
+
+#[cfg(target_env = "ohos")]
+use ohos_hilog_binding::{hilog_error, set_global_options, LogOptions};
+
+#[cfg(target_env = "ohos")]
+static INITIALIZED: std::sync::Once = std::sync::Once::new();
 
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
@@ -24,6 +31,44 @@ fn set_error_msg(msg: &str) {
     let len = bytes.len();
     msg_buf.resize(len, 0);
     msg_buf[..len].copy_from_slice(bytes);
+}
+
+#[cfg(target_env = "ohos")]
+fn panic_hook(info: &panic::PanicHookInfo) {
+    // 格式化 panic 信息
+    hilog_error!("RUST PANIC: {}", info);
+}
+
+#[no_mangle]
+#[cfg(target_env = "ohos")]
+pub extern "C" fn init_panic_hook() {
+    set_global_options(
+        LogOptions {
+            tag: "aa",
+            domain: 0
+        }
+    );
+    INITIALIZED.call_once(|| {
+            panic::set_hook(Box::new(panic_hook));
+        });
+}
+
+#[no_mangle]
+pub extern "C" fn set_tun_fd(inst_name: *const std::ffi::c_char, fd: std::ffi::c_int) -> std::ffi::c_int {
+    let inst_name = unsafe {
+        assert!(!inst_name.is_null());
+        std::ffi::CStr::from_ptr(inst_name)
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    if let Some(mut instance) = INSTANCE_MAP.get_mut(&inst_name) {
+        instance.set_tun_fd(fd);
+        return 0;
+    }
+
+    set_error_msg("instance not found");
+    -1
 }
 
 #[no_mangle]

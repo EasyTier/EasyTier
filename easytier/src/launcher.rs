@@ -95,7 +95,7 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
     async fn run_routine_for_android(
         instance: &Instance,
         data: &EasyTierData,

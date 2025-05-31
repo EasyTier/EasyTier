@@ -694,7 +694,7 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
     pub async fn setup_nic_ctx_for_android(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
