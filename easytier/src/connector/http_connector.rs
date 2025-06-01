@@ -211,6 +211,7 @@ impl super::TunnelConnector for HttpTunnelConnector {
         
         // New: Automatic protocol upgrade to WebSocket
         let is_ws_upgrade = self.addr.query_pairs().any(|(k, v)| k == "upgrade" && v == "websocket");
+        #[cfg(feature = "websocket")]
         if is_ws_upgrade {
             // Use the WebSocket connector directly
             let mut ws_connector = crate::tunnel::websocket::WSTunnelConnector::new(self.addr.clone());
