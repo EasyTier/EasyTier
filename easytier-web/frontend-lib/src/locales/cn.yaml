@@ -116,6 +116,10 @@ enable_magic_dns: 启用魔法DNS
 enable_magic_dns_help: |
   启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
 
+enable_private_mode: 启用私有模式
+enable_private_mode_help: |
+  启用私有模式，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转。
+
 relay_network_whitelist: 网络白名单
 relay_network_whitelist_help: |
   仅转发白名单网络的流量，支持通配符字符串。多个网络名称间可以使用英文空格间隔。

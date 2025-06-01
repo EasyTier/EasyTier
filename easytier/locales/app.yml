@@ -155,6 +155,9 @@ core_clap:
   accept_dns:
     en: "if true, enable magic dns. with magic dns, you can access other nodes with a domain name, e.g.: <hostname>.et.net. magic dns will modify your system dns settings, enable it carefully."
     zh-CN: "如果为true，则启用魔法DNS。使用魔法DNS，您可以使用域名访问其他节点，例如：<hostname>.et.net。魔法DNS将修改您的系统DNS设置，请谨慎启用。"
+  private_mode:
+    en: "if true, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node."
+    zh-CN: "如果为true，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转"
 
 core_app:
   panic_backtrace_save:

@@ -452,6 +452,13 @@ struct Cli {
         help = t!("core_clap.accept_dns").to_string(),
     )]
     accept_dns: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_PRIVATE_MODE",
+        help = t!("core_clap.private_mode").to_string(),
+    )]
+    private_mode: Option<bool>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -770,6 +777,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         f.enable_kcp_proxy = cli.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = cli.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.accept_dns = cli.accept_dns.unwrap_or(f.accept_dns);
+        f.private_mode = cli.private_mode.unwrap_or(f.private_mode);
         cfg.set_flags(f);
 
         if !cli.exit_nodes.is_empty() {
