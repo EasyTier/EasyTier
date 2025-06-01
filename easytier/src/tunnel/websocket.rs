@@ -1,5 +1,5 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-
+use std::os::fd::AsRawFd;
 use anyhow::Context;
 use bytes::BytesMut;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
@@ -20,6 +20,8 @@ use super::{
     packet_def::{ZCPacket, ZCPacketType},
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
+#[cfg(target_env = "ohos")]
+use crate::launcher::protect_socket;
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
@@ -232,6 +234,10 @@ impl WSTunnelConnector {
         } else {
             TcpSocket::new_v6()?
         };
+        #[cfg(target_env = "ohos")]
+        { 
+            protect_socket(socket.as_raw_fd());
+        }
         Self::connect_with(self.addr.clone(), self.ip_version, socket).await
     }
 

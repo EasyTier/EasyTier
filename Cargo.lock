@@ -1070,6 +1070,7 @@ dependencies = [
  "hickory-server",
  "http",
  "http_req",
+ "httparse",
  "humansize",
  "humantime-serde",
  "jemalloc-ctl",

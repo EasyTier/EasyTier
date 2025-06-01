@@ -32,7 +32,10 @@ use crate::{
         ring::RingTunnel,
     },
 };
+
+#[cfg(target_env = "ohos")]
 use crate::launcher::protect_socket;
+
 use super::{
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
@@ -775,7 +778,7 @@ impl UdpTunnelConnector {
         &self,
         socket: Arc<UdpSocket>,
         addr: SocketAddr,
-    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
+    ) -> Result<Box<dyn Tunnel>, TunnelError> {
         tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
@@ -811,7 +814,8 @@ impl UdpTunnelConnector {
         } else {
             UdpSocket::bind("[::]:0").await?
         };
-        if cfg!(target_env = "ohos") { 
+        #[cfg(target_env = "ohos")]
+        { 
             protect_socket(socket.as_raw_fd());
         }
         self.try_connect_with_socket(Arc::new(socket), addr).await

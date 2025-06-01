@@ -15,8 +15,10 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_stream::StreamExt;
 use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
-use crate::launcher::protect_socket;
 use super::TunnelInfo;
+
+#[cfg(target_env = "ohos")]
+use crate::launcher::protect_socket;
 
 use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
@@ -353,6 +355,11 @@ pub(crate) fn setup_sokcet2_ext(
         let is_udp = matches!(socket2_socket.r#type()?, socket2::Type::DGRAM);
         crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, bind_dev, is_udp)?;
     }
+    
+    #[cfg(target_env = "ohos")]
+    { 
+        protect_socket(socket2_socket.as_raw_fd());
+    }
 
     if bind_addr.is_ipv6() {
         socket2_socket.set_only_v6(true)?;
@@ -373,10 +380,6 @@ pub(crate) fn setup_sokcet2_ext(
 
     if bind_addr.ip().is_unspecified() {
         return Ok(());
-    }
-    
-    if cfg!(target_env = "ohos") { 
-        protect_socket(socket2_socket.as_raw_fd());
     }
 
     // linux/mac does not use interface of bind_addr to send packet, so we need to bind device
