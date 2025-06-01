@@ -21,6 +21,8 @@ use super::{
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
+use rustls::pki_types::ServerName;
+
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
         "ws" => Ok(false),
@@ -206,7 +208,7 @@ impl WSTunnelConnector {
                 tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
             // Modify SNI logic: always use "localhost" as SNI to avoid IP blocking
             let sni = "localhost";
-            let server_name = rustls::ServerName::try_from(sni)
+            let server_name = ServerName::try_from(sni)
                 .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
             let stream = tls_conn
                 .connect(server_name, stream)
