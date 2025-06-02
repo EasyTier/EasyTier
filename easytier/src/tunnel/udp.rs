@@ -14,6 +14,7 @@ use zerocopy::{AsBytes, FromBytes};
 
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
+
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
@@ -32,9 +33,8 @@ use crate::{
         ring::RingTunnel,
     },
 };
-
-#[cfg(target_env = "ohos")]
-use crate::launcher::protect_socket;
+#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_info;
+#[cfg(target_env = "ohos")] use crate::launcher::protect_socket;
 
 use super::{
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
@@ -814,9 +814,13 @@ impl UdpTunnelConnector {
         } else {
             UdpSocket::bind("[::]:0").await?
         };
+        
         #[cfg(target_env = "ohos")]
         { 
-            protect_socket(socket.as_raw_fd());
+            let success = protect_socket(socket.as_raw_fd());
+            if success { 
+                hilog_info!("connect_with_default_bind udp to addr: {:?}", addr);
+            }
         }
         self.try_connect_with_socket(Arc::new(socket), addr).await
     }

@@ -1,5 +1,4 @@
-use std::{panic, thread};
-use std::ffi::c_void;
+use std::panic;
 use std::sync::Mutex;
 
 use dashmap::DashMap;
@@ -8,9 +7,8 @@ use easytier::{
     launcher::NetworkInstance,
 };
 
-#[cfg(target_env = "ohos")]
-use ohos_hilog_binding::{hilog_error, set_global_options, LogOptions};
-use easytier::launcher::{PROTECT_FN};
+#[cfg(target_env = "ohos")] use easytier::launcher::PROTECT_FN;
+#[cfg(target_env = "ohos")] use ohos_hilog_binding::{hilog_error, set_global_options, LogOptions};
 
 #[cfg(target_env = "ohos")]
 static INITIALIZED: std::sync::Once = std::sync::Once::new();
@@ -44,12 +42,10 @@ fn panic_hook(info: &panic::PanicHookInfo) {
 #[no_mangle]
 #[cfg(target_env = "ohos")]
 pub extern "C" fn init_panic_hook() {
-    set_global_options(
-        LogOptions {
-            tag: "aa",
-            domain: 0
-        }
-    );
+    set_global_options(LogOptions {
+        tag: "aa",
+        domain: 0,
+    });
     INITIALIZED.call_once(|| {
         panic::set_hook(Box::new(panic_hook));
     });
@@ -63,7 +59,10 @@ pub extern "C" fn init_protect_fn(func: extern "C" fn(i32) -> bool) {
 }
 
 #[no_mangle]
-pub extern "C" fn set_tun_fd(inst_name: *const std::ffi::c_char, fd: std::ffi::c_int) -> std::ffi::c_int {
+pub extern "C" fn set_tun_fd(
+    inst_name: *const std::ffi::c_char,
+    fd: std::ffi::c_int,
+) -> std::ffi::c_int {
     let inst_name = unsafe {
         assert!(!inst_name.is_null());
         std::ffi::CStr::from_ptr(inst_name)

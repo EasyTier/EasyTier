@@ -26,10 +26,12 @@ lazy_static! {
 }
 
 #[cfg(target_env = "ohos")]
-pub fn protect_socket(socket_fd: i32) {
+pub fn protect_socket(socket_fd: i32) -> bool {
     let protect_fn = PROTECT_FN.lock().unwrap();
     if let Some(callback) = protect_fn.as_ref() {
-        callback(socket_fd);
+        callback(socket_fd)
+    }else {
+        false
     }
 }
 

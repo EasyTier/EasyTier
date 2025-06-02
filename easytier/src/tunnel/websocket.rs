@@ -20,8 +20,8 @@ use super::{
     packet_def::{ZCPacket, ZCPacketType},
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
-#[cfg(target_env = "ohos")]
-use crate::launcher::protect_socket;
+#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_info;
+#[cfg(target_env = "ohos")] use crate::launcher::protect_socket;
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
@@ -236,7 +236,10 @@ impl WSTunnelConnector {
         };
         #[cfg(target_env = "ohos")]
         { 
-            protect_socket(socket.as_raw_fd());
+            let success = protect_socket(socket.as_raw_fd());
+            if success { 
+                hilog_info!("connect_with_default_bind ws to remote_url: {:?}", addr);
+            }
         }
         Self::connect_with(self.addr.clone(), self.ip_version, socket).await
     }

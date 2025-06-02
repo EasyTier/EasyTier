@@ -1,14 +1,13 @@
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr};
 use std::os::fd::AsRawFd;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use url::Host;
 use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
 
-#[cfg(target_env = "ohos")]
-use crate::launcher::protect_socket;
+#[cfg(target_env = "ohos")] use crate::launcher::protect_socket;
+#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_info;
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -117,11 +116,6 @@ fn get_tunnel_with_tcp_stream(
     if let Err(e) = stream.set_nodelay(true) {
         tracing::warn!(?e, "set_nodelay fail in get_tunnel_with_tcp_stream");
     }
-    
-    #[cfg(target_env = "ohos")]
-    { 
-        protect_socket(stream.as_raw_fd());
-    }
 
     let info = TunnelInfo {
         tunnel_type: "tcp".to_owned(),
@@ -167,7 +161,10 @@ impl TcpTunnelConnector {
         };
         #[cfg(target_env = "ohos")]
         { 
-            protect_socket(socket.as_raw_fd());
+            let success = protect_socket(socket.as_raw_fd());
+            if success { 
+                hilog_info!("connect_with_default_bind tcp to remote_url: {:?}", addr);
+            }
         }
         let stream = socket.connect(addr).await?;
         tracing::info!(url = ?self.addr,?addr,local_addr = ?stream.local_addr()?,"connect tcp succ with explicit bind");
