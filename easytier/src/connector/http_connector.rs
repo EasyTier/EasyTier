@@ -208,17 +208,6 @@ impl HttpTunnelConnector {
 #[async_trait::async_trait]
 impl super::TunnelConnector for HttpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        
-        // New: Automatic protocol upgrade to WebSocket
-        let is_ws_upgrade = self.addr.query_pairs().any(|(k, v)| k == "upgrade" && v == "websocket");
-        #[cfg(feature = "websocket")]
-        if is_ws_upgrade {
-            // Use the WebSocket connector directly
-            let mut ws_connector = crate::tunnel::websocket::WSTunnelConnector::new(self.addr.clone());
-            ws_connector.set_ip_version(self.ip_version);
-            return ws_connector.connect().await;
-        }
-        
         let mut conn = self
             .get_redirected_connector(self.addr.to_string().as_str())
             .await
