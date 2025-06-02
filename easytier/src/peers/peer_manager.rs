@@ -1275,6 +1275,12 @@ mod tests {
         let peer_mgr_d = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         let peer_mgr_e = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
 
+        println!("peer_mgr_a: {}", peer_mgr_a.my_peer_id);
+        println!("peer_mgr_b: {}", peer_mgr_b.my_peer_id);
+        println!("peer_mgr_c: {}", peer_mgr_c.my_peer_id);
+        println!("peer_mgr_d: {}", peer_mgr_d.my_peer_id);
+        println!("peer_mgr_e: {}", peer_mgr_e.my_peer_id);
+
         connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
         connect_peer_manager(peer_mgr_b.clone(), peer_mgr_c.clone()).await;
 
