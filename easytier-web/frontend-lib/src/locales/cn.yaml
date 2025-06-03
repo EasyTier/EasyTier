@@ -64,6 +64,7 @@ event_log: 事件日志
 peer_info: 节点信息
 hostname: 主机名
 route_cost: 路由
+tunnel_proto: 协议
 latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载

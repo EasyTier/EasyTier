@@ -62,6 +62,7 @@ show_event_log: Show Event Log
 event_log: Event Log
 peer_info: Peer Info
 route_cost: Route Cost
+tunnel_proto: Protocol
 hostname: Hostname
 latency: Latency
 upload_bytes: Upload
