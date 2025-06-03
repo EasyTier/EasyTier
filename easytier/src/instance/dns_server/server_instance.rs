@@ -298,8 +298,9 @@ impl NicPacketFilter for MagicDnsServerInstanceData {
 
 #[async_trait::async_trait]
 impl RpcServerHook for MagicDnsServerInstanceData {
-    async fn on_new_client(&self, tunnel_info: Option<TunnelInfo>) {
+    async fn on_new_client(&self, tunnel_info: Option<TunnelInfo>)-> Result<Option<TunnelInfo>, anyhow::Error> {
         println!("New client connected: {:?}", tunnel_info);
+        Ok(tunnel_info)
     }
 
     async fn on_client_disconnected(&self, tunnel_info: Option<TunnelInfo>) {

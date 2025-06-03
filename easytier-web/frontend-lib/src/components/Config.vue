@@ -304,6 +304,15 @@ const bool_flags: BoolFlag[] = [
                 </div>
               </div>
 
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <label for="">{{ t('rpc_portal_whitelists') }}</label>
+                  <AutoComplete id="rpc_portal_whitelists" v-model="curNetwork.rpc_portal_whitelists"
+                    :placeholder="t('chips_placeholder', ['127.0.0.0/8'])" class="w-full" multiple fluid
+                    :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
+                </div>
+              </div>
+
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="dev_name">{{ t('dev_name') }}</label>

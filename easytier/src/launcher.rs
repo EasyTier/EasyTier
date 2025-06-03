@@ -527,6 +527,20 @@ impl NetworkConfig {
                 .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
         );
 
+        if self.rpc_portal_whitelists.is_empty() {
+            cfg.set_rpc_portal_whitelist(None);
+        } else {
+            cfg.set_rpc_portal_whitelist(Some(
+                self.rpc_portal_whitelists
+                    .iter()
+                    .map(|s| {
+                        s.parse()
+                            .with_context(|| format!("failed to parse rpc portal whitelist: {}", s))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
+
         if self.enable_vpn_portal.unwrap_or_default() {
             let cidr = format!(
                 "{}/{}",

@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::Context;
+use cidr::IpCidr;
 use clap::Parser;
 
 use easytier::{
@@ -175,6 +176,14 @@ struct Cli {
         help = t!("core_clap.rpc_portal").to_string(),
     )]
     rpc_portal: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_RPC_PORTAL_WHITELIST",
+        value_delimiter = ',',
+        help = t!("core_clap.rpc_portal_whitelist").to_string(),
+    )]
+    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     #[arg(
         short,
@@ -615,6 +624,8 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             Cli::parse_rpc_portal("0".into())?
         };
         cfg.set_rpc_portal(rpc_portal);
+
+        cfg.set_rpc_portal_whitelist(cli.rpc_portal_whitelist.clone());
 
         if let Some(external_nodes) = cli.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
