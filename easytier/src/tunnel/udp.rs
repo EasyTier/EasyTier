@@ -11,10 +11,8 @@ use dashmap::DashMap;
 use futures::{stream::FuturesUnordered, StreamExt};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
-
-use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
-
+use std::net::SocketAddr;
 use tokio::{
     net::UdpSocket,
     sync::mpsc::{Receiver, Sender, UnboundedReceiver, UnboundedSender},
@@ -33,9 +31,7 @@ use crate::{
         ring::RingTunnel,
     },
 };
-#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_info;
-#[cfg(target_env = "ohos")] use crate::launcher::protect_socket;
-
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 use super::{
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
@@ -778,7 +774,7 @@ impl UdpTunnelConnector {
         &self,
         socket: Arc<UdpSocket>,
         addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::warn!("udp connect: {:?}", self.addr);
 
         #[cfg(target_os = "windows")]
@@ -814,15 +810,11 @@ impl UdpTunnelConnector {
         } else {
             UdpSocket::bind("[::]:0").await?
         };
-        
         #[cfg(target_env = "ohos")]
-        { 
-            let success = protect_socket(socket.as_raw_fd());
-            if success { 
-                hilog_info!("connect_with_default_bind udp to addr: {:?}", addr);
-            }
+        {
+            socket_create_callback(socket.as_raw_fd(), &addr);
         }
-        self.try_connect_with_socket(Arc::new(socket), addr).await
+        return self.try_connect_with_socket(Arc::new(socket), addr).await;
     }
 
     async fn connect_with_custom_bind(

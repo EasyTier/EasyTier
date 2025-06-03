@@ -1,14 +1,12 @@
-use std::net::{SocketAddr};
+use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
+
 use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
-
-#[cfg(target_env = "ohos")] use crate::launcher::protect_socket;
-#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_info;
-
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 use super::{
     check_scheme_and_get_socket_addr,
     common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
@@ -153,22 +151,19 @@ impl TcpTunnelConnector {
     async fn connect_with_default_bind(
         &mut self,
         addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
         let socket = match addr {
             SocketAddr::V4(_) => TcpSocket::new_v4()?,
             SocketAddr::V6(_) => TcpSocket::new_v6()?,
         };
         #[cfg(target_env = "ohos")]
-        { 
-            let success = protect_socket(socket.as_raw_fd());
-            if success { 
-                hilog_info!("connect_with_default_bind tcp to remote_url: {:?}", addr);
-            }
+        {
+            socket_create_callback(socket.as_raw_fd(), &addr);
         }
         let stream = socket.connect(addr).await?;
-        tracing::info!(url = ?self.addr,?addr,local_addr = ?stream.local_addr()?,"connect tcp succ with explicit bind");
-        get_tunnel_with_tcp_stream(stream, self.addr.clone().into())
+        tracing::info!(url = ?self.addr, ?addr,local_addr = ?stream.local_addr()?, "connect tcp succ with explicit bind");
+        return get_tunnel_with_tcp_stream(stream, self.addr.clone().into())
     }
 
     async fn connect_with_custom_bind(
@@ -196,13 +191,13 @@ impl TcpTunnelConnector {
         }
 
         let ret = wait_for_connect_futures(futures).await;
-        get_tunnel_with_tcp_stream(ret?, self.addr.clone().into())
+        return get_tunnel_with_tcp_stream(ret?, self.addr.clone().into())
     }
 }
 
 #[async_trait]
 impl super::TunnelConnector for TcpTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", self.ip_version)
                 .await?;

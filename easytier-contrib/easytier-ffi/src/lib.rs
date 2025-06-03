@@ -1,16 +1,15 @@
-use std::panic;
-use std::sync::Mutex;
+#[cfg(target_env = "ohos")] mod ohos;
+#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_error;
 
 use dashmap::DashMap;
 use easytier::{
     common::config::{ConfigLoader as _, TomlConfigLoader},
     launcher::NetworkInstance,
 };
+use std::panic;
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 
-#[cfg(target_env = "ohos")] use easytier::launcher::PROTECT_FN;
-#[cfg(target_env = "ohos")] use ohos_hilog_binding::{hilog_error, set_global_options, LogOptions};
-
-#[cfg(target_env = "ohos")]
 static INITIALIZED: std::sync::Once = std::sync::Once::new();
 
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
@@ -33,29 +32,19 @@ fn set_error_msg(msg: &str) {
     msg_buf[..len].copy_from_slice(bytes);
 }
 
-#[cfg(target_env = "ohos")]
 fn panic_hook(info: &panic::PanicHookInfo) {
     // 格式化 panic 信息
-    hilog_error!("RUST PANIC: {}", info);
+    #[cfg(target_env = "ohos")]
+    {
+        hilog_error!("RUST PANIC: {}", info);
+    }
 }
 
 #[no_mangle]
-#[cfg(target_env = "ohos")]
 pub extern "C" fn init_panic_hook() {
-    set_global_options(LogOptions {
-        tag: "aa",
-        domain: 0,
-    });
     INITIALIZED.call_once(|| {
         panic::set_hook(Box::new(panic_hook));
     });
-}
-
-#[cfg(target_env = "ohos")]
-#[no_mangle]
-pub extern "C" fn init_protect_fn(func: extern "C" fn(i32) -> bool) {
-    let mut guard = PROTECT_FN.lock().unwrap();
-    *guard = Some(func);
 }
 
 #[no_mangle]
@@ -69,7 +58,6 @@ pub extern "C" fn set_tun_fd(
             .to_string_lossy()
             .into_owned()
     };
-
     if let Some(mut instance) = INSTANCE_MAP.get_mut(&inst_name) {
         instance.set_tun_fd(fd);
         return 0;
@@ -145,6 +133,13 @@ pub extern "C" fn run_network_instance(cfg_str: *const std::ffi::c_char) -> std:
     }
 
     let mut instance = NetworkInstance::new(cfg);
+    #[cfg(target_env = "ohos")]
+    {
+        let fd = ohos::TUN_FD.load(Ordering::SeqCst);
+        if fd > -1 {
+            instance.set_tun_fd(fd);
+        }
+    }
     if let Err(e) = instance.start().map_err(|e| e.to_string()) {
         set_error_msg(&format!("failed to start instance: {}", e));
         return -1;
@@ -180,6 +175,12 @@ pub extern "C" fn retain_network_instance(
 
     let _ = INSTANCE_MAP.retain(|k, _| inst_names.contains(k));
 
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn destroy_all_network_instance() -> std::ffi::c_int {
+    INSTANCE_MAP.clear();
     0
 }
 

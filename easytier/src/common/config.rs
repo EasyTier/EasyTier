@@ -255,7 +255,6 @@ struct Config {
 
     #[serde(skip)]
     flags_struct: Option<Flags>,
-    http: Option<url::Url>
 }
 
 #[derive(Debug, Clone)]

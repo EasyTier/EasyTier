@@ -15,11 +15,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_stream::StreamExt;
 use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
+
 use super::TunnelInfo;
-
-#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_info;
-#[cfg(target_env = "ohos")] use crate::launcher::protect_socket;
-
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
 use super::{
@@ -357,11 +355,8 @@ pub(crate) fn setup_sokcet2_ext(
     }
     
     #[cfg(target_env = "ohos")]
-    { 
-        let success = protect_socket(socket2_socket.as_raw_fd());
-        if success { 
-            hilog_info!("setup_sokcet2_ext to bind_addr: {:?}", bind_addr);
-        }
+    {
+        socket_create_callback(socket2_socket.as_raw_fd(), bind_addr);
     }
 
     if bind_addr.is_ipv6() {

@@ -1,3 +1,9 @@
+use std::{
+    collections::VecDeque,
+    net::SocketAddr,
+    sync::{atomic::AtomicBool, Arc, RwLock},
+};
+
 use crate::{
     common::{
         config::{
@@ -14,24 +20,19 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use tokio::{sync::broadcast, task::JoinSet};
 use lazy_static::lazy_static;
 use std::sync::Mutex;
-use std::{collections::VecDeque, net::SocketAddr, sync::{atomic::AtomicBool, Arc, RwLock}};
-use tokio::{sync::broadcast, task::JoinSet};
-
 #[cfg(target_env = "ohos")]
 lazy_static! {
-    pub static ref PROTECT_FN: Mutex<Option<extern "C" fn(i32) -> bool>> = 
+    pub static ref SOCKET_CREATE_CALLBACK: Mutex<Option<fn(i32, &SocketAddr) -> bool>> =
             Mutex::new(None);
 }
-
 #[cfg(target_env = "ohos")]
-pub fn protect_socket(socket_fd: i32) -> bool {
-    let protect_fn = PROTECT_FN.lock().unwrap();
+pub fn socket_create_callback(socket_fd: i32, socket_addr: &SocketAddr) {
+    let protect_fn = SOCKET_CREATE_CALLBACK.lock().unwrap();
     if let Some(callback) = protect_fn.as_ref() {
-        callback(socket_fd)
-    }else {
-        false
+        callback(socket_fd, socket_addr);
     }
 }
 
