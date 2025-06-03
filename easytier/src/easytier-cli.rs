@@ -47,8 +47,8 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
 struct Cli {
     /// the instance name
-    #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]
-    rpc_portal: SocketAddr,
+    #[arg(short = 'p', long, default_value = "15888", help = "local RPC portal port")]
+    rpc_portal_port: u16,
 
     #[arg(short, long, default_value = "false", help = "verbose output")]
     verbose: bool,
@@ -978,10 +978,9 @@ where
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
+    let rpc_addr = format!("tcp://127.0.0.1:{}", cli.rpc_portal_port);
     let client = RpcClient::new(TcpTunnelConnector::new(
-        format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
-            .parse()
-            .unwrap(),
+        rpc_addr.parse().unwrap(),
     ));
     let handler = CommandHandler {
         client: Mutex::new(client),
