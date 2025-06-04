@@ -108,7 +108,12 @@ fn set_tun_fd(instance_id: String, fd: i32) -> Result<(), String> {
 fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or_default() {
-            let _ = window.hide();
+            if window.is_minimized().unwrap_or_default() {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            } else {
+                let _ = window.hide();
+            }
         } else {
             let _ = window.show();
             let _ = window.set_focus();
