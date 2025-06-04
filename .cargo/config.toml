@@ -27,6 +27,8 @@ rustflags = [
     "atomic",
     "-l",
     "ctz",
+    "-l",
+    "gcc",
 ]
 
 [target.mips-unknown-linux-musl]
@@ -44,6 +46,8 @@ rustflags = [
     "atomic",
     "-l",
     "ctz",
+    "-l",
+    "gcc",
 ]
 
 [target.armv7-unknown-linux-musleabihf]

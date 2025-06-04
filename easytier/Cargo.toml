@@ -154,7 +154,7 @@ humansize = "2.1.3"
 
 base64 = "0.22"
 
-mimalloc-rust = { git = "https://github.com/EasyTier/mimalloc-rust", optional = true }
+mimalloc = { version = "*", optional = true }
 
 # mips
 atomic-shim = "0.2.0"
@@ -297,7 +297,7 @@ full = [
 mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
-mimalloc = ["dep:mimalloc-rust"]
+mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
 tun = ["dep:tun"]
 websocket = [
