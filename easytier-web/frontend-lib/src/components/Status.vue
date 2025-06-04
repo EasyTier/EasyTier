@@ -106,6 +106,10 @@ function ipFormat(info: PeerRoutePair) {
   return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
 }
 
+function tunnelProto(info: PeerRoutePair) {
+  return [...new Set(info.peer?.conns.map(c => c.tunnel?.tunnel_type))].join(',')
+}
+
 const myNodeInfo = computed(() => {
   if (!props.curNetworkInst)
     return {} as NodeInfo
@@ -311,7 +315,7 @@ function showEventLogs() {
       <Timeline v-else :value="dialogContent">
         <template #opposite="slotProps">
           <small class="text-surface-500 dark:text-surface-400">{{ useTimeAgo(Date.parse(slotProps.item.time))
-            }}</small>
+          }}</small>
         </template>
         <template #content="slotProps">
           <HumanEvent :event="slotProps.item.event" />
@@ -408,6 +412,7 @@ function showEventLogs() {
               </template>
             </Column>
             <Column :field="routeCost" :header="t('route_cost')" />
+            <Column :field="tunnelProto" :header="t('tunnel_proto')" />
             <Column :field="latencyMs" :header="t('latency')" />
             <Column :field="txBytes" :header="t('upload_bytes')" />
             <Column :field="rxBytes" :header="t('download_bytes')" />
