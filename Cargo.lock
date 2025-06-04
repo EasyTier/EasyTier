@@ -9118,7 +9118,6 @@ dependencies = [
  "thiserror 1.0.63",
  "tokio",
  "tokio-util",
- "tracing",
  "windows-sys 0.59.0",
  "wintun",
 ]
