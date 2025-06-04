@@ -204,7 +204,7 @@ impl WSTunnelConnector {
             init_crypto_provider();
             let tls_conn =
                 tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
-            // Modify SNI logic: always use "localhost" as SNI to avoid IP blocking
+            // Modify SNI logic: always use "localhost" as SNI to avoid IP blocking.
             let sni = "localhost";
             let server_name = rustls::ServerName::try_from(sni)
                 .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
