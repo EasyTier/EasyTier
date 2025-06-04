@@ -204,12 +204,12 @@ impl WSTunnelConnector {
             init_crypto_provider();
             let tls_conn =
                 tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
-            let domain_or_ip = match domain {
-                None => host.to_string(),
-                Some(domain) => domain.to_string(),
-            };
+            // Modify SNI logic: always use "localhost" as SNI to avoid IP blocking
+            let sni = "localhost";
+            let server_name = rustls::ServerName::try_from(sni)
+                .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
             let stream = tls_conn
-                .connect(domain_or_ip.try_into().unwrap(), stream)
+                .connect(server_name, stream)
                 .await?;
             MaybeTlsStream::Rustls(stream)
         } else {
