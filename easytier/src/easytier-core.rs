@@ -24,7 +24,7 @@ use easytier::{
         scoped_task::ScopedTask,
         stun::MockStunInfoCollector,
     },
-    connector::{create_connector_by_url, dns_connector::DNSTunnelConnector},
+    connector::create_connector_by_url,
     launcher,
     proto::{
         self,
@@ -1087,7 +1087,6 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             hostname,
         );
         tokio::signal::ctrl_c().await.unwrap();
-        DNSTunnelConnector::new("".parse().unwrap(), global_ctx);
         return Ok(());
     }
 

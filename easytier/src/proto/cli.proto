@@ -30,6 +30,7 @@ message PeerConnInfo {
   float loss_rate = 7;
   bool is_client = 8;
   string network_name = 9;
+  bool is_closed = 10;
 }
 
 message PeerInfo {

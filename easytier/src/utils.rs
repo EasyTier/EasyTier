@@ -205,7 +205,7 @@ pub fn setup_panic_handler() {
 
         // backtrace is risky, so use it last
         let backtrace = backtrace::Backtrace::force_capture();
-        write_err(format!("backtrace: {:?}", backtrace));
+        write_err(format!("backtrace: {:#?}", backtrace));
 
         std::process::exit(1);
     }));

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 
-use tokio::{select, sync::mpsc, task::JoinHandle};
+use tokio::{select, sync::mpsc};
 
 use tracing::Instrument;
 
@@ -32,7 +32,7 @@ pub struct Peer {
     packet_recv_chan: PacketRecvChan,
 
     close_event_sender: mpsc::Sender<PeerConnId>,
-    close_event_listener: JoinHandle<()>,
+    close_event_listener: ScopedTask<()>,
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
@@ -87,7 +87,8 @@ impl Peer {
                 "peer_close_event_listener",
                 ?peer_node_id,
             )),
-        );
+        )
+        .into();
 
         let default_conn_id = Arc::new(AtomicCell::new(PeerConnId::default()));
 
@@ -188,7 +189,13 @@ impl Peer {
 
         let mut ret = Vec::new();
         for conn in conns {
-            ret.push(conn.get_conn_info());
+            let info = conn.get_conn_info();
+            if !info.is_closed {
+                ret.push(info);
+            } else {
+                let conn_id = info.conn_id.parse().unwrap();
+                let _ = self.close_peer_conn(&conn_id).await;
+            }
         }
         ret
     }

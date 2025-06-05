@@ -86,8 +86,9 @@ impl AtomicVersion {
         self.0.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    fn set_if_larger(&self, version: Version) {
-        self.0.fetch_max(version, Ordering::Relaxed);
+    fn set_if_larger(&self, version: Version) -> bool {
+        // return true if the version is set.
+        self.0.fetch_max(version, Ordering::Relaxed) < version
     }
 }
 
@@ -452,7 +453,6 @@ impl SyncedRouteInfo {
         let mut need_inc_version = false;
 
         for (peer_idx, (peer_id, version)) in conn_bitmap.peer_ids.iter().enumerate() {
-            assert!(self.peer_infos.contains_key(peer_id));
             let connceted_peers = conn_bitmap.get_connected_peers(peer_idx);
             self.fill_empty_peer_info(&connceted_peers);
 
@@ -460,17 +460,14 @@ impl SyncedRouteInfo {
                 .entry(*peer_id)
                 .and_modify(|(old_conn_bitmap, old_version)| {
                     if *version > old_version.get() {
-                        *old_conn_bitmap = conn_bitmap.get_connected_peers(peer_idx);
+                        *old_conn_bitmap = connceted_peers.clone();
                         need_inc_version = true;
                         old_version.set(*version);
                     }
                 })
                 .or_insert_with(|| {
                     need_inc_version = true;
-                    (
-                        conn_bitmap.get_connected_peers(peer_idx),
-                        version.clone().into(),
-                    )
+                    (connceted_peers, version.clone().into())
                 });
         }
         if need_inc_version {
@@ -479,7 +476,6 @@ impl SyncedRouteInfo {
     }
 
     fn update_foreign_network(&self, foreign_network: &RouteForeignNetworkInfos) {
-        let mut need_inc_version = false;
         for item in foreign_network.infos.iter().map(Clone::clone) {
             let Some(key) = item.key else {
                 continue;
@@ -494,14 +490,10 @@ impl SyncedRouteInfo {
                 .entry(key.clone())
                 .and_modify(|old_entry| {
                     if entry.version > old_entry.version {
-                        need_inc_version = true;
                         *old_entry = entry.clone();
                     }
                 })
-                .or_insert_with(|| {
-                    need_inc_version = true;
-                    entry.clone()
-                });
+                .or_insert_with(|| entry.clone());
         }
     }
 
@@ -1069,6 +1061,7 @@ struct PeerRouteServiceImpl {
     foreign_network_owner_map: DashMap<NetworkIdentity, Vec<PeerId>>,
     synced_route_info: SyncedRouteInfo,
     cached_local_conn_map: std::sync::Mutex<RouteConnBitmap>,
+    cached_local_conn_map_version: AtomicVersion,
 
     last_update_my_foreign_network: AtomicCell<Option<std::time::Instant>>,
 
@@ -1118,6 +1111,7 @@ impl PeerRouteServiceImpl {
                 version: AtomicVersion::new(),
             },
             cached_local_conn_map: std::sync::Mutex::new(RouteConnBitmap::new()),
+            cached_local_conn_map_version: AtomicVersion::new(),
 
             last_update_my_foreign_network: AtomicCell::new(None),
 
@@ -1290,6 +1284,8 @@ impl PeerRouteServiceImpl {
         // update route table first because we want to filter out unreachable peers.
         self.update_route_table();
 
+        let synced_version = self.synced_route_info.version.get();
+
         // the conn_bitmap should contain complete list of directly connected peers.
         // use union of dst peers can preserve this property.
         let all_dst_peer_ids = self
@@ -1327,7 +1323,13 @@ impl PeerRouteServiceImpl {
             }
         }
 
-        *self.cached_local_conn_map.lock().unwrap() = conn_bitmap;
+        let mut locked = self.cached_local_conn_map.lock().unwrap();
+        if self
+            .cached_local_conn_map_version
+            .set_if_larger(synced_version)
+        {
+            *locked = conn_bitmap;
+        }
     }
 
     fn build_route_info(&self, session: &SyncRouteSession) -> Option<Vec<RoutePeerInfo>> {
