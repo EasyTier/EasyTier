@@ -183,8 +183,6 @@ impl WSTunnelConnector {
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let is_wss = is_wss(&addr)?;
         let socket_addr = SocketAddr::from_url(addr.clone(), ip_version).await?;
-        let domain = addr.domain();
-        let host = socket_addr.ip();
         let stream = tcp_socket.connect(socket_addr).await?;
 
         let info = TunnelInfo {
@@ -208,9 +206,7 @@ impl WSTunnelConnector {
             let sni = "localhost";
             let server_name = rustls::pki_types::ServerName::try_from(sni)
                 .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
-            let stream = tls_conn
-                .connect(server_name, stream)
-                .await?;
+            let stream = tls_conn.connect(server_name, stream).await?;
             MaybeTlsStream::Rustls(stream)
         } else {
             MaybeTlsStream::Plain(stream)
