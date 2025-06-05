@@ -39,11 +39,11 @@ use easytier::{
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
-use mimalloc_rust::GlobalMiMalloc;
+use mimalloc::MiMalloc;
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 #[global_allocator]
-static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
 
 #[cfg(feature = "jemalloc")]
 use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};

@@ -1315,7 +1315,9 @@ impl PeerRouteServiceImpl {
 
         let all_peer_ids = &conn_bitmap.peer_ids;
         for (peer_idx, (peer_id, _)) in all_peer_ids.iter().enumerate() {
-            let connected = self.synced_route_info.conn_map.get(peer_id).unwrap();
+            let Some(connected) = self.synced_route_info.conn_map.get(peer_id) else {
+                continue;
+            };
 
             for (idx, (other_peer_id, _)) in all_peer_ids.iter().enumerate() {
                 if connected.0.contains(other_peer_id) {
