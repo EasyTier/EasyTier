@@ -10,7 +10,7 @@ use easytier::{
     common::{
         config::{ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, TomlConfigLoader},
         constants::EASYTIER_VERSION,
-        error::Error,
+        error::Error, network::local_ipv6,
     },
     tunnel::{
         tcp::TcpTunnelListener, udp::UdpTunnelListener, websocket::WSTunnelListener, TunnelListener,
@@ -131,10 +131,13 @@ async fn main() {
 
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
-
+    let listen_unspecified = match local_ipv6().await {
+        Ok(_) => "[::0]",
+        Err(_) => "0.0.0.0",
+    };
     let listener = get_listener_by_url(
         &format!(
-            "{}://0.0.0.0:{}",
+            "{}://{listen_unspecified}:{}",
             cli.config_server_protocol, cli.config_server_port
         )
         .parse()
