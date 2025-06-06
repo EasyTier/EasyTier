@@ -186,10 +186,7 @@ async-ringbuf = "0.3.1"
 
 service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main" }
 
-async-compression = { version = "0.4.17", default-features = false, features = [
-    "zstd",
-    "tokio",
-] }
+zstd = { version = "0.13" }
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys" }
 
@@ -261,7 +258,7 @@ prost-reflect-build = { version = "0.14.0" }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.12.12", features = ["blocking"] }
-zip = "0.6.6"
+zip = "4.0.0"
 
 # enable thunk-rs when compiling for x86_64 or i686 windows
 [target.x86_64-pc-windows-msvc.build-dependencies]
