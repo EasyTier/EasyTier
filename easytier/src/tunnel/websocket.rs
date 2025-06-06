@@ -202,7 +202,7 @@ impl WSTunnelConnector {
             init_crypto_provider();
             let tls_conn =
                 tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
-            // Modify SNI logic: always use "localhost" as SNI to avoid IP blocking.
+            // Modify SNI logic: use "localhost" as SNI for url without domain to avoid IP blocking.
             let sni = match addr.domain() {
                 None => "localhost".to_string(),
                 Some(domain) => domain.to_string(),
