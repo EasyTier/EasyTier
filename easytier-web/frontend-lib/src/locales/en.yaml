@@ -18,6 +18,7 @@ advanced_settings: Advanced Settings
 basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
+rpc_portal_whitelists: RPC Whitelist
 config_network: Config Network
 running: Running
 error_msg: Error Message
