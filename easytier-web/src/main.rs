@@ -10,7 +10,8 @@ use easytier::{
     common::{
         config::{ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, TomlConfigLoader},
         constants::EASYTIER_VERSION,
-        error::Error, network::local_ipv6,
+        error::Error,
+        network::{local_ipv4, local_ipv6},
     },
     tunnel::{
         tcp::TcpTunnelListener, udp::UdpTunnelListener, websocket::WSTunnelListener, TunnelListener,
@@ -111,6 +112,29 @@ pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Erro
     })
 }
 
+async fn get_dual_stack_listener(
+    protocol: &str,
+    port: u16,
+) -> Result<
+    (
+        Option<Box<dyn TunnelListener>>,
+        Option<Box<dyn TunnelListener>>,
+    ),
+    Error,
+> {
+    let v6_listener = if let Ok(_) = local_ipv6().await {
+        get_listener_by_url(&format!("{}://[::0]:{}", protocol, port).parse().unwrap()).ok()
+    } else {
+        None
+    };
+    let v4_listener = if let Ok(_) = local_ipv4().await {
+        get_listener_by_url(&format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap()).ok()
+    } else {
+        None
+    };
+    Ok((v6_listener, v4_listener))
+}
+
 #[tokio::main]
 async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
@@ -131,21 +155,21 @@ async fn main() {
 
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
-    let listen_unspecified = match local_ipv6().await {
-        Ok(_) => "[::0]",
-        Err(_) => "0.0.0.0",
-    };
-    let listener = get_listener_by_url(
-        &format!(
-            "{}://{listen_unspecified}:{}",
-            cli.config_server_protocol, cli.config_server_port
-        )
-        .parse()
-        .unwrap(),
-    )
-    .unwrap();
     let mut mgr = client_manager::ClientManager::new(db.clone());
-    mgr.serve(listener).await.unwrap();
+    let (v6_listener, v4_listener) =
+        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
+            .await
+            .unwrap();
+    if v4_listener.is_none() && v6_listener.is_none() {
+        panic!("Listen to both IPv4 and IPv6 failed");
+    }
+    if let Some(listener) = v6_listener {
+        mgr.add_listener(listener).await.unwrap();
+    }
+    if let Some(listener) = v4_listener {
+        mgr.add_listener(listener).await.unwrap();
+    }
+
     let mgr = Arc::new(mgr);
 
     #[cfg(feature = "embed")]
