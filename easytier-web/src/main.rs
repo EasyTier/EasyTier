@@ -122,7 +122,9 @@ async fn get_dual_stack_listener(
     ),
     Error,
 > {
-    let v6_listener = if let Ok(_) = local_ipv6().await {
+    let is_protocol_support_dual_stack =
+        protocol.trim().to_lowercase() == "tcp" || protocol.trim().to_lowercase() == "udp";
+    let v6_listener = if is_protocol_support_dual_stack && local_ipv6().await.is_ok() {
         get_listener_by_url(&format!("{}://[::0]:{}", protocol, port).parse().unwrap()).ok()
     } else {
         None
