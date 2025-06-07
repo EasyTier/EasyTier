@@ -9,6 +9,7 @@ mod vpn_portal;
 pub mod common;
 pub mod connector;
 pub mod launcher;
+pub mod manager;
 pub mod peers;
 pub mod proto;
 pub mod tunnel;
