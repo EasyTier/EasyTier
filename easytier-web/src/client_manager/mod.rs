@@ -1,21 +1,24 @@
 pub mod session;
 pub mod storage;
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 
 use dashmap::DashMap;
-use easytier::{
-    common::scoped_task::ScopedTask, proto::web::HeartbeatRequest, tunnel::TunnelListener,
-};
+use easytier::{proto::web::HeartbeatRequest, tunnel::TunnelListener};
 use session::Session;
 use storage::{Storage, StorageToken};
+use tokio::task::JoinSet;
 
 use crate::db::{Db, UserIdInDb};
 
 #[derive(Debug)]
 pub struct ClientManager {
-    accept_task: Option<ScopedTask<()>>,
-    clear_task: Option<ScopedTask<()>>,
+    tasks: JoinSet<()>,
+
+    listeners_cnt: Arc<AtomicU32>,
 
     client_sessions: Arc<DashMap<url::Url, Arc<Session>>>,
     storage: Storage,
@@ -23,24 +26,35 @@ pub struct ClientManager {
 
 impl ClientManager {
     pub fn new(db: Db) -> Self {
+        let client_sessions = Arc::new(DashMap::new());
+        let sessions: Arc<DashMap<url::Url, Arc<Session>>> = client_sessions.clone();
+        let mut tasks = JoinSet::new();
+        tasks.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                sessions.retain(|_, session| session.is_running());
+            }
+        });
         ClientManager {
-            accept_task: None,
-            clear_task: None,
+            tasks,
 
-            client_sessions: Arc::new(DashMap::new()),
+            listeners_cnt: Arc::new(AtomicU32::new(0)),
+
+            client_sessions,
             storage: Storage::new(db),
         }
     }
 
-    pub async fn serve<L: TunnelListener + 'static>(
+    pub async fn add_listener<L: TunnelListener + 'static>(
         &mut self,
         mut listener: L,
     ) -> Result<(), anyhow::Error> {
         listener.listen().await?;
-
+        self.listeners_cnt.fetch_add(1, Ordering::Relaxed);
         let sessions = self.client_sessions.clone();
         let storage = self.storage.weak_ref();
-        let task = tokio::spawn(async move {
+        let listeners_cnt = self.listeners_cnt.clone();
+        self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
                 let info = tunnel.info().unwrap();
                 let client_url: url::Url = info.remote_addr.unwrap().into();
@@ -49,24 +63,14 @@ impl ClientManager {
                 session.serve(tunnel).await;
                 sessions.insert(client_url, Arc::new(session));
             }
+            listeners_cnt.fetch_sub(1, Ordering::Relaxed);
         });
-
-        self.accept_task = Some(ScopedTask::from(task));
-
-        let sessions = self.client_sessions.clone();
-        let task = tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-                sessions.retain(|_, session| session.is_running());
-            }
-        });
-        self.clear_task = Some(ScopedTask::from(task));
 
         Ok(())
     }
 
     pub fn is_running(&self) -> bool {
-        self.accept_task.is_some() && self.clear_task.is_some()
+        self.listeners_cnt.load(Ordering::Relaxed) > 0
     }
 
     pub async fn list_sessions(&self) -> Vec<StorageToken> {
@@ -132,7 +136,7 @@ mod tests {
     async fn test_client() {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:54333".parse().unwrap());
         let mut mgr = ClientManager::new(Db::memory_db().await);
-        mgr.serve(Box::new(listener)).await.unwrap();
+        mgr.add_listener(Box::new(listener)).await.unwrap();
 
         mgr.db()
             .inner()
