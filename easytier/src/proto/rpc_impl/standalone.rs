@@ -80,7 +80,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
             let tunnel_info = match hook.on_new_client(tunnel_info).await {
                 Ok(info) => info,
                 Err(e) => {
-                    println!("standalone hook.on_new_client failed: {:?}", e);
+                    tracing::warn!(?e, "standalone hook.on_new_client failed");
                     continue;
                 }
             };
