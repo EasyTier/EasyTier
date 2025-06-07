@@ -85,6 +85,7 @@ impl WireGuardImpl {
         let mut ip_registered = false;
 
         let remote_addr = info.remote_addr.clone();
+        let endpoint_addr = remote_addr.clone().map(Into::into);
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
@@ -115,10 +116,12 @@ impl WireGuardImpl {
             };
             if !ip_registered {
                 let client_entry = Arc::new(ClientEntry {
-                    endpoint_addr: remote_addr.clone().map(Into::into),
+                    endpoint_addr: endpoint_addr.clone(),
                     sink: mpsc_tunnel.get_sink(),
                 });
                 map_key = Some(i.get_source());
+                // Be careful here: we may overwrite an existing entry if the client IP is reused,
+                // which is common when clients are behind NAT.
                 wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
                 ip_registered = true;
             }
@@ -130,8 +133,17 @@ impl WireGuardImpl {
         }
 
         if map_key.is_some() {
-            tracing::info!(?map_key, "Removing wg client from table");
-            wg_peer_ip_table.remove(&map_key.unwrap());
+            // Remove the client from the wg_peer_ip_table only when its endpoint address is unchanged,
+            // or we may break clients behind NAT.
+            match wg_peer_ip_table.remove_if(&map_key.unwrap(), |_, entry| {
+                entry.endpoint_addr == endpoint_addr
+            }) {
+                Some(_) => tracing::info!(?map_key, "Removed wg client from table"),
+                None => tracing::info!(
+                    ?map_key,
+                    "The wg client changed its endpoint address, not removing from table"
+                ),
+            }
         }
 
         peer_mgr
