@@ -5,7 +5,7 @@ members = [
     "easytier-gui/src-tauri",
     "easytier-rpc-build",
     "easytier-web",
-    "easytier-contrib/easytier-ffi",
+    "easytier-contrib/easytier-ffi", "easytier-contrib/easytier-ohrs",
 ]
 default-members = ["easytier", "easytier-web"]
 

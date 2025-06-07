@@ -1,21 +1,10 @@
-#[cfg(target_env = "ohos")] mod ohos;
-#[cfg(target_env = "ohos")] use ohos_hilog_binding::hilog_error;
+use std::sync::Mutex;
 
 use dashmap::DashMap;
 use easytier::{
     common::config::{ConfigLoader as _, TomlConfigLoader},
     launcher::NetworkInstance,
 };
-use std::collections::HashMap;
-use std::panic;
-use std::sync::atomic::Ordering;
-use std::sync::Mutex;
-use ohos_hilog_binding::hilog_info;
-use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::prelude::*;
-
-static INITIALIZED: std::sync::Once = std::sync::Once::new();
 
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
     once_cell::sync::Lazy::new(DashMap::new);
@@ -28,46 +17,6 @@ pub struct KeyValuePair {
     pub key: *const std::ffi::c_char,
     pub value: *const std::ffi::c_char,
 }
-fn tracing_callback(event: &Event, fields: HashMap<String, String>) {
-    let metadata = event.metadata();
-    #[cfg(target_env = "ohos")]
-    {
-        hilog_info!("Tracing[{}/{}]{:?}",
-                metadata.level(),
-                metadata.target(),
-                fields.values().collect::<Vec<_>>());
-    }
-}
-
-struct CallbackLayer {
-    callback: Box<dyn Fn(&Event, HashMap<String, String>) + Send + Sync>,
-}
-
-impl<S: Subscriber> Layer<S> for CallbackLayer {
-    fn on_event(&self, event: &Event, _ctx: Context<S>) {
-        // 使用 fmt::format::FmtSpan 提取字段值
-        let mut fields = HashMap::new();
-        let mut visitor = FieldCollector(&mut fields);
-        event.record(&mut visitor);
-        (self.callback)(event, fields);
-    }
-}
-
-struct FieldCollector<'a>(&'a mut HashMap<String, String>);
-
-impl<'a> tracing::field::Visit for FieldCollector<'a> {
-    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
-        self.0.insert(field.name().to_string(), value.to_string());
-    }
-
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.0.insert(field.name().to_string(), value.to_string());
-    }
-
-    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(field.name().to_string(), format!("{:?}", value));
-    }
-}
 
 fn set_error_msg(msg: &str) {
     let bytes = msg.as_bytes();
@@ -75,39 +24,6 @@ fn set_error_msg(msg: &str) {
     let len = bytes.len();
     msg_buf.resize(len, 0);
     msg_buf[..len].copy_from_slice(bytes);
-}
-
-fn panic_hook(info: &panic::PanicHookInfo) {
-    // 格式化 panic 信息
-    #[cfg(target_env = "ohos")]
-    {
-        hilog_error!("RUST PANIC: {}", info);
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn init_panic_hook() {
-    tracing_subscriber::registry()
-        .with(
-            CallbackLayer {
-                callback: Box::new(tracing_callback),
-            }
-        )
-        .init();
-    INITIALIZED.call_once(|| {
-        panic::set_hook(Box::new(panic_hook));
-    });
-}
-
-#[no_mangle]
-pub extern "C" fn init_tracing_subscriber() {
-    tracing_subscriber::registry()
-        .with(
-            CallbackLayer {
-                callback: Box::new(tracing_callback),
-            }
-        )
-        .init();
 }
 
 #[no_mangle]
@@ -196,18 +112,10 @@ pub extern "C" fn run_network_instance(cfg_str: *const std::ffi::c_char) -> std:
     }
 
     let mut instance = NetworkInstance::new(cfg);
-    #[cfg(target_env = "ohos")]
-    {
-        let fd = ohos::TUN_FD.load(Ordering::SeqCst);
-        if fd > -1 {
-            instance.set_tun_fd(fd);
-        }
-    }
     if let Err(e) = instance.start().map_err(|e| e.to_string()) {
         set_error_msg(&format!("failed to start instance: {}", e));
         return -1;
     }
-
     INSTANCE_MAP.insert(inst_name, instance);
 
     0

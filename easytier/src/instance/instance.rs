@@ -82,8 +82,8 @@ impl IpProxy {
         self.tcp_proxy.start(true).await?;
         if let Err(e) = self.icmp_proxy.start().await {
             tracing::error!("start icmp proxy failed: {:?}", e);
-            if cfg!(not(target_os = "android")) {
-                // android may not support icmp proxy
+            if cfg!(not(any(target_os = "android", target_env = "ohos"))) {
+                // android and ohos not support icmp proxy
                 return Err(e);
             }
         }

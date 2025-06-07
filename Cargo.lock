@@ -1960,16 +1960,12 @@ dependencies = [
  "maplit",
  "mimalloc-rust",
  "multimap",
- "napi-build-ohos 1.0.4",
- "napi-derive-ohos",
- "napi-ohos",
  "netlink-packet-core",
  "netlink-packet-route 0.21.0",
  "netlink-packet-utils",
  "netlink-sys",
  "network-interface",
  "nix 0.29.0",
- "ohos-hilog-binding",
  "once_cell",
  "parking_lot",
  "percent-encoding",
@@ -2036,16 +2032,9 @@ version = "0.1.0"
 dependencies = [
  "dashmap",
  "easytier",
- "lazy_static",
- "napi-build-ohos 1.0.4",
- "napi-derive-ohos",
- "napi-ohos",
- "ohos-hilog-binding",
  "once_cell",
  "serde",
  "serde_json",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
@@ -2074,6 +2063,24 @@ dependencies = [
  "tauri-plugin-vpnservice",
  "thunk-rs",
  "tokio",
+]
+
+[[package]]
+name = "easytier-ohrs"
+version = "0.1.0"
+dependencies = [
+ "dashmap",
+ "easytier",
+ "lazy_static",
+ "napi-build-ohos",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "ohos-hilog-binding",
+ "once_cell",
+ "serde_json",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4426,12 +4433,6 @@ dependencies = [
 
 [[package]]
 name = "napi-build-ohos"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dd2379ae1fad5d645092a735837c2aaece31c3cdd2238a7c59eba22b4314aca2"
-
-[[package]]
-name = "napi-build-ohos"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ad5bf214216afe5b572da0bcd5cab932d17cbcca3dbe82991db0d765a764c8a"
@@ -4470,8 +4471,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32036ede4ef064610304337831e9d49dac23e7edc4e9efd076c8259eab6d19a9"
 dependencies = [
  "bitflags 2.8.0",
+ "chrono",
  "ctor",
+ "encoding_rs",
+ "futures-core",
+ "indexmap 2.7.1",
  "napi-sys-ohos",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -5133,6 +5142,7 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f360d22e965a34286283d36e8864fdfb04f443697641e8f6cbd64e670c3a3d5"
 dependencies = [
+ "libc",
  "ohos-hilogs-sys",
 ]
 
@@ -9112,9 +9122,7 @@ dependencies = [
  "libc",
  "libloading 0.8.5",
  "log",
- "napi-build-ohos 0.0.3",
  "nix 0.29.0",
- "nix 0.30.1",
  "thiserror 1.0.63",
  "tokio",
  "tokio-util",

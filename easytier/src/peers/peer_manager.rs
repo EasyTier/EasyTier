@@ -862,7 +862,13 @@ impl PeerManager {
                 }
             }
         }
-
+        #[cfg(target_env = "ohos")]
+        {
+            if dst_peers.is_empty() && !ipv4_inet.contains(ipv4_addr) {  
+                dst_peers.push(self.my_peer_id);
+                is_exit_node = true;
+            }
+        }
         (dst_peers, is_exit_node)
     }
 

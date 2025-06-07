@@ -525,6 +525,7 @@ impl NicCtx {
         let Some(mgr) = self.peer_mgr.upgrade() else {
             return Err(anyhow::anyhow!("peer manager not available").into());
         };
+        tracing::trace!("start do_forward_nic_to_peers");
         self.tasks.spawn(async move {
             while let Some(ret) = stream.next().await {
                 if ret.is_err() {
@@ -541,6 +542,7 @@ impl NicCtx {
 
     fn do_forward_peers_to_nic(&mut self, mut sink: Pin<Box<dyn ZCPacketSink>>) {
         let channel = self.peer_packet_receiver.clone();
+        tracing::trace!("start do_forward_peers_to_nic");
         self.tasks.spawn(async move {
             // unlock until coroutine finished
             let mut channel = channel.lock().await;
@@ -697,7 +699,7 @@ impl NicCtx {
                 }
             }
         };
-
+        tracing::trace!("tunnel created!");
         let (stream, sink) = tunnel.split();
 
         self.do_forward_nic_to_peers(stream)?;
