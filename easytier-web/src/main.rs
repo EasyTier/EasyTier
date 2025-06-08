@@ -8,7 +8,7 @@ use std::sync::Arc;
 use clap::Parser;
 use easytier::{
     common::{
-        config::{ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, TomlConfigLoader},
+        config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
         constants::EASYTIER_VERSION,
         error::Error,
         network::{local_ipv4, local_ipv6},
@@ -101,6 +101,22 @@ struct Cli {
     api_host: Option<url::Url>,
 }
 
+impl LoggingConfigLoader for &Cli {
+    fn get_console_logger_config(&self) -> ConsoleLoggerConfig {
+        ConsoleLoggerConfig {
+            level: self.console_log_level.clone(),
+        }
+    }
+
+    fn get_file_logger_config(&self) -> FileLoggerConfig {
+        FileLoggerConfig {
+            dir: self.file_log_dir.clone(),
+            level: self.file_log_level.clone(),
+            file: None,
+        }
+    }
+}
+
 pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.scheme() {
         "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
@@ -144,16 +160,7 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    let config = TomlConfigLoader::default();
-    config.set_console_logger_config(ConsoleLoggerConfig {
-        level: cli.console_log_level,
-    });
-    config.set_file_logger_config(FileLoggerConfig {
-        dir: cli.file_log_dir,
-        level: cli.file_log_level,
-        file: None,
-    });
-    init_logger(config, false).unwrap();
+    init_logger(&cli, false).unwrap();
 
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();

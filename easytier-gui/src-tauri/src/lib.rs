@@ -4,7 +4,12 @@
 use std::collections::BTreeMap;
 
 use easytier::{
-    common::config::{ConfigLoader, FileLoggerConfig, TomlConfigLoader}, launcher::{NetworkConfig, NetworkInstanceRunningInfo}, manager::NetworkInstanceManager, utils::{self, NewFilterSender}
+    common::config::{
+        ConfigLoader, FileLoggerConfig, LoggingConfigBuilder,
+    },
+    launcher::{ConfigSource, NetworkConfig, NetworkInstanceRunningInfo},
+    manager::NetworkInstanceManager,
+    utils::{self, NewFilterSender},
 };
 
 use tauri::Manager as _;
@@ -43,7 +48,9 @@ fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
 fn run_network_instance(cfg: NetworkConfig) -> Result<(), String> {
     let instance_id = cfg.instance_id().to_string();
     let cfg = cfg.gen_config().map_err(|e| e.to_string())?;
-    INSTANCE_MANAGER.run_network_instance(cfg).map_err(|e| e.to_string())?;
+    INSTANCE_MANAGER
+        .run_network_instance(cfg, ConfigSource::GUI)
+        .map_err(|e| e.to_string())?;
     println!("instance {} started", instance_id);
     Ok(())
 }
@@ -54,7 +61,8 @@ fn retain_network_instance(instance_ids: Vec<String>) -> Result<(), String> {
         .into_iter()
         .filter_map(|id| uuid::Uuid::parse_str(&id).ok())
         .collect();
-    let retained = INSTANCE_MANAGER.retain_network_instance(instance_ids)
+    let retained = INSTANCE_MANAGER
+        .retain_network_instance(instance_ids)
         .map_err(|e| e.to_string())?;
     println!("instance {:?} retained", retained);
     Ok(())
@@ -62,14 +70,15 @@ fn retain_network_instance(instance_ids: Vec<String>) -> Result<(), String> {
 
 #[tauri::command]
 fn collect_network_infos() -> Result<BTreeMap<String, NetworkInstanceRunningInfo>, String> {
-    let infos = INSTANCE_MANAGER.collect_network_infos()
+    let infos = INSTANCE_MANAGER
+        .collect_network_infos()
         .map_err(|e| e.to_string())?;
-    
+
     let mut ret = BTreeMap::new();
     for (uuid, info) in infos {
         ret.insert(uuid.to_string(), info);
     }
-    
+
     Ok(ret)
 }
 
@@ -89,7 +98,9 @@ fn set_logging_level(level: String) -> Result<(), String> {
 #[tauri::command]
 fn set_tun_fd(instance_id: String, fd: i32) -> Result<(), String> {
     let uuid = uuid::Uuid::parse_str(&instance_id).map_err(|e| e.to_string())?;
-    INSTANCE_MANAGER.set_tun_fd(&uuid, fd).map_err(|e| e.to_string())?;
+    INSTANCE_MANAGER
+        .set_tun_fd(&uuid, fd)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -174,13 +185,15 @@ pub fn run() {
             let Ok(log_dir) = app.path().app_log_dir() else {
                 return Ok(());
             };
-            let config = TomlConfigLoader::default();
-            config.set_file_logger_config(FileLoggerConfig {
-                dir: Some(log_dir.to_string_lossy().to_string()),
-                level: None,
-                file: None,
-            });
-            let Ok(Some(logger_reinit)) = utils::init_logger(config, true) else {
+            let config = LoggingConfigBuilder::default()
+                .file_logger(FileLoggerConfig {
+                    dir: Some(log_dir.to_string_lossy().to_string()),
+                    level: None,
+                    file: None,
+                })
+                .build()
+                .map_err(|e| e.to_string())?;
+            let Ok(Some(logger_reinit)) = utils::init_logger(&config, true) else {
                 return Ok(());
             };
             #[allow(static_mut_refs)]

@@ -1,7 +1,5 @@
 use crate::{
-    common::config::ConfigLoader,
-    manager::NetworkInstanceManager,
-    proto::{
+    common::config::ConfigLoader, launcher::ConfigSource, manager::NetworkInstanceManager, proto::{
         rpc_types::{self, controller::BaseController},
         web::{
             CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
@@ -10,7 +8,7 @@ use crate::{
             RetainNetworkInstanceResponse, RunNetworkInstanceRequest, RunNetworkInstanceResponse,
             ValidateConfigRequest, ValidateConfigResponse, WebClientService,
         },
-    },
+    }
 };
 
 pub struct Controller {
@@ -67,7 +65,7 @@ impl WebClientService for Controller {
         if let Some(inst_id) = req.inst_id {
             cfg.set_id(inst_id.into());
         }
-        self.manager.run_network_instance(cfg)?;
+        self.manager.run_network_instance(cfg, ConfigSource::Web)?;
         println!("instance {} started", id);
         Ok(RunNetworkInstanceResponse {
             inst_id: Some(id.into()),

@@ -343,25 +343,40 @@ impl Drop for EasyTierLauncher {
 
 pub type NetworkInstanceRunningInfo = crate::proto::web::NetworkInstanceRunningInfo;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigSource {
+    Cli,
+    File,
+    Web,
+    GUI,
+    FFI,
+}
+
 pub struct NetworkInstance {
     config: TomlConfigLoader,
     launcher: Option<EasyTierLauncher>,
 
-    fetch_node_info: bool,
+    config_source: ConfigSource,
 }
 
 impl NetworkInstance {
-    pub fn new(config: TomlConfigLoader) -> Self {
+    pub fn new(config: TomlConfigLoader, source: ConfigSource) -> Self {
         Self {
             config,
             launcher: None,
-            fetch_node_info: true,
+            config_source: source,
         }
     }
 
-    pub fn set_fetch_node_info(mut self, fetch_node_info: bool) -> Self {
-        self.fetch_node_info = fetch_node_info;
-        self
+    fn get_fetch_node_info(&self) -> bool {
+        match self.config_source {
+            ConfigSource::Cli | ConfigSource::File => false,
+            ConfigSource::Web | ConfigSource::GUI | ConfigSource::FFI => true,
+        }
+    }
+
+    pub fn get_config_source(&self) -> ConfigSource {
+        self.config_source.clone()
     }
 
     pub fn is_easytier_running(&self) -> bool {
@@ -406,7 +421,7 @@ impl NetworkInstance {
             return Ok(self.subscribe_event().unwrap());
         }
 
-        let launcher = EasyTierLauncher::new(self.fetch_node_info);
+        let launcher = EasyTierLauncher::new(self.get_fetch_node_info());
         self.launcher = Some(launcher);
         let ev = self.subscribe_event().unwrap();
 
@@ -418,7 +433,7 @@ impl NetworkInstance {
         Ok(ev)
     }
 
-    fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
+    pub fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
         if let Some(launcher) = self.launcher.as_ref() {
             Some(launcher.data.event_subscriber.read().unwrap().subscribe())
         } else {
@@ -426,9 +441,16 @@ impl NetworkInstance {
         }
     }
 
-    pub async fn wait(&self) -> Option<String> {
+    pub fn get_stop_notifier(&self) -> Option<Arc<tokio::sync::Notify>> {
         if let Some(launcher) = self.launcher.as_ref() {
-            launcher.data.instance_stop_notifier.notified().await;
+            Some(launcher.data.instance_stop_notifier.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn get_latest_error_msg(&self) -> Option<String> {
+        if let Some(launcher) = self.launcher.as_ref() {
             launcher.error_msg.read().unwrap().clone()
         } else {
             None

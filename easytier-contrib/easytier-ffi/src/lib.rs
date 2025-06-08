@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use dashmap::DashMap;
 use easytier::{
     common::config::{ConfigLoader as _, TomlConfigLoader},
-    launcher::NetworkInstance,
+    launcher::{ConfigSource, NetworkInstance},
 };
 
 static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
@@ -91,7 +91,7 @@ pub extern "C" fn run_network_instance(cfg_str: *const std::ffi::c_char) -> std:
         return -1;
     }
 
-    let mut instance = NetworkInstance::new(cfg);
+    let mut instance = NetworkInstance::new(cfg, ConfigSource::FFI);
     if let Err(e) = instance.start().map_err(|e| e.to_string()) {
         set_error_msg(&format!("failed to start instance: {}", e));
         return -1;
