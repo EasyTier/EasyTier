@@ -854,11 +854,36 @@ impl RouteTable {
 
             self.peer_infos.insert(*peer_id, info.clone());
 
+            let is_new_peer_better = |old_peer_id: PeerId| -> bool {
+                let old_next_hop = self.get_next_hop(old_peer_id);
+                let new_next_hop = item.value();
+                old_next_hop.is_none()
+                    || new_next_hop.path_latency < old_next_hop.unwrap().path_latency
+            };
+
             if let Some(ipv4_addr) = info.ipv4_addr {
-                self.ipv4_peer_id_map.insert(ipv4_addr.into(), *peer_id);
+                self.ipv4_peer_id_map
+                    .entry(ipv4_addr.into())
+                    .and_modify(|v| {
+                        if *v != *peer_id && is_new_peer_better(*v) {
+                            self.ipv4_peer_id_map.insert(ipv4_addr.into(), *peer_id);
+                        }
+                    })
+                    .or_insert(*peer_id);
             }
 
             for cidr in info.proxy_cidrs.iter() {
+                self.cidr_peer_id_map
+                    .entry(cidr.parse().unwrap())
+                    .and_modify(|v| {
+                        if *v != *peer_id && is_new_peer_better(*v) {
+                            // if the next hop is not set or the new next hop is better, update it.
+                            self.cidr_peer_id_map
+                                .insert(cidr.parse().unwrap(), *peer_id);
+                        }
+                    })
+                    .or_insert(*peer_id);
+
                 self.cidr_peer_id_map
                     .insert(cidr.parse().unwrap(), *peer_id);
             }
@@ -1363,7 +1388,7 @@ impl PeerRouteServiceImpl {
                 .dst_saved_conn_bitmap_version
                 .get(&peer_id)
                 .map(|item| item.get());
-            if Some(*local_version) != peer_version {
+            if peer_version.is_none() || peer_version.unwrap() < *local_version {
                 need_update = true;
                 break;
             }
