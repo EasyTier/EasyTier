@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     io,
     net::Ipv4Addr,
     pin::Pin,
@@ -569,26 +570,26 @@ impl NicCtx {
         let ifname = nic.ifname().to_owned();
 
         self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = vec![];
+            let mut cur_proxy_cidrs = BTreeSet::new();
             loop {
-                let mut proxy_cidrs = vec![];
+                let mut proxy_cidrs = BTreeSet::new();
                 let routes = peer_mgr.list_routes().await;
                 for r in routes {
                     for cidr in r.proxy_cidrs {
                         let Ok(cidr) = cidr.parse::<cidr::Ipv4Cidr>() else {
                             continue;
                         };
-                        proxy_cidrs.push(cidr);
+                        proxy_cidrs.insert(cidr);
                     }
                 }
                 // add vpn portal cidr to proxy_cidrs
                 if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
-                    proxy_cidrs.push(vpn_cfg.client_cidr);
+                    proxy_cidrs.insert(vpn_cfg.client_cidr);
                 }
 
                 if let Some(routes) = global_ctx.config.get_routes() {
                     // if has manual routes, just override entire proxy_cidrs
-                    proxy_cidrs = routes;
+                    proxy_cidrs = routes.into_iter().collect();
                 }
 
                 // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
