@@ -33,6 +33,11 @@ impl NetworkInstanceManager {
             .get(&instance_id)
             .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
 
+        if instance.get_config_source() == ConfigSource::FFI {
+            // FFI have no tokio runtime, so we don't need to spawn a task, and instance should be managed by the caller.
+            return Ok(());
+        }
+
         let instance_stop_notifier = instance.get_stop_notifier();
         let instance_config_source = instance.get_config_source();
         let instance_event_receiver = match instance.get_config_source() {
@@ -79,7 +84,7 @@ impl NetworkInstanceManager {
         &self,
         cfg: TomlConfigLoader,
         source: ConfigSource,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<uuid::Uuid, anyhow::Error> {
         let instance_id = cfg.get_id();
         if self.instance_map.contains_key(&instance_id) {
             anyhow::bail!("instance {} already exists", instance_id);
@@ -90,7 +95,7 @@ impl NetworkInstanceManager {
 
         self.instance_map.insert(instance_id, instance);
         self.start_instance_task(instance_id)?;
-        Ok(())
+        Ok(instance_id)
     }
 
     pub fn retain_network_instance(
@@ -126,6 +131,12 @@ impl NetworkInstanceManager {
             .iter()
             .map(|item| item.key().clone())
             .collect()
+    }
+
+    pub fn get_network_instance_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_inst_name())
     }
 
     pub fn set_tun_fd(&self, instance_id: &uuid::Uuid, fd: i32) -> Result<(), anyhow::Error> {

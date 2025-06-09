@@ -410,6 +410,10 @@ impl NetworkInstance {
         })
     }
 
+    pub fn get_inst_name(&self) -> String {
+        self.config.get_inst_name()
+    }
+
     pub fn set_tun_fd(&mut self, tun_fd: i32) {
         if let Some(launcher) = self.launcher.as_ref() {
             launcher.data.tun_fd.write().unwrap().replace(tun_fd);

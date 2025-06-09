@@ -2066,6 +2066,7 @@ dependencies = [
  "once_cell",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
