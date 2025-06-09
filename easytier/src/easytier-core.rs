@@ -26,7 +26,7 @@ use easytier::{
     },
     connector::create_connector_by_url,
     launcher::ConfigSource,
-    manager::NetworkInstanceManager,
+    instance_manager::NetworkInstanceManager,
     proto::common::{CompressionAlgoPb, NatType},
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},

@@ -1,5 +1,5 @@
 use crate::{
-    common::config::ConfigLoader, launcher::ConfigSource, manager::NetworkInstanceManager, proto::{
+    common::config::ConfigLoader, launcher::ConfigSource, instance_manager::NetworkInstanceManager, proto::{
         rpc_types::{self, controller::BaseController},
         web::{
             CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,

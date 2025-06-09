@@ -8,7 +8,7 @@ use easytier::{
         ConfigLoader, FileLoggerConfig, LoggingConfigBuilder,
     },
     launcher::{ConfigSource, NetworkConfig, NetworkInstanceRunningInfo},
-    manager::NetworkInstanceManager,
+    instance_manager::NetworkInstanceManager,
     utils::{self, NewFilterSender},
 };
 
