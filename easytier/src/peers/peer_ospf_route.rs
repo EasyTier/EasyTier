@@ -866,7 +866,7 @@ impl RouteTable {
                     .entry(ipv4_addr.into())
                     .and_modify(|v| {
                         if *v != *peer_id && is_new_peer_better(*v) {
-                            self.ipv4_peer_id_map.insert(ipv4_addr.into(), *peer_id);
+                            *v = *peer_id;
                         }
                     })
                     .or_insert(*peer_id);
@@ -878,14 +878,10 @@ impl RouteTable {
                     .and_modify(|v| {
                         if *v != *peer_id && is_new_peer_better(*v) {
                             // if the next hop is not set or the new next hop is better, update it.
-                            self.cidr_peer_id_map
-                                .insert(cidr.parse().unwrap(), *peer_id);
+                            *v = *peer_id;
                         }
                     })
                     .or_insert(*peer_id);
-
-                self.cidr_peer_id_map
-                    .insert(cidr.parse().unwrap(), *peer_id);
             }
         }
     }
