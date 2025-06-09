@@ -76,10 +76,12 @@ impl ForeignNetworkEntry {
     fn new(
         network: NetworkIdentity,
         global_ctx: ArcGlobalCtx,
-        my_peer_id: PeerId,
         relay_data: bool,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
+        // NOTICE: ospf route need my_peer_id be changed after restart.
+        let my_peer_id = rand::random();
+
         let foreign_global_ctx = Self::build_foreign_global_ctx(&network, global_ctx.clone());
 
         let (packet_sender, packet_recv) = create_packet_recv_chan();
@@ -202,11 +204,7 @@ impl ForeignNetworkEntry {
         (peer_rpc, rpc_transport_sender)
     }
 
-    async fn prepare_route(
-        &self,
-        my_peer_id: PeerId,
-        accessor: Box<dyn GlobalForeignNetworkAccessor>,
-    ) {
+    async fn prepare_route(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
         struct Interface {
             my_peer_id: PeerId,
             peer_map: Weak<PeerMap>,
@@ -238,10 +236,14 @@ impl ForeignNetworkEntry {
             }
         }
 
-        let route = PeerRoute::new(my_peer_id, self.global_ctx.clone(), self.peer_rpc.clone());
+        let route = PeerRoute::new(
+            self.my_peer_id,
+            self.global_ctx.clone(),
+            self.peer_rpc.clone(),
+        );
         route
             .open(Box::new(Interface {
-                my_peer_id,
+                my_peer_id: self.my_peer_id,
                 network_identity: self.network.clone(),
                 peer_map: Arc::downgrade(&self.peer_map),
                 accessor,
@@ -317,8 +319,8 @@ impl ForeignNetworkEntry {
         });
     }
 
-    async fn prepare(&self, my_peer_id: PeerId, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
-        self.prepare_route(my_peer_id, accessor).await;
+    async fn prepare(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
+        self.prepare_route(accessor).await;
         self.start_packet_recv().await;
         self.peer_rpc.run();
     }
@@ -384,7 +386,6 @@ impl ForeignNetworkManagerData {
     async fn get_or_insert_entry(
         &self,
         network_identity: &NetworkIdentity,
-        my_peer_id: PeerId,
         dst_peer_id: PeerId,
         relay_data: bool,
         global_ctx: &ArcGlobalCtx,
@@ -401,7 +402,6 @@ impl ForeignNetworkManagerData {
                 Arc::new(ForeignNetworkEntry::new(
                     network_identity.clone(),
                     global_ctx.clone(),
-                    my_peer_id,
                     relay_data,
                     pm_packet_sender.clone(),
                 ))
@@ -417,9 +417,7 @@ impl ForeignNetworkManagerData {
         drop(l);
 
         if new_added {
-            entry
-                .prepare(my_peer_id, Box::new(self.accessor.clone()))
-                .await;
+            entry.prepare(Box::new(self.accessor.clone())).await;
         }
 
         (entry, new_added)
@@ -483,7 +481,6 @@ impl ForeignNetworkManager {
             .data
             .get_or_insert_entry(
                 &peer_conn.get_network_identity(),
-                self.my_peer_id,
                 peer_conn.get_peer_id(),
                 !ret.is_err(),
                 &self.global_ctx,
