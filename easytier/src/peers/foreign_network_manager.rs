@@ -70,18 +70,19 @@ struct ForeignNetworkEntry {
     packet_recv: Mutex<Option<PacketRecvChanReceiver>>,
 
     tasks: Mutex<JoinSet<()>>,
+
+    pub lock: Mutex<()>,
 }
 
 impl ForeignNetworkEntry {
     fn new(
         network: NetworkIdentity,
+        // NOTICE: ospf route need my_peer_id be changed after restart.
+        my_peer_id: PeerId,
         global_ctx: ArcGlobalCtx,
         relay_data: bool,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
-        // NOTICE: ospf route need my_peer_id be changed after restart.
-        let my_peer_id = rand::random();
-
         let foreign_global_ctx = Self::build_foreign_global_ctx(&network, global_ctx.clone());
 
         let (packet_sender, packet_recv) = create_packet_recv_chan();
@@ -116,6 +117,8 @@ impl ForeignNetworkEntry {
             packet_recv: Mutex::new(Some(packet_recv)),
 
             tasks: Mutex::new(JoinSet::new()),
+
+            lock: Mutex::new(()),
         }
     }
 
@@ -386,6 +389,7 @@ impl ForeignNetworkManagerData {
     async fn get_or_insert_entry(
         &self,
         network_identity: &NetworkIdentity,
+        my_peer_id: PeerId,
         dst_peer_id: PeerId,
         relay_data: bool,
         global_ctx: &ArcGlobalCtx,
@@ -401,6 +405,7 @@ impl ForeignNetworkManagerData {
                 new_added = true;
                 Arc::new(ForeignNetworkEntry::new(
                     network_identity.clone(),
+                    my_peer_id,
                     global_ctx.clone(),
                     relay_data,
                     pm_packet_sender.clone(),
@@ -465,6 +470,13 @@ impl ForeignNetworkManager {
         }
     }
 
+    pub fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
+        self.data
+            .network_peer_maps
+            .get(network_name)
+            .and_then(|v| Some(v.my_peer_id))
+    }
+
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         tracing::info!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
 
@@ -481,6 +493,7 @@ impl ForeignNetworkManager {
             .data
             .get_or_insert_entry(
                 &peer_conn.get_network_identity(),
+                peer_conn.get_my_peer_id(),
                 peer_conn.get_peer_id(),
                 !ret.is_err(),
                 &self.global_ctx,
@@ -488,17 +501,30 @@ impl ForeignNetworkManager {
             )
             .await;
 
-        if entry.network != peer_conn.get_network_identity() {
+        let _g = entry.lock.lock().await;
+
+        if entry.network != peer_conn.get_network_identity()
+            || entry.my_peer_id != peer_conn.get_my_peer_id()
+        {
             if new_added {
                 self.data
                     .remove_network(&entry.network.network_name.clone());
             }
-            return Err(anyhow::anyhow!(
-                "network secret not match. exp: {:?} real: {:?}",
-                entry.network,
-                peer_conn.get_network_identity()
-            )
-            .into());
+            let err = if entry.my_peer_id != peer_conn.get_my_peer_id() {
+                anyhow::anyhow!(
+                    "my peer id not match. exp: {:?} real: {:?}, need retry connect",
+                    entry.my_peer_id,
+                    peer_conn.get_my_peer_id()
+                )
+            } else {
+                anyhow::anyhow!(
+                    "network secret not match. exp: {:?} real: {:?}",
+                    entry.network,
+                    peer_conn.get_network_identity()
+                )
+            };
+            tracing::error!(?err, "foreign network entry not match, disconnect peer");
+            return Err(err.into());
         }
 
         if new_added {
@@ -564,7 +590,8 @@ impl ForeignNetworkManager {
                     .network_secret_digest
                     .unwrap_or_default()
                     .to_vec(),
-                ..Default::default()
+                my_peer_id_for_this_network: item.my_peer_id,
+                peers: Default::default(),
             };
             for peer in item.peer_map.list_peers().await {
                 let mut peer_info = PeerInfo::default();
@@ -611,8 +638,6 @@ impl Drop for ForeignNetworkManager {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
         connector::udp_hole_punch::tests::{
@@ -626,6 +651,7 @@ mod tests {
         set_global_var,
         tunnel::common::tests::wait_for_condition,
     };
+    use std::time::Duration;
 
     use super::*;
 
@@ -766,7 +792,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            vec![pm_center.my_peer_id()],
+            vec![pm_center
+                .get_foreign_network_manager()
+                .get_network_peer_id("net1")
+                .unwrap()],
             pma_net1
                 .get_foreign_network_client()
                 .get_peer_map()
@@ -774,7 +803,10 @@ mod tests {
                 .await
         );
         assert_eq!(
-            vec![pm_center.my_peer_id()],
+            vec![pm_center
+                .get_foreign_network_manager()
+                .get_network_peer_id("net1")
+                .unwrap()],
             pmb_net1
                 .get_foreign_network_client()
                 .get_peer_map()
@@ -886,6 +918,75 @@ mod tests {
         drop(pm_center);
         wait_for_condition(
             || async { pma_net1.list_routes().await.len() == 0 },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_foreign_network_manager_cluster_simple() {
+        set_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, 1);
+
+        let pm_center1 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pm_center2 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(pm_center1.clone(), pm_center2.clone()).await;
+
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        connect_peer_manager(pma_net1.clone(), pm_center1.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center2.clone()).await;
+
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+
+        let pma_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
+        let pmb_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
+        connect_peer_manager(pma_net2.clone(), pm_center1.clone()).await;
+        connect_peer_manager(pmb_net2.clone(), pm_center2.clone()).await;
+
+        wait_route_appear(pma_net2.clone(), pmb_net2.clone())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_foreign_network_manager_cluster_multiple_hops() {
+        set_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, 1);
+
+        let pm_center1 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pm_center2 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pm_center3 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let pm_center4 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        connect_peer_manager(pm_center1.clone(), pm_center2.clone()).await;
+        connect_peer_manager(pm_center2.clone(), pm_center3.clone()).await;
+        connect_peer_manager(pm_center3.clone(), pm_center4.clone()).await;
+
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        let pmb_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        connect_peer_manager(pma_net1.clone(), pm_center1.clone()).await;
+        connect_peer_manager(pmb_net1.clone(), pm_center3.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmb_net1.clone())
+            .await
+            .unwrap();
+        let pmc_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+        connect_peer_manager(pmc_net1.clone(), pm_center4.clone()).await;
+        wait_route_appear(pma_net1.clone(), pmc_net1.clone())
+            .await
+            .unwrap();
+
+        let pma_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
+        let pmb_net2 = create_mock_peer_manager_for_foreign_network("net2").await;
+        connect_peer_manager(pma_net2.clone(), pm_center1.clone()).await;
+        connect_peer_manager(pmb_net2.clone(), pm_center4.clone()).await;
+        wait_route_appear(pma_net2.clone(), pmb_net2.clone())
+            .await
+            .unwrap();
+        drop(pmb_net2);
+        wait_for_condition(
+            || async { pma_net2.list_routes().await.len() == 1 },
             Duration::from_secs(5),
         )
         .await;

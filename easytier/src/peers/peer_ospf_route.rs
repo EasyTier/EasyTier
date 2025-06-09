@@ -857,8 +857,7 @@ impl RouteTable {
             let is_new_peer_better = |old_peer_id: PeerId| -> bool {
                 let old_next_hop = self.get_next_hop(old_peer_id);
                 let new_next_hop = item.value();
-                old_next_hop.is_none()
-                    || new_next_hop.path_latency < old_next_hop.unwrap().path_latency
+                old_next_hop.is_none() || new_next_hop.path_len < old_next_hop.unwrap().path_len
             };
 
             if let Some(ipv4_addr) = info.ipv4_addr {
@@ -1080,6 +1079,7 @@ struct PeerRouteServiceImpl {
     route_table: RouteTable,
     route_table_with_cost: RouteTable,
     foreign_network_owner_map: DashMap<NetworkIdentity, Vec<PeerId>>,
+    foreign_network_my_peer_id_map: DashMap<(String, PeerId), PeerId>,
     synced_route_info: SyncedRouteInfo,
     cached_local_conn_map: std::sync::Mutex<RouteConnBitmap>,
     cached_local_conn_map_version: AtomicVersion,
@@ -1100,6 +1100,10 @@ impl Debug for PeerRouteServiceImpl {
             .field("route_table_with_cost", &self.route_table_with_cost)
             .field("synced_route_info", &self.synced_route_info)
             .field("foreign_network_owner_map", &self.foreign_network_owner_map)
+            .field(
+                "foreign_network_my_peer_id_map",
+                &self.foreign_network_my_peer_id_map,
+            )
             .field(
                 "cached_local_conn_map",
                 &self.cached_local_conn_map.lock().unwrap(),
@@ -1123,6 +1127,7 @@ impl PeerRouteServiceImpl {
             route_table: RouteTable::new(),
             route_table_with_cost: RouteTable::new(),
             foreign_network_owner_map: DashMap::new(),
+            foreign_network_my_peer_id_map: DashMap::new(),
 
             synced_route_info: SyncedRouteInfo {
                 peer_infos: DashMap::new(),
@@ -1262,6 +1267,7 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_foreign_network_owner_map(&self) {
+        self.foreign_network_my_peer_id_map.clear();
         self.foreign_network_owner_map.clear();
         for item in self.synced_route_info.foreign_network.iter() {
             let key = item.key();
@@ -1286,7 +1292,12 @@ impl PeerRouteServiceImpl {
             self.foreign_network_owner_map
                 .entry(network_identity)
                 .or_insert_with(|| Vec::new())
-                .push(key.peer_id);
+                .push(entry.my_peer_id_for_this_network);
+
+            self.foreign_network_my_peer_id_map.insert(
+                (key.network_name.clone(), entry.my_peer_id_for_this_network),
+                key.peer_id,
+            );
         }
     }
 
@@ -1525,8 +1536,6 @@ impl PeerRouteServiceImpl {
             req_dynamic_msg.set_field_by_name("peer_infos", Value::Message(peer_infos));
         }
 
-        tracing::trace!(?req_dynamic_msg, "build_sync_route_raw_req");
-
         req_dynamic_msg
     }
 
@@ -1642,7 +1651,12 @@ impl PeerRouteServiceImpl {
     }
 
     fn update_peer_info_last_update(&self) {
-        tracing::debug!(?self, "update_peer_info_last_update");
+        tracing::debug!(
+            "update_peer_info_last_update, my_peer_id: {:?}, prev: {:?}, new: {:?}",
+            self.my_peer_id,
+            self.peer_info_last_update.load(),
+            std::time::Instant::now()
+        );
         self.peer_info_last_update.store(std::time::Instant::now());
     }
 
@@ -2085,7 +2099,6 @@ impl PeerRoute {
         }
     }
 
-    #[tracing::instrument(skip(session_mgr))]
     async fn maintain_session_tasks(
         session_mgr: RouteSessionManager,
         service_impl: Arc<PeerRouteServiceImpl>,
@@ -2093,7 +2106,6 @@ impl PeerRoute {
         session_mgr.maintain_sessions(service_impl).await;
     }
 
-    #[tracing::instrument(skip(session_mgr))]
     async fn update_my_peer_info_routine(
         service_impl: Arc<PeerRouteServiceImpl>,
         session_mgr: RouteSessionManager,
@@ -2290,6 +2302,17 @@ impl Route for PeerRoute {
             .get(network_identity)
             .map(|x| x.clone())
             .unwrap_or_default()
+    }
+
+    async fn get_origin_my_peer_id(
+        &self,
+        network_name: &str,
+        foreign_my_peer_id: PeerId,
+    ) -> Option<PeerId> {
+        self.service_impl
+            .foreign_network_my_peer_id_map
+            .get(&(network_name.to_string(), foreign_my_peer_id))
+            .map(|x| *x)
     }
 
     async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag> {
