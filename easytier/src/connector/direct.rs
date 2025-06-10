@@ -246,7 +246,7 @@ impl DirectConnectorManagerData {
         }
 
         loop {
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if self.peer_manager.has_directly_connected_client_conn(dst_peer_id) {
                 return Ok(());
             }
 
@@ -257,7 +257,7 @@ impl DirectConnectorManagerData {
                 return Ok(());
             }
 
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if self.peer_manager.has_directly_connected_client_conn(dst_peer_id) {
                 return Ok(());
             }
 
@@ -450,9 +450,9 @@ impl DirectConnectorManagerData {
                 "all tasks finished for current scheme"
             );
 
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if self.peer_manager.has_directly_connected_client_conn(dst_peer_id) {
                 tracing::info!(
-                    "direct connect to peer {} success, has direct conn",
+                    "direct connect to peer {} success, has direct client conn",
                     dst_peer_id
                 );
                 return Ok(());
@@ -494,9 +494,9 @@ impl DirectConnectorManagerData {
                 .await;
             tracing::info!(?ret, ?dst_peer_id, "do_try_direct_connect return");
 
-            if peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if peer_manager.has_directly_connected_client_conn(dst_peer_id) {
                 tracing::info!(
-                    "direct connect to peer {} success, has direct conn",
+                    "direct connect to peer {} success, has direct client conn",
                     dst_peer_id
                 );
                 return Ok(());
@@ -542,7 +542,7 @@ impl PeerTaskLauncher for DirectConnectorLauncher {
             .await
             .into_iter()
             .filter(|peer_id| {
-                *peer_id != my_peer_id && !data.peer_manager.has_directly_connected_conn(*peer_id)
+                *peer_id != my_peer_id && !data.peer_manager.has_directly_connected_client_conn(*peer_id)
             })
             .collect()
     }
