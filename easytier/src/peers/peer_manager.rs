@@ -142,8 +142,8 @@ pub struct PeerManager {
 
     exit_nodes: Vec<Ipv4Addr>,
 
-    // conns that are directly connected (which are not hole punched)
-    directly_connected_conn_map: Arc<DashMap<PeerId, DashSet<uuid::Uuid>>>,
+    // connections that are directly connected (which are not hole punched), and where they are client connections
+    directly_connected_conn_map: Arc<DashMap<PeerId, DashMap<uuid::Uuid, bool>>>,
 }
 
 impl Debug for PeerManager {
@@ -330,18 +330,27 @@ impl PeerManager {
         Ok((peer_id, conn_id))
     }
 
-    fn add_directly_connected_conn(&self, peer_id: PeerId, conn_id: uuid::Uuid) {
-        let _ = self
-            .directly_connected_conn_map
-            .entry(peer_id)
-            .or_insert_with(DashSet::new)
-            .insert(conn_id);
+    fn add_directly_connected_conn(&self, peer_id: PeerId, conn_id: uuid::Uuid, is_client: bool) {
+        let dmap = self.directly_connected_conn_map.clone();
+        if let Some(inner) = dmap.get(&peer_id) {
+            inner.insert(conn_id, is_client);
+        } else {
+            dmap.insert(peer_id, DashMap::new());
+        };
     }
 
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
         self.directly_connected_conn_map
             .get(&peer_id)
             .map_or(false, |x| !x.is_empty())
+    }
+
+    pub fn has_directly_connected_client_conn(&self, peer_id: PeerId) -> bool {
+        self.directly_connected_conn_map
+            .get(&peer_id)
+            .map_or(false, |x| {
+                x.iter().any(|entry|*entry.value())
+            })
     }
 
     async fn start_peer_conn_close_event_handler(&self) {
@@ -361,7 +370,7 @@ impl PeerManager {
                         event_recv = event_recv.resubscribe();
                         let alive_conns = peer_map.get_alive_conns();
                         for p in dmap.iter_mut() {
-                            p.retain(|x| alive_conns.contains_key(&(*p.key(), *x)));
+                            p.retain(|conn_id, _| alive_conns.contains_key(&(*p.key(), *conn_id)));
                         }
                         dmap.retain(|_, v| !v.is_empty());
                     }
@@ -394,7 +403,7 @@ impl PeerManager {
         t: Box<dyn Tunnel>,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let (peer_id, conn_id) = self.add_client_tunnel(t).await?;
-        self.add_directly_connected_conn(peer_id, conn_id);
+        self.add_directly_connected_conn(peer_id, conn_id, true);
         Ok((peer_id, conn_id))
     }
 
@@ -436,7 +445,7 @@ impl PeerManager {
             let (peer_id, conn_id) = (peer.get_peer_id(), peer.get_conn_id());
             self.add_new_peer_conn(peer).await?;
             if is_directly_connected {
-                self.add_directly_connected_conn(peer_id, conn_id);
+                self.add_directly_connected_conn(peer_id, conn_id, false);
             }
         } else {
             self.foreign_network_manager.add_peer_conn(peer).await?;
@@ -1071,10 +1080,13 @@ impl PeerManager {
     }
 
     pub fn get_directly_connections(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
-        self.directly_connected_conn_map
-            .get(&peer_id)
-            .map(|x| x.clone())
-            .unwrap_or_default()
+        let dmap = self.directly_connected_conn_map.clone();
+        let result = if let Some(inner) = dmap.get(&peer_id) {
+            inner.iter().map(|entry| entry.key().clone()).collect()
+        } else {
+            DashSet::new()
+        };
+        result
     }
 }
 
