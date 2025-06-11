@@ -1,16 +1,17 @@
 # OpenHarmonyOS 项目构建说明
 
 本项目需要 OpenHarmonyOS SDK 和多个基础库支持才能成功编译。请按照以下步骤准备构建环境。
+如存在任何编译问题，请前往[Easytier for OHOS](https://github.com/FrankHan052176/EasyTier)
 
 ## 前置要求
 
 ### 1. 安装 OpenHarmonyOS SDK
 
 **SDK 下载链接**：  
-[OpenHarmony 每日构建版本](https://ci.openharmony.cn/workbench/cicd/dailybuild/detail/component)
+[OpenHarmony 每日构建版本](https://ci.openharmony.cn/workbench/cicd/dailybuild/dailylist)
 
 **版本要求**：  
-请选择版本号 **小于 OpenHarmony_5.1.0.58** 的 SDK 版本
+请选择版本号 **小于 OpenHarmony_5.1.0.58** 的 ohos-sdk-full 版本
 
 下载后请解压到适当位置（如 `/usr/local/ohos-sdk`），并记下安装路径。
 
