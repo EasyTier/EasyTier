@@ -43,21 +43,22 @@ fn tracing_callback(event: &Event, fields: HashMap<String, String>) {
     let metadata = event.metadata();
     #[cfg(target_env = "ohos")]
     {
+        let loc = metadata.target().split("::").last().unwrap();
         match *metadata.level() {
             Level::TRACE => {
-                hilog_debug!("[Tracing] {:?}", fields.values().collect::<Vec<_>>());
+                hilog_debug!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
             }
             Level::DEBUG => {
-                hilog_debug!("[Tracing] {:?}", fields.values().collect::<Vec<_>>());
+                hilog_debug!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
             }
             Level::INFO => {
-                hilog_info!("[Tracing] {:?}", fields.values().collect::<Vec<_>>());
+                hilog_info!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
             }
             Level::WARN => {
-                hilog_warn!("[Tracing] {:?}", fields.values().collect::<Vec<_>>());
+                hilog_warn!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
             }
             Level::ERROR => {
-                hilog_error!("[Tracing] {:?}", fields.values().collect::<Vec<_>>());
+                hilog_error!("[{}] {:?}", loc, fields.values().collect::<Vec<_>>());
             }
         }
     }

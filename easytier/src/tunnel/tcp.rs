@@ -7,6 +7,7 @@ use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
 #[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
+
 use super::{
     check_scheme_and_get_socket_addr,
     common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
@@ -169,7 +170,7 @@ impl TcpTunnelConnector {
     async fn connect_with_custom_bind(
         &mut self,
         addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();
 
         for bind_addr in self.bind_addrs.iter() {
@@ -191,7 +192,7 @@ impl TcpTunnelConnector {
         }
 
         let ret = wait_for_connect_futures(futures).await;
-        return get_tunnel_with_tcp_stream(ret?, self.addr.clone().into())
+        return get_tunnel_with_tcp_stream(ret?, self.addr.clone().into());
     }
 }
 

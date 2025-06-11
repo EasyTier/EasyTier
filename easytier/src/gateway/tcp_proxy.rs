@@ -25,7 +25,7 @@ use tracing::Instrument;
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
-use crate::launcher::socket_create_callback;
+
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::cli::{
@@ -37,6 +37,8 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket};
 
 use super::CidrSet;
+
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 
 #[cfg(feature = "smoltcp")]
 use super::tokio_smoltcp::{self, channel_device, Net, NetConfig};
@@ -64,8 +66,11 @@ pub struct NatDstTcpConnector;
 impl NatDstConnector for NatDstTcpConnector {
     type DstStream = TcpStream;
     async fn connect(&self, _src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
-        let socket = TcpSocket::new_v4()?;
-        socket_create_callback(socket.as_raw_fd(), &nat_dst);
+        let socket = TcpSocket::new_v4().unwrap();
+        #[cfg(target_env = "ohos")]
+        {
+            socket_create_callback(socket.as_raw_fd(), &nat_dst);
+        }
         if let Err(e) = socket.set_nodelay(true) {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }

@@ -114,6 +114,13 @@ pub fn run_network_instance(cfg_str: String) -> bool {
         set_error_msg(format!("failed to start instance: {}", e));
         return false;
     }
+    let fd = TUN_FD.load(Ordering::SeqCst);
+    if fd > 0 {
+        hilog_info!("[Rust] set global tun:{} to {}", fd, inst_name);
+        instance.set_tun_fd(fd);
+    }else {
+        hilog_warn!("[Rust] global tun is {}", fd);
+    }
     hilog_info!("[Rust] run_network_instance {}", inst_name);
     INSTANCE_MAP.insert(inst_name, instance);
     true

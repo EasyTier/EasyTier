@@ -116,6 +116,7 @@ pub extern "C" fn run_network_instance(cfg_str: *const std::ffi::c_char) -> std:
         set_error_msg(&format!("failed to start instance: {}", e));
         return -1;
     }
+
     INSTANCE_MAP.insert(inst_name, instance);
 
     0

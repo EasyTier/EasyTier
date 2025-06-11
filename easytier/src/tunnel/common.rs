@@ -18,6 +18,7 @@ use zerocopy::FromBytes as _;
 
 use super::TunnelInfo;
 #[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
+
 use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
 use super::{
@@ -430,7 +431,7 @@ pub(crate) fn setup_sokcet2(
     setup_sokcet2_ext(
         socket2_socket,
         bind_addr,
-        get_interface_name_by_ip(&bind_addr.ip()),
+        super::common::get_interface_name_by_ip(&bind_addr.ip()),
     )
 }
 
