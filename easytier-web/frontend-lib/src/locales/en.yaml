@@ -18,6 +18,7 @@ advanced_settings: Advanced Settings
 basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
+rpc_portal_whitelists: RPC Whitelist
 config_network: Config Network
 running: Running
 error_msg: Error Message
@@ -62,6 +63,7 @@ show_event_log: Show Event Log
 event_log: Event Log
 peer_info: Peer Info
 route_cost: Route Cost
+tunnel_proto: Protocol
 hostname: Hostname
 latency: Latency
 upload_bytes: Upload
@@ -114,6 +116,10 @@ disable_udp_hole_punching_help: Disable udp hole punching
 enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
+
+enable_private_mode: Enable Private Mode
+enable_private_mode_help: |
+  Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
 
 relay_network_whitelist: Network Whitelist
 relay_network_whitelist_help: |

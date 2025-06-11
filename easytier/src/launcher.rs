@@ -547,6 +547,20 @@ impl NetworkConfig {
                 .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
         );
 
+        if self.rpc_portal_whitelists.is_empty() {
+            cfg.set_rpc_portal_whitelist(None);
+        } else {
+            cfg.set_rpc_portal_whitelist(Some(
+                self.rpc_portal_whitelists
+                    .iter()
+                    .map(|s| {
+                        s.parse()
+                            .with_context(|| format!("failed to parse rpc portal whitelist: {}", s))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ));
+        }
+
         if self.enable_vpn_portal.unwrap_or_default() {
             let cidr = format!(
                 "{}/{}",
@@ -694,6 +708,10 @@ impl NetworkConfig {
 
         if let Some(mtu) = self.mtu {
             flags.mtu = mtu as u32;
+        }
+
+        if let Some(enable_private_mode) = self.enable_private_mode {
+            flags.private_mode = enable_private_mode;
         }
 
         cfg.set_flags(flags);

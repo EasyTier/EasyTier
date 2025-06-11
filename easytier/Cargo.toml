@@ -3,7 +3,7 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.3.1"
+version = "2.3.2"
 edition = "2021"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
@@ -138,6 +138,7 @@ network-interface = "2.0"
 
 # for ospf route
 petgraph = "0.8.1"
+hashbrown = "0.15.3"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
@@ -153,7 +154,7 @@ humansize = "2.1.3"
 
 base64 = "0.22"
 
-mimalloc-rust = { git = "https://github.com/EasyTier/mimalloc-rust", optional = true }
+mimalloc = { version = "*", optional = true }
 
 # mips
 atomic-shim = "0.2.0"
@@ -185,10 +186,7 @@ async-ringbuf = "0.3.1"
 
 service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.git", branch = "main" }
 
-async-compression = { version = "0.4.17", default-features = false, features = [
-    "zstd",
-    "tokio",
-] }
+zstd = { version = "0.13" }
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys" }
 
@@ -260,7 +258,7 @@ prost-reflect-build = { version = "0.14.0" }
 
 [target.'cfg(windows)'.build-dependencies]
 reqwest = { version = "0.12.12", features = ["blocking"] }
-zip = "0.6.6"
+zip = "4.0.0"
 
 # enable thunk-rs when compiling for x86_64 or i686 windows
 [target.x86_64-pc-windows-msvc.build-dependencies]
@@ -296,7 +294,7 @@ full = [
 mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
-mimalloc = ["dep:mimalloc-rust"]
+mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
 tun = ["dep:tun"]
 websocket = [

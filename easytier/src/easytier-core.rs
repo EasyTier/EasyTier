@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::Context;
+use cidr::IpCidr;
 use clap::Parser;
 
 use easytier::{
@@ -24,7 +25,7 @@ use easytier::{
         scoped_task::ScopedTask,
         stun::MockStunInfoCollector,
     },
-    connector::{create_connector_by_url, dns_connector::DNSTunnelConnector},
+    connector::create_connector_by_url,
     launcher,
     proto::{
         self,
@@ -39,11 +40,11 @@ use easytier::{
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
-use mimalloc_rust::GlobalMiMalloc;
+use mimalloc::MiMalloc;
 
 #[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
 #[global_allocator]
-static GLOBAL_MIMALLOC: GlobalMiMalloc = GlobalMiMalloc;
+static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
 
 #[cfg(feature = "jemalloc")]
 use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
@@ -175,6 +176,14 @@ struct Cli {
         help = t!("core_clap.rpc_portal").to_string(),
     )]
     rpc_portal: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_RPC_PORTAL_WHITELIST",
+        value_delimiter = ',',
+        help = t!("core_clap.rpc_portal_whitelist").to_string(),
+    )]
+    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     #[arg(
         short,
@@ -452,6 +461,13 @@ struct Cli {
         help = t!("core_clap.accept_dns").to_string(),
     )]
     accept_dns: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_PRIVATE_MODE",
+        help = t!("core_clap.private_mode").to_string(),
+    )]
+    private_mode: Option<bool>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -608,6 +624,8 @@ impl TryFrom<&Cli> for TomlConfigLoader {
             Cli::parse_rpc_portal("0".into())?
         };
         cfg.set_rpc_portal(rpc_portal);
+
+        cfg.set_rpc_portal_whitelist(cli.rpc_portal_whitelist.clone());
 
         if let Some(external_nodes) = cli.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
@@ -770,6 +788,7 @@ impl TryFrom<&Cli> for TomlConfigLoader {
         f.enable_kcp_proxy = cli.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = cli.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.accept_dns = cli.accept_dns.unwrap_or(f.accept_dns);
+        f.private_mode = cli.private_mode.unwrap_or(f.private_mode);
         cfg.set_flags(f);
 
         if !cli.exit_nodes.is_empty() {
@@ -1079,7 +1098,6 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             hostname,
         );
         tokio::signal::ctrl_c().await.unwrap();
-        DNSTunnelConnector::new("".parse().unwrap(), global_ctx);
         return Ok(());
     }
 

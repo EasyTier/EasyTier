@@ -18,6 +18,7 @@ advanced_settings: 高级设置
 basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
+rpc_portal_whitelists: RPC白名单
 config_network: 配置网络
 running: 运行中
 error_msg: 错误信息
@@ -64,6 +65,7 @@ event_log: 事件日志
 peer_info: 节点信息
 hostname: 主机名
 route_cost: 路由
+tunnel_proto: 协议
 latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载
@@ -115,6 +117,10 @@ disable_udp_hole_punching_help: 禁用UDP打洞功能
 enable_magic_dns: 启用魔法DNS
 enable_magic_dns_help: |
   启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
+
+enable_private_mode: 启用私有模式
+enable_private_mode_help: |
+  启用私有模式，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转。
 
 relay_network_whitelist: 网络白名单
 relay_network_whitelist_help: |

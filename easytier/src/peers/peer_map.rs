@@ -204,6 +204,22 @@ impl PeerMap {
         None
     }
 
+    pub async fn get_origin_my_peer_id(
+        &self,
+        network_name: &str,
+        foreign_my_peer_id: PeerId,
+    ) -> Option<PeerId> {
+        for route in self.routes.read().await.iter() {
+            let origin_peer_id = route
+                .get_origin_my_peer_id(network_name, foreign_my_peer_id)
+                .await;
+            if origin_peer_id.is_some() {
+                return origin_peer_id;
+            }
+        }
+        None
+    }
+
     pub fn is_empty(&self) -> bool {
         self.peer_map.is_empty()
     }

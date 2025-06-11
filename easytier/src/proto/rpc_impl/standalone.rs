@@ -21,7 +21,12 @@ use super::service_registry::ServiceRegistry;
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc, Box)]
 pub trait RpcServerHook: Send + Sync {
-    async fn on_new_client(&self, _tunnel_info: Option<TunnelInfo>) {}
+    async fn on_new_client(
+        &self,
+        tunnel_info: Option<TunnelInfo>,
+    ) -> Result<Option<TunnelInfo>, anyhow::Error> {
+        Ok(tunnel_info)
+    }
     async fn on_client_disconnected(&self, _tunnel_info: Option<TunnelInfo>) {}
 }
 
@@ -72,7 +77,13 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
             let inflight_server = inflight.clone();
             let hook = hook.clone();
 
-            hook.on_new_client(tunnel_info.clone()).await;
+            let tunnel_info = match hook.on_new_client(tunnel_info).await {
+                Ok(info) => info,
+                Err(e) => {
+                    tracing::warn!(?e, "standalone hook.on_new_client failed");
+                    continue;
+                }
+            };
 
             inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tasks.lock().unwrap().spawn(async move {

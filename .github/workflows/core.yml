@@ -223,13 +223,6 @@ jobs:
             mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
             cargo build --release --verbose --target $TARGET
 
-      - name: Install UPX
-        if: ${{ matrix.OS != 'macos-latest' }}
-        uses: crazy-max/ghaction-upx@v3
-        with:
-          version: latest
-          install-only: true
-
       - name: Compress
         run: |
           mkdir -p ./artifacts/objects/
@@ -251,8 +244,11 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ ]]; then
-            upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"
-            upx --lzma --best ./target/$TARGET/release/easytier-cli"$SUFFIX"
+            UPX_VERSION=5.0.1
+            curl -L https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz -s | tar xJvf -
+            cp upx-${UPX_VERSION}-amd64_linux/upx .
+            ./upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"
+            ./upx --lzma --best ./target/$TARGET/release/easytier-cli"$SUFFIX"
           fi
 
           mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/

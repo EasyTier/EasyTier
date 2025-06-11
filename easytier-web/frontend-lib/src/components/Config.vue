@@ -157,6 +157,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'disable_encryption', help: 'disable_encryption_help' },
   { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
+  { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
 
 </script>
@@ -300,6 +301,15 @@ const bool_flags: BoolFlag[] = [
                   <label for="rpc_port">{{ t('rpc_port') }}</label>
                   <InputNumber id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="rpc_port-help"
                     :format="false" :min="0" :max="65535" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <label for="">{{ t('rpc_portal_whitelists') }}</label>
+                  <AutoComplete id="rpc_portal_whitelists" v-model="curNetwork.rpc_portal_whitelists"
+                    :placeholder="t('chips_placeholder', ['127.0.0.0/8'])" class="w-full" multiple fluid
+                    :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
                 </div>
               </div>
 

@@ -37,6 +37,9 @@ core_clap:
   rpc_portal:
     en: "rpc portal address to listen for management. 0 means random port, 12345 means listen on 12345 of localhost, 0.0.0.0:12345 means listen on 12345 of all interfaces. default is 0 and will try 15888 first"
     zh-CN: "用于管理的RPC门户地址。0表示随机端口，12345表示在localhost的12345上监听，0.0.0.0:12345表示在所有接口的12345上监听。默认是0，首先尝试15888"
+  rpc_portal_whitelist:
+    en: "rpc portal whitelist, only allow these addresses to access rpc portal, e.g.: 127.0.0.1,127.0.0.0/8,::1/128"
+    zh-CN: "RPC门户白名单，仅允许这些地址访问RPC门户，例如：127.0.0.1/32,127.0.0.0/8,::1/128"
   listeners:
     en: |+
         listeners to accept connections, allow format:
@@ -155,6 +158,9 @@ core_clap:
   accept_dns:
     en: "if true, enable magic dns. with magic dns, you can access other nodes with a domain name, e.g.: <hostname>.et.net. magic dns will modify your system dns settings, enable it carefully."
     zh-CN: "如果为true，则启用魔法DNS。使用魔法DNS，您可以使用域名访问其他节点，例如：<hostname>.et.net。魔法DNS将修改您的系统DNS设置，请谨慎启用。"
+  private_mode:
+    en: "if true, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node."
+    zh-CN: "如果为true，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转"
 
 core_app:
   panic_backtrace_save:

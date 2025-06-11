@@ -65,6 +65,9 @@ message NetworkConfig {
     repeated string mapped_listeners = 41;
 
     optional bool enable_magic_dns = 42;
+    optional bool enable_private_mode = 43;
+
+    repeated string rpc_portal_whitelists = 44;
 }
 
 message MyNodeInfo {
