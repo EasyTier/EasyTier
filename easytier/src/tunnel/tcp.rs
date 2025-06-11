@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::os::fd::AsRawFd;
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
@@ -160,6 +159,7 @@ impl TcpTunnelConnector {
         };
         #[cfg(target_env = "ohos")]
         {
+            use std::os::fd::AsRawFd;
             socket_create_callback(socket.as_raw_fd(), &addr);
         }
         let stream = socket.connect(addr).await?;

@@ -5,7 +5,6 @@ use std::{
     sync::{Arc, Mutex},
     task::{ready, Poll},
 };
-use std::os::fd::AsRawFd;
 use futures::{stream::FuturesUnordered, Future, Sink, Stream};
 use network_interface::NetworkInterfaceConfig as _;
 use pin_project_lite::pin_project;
@@ -357,6 +356,7 @@ pub(crate) fn setup_sokcet2_ext(
     
     #[cfg(target_env = "ohos")]
     {
+        use std::os::fd::AsRawFd;
         socket_create_callback(socket2_socket.as_raw_fd(), bind_addr);
     }
 

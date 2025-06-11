@@ -1,5 +1,4 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use std::os::fd::AsRawFd;
 use anyhow::Context;
 use bytes::BytesMut;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
@@ -234,6 +233,7 @@ impl WSTunnelConnector {
         };
         #[cfg(target_env = "ohos")]
         {
+            use std::os::fd::AsRawFd;
             socket_create_callback(socket.as_raw_fd(), &addr);
         }
         Self::connect_with(self.addr.clone(), self.ip_version, socket).await

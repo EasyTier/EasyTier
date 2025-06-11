@@ -10,7 +10,6 @@ use pnet::packet::MutablePacket;
 use pnet::packet::Packet;
 use socket2::{SockRef, TcpKeepalive};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -69,6 +68,7 @@ impl NatDstConnector for NatDstTcpConnector {
         let socket = TcpSocket::new_v4().unwrap();
         #[cfg(target_env = "ohos")]
         {
+            use std::os::fd::AsRawFd;
             socket_create_callback(socket.as_raw_fd(), &nat_dst);
         }
         if let Err(e) = socket.set_nodelay(true) {

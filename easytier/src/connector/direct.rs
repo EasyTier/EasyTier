@@ -10,7 +10,6 @@ use std::{
     },
     time::Duration,
 };
-use std::os::fd::AsRawFd;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::{
@@ -171,6 +170,7 @@ impl DirectConnectorManagerData {
         );
         #[cfg(target_env = "ohos")]
         {
+            use std::os::fd::AsRawFd;
             socket_create_callback_opt(local_socket.as_raw_fd(), None);
         }
         // ask remote to send v6 hole punch packet
