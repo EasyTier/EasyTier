@@ -337,8 +337,7 @@
         {
           "description": "Enables the start_vpn command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-start-vpn",
-          "markdownDescription": "Enables the start_vpn command without any pre-configured scope."
+          "const": "allow-start-vpn"
         },
         {
           "description": "Denies the start_vpn command without any pre-configured scope.",
@@ -356,7 +355,7 @@
           "const": "deny-stop-vpn"
         },
         {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-ping`\n- `allow-start-vpn`",
+          "description": "Default permissions for the plugin",
           "type": "string",
           "const": "default"
         }
