@@ -144,6 +144,8 @@ pub struct PeerManager {
 
     // conns that are directly connected (which are not hole punched)
     directly_connected_conn_map: Arc<DashMap<PeerId, DashSet<uuid::Uuid>>>,
+
+    reserved_my_peer_id_map: DashMap<String, PeerId>,
 }
 
 impl Debug for PeerManager {
@@ -272,6 +274,8 @@ impl PeerManager {
             exit_nodes,
 
             directly_connected_conn_map: Arc::new(DashMap::new()),
+
+            reserved_my_peer_id_map: DashMap::new(),
         }
     }
 
@@ -413,7 +417,7 @@ impl PeerManager {
         self.add_direct_tunnel(t).await
     }
 
-    #[tracing::instrument]
+    #[tracing::instrument(ret)]
     pub async fn add_tunnel_as_server(
         &self,
         tunnel: Box<dyn Tunnel>,
@@ -421,18 +425,43 @@ impl PeerManager {
     ) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
         let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
-        peer.do_handshake_as_server().await?;
-        if self.global_ctx.config.get_flags().private_mode
-            && peer.get_network_identity().network_name
-                != self.global_ctx.get_network_identity().network_name
-        {
-            return Err(Error::SecretKeyError(
-                "private mode is turned on, network identity not match".to_string(),
-            ));
-        }
-        if peer.get_network_identity().network_name
-            == self.global_ctx.get_network_identity().network_name
-        {
+        peer.do_handshake_as_server_ext(|peer, msg| {
+            if msg.network_name
+                == self.global_ctx.get_network_identity().network_name
+            {
+                return Ok(());
+            }
+
+            if self.global_ctx.config.get_flags().private_mode {
+                return Err(Error::SecretKeyError(
+                    "private mode is turned on, network identity not match".to_string(),
+                ));
+            }
+
+            let mut peer_id = self
+                .foreign_network_manager
+                .get_network_peer_id(&msg.network_name);
+            if peer_id.is_none() {
+                peer_id = Some(*self.reserved_my_peer_id_map.entry(msg.network_name.clone()).or_insert_with(|| {
+                    rand::random::<PeerId>()
+                }).value());
+            }
+            peer.set_peer_id(peer_id.clone().unwrap());
+
+            tracing::info!(
+                ?peer_id,
+                ?msg.network_name,
+                "handshake as server with foreign network, new peer id: {}, peer id in foreign manager: {:?}",
+                peer.get_my_peer_id(), peer_id
+            );
+
+            Ok(())
+        })
+        .await?;
+
+        let peer_network_name = peer.get_network_identity().network_name.clone();
+
+        if peer_network_name == self.global_ctx.get_network_identity().network_name {
             let (peer_id, conn_id) = (peer.get_peer_id(), peer.get_conn_id());
             self.add_new_peer_conn(peer).await?;
             if is_directly_connected {
@@ -441,12 +470,15 @@ impl PeerManager {
         } else {
             self.foreign_network_manager.add_peer_conn(peer).await?;
         }
+
+        self.reserved_my_peer_id_map.remove(&peer_network_name);
+
         tracing::info!("add tunnel as server done");
         Ok(())
     }
 
     async fn try_handle_foreign_network_packet(
-        packet: ZCPacket,
+        mut packet: ZCPacket,
         my_peer_id: PeerId,
         peer_map: &PeerMap,
         foreign_network_mgr: &ForeignNetworkManager,
@@ -463,6 +495,10 @@ impl PeerManager {
         let foreign_network_name = foreign_hdr.get_network_name(packet.payload());
         let foreign_peer_id = foreign_hdr.get_dst_peer_id();
 
+        let foreign_network_my_peer_id =
+            foreign_network_mgr.get_network_peer_id(&foreign_network_name);
+
+        // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
         if to_peer_id == my_peer_id {
             // packet sent from other peer to me, extract the inner packet and forward it
             if let Err(e) = foreign_network_mgr
@@ -481,7 +517,27 @@ impl PeerManager {
                 );
             }
             Ok(())
-        } else if from_peer_id == my_peer_id {
+        } else if Some(from_peer_id) == foreign_network_my_peer_id {
+            // to_peer_id is my peer id for the foreign network, need to convert to the origin my_peer_id of dst
+            let Some(to_peer_id) = peer_map
+                .get_origin_my_peer_id(&foreign_network_name, to_peer_id)
+                .await
+            else {
+                tracing::debug!(
+                    ?foreign_network_name,
+                    ?to_peer_id,
+                    "cannot find origin my peer id for foreign network."
+                );
+                return Err(packet);
+            };
+
+            // modify the to_peer id from foreign network my peer id to the origin my peer id
+            packet
+                .mut_peer_manager_header()
+                .unwrap()
+                .to_peer_id
+                .set(to_peer_id);
+
             // packet is generated from foreign network mgr and should be forward to other peer
             if let Err(e) = peer_map
                 .send_msg(packet, to_peer_id, NextHopPolicy::LeastHop)
@@ -496,7 +552,7 @@ impl PeerManager {
 
             Ok(())
         } else {
-            // target is not me, forward it
+            // target is not me, forward it. try get origin peer id
             Err(packet)
         }
     }
@@ -717,6 +773,7 @@ impl PeerManager {
                             last_update: Some(last_update.into()),
                             version: 0,
                             network_secret_digest: info.network_secret_digest.clone(),
+                            my_peer_id_for_this_network: info.my_peer_id_for_this_network,
                         },
                     );
                 }

@@ -887,11 +887,17 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
             .get_foreign_network_client()
             .get_peer_map()
     };
+    let center_inst_peer_id = if !is_foreign {
+        center_inst.peer_id()
+    } else {
+        center_inst
+            .get_peer_manager()
+            .get_foreign_network_manager()
+            .get_network_peer_id(&inst1.get_global_ctx().get_network_identity().network_name)
+            .unwrap()
+    };
 
-    let conns = peer_map
-        .list_peer_conns(center_inst.peer_id())
-        .await
-        .unwrap();
+    let conns = peer_map.list_peer_conns(center_inst_peer_id).await.unwrap();
 
     assert!(conns.len() >= 1);
 

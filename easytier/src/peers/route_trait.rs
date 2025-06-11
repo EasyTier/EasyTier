@@ -95,6 +95,16 @@ pub trait Route {
         Default::default()
     }
 
+    // my peer id in foreign network is different from the one in local network
+    // this function is used to get the peer id in local network
+    async fn get_origin_my_peer_id(
+        &self,
+        _network_name: &str,
+        _foreign_my_peer_id: PeerId,
+    ) -> Option<PeerId> {
+        None
+    }
+
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {}
 
     async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag>;

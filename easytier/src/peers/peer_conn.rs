@@ -266,6 +266,31 @@ impl PeerConn {
         Ok(())
     }
 
+    #[tracing::instrument(skip(handshake_recved))]
+    pub async fn do_handshake_as_server_ext<Fn>(
+        &mut self,
+        mut handshake_recved: Fn,
+    ) -> Result<(), Error>
+    where
+        Fn: FnMut(&mut Self, &HandshakeRequest) -> Result<(), Error> + Send,
+    {
+        let rsp = self.wait_handshake_loop().await?;
+
+        handshake_recved(self, &rsp)?;
+
+        tracing::info!("handshake request: {:?}", rsp);
+        self.info = Some(rsp);
+        self.is_client = Some(false);
+
+        self.send_handshake().await?;
+
+        if self.get_peer_id() == self.my_peer_id {
+            Err(Error::WaitRespError("peer id conflict".to_owned()))
+        } else {
+            Ok(())
+        }
+    }
+
     #[tracing::instrument]
     pub async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
         let rsp = self.wait_handshake_loop().await?;
@@ -434,6 +459,17 @@ impl PeerConn {
             network_name: info.network_name.clone(),
             is_closed: self.close_event_notifier.is_closed(),
         }
+    }
+
+    pub fn set_peer_id(&mut self, peer_id: PeerId) {
+        if self.info.is_some() {
+            panic!("set_peer_id should only be called before handshake");
+        }
+        self.my_peer_id = peer_id;
+    }
+
+    pub fn get_my_peer_id(&self) -> PeerId {
+        self.my_peer_id
     }
 }
 
