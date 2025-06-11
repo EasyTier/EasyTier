@@ -1948,7 +1948,6 @@ dependencies = [
  "hickory-server",
  "http",
  "http_req",
- "httparse",
  "humansize",
  "humantime-serde",
  "jemalloc-ctl",
@@ -9114,6 +9113,7 @@ checksum = "7b3e06c9b9d80ed6b745c7159c40b311ad2916abb34a49e9be2653b90db0d8dd"
 [[package]]
 name = "tun-easytier"
 version = "1.1.1"
+source = "git+https://github.com/EasyTier/rust-tun#12378839e7985283df0e4fb536b7137230356db5"
 dependencies = [
  "bytes",
  "cfg-if",

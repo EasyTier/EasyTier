@@ -151,12 +151,6 @@ pub extern "C" fn retain_network_instance(
 }
 
 #[no_mangle]
-pub extern "C" fn destroy_all_network_instance() -> std::ffi::c_int {
-    INSTANCE_MAP.clear();
-    0
-}
-
-#[no_mangle]
 pub extern "C" fn collect_network_infos(
     infos: *mut KeyValuePair,
     max_length: usize,
