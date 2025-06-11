@@ -19,6 +19,7 @@ use crate::{
 
 pub mod direct;
 pub mod manual;
+pub mod cache;
 pub mod udp_hole_punch;
 
 pub mod dns_connector;
