@@ -11,8 +11,11 @@ use easytier::{
         config::{ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, TomlConfigLoader},
         constants::EASYTIER_VERSION,
         error::Error,
+        network::{local_ipv4, local_ipv6},
     },
-    tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, websocket::WSTunnelListener, TunnelListener},
+    tunnel::{
+        tcp::TcpTunnelListener, udp::UdpTunnelListener, websocket::WSTunnelListener, TunnelListener,
+    },
     utils::{init_logger, setup_panic_handler},
 };
 
@@ -89,6 +92,13 @@ struct Cli {
         default_value = "false"
     )]
     no_web: bool,
+
+    #[cfg(feature = "embed")]
+    #[arg(
+        long,
+        help = t!("cli.api_host").to_string()
+    )]
+    api_host: Option<url::Url>,
 }
 
 pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Error> {
@@ -100,6 +110,31 @@ pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Erro
             return Err(Error::InvalidUrl(l.to_string()));
         }
     })
+}
+
+async fn get_dual_stack_listener(
+    protocol: &str,
+    port: u16,
+) -> Result<
+    (
+        Option<Box<dyn TunnelListener>>,
+        Option<Box<dyn TunnelListener>>,
+    ),
+    Error,
+> {
+    let is_protocol_support_dual_stack =
+        protocol.trim().to_lowercase() == "tcp" || protocol.trim().to_lowercase() == "udp";
+    let v6_listener = if is_protocol_support_dual_stack && local_ipv6().await.is_ok() {
+        get_listener_by_url(&format!("{}://[::0]:{}", protocol, port).parse().unwrap()).ok()
+    } else {
+        None
+    };
+    let v4_listener = if let Ok(_) = local_ipv4().await {
+        get_listener_by_url(&format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap()).ok()
+    } else {
+        None
+    };
+    Ok((v6_listener, v4_listener))
 }
 
 #[tokio::main]
@@ -122,51 +157,67 @@ async fn main() {
 
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
-
-    let listener = get_listener_by_url(
-        &format!(
-            "{}://0.0.0.0:{}",
-            cli.config_server_protocol, cli.config_server_port
-        )
-        .parse()
-        .unwrap(),
-    )
-    .unwrap();
     let mut mgr = client_manager::ClientManager::new(db.clone());
-    mgr.serve(listener).await.unwrap();
+    let (v6_listener, v4_listener) =
+        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
+            .await
+            .unwrap();
+    if v4_listener.is_none() && v6_listener.is_none() {
+        panic!("Listen to both IPv4 and IPv6 failed");
+    }
+    if let Some(listener) = v6_listener {
+        mgr.add_listener(listener).await.unwrap();
+    }
+    if let Some(listener) = v4_listener {
+        mgr.add_listener(listener).await.unwrap();
+    }
+
     let mgr = Arc::new(mgr);
 
     #[cfg(feature = "embed")]
-    let restful_also_serve_web = !cli.no_web
-        && (cli.web_server_port.is_none() || cli.web_server_port == Some(cli.api_server_port));
-
+    let (web_router_restful, web_router_static) = if cli.no_web {
+        (None, None)
+    } else {
+        let web_router = web::build_router(cli.api_host.clone());
+        if cli.web_server_port.is_none() || cli.web_server_port == Some(cli.api_server_port) {
+            (Some(web_router), None)
+        } else {
+            (None, Some(web_router))
+        }
+    };
     #[cfg(not(feature = "embed"))]
-    let restful_also_serve_web = false;
+    let web_router_restful = None;
 
-    let mut restful_server = restful::RestfulServer::new(
+    let _restful_server_tasks = restful::RestfulServer::new(
         format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
         mgr.clone(),
         db,
-        restful_also_serve_web,
+        web_router_restful,
     )
+    .await
+    .unwrap()
+    .start()
     .await
     .unwrap();
 
-    restful_server.start().await.unwrap();
-
     #[cfg(feature = "embed")]
-    let mut web_server = web::WebServer::new(
-        format!("0.0.0.0:{}", cli.web_server_port.unwrap_or(0))
-            .parse()
+    let _web_server_task = if let Some(web_router) = web_router_static {
+        Some(
+            web::WebServer::new(
+                format!("0.0.0.0:{}", cli.web_server_port.unwrap_or(0))
+                    .parse()
+                    .unwrap(),
+                web_router,
+            )
+            .await
+            .unwrap()
+            .start()
+            .await
             .unwrap(),
-    )
-    .await
-    .unwrap();
-
-    #[cfg(feature = "embed")]
-    if !cli.no_web && !restful_also_serve_web {
-        web_server.start().await.unwrap();
-    }
+        )
+    } else {
+        None
+    };
 
     tokio::signal::ctrl_c().await.unwrap();
 }

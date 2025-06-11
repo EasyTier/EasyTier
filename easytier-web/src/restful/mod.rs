@@ -39,12 +39,11 @@ pub struct RestfulServer {
     client_mgr: Arc<ClientManager>,
     db: Db,
 
-    serve_task: Option<ScopedTask<()>>,
-    delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
-
+    // serve_task: Option<ScopedTask<()>>,
+    // delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
     network_api: NetworkApi,
 
-    enable_web_embed: bool,
+    web_router: Option<Router>,
 }
 
 type AppStateInner = Arc<ClientManager>;
@@ -94,7 +93,7 @@ impl RestfulServer {
         bind_addr: SocketAddr,
         client_mgr: Arc<ClientManager>,
         db: Db,
-        enable_web_embed: bool,
+        web_router: Option<Router>,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -104,10 +103,10 @@ impl RestfulServer {
             bind_addr,
             client_mgr,
             db,
-            serve_task: None,
-            delete_task: None,
+            // serve_task: None,
+            // delete_task: None,
             network_api,
-            enable_web_embed,
+            web_router,
         })
     }
 
@@ -159,7 +158,15 @@ impl RestfulServer {
         }
     }
 
-    pub async fn start(&mut self) -> Result<(), anyhow::Error> {
+    pub async fn start(
+        mut self,
+    ) -> Result<
+        (
+            ScopedTask<()>,
+            ScopedTask<tower_sessions::session_store::Result<()>>,
+        ),
+        anyhow::Error,
+    > {
         let listener = TcpListener::bind(self.bind_addr).await?;
 
         // Session layer.
@@ -169,14 +176,13 @@ impl RestfulServer {
         let session_store = SqliteStore::new(self.db.inner());
         session_store.migrate().await?;
 
-        self.delete_task.replace(
+        let delete_task: ScopedTask<tower_sessions::session_store::Result<()>> =
             tokio::task::spawn(
                 session_store
                     .clone()
                     .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
             )
-            .into(),
-        );
+            .into();
 
         // Generate a cryptographic key to sign the session cookie.
         let key = Key::generate();
@@ -216,19 +222,17 @@ impl RestfulServer {
             .layer(compression_layer);
 
         #[cfg(feature = "embed")]
-        let app = if self.enable_web_embed {
-            use axum_embed::ServeEmbed;
-            let service = ServeEmbed::<Assets>::new();
-            app.fallback_service(service)
+        let app = if let Some(web_router) = self.web_router.take() {
+            app.merge(web_router)
         } else {
             app
         };
 
-        let task = tokio::spawn(async move {
+        let serve_task: ScopedTask<()> = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
-        });
-        self.serve_task = Some(task.into());
+        })
+        .into();
 
-        Ok(())
+        Ok((serve_task, delete_task))
     }
 }

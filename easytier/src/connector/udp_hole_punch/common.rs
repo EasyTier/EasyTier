@@ -56,8 +56,8 @@ impl From<NatType> for UdpNatType {
     fn from(nat_type: NatType) -> Self {
         match nat_type {
             NatType::Unknown => UdpNatType::Unknown,
-            NatType::NoPat | NatType::OpenInternet => UdpNatType::Open(nat_type),
-            NatType::FullCone | NatType::Restricted | NatType::PortRestricted => {
+            NatType::OpenInternet => UdpNatType::Open(nat_type),
+            NatType::NoPat | NatType::FullCone | NatType::Restricted | NatType::PortRestricted => {
                 UdpNatType::Cone(nat_type)
             }
             NatType::Symmetric | NatType::SymUdpFirewall => UdpNatType::HardSymmetric(nat_type),

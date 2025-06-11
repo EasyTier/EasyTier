@@ -234,7 +234,7 @@ pub struct AesGcmTail {
 }
 pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
 
-#[derive(AsBytes, FromZeroes, Clone, Debug, Copy)]
+#[derive(AsBytes, FromZeroes, Clone, Debug, Copy, PartialEq, Hash, Eq)]
 #[repr(u8)]
 pub enum CompressorAlgo {
     None = 0,
