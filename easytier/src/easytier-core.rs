@@ -105,7 +105,7 @@ struct Cli {
         env = "ET_CONFIG_FILE",
         value_delimiter = ',',
         help = t!("core_clap.config_file").to_string(),
-        num_args = 0..,
+        num_args = 1..,
     )]
     config_file: Option<Vec<PathBuf>>,
 

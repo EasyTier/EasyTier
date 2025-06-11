@@ -211,6 +211,21 @@ pub fn setup_panic_handler() {
     }));
 }
 
+pub fn check_tcp_available(port: u16) -> bool {
+    use std::net::TcpListener;
+    let s = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
+    TcpListener::bind(s).is_ok()
+}
+
+pub fn find_free_tcp_port(range: std::ops::Range<u16>) -> Option<u16> {
+    for port in range {
+        if check_tcp_available(port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::config::{self};

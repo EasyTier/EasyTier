@@ -320,3 +320,172 @@ fn peer_conn_info_to_string(p: proto::cli::PeerConnInfo) -> String {
         p.my_peer_id, p.peer_id, p.tunnel
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::config::*;
+
+    #[tokio::test]
+    async fn it_works() {
+        let manager = NetworkInstanceManager::new();
+        let cfg_str = r#"
+            listeners = []
+            "#;
+
+        let port = crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
+
+        let instance_id1 = manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str)
+                    .map(|c| {
+                        c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
+                        c
+                    })
+                    .unwrap(),
+                ConfigSource::Cli,
+            )
+            .unwrap();
+        let instance_id2 = manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::File,
+            )
+            .unwrap();
+        let instance_id3 = manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::GUI,
+            )
+            .unwrap();
+        let instance_id4 = manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::Web,
+            )
+            .unwrap();
+        let instance_id5 = manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::FFI,
+            )
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await; // to make instance actually started
+
+        assert!(!crate::utils::check_tcp_available(port));
+
+        assert!(manager.instance_map.contains_key(&instance_id1));
+        assert!(manager.instance_map.contains_key(&instance_id2));
+        assert!(manager.instance_map.contains_key(&instance_id3));
+        assert!(manager.instance_map.contains_key(&instance_id4));
+        assert!(manager.instance_map.contains_key(&instance_id5));
+        assert_eq!(manager.list_network_instance_ids().len(), 5);
+        assert_eq!(manager.instance_stop_tasks.len(), 4); // FFI instance does not have a stop task
+
+        manager
+            .delete_network_instance(vec![instance_id3, instance_id4, instance_id5])
+            .unwrap();
+        assert!(!manager.instance_map.contains_key(&instance_id3));
+        assert!(!manager.instance_map.contains_key(&instance_id4));
+        assert!(!manager.instance_map.contains_key(&instance_id5));
+        assert_eq!(manager.list_network_instance_ids().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_single_instance_failed() {
+        let free_tcp_port =
+            crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
+
+        for config_source in [ConfigSource::Cli, ConfigSource::File] {
+            let _port_holder =
+                std::net::TcpListener::bind(format!("0.0.0.0:{}", free_tcp_port)).unwrap();
+
+            let cfg_str = format!(
+                r#"
+            listeners = ["tcp://0.0.0.0:{}"]
+            "#,
+                free_tcp_port
+            );
+
+            let manager = NetworkInstanceManager::new();
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
+                    config_source.clone(),
+                )
+                .unwrap();
+
+            tokio::select! {
+                _ = manager.wait() => {
+                    assert_eq!(manager.list_network_instance_ids().len(), 0);
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                    panic!("instance manager with single failed instance({:?}) should not running", config_source);
+                }
+            }
+        }
+        for config_source in [ConfigSource::Web, ConfigSource::GUI, ConfigSource::FFI] {
+            let _port_holder =
+                std::net::TcpListener::bind(format!("0.0.0.0:{}", free_tcp_port)).unwrap();
+
+            let cfg_str = format!(
+                r#"
+            listeners = ["tcp://0.0.0.0:{}"]
+            "#,
+                free_tcp_port
+            );
+
+            let manager = NetworkInstanceManager::new();
+            manager
+                .run_network_instance(
+                    TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
+                    config_source.clone(),
+                )
+                .unwrap();
+
+            assert_eq!(manager.list_network_instance_ids().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiple_instances_one_failed() {
+        let free_tcp_port =
+            crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
+
+        let manager = NetworkInstanceManager::new();
+        let cfg_str = format!(
+            r#"
+            listeners = ["tcp://0.0.0.0:{}"]
+            [flags]
+            enable_ipv6 = false
+            "#,
+            free_tcp_port
+        );
+
+        manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
+                ConfigSource::Cli,
+            )
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+        manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
+                ConfigSource::Cli,
+            )
+            .unwrap();
+
+        tokio::select! {
+            _ = manager.wait() => {
+                panic!("instance manager with multiple instances one failed should still running");
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
+                assert_eq!(manager.list_network_instance_ids().len(), 1);
+            }
+        }
+    }
+}

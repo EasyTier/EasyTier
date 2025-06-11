@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    net::SocketAddr,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
 
@@ -214,24 +213,18 @@ impl EasyTierLauncher {
         Ok(())
     }
 
-    fn check_tcp_available(port: u16) -> bool {
-        let s = format!("0.0.0.0:{}", port).parse::<SocketAddr>().unwrap();
-        std::net::TcpListener::bind(s).is_ok()
-    }
-
     fn select_proper_rpc_port(cfg: &TomlConfigLoader) {
         let Some(mut f) = cfg.get_rpc_portal() else {
             return;
         };
 
         if f.port() == 0 {
-            for i in 15888..15900 {
-                if Self::check_tcp_available(i) {
-                    f.set_port(i);
-                    cfg.set_rpc_portal(f);
-                    break;
-                }
-            }
+            let Some(port) = crate::utils::find_free_tcp_port(15888..15900) else {
+                tracing::warn!("No free port found for RPC portal, skipping setting RPC portal");
+                return;
+            };
+            f.set_port(port);
+            cfg.set_rpc_portal(f);
         }
     }
 
