@@ -3,11 +3,14 @@ use std::sync::Mutex;
 use dashmap::DashMap;
 use easytier::{
     common::config::{ConfigLoader as _, TomlConfigLoader},
-    launcher::NetworkInstance,
+    instance_manager::NetworkInstanceManager,
+    launcher::ConfigSource,
 };
 
-static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
+static INSTANCE_NAME_ID_MAP: once_cell::sync::Lazy<DashMap<String, uuid::Uuid>> =
     once_cell::sync::Lazy::new(DashMap::new);
+static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
+    once_cell::sync::Lazy::new(NetworkInstanceManager::new);
 
 static ERROR_MSG: once_cell::sync::Lazy<Mutex<Vec<u8>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(Vec::new()));
@@ -86,18 +89,20 @@ pub extern "C" fn run_network_instance(cfg_str: *const std::ffi::c_char) -> std:
 
     let inst_name = cfg.get_inst_name();
 
-    if INSTANCE_MAP.contains_key(&inst_name) {
+    if INSTANCE_NAME_ID_MAP.contains_key(&inst_name) {
         set_error_msg("instance already exists");
         return -1;
     }
 
-    let mut instance = NetworkInstance::new(cfg);
-    if let Err(e) = instance.start().map_err(|e| e.to_string()) {
-        set_error_msg(&format!("failed to start instance: {}", e));
-        return -1;
-    }
+    let instance_id = match INSTANCE_MANAGER.run_network_instance(cfg, ConfigSource::FFI) {
+        Ok(id) => id,
+        Err(e) => {
+            set_error_msg(&format!("failed to start instance: {}", e));
+            return -1;
+        }
+    };
 
-    INSTANCE_MAP.insert(inst_name, instance);
+    INSTANCE_NAME_ID_MAP.insert(inst_name, instance_id);
 
     0
 }
@@ -108,7 +113,11 @@ pub extern "C" fn retain_network_instance(
     length: usize,
 ) -> std::ffi::c_int {
     if length == 0 {
-        INSTANCE_MAP.clear();
+        if let Err(e) = INSTANCE_MANAGER.retain_network_instance(Vec::new()) {
+            set_error_msg(&format!("failed to retain instances: {}", e));
+            return -1;
+        }
+        INSTANCE_NAME_ID_MAP.clear();
         return 0;
     }
 
@@ -125,7 +134,17 @@ pub extern "C" fn retain_network_instance(
             .collect::<Vec<_>>()
     };
 
-    let _ = INSTANCE_MAP.retain(|k, _| inst_names.contains(k));
+    let inst_ids: Vec<uuid::Uuid> = inst_names
+        .iter()
+        .filter_map(|name| INSTANCE_NAME_ID_MAP.get(name).map(|id| *id))
+        .collect();
+
+    if let Err(e) = INSTANCE_MANAGER.retain_network_instance(inst_ids) {
+        set_error_msg(&format!("failed to retain instances: {}", e));
+        return -1;
+    }
+
+    let _ = INSTANCE_NAME_ID_MAP.retain(|k, _| inst_names.contains(k));
 
     0
 }
@@ -144,13 +163,20 @@ pub extern "C" fn collect_network_infos(
         std::slice::from_raw_parts_mut(infos, max_length)
     };
 
+    let collected_infos = match INSTANCE_MANAGER.collect_network_infos() {
+        Ok(infos) => infos,
+        Err(e) => {
+            set_error_msg(&format!("failed to collect network infos: {}", e));
+            return -1;
+        }
+    };
+
     let mut index = 0;
-    for instance in INSTANCE_MAP.iter() {
+    for (instance_id, value) in collected_infos.iter() {
         if index >= max_length {
             break;
         }
-        let key = instance.key();
-        let Some(value) = instance.get_running_info() else {
+        let Some(key) = INSTANCE_MANAGER.get_network_instance_name(instance_id) else {
             continue;
         };
         // convert value to json string
@@ -181,7 +207,6 @@ mod tests {
         let cfg_str = r#"
             inst_name = "test"
             network = "test_network"
-            fdsafdsa
         "#;
         let cstr = std::ffi::CString::new(cfg_str).unwrap();
         assert_eq!(parse_config(cstr.as_ptr()), 0);

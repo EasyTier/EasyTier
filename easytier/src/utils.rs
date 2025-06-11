@@ -4,7 +4,7 @@ use anyhow::Context;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
-use crate::common::{config::ConfigLoader, get_logger_timer_rfc3339};
+use crate::common::{config::LoggingConfigLoader, get_logger_timer_rfc3339};
 
 pub type PeerRoutePair = crate::proto::cli::PeerRoutePair;
 
@@ -23,7 +23,7 @@ pub fn float_to_str(f: f64, precision: usize) -> String {
 pub type NewFilterSender = std::sync::mpsc::Sender<String>;
 
 pub fn init_logger(
-    config: impl ConfigLoader,
+    config: impl LoggingConfigLoader,
     need_reload: bool,
 ) -> Result<Option<NewFilterSender>, anyhow::Error> {
     let file_config = config.get_file_logger_config();
@@ -211,6 +211,21 @@ pub fn setup_panic_handler() {
     }));
 }
 
+pub fn check_tcp_available(port: u16) -> bool {
+    use std::net::TcpListener;
+    let s = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
+    TcpListener::bind(s).is_ok()
+}
+
+pub fn find_free_tcp_port(range: std::ops::Range<u16>) -> Option<u16> {
+    for port in range {
+        if check_tcp_available(port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::config::{self};
@@ -219,7 +234,7 @@ mod tests {
 
     async fn test_logger_reload() {
         println!("current working dir: {:?}", std::env::current_dir());
-        let config = config::TomlConfigLoader::default();
+        let config = config::LoggingConfigBuilder::default().build().unwrap();
         let s = init_logger(&config, true).unwrap();
         tracing::debug!("test not display debug");
         s.unwrap().send(LevelFilter::DEBUG.to_string()).unwrap();

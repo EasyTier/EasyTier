@@ -71,11 +71,6 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_listener_uris(&self) -> Vec<url::Url>;
 
-    fn get_file_logger_config(&self) -> FileLoggerConfig;
-    fn set_file_logger_config(&self, config: FileLoggerConfig);
-    fn get_console_logger_config(&self) -> ConsoleLoggerConfig;
-    fn set_console_logger_config(&self, config: ConsoleLoggerConfig);
-
     fn get_peers(&self) -> Vec<PeerConfig>;
     fn set_peers(&self, peers: Vec<PeerConfig>);
 
@@ -110,6 +105,12 @@ pub trait ConfigLoader: Send + Sync {
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
 
     fn dump(&self) -> String;
+}
+
+pub trait LoggingConfigLoader {
+    fn get_file_logger_config(&self) -> FileLoggerConfig;
+
+    fn get_console_logger_config(&self) -> ConsoleLoggerConfig;
 }
 
 pub type NetworkSecretDigest = [u8; 32];
@@ -186,6 +187,24 @@ pub struct ConsoleLoggerConfig {
     pub level: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
+pub struct LoggingConfig {
+    #[builder(setter(into, strip_option), default = None)]
+    file_logger: Option<FileLoggerConfig>,
+    #[builder(setter(into, strip_option), default = None)]
+    console_logger: Option<ConsoleLoggerConfig>,
+}
+
+impl LoggingConfigLoader for &LoggingConfig {
+    fn get_file_logger_config(&self) -> FileLoggerConfig {
+        self.file_logger.clone().unwrap_or_default()
+    }
+
+    fn get_console_logger_config(&self) -> ConsoleLoggerConfig {
+        self.console_logger.clone().unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct VpnPortalConfig {
     pub client_cidr: cidr::Ipv4Cidr,
@@ -242,9 +261,6 @@ struct Config {
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
-
-    file_logger: Option<FileLoggerConfig>,
-    console_logger: Option<ConsoleLoggerConfig>,
 
     rpc_portal: Option<SocketAddr>,
     rpc_portal_whitelist: Option<Vec<IpCidr>>,
@@ -484,32 +500,6 @@ impl ConfigLoader for TomlConfigLoader {
             .listeners
             .clone()
             .unwrap_or_default()
-    }
-
-    fn get_file_logger_config(&self) -> FileLoggerConfig {
-        self.config
-            .lock()
-            .unwrap()
-            .file_logger
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_file_logger_config(&self, config: FileLoggerConfig) {
-        self.config.lock().unwrap().file_logger = Some(config);
-    }
-
-    fn get_console_logger_config(&self) -> ConsoleLoggerConfig {
-        self.config
-            .lock()
-            .unwrap()
-            .console_logger
-            .clone()
-            .unwrap_or_default()
-    }
-
-    fn set_console_logger_config(&self, config: ConsoleLoggerConfig) {
-        self.config.lock().unwrap().console_logger = Some(config);
     }
 
     fn get_peers(&self) -> Vec<PeerConfig> {
