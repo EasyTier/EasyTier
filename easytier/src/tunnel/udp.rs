@@ -151,7 +151,7 @@ async fn respond_stun_packet(
     use crate::common::stun_codec_ext::*;
     use bytecodec::DecodeExt as _;
     use bytecodec::EncodeExt as _;
-    use stun_codec::rfc5389::attributes::MappedAddress;
+    use stun_codec::rfc5389::attributes::XorMappedAddress;
     use stun_codec::rfc5389::methods::BINDING;
     use stun_codec::{Message, MessageClass, MessageDecoder, MessageEncoder};
 
@@ -173,7 +173,9 @@ async fn respond_stun_packet(
         // we discard the prefix, make sure our implementation is not compatible with other stun client
         u32_to_tid(tid_to_u32(&tid)),
     );
-    resp_msg.add_attribute(Attribute::MappedAddress(MappedAddress::new(addr.clone())));
+    resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(
+        addr.clone(),
+    )));
 
     let mut encoder = MessageEncoder::new();
     let rsp_buf = encoder
