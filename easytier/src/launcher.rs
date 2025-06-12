@@ -455,6 +455,36 @@ impl NetworkInstance {
     }
 }
 
+pub fn add_proxy_network_to_config(
+    proxy_network: &str,
+    cfg: &TomlConfigLoader,
+) -> Result<(), anyhow::Error> {
+    let parts: Vec<&str> = proxy_network.split("->").collect();
+    let real_cidr = parts[0]
+        .parse()
+        .with_context(|| format!("failed to parse proxy network: {}", parts[0]))?;
+
+    if parts.len() > 2 {
+        return Err(anyhow::anyhow!(
+                    "invalid proxy network format: {}, support format: <real_cidr> or <real_cidr>-><mapped_cidr>, example:
+                    10.0.0.0/24 or 10.0.0.0/24->192.168.0.0/24",
+                    proxy_network
+                ));
+    }
+
+    let mapped_cidr = if parts.len() == 2 {
+        Some(
+            parts[1]
+                .parse()
+                .with_context(|| format!("failed to parse mapped network: {}", parts[1]))?,
+        )
+    } else {
+        None
+    };
+    cfg.add_proxy_cidr(real_cidr, mapped_cidr);
+    Ok(())
+}
+
 pub type NetworkingMethod = crate::proto::web::NetworkingMethod;
 pub type NetworkConfig = crate::proto::web::NetworkConfig;
 
@@ -534,11 +564,7 @@ impl NetworkConfig {
         cfg.set_listeners(listener_urls);
 
         for n in self.proxy_cidrs.iter() {
-            cfg.add_proxy_cidr(
-                n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
-                None,
-            );
+            add_proxy_network_to_config(n, &cfg)?;
         }
 
         cfg.set_rpc_portal(

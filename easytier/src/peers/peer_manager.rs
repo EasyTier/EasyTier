@@ -1108,7 +1108,7 @@ impl PeerManager {
                     if x.mapped_cidr.is_none() {
                         x.cidr.to_string()
                     } else {
-                        format!("{} -> {}", x.cidr, x.mapped_cidr.unwrap())
+                        format!("{}->{}", x.cidr, x.mapped_cidr.unwrap())
                     }
                 })
                 .collect(),

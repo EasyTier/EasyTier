@@ -26,7 +26,7 @@ use easytier::{
     },
     connector::create_connector_by_url,
     instance_manager::NetworkInstanceManager,
-    launcher::ConfigSource,
+    launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
@@ -624,11 +624,7 @@ impl NetworkOptions {
         }
 
         for n in self.proxy_networks.iter() {
-            cfg.add_proxy_cidr(
-                n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
-                None,
-            );
+            add_proxy_network_to_config(n, &cfg)?;
         }
 
         let rpc_portal = if let Some(r) = &self.rpc_portal {
