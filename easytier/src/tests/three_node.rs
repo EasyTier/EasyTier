@@ -235,12 +235,13 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
     .await;
 }
 
-async fn subnet_proxy_test_udp() {
+async fn subnet_proxy_test_udp(target_ip: &str) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, udp::UdpTunnelListener};
     use rand::Rng;
 
     let udp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
-    let udp_connector = UdpTunnelConnector::new("udp://10.1.2.4:22233".parse().unwrap());
+    let udp_connector =
+        UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
 
     // NOTE: this should not excced udp tunnel max buffer size
     let mut buf = vec![0; 7 * 1024];
@@ -257,7 +258,8 @@ async fn subnet_proxy_test_udp() {
 
     // no fragment
     let udp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
-    let udp_connector = UdpTunnelConnector::new("udp://10.1.2.4:22233".parse().unwrap());
+    let udp_connector =
+        UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
 
     let mut buf = vec![0; 1 * 1024];
     rand::thread_rng().fill(&mut buf[..]);
@@ -305,12 +307,13 @@ async fn subnet_proxy_test_udp() {
     .await;
 }
 
-async fn subnet_proxy_test_tcp() {
+async fn subnet_proxy_test_tcp(target_ip: &str) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
     use rand::Rng;
 
     let tcp_listener = TcpTunnelListener::new("tcp://10.1.2.4:22223".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://10.1.2.4:22223".parse().unwrap());
+    let tcp_connector =
+        TcpTunnelConnector::new(format!("tcp://{}:22223", target_ip).parse().unwrap());
 
     let mut buf = vec![0; 32];
     rand::thread_rng().fill(&mut buf[..]);
@@ -341,15 +344,15 @@ async fn subnet_proxy_test_tcp() {
     .await;
 }
 
-async fn subnet_proxy_test_icmp() {
+async fn subnet_proxy_test_icmp(target_ip: &str) {
     wait_for_condition(
-        || async { ping_test("net_a", "10.1.2.4", None).await },
+        || async { ping_test("net_a", target_ip, None).await },
         Duration::from_secs(5),
     )
     .await;
 
     wait_for_condition(
-        || async { ping_test("net_a", "10.1.2.4", Some(5 * 1024)).await },
+        || async { ping_test("net_a", target_ip, Some(5 * 1024)).await },
         Duration::from_secs(5),
     )
     .await;
@@ -378,6 +381,7 @@ pub async fn subnet_proxy_three_node_test(
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] disable_kcp_input: bool,
     #[values(true, false)] dst_enable_kcp_proxy: bool,
+    #[values(true, false)] test_mapped_cidr: bool,
 ) {
     let insts = init_three_node_ex(
         proto,
@@ -388,7 +392,14 @@ pub async fn subnet_proxy_three_node_test(
                 flags.disable_kcp_input = disable_kcp_input;
                 flags.enable_kcp_proxy = dst_enable_kcp_proxy;
                 cfg.set_flags(flags);
-                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap());
+                cfg.add_proxy_cidr(
+                    "10.1.2.0/24".parse().unwrap(),
+                    if test_mapped_cidr {
+                        Some("10.1.3.0/24".parse().unwrap())
+                    } else {
+                        None
+                    },
+                );
             }
 
             if cfg.get_inst_name() == "inst2" && relay_by_public_server {
@@ -410,19 +421,29 @@ pub async fn subnet_proxy_three_node_test(
     )
     .await;
 
-    assert_eq!(insts[2].get_global_ctx().get_proxy_cidrs().len(), 1);
+    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
 
     wait_proxy_route_appear(
         &insts[0].get_peer_manager(),
         "10.144.144.3/24",
         insts[2].peer_id(),
-        "10.1.2.0/24",
+        if test_mapped_cidr {
+            "10.1.3.0/24"
+        } else {
+            "10.1.2.0/24"
+        },
     )
     .await;
 
-    subnet_proxy_test_icmp().await;
-    subnet_proxy_test_tcp().await;
-    subnet_proxy_test_udp().await;
+    let target_ip = if test_mapped_cidr {
+        "10.1.3.4"
+    } else {
+        "10.1.2.4"
+    };
+
+    subnet_proxy_test_icmp(target_ip).await;
+    subnet_proxy_test_tcp(target_ip).await;
+    subnet_proxy_test_udp(target_ip).await;
 }
 
 #[rstest::rstest]
@@ -1017,7 +1038,7 @@ pub async fn port_forward_test(
                     },
                 ]);
             } else if cfg.get_inst_name() == "inst3" {
-                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap());
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
             }
             let mut flags = cfg.get_flags();
             flags.no_tun = no_tun;

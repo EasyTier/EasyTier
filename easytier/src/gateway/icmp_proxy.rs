@@ -34,7 +34,7 @@ use super::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IcmpNatKey {
-    dst_ip: std::net::IpAddr,
+    real_dst_ip: std::net::IpAddr,
     icmp_id: u16,
     icmp_seq: u16,
 }
@@ -45,15 +45,22 @@ struct IcmpNatEntry {
     my_peer_id: PeerId,
     src_ip: IpAddr,
     start_time: std::time::Instant,
+    mapped_dst_ip: std::net::Ipv4Addr,
 }
 
 impl IcmpNatEntry {
-    fn new(src_peer_id: PeerId, my_peer_id: PeerId, src_ip: IpAddr) -> Result<Self, Error> {
+    fn new(
+        src_peer_id: PeerId,
+        my_peer_id: PeerId,
+        src_ip: IpAddr,
+        mapped_dst_ip: Ipv4Addr,
+    ) -> Result<Self, Error> {
         Ok(Self {
             src_peer_id,
             my_peer_id,
             src_ip,
             start_time: std::time::Instant::now(),
+            mapped_dst_ip,
         })
     }
 }
@@ -114,7 +121,7 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
         }
 
         let key = IcmpNatKey {
-            dst_ip: peer_ip,
+            real_dst_ip: peer_ip,
             icmp_id: icmp_packet.get_identifier(),
             icmp_seq: icmp_packet.get_sequence_number(),
         };
@@ -128,12 +135,11 @@ fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSe
             continue;
         };
 
-        let src_v4 = ipv4_packet.get_source();
         let payload_len = len - ipv4_packet.get_header_length() as usize * 4;
         let id = ipv4_packet.get_identification();
         let _ = compose_ipv4_packet(
             &mut buf[..],
-            &src_v4,
+            &v.mapped_dst_ip,
             &dest_ip,
             IpNextHeaderProtocols::Icmp,
             payload_len,
@@ -361,7 +367,11 @@ impl IcmpProxy {
             return None;
         }
 
-        if !self.cidr_set.contains_v4(ipv4.get_destination())
+        let mut real_dst_ip = ipv4.get_destination();
+
+        if !self
+            .cidr_set
+            .contains_v4(ipv4.get_destination(), &mut real_dst_ip)
             && !is_exit_node
             && !(self.global_ctx.no_tun()
                 && Some(ipv4.get_destination())
@@ -416,7 +426,7 @@ impl IcmpProxy {
         let icmp_seq = icmp_packet.get_sequence_number();
 
         let key = IcmpNatKey {
-            dst_ip: ipv4.get_destination().into(),
+            real_dst_ip: real_dst_ip.into(),
             icmp_id,
             icmp_seq,
         };
@@ -425,6 +435,7 @@ impl IcmpProxy {
             hdr.from_peer_id.into(),
             hdr.to_peer_id.into(),
             ipv4.get_source().into(),
+            ipv4.get_destination(),
         )
         .ok()?;
 
@@ -432,7 +443,7 @@ impl IcmpProxy {
             tracing::info!("icmp nat table entry replaced: {:?}", old);
         }
 
-        if let Err(e) = self.send_icmp_packet(ipv4.get_destination(), &icmp_packet) {
+        if let Err(e) = self.send_icmp_packet(real_dst_ip, &icmp_packet) {
             tracing::error!("send icmp packet failed: {:?}", e);
         }
 

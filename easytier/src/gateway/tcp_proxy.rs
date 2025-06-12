@@ -52,6 +52,7 @@ pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
         global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
         ipv4: &Ipv4Packet,
+        real_dst_ip: &mut Ipv4Addr,
     ) -> bool;
     fn transport_type(&self) -> TcpProxyEntryTransportType;
 }
@@ -99,10 +100,11 @@ impl NatDstConnector for NatDstTcpConnector {
         global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
         ipv4: &Ipv4Packet,
+        real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
         let is_exit_node = hdr.is_exit_node();
 
-        if !cidr_set.contains_v4(ipv4.get_destination())
+        if !cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
             && !is_exit_node
             && !(global_ctx.no_tun()
                 && Some(ipv4.get_destination())
@@ -125,7 +127,8 @@ type NatDstEntryState = TcpProxyEntryState;
 pub struct NatDstEntry {
     id: uuid::Uuid,
     src: SocketAddr,
-    dst: SocketAddr,
+    real_dst: SocketAddr,
+    mapped_dst: SocketAddr,
     start_time: Instant,
     start_time_local: chrono::DateTime<chrono::Local>,
     tasks: Mutex<JoinSet<()>>,
@@ -133,11 +136,12 @@ pub struct NatDstEntry {
 }
 
 impl NatDstEntry {
-    pub fn new(src: SocketAddr, dst: SocketAddr) -> Self {
+    pub fn new(src: SocketAddr, real_dst: SocketAddr, mapped_dst: SocketAddr) -> Self {
         Self {
             id: uuid::Uuid::new_v4(),
             src,
-            dst,
+            real_dst,
+            mapped_dst,
             start_time: Instant::now(),
             start_time_local: chrono::Local::now(),
             tasks: Mutex::new(JoinSet::new()),
@@ -148,7 +152,7 @@ impl NatDstEntry {
     fn into_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
         TcpProxyEntry {
             src: Some(self.src.clone().into()),
-            dst: Some(self.dst.clone().into()),
+            dst: Some(self.real_dst.clone().into()),
             start_time: self.start_time_local.timestamp() as u64,
             state: self.state.load().into(),
             transport_type: transport_type.into(),
@@ -396,7 +400,7 @@ impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
         drop(entry);
         assert_eq!(nat_entry.src, dst_addr);
 
-        let IpAddr::V4(ip) = nat_entry.dst.ip() else {
+        let IpAddr::V4(ip) = nat_entry.mapped_dst.ip() else {
             panic!("v4 nat entry src ip is not v4");
         };
 
@@ -416,7 +420,7 @@ impl<C: NatDstConnector> NicPacketFilter for TcpProxy<C> {
         let dst = ip_packet.get_destination();
 
         let mut tcp_packet = MutableTcpPacket::new(ip_packet.payload_mut()).unwrap();
-        tcp_packet.set_source(nat_entry.dst.port());
+        tcp_packet.set_source(nat_entry.real_dst.port());
 
         Self::update_tcp_packet_checksum(&mut tcp_packet, &ip, &dst);
         drop(tcp_packet);
@@ -644,7 +648,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 tracing::info!(
                     ?socket_addr,
                     "tcp connection accepted for proxy, nat dst: {:?}",
-                    entry.dst
+                    entry.real_dst
                 );
                 assert_eq!(entry.state.load(), NatDstEntryState::SynReceived);
 
@@ -697,14 +701,14 @@ impl<C: NatDstConnector> TcpProxy<C> {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        let nat_dst = if Some(nat_entry.dst.ip())
+        let nat_dst = if Some(nat_entry.real_dst.ip())
             == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
         {
-            format!("127.0.0.1:{}", nat_entry.dst.port())
+            format!("127.0.0.1:{}", nat_entry.real_dst.port())
                 .parse()
                 .unwrap()
         } else {
-            nat_entry.dst
+            nat_entry.real_dst
         };
 
         let _guard = global_ctx.net_ns.guard();
@@ -818,10 +822,15 @@ impl<C: NatDstConnector> TcpProxy<C> {
             return None;
         }
 
-        if !self
-            .connector
-            .check_packet_from_peer(&self.cidr_set, &self.global_ctx, &hdr, &ipv4)
-        {
+        let mut real_dst_ip = ipv4.get_destination();
+
+        if !self.connector.check_packet_from_peer(
+            &self.cidr_set,
+            &self.global_ctx,
+            &hdr,
+            &ipv4,
+            &mut real_dst_ip,
+        ) {
             return None;
         }
 
@@ -839,12 +848,13 @@ impl<C: NatDstConnector> TcpProxy<C> {
         if is_tcp_syn && !is_tcp_ack {
             let dest_ip = ip_packet.get_destination();
             let dest_port = tcp_packet.get_destination();
-            let dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
+            let mapped_dst = SocketAddr::V4(SocketAddrV4::new(dest_ip, dest_port));
+            let real_dst = SocketAddr::V4(SocketAddrV4::new(real_dst_ip, dest_port));
 
             let old_val = self
                 .syn_map
-                .insert(src, Arc::new(NatDstEntry::new(src, dst)));
-            tracing::info!(src = ?src, dst = ?dst, old_entry = ?old_val, "tcp syn received");
+                .insert(src, Arc::new(NatDstEntry::new(src, real_dst, mapped_dst)));
+            tracing::info!(src = ?src, ?real_dst, ?mapped_dst, old_entry = ?old_val, "tcp syn received");
         } else if !self.addr_conn_map.contains_key(&src) && !self.syn_map.contains_key(&src) {
             // if not in syn map and addr conn map, may forwarding n2n packet
             return None;

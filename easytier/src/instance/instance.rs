@@ -70,7 +70,7 @@ impl IpProxy {
     }
 
     async fn start(&self) -> Result<(), Error> {
-        if (self.global_ctx.get_proxy_cidrs().is_empty()
+        if (self.global_ctx.config.get_proxy_cidrs().is_empty()
             || self.started.load(Ordering::Relaxed))
             && !self.global_ctx.enable_exit_node()
             && !self.global_ctx.no_tun()
@@ -80,8 +80,7 @@ impl IpProxy {
 
         // Actually, if this node is enabled as an exit node,
         // we still can use the system stack to forward packets.
-        if self.global_ctx.proxy_forward_by_system()
-          && !self.global_ctx.no_tun() {
+        if self.global_ctx.proxy_forward_by_system() && !self.global_ctx.no_tun() {
             return Ok(());
         }
 
@@ -792,8 +791,9 @@ impl Instance {
 
 #[cfg(test)]
 mod tests {
-    use crate::{instance::instance::InstanceRpcServerHook, proto::rpc_impl::standalone::RpcServerHook};
-
+    use crate::{
+        instance::instance::InstanceRpcServerHook, proto::rpc_impl::standalone::RpcServerHook,
+    };
 
     #[tokio::test]
     async fn test_rpc_portal_whitelist() {
@@ -805,7 +805,7 @@ mod tests {
             expected_result: bool,
         }
 
-        let test_cases:Vec<TestCase> = vec![
+        let test_cases: Vec<TestCase> = vec![
             // Test default whitelist (127.0.0.0/8, ::1/128)
             TestCase {
                 remote_url: "tcp://127.0.0.1:15888".to_string(),
@@ -822,7 +822,6 @@ mod tests {
                 whitelist: None,
                 expected_result: false,
             },
-            
             // Test custom whitelist
             TestCase {
                 remote_url: "tcp://192.168.1.10:15888".to_string(),
@@ -848,46 +847,35 @@ mod tests {
                 ]),
                 expected_result: false,
             },
-            
             // Test empty whitelist (should reject all connections)
             TestCase {
                 remote_url: "tcp://127.0.0.1:15888".to_string(),
                 whitelist: Some(vec![]),
                 expected_result: false,
             },
-            
             // Test broad whitelist (0.0.0.0/0 and ::/0 accept all IP addresses)
             TestCase {
                 remote_url: "tcp://8.8.8.8:15888".to_string(),
-                whitelist: Some(vec![
-                    "0.0.0.0/0".parse().unwrap(),
-                ]),
+                whitelist: Some(vec!["0.0.0.0/0".parse().unwrap()]),
                 expected_result: true,
             },
-            
             // Test edge case: specific IP whitelist
             TestCase {
                 remote_url: "tcp://192.168.1.5:15888".to_string(),
-                whitelist: Some(vec![
-                    "192.168.1.5/32".parse().unwrap(),
-                ]),
+                whitelist: Some(vec!["192.168.1.5/32".parse().unwrap()]),
                 expected_result: true,
             },
             TestCase {
                 remote_url: "tcp://192.168.1.6:15888".to_string(),
-                whitelist: Some(vec![
-                    "192.168.1.5/32".parse().unwrap(),
-                ]),
+                whitelist: Some(vec!["192.168.1.5/32".parse().unwrap()]),
                 expected_result: false,
             },
-            
             // Test invalid URL (this case will fail during URL parsing)
             TestCase {
                 remote_url: "invalid-url".to_string(),
                 whitelist: None,
                 expected_result: false,
             },
-
             // Test URL without IP address (this case will fail during IP parsing)
             TestCase {
                 remote_url: "tcp://localhost:15888".to_string(),
@@ -907,11 +895,22 @@ mod tests {
 
             let result = hook.on_new_client(tunnel_info).await;
             if case.expected_result {
-                assert!(result.is_ok(), "Expected success for remote_url:{},whitelist:{:?},but got: {:?}", case.remote_url, case.whitelist, result);
+                assert!(
+                    result.is_ok(),
+                    "Expected success for remote_url:{},whitelist:{:?},but got: {:?}",
+                    case.remote_url,
+                    case.whitelist,
+                    result
+                );
             } else {
-                assert!(result.is_err(), "Expected failure for remote_url:{},whitelist:{:?},but got: {:?}", case.remote_url, case.whitelist, result);
+                assert!(
+                    result.is_err(),
+                    "Expected failure for remote_url:{},whitelist:{:?},but got: {:?}",
+                    case.remote_url,
+                    case.whitelist,
+                    result
+                );
             }
         }
-        
     }
 }

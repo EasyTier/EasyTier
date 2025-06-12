@@ -537,6 +537,7 @@ impl NetworkConfig {
             cfg.add_proxy_cidr(
                 n.parse()
                     .with_context(|| format!("failed to parse proxy network: {}", n))?,
+                None,
             );
         }
 
