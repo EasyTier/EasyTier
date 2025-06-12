@@ -752,4 +752,392 @@ impl NetworkConfig {
         cfg.set_flags(flags);
         Ok(cfg)
     }
+
+    pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
+        let default_config = TomlConfigLoader::default();
+
+        let mut result = Self::default();
+
+        result.instance_id = Some(config.get_id().to_string());
+        if config.get_hostname() != default_config.get_hostname() {
+            result.hostname = Some(config.get_hostname());
+        }
+
+        result.dhcp = Some(config.get_dhcp());
+
+        let network_identity = config.get_network_identity();
+        result.network_name = Some(network_identity.network_name.clone());
+        result.network_secret = network_identity.network_secret.clone();
+
+        if let Some(ipv4) = config.get_ipv4() {
+            result.virtual_ipv4 = Some(ipv4.address().to_string());
+            result.network_length = Some(ipv4.network_length() as i32);
+        }
+
+        let peers = config.get_peers();
+        match peers.len() {
+            1 => {
+                result.networking_method = Some(NetworkingMethod::PublicServer as i32);
+                result.public_server_url = Some(peers[0].uri.to_string());
+            }
+            0 => {
+                result.networking_method = Some(NetworkingMethod::Standalone as i32);
+            }
+            _ => {
+                result.networking_method = Some(NetworkingMethod::Manual as i32);
+                result.peer_urls = peers.iter().map(|p| p.uri.to_string()).collect();
+            }
+        }
+
+        result.listener_urls = config
+            .get_listeners()
+            .unwrap_or_else(|| vec![])
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+
+        result.proxy_cidrs = config
+            .get_proxy_cidrs()
+            .iter()
+            .map(|c| {
+                if let Some(mapped) = c.mapped_cidr {
+                    format!("{}->{}", c.cidr, mapped)
+                } else {
+                    c.cidr.to_string()
+                }
+            })
+            .collect();
+
+        if let Some(rpc_portal) = config.get_rpc_portal() {
+            result.rpc_port = Some(rpc_portal.port() as i32);
+        }
+
+        if let Some(whitelist) = config.get_rpc_portal_whitelist() {
+            result.rpc_portal_whitelists = whitelist.iter().map(|w| w.to_string()).collect();
+        }
+
+        if let Some(vpn_config) = config.get_vpn_portal_config() {
+            result.enable_vpn_portal = Some(true);
+
+            let cidr = vpn_config.client_cidr;
+            result.vpn_portal_client_network_addr = Some(cidr.first_address().to_string());
+            result.vpn_portal_client_network_len = Some(cidr.network_length() as i32);
+
+            result.vpn_portal_listen_port = Some(vpn_config.wireguard_listen.port() as i32);
+        }
+
+        if let Some(routes) = config.get_routes() {
+            if !routes.is_empty() {
+                result.enable_manual_routes = Some(true);
+                result.routes = routes.iter().map(|r| r.to_string()).collect();
+            }
+        }
+
+        let exit_nodes = config.get_exit_nodes();
+        if !exit_nodes.is_empty() {
+            result.exit_nodes = exit_nodes.iter().map(|n| n.to_string()).collect();
+        }
+
+        if let Some(socks5_portal) = config.get_socks5_portal() {
+            result.enable_socks5 = Some(true);
+            result.socks5_port = socks5_portal.port().map(|p| p as i32);
+        }
+
+        let mapped_listeners = config.get_mapped_listeners();
+        if !mapped_listeners.is_empty() {
+            result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
+        }
+
+        let flags = config.get_flags();
+        result.latency_first = Some(flags.latency_first);
+        result.dev_name = Some(flags.dev_name.clone());
+        result.use_smoltcp = Some(flags.use_smoltcp);
+        result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
+        result.disable_kcp_input = Some(flags.disable_kcp_input);
+        result.disable_p2p = Some(flags.disable_p2p);
+        result.bind_device = Some(flags.bind_device);
+        result.no_tun = Some(flags.no_tun);
+        result.enable_exit_node = Some(flags.enable_exit_node);
+        result.relay_all_peer_rpc = Some(flags.relay_all_peer_rpc);
+        result.multi_thread = Some(flags.multi_thread);
+        result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
+        result.disable_encryption = Some(!flags.enable_encryption);
+        result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
+        result.enable_magic_dns = Some(flags.accept_dns);
+        result.mtu = Some(flags.mtu as i32);
+        result.enable_private_mode = Some(flags.private_mode);
+
+        if !flags.relay_network_whitelist.is_empty() && flags.relay_network_whitelist != "*" {
+            result.enable_relay_network_whitelist = Some(true);
+            result.relay_network_whitelist = flags
+                .relay_network_whitelist
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+        }
+
+        Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::common::config::ConfigLoader;
+    use rand::Rng;
+    use std::net::Ipv4Addr;
+
+    fn gen_default_config() -> crate::common::config::TomlConfigLoader {
+        let config = crate::common::config::TomlConfigLoader::default();
+        config.set_id(uuid::Uuid::new_v4());
+        config.set_dhcp(false);
+        config.set_inst_name("default".to_string());
+        config.set_listeners(vec![]);
+        config.set_rpc_portal(std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
+        config
+    }
+
+    #[test]
+    fn test_network_config_conversion_basic() -> Result<(), anyhow::Error> {
+        let config = gen_default_config();
+
+        let network_config = super::NetworkConfig::new_from_config(&config)?;
+
+        let generated_config = network_config.gen_config()?;
+
+        let config_str = config.dump();
+        let generated_config_str = generated_config.dump();
+
+        assert_eq!(
+                config_str, generated_config_str,
+                "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
+                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_network_config_conversion_random() -> Result<(), anyhow::Error> {
+        let mut rng = rand::thread_rng();
+
+        for _ in 0..100 {
+            let config = gen_default_config();
+
+            config.set_id(uuid::Uuid::new_v4());
+
+            config.set_dhcp(rng.gen_bool(0.5));
+
+            if rng.gen_bool(0.7) {
+                let hostname = format!("host-{}", rng.gen::<u16>());
+                config.set_hostname(Some(hostname));
+            }
+
+            config.set_network_identity(crate::common::config::NetworkIdentity::new(
+                format!("network-{}", rng.gen::<u16>()),
+                format!("secret-{}", rng.gen::<u64>()),
+            ));
+            config.set_inst_name(config.get_network_identity().network_name.clone());
+
+            if !config.get_dhcp() {
+                let addr = Ipv4Addr::new(
+                    rng.gen_range(1..254),
+                    rng.gen_range(0..255),
+                    rng.gen_range(0..255),
+                    rng.gen_range(1..254),
+                );
+                let prefix_len = rng.gen_range(1..31);
+                let ipv4 = format!("{}/{}", addr, prefix_len).parse().unwrap();
+                config.set_ipv4(Some(ipv4));
+            }
+
+            let peer_count = rng.gen_range(0..3);
+            let mut peers = Vec::new();
+            for _ in 0..peer_count {
+                let port = rng.gen_range(10000..60000);
+                let protocol = if rng.gen_bool(0.5) { "tcp" } else { "udp" };
+                let uri = format!("{}://127.0.0.1:{}", protocol, port)
+                    .parse()
+                    .unwrap();
+                peers.push(crate::common::config::PeerConfig { uri });
+            }
+            config.set_peers(peers);
+
+            if rng.gen_bool(0.7) {
+                let listener_count = rng.gen_range(0..3);
+                let mut listeners = Vec::new();
+                for _ in 0..listener_count {
+                    let port = rng.gen_range(10000..60000);
+                    let protocol = if rng.gen_bool(0.5) { "tcp" } else { "udp" };
+                    listeners.push(format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap());
+                }
+                config.set_listeners(listeners);
+            }
+
+            if rng.gen_bool(0.6) {
+                let proxy_count = rng.gen_range(0..3);
+                for _ in 0..proxy_count {
+                    let network = format!(
+                        "{}.{}.{}.0/{}",
+                        rng.gen_range(1..254),
+                        rng.gen_range(0..255),
+                        rng.gen_range(0..255),
+                        rng.gen_range(24..30)
+                    )
+                    .parse::<cidr::Ipv4Cidr>()
+                    .unwrap();
+
+                    let mapped_network = if rng.gen_bool(0.5) {
+                        Some(
+                            format!(
+                                "{}.{}.{}.0/{}",
+                                rng.gen_range(1..254),
+                                rng.gen_range(0..255),
+                                rng.gen_range(0..255),
+                                network.network_length()
+                            )
+                            .parse::<cidr::Ipv4Cidr>()
+                            .unwrap(),
+                        )
+                    } else {
+                        None
+                    };
+                    config.add_proxy_cidr(network, mapped_network);
+                }
+            }
+
+            if rng.gen_bool(0.8) {
+                let port = rng.gen_range(0..65535);
+                config.set_rpc_portal(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
+
+                if rng.gen_bool(0.6) {
+                    let whitelist_count = rng.gen_range(1..3);
+                    let mut whitelist = Vec::new();
+                    for _ in 0..whitelist_count {
+                        let ip = Ipv4Addr::new(
+                            rng.gen_range(1..254),
+                            rng.gen_range(0..255),
+                            rng.gen_range(0..255),
+                            rng.gen_range(0..255),
+                        );
+                        let cidr = format!("{}/32", ip);
+                        whitelist.push(cidr.parse().unwrap());
+                    }
+                    config.set_rpc_portal_whitelist(Some(whitelist));
+                }
+            }
+
+            if rng.gen_bool(0.5) {
+                let vpn_network = format!(
+                    "{}.{}.{}.0/{}",
+                    rng.gen_range(10..173),
+                    rng.gen_range(0..255),
+                    rng.gen_range(0..255),
+                    rng.gen_range(24..30)
+                );
+                let vpn_port = rng.gen_range(10000..60000);
+                config.set_vpn_portal_config(crate::common::config::VpnPortalConfig {
+                    client_cidr: vpn_network.parse().unwrap(),
+                    wireguard_listen: format!("0.0.0.0:{}", vpn_port).parse().unwrap(),
+                });
+            }
+
+            if rng.gen_bool(0.6) {
+                let route_count = rng.gen_range(1..3);
+                let mut routes = Vec::new();
+                for _ in 0..route_count {
+                    let route = format!(
+                        "{}.{}.{}.0/{}",
+                        rng.gen_range(1..254),
+                        rng.gen_range(0..255),
+                        rng.gen_range(0..255),
+                        rng.gen_range(24..30)
+                    );
+                    routes.push(route.parse().unwrap());
+                }
+                config.set_routes(Some(routes));
+            }
+
+            if rng.gen_bool(0.4) {
+                let node_count = rng.gen_range(1..3);
+                let mut nodes = Vec::new();
+                for _ in 0..node_count {
+                    let ip = Ipv4Addr::new(
+                        rng.gen_range(1..254),
+                        rng.gen_range(0..255),
+                        rng.gen_range(0..255),
+                        rng.gen_range(1..254),
+                    );
+                    nodes.push(ip);
+                }
+                config.set_exit_nodes(nodes);
+            }
+
+            if rng.gen_bool(0.5) {
+                let socks5_port = rng.gen_range(10000..60000);
+                config.set_socks5_portal(Some(
+                    format!("socks5://0.0.0.0:{}", socks5_port).parse().unwrap(),
+                ));
+            }
+
+            if rng.gen_bool(0.4) {
+                let count = rng.gen_range(1..3);
+                let mut mapped_listeners = Vec::new();
+                for _ in 0..count {
+                    let port = rng.gen_range(10000..60000);
+                    mapped_listeners.push(format!("tcp://0.0.0.0:{}", port).parse().unwrap());
+                }
+                config.set_mapped_listeners(Some(mapped_listeners));
+            }
+
+            if rng.gen_bool(0.9) {
+                let mut flags = crate::common::config::gen_default_flags();
+                flags.latency_first = rng.gen_bool(0.5);
+                flags.dev_name = format!("etun{}", rng.gen_range(0..10));
+                flags.use_smoltcp = rng.gen_bool(0.3);
+                flags.enable_kcp_proxy = rng.gen_bool(0.5);
+                flags.disable_kcp_input = rng.gen_bool(0.3);
+                flags.disable_p2p = rng.gen_bool(0.2);
+                flags.bind_device = rng.gen_bool(0.3);
+                flags.no_tun = rng.gen_bool(0.1);
+                flags.enable_exit_node = rng.gen_bool(0.4);
+                flags.relay_all_peer_rpc = rng.gen_bool(0.5);
+                flags.multi_thread = rng.gen_bool(0.7);
+                flags.proxy_forward_by_system = rng.gen_bool(0.3);
+                flags.enable_encryption = rng.gen_bool(0.8);
+                flags.disable_udp_hole_punching = rng.gen_bool(0.2);
+                flags.accept_dns = rng.gen_bool(0.6);
+                flags.mtu = rng.gen_range(1200..1500);
+                flags.private_mode = rng.gen_bool(0.3);
+
+                if rng.gen_bool(0.4) {
+                    flags.relay_network_whitelist = (0..rng.gen_range(1..3))
+                        .map(|_| {
+                            format!(
+                                "{}.{}.0.0/16",
+                                rng.gen_range(10..192),
+                                rng.gen_range(0..255)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                }
+
+                config.set_flags(flags);
+            }
+
+            let network_config = super::NetworkConfig::new_from_config(&config)?;
+            let generated_config = network_config.gen_config()?;
+            generated_config.set_peers(generated_config.get_peers()); // Ensure peers field is not None
+
+            let config_str = config.dump();
+            let generated_config_str = generated_config.dump();
+
+            assert_eq!(
+                config_str, generated_config_str,
+                "Generated config does not match original config:\nOriginal:\n{}\n\nGenerated:\n{}\nNetwork Config: {}\n",
+                config_str, generated_config_str, serde_json::to_string(&network_config).unwrap()
+            );
+        }
+
+        Ok(())
+    }
 }
