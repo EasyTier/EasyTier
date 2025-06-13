@@ -3,10 +3,12 @@
 
 use std::collections::BTreeMap;
 
-use dashmap::DashMap;
 use easytier::{
-    common::config::{ConfigLoader, FileLoggerConfig, TomlConfigLoader},
-    launcher::{NetworkConfig, NetworkInstance, NetworkInstanceRunningInfo},
+    common::config::{
+        ConfigLoader, FileLoggerConfig, LoggingConfigBuilder,
+    },
+    launcher::{ConfigSource, NetworkConfig, NetworkInstanceRunningInfo},
+    instance_manager::NetworkInstanceManager,
     utils::{self, NewFilterSender},
 };
 
@@ -17,8 +19,8 @@ pub const AUTOSTART_ARG: &str = "--autostart";
 #[cfg(not(target_os = "android"))]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
-    once_cell::sync::Lazy::new(DashMap::new);
+static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
+    once_cell::sync::Lazy::new(NetworkInstanceManager::new);
 
 static mut LOGGER_LEVEL_SENDER: once_cell::sync::Lazy<Option<NewFilterSender>> =
     once_cell::sync::Lazy::new(Default::default);
@@ -44,41 +46,39 @@ fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
 
 #[tauri::command]
 fn run_network_instance(cfg: NetworkConfig) -> Result<(), String> {
-    if INSTANCE_MAP.contains_key(cfg.instance_id()) {
-        return Err("instance already exists".to_string());
-    }
     let instance_id = cfg.instance_id().to_string();
-
     let cfg = cfg.gen_config().map_err(|e| e.to_string())?;
-    let mut instance = NetworkInstance::new(cfg);
-    instance.start().map_err(|e| e.to_string())?;
-
+    INSTANCE_MANAGER
+        .run_network_instance(cfg, ConfigSource::GUI)
+        .map_err(|e| e.to_string())?;
     println!("instance {} started", instance_id);
-    INSTANCE_MAP.insert(instance_id, instance);
     Ok(())
 }
 
 #[tauri::command]
 fn retain_network_instance(instance_ids: Vec<String>) -> Result<(), String> {
-    let _ = INSTANCE_MAP.retain(|k, _| instance_ids.contains(k));
-    println!(
-        "instance {:?} retained",
-        INSTANCE_MAP
-            .iter()
-            .map(|item| item.key().clone())
-            .collect::<Vec<_>>()
-    );
+    let instance_ids = instance_ids
+        .into_iter()
+        .filter_map(|id| uuid::Uuid::parse_str(&id).ok())
+        .collect();
+    let retained = INSTANCE_MANAGER
+        .retain_network_instance(instance_ids)
+        .map_err(|e| e.to_string())?;
+    println!("instance {:?} retained", retained);
     Ok(())
 }
 
 #[tauri::command]
 fn collect_network_infos() -> Result<BTreeMap<String, NetworkInstanceRunningInfo>, String> {
+    let infos = INSTANCE_MANAGER
+        .collect_network_infos()
+        .map_err(|e| e.to_string())?;
+
     let mut ret = BTreeMap::new();
-    for instance in INSTANCE_MAP.iter() {
-        if let Some(info) = instance.get_running_info() {
-            ret.insert(instance.key().clone(), info);
-        }
+    for (uuid, info) in infos {
+        ret.insert(uuid.to_string(), info);
     }
+
     Ok(ret)
 }
 
@@ -97,10 +97,10 @@ fn set_logging_level(level: String) -> Result<(), String> {
 
 #[tauri::command]
 fn set_tun_fd(instance_id: String, fd: i32) -> Result<(), String> {
-    let mut instance = INSTANCE_MAP
-        .get_mut(&instance_id)
-        .ok_or("instance not found")?;
-    instance.set_tun_fd(fd);
+    let uuid = uuid::Uuid::parse_str(&instance_id).map_err(|e| e.to_string())?;
+    INSTANCE_MANAGER
+        .set_tun_fd(&uuid, fd)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -185,13 +185,15 @@ pub fn run() {
             let Ok(log_dir) = app.path().app_log_dir() else {
                 return Ok(());
             };
-            let config = TomlConfigLoader::default();
-            config.set_file_logger_config(FileLoggerConfig {
-                dir: Some(log_dir.to_string_lossy().to_string()),
-                level: None,
-                file: None,
-            });
-            let Ok(Some(logger_reinit)) = utils::init_logger(config, true) else {
+            let config = LoggingConfigBuilder::default()
+                .file_logger(FileLoggerConfig {
+                    dir: Some(log_dir.to_string_lossy().to_string()),
+                    level: None,
+                    file: None,
+                })
+                .build()
+                .map_err(|e| e.to_string())?;
+            let Ok(Some(logger_reinit)) = utils::init_logger(&config, true) else {
                 return Ok(());
             };
             #[allow(static_mut_refs)]

@@ -53,6 +53,7 @@ tauri-plugin-positioner = { version = "2.0", features = ["tray-icon"] }
 tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
 tauri-plugin-os = "2.0"
 tauri-plugin-autostart = "2.0"
+uuid = "1.17.0"
 
 
 [features]

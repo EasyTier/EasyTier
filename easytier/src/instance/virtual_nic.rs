@@ -658,6 +658,15 @@ impl NicCtx {
                         let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
+                    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+                    {
+                        // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
+                        let _ = nic
+                            .ifcfg
+                            .remove_ipv4_route(&nic.ifname(), "10.0.0.0".parse().unwrap(), 24)
+                            .await;
+                    }
+
                     self.global_ctx
                         .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));
                     ret

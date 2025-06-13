@@ -839,6 +839,74 @@ pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_add
     tokio::join!(task).0.unwrap();
 }
 
+#[tokio::test]
+#[serial_test::serial]
+pub async fn foreign_network_functional_cluster() {
+    crate::set_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, 1);
+    prepare_linux_namespaces();
+
+    let center_node_config1 = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
+    center_node_config1
+        .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    let mut center_inst1 = Instance::new(center_node_config1);
+
+    let center_node_config2 = get_inst_config("inst2", Some("net_b"), "10.144.144.2");
+    center_node_config2
+        .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
+    let mut center_inst2 = Instance::new(center_node_config2);
+
+    let inst1_config = get_inst_config("inst1", Some("net_c"), "10.144.145.1");
+    inst1_config.set_listeners(vec![]);
+    let mut inst1 = Instance::new(inst1_config);
+
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_d"), "10.144.145.2"));
+
+    center_inst1.run().await.unwrap();
+    center_inst2.run().await.unwrap();
+    inst1.run().await.unwrap();
+    inst2.run().await.unwrap();
+
+    center_inst1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst2.id()).parse().unwrap(),
+        ));
+
+    inst1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst1.id()).parse().unwrap(),
+        ));
+
+    inst2
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst2.id()).parse().unwrap(),
+        ));
+
+    let peer_map_inst1 = inst1.get_peer_manager();
+    println!("inst1 peer map: {:?}", peer_map_inst1.list_routes().await);
+
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.145.2", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // connect to two centers, ping should work
+    inst1
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", center_inst2.id()).parse().unwrap(),
+        ));
+    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    wait_for_condition(
+        || async { ping_test("net_c", "10.144.145.2", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
