@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Weak},
+};
 
 use anyhow::Context;
 use dashmap::{DashMap, DashSet};
@@ -12,7 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    common::PeerId,
+    common::{join_joinset_background, PeerId},
     peers::peer_conn::PeerConnId,
     proto::{
         cli::{
@@ -53,7 +56,7 @@ struct ReconnResult {
 struct ConnectorManagerData {
     connectors: ConnectorMap,
     reconnecting: DashSet<String>,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
     alive_conn_urls: Arc<DashSet<String>>,
     // user removed connector urls
     removed_conn_urls: Arc<DashSet<String>>,
@@ -78,7 +81,7 @@ impl ManualConnectorManager {
             data: Arc::new(ConnectorManagerData {
                 connectors,
                 reconnecting: DashSet::new(),
-                peer_manager,
+                peer_manager: Arc::downgrade(&peer_manager),
                 alive_conn_urls: Arc::new(DashSet::new()),
                 removed_conn_urls: Arc::new(DashSet::new()),
                 net_ns: global_ctx.net_ns.clone(),
@@ -190,20 +193,18 @@ impl ManualConnectorManager {
                     tracing::warn!("event_recv lagged: {}, rebuild alive conn list", n);
                     event_recv = event_recv.resubscribe();
                     data.alive_conn_urls.clear();
-                    for x in data
-                        .peer_manager
-                        .get_peer_map()
-                        .get_alive_conns()
-                        .iter()
-                        .map(|x| {
-                            x.tunnel
-                                .clone()
-                                .unwrap_or_default()
-                                .remote_addr
-                                .unwrap_or_default()
-                                .to_string()
-                        })
-                    {
+                    let Some(pm) = data.peer_manager.upgrade() else {
+                        tracing::warn!("peer manager is gone, exit");
+                        break;
+                    };
+                    for x in pm.get_peer_map().get_alive_conns().iter().map(|x| {
+                        x.tunnel
+                            .clone()
+                            .unwrap_or_default()
+                            .remote_addr
+                            .unwrap_or_default()
+                            .to_string()
+                    }) {
                         data.alive_conn_urls.insert(x);
                     }
                     continue;
@@ -222,6 +223,8 @@ impl ManualConnectorManager {
             use_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS),
         ));
         let (reconn_result_send, mut reconn_result_recv) = mpsc::channel(100);
+        let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone(), "connector_reconnect_tasks".to_string());
 
         loop {
             tokio::select! {
@@ -237,7 +240,7 @@ impl ManualConnectorManager {
                         let insert_succ = data.reconnecting.insert(dead_url.clone());
                         assert!(insert_succ);
 
-                        tokio::spawn(async move {
+                        tasks.lock().unwrap().spawn(async move {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone(), connector.clone()).await;
                             sender.send(reconn_ret).await.unwrap();
 
@@ -340,8 +343,13 @@ impl ManualConnectorManager {
             connector.lock().await.remote_url().clone(),
         ));
         tracing::info!("reconnect try connect... conn: {:?}", connector);
-        let (peer_id, conn_id) = data
-            .peer_manager
+        let Some(pm) = data.peer_manager.upgrade() else {
+            return Err(Error::AnyhowError(anyhow::anyhow!(
+                "peer manager is gone, cannot reconnect"
+            )));
+        };
+
+        let (peer_id, conn_id) = pm
             .try_direct_connect(connector.lock().await.as_mut())
             .await?;
         tracing::info!("reconnect succ: {} {} {}", peer_id, conn_id, dead_url);

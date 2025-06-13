@@ -541,7 +541,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     }
                 }
                 tracing::error!("smoltcp stack sink exited");
-                panic!("smoltcp stack sink exited");
             });
 
             let peer_mgr = self.peer_manager.clone();
@@ -563,7 +562,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     }
                 }
                 tracing::error!("smoltcp stack stream exited");
-                panic!("smoltcp stack stream exited");
             });
 
             let interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
@@ -611,7 +609,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let mut tcp_listener = self.get_proxy_listener().await?;
 
         let global_ctx = self.global_ctx.clone();
-        let tasks = self.tasks.clone();
+        let tasks = Arc::downgrade(&self.tasks);
         let syn_map = self.syn_map.clone();
         let conn_map = self.conn_map.clone();
         let addr_conn_map = self.addr_conn_map.clone();
@@ -661,6 +659,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 let _ = addr_conn_map.insert(entry_clone.src, entry_clone.clone());
                 let old_nat_val = conn_map.insert(entry_clone.id, entry_clone.clone());
                 assert!(old_nat_val.is_none());
+
+                let Some(tasks) = tasks.upgrade() else {
+                    tracing::error!("tcp proxy tasks is dropped, exit accept loop");
+                    break;
+                };
 
                 tasks.lock().unwrap().spawn(Self::connect_to_nat_dst(
                     connector.clone(),

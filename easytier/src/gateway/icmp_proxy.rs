@@ -1,7 +1,7 @@
 use std::{
     mem::MaybeUninit,
     net::{IpAddr, Ipv4Addr, SocketAddrV4},
-    sync::Arc,
+    sync::{Arc, Weak},
     thread,
     time::Duration,
 };
@@ -72,10 +72,10 @@ type NewPacketReceiver = tokio::sync::mpsc::UnboundedReceiver<IcmpNatKey>;
 #[derive(Debug)]
 pub struct IcmpProxy {
     global_ctx: ArcGlobalCtx,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
 
     cidr_set: CidrSet,
-    socket: std::sync::Mutex<Option<socket2::Socket>>,
+    socket: std::sync::Mutex<Option<Arc<socket2::Socket>>>,
 
     nat_table: IcmpNatTable,
 
@@ -85,7 +85,10 @@ pub struct IcmpProxy {
     icmp_sender: Arc<std::sync::Mutex<Option<UnboundedSender<ZCPacket>>>>,
 }
 
-fn socket_recv(socket: &Socket, buf: &mut [MaybeUninit<u8>]) -> Result<(usize, IpAddr), Error> {
+fn socket_recv(
+    socket: &Socket,
+    buf: &mut [MaybeUninit<u8>],
+) -> Result<(usize, IpAddr), std::io::Error> {
     let (size, addr) = socket.recv_from(buf)?;
     let addr = match addr.as_socket() {
         None => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -94,14 +97,31 @@ fn socket_recv(socket: &Socket, buf: &mut [MaybeUninit<u8>]) -> Result<(usize, I
     Ok((size, addr))
 }
 
-fn socket_recv_loop(socket: Socket, nat_table: IcmpNatTable, sender: UnboundedSender<ZCPacket>) {
+fn socket_recv_loop(
+    socket: Arc<Socket>,
+    nat_table: IcmpNatTable,
+    sender: UnboundedSender<ZCPacket>,
+) {
     let mut buf = [0u8; 8192];
     let data: &mut [MaybeUninit<u8>] = unsafe { std::mem::transmute(&mut buf[..]) };
 
     loop {
-        let Ok((len, peer_ip)) = socket_recv(&socket, data) else {
-            continue;
+        let (len, peer_ip) = match socket_recv(&socket, data) {
+            Ok((len, peer_ip)) => (len, peer_ip),
+            Err(e) => {
+                tracing::error!("recv icmp packet failed: {:?}", e);
+                if sender.is_closed() {
+                    break;
+                } else {
+                    continue;
+                }
+            }
         };
+
+        if len <= 0 {
+            tracing::error!("recv empty packet, len: {}", len);
+            return;
+        }
 
         if !peer_ip.is_ipv4() {
             continue;
@@ -182,7 +202,7 @@ impl IcmpProxy {
         let cidr_set = CidrSet::new(global_ctx.clone());
         let ret = Self {
             global_ctx,
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
             cidr_set,
             socket: std::sync::Mutex::new(None),
 
@@ -214,7 +234,7 @@ impl IcmpProxy {
         let socket = self.create_raw_socket();
         match socket {
             Ok(socket) => {
-                self.socket.lock().unwrap().replace(socket);
+                self.socket.lock().unwrap().replace(Arc::new(socket));
             }
             Err(e) => {
                 tracing::warn!("create icmp socket failed: {:?}", e);
@@ -247,7 +267,7 @@ impl IcmpProxy {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         self.icmp_sender.lock().unwrap().replace(sender.clone());
         if let Some(socket) = self.socket.lock().unwrap().as_ref() {
-            let socket = socket.try_clone()?;
+            let socket = socket.clone();
             let nat_table = self.nat_table.clone();
             thread::spawn(|| {
                 socket_recv_loop(socket, nat_table, sender);
@@ -260,7 +280,11 @@ impl IcmpProxy {
                 while let Some(msg) = receiver.recv().await {
                     let hdr = msg.peer_manager_header().unwrap();
                     let to_peer_id = hdr.to_peer_id.into();
-                    let ret = peer_manager.send_msg(msg, to_peer_id).await;
+                    let Some(pm) = peer_manager.upgrade() else {
+                        tracing::warn!("peer manager is gone, icmp proxy send loop exit");
+                        return;
+                    };
+                    let ret = pm.send_msg(msg, to_peer_id).await;
                     if ret.is_err() {
                         tracing::error!("send icmp packet to peer failed: {:?}", ret);
                     }
@@ -277,9 +301,12 @@ impl IcmpProxy {
             }
         });
 
-        self.peer_manager
-            .add_packet_process_pipeline(Box::new(self.clone()))
-            .await;
+        let Some(pm) = self.peer_manager.upgrade() else {
+            tracing::warn!("peer manager is gone, icmp proxy init failed");
+            return Err(anyhow::anyhow!("peer manager is gone").into());
+        };
+
+        pm.add_packet_process_pipeline(Box::new(self.clone())).await;
         Ok(())
     }
 
@@ -448,5 +475,19 @@ impl IcmpProxy {
         }
 
         Some(())
+    }
+}
+
+impl Drop for IcmpProxy {
+    fn drop(&mut self) {
+        tracing::info!(
+            "dropping icmp proxy, {:?}",
+            self.socket.lock().unwrap().as_ref()
+        );
+        self.socket.lock().unwrap().as_ref().and_then(|s| {
+            tracing::info!("shutting down icmp socket");
+            let _ = s.shutdown(std::net::Shutdown::Both);
+            Some(())
+        });
     }
 }

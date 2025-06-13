@@ -135,8 +135,6 @@ impl EasyTierLauncher {
         fetch_node_info: bool,
     ) -> Result<(), anyhow::Error> {
         let mut instance = Instance::new(cfg);
-        let peer_mgr = instance.get_peer_manager();
-
         let mut tasks = JoinSet::new();
 
         // Subscribe to global context events
@@ -164,7 +162,7 @@ impl EasyTierLauncher {
         if fetch_node_info {
             let data_c = data.clone();
             let global_ctx_c = instance.get_global_ctx();
-            let peer_mgr_c = peer_mgr.clone();
+            let peer_mgr_c = instance.get_peer_manager().clone();
             let vpn_portal = instance.get_vpn_portal_inst();
             tasks.spawn(async move {
                 loop {
@@ -209,6 +207,9 @@ impl EasyTierLauncher {
 
         tasks.abort_all();
         drop(tasks);
+
+        instance.clear_resources().await;
+        drop(instance);
 
         Ok(())
     }

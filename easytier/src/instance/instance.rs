@@ -7,13 +7,13 @@ use std::sync::{Arc, Weak};
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 
-use tokio::task::JoinHandle;
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
+use crate::common::scoped_task::ScopedTask;
 use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
@@ -118,7 +118,7 @@ impl NicCtx {
 }
 
 struct MagicDnsContainer {
-    dns_runner_task: JoinHandle<()>,
+    dns_runner_task: ScopedTask<()>,
     dns_runner_cancel_token: CancellationToken,
 }
 
@@ -139,7 +139,7 @@ impl NicCtxContainer {
             Self {
                 nic_ctx: Some(Box::new(nic_ctx)),
                 magic_dns: Some(MagicDnsContainer {
-                    dns_runner_task: task,
+                    dns_runner_task: task.into(),
                     dns_runner_cancel_token: token,
                 }),
             }
@@ -399,7 +399,7 @@ impl Instance {
     // Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed.
     fn check_dhcp_ip_conflict(&self) {
         use rand::Rng;
-        let peer_manager_c = self.peer_manager.clone();
+        let peer_manager_c = Arc::downgrade(&self.peer_manager.clone());
         let global_ctx_c = self.get_global_ctx();
         let nic_ctx = self.nic_ctx.clone();
         let _peer_packet_receiver = self.peer_packet_receiver.clone();
@@ -409,6 +409,11 @@ impl Instance {
             let mut next_sleep_time = 0;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(next_sleep_time)).await;
+
+                let Some(peer_manager_c) = peer_manager_c.upgrade() else {
+                    tracing::warn!("peer manager is dropped, stop dhcp check.");
+                    return;
+                };
 
                 // do not allocate ip if no peer connected
                 let routes = peer_manager_c.list_routes().await;
@@ -786,6 +791,49 @@ impl Instance {
         };
         Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, magic_dns_runner).await;
         Ok(())
+    }
+
+    pub async fn clear_resources(&mut self) {
+        self.peer_manager.clear_resources().await;
+        let _ = self.nic_ctx.lock().await.take();
+        if let Some(rpc_server) = self.rpc_server.take() {
+            rpc_server.registry().unregister_all();
+        };
+    }
+}
+
+impl Drop for Instance {
+    fn drop(&mut self) {
+        let my_peer_id = self.peer_manager.my_peer_id();
+        let pm = Arc::downgrade(&self.peer_manager);
+        let nic_ctx = self.nic_ctx.clone();
+        if let Some(rpc_server) = self.rpc_server.take() {
+            rpc_server.registry().unregister_all();
+        };
+        tokio::spawn(async move {
+            nic_ctx.lock().await.take();
+            if let Some(pm) = pm.upgrade() {
+                pm.clear_resources().await;
+            };
+
+            let now = std::time::Instant::now();
+            while now.elapsed().as_secs() < 1 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                if pm.strong_count() == 0 {
+                    tracing::info!(
+                        "Instance for peer {} dropped, all resources cleared.",
+                        my_peer_id
+                    );
+                    return;
+                }
+            }
+
+            debug_assert!(
+                false,
+                "Instance for peer {} dropped, but resources not cleared in 1 seconds.",
+                my_peer_id
+            );
+        });
     }
 }
 

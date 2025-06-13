@@ -188,6 +188,24 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     vec![inst1, inst2, inst3]
 }
 
+pub async fn drop_insts(insts: Vec<Instance>) {
+    let mut set = JoinSet::new();
+    for mut inst in insts {
+        set.spawn(async move {
+            inst.clear_resources().await;
+            let pm = Arc::downgrade(&inst.get_peer_manager());
+            drop(inst);
+            let now = std::time::Instant::now();
+            while now.elapsed().as_secs() < 5 && pm.strong_count() > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+
+            debug_assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
+        });
+    }
+    while let Some(_) = set.join_next().await {}
+}
+
 async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
@@ -233,6 +251,8 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
         Duration::from_secs(5000),
     )
     .await;
+
+    drop_insts(insts).await;
 }
 
 async fn subnet_proxy_test_udp(target_ip: &str) {
@@ -372,8 +392,8 @@ async fn subnet_proxy_test_icmp(target_ip: &str) {
 }
 
 #[rstest::rstest]
-#[tokio::test]
 #[serial_test::serial]
+#[tokio::test]
 pub async fn subnet_proxy_three_node_test(
     #[values("tcp", "udp", "wg")] proto: &str,
     #[values(true, false)] no_tun: bool,
@@ -444,6 +464,8 @@ pub async fn subnet_proxy_three_node_test(
     subnet_proxy_test_icmp(target_ip).await;
     subnet_proxy_test_tcp(target_ip).await;
     subnet_proxy_test_udp(target_ip).await;
+
+    drop_insts(insts).await;
 }
 
 #[rstest::rstest]
@@ -485,6 +507,8 @@ pub async fn data_compress(
         Duration::from_secs(5),
     )
     .await;
+
+    drop_insts(_insts).await;
 }
 
 #[cfg(feature = "wireguard")]
@@ -598,6 +622,8 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
 
             set_link_status("net_d", true);
         }
+
+        drop_insts(insts).await;
     });
 
     let (ret,) = tokio::join!(task);
@@ -651,6 +677,8 @@ pub async fn udp_broadcast_test() {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     assert_eq!(counter.load(std::sync::atomic::Ordering::Relaxed), 2);
+
+    drop_insts(_insts).await;
 }
 
 #[tokio::test]
@@ -699,6 +727,8 @@ pub async fn foreign_network_forward_nic_data() {
         Duration::from_secs(5),
     )
     .await;
+
+    drop_insts(vec![center_inst, inst1, inst2]).await;
 }
 
 use std::{net::SocketAddr, str::FromStr};
@@ -799,6 +829,8 @@ pub async fn wireguard_vpn_portal() {
         Duration::from_secs(5),
     )
     .await;
+
+    drop_insts(insts).await;
 }
 
 #[cfg(feature = "wireguard")]
@@ -858,6 +890,8 @@ pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_add
     drop(conn);
 
     tokio::join!(task).0.unwrap();
+
+    drop_insts(_insts).await;
 }
 
 #[tokio::test]
@@ -907,6 +941,7 @@ pub async fn foreign_network_functional_cluster() {
 
     let peer_map_inst1 = inst1.get_peer_manager();
     println!("inst1 peer map: {:?}", peer_map_inst1.list_routes().await);
+    drop(peer_map_inst1);
 
     wait_for_condition(
         || async { ping_test("net_c", "10.144.145.2", None).await },
@@ -926,6 +961,8 @@ pub async fn foreign_network_functional_cluster() {
         Duration::from_secs(5),
     )
     .await;
+
+    drop_insts(vec![center_inst1, center_inst2, inst1, inst2]).await;
 }
 
 #[rstest::rstest]
@@ -995,6 +1032,9 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
         Duration::from_secs(5),
     )
     .await;
+
+    drop(peer_map);
+    drop_insts(vec![center_inst, inst1, inst2]).await;
 }
 
 #[rstest::rstest]
@@ -1114,4 +1154,6 @@ pub async fn port_forward_test(
         buf,
     )
     .await;
+
+    drop_insts(_insts).await;
 }

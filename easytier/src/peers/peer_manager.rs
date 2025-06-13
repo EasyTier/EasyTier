@@ -1140,6 +1140,15 @@ impl PeerManager {
             .map(|x| x.clone())
             .unwrap_or_default()
     }
+
+    pub async fn clear_resources(&self) {
+        let mut peer_pipeline = self.peer_packet_process_pipeline.write().await;
+        peer_pipeline.clear();
+        let mut nic_pipeline = self.nic_packet_process_pipeline.write().await;
+        nic_pipeline.clear();
+
+        self.peer_rpc_mgr.rpc_server().registry().unregister_all();
+    }
 }
 
 #[cfg(test)]

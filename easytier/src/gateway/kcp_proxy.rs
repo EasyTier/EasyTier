@@ -107,7 +107,7 @@ async fn handle_kcp_output(
 #[derive(Debug, Clone)]
 pub struct NatDstKcpConnector {
     pub(crate) kcp_endpoint: Arc<KcpEndpoint>,
-    pub(crate) peer_mgr: Arc<PeerManager>,
+    pub(crate) peer_mgr: Weak<PeerManager>,
 }
 
 #[async_trait::async_trait]
@@ -120,10 +120,14 @@ impl NatDstConnector for NatDstKcpConnector {
             dst: Some(nat_dst.into()),
         };
 
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager is not available").into());
+        };
+
         let (dst_peers, _) = match nat_dst {
             SocketAddr::V4(addr) => {
                 let ip = addr.ip();
-                self.peer_mgr.get_msg_dst_peer(&ip).await
+                peer_mgr.get_msg_dst_peer(&ip).await
             }
             SocketAddr::V6(_) => return Err(anyhow::anyhow!("ipv6 is not supported").into()),
         };
@@ -162,7 +166,7 @@ impl NatDstConnector for NatDstKcpConnector {
             retry_remain -= 1;
 
             let kcp_endpoint = self.kcp_endpoint.clone();
-            let peer_mgr = self.peer_mgr.clone();
+            let my_peer_id = peer_mgr.my_peer_id();
             let dst_peer = dst_peers[0];
             let conn_data_clone = conn_data.clone();
 
@@ -170,7 +174,7 @@ impl NatDstConnector for NatDstKcpConnector {
                 kcp_endpoint
                     .connect(
                         Duration::from_secs(10),
-                        peer_mgr.my_peer_id(),
+                        my_peer_id,
                         dst_peer,
                         Bytes::from(conn_data_clone.encode_to_vec()),
                     )
@@ -302,7 +306,7 @@ impl KcpProxySrc {
             peer_manager.clone(),
             NatDstKcpConnector {
                 kcp_endpoint: kcp_endpoint.clone(),
-                peer_mgr: peer_manager.clone(),
+                peer_mgr: Arc::downgrade(&peer_manager),
             },
         );
 
