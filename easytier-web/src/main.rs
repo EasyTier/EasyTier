@@ -86,7 +86,7 @@ struct Cli {
     #[arg(
         long,
         default_value = "v4",
-        help = "IP version to use: v4 (IPv4 only), v6 (IPv6 only), both (dual stack)"
+        help = "IP version to use: v4 (IPv4 only), v6 (IPv6 only)"
     )]
     ip_version: String,
 
@@ -122,16 +122,7 @@ fn get_bind_address(ip_version: &str, custom_ip: &str, port: u16) -> String {
             } else if custom_ip.contains(':') {
                 format!("[{}]:{}", custom_ip, port)
             } else {
-                format!("[::]:{}", port) // 默认IPv6
-            }
-        },
-        "both" => {
-            if custom_ip == "0.0.0.0" {
                 format!("[::]:{}", port)
-            } else if custom_ip.contains(':') {
-                format!("[{}]:{}", custom_ip, port)
-            } else {
-                format!("{}:{}", custom_ip, port)
             }
         },
         _ => {
@@ -163,8 +154,8 @@ async fn main() {
 
     let cli = Cli::parse();
     
-    if !matches!(cli.ip_version.as_str(), "v4" | "v6" | "both") {
-        eprintln!("错误: ip_version 必须是 'v4', 'v6', 或 'both'");
+    if !matches!(cli.ip_version.as_str(), "v4" | "v6") {
+        eprintln!("错误: ip_version 必须是 'v4' 或 'v6'");
         std::process::exit(1);
     }
     
