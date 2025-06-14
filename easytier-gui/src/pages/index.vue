@@ -23,7 +23,7 @@ useTray(true)
 
 const items = ref([
   {
-    label: () => t('show_config'),
+    label: () => activeStep.value == "2" ? t('show_config') : t('edit_config'),
     icon: 'pi pi-file-edit',
     command: async () => {
       try {
@@ -262,6 +262,19 @@ onMounted(async () => {
 function isRunning(id: string) {
   return networkStore.networkInstanceIds.includes(id)
 }
+
+async function saveTomlConfig() {
+  try {
+    const config = await generateNetworkConfig(tomlConfig.value)
+    networkStore.replaceCurNetwork(config);
+    toast.add({ severity: 'success', detail: t('config_saved'), life: 3000 })
+    visible.value = false
+  } catch (e: any) {
+    console.error('saving config failed', e)
+    toast.add({ severity: 'error', detail: e, life: 3000 })
+    return
+  }
+}
 </script>
 
 <script lang="ts">
@@ -272,11 +285,14 @@ function isRunning(id: string) {
     <Dialog v-model:visible="visible" modal header="Config File" :style="{ width: '70%' }">
       <Panel>
         <ScrollPanel style="width: 100%; height: 300px">
-          <pre>{{ tomlConfig }}</pre>
+          <pre v-if="activeStep !== '1'" readonly>{{ tomlConfig }}</pre>
+          <textarea v-else v-model="tomlConfig" class="w-full h-full"
+            style="min-height: 300px; font-family: monospace; resize: none;"></textarea>
         </ScrollPanel>
       </Panel>
       <Divider />
       <div class="flex gap-2 justify-end">
+        <Button v-if="activeStep === '1'" type="button" :label="t('save')" @click="saveTomlConfig" />
         <Button type="button" :label="t('close')" @click="visible = false" />
       </div>
     </Dialog>

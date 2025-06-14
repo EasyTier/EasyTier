@@ -48,6 +48,12 @@ export const useNetworkStore = defineStore('networkStore', {
       this.curNetwork = this.networkList[nextCurNetworkIdx]
     },
 
+    replaceCurNetwork(cfg: NetworkTypes.NetworkConfig) {
+      const curNetworkIdx = this.networkList.indexOf(this.curNetwork)
+      this.networkList[curNetworkIdx] = cfg
+      this.curNetwork = cfg
+    },
+
     removeNetworkInstance(instanceId: string) {
       delete this.instances[instanceId]
     },

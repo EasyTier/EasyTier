@@ -8,6 +8,10 @@ export async function parseNetworkConfig(cfg: NetworkConfig) {
   return invoke<string>('parse_network_config', { cfg })
 }
 
+export async function generateNetworkConfig(tomlConfig: string) {
+  return invoke<NetworkConfig>('generate_network_config', { tomlConfig })
+}
+
 export async function runNetworkInstance(cfg: NetworkConfig) {
   return invoke('run_network_instance', { cfg })
 }
