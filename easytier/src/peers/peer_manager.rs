@@ -1101,9 +1101,16 @@ impl PeerManager {
                 .unwrap_or_default(),
             proxy_cidrs: self
                 .global_ctx
+                .config
                 .get_proxy_cidrs()
                 .into_iter()
-                .map(|x| x.to_string())
+                .map(|x| {
+                    if x.mapped_cidr.is_none() {
+                        x.cidr.to_string()
+                    } else {
+                        format!("{}->{}", x.cidr, x.mapped_cidr.unwrap())
+                    }
+                })
                 .collect(),
             hostname: self.global_ctx.get_hostname(),
             stun_info: Some(self.global_ctx.get_stun_info_collector().get_stun_info()),
@@ -1132,6 +1139,15 @@ impl PeerManager {
             .get(&peer_id)
             .map(|x| x.clone())
             .unwrap_or_default()
+    }
+
+    pub async fn clear_resources(&self) {
+        let mut peer_pipeline = self.peer_packet_process_pipeline.write().await;
+        peer_pipeline.clear();
+        let mut nic_pipeline = self.nic_packet_process_pipeline.write().await;
+        nic_pipeline.clear();
+
+        self.peer_rpc_mgr.rpc_server().registry().unregister_all();
     }
 }
 

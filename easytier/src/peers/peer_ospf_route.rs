@@ -139,10 +139,12 @@ impl RoutePeerInfo {
             cost: 0,
             ipv4_addr: global_ctx.get_ipv4().map(|x| x.address().into()),
             proxy_cidrs: global_ctx
+                .config
                 .get_proxy_cidrs()
                 .iter()
+                .map(|x| x.mapped_cidr.unwrap_or(x.cidr))
+                .chain(global_ctx.get_vpn_portal_cidr())
                 .map(|x| x.to_string())
-                .chain(global_ctx.get_vpn_portal_cidr().map(|x| x.to_string()))
                 .collect(),
             hostname: Some(global_ctx.get_hostname()),
             udp_stun_info: global_ctx
