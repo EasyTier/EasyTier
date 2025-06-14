@@ -96,6 +96,10 @@ impl ServiceRegistry {
         self.table.retain(|k, _| k.domain_name != domain_name);
     }
 
+    pub fn unregister_all(&self) {
+        self.table.clear();
+    }
+
     pub async fn call_method(
         &self,
         rpc_desc: RpcDescriptor,
