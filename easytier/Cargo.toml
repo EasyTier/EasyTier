@@ -270,7 +270,7 @@ thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = f
 
 [dev-dependencies]
 serial_test = "3.0.0"
-rstest = "0.18.2"
+rstest = "0.25.0"
 futures-util = "0.3.30"
 maplit = "1.0.2"
 
