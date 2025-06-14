@@ -211,15 +211,21 @@ impl NatDstConnector for NatDstKcpConnector {
 #[derive(Clone)]
 struct TcpProxyForKcpSrc(Arc<TcpProxy<NatDstKcpConnector>>);
 
-pub struct KcpProxySrc {
-    kcp_endpoint: Arc<KcpEndpoint>,
-    peer_manager: Arc<PeerManager>,
-
-    tcp_proxy: TcpProxyForKcpSrc,
-    tasks: JoinSet<()>,
+#[async_trait::async_trait]
+pub(crate) trait TcpProxyForKcpSrcTrait: Send + Sync + 'static {
+    type Connector: NatDstConnector;
+    fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>>;
+    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool;
 }
 
-impl TcpProxyForKcpSrc {
+#[async_trait::async_trait]
+impl TcpProxyForKcpSrcTrait for TcpProxyForKcpSrc {
+    type Connector = NatDstKcpConnector;
+
+    fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>> {
+        &self.0
+    }
+
     async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
         let peer_map: Arc<crate::peers::peer_map::PeerMap> =
             self.0.get_peer_manager().get_peer_map();
@@ -234,9 +240,12 @@ impl TcpProxyForKcpSrc {
 }
 
 #[async_trait::async_trait]
-impl NicPacketFilter for TcpProxyForKcpSrc {
+impl<C: NatDstConnector, T: TcpProxyForKcpSrcTrait<Connector = C>> NicPacketFilter for T {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        let ret = self.0.try_process_packet_from_nic(zc_packet).await;
+        let ret = self
+            .get_tcp_proxy()
+            .try_process_packet_from_nic(zc_packet)
+            .await;
         if ret {
             return true;
         }
@@ -263,27 +272,41 @@ impl NicPacketFilter for TcpProxyForKcpSrc {
             }
         } else {
             // if not syn packet, only allow established connection
-            if !self.0.is_tcp_proxy_connection(SocketAddr::new(
-                IpAddr::V4(ip_packet.get_source()),
-                tcp_packet.get_source(),
-            )) {
+            if !self
+                .get_tcp_proxy()
+                .is_tcp_proxy_connection(SocketAddr::new(
+                    IpAddr::V4(ip_packet.get_source()),
+                    tcp_packet.get_source(),
+                ))
+            {
                 return false;
             }
         }
 
-        if let Some(my_ipv4) = self.0.get_global_ctx().get_ipv4() {
+        if let Some(my_ipv4) = self.get_tcp_proxy().get_global_ctx().get_ipv4() {
             // this is a net-to-net packet, only allow it when smoltcp is enabled
             // because the syn-ack packet will not be through and handled by the tun device when
             // the source ip is in the local network
-            if ip_packet.get_source() != my_ipv4.address() && !self.0.is_smoltcp_enabled() {
+            if ip_packet.get_source() != my_ipv4.address()
+                && !self.get_tcp_proxy().is_smoltcp_enabled()
+            {
                 return false;
             }
         };
 
-        zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.0.get_my_peer_id().into();
+        zc_packet.mut_peer_manager_header().unwrap().to_peer_id =
+            self.get_tcp_proxy().get_my_peer_id().into();
 
         true
     }
+}
+
+pub struct KcpProxySrc {
+    kcp_endpoint: Arc<KcpEndpoint>,
+    peer_manager: Arc<PeerManager>,
+
+    tcp_proxy: TcpProxyForKcpSrc,
+    tasks: JoinSet<()>,
 }
 
 impl KcpProxySrc {

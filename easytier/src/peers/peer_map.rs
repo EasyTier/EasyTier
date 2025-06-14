@@ -204,6 +204,16 @@ impl PeerMap {
         None
     }
 
+    pub async fn get_peer_ipv4(&self, peer_id: PeerId) -> Option<Ipv4Addr> {
+        for route in self.routes.read().await.iter() {
+            let ipv4 = route.get_peer_ipv4(peer_id).await;
+            if ipv4.is_some() {
+                return ipv4;
+            }
+        }
+        None
+    }
+
     pub async fn get_origin_my_peer_id(
         &self,
         network_name: &str,

@@ -17,7 +17,7 @@ use super::{
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
-fn configure_client() -> ClientConfig {
+pub fn configure_client() -> ClientConfig {
     ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
     ))
@@ -38,7 +38,7 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>)
 }
 
 /// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
+pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let (certs, key) = get_insecure_tls_cert();
 
     let mut server_config = ServerConfig::with_single_cert(certs.clone(), key.into())?;
