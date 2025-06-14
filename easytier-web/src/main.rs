@@ -8,10 +8,9 @@ use std::sync::Arc;
 use clap::Parser;
 use easytier::{
     common::{
-        config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
+        config::{ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, TomlConfigLoader},
         constants::EASYTIER_VERSION,
         error::Error,
-        network::{local_ipv4, local_ipv6},
     },
     tunnel::{
         tcp::TcpTunnelListener, udp::UdpTunnelListener, websocket::WSTunnelListener, TunnelListener,
@@ -77,6 +76,20 @@ struct Cli {
     )]
     api_server_port: u16,
 
+    #[arg(
+        long,
+        default_value = "0.0.0.0",
+        help = "IP address to bind all services to (e.g., 0.0.0.0, 127.0.0.1, ::, ::1)"
+    )]
+    bind_ip: String,
+
+    #[arg(
+        long,
+        default_value = "v4",
+        help = "IP version to use: v4 (IPv4 only), v6 (IPv6 only), both (dual stack)"
+    )]
+    ip_version: String,
+
     #[cfg(feature = "embed")]
     #[arg(
         long,
@@ -101,18 +114,32 @@ struct Cli {
     api_host: Option<url::Url>,
 }
 
-impl LoggingConfigLoader for &Cli {
-    fn get_console_logger_config(&self) -> ConsoleLoggerConfig {
-        ConsoleLoggerConfig {
-            level: self.console_log_level.clone(),
-        }
-    }
-
-    fn get_file_logger_config(&self) -> FileLoggerConfig {
-        FileLoggerConfig {
-            dir: self.file_log_dir.clone(),
-            level: self.file_log_level.clone(),
-            file: None,
+fn get_bind_address(ip_version: &str, custom_ip: &str, port: u16) -> String {
+    match ip_version {
+        "v6" => {
+            if custom_ip == "0.0.0.0" {
+                format!("[::]:{}", port)
+            } else if custom_ip.contains(':') {
+                format!("[{}]:{}", custom_ip, port)
+            } else {
+                format!("[::]:{}", port) // 默认IPv6
+            }
+        },
+        "both" => {
+            if custom_ip == "0.0.0.0" {
+                format!("[::]:{}", port)
+            } else if custom_ip.contains(':') {
+                format!("[{}]:{}", custom_ip, port)
+            } else {
+                format!("{}:{}", custom_ip, port)
+            }
+        },
+        _ => {
+            if custom_ip == "0.0.0.0" || !custom_ip.contains(':') {
+                format!("{}:{}", custom_ip, port)
+            } else {
+                format!("0.0.0.0:{}", port)
+            }
         }
     }
 }
@@ -128,31 +155,6 @@ pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Erro
     })
 }
 
-async fn get_dual_stack_listener(
-    protocol: &str,
-    port: u16,
-) -> Result<
-    (
-        Option<Box<dyn TunnelListener>>,
-        Option<Box<dyn TunnelListener>>,
-    ),
-    Error,
-> {
-    let is_protocol_support_dual_stack =
-        protocol.trim().to_lowercase() == "tcp" || protocol.trim().to_lowercase() == "udp";
-    let v6_listener = if is_protocol_support_dual_stack && local_ipv6().await.is_ok() {
-        get_listener_by_url(&format!("{}://[::0]:{}", protocol, port).parse().unwrap()).ok()
-    } else {
-        None
-    };
-    let v4_listener = if let Ok(_) = local_ipv4().await {
-        get_listener_by_url(&format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap()).ok()
-    } else {
-        None
-    };
-    Ok((v6_listener, v4_listener))
-}
-
 #[tokio::main]
 async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
@@ -160,25 +162,37 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    init_logger(&cli, false).unwrap();
+    
+    if !matches!(cli.ip_version.as_str(), "v4" | "v6" | "both") {
+        eprintln!("错误: ip_version 必须是 'v4', 'v6', 或 'both'");
+        std::process::exit(1);
+    }
+    
+    let config = TomlConfigLoader::default();
+    config.set_console_logger_config(ConsoleLoggerConfig {
+        level: cli.console_log_level,
+    });
+    config.set_file_logger_config(FileLoggerConfig {
+        dir: cli.file_log_dir,
+        level: cli.file_log_level,
+        file: None,
+    });
+    init_logger(config, false).unwrap();
 
-    // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
-    let mut mgr = client_manager::ClientManager::new(db.clone());
-    let (v6_listener, v4_listener) =
-        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
-            .await
-            .unwrap();
-    if v4_listener.is_none() && v6_listener.is_none() {
-        panic!("Listen to both IPv4 and IPv6 failed");
-    }
-    if let Some(listener) = v6_listener {
-        mgr.add_listener(listener).await.unwrap();
-    }
-    if let Some(listener) = v4_listener {
-        mgr.add_listener(listener).await.unwrap();
-    }
 
+    let config_server_addr = get_bind_address(&cli.ip_version, &cli.bind_ip, cli.config_server_port);
+    let listener = get_listener_by_url(
+        &format!(
+            "{}://{}",
+            cli.config_server_protocol, config_server_addr
+        )
+        .parse()
+        .unwrap(),
+    )
+    .unwrap();
+    let mut mgr = client_manager::ClientManager::new(db.clone());
+    mgr.serve(listener).await.unwrap();
     let mgr = Arc::new(mgr);
 
     #[cfg(feature = "embed")]
@@ -195,8 +209,9 @@ async fn main() {
     #[cfg(not(feature = "embed"))]
     let web_router_restful = None;
 
+    let api_server_addr = get_bind_address(&cli.ip_version, &cli.bind_ip, cli.api_server_port);
     let _restful_server_tasks = restful::RestfulServer::new(
-        format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
+        api_server_addr.parse().unwrap(),
         mgr.clone(),
         db,
         web_router_restful,
@@ -209,11 +224,14 @@ async fn main() {
 
     #[cfg(feature = "embed")]
     let _web_server_task = if let Some(web_router) = web_router_static {
+        let web_server_addr = get_bind_address(
+            &cli.ip_version, 
+            &cli.bind_ip, 
+            cli.web_server_port.unwrap_or(0)
+        );
         Some(
             web::WebServer::new(
-                format!("0.0.0.0:{}", cli.web_server_port.unwrap_or(0))
-                    .parse()
-                    .unwrap(),
+                web_server_addr.parse().unwrap(),
                 web_router,
             )
             .await
