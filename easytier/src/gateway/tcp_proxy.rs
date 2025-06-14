@@ -37,6 +37,8 @@ use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket};
 
 use super::CidrSet;
 
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
+
 #[cfg(feature = "smoltcp")]
 use super::tokio_smoltcp::{self, channel_device, Net, NetConfig};
 
@@ -65,6 +67,11 @@ impl NatDstConnector for NatDstTcpConnector {
     type DstStream = TcpStream;
     async fn connect(&self, _src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
         let socket = TcpSocket::new_v4().unwrap();
+        #[cfg(target_env = "ohos")]
+        {
+            use std::os::fd::AsRawFd;
+            socket_create_callback(socket.as_raw_fd(), &nat_dst);
+        }
         if let Err(e) = socket.set_nodelay(true) {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
@@ -520,7 +527,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
         #[cfg(feature = "smoltcp")]
         if self.global_ctx.get_flags().use_smoltcp
             || self.global_ctx.no_tun()
-            || cfg!(target_os = "android")
+            || cfg!(any(target_os = "android", target_env = "ohos"))
         {
             // use smoltcp network stack
             self.local_port

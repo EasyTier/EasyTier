@@ -10,7 +10,6 @@ use std::{
     },
     time::Duration,
 };
-
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
     peers::{
@@ -37,6 +36,8 @@ use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
 use url::Host;
 
 use super::{create_connector_by_url, udp_hole_punch};
+
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback_opt;
 
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
@@ -167,7 +168,11 @@ impl DirectConnectorManagerData {
                 .await
                 .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
         );
-
+        #[cfg(target_env = "ohos")]
+        {
+            use std::os::fd::AsRawFd;
+            socket_create_callback_opt(local_socket.as_raw_fd(), None);
+        }
         // ask remote to send v6 hole punch packet
         // and no matter what the result is, continue to connect
         let _ = self

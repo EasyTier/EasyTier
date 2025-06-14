@@ -1,5 +1,4 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-
 use anyhow::Context;
 use bytes::BytesMut;
 use futures::{stream::FuturesUnordered, SinkExt, StreamExt};
@@ -20,6 +19,7 @@ use super::{
     packet_def::{ZCPacket, ZCPacketType},
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 
 fn is_wss(addr: &url::Url) -> Result<bool, TunnelError> {
     match addr.scheme() {
@@ -231,6 +231,11 @@ impl WSTunnelConnector {
         } else {
             TcpSocket::new_v6()?
         };
+        #[cfg(target_env = "ohos")]
+        {
+            use std::os::fd::AsRawFd;
+            socket_create_callback(socket.as_raw_fd(), &addr);
+        }
         Self::connect_with(self.addr.clone(), self.ip_version, socket).await
     }
 

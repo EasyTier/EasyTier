@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
-
+use std::net::{IpAddr, Ipv4Addr};
 use crate::{
     common::{
         config::{
@@ -20,6 +20,26 @@ use crate::{
 use anyhow::Context;
 use chrono::{DateTime, Local};
 use tokio::{sync::broadcast, task::JoinSet};
+use lazy_static::lazy_static;
+use std::sync::Mutex;
+#[cfg(target_env = "ohos")]
+lazy_static! {
+    pub static ref SOCKET_CREATE_CALLBACK: Mutex<Option<fn(i32, &SocketAddr) -> bool>> = Mutex::new(None);
+}
+#[cfg(target_env = "ohos")]
+pub fn socket_create_callback_opt(fd: i32, addr: Option<&SocketAddr>) {
+    socket_create_callback(fd, addr.unwrap_or(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)));
+}
+
+#[cfg(target_env = "ohos")]
+pub fn socket_create_callback(fd: i32, addr: &SocketAddr) {
+    let protect_fn = SOCKET_CREATE_CALLBACK.lock().unwrap();
+    if let Some(callback) = protect_fn.as_ref() {
+        callback(fd, addr);
+    }else {
+        tracing::error!("[Tracing] socket_create_callback is not initialized");
+    }
+}
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -94,7 +114,7 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(target_os = "android")]
+    #[cfg(any(target_os = "android", target_env = "ohos"))]
     async fn run_routine_for_android(
         instance: &Instance,
         data: &EasyTierData,
@@ -199,7 +219,7 @@ impl EasyTierLauncher {
             });
         }
 
-        #[cfg(target_os = "android")]
+        #[cfg(any(target_os = "android", target_env = "ohos"))]
         Self::run_routine_for_android(&instance, &data, &mut tasks).await;
 
         instance.run().await?;

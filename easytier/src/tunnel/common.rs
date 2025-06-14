@@ -5,7 +5,6 @@ use std::{
     sync::{Arc, Mutex},
     task::{ready, Poll},
 };
-
 use futures::{stream::FuturesUnordered, Future, Sink, Stream};
 use network_interface::NetworkInterfaceConfig as _;
 use pin_project_lite::pin_project;
@@ -17,6 +16,7 @@ use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
 
 use super::TunnelInfo;
+#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 
 use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
@@ -353,6 +353,12 @@ pub(crate) fn setup_sokcet2_ext(
         let is_udp = matches!(socket2_socket.r#type()?, socket2::Type::DGRAM);
         crate::arch::windows::setup_socket_for_win(socket2_socket, bind_addr, bind_dev, is_udp)?;
     }
+    
+    #[cfg(target_env = "ohos")]
+    {
+        use std::os::fd::AsRawFd;
+        socket_create_callback(socket2_socket.as_raw_fd(), bind_addr);
+    }
 
     if bind_addr.is_ipv6() {
         socket2_socket.set_only_v6(true)?;
@@ -388,7 +394,7 @@ pub(crate) fn setup_sokcet2_ext(
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux", target_env = "ohos"))]
     if let Some(dev_name) = bind_dev {
         tracing::trace!(dev_name = ?dev_name, "bind device");
         socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
