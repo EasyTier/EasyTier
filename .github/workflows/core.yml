@@ -244,7 +244,7 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ ]]; then
-            UPX_VERSION=5.0.1
+            UPX_VERSION=4.2.4
             curl -L https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz -s | tar xJvf -
             cp upx-${UPX_VERSION}-amd64_linux/upx .
             ./upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"
