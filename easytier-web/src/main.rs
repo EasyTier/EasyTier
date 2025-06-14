@@ -76,20 +76,6 @@ struct Cli {
     )]
     api_server_port: u16,
 
-    #[arg(
-        long,
-        default_value = "0.0.0.0",
-        help = "IP address to bind all services to (e.g., 0.0.0.0, 127.0.0.1, ::, ::1)"
-    )]
-    bind_ip: String,
-
-    #[arg(
-        long,
-        default_value = "v4",
-        help = "IP version to use: v4 (IPv4 only), v6 (IPv6 only)"
-    )]
-    ip_version: String,
-
     #[cfg(feature = "embed")]
     #[arg(
         long,
@@ -112,27 +98,14 @@ struct Cli {
         help = t!("cli.api_host").to_string()
     )]
     api_host: Option<url::Url>,
-}
 
-fn get_bind_address(ip_version: &str, custom_ip: &str, port: u16) -> String {
-    match ip_version {
-        "v6" => {
-            if custom_ip == "0.0.0.0" {
-                format!("[::]:{}", port)
-            } else if custom_ip.contains(':') {
-                format!("[{}]:{}", custom_ip, port)
-            } else {
-                format!("[::]:{}", port)
-            }
-        },
-        _ => {
-            if custom_ip == "0.0.0.0" || !custom_ip.contains(':') {
-                format!("{}:{}", custom_ip, port)
-            } else {
-                format!("0.0.0.0:{}", port)
-            }
-        }
-    }
+    #[cfg(feature = "embed")]
+    #[arg(
+        long,
+        default_value = "0.0.0.0",
+        help = "Listen address for web server (supports IPv4, IPv6, e.g., 0.0.0.0, 127.0.0.1, ::1)"
+    )]
+    web_listen_addr: String,
 }
 
 pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Error> {
@@ -153,12 +126,6 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    
-    if !matches!(cli.ip_version.as_str(), "v4" | "v6") {
-        eprintln!("错误: ip_version 必须是 'v4' 或 'v6'");
-        std::process::exit(1);
-    }
-    
     let config = TomlConfigLoader::default();
     config.set_console_logger_config(ConsoleLoggerConfig {
         level: cli.console_log_level,
@@ -170,13 +137,13 @@ async fn main() {
     });
     init_logger(config, false).unwrap();
 
+    // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
 
-    let config_server_addr = get_bind_address(&cli.ip_version, &cli.bind_ip, cli.config_server_port);
     let listener = get_listener_by_url(
         &format!(
-            "{}://{}",
-            cli.config_server_protocol, config_server_addr
+            "{}://0.0.0.0:{}",
+            cli.config_server_protocol, cli.config_server_port
         )
         .parse()
         .unwrap(),
@@ -200,9 +167,8 @@ async fn main() {
     #[cfg(not(feature = "embed"))]
     let web_router_restful = None;
 
-    let api_server_addr = get_bind_address(&cli.ip_version, &cli.bind_ip, cli.api_server_port);
     let _restful_server_tasks = restful::RestfulServer::new(
-        api_server_addr.parse().unwrap(),
+        format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
         mgr.clone(),
         db,
         web_router_restful,
@@ -215,14 +181,11 @@ async fn main() {
 
     #[cfg(feature = "embed")]
     let _web_server_task = if let Some(web_router) = web_router_static {
-        let web_server_addr = get_bind_address(
-            &cli.ip_version, 
-            &cli.bind_ip, 
-            cli.web_server_port.unwrap_or(0)
-        );
         Some(
             web::WebServer::new(
-                web_server_addr.parse().unwrap(),
+                format!("{}:{}", cli.web_listen_addr, cli.web_server_port.unwrap_or(0))
+                    .parse()
+                    .unwrap(),
                 web_router,
             )
             .await
