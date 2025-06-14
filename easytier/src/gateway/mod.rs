@@ -18,6 +18,8 @@ pub mod socks5;
 
 pub mod kcp_proxy;
 
+pub mod quic_proxy;
+
 #[derive(Debug)]
 pub(crate) struct CidrSet {
     global_ctx: ArcGlobalCtx,

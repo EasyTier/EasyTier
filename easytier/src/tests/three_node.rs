@@ -391,6 +391,37 @@ async fn subnet_proxy_test_icmp(target_ip: &str) {
     .await;
 }
 
+#[tokio::test]
+pub async fn quic_proxy() {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
+
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    let target_ip = "10.1.2.4";
+
+    subnet_proxy_test_tcp(target_ip).await;
+
+    drop_insts(insts).await;
+}
+
 #[rstest::rstest]
 #[serial_test::serial]
 #[tokio::test]

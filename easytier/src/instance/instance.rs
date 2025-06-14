@@ -20,6 +20,7 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
+use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxySrc};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
@@ -232,6 +233,9 @@ pub struct Instance {
     kcp_proxy_src: Option<KcpProxySrc>,
     kcp_proxy_dst: Option<KcpProxyDst>,
 
+    quic_proxy_src: Option<QUICProxySrc>,
+    quic_proxy_dst: Option<QUICProxyDst>,
+
     peer_center: Arc<PeerCenterInstance>,
 
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
@@ -311,6 +315,9 @@ impl Instance {
             ip_proxy: None,
             kcp_proxy_src: None,
             kcp_proxy_dst: None,
+
+            quic_proxy_src: None,
+            quic_proxy_dst: None,
 
             peer_center,
 
@@ -560,6 +567,20 @@ impl Instance {
             let mut dst_proxy = KcpProxyDst::new(self.get_peer_manager()).await;
             dst_proxy.start().await;
             self.kcp_proxy_dst = Some(dst_proxy);
+        }
+
+        {
+            let quic_src = QUICProxySrc::new(self.get_peer_manager()).await;
+            quic_src.start().await;
+            self.quic_proxy_src = Some(quic_src);
+        }
+
+        {
+            let quic_dst = QUICProxyDst::new(self.global_ctx.clone())?;
+            quic_dst.start().await?;
+            self.global_ctx
+                .set_quic_proxy_port(Some(quic_dst.local_addr()?.port()));
+            self.quic_proxy_dst = Some(quic_dst);
         }
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10

@@ -171,3 +171,7 @@ message PortForwardConfigPb {
     SocketAddr dst_addr = 2;
     SocketType socket_type = 3;
 }
+
+message ProxyDstInfo {
+  SocketAddr dst_addr = 1;
+}

@@ -22,6 +22,8 @@ message RoutePeerInfo {
   uint64 peer_route_id = 12;
 
   uint32 network_length = 13;
+
+  optional uint32 quic_port = 14;
 }
 
 message PeerIdVersion {
