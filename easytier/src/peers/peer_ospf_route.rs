@@ -2325,6 +2325,15 @@ impl Route for PeerRoute {
             .and_then(|x| x.feature_flag.clone())
     }
 
+    async fn get_peer_ipv4(&self, peer_id: PeerId) -> Option<Ipv4Addr> {
+        self.service_impl
+            .route_table
+            .peer_infos
+            .get(&peer_id)
+            .and_then(|x| x.ipv4_addr)
+            .map(Into::into)
+    }
+
     async fn get_peer_info_last_update_time(&self) -> Instant {
         self.service_impl.get_peer_info_last_update()
     }
