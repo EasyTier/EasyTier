@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {Toolbar, IftaLabel, Select, Button, ConfirmPopup, Dialog, useConfirm, useToast, Divider} from 'primevue';
+import { Toolbar, IftaLabel, Select, Button, ConfirmPopup, Dialog, useConfirm, useToast, Divider } from 'primevue';
 import { NetworkTypes, Status, Utils, Api, } from 'easytier-frontend-lib';
 import { watch, computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -211,62 +211,72 @@ const loadDeviceInfo = async () => {
 }
 
 const exportConfig = async () => {
-  if (!deviceId.value || !instanceId.value) {
-    toast.add({ severity: 'error', summary: 'Error', detail: 'No network instance selected', life: 2000 });
-    return;
-  }
+    if (!deviceId.value || !instanceId.value) {
+        toast.add({ severity: 'error', summary: 'Error', detail: 'No network instance selected', life: 2000 });
+        return;
+    }
 
-  try {
-    let ret = await props.api?.get_network_config(deviceId.value, instanceId.value);
-    delete ret.instance_id;
-    exportJsonFile(JSON.stringify(ret, null, 2),instanceId.value +'.json');
-  } catch (e: any) {
-    console.error(e);
-    toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to export network config, error: ' + JSON.stringify(e.response.data), life: 2000 });
-    return;
-  }
+    try {
+        let networkConfig = await props.api?.get_network_config(deviceId.value, instanceId.value);
+        delete networkConfig.instance_id;
+        let { toml_config: tomlConfig, error } = await props.api?.generate_config({
+            config: networkConfig
+        });
+        if (error) {
+            throw { response: { data: error } };
+        }
+        exportTomlFile(tomlConfig ?? '', instanceId.value + '.toml');
+    } catch (e: any) {
+        console.error(e);
+        toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to export network config, error: ' + JSON.stringify(e.response.data), life: 2000 });
+        return;
+    }
 }
 
 const importConfig = () => {
-  configFile.value.click();
+    configFile.value.click();
 }
 
 const handleFileUpload = (event: Event) => {
-  const files = (event.target as HTMLInputElement).files;
-  const file = files ? files[0] : null;
-  if (file) {
+    const files = (event.target as HTMLInputElement).files;
+    const file = files ? files[0] : null;
+    if (!file) return;
     const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        let str = e.target?.result?.toString();
-        if(str){
-          const config = JSON.parse(str);
-          if(config === null || typeof config !== "object"){
-            throw new Error();
-          }
-          Object.assign(newNetworkConfig.value, config);
-          toast.add({ severity: 'success', summary: 'Import Success', detail: "Config file import success", life: 2000 });
+    reader.onload = async (e) => {
+        try {
+            let tomlConfig = e.target?.result?.toString();
+            if (!tomlConfig) return;
+            const resp = await props.api?.parse_config({ toml_config: tomlConfig });
+            if (resp.error) {
+                throw resp.error;
+            }
+
+            const config = resp.config;
+            if (!config) return;
+            
+            config.instance_id = newNetworkConfig.value?.instance_id ?? config?.instance_id;
+
+            Object.assign(newNetworkConfig.value, resp.config);
+            toast.add({ severity: 'success', summary: 'Import Success', detail: "Config file import success", life: 2000 });
+        } catch (error) {
+            toast.add({ severity: 'error', summary: 'Error', detail: 'Config file parse error: ' + error, life: 2000 });
         }
-      } catch (error) {
-        toast.add({ severity: 'error', summary: 'Error', detail: 'Config file parse error.', life: 2000 });
-      }
-      configFile.value.value = null;
+        configFile.value.value = null;
     }
     reader.readAsText(file);
-  }
 }
 
-const exportJsonFile = (context: string, name: string) => {
-  let url = window.URL.createObjectURL(new Blob([context], { type: 'application/json' }));
-  let link = document.createElement('a');
-  link.style.display = 'none';
-  link.href = url;
-  link.setAttribute('download', name);
-  document.body.appendChild(link);
-  link.click();
+const exportTomlFile = (context: string, name: string) => {
+    let url = window.URL.createObjectURL(new Blob([context], { type: 'application/toml' }));
+    let link = document.createElement('a');
+    link.style.display = 'none';
+    link.href = url;
+    link.setAttribute('download', name);
+    document.body.appendChild(link);
+    link.click();
 
-  document.body.removeChild(link);
-  window.URL.revokeObjectURL(url);
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
 }
 
 let periodFunc = new Utils.PeriodicTask(async () => {
@@ -288,15 +298,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <input type="file" @change="handleFileUpload" class="hidden" accept="application/json" ref="configFile"/>
+    <input type="file" @change="handleFileUpload" class="hidden" accept="application/toml" ref="configFile" />
     <ConfirmPopup></ConfirmPopup>
     <Dialog v-model:visible="showCreateNetworkDialog" modal :header="!isEditing ? 'Create New Network' : 'Edit Network'"
         :style="{ width: '55rem' }">
         <div class="flex flex-col">
-          <div class="w-11/12 self-center ">
-            <Button @click="importConfig" icon="pi pi-file-import" label="Import" iconPos="right" />
-            <Divider />
-          </div>
+            <div class="w-11/12 self-center ">
+                <Button @click="importConfig" icon="pi pi-file-import" label="Import" iconPos="right" />
+                <Divider />
+            </div>
         </div>
         <Config :cur-network="newNetworkConfig" @run-network="createNewNetwork"></Config>
     </Dialog>
@@ -329,7 +339,7 @@ onUnmounted(() => {
         </Status>
         <Divider />
         <div class="text-center">
-          <Button @click="updateNetworkState(true)" label="Disable Network" severity="warn" />
+            <Button @click="updateNetworkState(true)" label="Disable Network" severity="warn" />
         </div>
     </div>
 

@@ -51,7 +51,10 @@ dev_name_placeholder: 注意：当多个网络同时使用相同的TUN接口名�
 off_text: 点击关闭
 on_text: 点击开启
 show_config: 显示配置
+edit_config: 编辑配置文件
 close: 关闭
+save: 保存
+config_saved: 配置已保存
 
 use_latency_first: 延迟优先模式
 my_node_info: 当前节点信息
