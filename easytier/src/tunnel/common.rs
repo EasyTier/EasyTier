@@ -16,7 +16,6 @@ use tokio_util::io::poll_write_buf;
 use zerocopy::FromBytes as _;
 
 use super::TunnelInfo;
-#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 
 use crate::tunnel::packet_def::{ZCPacket, PEER_MANAGER_HEADER_SIZE};
 
@@ -356,6 +355,7 @@ pub(crate) fn setup_sokcet2_ext(
     
     #[cfg(target_env = "ohos")]
     {
+        use crate::launcher::socket_create_callback;
         use std::os::fd::AsRawFd;
         socket_create_callback(socket2_socket.as_raw_fd(), bind_addr);
     }

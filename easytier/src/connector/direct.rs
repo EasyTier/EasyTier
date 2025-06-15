@@ -37,8 +37,6 @@ use url::Host;
 
 use super::{create_connector_by_url, udp_hole_punch};
 
-#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback_opt;
-
 pub const DIRECT_CONNECTOR_SERVICE_ID: u32 = 1;
 pub const DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC: u64 = 300;
 
@@ -170,6 +168,7 @@ impl DirectConnectorManagerData {
         );
         #[cfg(target_env = "ohos")]
         {
+            use crate::launcher::socket_create_callback_opt;
             use std::os::fd::AsRawFd;
             socket_create_callback_opt(local_socket.as_raw_fd(), None);
         }

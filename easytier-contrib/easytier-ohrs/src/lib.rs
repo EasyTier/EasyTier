@@ -23,7 +23,6 @@ static TUN_FD: atomic::AtomicI32 = atomic::AtomicI32::new(-1);
 
 lazy_static! {
     static ref PROTECT_FN: Mutex<Option<ThreadsafeFunction<u32, Promise<()>>>> = Mutex::new(None);
-    static ref DNS_FN: Mutex<Option<ThreadsafeFunction<u32, Promise<()>>>> = Mutex::new(None);
     static ref SOCKET_SET: Mutex<HashSet<i32>> = Mutex::new(HashSet::new());
 }
 

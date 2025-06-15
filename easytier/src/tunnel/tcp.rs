@@ -5,7 +5,6 @@ use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
-#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -159,6 +158,7 @@ impl TcpTunnelConnector {
         };
         #[cfg(target_env = "ohos")]
         {
+            use crate::launcher::socket_create_callback;
             use std::os::fd::AsRawFd;
             socket_create_callback(socket.as_raw_fd(), &addr);
         }

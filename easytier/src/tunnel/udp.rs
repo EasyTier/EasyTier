@@ -30,7 +30,6 @@ use crate::{
         ring::RingTunnel,
     },
 };
-#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
 
 use super::{
     common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
@@ -814,6 +813,7 @@ impl UdpTunnelConnector {
         };
         #[cfg(target_env = "ohos")]
         {
+            use crate::launcher::socket_create_callback;
             use std::os::fd::AsRawFd;
             socket_create_callback(socket.as_raw_fd(), &addr);
         }

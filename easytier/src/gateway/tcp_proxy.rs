@@ -37,8 +37,6 @@ use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket};
 
 use super::CidrSet;
 
-#[cfg(target_env = "ohos")] use crate::launcher::socket_create_callback;
-
 #[cfg(feature = "smoltcp")]
 use super::tokio_smoltcp::{self, channel_device, Net, NetConfig};
 
@@ -69,6 +67,7 @@ impl NatDstConnector for NatDstTcpConnector {
         let socket = TcpSocket::new_v4().unwrap();
         #[cfg(target_env = "ohos")]
         {
+            use crate::launcher::socket_create_callback;
             use std::os::fd::AsRawFd;
             socket_create_callback(socket.as_raw_fd(), &nat_dst);
         }
