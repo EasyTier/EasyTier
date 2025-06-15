@@ -854,6 +854,8 @@ impl NetworkConfig {
         result.use_smoltcp = Some(flags.use_smoltcp);
         result.enable_kcp_proxy = Some(flags.enable_kcp_proxy);
         result.disable_kcp_input = Some(flags.disable_kcp_input);
+        result.enable_quic_proxy = Some(flags.enable_quic_proxy);
+        result.disable_quic_input = Some(flags.disable_quic_input);
         result.disable_p2p = Some(flags.disable_p2p);
         result.bind_device = Some(flags.bind_device);
         result.no_tun = Some(flags.no_tun);
@@ -1095,6 +1097,8 @@ mod tests {
                 flags.use_smoltcp = rng.gen_bool(0.3);
                 flags.enable_kcp_proxy = rng.gen_bool(0.5);
                 flags.disable_kcp_input = rng.gen_bool(0.3);
+                flags.enable_quic_proxy = rng.gen_bool(0.5);
+                flags.disable_quic_input = rng.gen_bool(0.3);
                 flags.disable_p2p = rng.gen_bool(0.2);
                 flags.bind_device = rng.gen_bool(0.3);
                 flags.no_tun = rng.gen_bool(0.1);
