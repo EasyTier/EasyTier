@@ -196,7 +196,7 @@ impl NatDstConnector for NatDstKcpConnector {
         _ipv4: &Ipv4Packet,
         _real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
-        return hdr.from_peer_id == hdr.to_peer_id;
+        return hdr.from_peer_id == hdr.to_peer_id && hdr.is_kcp_src_modified();
     }
 
     fn transport_type(&self) -> TcpProxyEntryTransportType {
@@ -290,9 +290,11 @@ impl<C: NatDstConnector, T: TcpProxyForKcpSrcTrait<Connector = C>> NicPacketFilt
             }
         };
 
-        zc_packet.mut_peer_manager_header().unwrap().to_peer_id =
-            self.get_tcp_proxy().get_my_peer_id().into();
-
+        let hdr = zc_packet.mut_peer_manager_header().unwrap();
+        hdr.to_peer_id = self.get_tcp_proxy().get_my_peer_id().into();
+        if self.get_tcp_proxy().get_transport_type() == TcpProxyEntryTransportType::Kcp {
+            hdr.set_kcp_src_modified(true);
+        }
         true
     }
 }

@@ -1083,7 +1083,8 @@ async fn main() -> Result<(), Error> {
                     .iter()
                     .map(|(k, v)| format!("{}: {:?}ms", k, v.latency_ms,))
                     .collect::<Vec<_>>();
-                let direct_peers: Vec<_> = v.direct_peers
+                let direct_peers: Vec<_> = v
+                    .direct_peers
                     .iter()
                     .map(|(k, v)| DirectPeerItem {
                         node_id: k.to_string(),
@@ -1257,23 +1258,14 @@ async fn main() -> Result<(), Error> {
         }
         SubCommand::Proxy => {
             let mut entries = vec![];
-            let client = handler.get_tcp_proxy_client("tcp").await?;
-            let ret = client
-                .list_tcp_proxy_entry(BaseController::default(), Default::default())
-                .await;
-            entries.extend(ret.unwrap_or_default().entries);
 
-            let client = handler.get_tcp_proxy_client("kcp_src").await?;
-            let ret = client
-                .list_tcp_proxy_entry(BaseController::default(), Default::default())
-                .await;
-            entries.extend(ret.unwrap_or_default().entries);
-
-            let client = handler.get_tcp_proxy_client("kcp_dst").await?;
-            let ret = client
-                .list_tcp_proxy_entry(BaseController::default(), Default::default())
-                .await;
-            entries.extend(ret.unwrap_or_default().entries);
+            for client_type in &["tcp", "kcp_src", "kcp_dst", "quic_src", "quic_dst"] {
+                let client = handler.get_tcp_proxy_client(client_type).await?;
+                let ret = client
+                    .list_tcp_proxy_entry(BaseController::default(), Default::default())
+                    .await;
+                entries.extend(ret.unwrap_or_default().entries);
+            }
 
             if cli.verbose {
                 println!("{}", serde_json::to_string_pretty(&entries)?);

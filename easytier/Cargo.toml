@@ -290,7 +290,6 @@ full = [
     "tun",
     "socks5",
 ]
-mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc"]

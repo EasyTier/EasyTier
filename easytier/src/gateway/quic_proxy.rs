@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::{net::SocketAddr, pin::Pin};
 
 use anyhow::Context;
+use dashmap::DashMap;
 use pnet::packet::ipv4::Ipv4Packet;
 use prost::Message as _;
 use quinn::{Endpoint, Incoming};
@@ -14,12 +15,18 @@ use tokio::time::timeout;
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
+use crate::defer;
 use crate::gateway::kcp_proxy::TcpProxyForKcpSrcTrait;
 use crate::gateway::tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy};
 use crate::gateway::CidrSet;
 use crate::peers::peer_manager::PeerManager;
-use crate::proto::cli::TcpProxyEntryTransportType;
+use crate::proto::cli::{
+    ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
+    TcpProxyEntryTransportType, TcpProxyRpc,
+};
 use crate::proto::common::ProxyDstInfo;
+use crate::proto::rpc_types;
+use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::PeerManagerHeader;
 use crate::tunnel::quic::{configure_client, make_server_endpoint};
 
@@ -163,11 +170,11 @@ impl NatDstConnector for NatDstQUICConnector {
         _ipv4: &Ipv4Packet,
         _real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
-        return hdr.from_peer_id == hdr.to_peer_id;
+        return hdr.from_peer_id == hdr.to_peer_id && !hdr.is_kcp_src_modified();
     }
 
     fn transport_type(&self) -> TcpProxyEntryTransportType {
-        TcpProxyEntryTransportType::Kcp
+        TcpProxyEntryTransportType::Quic
     }
 }
 
@@ -191,7 +198,10 @@ impl TcpProxyForKcpSrcTrait for TcpProxyForQUICSrc {
         let Some(peer_info) = peer_map.get_route_peer_info(dst_peer_id).await else {
             return false;
         };
-        peer_info.quic_port.is_some()
+        let Some(quic_port) = peer_info.quic_port else {
+            return false;
+        };
+        quic_port > 0
     }
 }
 
@@ -224,11 +234,16 @@ impl QUICProxySrc {
             .await;
         self.tcp_proxy.0.start(false).await.unwrap();
     }
+
+    pub fn get_tcp_proxy(&self) -> Arc<TcpProxy<NatDstQUICConnector>> {
+        self.tcp_proxy.0.clone()
+    }
 }
 
 pub struct QUICProxyDst {
     global_ctx: Arc<GlobalCtx>,
     endpoint: Arc<quinn::Endpoint>,
+    proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
 }
 
@@ -242,6 +257,7 @@ impl QUICProxyDst {
         Ok(Self {
             global_ctx,
             endpoint: Arc::new(endpoint),
+            proxy_entries: Arc::new(DashMap::new()),
             tasks,
         })
     }
@@ -250,6 +266,8 @@ impl QUICProxyDst {
         let endpoint = self.endpoint.clone();
         let tasks = Arc::downgrade(&self.tasks.clone());
         let ctx = self.global_ctx.clone();
+        let cidr_set = Arc::new(CidrSet::new(ctx.clone()));
+        let proxy_entries = self.proxy_entries.clone();
 
         let task = async move {
             loop {
@@ -264,7 +282,12 @@ impl QUICProxyDst {
                         tasks
                             .lock()
                             .unwrap()
-                            .spawn(Self::handle_connection_with_timeout(conn, ctx.clone()));
+                            .spawn(Self::handle_connection_with_timeout(
+                                conn,
+                                ctx.clone(),
+                                cidr_set.clone(),
+                                proxy_entries.clone(),
+                            ));
                     }
                     None => {
                         return;
@@ -282,10 +305,19 @@ impl QUICProxyDst {
         self.endpoint.local_addr().map_err(Into::into)
     }
 
-    async fn handle_connection_with_timeout(conn: Incoming, ctx: Arc<GlobalCtx>) {
+    async fn handle_connection_with_timeout(
+        conn: Incoming,
+        ctx: Arc<GlobalCtx>,
+        cidr_set: Arc<CidrSet>,
+        proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
+    ) {
+        let remote_addr = conn.remote_address();
+        defer!(
+            proxy_entries.remove(&remote_addr);
+        );
         let ret = timeout(
             std::time::Duration::from_secs(10),
-            Self::handle_connection(conn, ctx),
+            Self::handle_connection(conn, ctx, cidr_set, remote_addr, proxy_entries.clone()),
         )
         .await;
 
@@ -310,6 +342,9 @@ impl QUICProxyDst {
     async fn handle_connection(
         incoming: Incoming,
         ctx: ArcGlobalCtx,
+        cidr_set: Arc<CidrSet>,
+        proxy_entry_key: SocketAddr,
+        proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
     ) -> Result<(QUICStream, TcpStream)> {
         let conn = incoming.await.with_context(|| "accept failed")?;
         let addr = conn.remote_address();
@@ -327,22 +362,47 @@ impl QUICProxyDst {
         let proxy_dst_info =
             ProxyDstInfo::decode(&buf[..]).with_context(|| "failed to decode proxy dst info")?;
 
-        let mut nat_dst: SocketAddr = proxy_dst_info
+        let dst_socket: SocketAddr = proxy_dst_info
             .dst_addr
             .map(Into::into)
             .ok_or_else(|| anyhow::anyhow!("no dst addr in proxy dst info"))?;
-        if Some(nat_dst.ip()) == ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address())) && ctx.no_tun() {
-            nat_dst = format!("127.0.0.1:{}", nat_dst.port()).parse().unwrap();
+
+        let SocketAddr::V4(mut dst_socket) = dst_socket else {
+            return Err(anyhow::anyhow!("NAT destination must be an IPv4 address").into());
+        };
+
+        let mut real_ip = *dst_socket.ip();
+        if cidr_set.contains_v4(*dst_socket.ip(), &mut real_ip) {
+            dst_socket.set_ip(real_ip);
         }
+
+        if Some(*dst_socket.ip()) == ctx.get_ipv4().map(|ip| ip.address()) && ctx.no_tun() {
+            dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
+        }
+
+        proxy_entries.insert(
+            proxy_entry_key,
+            TcpProxyEntry {
+                src: Some(addr.into()),
+                dst: Some(SocketAddr::V4(dst_socket).into()),
+                start_time: chrono::Local::now().timestamp() as u64,
+                state: TcpProxyEntryState::ConnectingDst.into(),
+                transport_type: TcpProxyEntryTransportType::Quic.into(),
+            },
+        );
 
         let connector = NatDstTcpConnector {};
 
         let dst_stream = {
             let _g = ctx.net_ns.guard();
             connector
-                .connect("0.0.0.0:0".parse().unwrap(), nat_dst)
+                .connect("0.0.0.0:0".parse().unwrap(), dst_socket.into())
                 .await?
         };
+
+        if let Some(mut e) = proxy_entries.get_mut(&proxy_entry_key) {
+            e.state = TcpProxyEntryState::Connected.into();
+        }
 
         let quic_stream = QUICStream {
             endpoint: None,
@@ -352,5 +412,32 @@ impl QUICProxyDst {
         };
 
         Ok((quic_stream, dst_stream))
+    }
+}
+
+#[derive(Clone)]
+pub struct QUICProxyDstRpcService(Weak<DashMap<SocketAddr, TcpProxyEntry>>);
+
+impl QUICProxyDstRpcService {
+    pub fn new(quic_proxy_dst: &QUICProxyDst) -> Self {
+        Self(Arc::downgrade(&quic_proxy_dst.proxy_entries))
+    }
+}
+
+#[async_trait::async_trait]
+impl TcpProxyRpc for QUICProxyDstRpcService {
+    type Controller = BaseController;
+    async fn list_tcp_proxy_entry(
+        &self,
+        _: BaseController,
+        _request: ListTcpProxyEntryRequest, // Accept request of type HelloRequest
+    ) -> std::result::Result<ListTcpProxyEntryResponse, rpc_types::error::Error> {
+        let mut reply = ListTcpProxyEntryResponse::default();
+        if let Some(tcp_proxy) = self.0.upgrade() {
+            for item in tcp_proxy.iter() {
+                reply.entries.push(item.value().clone());
+            }
+        }
+        Ok(reply)
     }
 }

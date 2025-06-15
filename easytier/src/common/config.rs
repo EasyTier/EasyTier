@@ -439,7 +439,7 @@ impl ConfigLoader for TomlConfigLoader {
             .as_ref()
             .unwrap()
             .iter()
-            .any(|c| c.cidr == cidr)
+            .any(|c| c.cidr == cidr && c.mapped_cidr == mapped_cidr)
         {
             locked_config
                 .proxy_network

@@ -20,7 +20,7 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
-use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxySrc};
+use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
@@ -569,7 +569,7 @@ impl Instance {
             self.kcp_proxy_dst = Some(dst_proxy);
         }
 
-        if !self.global_ctx.get_flags().enable_quic_proxy {
+        if self.global_ctx.get_flags().enable_quic_proxy {
             let quic_src = QUICProxySrc::new(self.get_peer_manager()).await;
             quic_src.start().await;
             self.quic_proxy_src = Some(quic_src);
@@ -755,6 +755,20 @@ impl Instance {
             s.registry().register(
                 TcpProxyRpcServer::new(KcpProxyDstRpcService::new(kcp_proxy)),
                 "kcp_dst",
+            );
+        }
+
+        if let Some(quic_proxy) = self.quic_proxy_src.as_ref() {
+            s.registry().register(
+                TcpProxyRpcServer::new(TcpProxyRpcService::new(quic_proxy.get_tcp_proxy())),
+                "quic_src",
+            );
+        }
+
+        if let Some(quic_proxy) = self.quic_proxy_dst.as_ref() {
+            s.registry().register(
+                TcpProxyRpcServer::new(QUICProxyDstRpcService::new(quic_proxy)),
+                "quic_dst",
             );
         }
 
