@@ -77,16 +77,22 @@ const handleConfigSave = async () => {
 };
 
 const tomlConfig = ref<string>('')
+const tomlConfigRows = ref<number>(1);
 const errorMessage = ref<string>('');
+
+watch(tomlConfig, (newValue) => {
+    tomlConfigRows.value = newValue.split('\n').length;
+    errorMessage.value = '';
+});
 
 </script>
 <template>
     <Dialog v-model:visible="visible" modal :header="t('config_file')" :style="{ width: '70%' }">
         <pre v-if="errorMessage"
-            class="mb-2 p-2 rounded text-sm overflow-auto bg-red-100 text-red-700">{{ errorMessage }}</pre>
+            class="mb-2 p-2 rounded text-sm overflow-auto bg-red-100 text-red-700 max-h-40">{{ errorMessage }}</pre>
         <div class="flex w-full" style="max-height: 60vh; overflow-y: auto;">
-            <Textarea v-model="tomlConfig" class="w-full h-full font-mono flex flex-col" autoResize spellcheck="false"
-                :readonly="props.readonly"></Textarea>
+            <Textarea v-model="tomlConfig" class="w-full h-full font-mono flex flex-col resize-none" :rows="tomlConfigRows"
+                spellcheck="false" :readonly="props.readonly"></Textarea>
         </div>
         <Divider />
         <div class="flex gap-2 justify-end">
