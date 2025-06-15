@@ -52,7 +52,11 @@ dev_name_placeholder: 'Note: When multiple networks use the same TUN interface n
 off_text: Press to disable
 on_text: Press to enable
 show_config: Show Config
+edit_config: Edit Config File
+config_file: Config File
 close: Close
+save: Save
+config_saved: Configuration saved
 my_node_info: My Node Info
 peer_count: Connected
 upload: Upload
