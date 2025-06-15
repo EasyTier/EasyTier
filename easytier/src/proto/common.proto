@@ -35,6 +35,11 @@ message FlagsInConfig {
   bool accept_dns = 22;
   // enable private mode
   bool private_mode = 23;
+
+  // should we convert all tcp streams into quic streams
+  bool enable_quic_proxy = 24;
+  // does this peer allow quic input
+  bool disable_quic_input = 25;
 }
 
 message RpcDescriptor {

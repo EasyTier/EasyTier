@@ -326,16 +326,21 @@ impl QUICProxyDst {
 
         let proxy_dst_info =
             ProxyDstInfo::decode(&buf[..]).with_context(|| "failed to decode proxy dst info")?;
-        let nat_dst = proxy_dst_info
+
+        let mut nat_dst: SocketAddr = proxy_dst_info
             .dst_addr
+            .map(Into::into)
             .ok_or_else(|| anyhow::anyhow!("no dst addr in proxy dst info"))?;
+        if Some(nat_dst.ip()) == ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address())) && ctx.no_tun() {
+            nat_dst = format!("127.0.0.1:{}", nat_dst.port()).parse().unwrap();
+        }
 
         let connector = NatDstTcpConnector {};
 
         let dst_stream = {
             let _g = ctx.net_ns.guard();
             connector
-                .connect("0.0.0.0:0".parse().unwrap(), nat_dst.into())
+                .connect("0.0.0.0:0".parse().unwrap(), nat_dst)
                 .await?
         };
 

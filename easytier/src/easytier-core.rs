@@ -435,6 +435,24 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ENABLE_QUIC_PROXY",
+        help = t!("core_clap.enable_quic_proxy").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_quic_proxy: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_DISABLE_QUIC_INPUT",
+        help = t!("core_clap.disable_quic_input").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_quic_input: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -773,6 +791,8 @@ impl NetworkOptions {
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
+        f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
+        f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         cfg.set_flags(f);

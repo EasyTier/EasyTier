@@ -39,6 +39,8 @@ pub fn gen_default_flags() -> Flags {
         disable_relay_kcp: true,
         accept_dns: false,
         private_mode: false,
+        enable_quic_proxy: false,
+        disable_quic_input: false,
     }
 }
 

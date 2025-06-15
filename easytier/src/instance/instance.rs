@@ -569,13 +569,13 @@ impl Instance {
             self.kcp_proxy_dst = Some(dst_proxy);
         }
 
-        {
+        if !self.global_ctx.get_flags().enable_quic_proxy {
             let quic_src = QUICProxySrc::new(self.get_peer_manager()).await;
             quic_src.start().await;
             self.quic_proxy_src = Some(quic_src);
         }
 
-        {
+        if !self.global_ctx.get_flags().disable_quic_input {
             let quic_dst = QUICProxyDst::new(self.global_ctx.clone())?;
             quic_dst.start().await?;
             self.global_ctx

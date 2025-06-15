@@ -685,6 +685,14 @@ impl NetworkConfig {
             flags.disable_kcp_input = disable_kcp_input;
         }
 
+        if let Some(enable_quic_proxy) = self.enable_quic_proxy {
+            flags.enable_quic_proxy = enable_quic_proxy;
+        }
+
+        if let Some(disable_quic_input) = self.disable_quic_input {
+            flags.disable_quic_input = disable_quic_input;
+        }
+
         if let Some(disable_p2p) = self.disable_p2p {
             flags.disable_p2p = disable_p2p;
         }

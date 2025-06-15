@@ -417,6 +417,7 @@ pub async fn quic_proxy() {
 
     let target_ip = "10.1.2.4";
 
+    subnet_proxy_test_icmp(target_ip).await;
     subnet_proxy_test_tcp(target_ip).await;
 
     drop_insts(insts).await;
@@ -430,8 +431,11 @@ pub async fn subnet_proxy_three_node_test(
     #[values(true, false)] no_tun: bool,
     #[values(true, false)] relay_by_public_server: bool,
     #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
     #[values(true, false)] disable_kcp_input: bool,
+    #[values(true, false)] disable_quic_input: bool,
     #[values(true, false)] dst_enable_kcp_proxy: bool,
+    #[values(true, false)] dst_enable_quic_proxy: bool,
     #[values(true, false)] test_mapped_cidr: bool,
 ) {
     let insts = init_three_node_ex(
@@ -442,6 +446,8 @@ pub async fn subnet_proxy_three_node_test(
                 flags.no_tun = no_tun;
                 flags.disable_kcp_input = disable_kcp_input;
                 flags.enable_kcp_proxy = dst_enable_kcp_proxy;
+                flags.disable_quic_input = disable_quic_input;
+                flags.enable_quic_proxy = dst_enable_quic_proxy;
                 cfg.set_flags(flags);
                 cfg.add_proxy_cidr(
                     "10.1.2.0/24".parse().unwrap(),
@@ -460,9 +466,14 @@ pub async fn subnet_proxy_three_node_test(
                 ));
             }
 
-            if cfg.get_inst_name() == "inst1" && enable_kcp_proxy {
+            if cfg.get_inst_name() == "inst1" {
                 let mut flags = cfg.get_flags();
-                flags.enable_kcp_proxy = true;
+                if enable_kcp_proxy {
+                    flags.enable_kcp_proxy = true;
+                }
+                if enable_quic_proxy {
+                    flags.enable_quic_proxy = true;
+                }
                 cfg.set_flags(flags);
             }
 
