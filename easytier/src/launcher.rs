@@ -127,11 +127,13 @@ impl EasyTierLauncher {
         let arc_tun_fd = data.tun_fd.clone();
 
         tasks.spawn(async move {
-            let mut old_tun_fd = arc_tun_fd.read().unwrap().clone();
+            let mut old_tun_fd = None;
+            tracing::debug!("old tun fd is {:?}", old_tun_fd.unwrap_or(-1));
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let tun_fd = arc_tun_fd.read().unwrap().clone();
                 if tun_fd != old_tun_fd && tun_fd.is_some() {
+                    tracing::debug!("get different tun fd {:?} -> {:?}",old_tun_fd.unwrap_or(-1),tun_fd.unwrap_or(-1));
                     let res = Instance::setup_nic_ctx_for_android(
                         nic_ctx.clone(),
                         global_ctx.clone(),
