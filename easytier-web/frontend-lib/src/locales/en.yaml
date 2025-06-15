@@ -84,6 +84,12 @@ enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and 
 disable_kcp_input: Disable KCP Input
 disable_kcp_input_help: Disable inbound KCP traffic, while nodes with KCP proxy enabled continue to connect using TCP.
 
+enable_quic_proxy: Enable QUIC Proxy
+enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency and boost transmission speed.
+
+disable_quic_input: Disable QUIC Input
+disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
+
 disable_p2p: Disable P2P
 disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
 

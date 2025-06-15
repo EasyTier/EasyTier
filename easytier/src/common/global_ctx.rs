@@ -75,6 +75,8 @@ pub struct GlobalCtx {
     no_tun: bool,
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
+
+    quic_proxy_port: AtomicCell<Option<u16>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -137,6 +139,7 @@ impl GlobalCtx {
             no_tun,
 
             feature_flags: AtomicCell::new(feature_flags),
+            quic_proxy_port: AtomicCell::new(None),
         }
     }
 
@@ -280,6 +283,14 @@ impl GlobalCtx {
 
     pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
         self.feature_flags.store(flags);
+    }
+
+    pub fn get_quic_proxy_port(&self) -> Option<u16> {
+        self.quic_proxy_port.load()
+    }
+
+    pub fn set_quic_proxy_port(&self, port: Option<u16>) {
+        self.quic_proxy_port.store(port);
     }
 }
 

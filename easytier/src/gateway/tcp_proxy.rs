@@ -902,6 +902,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
         }
         entries
     }
+
+    pub fn get_transport_type(&self) -> TcpProxyEntryTransportType {
+        self.connector.transport_type()
+    }
 }
 
 #[derive(Clone)]

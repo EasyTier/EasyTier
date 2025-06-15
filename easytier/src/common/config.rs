@@ -39,6 +39,8 @@ pub fn gen_default_flags() -> Flags {
         disable_relay_kcp: true,
         accept_dns: false,
         private_mode: false,
+        enable_quic_proxy: false,
+        disable_quic_input: false,
     }
 }
 
@@ -437,7 +439,7 @@ impl ConfigLoader for TomlConfigLoader {
             .as_ref()
             .unwrap()
             .iter()
-            .any(|c| c.cidr == cidr)
+            .any(|c| c.cidr == cidr && c.mapped_cidr == mapped_cidr)
         {
             locked_config
                 .proxy_network

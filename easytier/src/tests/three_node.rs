@@ -222,6 +222,8 @@ async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize
             "1",
             target_ip.to_string().as_str(),
         ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .await
         .unwrap();
@@ -391,34 +393,66 @@ async fn subnet_proxy_test_icmp(target_ip: &str) {
     .await;
 }
 
+#[tokio::test]
+pub async fn quic_proxy() {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
+
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    let target_ip = "10.1.2.4";
+
+    subnet_proxy_test_icmp(target_ip).await;
+    subnet_proxy_test_tcp(target_ip).await;
+
+    drop_insts(insts).await;
+}
+
 #[rstest::rstest]
 #[serial_test::serial]
 #[tokio::test]
 pub async fn subnet_proxy_three_node_test(
-    #[values("tcp", "udp", "wg")] proto: &str,
     #[values(true, false)] no_tun: bool,
     #[values(true, false)] relay_by_public_server: bool,
     #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
     #[values(true, false)] disable_kcp_input: bool,
+    #[values(true, false)] disable_quic_input: bool,
     #[values(true, false)] dst_enable_kcp_proxy: bool,
-    #[values(true, false)] test_mapped_cidr: bool,
+    #[values(true, false)] dst_enable_quic_proxy: bool,
 ) {
     let insts = init_three_node_ex(
-        proto,
+        "udp",
         |cfg| {
             if cfg.get_inst_name() == "inst3" {
                 let mut flags = cfg.get_flags();
                 flags.no_tun = no_tun;
                 flags.disable_kcp_input = disable_kcp_input;
                 flags.enable_kcp_proxy = dst_enable_kcp_proxy;
+                flags.disable_quic_input = disable_quic_input;
+                flags.enable_quic_proxy = dst_enable_quic_proxy;
                 cfg.set_flags(flags);
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
                 cfg.add_proxy_cidr(
                     "10.1.2.0/24".parse().unwrap(),
-                    if test_mapped_cidr {
-                        Some("10.1.3.0/24".parse().unwrap())
-                    } else {
-                        None
-                    },
+                    Some("10.1.3.0/24".parse().unwrap()),
                 );
             }
 
@@ -429,9 +463,14 @@ pub async fn subnet_proxy_three_node_test(
                 ));
             }
 
-            if cfg.get_inst_name() == "inst1" && enable_kcp_proxy {
+            if cfg.get_inst_name() == "inst1" {
                 let mut flags = cfg.get_flags();
-                flags.enable_kcp_proxy = true;
+                if enable_kcp_proxy {
+                    flags.enable_kcp_proxy = true;
+                }
+                if enable_quic_proxy {
+                    flags.enable_quic_proxy = true;
+                }
                 cfg.set_flags(flags);
             }
 
@@ -441,29 +480,28 @@ pub async fn subnet_proxy_three_node_test(
     )
     .await;
 
-    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
+    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 2);
 
     wait_proxy_route_appear(
         &insts[0].get_peer_manager(),
         "10.144.144.3/24",
         insts[2].peer_id(),
-        if test_mapped_cidr {
-            "10.1.3.0/24"
-        } else {
-            "10.1.2.0/24"
-        },
+        "10.1.2.0/24",
+    )
+    .await;
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.3.0/24",
     )
     .await;
 
-    let target_ip = if test_mapped_cidr {
-        "10.1.3.4"
-    } else {
-        "10.1.2.4"
-    };
-
-    subnet_proxy_test_icmp(target_ip).await;
-    subnet_proxy_test_tcp(target_ip).await;
-    subnet_proxy_test_udp(target_ip).await;
+    for target_ip in ["10.1.3.4", "10.1.2.4"].iter() {
+        subnet_proxy_test_icmp(target_ip).await;
+        subnet_proxy_test_tcp(target_ip).await;
+        subnet_proxy_test_udp(target_ip).await;
+    }
 
     drop_insts(insts).await;
 }

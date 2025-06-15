@@ -33,7 +33,7 @@ use crate::{
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
-        common::{Ipv4Inet, NatType, PeerFeatureFlag, StunInfo},
+        common::{Ipv4Inet, NatType, StunInfo},
         peer_rpc::{
             route_foreign_network_infos, ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey,
             OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
@@ -124,6 +124,7 @@ impl RoutePeerInfo {
             feature_flag: None,
             peer_route_id: 0,
             network_length: 24,
+            quic_port: None,
         }
     }
 
@@ -162,6 +163,8 @@ impl RoutePeerInfo {
                 .get_ipv4()
                 .map(|x| x.network_length() as u32)
                 .unwrap_or(24),
+
+            quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -2317,12 +2320,12 @@ impl Route for PeerRoute {
             .map(|x| *x)
     }
 
-    async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag> {
+    async fn get_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo> {
         self.service_impl
             .route_table
             .peer_infos
             .get(&peer_id)
-            .and_then(|x| x.feature_flag.clone())
+            .map(|x| x.clone())
     }
 
     async fn get_peer_info_last_update_time(&self) -> Instant {

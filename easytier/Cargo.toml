@@ -64,7 +64,7 @@ bytes = "1.5.0"
 pin-project-lite = "0.2.13"
 tachyonix = "0.3.0"
 
-quinn = { version = "0.11.0", optional = true, features = ["ring"] }
+quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 rustls = { version = "0.23.0", features = [
     "ring",
 ], default-features = false, optional = true }
@@ -280,9 +280,8 @@ tokio-socks = "0.5.2"
 
 
 [features]
-default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun", "socks5"]
+default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun", "socks5", "quic"]
 full = [
-    "quic",
     "websocket",
     "wireguard",
     "mimalloc",
@@ -291,7 +290,6 @@ full = [
     "tun",
     "socks5",
 ]
-mips = ["aes-gcm", "mimalloc", "wireguard", "tun", "smoltcp", "socks5"]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc"]
