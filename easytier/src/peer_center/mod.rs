@@ -19,6 +19,8 @@ pub enum Error {
     DigestMismatch,
     #[error("Not center server")]
     NotCenterServer,
+    #[error("Instance shutdown")]
+    Shutdown,
 }
 
 pub type Digest = u64;

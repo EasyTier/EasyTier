@@ -139,6 +139,8 @@ impl UdpNatEntry {
         self: Arc<Self>,
         mut packet_sender: Sender<ZCPacket>,
         virtual_ipv4: Ipv4Addr,
+        real_ipv4: Ipv4Addr,
+        mapped_ipv4: Ipv4Addr,
     ) {
         let (s, mut r) = tachyonix::channel(128);
 
@@ -195,6 +197,10 @@ impl UdpNatEntry {
 
                 if src_v4.ip().is_loopback() {
                     src_v4.set_ip(virtual_ipv4);
+                }
+
+                if *src_v4.ip() == real_ipv4 {
+                    src_v4.set_ip(mapped_ipv4);
                 }
 
                 let Ok(_) = Self::compose_ipv4_packet(
@@ -266,7 +272,10 @@ impl UdpProxy {
             return None;
         }
 
-        if !self.cidr_set.contains_v4(ipv4.get_destination())
+        let mut real_dst_ip = ipv4.get_destination();
+        if !self
+            .cidr_set
+            .contains_v4(ipv4.get_destination(), &mut real_dst_ip)
             && !is_exit_node
             && !(self.global_ctx.no_tun()
                 && Some(ipv4.get_destination())
@@ -322,6 +331,8 @@ impl UdpProxy {
                     nat_entry.clone(),
                     self.sender.clone(),
                     self.global_ctx.get_ipv4().map(|x| x.address())?,
+                    real_dst_ip,
+                    ipv4.get_destination(),
                 )));
         }
 
@@ -335,7 +346,7 @@ impl UdpProxy {
                 .parse()
                 .unwrap()
         } else {
-            SocketAddr::new(ipv4.get_destination().into(), udp_packet.get_destination())
+            SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination())
         };
 
         let send_ret = {

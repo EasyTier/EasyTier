@@ -107,7 +107,7 @@ async fn handle_kcp_output(
 #[derive(Debug, Clone)]
 pub struct NatDstKcpConnector {
     pub(crate) kcp_endpoint: Arc<KcpEndpoint>,
-    pub(crate) peer_mgr: Arc<PeerManager>,
+    pub(crate) peer_mgr: Weak<PeerManager>,
 }
 
 #[async_trait::async_trait]
@@ -120,10 +120,14 @@ impl NatDstConnector for NatDstKcpConnector {
             dst: Some(nat_dst.into()),
         };
 
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager is not available").into());
+        };
+
         let (dst_peers, _) = match nat_dst {
             SocketAddr::V4(addr) => {
                 let ip = addr.ip();
-                self.peer_mgr.get_msg_dst_peer(&ip).await
+                peer_mgr.get_msg_dst_peer(&ip).await
             }
             SocketAddr::V6(_) => return Err(anyhow::anyhow!("ipv6 is not supported").into()),
         };
@@ -162,7 +166,7 @@ impl NatDstConnector for NatDstKcpConnector {
             retry_remain -= 1;
 
             let kcp_endpoint = self.kcp_endpoint.clone();
-            let peer_mgr = self.peer_mgr.clone();
+            let my_peer_id = peer_mgr.my_peer_id();
             let dst_peer = dst_peers[0];
             let conn_data_clone = conn_data.clone();
 
@@ -170,7 +174,7 @@ impl NatDstConnector for NatDstKcpConnector {
                 kcp_endpoint
                     .connect(
                         Duration::from_secs(10),
-                        peer_mgr.my_peer_id(),
+                        my_peer_id,
                         dst_peer,
                         Bytes::from(conn_data_clone.encode_to_vec()),
                     )
@@ -194,6 +198,7 @@ impl NatDstConnector for NatDstKcpConnector {
         _global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
         _ipv4: &Ipv4Packet,
+        _real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
         return hdr.from_peer_id == hdr.to_peer_id;
     }
@@ -301,7 +306,7 @@ impl KcpProxySrc {
             peer_manager.clone(),
             NatDstKcpConnector {
                 kcp_endpoint: kcp_endpoint.clone(),
-                peer_mgr: peer_manager.clone(),
+                peer_mgr: Arc::downgrade(&peer_manager),
             },
         );
 
@@ -342,6 +347,7 @@ pub struct KcpProxyDst {
     kcp_endpoint: Arc<KcpEndpoint>,
     peer_manager: Arc<PeerManager>,
     proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
+    cidr_set: Arc<CidrSet>,
     tasks: JoinSet<()>,
 }
 
@@ -357,11 +363,12 @@ impl KcpProxyDst {
             output_receiver,
             false,
         ));
-
+        let cidr_set = CidrSet::new(peer_manager.get_global_ctx());
         Self {
             kcp_endpoint: Arc::new(kcp_endpoint),
             peer_manager,
             proxy_entries: Arc::new(DashMap::new()),
+            cidr_set: Arc::new(cidr_set),
             tasks,
         }
     }
@@ -371,6 +378,7 @@ impl KcpProxyDst {
         mut kcp_stream: KcpStream,
         global_ctx: ArcGlobalCtx,
         proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
+        cidr_set: Arc<CidrSet>,
     ) -> Result<()> {
         let mut conn_data = kcp_stream.conn_data().clone();
         let parsed_conn_data = KcpConnData::decode(&mut conn_data)
@@ -382,6 +390,16 @@ impl KcpProxyDst {
                 parsed_conn_data
             ))?
             .into();
+
+        match dst_socket.ip() {
+            IpAddr::V4(dst_v4_ip) => {
+                let mut real_ip = dst_v4_ip;
+                if cidr_set.contains_v4(dst_v4_ip, &mut real_ip) {
+                    dst_socket.set_ip(real_ip.into());
+                }
+            }
+            _ => {}
+        };
 
         let conn_id = kcp_stream.conn_id();
         proxy_entries.insert(
@@ -424,6 +442,7 @@ impl KcpProxyDst {
         let kcp_endpoint = self.kcp_endpoint.clone();
         let global_ctx = self.peer_manager.get_global_ctx().clone();
         let proxy_entries = self.proxy_entries.clone();
+        let cidr_set = self.cidr_set.clone();
         self.tasks.spawn(async move {
             while let Ok(conn) = kcp_endpoint.accept().await {
                 let stream = KcpStream::new(&kcp_endpoint, conn)
@@ -432,8 +451,10 @@ impl KcpProxyDst {
 
                 let global_ctx = global_ctx.clone();
                 let proxy_entries = proxy_entries.clone();
+                let cidr_set = cidr_set.clone();
                 tokio::spawn(async move {
-                    let _ = Self::handle_one_in_stream(stream, global_ctx, proxy_entries).await;
+                    let _ = Self::handle_one_in_stream(stream, global_ctx, proxy_entries, cidr_set)
+                        .await;
                 });
             }
         });

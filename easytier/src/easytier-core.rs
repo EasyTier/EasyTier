@@ -25,8 +25,8 @@ use easytier::{
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
-    launcher::ConfigSource,
     instance_manager::NetworkInstanceManager,
+    launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
@@ -540,7 +540,7 @@ impl Cli {
 
 impl NetworkOptions {
     fn can_merge(&self, cfg: &TomlConfigLoader, config_file_count: usize) -> bool {
-        if config_file_count == 1{
+        if config_file_count == 1 {
             return true;
         }
         let Some(network_name) = &self.network_name else {
@@ -624,10 +624,7 @@ impl NetworkOptions {
         }
 
         for n in self.proxy_networks.iter() {
-            cfg.add_proxy_cidr(
-                n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
-            );
+            add_proxy_network_to_config(n, &cfg)?;
         }
 
         let rpc_portal = if let Some(r) = &self.rpc_portal {

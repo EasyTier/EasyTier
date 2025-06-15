@@ -237,12 +237,9 @@ impl AsyncTcpConnector for Socks5KcpConnector {
         let Some(kcp_endpoint) = self.kcp_endpoint.upgrade() else {
             return Err(anyhow::anyhow!("kcp endpoint is not ready").into());
         };
-        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
-            return Err(anyhow::anyhow!("peer mgr is not ready").into());
-        };
         let c = NatDstKcpConnector {
             kcp_endpoint,
-            peer_mgr,
+            peer_mgr: self.peer_mgr.clone(),
         };
         println!("connect to kcp endpoint, addr = {:?}", addr);
         let ret = c

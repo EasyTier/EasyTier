@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -31,7 +31,8 @@ use crate::{
 use super::{server::PeerCenterServer, Digest, Error};
 
 struct PeerCenterBase {
-    peer_mgr: Arc<PeerManager>,
+    peer_mgr: Weak<PeerManager>,
+    my_peer_id: PeerId,
     tasks: Mutex<JoinSet<()>>,
     lock: Arc<Mutex<()>>,
 }
@@ -40,20 +41,25 @@ struct PeerCenterBase {
 static SERVICE_ID: u32 = 50;
 
 struct PeridicJobCtx<T> {
-    peer_mgr: Arc<PeerManager>,
+    peer_mgr: Weak<PeerManager>,
+    my_peer_id: PeerId,
     center_peer: AtomicCell<PeerId>,
     job_ctx: T,
 }
 
 impl PeerCenterBase {
     pub async fn init(&self) -> Result<(), Error> {
-        self.peer_mgr
+        let Some(peer_mgr) = self.peer_mgr.upgrade() else {
+            return Err(Error::Shutdown);
+        };
+
+        peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()
             .register(
-                PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
-                &self.peer_mgr.get_global_ctx().get_network_name(),
+                PeerCenterRpcServer::new(PeerCenterServer::new(peer_mgr.my_peer_id())),
+                &peer_mgr.get_global_ctx().get_network_name(),
             );
         Ok(())
     }
@@ -91,17 +97,23 @@ impl PeerCenterBase {
              + Sync
              + 'static),
     ) -> () {
-        let my_peer_id = self.peer_mgr.my_peer_id();
+        let my_peer_id = self.my_peer_id;
         let peer_mgr = self.peer_mgr.clone();
         let lock = self.lock.clone();
         self.tasks.lock().await.spawn(
             async move {
                 let ctx = Arc::new(PeridicJobCtx {
                     peer_mgr: peer_mgr.clone(),
+                    my_peer_id,
                     center_peer: AtomicCell::new(PeerId::default()),
                     job_ctx,
                 });
                 loop {
+                    let Some(peer_mgr) = peer_mgr.upgrade() else {
+                        tracing::error!("peer manager is shutdown, exit periodic job");
+                        return;
+                    };
+
                     let Some(center_peer) = Self::select_center_peer(&peer_mgr).await else {
                         tracing::trace!("no center peer found, sleep 1 second");
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -138,7 +150,8 @@ impl PeerCenterBase {
 
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         PeerCenterBase {
-            peer_mgr,
+            peer_mgr: Arc::downgrade(&peer_mgr),
+            my_peer_id: peer_mgr.my_peer_id(),
             tasks: Mutex::new(JoinSet::new()),
             lock: Arc::new(Mutex::new(())),
         }
@@ -289,7 +302,7 @@ impl PeerCenterInstance {
 
         self.client
             .init_periodic_job(ctx, |client, ctx| async move {
-                let my_node_id = ctx.peer_mgr.my_peer_id();
+                let my_node_id = ctx.my_peer_id;
                 let peers: PeerInfoForGlobalMap = ctx.job_ctx.service.list_peers().await.into();
                 let peer_list = peers.direct_peers.keys().map(|k| *k).collect();
                 let job_ctx = &ctx.job_ctx;

@@ -955,9 +955,18 @@ mod tests {
     async fn test_txt_public_stun_server() {
         let stun_servers = vec!["txt:stun.easytier.cn".to_string()];
         let detector = UdpNatTypeDetector::new(stun_servers, 1);
-        let ret = detector.detect_nat_type(0).await;
-        println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
-        assert!(!ret.unwrap().stun_resps.is_empty());
+        for _ in 0..5 {
+            let ret = detector.detect_nat_type(0).await;
+            println!("{:#?}, {:?}", ret, ret.as_ref().unwrap().nat_type());
+            if ret.is_ok() {
+                assert!(!ret.unwrap().stun_resps.is_empty());
+                return;
+            }
+        }
+        debug_assert!(
+            false,
+            "should not reach here, stun server should be available"
+        );
     }
 
     #[tokio::test]

@@ -32,8 +32,14 @@ core_clap:
     en: "use a public shared node to discover peers"
     zh-CN: "使用公共共享节点来发现对等节点"
   proxy_networks:
-    en: "export local networks to other peers in the vpn"
-    zh-CN: "将本地网络导出到VPN中的其他对等节点"
+    en: |+
+      export local networks to other peers in the vpn,  e.g.: 10.0.0.0/24.
+      also support mapping proxy network to other cidr, e.g.: 10.0.0.0/24->192.168.0.0/24
+      other peers can access 10.0.0.1 with ip 192.168.0.1
+    zh-CN: |+
+      将本地网络导出到VPN中的其他对等节点，例如：10.0.0.0/24。
+      还支持将代理网络映射到其他CIDR，例如：10.0.0.0/24->192.168.0.0/24
+      其他对等节点可以通过 IP 192.168.0.1 来访问 10.0.0.1
   rpc_portal:
     en: "rpc portal address to listen for management. 0 means random port, 12345 means listen on 12345 of localhost, 0.0.0.0:12345 means listen on 12345 of all interfaces. default is 0 and will try 15888 first"
     zh-CN: "用于管理的RPC门户地址。0表示随机端口，12345表示在localhost的12345上监听，0.0.0.0:12345表示在所有接口的12345上监听。默认是0，首先尝试15888"
