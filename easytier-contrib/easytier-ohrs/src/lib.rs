@@ -1,25 +1,23 @@
 mod native_log;
 
-use dashmap::DashMap;
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
-use easytier::launcher::{NetworkInstance, SOCKET_CREATE_CALLBACK};
+use easytier::instance_manager::NetworkInstanceManager;
+use easytier::launcher::{ConfigSource, SOCKET_CREATE_CALLBACK};
 use lazy_static::lazy_static;
 use napi_derive_ohos::napi;
 use napi_ohos::bindgen_prelude::*;
 use napi_ohos::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use ohos_hilog_binding::{hilog_info, hilog_warn};
+use ohos_hilog_binding::{hilog_debug, hilog_error, hilog_warn};
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
-use std::sync::{atomic, Mutex};
+use std::sync::{Mutex, atomic};
 use std::time::Duration;
 use std::{format, thread};
+use uuid::Uuid;
 
-static INSTANCE_MAP: once_cell::sync::Lazy<DashMap<String, NetworkInstance>> =
-    once_cell::sync::Lazy::new(DashMap::new);
-
-static ERROR_MSG: once_cell::sync::Lazy<Mutex<String>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(String::new()));
+static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
+    once_cell::sync::Lazy::new(NetworkInstanceManager::new);
 
 static TUN_FD: atomic::AtomicI32 = atomic::AtomicI32::new(-1);
 
@@ -31,7 +29,7 @@ lazy_static! {
 
 pub fn protect_socket(fd: i32, socket_addr: &SocketAddr) -> bool {
     if SOCKET_SET.lock().unwrap().contains(&fd) {
-        hilog_info!("[Rust] fd {} has been protected", fd);
+        hilog_debug!("[Rust] fd {} has been protected", fd);
         return true;
     }
     let guard = PROTECT_FN.lock().unwrap();
@@ -39,20 +37,20 @@ pub fn protect_socket(fd: i32, socket_addr: &SocketAddr) -> bool {
         Some(tsfn) => {
             tsfn.call(Ok(fd as u32), ThreadsafeFunctionCallMode::Blocking);
             thread::sleep(Duration::from_millis(10));
-            hilog_info!("[Rust] successful protect fd {} to {}", fd, socket_addr);
+            hilog_debug!("[Rust] successful protect fd {} to {}", fd, socket_addr);
             SOCKET_SET.lock().unwrap().insert(fd);
             true
-        },
+        }
         None => {
-            hilog_warn!("[Rust] protect_function is 404");
+            hilog_error!("[Rust] protect_function is 404");
             false
-        },
+        }
     }
 }
 
 #[napi]
-pub async fn init_protect_fn(func: ThreadsafeFunction<u32, Promise<()>>) {
-    hilog_info!("[Rust] init_protect_fn");
+pub fn init_protect_fn(func: ThreadsafeFunction<u32, Promise<()>>) {
+    hilog_debug!("[Rust] init_protect_fn");
     let mut guard = PROTECT_FN.lock().unwrap();
     *guard = Some(func);
     let mut guard = SOCKET_CREATE_CALLBACK.lock().unwrap();
@@ -67,23 +65,21 @@ pub struct KeyValuePair {
 
 #[napi]
 pub fn set_global_tun(fd: i32) {
-    hilog_info!("[Rust] init global tun {}", fd);
+    hilog_debug!("[Rust] init global tun {}", fd);
     TUN_FD.store(fd, Ordering::SeqCst);
 }
 
 #[napi]
-pub fn get_error_msg() -> String {
-    let msg_buf = ERROR_MSG.lock().unwrap().clone();
-    String::from(msg_buf)
-}
-
-#[napi]
 pub fn parse_config(cfg_str: String) -> bool {
-    if let Err(e) = TomlConfigLoader::new_from_str(&cfg_str) {
-        set_error_msg(format!("failed to parse config: {:?}", e));
-        return false;
+    match TomlConfigLoader::new_from_str(&cfg_str) {
+        Ok(_) => {
+            true
+        }
+        Err(e) => {
+            hilog_error!("[Rust] parse config failed {}", e);
+            false
+        }
     }
-    true
 }
 
 #[napi]
@@ -91,118 +87,106 @@ pub fn run_network_instance(cfg_str: String) -> bool {
     let cfg = match TomlConfigLoader::new_from_str(&cfg_str) {
         Ok(cfg) => cfg,
         Err(e) => {
-            set_error_msg(format!("failed to parse config: {}", e));
+            hilog_error!("[Rust] parse config failed {}", e);
             return false;
         }
     };
-
-    let inst_name = cfg.get_inst_name();
-    if INSTANCE_MAP.contains_key(&inst_name) {
-        set_error_msg(String::from("instance already exists"));
+    
+    if INSTANCE_MANAGER.list_network_instance_ids().len() > 0 { 
+        hilog_error!("[Rust] there is a running instance!");
         return false;
     }
 
-    let mut instance = NetworkInstance::new(cfg);
-    let fd = TUN_FD.load(Ordering::SeqCst);
-    if fd > 0 {
-        hilog_info!("[Rust] set global tun:{} to {}", fd, inst_name);
-        instance.set_tun_fd(fd);
-    }else {
-        hilog_warn!("[Rust] global tun is {}", fd);
-    }
-    if let Err(e) = instance.start().map_err(|e| e.to_string()) {
-        set_error_msg(format!("failed to start instance: {}", e));
+    let inst_id = cfg.get_id();
+    if INSTANCE_MANAGER
+        .list_network_instance_ids()
+        .contains(&inst_id)
+    {
         return false;
     }
+    let uuid = INSTANCE_MANAGER
+        .run_network_instance(cfg, ConfigSource::FFI)
+        .unwrap();
     let fd = TUN_FD.load(Ordering::SeqCst);
     if fd > 0 {
-        hilog_info!("[Rust] set global tun:{} to {}", fd, inst_name);
-        instance.set_tun_fd(fd);
-    }else {
-        hilog_warn!("[Rust] global tun is {}", fd);
-    }
-    hilog_info!("[Rust] run_network_instance {}", inst_name);
-    INSTANCE_MAP.insert(inst_name, instance);
-    true
-}
-
-#[napi]
-pub fn retain_network_instance(
-    inst_names: Vec<String>
-) {
-    hilog_info!("[Rust] retain_network_instance {:?}", inst_names);
-    if inst_names.len() == 0 {
-        INSTANCE_MAP.clear();
-        return;
-    }
-    let _ = INSTANCE_MAP.retain(|k, _| inst_names.contains(k));
-    if INSTANCE_MAP.is_empty() {
-        SOCKET_SET.lock().unwrap().clear()
-    }
-}
-
-#[napi]
-pub fn stop_network_instance(
-    inst_names: Vec<String>
-) {
-    hilog_info!("[Rust] stop_network_instance {:?}", inst_names);
-    if inst_names.len() == 0 {
-        return;
-    }
-    let _ = INSTANCE_MAP.retain(|k, _| !inst_names.contains(k));
-    if INSTANCE_MAP.is_empty() {
-        SOCKET_SET.lock().unwrap().clear()
-    }
-}
-
-#[napi]
-pub fn destroy_all_network_instance() -> bool {
-    hilog_info!("[Rust] destroy_all_network_instance");
-    INSTANCE_MAP.clear();
-    SOCKET_SET.lock().unwrap().clear();
-    true
-}
-
-#[napi]
-pub fn collect_network_infos(max_length: i32) -> Vec<KeyValuePair> {
-    let mut result = Vec::new();
-    if max_length == 0 {
-        return result;
-    }
-    let mut index = 0;
-    for instance in INSTANCE_MAP.iter() {
-        if index >= max_length {
-            break;
-        }
-        let key = instance.key();
-        let Some(value) = instance.get_running_info() else {
-            continue;
-        };
-        // convert value to json string
-        let value = match serde_json::to_string(&value) {
-            Ok(value) => value,
+        match INSTANCE_MANAGER.set_tun_fd(&uuid, fd) {
+            Ok(_) => {
+                hilog_debug!("[Rust] set global tun:{} to {}", fd, inst_id);
+            }
             Err(e) => {
-                set_error_msg(format!("failed to serialize instance info: {}", e));
-                return result;
+                hilog_error!("[Rust] set global tun:{} to {} failed {}", fd, inst_id, e);
             }
-        };
-        result.push(
-            KeyValuePair {
-                key: key.clone(),
-                value: value.clone(),
+        }
+        hilog_debug!("[Rust] run_network_instance {}", inst_id);
+    } else {
+        hilog_warn!("[Rust] global tun is {}", fd);
+    }
+    true
+}
+
+#[napi]
+pub fn stop_network_instance(inst_names: Vec<String>) {
+    INSTANCE_MANAGER
+        .delete_network_instance(
+            inst_names
+                .into_iter()
+                .filter_map(|s| Uuid::parse_str(&s).ok())
+                .collect(),
+        )
+        .unwrap();
+    hilog_debug!("[Rust] stop_network_instance");
+    if INSTANCE_MANAGER.list_network_instance_ids().is_empty() {
+        SOCKET_SET.lock().unwrap().clear()
+    }
+}
+
+#[napi]
+pub fn collect_network_infos() -> Vec<KeyValuePair> {
+    let mut result = Vec::new();
+    match INSTANCE_MANAGER.collect_network_infos() {
+        Ok(map) => {
+            for (uuid, info) in map.iter() {
+                // convert value to json string
+                let value = match serde_json::to_string(&info) {
+                    Ok(value) => value,
+                    Err(e) => {
+                        hilog_error!("[Rust] failed to serialize instance {} info: {}", uuid, e);
+                        continue;
+                    }
+                };
+                result.push(KeyValuePair {
+                    key: uuid.clone().to_string(),
+                    value: value.clone(),
+                });
             }
-        );
-        index += 1;
+        }
+        Err(_) => {}
     }
     result
 }
 
 #[napi]
-pub fn reflash() {
-    hilog_warn!("aa")
+pub fn collect_running_network() -> Vec<String> {
+    INSTANCE_MANAGER
+        .list_network_instance_ids()
+        .clone()
+        .into_iter()
+        .map(|id| id.to_string())
+        .collect()
 }
 
-fn set_error_msg(msg: String) {
-    let mut msg_buf = ERROR_MSG.lock().unwrap();
-    *msg_buf = msg;
+#[napi]
+pub fn is_running_network(inst_id: String) -> bool {
+    match Uuid::try_parse(&inst_id) {
+        Ok(uuid) => {
+            INSTANCE_MANAGER
+                    .list_network_instance_ids()
+                    .contains(&uuid)
+        }
+        Err(e) => {
+            hilog_error!("[Rust] cant covert {} to uuid. {}", inst_id, e);
+            false
+        }
+    }
+    
 }
