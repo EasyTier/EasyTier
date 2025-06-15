@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-
 use async_trait::async_trait;
 use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
@@ -153,9 +152,19 @@ impl TcpTunnelConnector {
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
-        let stream = TcpStream::connect(addr).await?;
-        tracing::info!(url = ?self.addr, ?addr, "connect tcp succ");
-        return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
+        let socket = match addr {
+            SocketAddr::V4(_) => TcpSocket::new_v4()?,
+            SocketAddr::V6(_) => TcpSocket::new_v6()?,
+        };
+        #[cfg(target_env = "ohos")]
+        {
+            use crate::launcher::socket_create_callback;
+            use std::os::fd::AsRawFd;
+            socket_create_callback(socket.as_raw_fd(), &addr);
+        }
+        let stream = socket.connect(addr).await?;
+        tracing::info!(url = ?self.addr, ?addr,local_addr = ?stream.local_addr()?, "connect tcp succ with explicit bind");
+        return get_tunnel_with_tcp_stream(stream, self.addr.clone().into())
     }
 
     async fn connect_with_custom_bind(
