@@ -52,6 +52,7 @@ off_text: 点击关闭
 on_text: 点击开启
 show_config: 显示配置
 edit_config: 编辑配置文件
+config_file: 配置文件
 close: 关闭
 save: 保存
 config_saved: 配置已保存

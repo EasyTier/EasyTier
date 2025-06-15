@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Toolbar, IftaLabel, Select, Button, ConfirmPopup, Dialog, useConfirm, useToast, Divider } from 'primevue';
-import { NetworkTypes, Status, Utils, Api, } from 'easytier-frontend-lib';
+import { NetworkTypes, Status, Utils, Api, ConfigEditDialog } from 'easytier-frontend-lib';
 import { watch, computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -33,6 +33,7 @@ const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
 
 const isEditing = ref(false);
 const showCreateNetworkDialog = ref(false);
+const showConfigEditDialog = ref(false);
 const newNetworkConfig = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAULT_NETWORK_CONFIG());
 
 const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
@@ -103,7 +104,12 @@ const updateNetworkState = async (disabled: boolean) => {
         return;
     }
 
-    await props.api?.update_device_instance_state(deviceId.value, selectedInstanceId.value.uuid, disabled);
+    if (disabled || !disabledNetworkConfig.value) {
+        await props.api?.update_device_instance_state(deviceId.value, selectedInstanceId.value.uuid, disabled);
+    } else if (disabledNetworkConfig.value) {
+        await props.api?.delete_network(deviceId.value, disabledNetworkConfig.value.instance_id);
+        await props.api?.run_network(deviceId.value, disabledNetworkConfig.value);
+    }
     await loadNetworkInstanceIds();
 }
 
@@ -253,7 +259,7 @@ const handleFileUpload = (event: Event) => {
 
             const config = resp.config;
             if (!config) return;
-            
+
             config.instance_id = newNetworkConfig.value?.instance_id ?? config?.instance_id;
 
             Object.assign(newNetworkConfig.value, resp.config);
@@ -279,6 +285,31 @@ const exportTomlFile = (context: string, name: string) => {
     window.URL.revokeObjectURL(url);
 }
 
+const generateConfig = async (config: NetworkTypes.NetworkConfig): Promise<string> => {
+    let { toml_config: tomlConfig, error } = await props.api?.generate_config({ config });
+    if (error) {
+        throw error;
+    }
+    return tomlConfig ?? '';
+}
+
+const saveConfig = async (tomlConfig: string): Promise<void> => {
+    let resp = await props.api?.parse_config({ toml_config: tomlConfig });
+    if (resp.error) {
+        throw resp.error;
+    };
+    const config = resp.config;
+    if (!config) {
+        throw new Error("Parsed config is empty");
+    }
+    config.instance_id = disabledNetworkConfig.value?.instance_id ?? config?.instance_id;
+    if (networkIsDisabled.value) {
+        disabledNetworkConfig.value = config;
+    } else {
+        newNetworkConfig.value = config;
+    }
+}
+
 let periodFunc = new Utils.PeriodicTask(async () => {
     try {
         await Promise.all([loadNetworkInstanceIds(), loadDeviceInfo()]);
@@ -300,16 +331,21 @@ onUnmounted(() => {
 <template>
     <input type="file" @change="handleFileUpload" class="hidden" accept="application/toml" ref="configFile" />
     <ConfirmPopup></ConfirmPopup>
-    <Dialog v-model:visible="showCreateNetworkDialog" modal :header="!isEditing ? 'Create New Network' : 'Edit Network'"
-        :style="{ width: '55rem' }">
+    <Dialog v-if="!networkIsDisabled" v-model:visible="showCreateNetworkDialog" modal
+        :header="!isEditing ? 'Create New Network' : 'Edit Network'" :style="{ width: '55rem' }">
         <div class="flex flex-col">
-            <div class="w-11/12 self-center ">
+            <div class="w-11/12 self-center space-x-2">
+                <Button @click="showConfigEditDialog = true" icon="pi pi-pen-to-square" label="Edit File" iconPos="right" />
                 <Button @click="importConfig" icon="pi pi-file-import" label="Import" iconPos="right" />
-                <Divider />
             </div>
         </div>
+        <Divider />
         <Config :cur-network="newNetworkConfig" @run-network="createNewNetwork"></Config>
     </Dialog>
+    <ConfigEditDialog v-if="networkIsDisabled" v-model:visible="showCreateNetworkDialog"
+        :cur-network="disabledNetworkConfig" :generate-config="generateConfig" :save-config="saveConfig" />
+    <ConfigEditDialog v-else v-model:visible="showConfigEditDialog" :cur-network="newNetworkConfig"
+        :generate-config="generateConfig" :save-config="saveConfig" />
 
     <Toolbar>
         <template #start>

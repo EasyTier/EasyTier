@@ -8,7 +8,7 @@ import { exit } from '@tauri-apps/plugin-process'
 import { open } from '@tauri-apps/plugin-shell'
 import TieredMenu from 'primevue/tieredmenu'
 import { useToast } from 'primevue/usetoast'
-import { NetworkTypes, Config, Status, Utils, I18nUtils } from 'easytier-frontend-lib'
+import { NetworkTypes, Config, Status, Utils, I18nUtils, ConfigEditDialog } from 'easytier-frontend-lib'
 
 import { isAutostart, setLoggingLevel } from '~/composables/network'
 import { useTray } from '~/composables/tray'
@@ -263,17 +263,11 @@ function isRunning(id: string) {
   return networkStore.networkInstanceIds.includes(id)
 }
 
-async function saveTomlConfig() {
-  try {
-    const config = await generateNetworkConfig(tomlConfig.value)
-    networkStore.replaceCurNetwork(config);
-    toast.add({ severity: 'success', detail: t('config_saved'), life: 3000 })
-    visible.value = false
-  } catch (e: any) {
-    console.error('saving config failed', e)
-    toast.add({ severity: 'error', detail: e, life: 3000 })
-    return
-  }
+async function saveTomlConfig(tomlConfig: string) {
+  const config = await generateNetworkConfig(tomlConfig)
+  networkStore.replaceCurNetwork(config);
+  toast.add({ severity: 'success', detail: t('config_saved'), life: 3000 })
+  visible.value = false
 }
 </script>
 
@@ -282,20 +276,8 @@ async function saveTomlConfig() {
 
 <template>
   <div id="root" class="flex flex-col">
-    <Dialog v-model:visible="visible" modal header="Config File" :style="{ width: '70%' }">
-      <Panel>
-        <ScrollPanel style="width: 100%; height: 300px">
-          <pre v-if="activeStep !== '1'" readonly>{{ tomlConfig }}</pre>
-          <textarea v-else v-model="tomlConfig" class="w-full h-full"
-            style="min-height: 300px; font-family: monospace; resize: none;"></textarea>
-        </ScrollPanel>
-      </Panel>
-      <Divider />
-      <div class="flex gap-2 justify-end">
-        <Button v-if="activeStep === '1'" type="button" :label="t('save')" @click="saveTomlConfig" />
-        <Button type="button" :label="t('close')" @click="visible = false" />
-      </div>
-    </Dialog>
+    <ConfigEditDialog v-model:visible="visible" :cur-network="curNetworkConfig" :readonly="activeStep !== '1'"
+      :save-config="saveTomlConfig" :generate-config="parseNetworkConfig" />
 
     <Dialog v-model:visible="aboutVisible" modal :header="t('about.title')" :style="{ width: '70%' }">
       <About />

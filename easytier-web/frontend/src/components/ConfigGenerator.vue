@@ -2,7 +2,7 @@
 import { NetworkTypes } from 'easytier-frontend-lib';
 import {computed, ref} from 'vue';
 import { Api } from 'easytier-frontend-lib'
-import {AutoComplete, Divider, Button} from "primevue";
+import {AutoComplete, Divider, Button, Textarea} from "primevue";
 import {getInitialApiHost, cleanAndLoadApiHosts, saveApiHost} from "../modules/api-host"
 
 const api = computed<Api.ApiClient>(() => new Api.ApiClient(apiHost.value));
@@ -77,13 +77,14 @@ const parseConfig = async () => {
                 </div>
                 <Config :cur-network="newNetworkConfig" @run-network="generateConfig" />
             </div>
-            <div class="sm:w-full md:w-1/2 p-4 bg-gray-100 flex flex-col h-[calc(100vh-80px)]">
-                <pre v-if="errorMessage" class="mb-2 p-2 rounded text-sm overflow-auto bg-red-100 text-red-700">{{ errorMessage }}</pre>
-                <textarea 
+            <div class="sm:w-full md:w-1/2 p-4 flex flex-col h-[calc(100vh-80px)]">
+                <pre v-if="errorMessage" class="mb-2 p-2 rounded text-sm overflow-auto bg-red-100 text-red-700 max-h-40">{{ errorMessage }}</pre>
+                <Textarea 
                     v-model="toml_config" 
-                    class="w-full flex-grow p-2 bg-transparent whitespace-pre-wrap font-mono border-none focus:outline-none resize-none" 
+                    spellcheck="false"
+                    class="w-full flex-grow p-2 bg-gray-100 whitespace-pre-wrap font-mono border-none focus:outline-none resize-none" 
                     placeholder="Press 'Run Network' to generate TOML configuration, or paste your TOML configuration here to parse it"
-                ></textarea>
+                ></Textarea>
                 <div class="mt-3 flex justify-center">
                   <Button label="Parse Config" icon="pi pi-arrow-left" icon-pos="left" @click="parseConfig" />
                 </div>
