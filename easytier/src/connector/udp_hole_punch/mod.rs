@@ -221,7 +221,7 @@ impl UdpHoePunchConnectorData {
             Ok(Some(tunnel)) => {
                 tracing::info!(?tunnel, "hole punching get tunnel success");
 
-                if let Err(e) = self.peer_mgr.add_client_tunnel(tunnel).await {
+                if let Err(e) = self.peer_mgr.add_client_tunnel(tunnel, false).await {
                     tracing::warn!(?e, "add client tunnel failed");
                     op(true);
                     false

@@ -41,7 +41,7 @@ pub async fn connect_peer_manager(client: Arc<PeerManager>, server: Arc<PeerMana
     let (a_ring, b_ring) = create_ring_tunnel_pair();
     let a_mgr_copy = client.clone();
     tokio::spawn(async move {
-        a_mgr_copy.add_client_tunnel(a_ring).await.unwrap();
+        a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
     });
     let b_mgr_copy = server.clone();
     tokio::spawn(async move {
