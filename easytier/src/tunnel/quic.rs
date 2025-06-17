@@ -16,11 +16,16 @@ use super::{
     insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
+use quinn_proto::congestion::BbrConfig; 
 
 pub fn configure_client() -> ClientConfig {
-    ClientConfig::new(Arc::new(
+    let mut config = ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
-    ))
+    ));
+    if let Some(transport_config) = Arc::get_mut(&mut config.transport) {
+        transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    }
+    config
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
@@ -45,7 +50,8 @@ pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
-
+    /// Setting BBR congestion control
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
     Ok((server_config, certs[0].to_vec()))
 }
 
