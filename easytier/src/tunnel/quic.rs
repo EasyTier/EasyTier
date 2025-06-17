@@ -18,9 +18,6 @@ use super::{
 };
 use quinn_proto::congestion::BbrConfig; 
 
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, TransportConfig};
-use quinn_proto::congestion::BbrConfig;
-use std::sync::Arc;
 
 pub fn configure_client() -> ClientConfig {
     let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
