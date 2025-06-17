@@ -18,17 +18,22 @@ use super::{
 };
 use quinn_proto::congestion::BbrConfig; 
 
+use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, TransportConfig};
+use quinn_proto::congestion::BbrConfig;
+use std::sync::Arc;
+
 pub fn configure_client() -> ClientConfig {
-    let mut config = ClientConfig::new(Arc::new(
-        QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
-    ));
-    // Setting BBR congestion control
-    // Attempt to modify the transport config using Arc::make_mut
-    // This is the standard way if config.transport is a public mutable Arc<TransportConfig>
-    // and TransportConfig is Clone.
-    let transport_config_mut_ref = Arc::make_mut(&mut config.transport);
-    transport_config_mut_ref.congestion_controller_factory(Arc::new(BbrConfig::default()));
-    config
+    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
+    let mut client_config = ClientConfig::new(Arc::new(client_crypto));
+
+    // // Create a new TransportConfig and set BBR
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+
+    // Replace the default TransportConfig with the transport_config() method
+    client_config.transport_config(Arc::new(transport_config));
+
+    client_config
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address

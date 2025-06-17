@@ -29,8 +29,6 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::PeerManagerHeader;
 use crate::tunnel::quic::{configure_client, make_server_endpoint};
-#[cfg(feature = "quic")] 
-use quinn_proto::congestion::BbrConfig;
 
 pub struct QUICStream {
     endpoint: Option<quinn::Endpoint>,
