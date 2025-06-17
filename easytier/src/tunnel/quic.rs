@@ -2,14 +2,17 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::tunnel::{
     common::{FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig};
+use quinn::{
+    crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig,
+    TransportConfig,
+};
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -18,9 +21,15 @@ use super::{
 };
 
 pub fn configure_client() -> ClientConfig {
-    ClientConfig::new(Arc::new(
+    let mut tspt_cfg = TransportConfig::default();
+    tspt_cfg.keep_alive_interval(Some(Duration::from_secs(5)));
+
+    let mut cfg = ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
-    ))
+    ));
+    cfg.transport_config(Arc::new(tspt_cfg));
+
+    cfg
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
