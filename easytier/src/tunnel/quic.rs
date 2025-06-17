@@ -22,6 +22,7 @@ pub fn configure_client() -> ClientConfig {
     let mut config = ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
     ));
+    /// Setting BBR congestion control
     if let Some(transport_config) = Arc::get_mut(&mut config.transport) {
         transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
     }
