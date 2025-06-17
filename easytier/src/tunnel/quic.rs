@@ -9,7 +9,7 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig};
+use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig};
 
 use super::{
     check_scheme_and_get_socket_addr,
