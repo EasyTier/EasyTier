@@ -65,6 +65,8 @@ pin-project-lite = "0.2.13"
 tachyonix = "0.3.0"
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
+quinn-proto = { version = "0.11.12", optional = true } 
+
 rustls = { version = "0.23.0", features = [
     "ring",
 ], default-features = false, optional = true }
@@ -291,7 +293,7 @@ full = [
     "socks5",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
-quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
+quic = ["dep:quinn", "dep:rustls", "dep:rcgen", "dep:quinn-proto"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
 tun = ["dep:tun"]

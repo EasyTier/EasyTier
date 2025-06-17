@@ -22,10 +22,12 @@ pub fn configure_client() -> ClientConfig {
     let mut config = ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
     ));
-    /// Setting BBR congestion control
-    if let Some(transport_config) = Arc::get_mut(&mut config.transport) {
-        transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-    }
+    // Setting BBR congestion control
+    // Attempt to modify the transport config using Arc::make_mut
+    // This is the standard way if config.transport is a public mutable Arc<TransportConfig>
+    // and TransportConfig is Clone.
+    let transport_config_mut_ref = Arc::make_mut(&mut config.transport);
+    transport_config_mut_ref.congestion_controller_factory(Arc::new(BbrConfig::default()));
     config
 }
 
@@ -51,8 +53,9 @@ pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
-    /// Setting BBR congestion control
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    // Setting BBR congestion control
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default())); // Removed ///, changed to // if it was ///
+
     Ok((server_config, certs[0].to_vec()))
 }
 
