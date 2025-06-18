@@ -152,26 +152,27 @@ impl CacheConnectorManager {
         loop {
             reconn_interval_sec.tick().await;
 
-            let now = Instant::now();
+            // Remove URLs exceeding the timeout period
             let timeout_sec = use_global_var!(CACHE_CONNECTOR_QUEUE_TIMEOUT_SEC);
-            conn_cache.retain(|_, add_time| now.duration_since(*add_time) < Duration::from_secs(timeout_sec));
+            conn_cache.retain(|_, add_time| add_time.elapsed() < Duration::from_secs(timeout_sec));
 
+            /*
+                Find URLs where:
+                1. No connection exists to the peer owning the URL.
+                2. No direct connection exists to the URL (the peer ID behind a URL can change upon node reboot).
+             */
             let peers = data.peer_manager.get_peer_map().list_peers_with_conn().await;
             let mut urls: HashSet<Url> = HashSet::new();
             conn_cache.iter().for_each(|entry| {
                 let ((peer_id, url), _add_time) = entry.pair();
-                if !peers.contains(peer_id) {
+                if !peers.contains(peer_id) && !alive_conn.contains(url) {
                     urls.insert(url.clone());
                 };
             });
 
-            let urls: HashSet<Url> = urls.into_iter()
-                .filter(|x| !alive_conn.contains(x))
-                .collect();
-
             let tasks = match tasks.upgrade() {
                     Some(tasks) => tasks,
-                    None => break
+                    None => continue,
             };
             let mut tasks = tasks.lock().unwrap();
             for url in urls.into_iter() {
