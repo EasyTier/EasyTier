@@ -9,6 +9,7 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
+
 use quinn::{
     crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig,
     TransportConfig,
@@ -19,17 +20,21 @@ use super::{
     insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
+use quinn_proto::congestion::BbrConfig;
+
 
 pub fn configure_client() -> ClientConfig {
-    let mut tspt_cfg = TransportConfig::default();
-    tspt_cfg.keep_alive_interval(Some(Duration::from_secs(5)));
+    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
+    let mut client_config = ClientConfig::new(Arc::new(client_crypto));
 
-    let mut cfg = ClientConfig::new(Arc::new(
-        QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
-    ));
-    cfg.transport_config(Arc::new(tspt_cfg));
+    // // Create a new TransportConfig and set BBR
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+    // Replace the default TransportConfig with the transport_config() method
+    client_config.transport_config(Arc::new(transport_config));
 
-    cfg
+    client_config
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
@@ -54,6 +59,8 @@ pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
+    // Setting BBR congestion control
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
 
     Ok((server_config, certs[0].to_vec()))
 }
