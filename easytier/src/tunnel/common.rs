@@ -436,9 +436,10 @@ pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
 }
 
 pub mod tests {
-    use std::time::Instant;
+    use atomic_shim::AtomicU64;
+    use std::{sync::Arc, time::Instant};
 
-    use futures::{Future, SinkExt, StreamExt, TryStreamExt};
+    use futures::{Future, SinkExt, StreamExt};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
     use crate::{
@@ -554,43 +555,62 @@ pub mod tests {
         }
     }
 
-    pub(crate) async fn _tunnel_bench<L, C>(mut listener: L, mut connector: C)
+    pub(crate) async fn _tunnel_bench<L, C>(listener: L, connector: C)
     where
         L: TunnelListener + Send + Sync + 'static,
         C: TunnelConnector + Send + Sync + 'static,
     {
-        listener.listen().await.unwrap();
+        _tunnel_bench_netns(listener, connector, NetNS::new(None), NetNS::new(None)).await;
+    }
+
+    pub(crate) async fn _tunnel_bench_netns<L, C>(
+        mut listener: L,
+        mut connector: C,
+        netns_l: NetNS,
+        netns_c: NetNS,
+    ) -> usize
+    where
+        L: TunnelListener + Send + Sync + 'static,
+        C: TunnelConnector + Send + Sync + 'static,
+    {
+        {
+            let _g = netns_l.guard();
+            listener.listen().await.unwrap();
+        }
+
+        let bps = Arc::new(AtomicU64::new(0));
+        let bps_clone = bps.clone();
 
         let lis = tokio::spawn(async move {
             let ret = listener.accept().await.unwrap();
-            _tunnel_echo_server(ret, false).await
+            // _tunnel_echo_server(ret, false).await
+            let (mut r, _s) = ret.split();
+            let now = Instant::now();
+            let mut count = 0;
+            while let Some(Ok(p)) = r.next().await {
+                count += p.payload_len();
+                let elapsed_sec = now.elapsed().as_secs();
+                if elapsed_sec > 0 {
+                    bps_clone.store(
+                        count as u64 / now.elapsed().as_secs() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            }
         });
 
-        let tunnel = connector.connect().await.unwrap();
+        let tunnel = {
+            let _g = netns_c.guard();
+            connector.connect().await.unwrap()
+        };
 
-        let (recv, mut send) = tunnel.split();
+        let (_recv, mut send) = tunnel.split();
 
         // prepare a 4k buffer with random data
         let mut send_buf = BytesMut::new();
         for _ in 0..64 {
             send_buf.put_i128(rand::random::<i128>());
         }
-
-        let r = tokio::spawn(async move {
-            let now = Instant::now();
-            let count = recv
-                .try_fold(0usize, |mut ret, _| async move {
-                    ret += 1;
-                    Ok(ret)
-                })
-                .await
-                .unwrap();
-
-            println!(
-                "bps: {}",
-                (count / 1024) * 4 / now.elapsed().as_secs() as usize
-            );
-        });
 
         let now = Instant::now();
         while now.elapsed().as_secs() < 10 {
@@ -605,11 +625,11 @@ pub mod tests {
         drop(tunnel);
 
         tracing::warn!("wait for recv to finish...");
-
-        let _ = tokio::join!(r);
+        let bps = bps.load(std::sync::atomic::Ordering::Acquire);
+        println!("bps: {}", bps);
 
         lis.abort();
-        let _ = tokio::join!(lis);
+        bps as usize
     }
 
     pub fn enable_log() {

@@ -1,6 +1,6 @@
+use atomic_shim::AtomicU64;
 use dashmap::DashMap;
-use dbus::channel::Token;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time;
@@ -95,10 +95,6 @@ impl TokenBucket {
 
         // Calculate tokens to add
         let tokens_to_add = (self.config.fill_rate as f64 * elapsed_secs) as u64;
-        println!(
-            "Refilling {} tokens ({} seconds elapsed), now: {}, prev: {}",
-            tokens_to_add, elapsed_secs, now_micros, prev_time
-        );
         if tokens_to_add == 0 {
             return;
         }
@@ -159,18 +155,12 @@ impl TokenBucket {
 pub struct TokenBucketManager {
     buckets: Arc<DashMap<String, Arc<TokenBucket>>>,
 
-    local_network_cfg: Option<BucketConfig>,
-    foreign_network_cfg: Option<BucketConfig>,
-
     retain_task: ScopedTask<()>,
 }
 
 impl TokenBucketManager {
     /// Creates a new TokenBucketManager
-    pub fn new(
-        local_network_cfg: Option<BucketConfig>,
-        foreign_network_cfg: Option<BucketConfig>,
-    ) -> Self {
+    pub fn new() -> Self {
         let buckets = Arc::new(DashMap::new());
 
         let buckets_clone = buckets.clone();
@@ -185,29 +175,16 @@ impl TokenBucketManager {
 
         Self {
             buckets,
-            local_network_cfg,
-            foreign_network_cfg,
             retain_task: retain_task.into(),
         }
     }
 
     /// Get or create a token bucket for the given key
-    fn get_or_create(&self, key: &str, cfg: Option<BucketConfig>) -> Option<Arc<TokenBucket>> {
-        let cfg = cfg?;
-        Some(
-            self.buckets
-                .entry(key.to_string())
-                .or_insert_with(|| TokenBucket::new_from_cfg(cfg))
-                .clone(),
-        )
-    }
-
-    pub fn get_foreign_bucket(&self, key: &str) -> Option<Arc<TokenBucket>> {
-        self.get_or_create(key, self.foreign_network_cfg)
-    }
-
-    pub fn get_local_bucket(&self, key: &str) -> Option<Arc<TokenBucket>> {
-        self.get_or_create(key, self.local_network_cfg)
+    pub fn get_or_create(&self, key: &str, cfg: BucketConfig) -> Arc<TokenBucket> {
+        self.buckets
+            .entry(key.to_string())
+            .or_insert_with(|| TokenBucket::new_from_cfg(cfg))
+            .clone()
     }
 }
 

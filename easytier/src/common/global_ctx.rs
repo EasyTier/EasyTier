@@ -143,6 +143,8 @@ impl GlobalCtx {
 
             feature_flags: AtomicCell::new(feature_flags),
             quic_proxy_port: AtomicCell::new(None),
+
+            token_bucket_manager: TokenBucketManager::new(),
         }
     }
 
@@ -294,6 +296,10 @@ impl GlobalCtx {
 
     pub fn set_quic_proxy_port(&self, port: Option<u16>) {
         self.quic_proxy_port.store(port);
+    }
+
+    pub fn token_bucket_manager(&self) -> &TokenBucketManager {
+        &self.token_bucket_manager
     }
 }
 

@@ -2,7 +2,7 @@ use std::{
     fmt::Debug,
     net::Ipv4Addr,
     sync::{Arc, Weak},
-    time::{Duration, Instant, SystemTime},
+    time::{Instant, SystemTime},
 };
 
 use anyhow::Context;
@@ -25,7 +25,6 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, NetworkIdentity},
         stun::StunInfoCollectorTrait,
-        token_bucket::TokenBucket,
         PeerId,
     },
     peers::{
@@ -1067,7 +1066,7 @@ impl PeerManager {
 
     pub fn get_directly_connections(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
         if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
-            return peer.get_directly_connections()
+            return peer.get_directly_connections();
         }
 
         DashSet::new()
