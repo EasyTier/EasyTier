@@ -2,21 +2,24 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::tunnel::{
     common::{FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig};
+use quinn::{
+    crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig,
+    TransportConfig,
+};
 
 use super::{
     check_scheme_and_get_socket_addr,
     insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
-use quinn_proto::congestion::BbrConfig; 
+use quinn_proto::congestion::BbrConfig;
 
 
 pub fn configure_client() -> ClientConfig {
@@ -26,7 +29,7 @@ pub fn configure_client() -> ClientConfig {
     // // Create a new TransportConfig and set BBR
     let mut transport_config = TransportConfig::default();
     transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-
+    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
     // Replace the default TransportConfig with the transport_config() method
     client_config.transport_config(Arc::new(transport_config));
 
