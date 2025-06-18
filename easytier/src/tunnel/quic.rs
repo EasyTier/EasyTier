@@ -9,6 +9,7 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
+
 use quinn::{
     crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig,
     TransportConfig,
@@ -59,7 +60,7 @@ pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
     // Setting BBR congestion control
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default())); // Removed ///, changed to // if it was ///
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
 
     Ok((server_config, certs[0].to_vec()))
 }
