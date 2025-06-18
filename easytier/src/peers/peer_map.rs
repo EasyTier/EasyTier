@@ -87,7 +87,7 @@ impl PeerMap {
         });
     }
 
-    fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
+    pub fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
         self.peer_map.get(&peer_id).map(|v| v.clone())
     }
 

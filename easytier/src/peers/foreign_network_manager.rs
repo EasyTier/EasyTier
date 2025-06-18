@@ -721,7 +721,7 @@ mod tests {
         let s_ret =
             tokio::spawn(async move { b_mgr_copy.add_tunnel_as_server(b_ring, true).await });
 
-        pma_net1.add_client_tunnel(a_ring).await.unwrap();
+        pma_net1.add_client_tunnel(a_ring, false).await.unwrap();
 
         s_ret.await.unwrap().unwrap();
     }

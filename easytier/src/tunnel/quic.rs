@@ -2,14 +2,18 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::tunnel::{
     common::{FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig};
+
+use quinn::{
+    crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig,
+    TransportConfig,
+};
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -20,17 +24,16 @@ use quinn_proto::congestion::BbrConfig;
 
 
 pub fn configure_client() -> ClientConfig {
-    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
-    let mut client_config = ClientConfig::new(Arc::new(client_crypto));
+    let mut tspt_cfg = TransportConfig::default();
+    tspt_cfg.keep_alive_interval(Some(Duration::from_secs(5)));
+    tspt_cfg.congestion_controller_factory(Arc::new(BbrConfig::default()));
 
-    // // Create a new TransportConfig and set BBR
-    let mut transport_config = TransportConfig::default();
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    let mut cfg = ClientConfig::new(Arc::new(
+        QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
+    ));
+    cfg.transport_config(Arc::new(tspt_cfg));
 
-    // Replace the default TransportConfig with the transport_config() method
-    client_config.transport_config(Arc::new(transport_config));
-
-    client_config
+    cfg
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
