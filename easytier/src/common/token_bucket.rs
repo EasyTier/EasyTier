@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::time;
 
 use crate::common::scoped_task::ScopedTask;
+use crate::proto::common::LimiterConfig;
 
 /// Token Bucket rate limiter using atomic operations
 pub struct TokenBucket {
@@ -21,6 +22,22 @@ pub struct BucketConfig {
     capacity: u64,             // Maximum token capacity
     fill_rate: u64,            // Tokens added per second
     refill_interval: Duration, // Time between refill operations
+}
+
+impl From<LimiterConfig> for BucketConfig {
+    fn from(cfg: LimiterConfig) -> Self {
+        let burst_rate = 1.max(cfg.burst_rate.unwrap_or(1));
+        let fill_rate = 8196.max(cfg.bps.unwrap_or(u64::MAX / burst_rate));
+        let refill_interval = cfg
+            .fill_duration_ms
+            .map(|x| Duration::from_millis(1.max(x)))
+            .unwrap_or(Duration::from_millis(10));
+        BucketConfig {
+            capacity: burst_rate * fill_rate,
+            fill_rate: fill_rate,
+            refill_interval,
+        }
+    }
 }
 
 impl TokenBucket {

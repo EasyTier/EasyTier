@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::common::config::ProxyNetworkConfig;
+use crate::common::token_bucket::TokenBucketManager;
 use crate::proto::cli::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crossbeam::atomic::AtomicCell;
@@ -77,6 +78,8 @@ pub struct GlobalCtx {
     feature_flags: AtomicCell<PeerFeatureFlag>,
 
     quic_proxy_port: AtomicCell<Option<u16>>,
+
+    token_bucket_manager: TokenBucketManager,
 }
 
 impl std::fmt::Debug for GlobalCtx {

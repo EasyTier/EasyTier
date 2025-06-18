@@ -180,3 +180,9 @@ message PortForwardConfigPb {
 message ProxyDstInfo {
   SocketAddr dst_addr = 1;
 }
+
+message LimiterConfig {
+  optional uint64 burst_rate = 1; // default 1 means no burst (capacity is same with bps)
+  optional uint64 bps = 2; // default 0 means no limit (unit is B/s)
+  optional uint64 fill_duration_ms = 3; // default 10ms, the period to fill the bucket
+}
