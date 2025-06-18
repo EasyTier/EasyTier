@@ -22,6 +22,7 @@ use easytier::{
         },
         constants::EASYTIER_VERSION,
         global_ctx::GlobalCtx,
+        set_default_machine_id,
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
@@ -98,6 +99,13 @@ struct Cli {
         help = t!("core_clap.config_server").to_string()
     )]
     config_server: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_MACHINE_ID",
+        help = t!("core_clap.machine_id").to_string()
+    )]
+    machine_id: Option<String>,
 
     #[arg(
         short,
@@ -936,6 +944,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     init_logger(&cli.logging_options, false)?;
 
     if cli.config_server.is_some() {
+        set_default_machine_id(cli.machine_id);
         let config_server_url_s = cli.config_server.clone().unwrap();
         let config_server_url = match url::Url::parse(&config_server_url_s) {
             Ok(u) => u,
