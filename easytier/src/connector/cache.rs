@@ -113,7 +113,7 @@ impl CacheConnectorManager {
                 alive_conn.insert(conn_url);
             }
             GlobalCtxEvent::PeerConnRemoved(conn_info) => {
-                if !conn_info.is_client {
+                if !conn_info.is_client || conn_info.is_hole_punched {
                     return;
                 }
                 let peer_id = conn_info.peer_id;
