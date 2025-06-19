@@ -2008,7 +2008,6 @@ dependencies = [
  "prost-reflect-build",
  "prost-types",
  "quinn",
- "quinn-proto",
  "rand 0.8.5",
  "rcgen",
  "regex",
