@@ -481,6 +481,13 @@ struct NetworkOptions {
         help = t!("core_clap.private_mode").to_string(),
     )]
     private_mode: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_FOREIGN_RELAY_BPS_LIMIT",
+        help = t!("core_clap.foreign_relay_bps_limit").to_string(),
+    )]
+    foreign_relay_bps_limit: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
@@ -803,6 +810,9 @@ impl NetworkOptions {
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
+        f.foreign_relay_bps_limit = self
+            .foreign_relay_bps_limit
+            .unwrap_or(f.foreign_relay_bps_limit);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

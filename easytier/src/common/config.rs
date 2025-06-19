@@ -2,6 +2,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
+    u64,
 };
 
 use anyhow::Context;
@@ -41,6 +42,7 @@ pub fn gen_default_flags() -> Flags {
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
+        foreign_relay_bps_limit: u64::MAX,
     }
 }
 

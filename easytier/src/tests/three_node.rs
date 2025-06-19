@@ -17,7 +17,9 @@ use crate::{
     instance::instance::Instance,
     proto::common::CompressionAlgoPb,
     tunnel::{
-        common::tests::wait_for_condition, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
+        common::tests::{_tunnel_bench_netns, wait_for_condition},
+        ring::RingTunnelConnector,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::UdpTunnelConnector,
     },
 };
@@ -1194,4 +1196,47 @@ pub async fn port_forward_test(
     .await;
 
     drop_insts(_insts).await;
+}
+
+#[rstest::rstest]
+#[serial_test::serial]
+#[tokio::test]
+pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst2" {
+                cfg.set_network_identity(NetworkIdentity::new(
+                    "public".to_string(),
+                    "public".to_string(),
+                ));
+                let mut f = cfg.get_flags();
+                f.foreign_relay_bps_limit = bps_limit * 1024;
+                cfg.set_flags(f);
+            }
+            cfg
+        },
+        true,
+    )
+    .await;
+
+    // connect to virtual ip (no tun mode)
+    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:22223".parse().unwrap());
+    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.3:22223".parse().unwrap());
+
+    let bps = _tunnel_bench_netns(
+        tcp_listener,
+        tcp_connector,
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+    )
+    .await;
+
+    println!("bps: {}", bps);
+
+    let bps = bps as u64 / 1024;
+    // allow 50kb jitter
+    assert!(bps >= bps_limit - 50 && bps <= bps_limit + 50);
+
+    drop_insts(insts).await;
 }

@@ -1066,7 +1066,7 @@ impl PeerManager {
 
     pub fn get_directly_connections(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
         if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
-            return peer.get_directly_connections()
+            return peer.get_directly_connections();
         }
 
         DashSet::new()

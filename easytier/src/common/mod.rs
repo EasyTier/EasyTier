@@ -23,6 +23,7 @@ pub mod network;
 pub mod scoped_task;
 pub mod stun;
 pub mod stun_codec_ext;
+pub mod token_bucket;
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,

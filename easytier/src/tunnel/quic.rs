@@ -11,8 +11,8 @@ use crate::tunnel::{
 use anyhow::Context;
 
 use quinn::{
-    crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig,
-    TransportConfig,
+    congestion::BbrConfig, crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint,
+    ServerConfig, TransportConfig,
 };
 
 use super::{
@@ -20,8 +20,6 @@ use super::{
     insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
-use quinn_proto::congestion::BbrConfig;
-
 
 pub fn configure_client() -> ClientConfig {
     let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
