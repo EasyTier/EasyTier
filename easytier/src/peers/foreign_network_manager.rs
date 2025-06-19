@@ -300,7 +300,10 @@ impl ForeignNetworkEntry {
                     }
                     tracing::trace!(?hdr, "ignore packet in foreign network");
                 } else {
-                    if hdr.packet_type == PacketType::Data as u8 {
+                    if hdr.packet_type == PacketType::Data as u8
+                        || hdr.packet_type == PacketType::KcpSrc as u8
+                        || hdr.packet_type == PacketType::KcpDst as u8
+                    {
                         if !relay_data {
                             continue;
                         }
