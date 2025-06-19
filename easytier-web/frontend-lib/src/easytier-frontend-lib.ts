@@ -1,7 +1,7 @@
 import './style.css'
 
 import type { App } from 'vue';
-import { Config, Status } from "./components";
+import { Config, Status, ConfigEditDialog } from "./components";
 import Aura from '@primevue/themes/aura'
 import PrimeVue from 'primevue/config'
 
@@ -41,10 +41,11 @@ export default {
         });
 
         app.component('Config', Config);
+        app.component('ConfigEditDialog', ConfigEditDialog);
         app.component('Status', Status);
         app.component('HumanEvent', HumanEvent);
         app.directive('tooltip', vTooltip as any);
     }
 };
 
-export { Config, Status, I18nUtils, NetworkTypes, Api, Utils };
+export { Config, ConfigEditDialog, Status, I18nUtils, NetworkTypes, Api, Utils };

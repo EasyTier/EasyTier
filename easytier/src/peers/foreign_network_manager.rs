@@ -26,12 +26,13 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
         join_joinset_background,
         stun::MockStunInfoCollector,
+        token_bucket::TokenBucket,
         PeerId,
     },
     peers::route_trait::{Route, RouteInterface},
     proto::{
         cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
-        common::NatType,
+        common::{LimiterConfig, NatType},
         peer_rpc::DirectConnectorRpcServer,
     },
     tunnel::packet_def::{PacketType, ZCPacket},
@@ -69,6 +70,8 @@ struct ForeignNetworkEntry {
 
     packet_recv: Mutex<Option<PacketRecvChanReceiver>>,
 
+    bps_limiter: Arc<TokenBucket>,
+
     tasks: Mutex<JoinSet<()>>,
 
     pub lock: Mutex<()>,
@@ -102,6 +105,16 @@ impl ForeignNetworkEntry {
             &network.network_name,
         );
 
+        let relay_bps_limit = global_ctx.config.get_flags().foreign_relay_bps_limit;
+        let limiter_config = LimiterConfig {
+            burst_rate: None,
+            bps: Some(relay_bps_limit),
+            fill_duration_ms: None,
+        };
+        let bps_limiter = global_ctx
+            .token_bucket_manager()
+            .get_or_create(&network.network_name, limiter_config.into());
+
         Self {
             my_peer_id,
 
@@ -115,6 +128,8 @@ impl ForeignNetworkEntry {
             rpc_sender: rpc_transport_sender,
 
             packet_recv: Mutex::new(Some(packet_recv)),
+
+            bps_limiter,
 
             tasks: Mutex::new(JoinSet::new()),
 
@@ -265,6 +280,7 @@ impl ForeignNetworkEntry {
         let relay_data = self.relay_data;
         let pm_sender = self.pm_packet_sender.lock().await.take().unwrap();
         let network_name = self.network.network_name.clone();
+        let bps_limiter = self.bps_limiter.clone();
 
         self.tasks.lock().await.spawn(async move {
             while let Ok(zc_packet) = recv_packet_from_chan(&mut recv).await {
@@ -284,8 +300,16 @@ impl ForeignNetworkEntry {
                     }
                     tracing::trace!(?hdr, "ignore packet in foreign network");
                 } else {
-                    if !relay_data && hdr.packet_type == PacketType::Data as u8 {
-                        continue;
+                    if hdr.packet_type == PacketType::Data as u8
+                        || hdr.packet_type == PacketType::KcpSrc as u8
+                        || hdr.packet_type == PacketType::KcpDst as u8
+                    {
+                        if !relay_data {
+                            continue;
+                        }
+                        if !bps_limiter.try_consume(hdr.len.into()) {
+                            continue;
+                        }
                     }
 
                     let gateway_peer_id = peer_map
@@ -721,7 +745,7 @@ mod tests {
         let s_ret =
             tokio::spawn(async move { b_mgr_copy.add_tunnel_as_server(b_ring, true).await });
 
-        pma_net1.add_client_tunnel(a_ring).await.unwrap();
+        pma_net1.add_client_tunnel(a_ring, false).await.unwrap();
 
         s_ret.await.unwrap().unwrap();
     }

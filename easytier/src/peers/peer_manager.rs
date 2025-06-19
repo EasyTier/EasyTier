@@ -23,7 +23,7 @@ use crate::{
         compressor::{Compressor as _, DefaultCompressor},
         constants::EASYTIER_VERSION,
         error::Error,
-        global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
+        global_ctx::{ArcGlobalCtx, NetworkIdentity},
         stun::StunInfoCollectorTrait,
         PeerId,
     },
@@ -141,9 +141,6 @@ pub struct PeerManager {
     data_compress_algo: CompressorAlgo,
 
     exit_nodes: Vec<Ipv4Addr>,
-
-    // conns that are directly connected (which are not hole punched)
-    directly_connected_conn_map: Arc<DashMap<PeerId, DashSet<uuid::Uuid>>>,
 
     reserved_my_peer_id_map: DashMap<String, PeerId>,
 }
@@ -273,8 +270,6 @@ impl PeerManager {
 
             exit_nodes,
 
-            directly_connected_conn_map: Arc::new(DashMap::new()),
-
             reserved_my_peer_id_map: DashMap::new(),
         }
     }
@@ -319,8 +314,10 @@ impl PeerManager {
     pub async fn add_client_tunnel(
         &self,
         tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
+        peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
         let peer_id = peer.get_peer_id();
@@ -334,72 +331,12 @@ impl PeerManager {
         Ok((peer_id, conn_id))
     }
 
-    fn add_directly_connected_conn(&self, peer_id: PeerId, conn_id: uuid::Uuid) {
-        let _ = self
-            .directly_connected_conn_map
-            .entry(peer_id)
-            .or_insert_with(DashSet::new)
-            .insert(conn_id);
-    }
-
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
-        self.directly_connected_conn_map
-            .get(&peer_id)
-            .map_or(false, |x| !x.is_empty())
-    }
-
-    async fn start_peer_conn_close_event_handler(&self) {
-        let dmap = self.directly_connected_conn_map.clone();
-        let mut event_recv = self.global_ctx.subscribe();
-        let peer_map = self.peers.clone();
-        use tokio::sync::broadcast::error::RecvError;
-        self.tasks.lock().await.spawn(async move {
-            loop {
-                match event_recv.recv().await {
-                    Err(RecvError::Closed) => {
-                        tracing::error!("peer conn close event handler exit");
-                        break;
-                    }
-                    Err(RecvError::Lagged(_)) => {
-                        tracing::warn!("peer conn close event handler lagged");
-                        event_recv = event_recv.resubscribe();
-                        let alive_conns = peer_map.get_alive_conns();
-                        for p in dmap.iter_mut() {
-                            p.retain(|x| alive_conns.contains_key(&(*p.key(), *x)));
-                        }
-                        dmap.retain(|_, v| !v.is_empty());
-                    }
-                    Ok(event) => {
-                        if let GlobalCtxEvent::PeerConnRemoved(info) = event {
-                            let mut need_remove = false;
-                            if let Some(set) = dmap.get_mut(&info.peer_id) {
-                                let conn_id = info.conn_id.parse().unwrap();
-                                let old = set.remove(&conn_id);
-                                tracing::info!(
-                                    ?old,
-                                    ?info,
-                                    "try remove conn id from directly connected map"
-                                );
-                                need_remove = set.is_empty();
-                            }
-
-                            if need_remove {
-                                dmap.remove(&info.peer_id);
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    pub async fn add_direct_tunnel(
-        &self,
-        t: Box<dyn Tunnel>,
-    ) -> Result<(PeerId, PeerConnId), Error> {
-        let (peer_id, conn_id) = self.add_client_tunnel(t).await?;
-        self.add_directly_connected_conn(peer_id, conn_id);
-        Ok((peer_id, conn_id))
+        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+            peer.has_directly_connected_conn()
+        } else {
+            false
+        }
     }
 
     #[tracing::instrument]
@@ -414,7 +351,7 @@ impl PeerManager {
         let t = ns
             .run_async(|| async move { connector.connect().await })
             .await?;
-        self.add_direct_tunnel(t).await
+        self.add_client_tunnel(t, true).await
     }
 
     #[tracing::instrument(ret)]
@@ -462,11 +399,8 @@ impl PeerManager {
         let peer_network_name = peer.get_network_identity().network_name.clone();
 
         if peer_network_name == self.global_ctx.get_network_identity().network_name {
-            let (peer_id, conn_id) = (peer.get_peer_id(), peer.get_conn_id());
+            peer.set_is_hole_punched(!is_directly_connected);
             self.add_new_peer_conn(peer).await?;
-            if is_directly_connected {
-                self.add_directly_connected_conn(peer_id, conn_id);
-            }
         } else {
             self.foreign_network_manager.add_peer_conn(peer).await?;
         }
@@ -1020,11 +954,9 @@ impl PeerManager {
 
     async fn run_clean_peer_without_conn_routine(&self) {
         let peer_map = self.peers.clone();
-        let dmap = self.directly_connected_conn_map.clone();
         self.tasks.lock().await.spawn(async move {
             loop {
                 peer_map.clean_peer_without_conn().await;
-                dmap.retain(|p, v| peer_map.has_peer(*p) && !v.is_empty());
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             }
         });
@@ -1041,8 +973,6 @@ impl PeerManager {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        self.start_peer_conn_close_event_handler().await;
-
         match &self.route_algo_inst {
             RouteAlgoInst::Ospf(route) => self.add_route(route.clone()).await,
             RouteAlgoInst::None => {}
@@ -1101,9 +1031,16 @@ impl PeerManager {
                 .unwrap_or_default(),
             proxy_cidrs: self
                 .global_ctx
+                .config
                 .get_proxy_cidrs()
                 .into_iter()
-                .map(|x| x.to_string())
+                .map(|x| {
+                    if x.mapped_cidr.is_none() {
+                        x.cidr.to_string()
+                    } else {
+                        format!("{}->{}", x.cidr, x.mapped_cidr.unwrap())
+                    }
+                })
                 .collect(),
             hostname: self.global_ctx.get_hostname(),
             stun_info: Some(self.global_ctx.get_stun_info_collector().get_stun_info()),
@@ -1128,10 +1065,20 @@ impl PeerManager {
     }
 
     pub fn get_directly_connections(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
-        self.directly_connected_conn_map
-            .get(&peer_id)
-            .map(|x| x.clone())
-            .unwrap_or_default()
+        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
+            return peer.get_directly_connections();
+        }
+
+        DashSet::new()
+    }
+
+    pub async fn clear_resources(&self) {
+        let mut peer_pipeline = self.peer_packet_process_pipeline.write().await;
+        peer_pipeline.clear();
+        let mut nic_pipeline = self.nic_packet_process_pipeline.write().await;
+        nic_pipeline.clear();
+
+        self.peer_rpc_mgr.rpc_server().registry().unregister_all();
     }
 }
 
@@ -1211,7 +1158,7 @@ mod tests {
         });
 
         server_mgr
-            .add_client_tunnel(server.accept().await.unwrap())
+            .add_client_tunnel(server.accept().await.unwrap(), false)
             .await
             .unwrap();
     }
@@ -1416,7 +1363,7 @@ mod tests {
 
         let a_mgr_copy = peer_mgr_a.clone();
         tokio::spawn(async move {
-            a_mgr_copy.add_client_tunnel(a_ring).await.unwrap();
+            a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
         });
         let b_mgr_copy = peer_mgr_b.clone();
         tokio::spawn(async move {

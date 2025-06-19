@@ -10,6 +10,11 @@ core_clap:
       配置服务器地址。允许格式：
       完整URL：--config-server udp://127.0.0.1:22020/admin
       仅用户名：--config-server admin，将使用官方的服务器
+  machine_id:
+    en: |+
+      the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. default is from system.
+    zh-CN: |+
+      Web 配置服务器通过 machine id 来识别机器，用于断线重连后的配置恢复，需要保证唯一且固定不变。默认从系统获得。
   config_file:
     en: "path to the config file, NOTE: the options set by cmdline args will override options in config file"
     zh-CN: "配置文件路径，注意：命令行中的配置的选项会覆盖配置文件中的选项"
@@ -32,8 +37,14 @@ core_clap:
     en: "use a public shared node to discover peers"
     zh-CN: "使用公共共享节点来发现对等节点"
   proxy_networks:
-    en: "export local networks to other peers in the vpn"
-    zh-CN: "将本地网络导出到VPN中的其他对等节点"
+    en: |+
+      export local networks to other peers in the vpn,  e.g.: 10.0.0.0/24.
+      also support mapping proxy network to other cidr, e.g.: 10.0.0.0/24->192.168.0.0/24
+      other peers can access 10.0.0.1 with ip 192.168.0.1
+    zh-CN: |+
+      将本地网络导出到VPN中的其他对等节点，例如：10.0.0.0/24。
+      还支持将代理网络映射到其他CIDR，例如：10.0.0.0/24->192.168.0.0/24
+      其他对等节点可以通过 IP 192.168.0.1 来访问 10.0.0.1
   rpc_portal:
     en: "rpc portal address to listen for management. 0 means random port, 12345 means listen on 12345 of localhost, 0.0.0.0:12345 means listen on 12345 of all interfaces. default is 0 and will try 15888 first"
     zh-CN: "用于管理的RPC门户地址。0表示随机端口，12345表示在localhost的12345上监听，0.0.0.0:12345表示在所有接口的12345上监听。默认是0，首先尝试15888"
@@ -152,6 +163,12 @@ core_clap:
   disable_kcp_input:
     en: "do not allow other nodes to use kcp to proxy tcp streams to this node. when a node with kcp proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 KCP 代理 TCP 流到此节点。开启 KCP 代理的节点访问此节点时，依然使用原始 TCP 连接。"
+  enable_quic_proxy:
+    en: "proxy tcp streams with QUIC, improving the latency and throughput on the network with udp packet loss."
+    zh-CN: "使用 QUIC 代理 TCP 流，提高在 UDP 丢包网络上的延迟和吞吐量。"
+  disable_quic_input:
+    en: "do not allow other nodes to use QUIC to proxy tcp streams to this node. when a node with QUIC proxy enabled accesses this node, the original tcp connection is preserved."
+    zh-CN: "不允许其他节点使用 QUIC 代理 TCP 流到此节点。开启 QUIC 代理的节点访问此节点时，依然使用原始 TCP 连接。"
   port_forward:
     en: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
     zh-CN: "将本地端口转发到虚拟网络中的远程端口。例如：udp://0.0.0.0:12345/10.126.126.1:23456，表示将本地UDP端口12345转发到虚拟网络中的10.126.126.1:23456。可以指定多个。"

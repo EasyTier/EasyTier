@@ -186,7 +186,7 @@ impl DirectConnectorManagerData {
             .await?;
 
         // NOTICE: must add as directly connected tunnel
-        self.peer_manager.add_direct_tunnel(ret).await
+        self.peer_manager.add_client_tunnel(ret, true).await
     }
 
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {

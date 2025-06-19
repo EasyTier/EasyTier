@@ -1,4 +1,9 @@
-use std::{fmt::Debug, net::IpAddr, str::FromStr, sync::Arc};
+use std::{
+    fmt::Debug,
+    net::IpAddr,
+    str::FromStr,
+    sync::{Arc, Weak},
+};
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -89,7 +94,7 @@ pub struct ListenerManager<H> {
     global_ctx: ArcGlobalCtx,
     net_ns: NetNS,
     listeners: Vec<ListenerFactory>,
-    peer_manager: Arc<H>,
+    peer_manager: Weak<H>,
 
     tasks: JoinSet<()>,
 }
@@ -100,7 +105,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             global_ctx: global_ctx.clone(),
             net_ns: global_ctx.net_ns.clone(),
             listeners: Vec::new(),
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
             tasks: JoinSet::new(),
         }
     }
@@ -137,6 +142,8 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             if self.global_ctx.config.get_flags().enable_ipv6
                 && !is_url_host_ipv6(&l)
                 && is_url_host_unspecified(&l)
+                // quic enables dual-stack by default, may conflict with v4 listener
+                && l.scheme() != "quic"
             {
                 let mut ipv6_listener = l.clone();
                 ipv6_listener
@@ -169,7 +176,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
     #[tracing::instrument(skip(creator))]
     async fn run_listener(
         creator: Arc<ListenerCreator>,
-        peer_manager: Arc<H>,
+        peer_manager: Weak<H>,
         global_ctx: ArcGlobalCtx,
     ) {
         loop {
@@ -221,6 +228,10 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 let peer_manager = peer_manager.clone();
                 let global_ctx = global_ctx.clone();
                 tokio::spawn(async move {
+                    let Some(peer_manager) = peer_manager.upgrade() else {
+                        tracing::error!("peer manager is gone, cannot handle tunnel");
+                        return;
+                    };
                     let server_ret = peer_manager.handle_tunnel(ret).await;
                     if let Err(e) = &server_ret {
                         global_ctx.issue_event(GlobalCtxEvent::ConnectionError(

@@ -187,6 +187,7 @@ service VpnPortalRpc {
 enum TcpProxyEntryTransportType {
   TCP = 0;
   KCP = 1;
+  QUIC = 2;
 }
 
 enum TcpProxyEntryState {

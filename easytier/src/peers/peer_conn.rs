@@ -101,6 +101,9 @@ pub struct PeerConn {
     info: Option<HandshakeRequest>,
     is_client: Option<bool>,
 
+    // remote or local
+    is_hole_punched: bool,
+
     close_event_notifier: Arc<PeerConnCloseNotify>,
 
     ctrl_resp_sender: broadcast::Sender<ZCPacket>,
@@ -152,6 +155,8 @@ impl PeerConn {
             info: None,
             is_client: None,
 
+            is_hole_punched: true,
+
             close_event_notifier: Arc::new(PeerConnCloseNotify::new(conn_id)),
 
             ctrl_resp_sender: ctrl_sender,
@@ -164,6 +169,14 @@ impl PeerConn {
 
     pub fn get_conn_id(&self) -> PeerConnId {
         self.conn_id
+    }
+
+    pub fn set_is_hole_punched(&mut self, is_hole_punched: bool) {
+        self.is_hole_punched = is_hole_punched;
+    }
+
+    pub fn is_hole_punched(&self) -> bool {
+        self.is_hole_punched
     }
 
     async fn wait_handshake(&mut self, need_retry: &mut bool) -> Result<HandshakeRequest, Error> {

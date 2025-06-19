@@ -22,11 +22,12 @@ use easytier::{
         },
         constants::EASYTIER_VERSION,
         global_ctx::GlobalCtx,
+        set_default_machine_id,
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
-    launcher::ConfigSource,
     instance_manager::NetworkInstanceManager,
+    launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
@@ -98,6 +99,13 @@ struct Cli {
         help = t!("core_clap.config_server").to_string()
     )]
     config_server: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_MACHINE_ID",
+        help = t!("core_clap.machine_id").to_string()
+    )]
+    machine_id: Option<String>,
 
     #[arg(
         short,
@@ -435,6 +443,24 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ENABLE_QUIC_PROXY",
+        help = t!("core_clap.enable_quic_proxy").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_quic_proxy: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_DISABLE_QUIC_INPUT",
+        help = t!("core_clap.disable_quic_input").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_quic_input: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -455,6 +481,13 @@ struct NetworkOptions {
         help = t!("core_clap.private_mode").to_string(),
     )]
     private_mode: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_FOREIGN_RELAY_BPS_LIMIT",
+        help = t!("core_clap.foreign_relay_bps_limit").to_string(),
+    )]
+    foreign_relay_bps_limit: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
@@ -540,7 +573,7 @@ impl Cli {
 
 impl NetworkOptions {
     fn can_merge(&self, cfg: &TomlConfigLoader, config_file_count: usize) -> bool {
-        if config_file_count == 1{
+        if config_file_count == 1 {
             return true;
         }
         let Some(network_name) = &self.network_name else {
@@ -624,10 +657,7 @@ impl NetworkOptions {
         }
 
         for n in self.proxy_networks.iter() {
-            cfg.add_proxy_cidr(
-                n.parse()
-                    .with_context(|| format!("failed to parse proxy network: {}", n))?,
-            );
+            add_proxy_network_to_config(n, &cfg)?;
         }
 
         let rpc_portal = if let Some(r) = &self.rpc_portal {
@@ -776,8 +806,13 @@ impl NetworkOptions {
         f.bind_device = self.bind_device.unwrap_or(f.bind_device);
         f.enable_kcp_proxy = self.enable_kcp_proxy.unwrap_or(f.enable_kcp_proxy);
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
+        f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
+        f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
+        f.foreign_relay_bps_limit = self
+            .foreign_relay_bps_limit
+            .unwrap_or(f.foreign_relay_bps_limit);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
@@ -919,6 +954,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     init_logger(&cli.logging_options, false)?;
 
     if cli.config_server.is_some() {
+        set_default_machine_id(cli.machine_id);
         let config_server_url_s = cli.config_server.clone().unwrap();
         let config_server_url = match url::Url::parse(&config_server_url_s) {
             Ok(u) => u,

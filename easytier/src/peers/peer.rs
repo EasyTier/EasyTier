@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crossbeam::atomic::AtomicCell;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use tokio::{select, sync::mpsc};
 
@@ -198,6 +198,17 @@ impl Peer {
             }
         }
         ret
+    }
+
+    pub fn has_directly_connected_conn(&self) -> bool {
+        self.conns.iter().any(|entry|!(entry.value()).is_hole_punched())
+    }
+
+    pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
+        self.conns.iter()
+        .filter(|entry| !(entry.value()).is_hole_punched())
+        .map(|entry|(entry.value()).get_conn_id())
+        .collect()
     }
 
     pub fn get_default_conn_id(&self) -> PeerConnId {

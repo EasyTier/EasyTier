@@ -81,6 +81,7 @@ bitflags::bitflags! {
         const EXIT_NODE = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
+        const KCP_SRC_MODIFIED = 0b0010_0000;
 
         const _ = !0;
     }
@@ -182,6 +183,23 @@ impl PeerManagerHeader {
         }
         self.flags = flags.bits();
         self
+    }
+
+    pub fn set_kcp_src_modified(&mut self, modified: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if modified {
+            flags.insert(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn is_kcp_src_modified(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::KCP_SRC_MODIFIED)
     }
 }
 

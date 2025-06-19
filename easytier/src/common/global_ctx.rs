@@ -4,6 +4,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::common::config::ProxyNetworkConfig;
+use crate::common::token_bucket::TokenBucketManager;
 use crate::proto::cli::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crossbeam::atomic::AtomicCell;
@@ -59,7 +61,7 @@ pub struct GlobalCtx {
     event_bus: EventBus,
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
-    cached_proxy_cidrs: AtomicCell<Option<Vec<cidr::IpCidr>>>,
+    cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
 
     ip_collector: Mutex<Option<Arc<IPCollector>>>,
 
@@ -74,6 +76,10 @@ pub struct GlobalCtx {
     no_tun: bool,
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
+
+    quic_proxy_port: AtomicCell<Option<u16>>,
+
+    token_bucket_manager: TokenBucketManager,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -136,6 +142,9 @@ impl GlobalCtx {
             no_tun,
 
             feature_flags: AtomicCell::new(feature_flags),
+            quic_proxy_port: AtomicCell::new(None),
+
+            token_bucket_manager: TokenBucketManager::new(),
         }
     }
 
@@ -180,29 +189,6 @@ impl GlobalCtx {
     pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
         self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
-    }
-
-    pub fn add_proxy_cidr(&self, cidr: cidr::IpCidr) -> Result<(), std::io::Error> {
-        self.config.add_proxy_cidr(cidr);
-        self.cached_proxy_cidrs.store(None);
-        Ok(())
-    }
-
-    pub fn remove_proxy_cidr(&self, cidr: cidr::IpCidr) -> Result<(), std::io::Error> {
-        self.config.remove_proxy_cidr(cidr);
-        self.cached_proxy_cidrs.store(None);
-        Ok(())
-    }
-
-    pub fn get_proxy_cidrs(&self) -> Vec<cidr::IpCidr> {
-        if let Some(proxy_cidrs) = self.cached_proxy_cidrs.take() {
-            self.cached_proxy_cidrs.store(Some(proxy_cidrs.clone()));
-            return proxy_cidrs;
-        }
-
-        let ret = self.config.get_proxy_cidrs();
-        self.cached_proxy_cidrs.store(Some(ret.clone()));
-        ret
     }
 
     pub fn get_id(&self) -> uuid::Uuid {
@@ -302,6 +288,18 @@ impl GlobalCtx {
 
     pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
         self.feature_flags.store(flags);
+    }
+
+    pub fn get_quic_proxy_port(&self) -> Option<u16> {
+        self.quic_proxy_port.load()
+    }
+
+    pub fn set_quic_proxy_port(&self, port: Option<u16>) {
+        self.quic_proxy_port.store(port);
+    }
+
+    pub fn token_bucket_manager(&self) -> &TokenBucketManager {
+        &self.token_bucket_manager
     }
 }
 

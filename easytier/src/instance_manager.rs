@@ -33,16 +33,27 @@ impl NetworkInstanceManager {
             .get(&instance_id)
             .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
 
-        if instance.get_config_source() == ConfigSource::FFI {
-            // FFI have no tokio runtime, so we don't need to spawn a task, and instance should be managed by the caller.
-            return Ok(());
+        match instance.get_config_source() {
+            ConfigSource::FFI | ConfigSource::GUI => {
+                // FFI and GUI have no tokio runtime, so we don't need to spawn a task
+                return Ok(());
+            }
+            _ => {
+                if tokio::runtime::Handle::try_current().is_err() {
+                    return Err(anyhow::anyhow!(
+                        "tokio runtime not found, cannot start instance task"
+                    ));
+                }
+            }
         }
 
         let instance_stop_notifier = instance.get_stop_notifier();
         let instance_config_source = instance.get_config_source();
         let instance_event_receiver = match instance.get_config_source() {
-            ConfigSource::Cli | ConfigSource::File => Some(instance.subscribe_event()),
-            _ => None,
+            ConfigSource::Cli | ConfigSource::File | ConfigSource::Web => {
+                Some(instance.subscribe_event())
+            }
+            ConfigSource::GUI | ConfigSource::FFI => None,
         };
 
         let instance_map = self.instance_map.clone();
@@ -381,7 +392,7 @@ mod tests {
         assert!(manager.instance_map.contains_key(&instance_id4));
         assert!(manager.instance_map.contains_key(&instance_id5));
         assert_eq!(manager.list_network_instance_ids().len(), 5);
-        assert_eq!(manager.instance_stop_tasks.len(), 4); // FFI instance does not have a stop task
+        assert_eq!(manager.instance_stop_tasks.len(), 3); // FFI and GUI instance does not have a stop task
 
         manager
             .delete_network_instance(vec![instance_id3, instance_id4, instance_id5])
@@ -390,6 +401,68 @@ mod tests {
         assert!(!manager.instance_map.contains_key(&instance_id4));
         assert!(!manager.instance_map.contains_key(&instance_id5));
         assert_eq!(manager.list_network_instance_ids().len(), 2);
+    }
+
+    #[test]
+    fn test_no_tokio_runtime() {
+        let manager = NetworkInstanceManager::new();
+        let cfg_str = r#"
+            listeners = []
+            "#;
+
+        let port = crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
+
+        assert!(manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::Cli,
+            )
+            .is_err());
+        assert!(manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::File,
+            )
+            .is_err());
+        assert!(manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str)
+                    .map(|c| {
+                        c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
+                        c
+                    })
+                    .unwrap(),
+                ConfigSource::GUI,
+            )
+            .is_ok());
+        assert!(manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::Web,
+            )
+            .is_err());
+        assert!(manager
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                ConfigSource::FFI,
+            )
+            .is_ok());
+
+        std::thread::sleep(std::time::Duration::from_secs(1)); // wait instance actually started
+
+        assert!(!crate::utils::check_tcp_available(port));
+
+        assert_eq!(manager.list_network_instance_ids().len(), 5);
+        assert_eq!(
+            manager
+                .instance_map
+                .iter()
+                .map(|item| item.is_easytier_running())
+                .filter(|x| *x)
+                .count(),
+            5
+        ); // stop tasks failed not affect instance running status
+        assert_eq!(manager.instance_stop_tasks.len(), 0);
     }
 
     #[tokio::test]

@@ -47,6 +47,15 @@ export interface GenerateConfigResponse {
     error?: string;
 }
 
+export interface ParseConfigRequest {
+    toml_config: string;
+}
+
+export interface ParseConfigResponse {
+    config?: NetworkConfig;
+    error?: string;
+}
+
 export class ApiClient {
     private client: AxiosInstance;
     private authFailedCb: Function | undefined;
@@ -207,6 +216,18 @@ export class ApiClient {
     public async generate_config(config: GenerateConfigRequest): Promise<GenerateConfigResponse> {
         try {
             const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', config);
+            return response;
+        } catch (error) {
+            if (error instanceof AxiosError) {
+                return { error: error.response?.data };
+            }
+            return { error: 'Unknown error: ' + error };
+        }
+    }
+
+    public async parse_config(config: ParseConfigRequest): Promise<ParseConfigResponse> {
+        try {
+            const response = await this.client.post<any, ParseConfigResponse>('/parse-config', config);
             return response;
         } catch (error) {
             if (error instanceof AxiosError) {
