@@ -227,6 +227,8 @@ impl CacheConnectorManager {
             .await
             .ok() {
             tracing::info!("reconnect succ: {} {} {}", peer_id, &conn_id, &dead_url);
+            let conn_cache = &data.conn_cache;
+            conn_cache.retain(|(_peer_id, url), _add_time| *url != dead_url);
         }
         else {
             tracing::warn!("failed to reconnect {}", &dead_url);
