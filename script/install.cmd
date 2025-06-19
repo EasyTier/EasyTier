@@ -1,24 +1,41 @@
+::BATCH_START
 @ECHO off
 SETLOCAL EnableDelayedExpansion
 TITLE Initializing Script...
-<NUL SET /p="Checking system requirements ... "
+CD /d %~dp0   
+SET ScriptPath=\^"%~f0\^"
+SET ScriptRoot=%~dp0
+SET ScriptRoot=\^"!ScriptRoot:~0,-1!\^"
+SET Args=%*
+IF DEFINED Args (SET Args=!Args:"=\"!)
+<NUL SET /p="Checking PowerShell ... "
 WHERE /q PowerShell 
 IF !ERRORLEVEL! NEQ 0 (ECHO PowerShell is not installed. & PAUSE & EXIT)
 PowerShell -Command "if ($PSVersionTable.PSVersion.Major -lt 3) { exit 1 }"
-IF !ERRORLEVEL! NEQ 0 (ECHO Requires PowerShell 3.0 or later. & PAUSE & EXIT)
-PowerShell -Command "$content = Get-Content -Path '%~f0' -Raw -Encoding UTF8; if ($content.LastIndexOf('#POWERSHELL#') -le 0) { exit 1 }"
+IF !ERRORLEVEL! NEQ 0 (ECHO Requires PowerShell 3 or later. & PAUSE & EXIT)
+ECHO OK
+<NUL SET /p="Checking execute permissions ... "
+PowerShell -Command "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }"
+IF !ERRORLEVEL! NEQ 0 (CLS & ECHO Restart with administrator privileges ... & PowerShell -Command "Start-Process cmd.exe -Verb RunAs -ArgumentList '/k CD /d !ScriptRoot! && !ScriptPath! !Args!'" & EXIT)
+ECHO OK
+<NUL SET /p="Extract embedded script ... "
+PowerShell -Command "$content = (Get-Content -Path '%~f0' -Encoding UTF8 | Out-String) -replace '(?s)' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9TVEFSVA==')) + '.*?' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9FTkQ=')); Set-Content -Path '%~f0.ps1' -Value $content.Trim() -Encoding UTF8"
 IF !ERRORLEVEL! NEQ 0 (ECHO Embedded script section not found. & PAUSE & EXIT)
 ECHO OK
-FOR /f %%a IN ('PowerShell -Command "[guid]::NewGuid().ToString('n')"') do set "GUID=%%a"
-SET "TempScriptPath=!TEMP!\tmp_!GUID!.ps1"
-PowerShell -Command "$content = Get-Content -Path '%~f0' -Raw -Encoding UTF8; Set-Content -Encoding UTF8 -Path '!TempScriptPath!' -Value $content.Substring($content.LastIndexOf('#POWERSHELL#') + '#POWERSHELL#'.Length);"
-PowerShell -NoProfile -ExecutionPolicy Bypass -Command "Set-Location -Path '%~dp0'; & '!TempScriptPath!' %*"
-DEL /f /q "!TempScriptPath!"
+<NUL SET /p="Execute script ... "
+PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~f0.ps1" %*
+ECHO OK
+<NUL SET /p="Delete script ... "
+DEL /f /q "%~f0.ps1"
+ECHO OK
 EXIT
-#POWERSHELL#
+::BATCH_END
+param(
+    [Parameter(Mandatory = $false)]
+    [string]$ServiceName = "EasyTierService"
+)
 [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")
 [System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")
-
 function Show-Pause {
     [CmdletBinding()]
     param(
@@ -85,7 +102,6 @@ function Show-MultipleChoicePrompt {
         throw "Options 和 Helps 的数量必须相同。"
     }
     
-    # 确保默认索引不超过选项数量
     if ($DefaultIndex -ge $Options.Count) {
         $DefaultIndex = $Options.Count - 1
     }
@@ -97,34 +113,62 @@ function Show-MultipleChoicePrompt {
             [string]$title,
             [string]$message,
             [string[]]$options,
-            [string[]]$helps
+            [string[]]$helps,
+            [int]$prevIndex = -1
         )
-        Clear-Host
-        if (-not [string]::IsNullOrEmpty($title)) {
-            Write-Host "`n$title" -ForegroundColor Cyan
-        }
-        Write-Host "`n$message" -ForegroundColor Yellow
         
-        # 显示选项列表
-        for ($i = 0; $i -lt $options.Count; $i++) {
-            $prefix = if ($i -eq $highlightIndex) { "[>]" } else { "[ ]" }
-            $color = if ($i -eq $highlightIndex) { "Green" } else { "Gray" }
-            Write-Host "$prefix $($options[$i])" -ForegroundColor $color -NoNewline
-            if (-not [string]::IsNullOrEmpty($helps[$i])) {
-                Write-Host " - $($helps[$i])" -ForegroundColor DarkGray
+        try {
+            # 首次显示时绘制完整菜单
+            if ($prevIndex -eq -1) {
+                Clear-Host
+                if (-not [string]::IsNullOrEmpty($title)) {
+                    Write-Host "$title`n" -ForegroundColor Blue
+                }
+                Write-Host "$message" -ForegroundColor Yellow
+                
+                # 保存初始光标位置
+                $script:menuTop = [Console]::CursorTop
+                
+                # 首次绘制所有选项
+                for ($i = 0; $i -lt $options.Count; $i++) {
+                    $prefix = if ($i -eq $highlightIndex) { "[>]" } else { "[ ]" }
+                    $color = if ($i -eq $highlightIndex) { "Green" } else { "Gray" }
+                    Write-Host "$prefix $($options[$i])" -ForegroundColor $color -NoNewline
+                    Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$i])) { " - $($helps[$i])" } else { "" }) -ForegroundColor DarkGray
+                }
             }
-            else {
-                Write-Host ""
+
+            # 只更新变化的选项
+            if ($prevIndex -ne -1) {
+                $safePrevPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevIndex)
+                [Console]::SetCursorPosition(0, $safePrevPos)
+                Write-Host "[ ] $($options[$prevIndex])" -ForegroundColor Gray -NoNewline
+                Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$prevIndex])) { " - $($helps[$prevIndex])" } else { "" }) -ForegroundColor DarkGray
+            }
+
+            $safeHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $highlightIndex)
+            [Console]::SetCursorPosition(0, $safeHighlightPos)
+            Write-Host "[>] $($options[$highlightIndex])" -ForegroundColor Green -NoNewline
+            Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$highlightIndex])) { " - $($helps[$highlightIndex])" } else { "" }) -ForegroundColor DarkGray
+
+            # 首次显示时绘制操作提示
+            if ($prevIndex -eq -1) {
+                $safePos = [Math]::Min([Console]::WindowHeight - 2, $menuTop + $options.Count)
+                [Console]::SetCursorPosition(0, $safePos)
+                Write-Host "操作: 使用 ↑ / ↓ 移动 | Enter - 确认"
             }
         }
-        
-        # 显示操作提示
-        Write-Host "`n操作:"
-        Write-Host "使用 ↑ / ↓ 移动 | Enter - 确认"
+        finally {
+            # 将光标移动到操作提示下方等待位置
+            $waitPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $options.Count + 1)
+            [Console]::SetCursorPosition(0, $waitPos)
+        }
     }
     
+    $prevSelection = -1
     while ($true) {
-        Show-Menu -highlightIndex $currentSelection -title $Title -message $Message -options $Options -helps $Helps
+        Show-Menu -highlightIndex $currentSelection -title $Title -message $Message -options $Options -helps $Helps -prevIndex $prevSelection
+        $prevSelection = $currentSelection
         
         $key = [System.Console]::ReadKey($true)
         switch ($key.Key) {
@@ -173,42 +217,91 @@ function Show-MultiSelectPrompt {
     function Show-Menu {
         param(
             [int]$highlightIndex,
-            [System.Collections.Generic.List[int]]$selectedItems
+            [System.Collections.Generic.List[int]]$selectedItems,
+            [int]$prevIndex = -1,
+            [int]$prevHighlight = -1
         )
-        Clear-Host
-        Write-Host "`n$Message" -ForegroundColor Cyan
         
-        # 显示选项列表
-        for ($i = 0; $i -lt $Options.Count; $i++) {
-            $isSelected = $selectedItems -contains $i
-            $prefix = if ($isSelected) { "[#]" } else { "[ ]" }
-            $color = if ($i -eq $highlightIndex) { "Yellow" } elseif ($isSelected) { "Green" } else { "Gray" }
-            Write-Host "$prefix $($Options[$i])" -ForegroundColor $color -NoNewline
-            if (-not [string]::IsNullOrEmpty($Helps[$i])) {
-                Write-Host " - $($Helps[$i])" -ForegroundColor DarkGray
+        try {
+            # 首次显示时绘制完整菜单
+            if ($prevIndex -eq -1) {
+                Clear-Host
+                if (-not [string]::IsNullOrEmpty($Title)) {
+                    Write-Host "$Title`n" -ForegroundColor Blue
+                }
+                Write-Host "$Message" -ForegroundColor Yellow
+                
+                # 保存初始光标位置
+                $script:menuTop = [Console]::CursorTop
+                
+                # 首次绘制所有选项
+                for ($i = 0; $i -lt $Options.Count; $i++) {
+                    $isSelected = $selectedItems -contains $i
+                    $prefix = if ($isSelected) { "[#]" } else { "[ ]" }
+                    $color = if ($i -eq $highlightIndex) { "Green" } elseif ($isSelected) { "Cyan" } else { "Gray" }
+                    Write-Host "$prefix $($Options[$i])" -ForegroundColor $color -NoNewline
+                    Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$i])) { " - $($Helps[$i])" } else { "" }) -ForegroundColor DarkGray
+                }
             }
-            else {
-                Write-Host ""
+
+            # 只更新变化的选项
+            if ($prevIndex -ne -1) {
+                $safePrevPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevIndex)
+                [Console]::SetCursorPosition(0, $safePrevPos)
+                $isPrevSelected = $selectedItems -contains $prevIndex
+                $prefix = if ($isPrevSelected) { "[#]" } else { "[ ]" }
+                Write-Host "$prefix $($Options[$prevIndex])" -ForegroundColor $(if ($isPrevSelected) { "Cyan" } else { "Gray" }) -NoNewline
+                Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$prevIndex])) { " - $($Helps[$prevIndex])" } else { "" }) -ForegroundColor DarkGray
+            }
+
+            if ($prevHighlight -ne -1 -and $prevHighlight -ne $highlightIndex) {
+                $safePrevHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevHighlight)
+                [Console]::SetCursorPosition(0, $safePrevHighlightPos)
+                $isPrevHighlightSelected = $selectedItems -contains $prevHighlight
+                $prefix = if ($isPrevHighlightSelected) { "[#]" } else { "[ ]" }
+                Write-Host "$prefix $($Options[$prevHighlight])" -ForegroundColor $(if ($isPrevHighlightSelected) { "Cyan" } else { "Gray" }) -NoNewline
+                Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$prevHighlight])) { " - $($Helps[$prevHighlight])" } else { "" }) -ForegroundColor DarkGray
+            }
+
+            $safeHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $highlightIndex)
+            [Console]::SetCursorPosition(0, $safeHighlightPos)
+            $isSelected = $selectedItems -contains $highlightIndex
+            $prefix = if ($isSelected) { "[#]" } else { "[ ]" }
+            Write-Host "$prefix $($Options[$highlightIndex])" -ForegroundColor "Green" -NoNewline
+            Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$highlightIndex])) { " - $($Helps[$highlightIndex])" } else { "" }) -ForegroundColor DarkGray
+
+            # 首次显示时绘制操作提示
+            if ($prevIndex -eq -1) {
+                $safePos = [Math]::Min([Console]::WindowHeight - 2, $menuTop + $Options.Count)
+                [Console]::SetCursorPosition(0, $safePos)
+                Write-Host "操作: 使用 ↑ / ↓ 移动 | Space - 选中/取消 | Enter - 确认"
             }
         }
-        
-        # 显示操作提示
-        Write-Host "`n操作:"
-        Write-Host "使用 ↑ / ↓ 移动 | Space 选中 / 取消 | Enter - 完成"
+        finally {
+            # 将光标移动到操作提示下方等待位置
+            $waitPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $Options.Count + 1)
+            [Console]::SetCursorPosition(0, $waitPos)
+        }
     }
     
+    $prevSelection = -1
+    $prevHighlight = -1
     while ($true) {
-        Show-Menu -highlightIndex $currentSelection -selectedItems $selectedIndices
+        Show-Menu -highlightIndex $currentSelection -selectedItems $selectedIndices -prevIndex $prevSelection -prevHighlight $prevHighlight
+        $prevHighlight = $currentSelection
         
         $key = [System.Console]::ReadKey($true)
         switch ($key.Key) {
             { $_ -eq [ConsoleKey]::UpArrow } {
+                $prevSelection = $currentSelection
                 $currentSelection = [Math]::Max(0, $currentSelection - 1)
             }
             { $_ -eq [ConsoleKey]::DownArrow } {
+                $prevSelection = $currentSelection
                 $currentSelection = [Math]::Min($Options.Count - 1, $currentSelection + 1)
             }
             { $_ -eq [ConsoleKey]::Spacebar } {
+                $prevSelection = $currentSelection
                 if ($selectedIndices.Contains($currentSelection)) {
                     $selectedIndices.Remove($currentSelection)
                 }
@@ -239,6 +332,9 @@ function Get-InputWithNoNullOrWhiteSpace {
                 Write-Host "${Prompt}不能为空！" -ForegroundColor Red
                 continue
             }
+            if ($response -match '^(?!").*(?<!")(?=.*\s).*$') {
+                $response = "`"$response`""
+            }
             return $response.Trim()
         }
         catch {
@@ -255,21 +351,13 @@ function Get-InputWithFileValidation {
         [ValidateNotNullOrEmpty()]
         [string]$Prompt
     )
-    
     while ($true) {
-        try {
-            $response = Read-Host "请输入${Prompt}(必填)"
-            if ([string]::IsNullOrWhiteSpace($response)) {
-                Write-Host "${Prompt}不能为空！" -ForegroundColor Red
-                continue
-            }
-            
-            $filePath = $response.Trim()
+        try {         
+            $filePath = (Get-InputWithNoNullOrWhiteSpace -Prompt $Prompt).Trim()  
             if (-not (Test-Path $filePath)) {
                 Write-Host "文件不存在: $filePath" -ForegroundColor Red
                 continue
             }
-            
             return $filePath
         }
         catch {
@@ -294,29 +382,14 @@ function Get-InputWithDefault {
         if ([string]::IsNullOrWhiteSpace($response)) {
             return $DefaultValue
         }
+        if ($response -match '^(?!").*(?<!")(?=.*\s).*$') {
+            $response = "`"$response`""
+        }
         return $response.Trim()
     }
     catch {
         Write-Error "读取输入时出错: $_"
         return $DefaultValue
-    }
-}
-
-Clear-Host
-$ScriptRoot = (Get-Location).Path
-$host.ui.rawui.WindowTitle = "安装EasyTier服务"
-
-if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "请使用管理员权限运行！" -ForegroundColor Red
-    Show-Pause -Text "按任意键退出..."
-    exit 1
-}
-$RequiredFiles = @("easytier-core.exe", "easytier-cli.exe", "nssm.exe", "Packet.dll", "wintun.dll")
-foreach ($file in $RequiredFiles) {
-    if (-not (Test-Path (Join-Path $ScriptRoot $file))) {
-        Write-Host "缺少必要文件: ${file}" -ForegroundColor Red
-        Show-Pause -Text "按任意键退出..."
-        exit 1
     }
 }
 
@@ -375,7 +448,7 @@ function Get-AdvancedConfig {
     # 网络白名单
     if (Show-YesNoPrompt -Message "是否设置转发网络白名单？" -DefaultIndex 1) {
         $whitelist = Get-InputWithDefault -Prompt "白名单网络(空格分隔,*=所有,def*=以def开头的网络)" -DefaultValue "*"
-        $options += "--relay-network-whitelist `"$whitelist`""
+        $options += "--relay-network-whitelist $whitelist"
     }
 
     # 监听器配置
@@ -432,7 +505,7 @@ function Get-EasyTierConfig {
     $options = @()
     $configChoice = Show-MultipleChoicePrompt -Message "请选择配置方案:" `
         -Options @("命令行", "配置文件", "配置服务器") `
-        -Helps @("默认", "使用本地配置文件", "使用服务器集中管理") `
+        -Helps @("使用命令行参数进行配置", "使用本地配置文件", "使用服务器集中管理") `
         -DefaultIndex 0
     switch ($configChoice) {
         0 {
@@ -448,13 +521,15 @@ function Get-EasyTierConfig {
             }
         }
         1 {
-            $options += "--config-file $(Get-InputWithFileValidation -Prompt "配置文件路径")"
+            $options += "--config-file $(Get-InputWithFileValidation -Prompt "配置文件路径(或将文件拖动到此处)")"
         }
         2 {
             if (Show-YesNoPrompt -Message "是否使用自定义管理服务器？" -DefaultIndex 1) {
                 $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "自定义管理服务器（格式：协议://IP:端口/用户）" 
             }
-            $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "官方服务器用户名"
+            else {
+                $configServer = Get-InputWithNoNullOrWhiteSpace -Prompt "官方服务器用户名"
+            }
             $options += "--config-server $configServer"
         }
     }
@@ -626,26 +701,87 @@ function Get-ExtraAdvancedOptions {
 
     return $options
 }
+function Save-ServiceName {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
 
-Write-Host "`n正在创建EasyTier服务配置...`n" -ForegroundColor Cyan
-$SERVICE_NAME = "EasyTierService"
-$OPTIONS = Get-EasyTierConfig
+        [Parameter(Mandatory = $true)]
+        [string]$ServiceName
+    )
+    if (-not (Test-ServiceNameExists -FilePath $FilePath -ServiceName $ServiceName)) {
+        $uniqueLines = @()
+        $uniqueLines += Get-Content -Path $FilePath 
+        $uniqueLines += $ServiceName | Sort-Object -Unique
+        Set-Content -Path $FilePath -Value ($uniqueLines -join [Environment]::NewLine) -Encoding UTF8 -Force
+    }
+}
+function Remove-ServiceName {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ServiceName
+    )
+    if (Test-ServiceNameExists -FilePath $FilePath -ServiceName $ServiceName) {
+        $uniqueLines = Get-Content -Path $FilePath | Where-Object { $_ -ne $ServiceName } | Sort-Object -Unique
+        Set-Content -Path $FilePath -Value ($uniqueLines -join [Environment]::NewLine) -Encoding UTF8 -Force
+    }
+}
+function Test-ServiceNameExists {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$ServiceName
+    )
+
+    if (-Not (Test-Path $FilePath)) {
+        Set-Content -Path $FilePath -Value "" -Encoding UTF8 -Force
+        return $false
+    }
+    $uniqueLines = Get-Content -Path $FilePath | Sort-Object -Unique
+    return $uniqueLines -contains $ServiceName
+}
+
+$host.ui.rawui.WindowTitle = "安装EasyTier服务"
+Clear-Host
+$ScriptRoot = (Get-Location).Path
+$ServicesPath = Join-Path $ScriptRoot "services"
+
+$RequiredFiles = @("easytier-core.exe", "easytier-cli.exe", "nssm.exe", "Packet.dll", "wintun.dll")
+foreach ($file in $RequiredFiles) {
+    if (-not (Test-Path (Join-Path $ScriptRoot $file))) {
+        Write-Host "缺少必要文件: ${file}" -ForegroundColor Red
+        Show-Pause -Text "按任意键退出..."
+        exit 1
+    }
+}
 
 try {
+    
+    $OPTIONS = Get-EasyTierConfig
     $nssm = Join-Path $ScriptRoot "nssm.exe"
     $arguments = $OPTIONS -join ' '
     Write-Host "`n生成的配置参数如下：" -ForegroundColor Yellow
     Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
     
     if (Show-YesNoPrompt -Message "`n确认安装配置？" -DefaultIndex 1) {
-        & $nssm install $SERVICE_NAME (Join-Path $ScriptRoot "easytier-core.exe")
-        & $nssm set $SERVICE_NAME AppParameters $arguments
-        & $nssm set $SERVICE_NAME Description "EasyTier 核心服务"
-        & $nssm set $SERVICE_NAME AppDirectory $ScriptRoot
-        & $nssm set $SERVICE_NAME Start SERVICE_AUTO_START
-        & $nssm start $SERVICE_NAME
+
+        & $nssm install $ServiceName (Join-Path $ScriptRoot "easytier-core.exe")
+        & $nssm set $ServiceName AppParameters $arguments
+        & $nssm set $ServiceName Description "EasyTier 核心服务"
+        & $nssm set $ServiceName AppDirectory $ScriptRoot
+        & $nssm set $ServiceName Start SERVICE_AUTO_START
+        & $nssm start $ServiceName
         
-        Write-Host "`n服务安装完成，如需查看节点信息请执行：easytier-cli.exe node" -ForegroundColor Green
+        Save-ServiceName -FilePath $ServicesPath -ServiceName $ServiceName
+        Write-Host "`n服务安装完成。" -ForegroundColor Green
     }
     else {
         Write-Host "安装已取消。" -ForegroundColor Yellow
