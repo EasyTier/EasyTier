@@ -32,7 +32,9 @@ EXIT
 ::BATCH_END
 param(
     [Parameter(Mandatory = $false)]
-    [string]$ServiceName = "EasyTierService"
+    [string]$ServiceName = "EasyTierService",
+    [Parameter(Mandatory = $false)]
+    [switch]$Uninstall
 )
 [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")
 [System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::GetCultureInfo("zh-CN")
@@ -46,7 +48,6 @@ function Show-Pause {
     Write-Host "$Text" -ForegroundColor $Color
     [System.Console]::ReadKey($true) > $null
 }
-
 function Show-YesNoPrompt {
     [CmdletBinding()]
     param(
@@ -59,15 +60,12 @@ function Show-YesNoPrompt {
         [string[]]$Labels = @("&Yes", "&No"),
         [string[]]$Helps = @("是", "否")
     )
-    
     if ($Labels.Count -ne $Helps.Count) {
         throw "Labels 和 Helps 的数量必须相同。"
     }
-    
     $choices = for ($i = 0; $i -lt $Labels.Count; $i++) {
         [System.Management.Automation.Host.ChoiceDescription]::new($Labels[$i], $Helps[$i])
     }
-    
     try {
         return $Host.UI.PromptForChoice($Title, $Message, $choices, $DefaultIndex) -eq 0
     }
@@ -76,7 +74,6 @@ function Show-YesNoPrompt {
         return $false
     }
 }
-
 function Show-MultipleChoicePrompt {
     [CmdletBinding()]
     param(
@@ -90,23 +87,19 @@ function Show-MultipleChoicePrompt {
         [string]$Title = "",
         [int]$DefaultIndex = 0
     )
-    
     if ($Helps.Count -eq 0) {
         $Helps = @("")
         for ($i = 1; $i -lt $Options.Count; $i++) {
             $Helps += ""
         }
     }
-    
     if ($Options.Count -ne $Helps.Count) {
         throw "Options 和 Helps 的数量必须相同。"
     }
-    
     if ($DefaultIndex -ge $Options.Count) {
         $DefaultIndex = $Options.Count - 1
     }
     $currentSelection = $DefaultIndex
-    
     function Show-Menu {
         param(
             [int]$highlightIndex,
@@ -116,7 +109,6 @@ function Show-MultipleChoicePrompt {
             [string[]]$helps,
             [int]$prevIndex = -1
         )
-        
         try {
             # 首次显示时绘制完整菜单
             if ($prevIndex -eq -1) {
@@ -125,10 +117,8 @@ function Show-MultipleChoicePrompt {
                     Write-Host "$title`n" -ForegroundColor Blue
                 }
                 Write-Host "$message" -ForegroundColor Yellow
-                
                 # 保存初始光标位置
                 $script:menuTop = [Console]::CursorTop
-                
                 # 首次绘制所有选项
                 for ($i = 0; $i -lt $options.Count; $i++) {
                     $prefix = if ($i -eq $highlightIndex) { "[>]" } else { "[ ]" }
@@ -137,7 +127,6 @@ function Show-MultipleChoicePrompt {
                     Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$i])) { " - $($helps[$i])" } else { "" }) -ForegroundColor DarkGray
                 }
             }
-
             # 只更新变化的选项
             if ($prevIndex -ne -1) {
                 $safePrevPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevIndex)
@@ -145,12 +134,10 @@ function Show-MultipleChoicePrompt {
                 Write-Host "[ ] $($options[$prevIndex])" -ForegroundColor Gray -NoNewline
                 Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$prevIndex])) { " - $($helps[$prevIndex])" } else { "" }) -ForegroundColor DarkGray
             }
-
             $safeHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $highlightIndex)
             [Console]::SetCursorPosition(0, $safeHighlightPos)
             Write-Host "[>] $($options[$highlightIndex])" -ForegroundColor Green -NoNewline
             Write-Host $(if (-not [string]::IsNullOrEmpty($helps[$highlightIndex])) { " - $($helps[$highlightIndex])" } else { "" }) -ForegroundColor DarkGray
-
             # 首次显示时绘制操作提示
             if ($prevIndex -eq -1) {
                 $safePos = [Math]::Min([Console]::WindowHeight - 2, $menuTop + $options.Count)
@@ -164,12 +151,10 @@ function Show-MultipleChoicePrompt {
             [Console]::SetCursorPosition(0, $waitPos)
         }
     }
-    
     $prevSelection = -1
     while ($true) {
         Show-Menu -highlightIndex $currentSelection -title $Title -message $Message -options $Options -helps $Helps -prevIndex $prevSelection
         $prevSelection = $currentSelection
-        
         $key = [System.Console]::ReadKey($true)
         switch ($key.Key) {
             { $_ -eq [ConsoleKey]::UpArrow } {
@@ -185,7 +170,6 @@ function Show-MultipleChoicePrompt {
         }
     }
 }
-
 function Show-MultiSelectPrompt {
     [CmdletBinding()]
     param(
@@ -199,21 +183,17 @@ function Show-MultiSelectPrompt {
         [string]$Title = "",
         [int[]]$DefaultSelections = @()
     )
-    
     if ($Helps.Count -eq 0) {
         $Helps = @("")
         for ($i = 1; $i -lt $Options.Count; $i++) {
             $Helps += ""
         }
     }
-    
     if ($Options.Count -ne $Helps.Count) {
         throw "Options 和 Helps 的数量必须相同。"
     }
-    
     $selectedIndices = [System.Collections.Generic.List[int]]::new($DefaultSelections)
     $currentSelection = 0
-    
     function Show-Menu {
         param(
             [int]$highlightIndex,
@@ -221,7 +201,6 @@ function Show-MultiSelectPrompt {
             [int]$prevIndex = -1,
             [int]$prevHighlight = -1
         )
-        
         try {
             # 首次显示时绘制完整菜单
             if ($prevIndex -eq -1) {
@@ -230,10 +209,8 @@ function Show-MultiSelectPrompt {
                     Write-Host "$Title`n" -ForegroundColor Blue
                 }
                 Write-Host "$Message" -ForegroundColor Yellow
-                
                 # 保存初始光标位置
                 $script:menuTop = [Console]::CursorTop
-                
                 # 首次绘制所有选项
                 for ($i = 0; $i -lt $Options.Count; $i++) {
                     $isSelected = $selectedItems -contains $i
@@ -243,7 +220,6 @@ function Show-MultiSelectPrompt {
                     Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$i])) { " - $($Helps[$i])" } else { "" }) -ForegroundColor DarkGray
                 }
             }
-
             # 只更新变化的选项
             if ($prevIndex -ne -1) {
                 $safePrevPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevIndex)
@@ -253,7 +229,6 @@ function Show-MultiSelectPrompt {
                 Write-Host "$prefix $($Options[$prevIndex])" -ForegroundColor $(if ($isPrevSelected) { "Cyan" } else { "Gray" }) -NoNewline
                 Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$prevIndex])) { " - $($Helps[$prevIndex])" } else { "" }) -ForegroundColor DarkGray
             }
-
             if ($prevHighlight -ne -1 -and $prevHighlight -ne $highlightIndex) {
                 $safePrevHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $prevHighlight)
                 [Console]::SetCursorPosition(0, $safePrevHighlightPos)
@@ -262,14 +237,12 @@ function Show-MultiSelectPrompt {
                 Write-Host "$prefix $($Options[$prevHighlight])" -ForegroundColor $(if ($isPrevHighlightSelected) { "Cyan" } else { "Gray" }) -NoNewline
                 Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$prevHighlight])) { " - $($Helps[$prevHighlight])" } else { "" }) -ForegroundColor DarkGray
             }
-
             $safeHighlightPos = [Math]::Min([Console]::WindowHeight - 1, $menuTop + $highlightIndex)
             [Console]::SetCursorPosition(0, $safeHighlightPos)
             $isSelected = $selectedItems -contains $highlightIndex
             $prefix = if ($isSelected) { "[#]" } else { "[ ]" }
             Write-Host "$prefix $($Options[$highlightIndex])" -ForegroundColor "Green" -NoNewline
             Write-Host $(if (-not [string]::IsNullOrEmpty($Helps[$highlightIndex])) { " - $($Helps[$highlightIndex])" } else { "" }) -ForegroundColor DarkGray
-
             # 首次显示时绘制操作提示
             if ($prevIndex -eq -1) {
                 $safePos = [Math]::Min([Console]::WindowHeight - 2, $menuTop + $Options.Count)
@@ -283,13 +256,11 @@ function Show-MultiSelectPrompt {
             [Console]::SetCursorPosition(0, $waitPos)
         }
     }
-    
     $prevSelection = -1
     $prevHighlight = -1
     while ($true) {
         Show-Menu -highlightIndex $currentSelection -selectedItems $selectedIndices -prevIndex $prevSelection -prevHighlight $prevHighlight
         $prevHighlight = $currentSelection
-        
         $key = [System.Console]::ReadKey($true)
         switch ($key.Key) {
             { $_ -eq [ConsoleKey]::UpArrow } {
@@ -316,7 +287,6 @@ function Show-MultiSelectPrompt {
         }
     }
 }
-
 function Get-InputWithNoNullOrWhiteSpace {
     [CmdletBinding()]
     param(
@@ -324,7 +294,6 @@ function Get-InputWithNoNullOrWhiteSpace {
         [ValidateNotNullOrEmpty()]
         [string]$Prompt
     )
-    
     while ($true) {
         try {
             $response = Read-Host "请输入${Prompt}(必填)"
@@ -343,7 +312,6 @@ function Get-InputWithNoNullOrWhiteSpace {
         }
     }
 }
-
 function Get-InputWithFileValidation {
     [CmdletBinding()]
     param(
@@ -366,7 +334,6 @@ function Get-InputWithFileValidation {
         }
     }
 }
-
 function Get-InputWithDefault {
     [CmdletBinding()]
     param(
@@ -376,7 +343,6 @@ function Get-InputWithDefault {
         [Parameter(Mandatory = $true, Position = 1)]
         [string]$DefaultValue
     )
-    
     try {
         $response = Read-Host "${Prompt}(默认: ${DefaultValue})"
         if ([string]::IsNullOrWhiteSpace($response)) {
@@ -392,65 +358,51 @@ function Get-InputWithDefault {
         return $DefaultValue
     }
 }
-
 function Get-BasicNetworkConfig {
     [CmdletBinding()]
     param()
-    
     $options = @()
     $options += "--network-name $(Get-InputWithNoNullOrWhiteSpace -Prompt "网络名称")"
     $options += "--network-secret $(Get-InputWithNoNullOrWhiteSpace -Prompt "网络密钥")"
-    
     if (Show-YesNoPrompt -Message "是否指定当前设备名称？" -DefaultIndex 1) {
         $options += "--hostname $(Get-InputWithNoNullOrWhiteSpace -Prompt "设备名称")"
     }
-    
     if (Show-YesNoPrompt -Message "是否使用公共共享节点来发现对等节点？") {
         $options += "--external-node $(Get-InputWithDefault -Prompt "公共节点地址(格式:协议://IP:端口)" -DefaultValue "tcp://public.easytier.cn:11010")"
     }
-    
     if (Show-YesNoPrompt -Message "是否添加对等节点？") {
         $peers = @()
         do {
             $peers += Get-InputWithDefault -Prompt "对等节点地址" -DefaultValue "tcp://public.easytier.cn:11010"
         } while (Show-YesNoPrompt -Message "是否继续添加对等节点？" -DefaultIndex 1)
-        
         if ($peers.Count -gt 0) {
             $options += ($peers | ForEach-Object { "--peers $($_.Trim())" }) -join ' '
         }
     }
-    
     $ipChoice = Show-MultipleChoicePrompt -Message "请选择IP分配方式" `
         -Options @("手动指定IPv4", "自动DHCP", "不设置IP") `
         -Helps @("自定义此节点的IPv4地址，如果为空则仅转发数据包", "由Easytier自动确定并设置IP地址", "将仅转发数据包，不会创建TUN设备") `
         -DefaultIndex 1
-    
     switch ($ipChoice) {
         0 { $options += "--ipv4 $(Get-InputWithNoNullOrWhiteSpace -Prompt "IPv4地址")" }
         1 { $options += "--dhcp" }
         2 { break }
     }
-    
     return $options
 }
-
 function Get-AdvancedConfig {
     [CmdletBinding()]
     param()
-    
     $options = @()
-
     # 设备配置
     if (Show-YesNoPrompt -Message "是否指定TUN接口名称？" -DefaultIndex 1) {
         $options += "--dev-name $(Get-InputWithNoNullOrWhiteSpace -Prompt "TUN接口名称(可选)")"
     }
-        
     # 网络白名单
     if (Show-YesNoPrompt -Message "是否设置转发网络白名单？" -DefaultIndex 1) {
         $whitelist = Get-InputWithDefault -Prompt "白名单网络(空格分隔,*=所有,def*=以def开头的网络)" -DefaultValue "*"
         $options += "--relay-network-whitelist $whitelist"
     }
-
     # 监听器配置
     if (Show-YesNoPrompt -Message "是否启用端口监听？" -DefaultIndex 1) {
         $listeners = @()
@@ -458,9 +410,7 @@ function Get-AdvancedConfig {
             $listener = Get-InputWithNoNullOrWhiteSpace -Prompt "监听器地址（格式：协议://IP:端口）"
             $listeners += $listener
         } while (Show-YesNoPrompt -Message "是否添加更多监听器？" -DefaultIndex 1)
-        
         $options += "--listeners $($listeners -join ' ')"
-
         if (Show-YesNoPrompt -Message "是否手动指定公网映射地址？") {
             $mapped = Get-InputWithNoNullOrWhiteSpace -Prompt "公网地址（格式：协议://IP:端口）"
             $options += "--mapped-listeners $mapped"
@@ -469,7 +419,6 @@ function Get-AdvancedConfig {
     else {
         $options += "--no-listener"
     }
-    
     # 性能选项
     $performanceOptions = @(
         "启用多线程运行",
@@ -477,16 +426,13 @@ function Get-AdvancedConfig {
         "通过系统内核转发",
         "启用KCP代理"
     )
-    
     $performanceHelps = @(
         "使用多线程运行时(默认为单线程)",
         "延迟优先模式(默认使用最短路径)",
         "通过系统内核转发子网代理数据包(禁用内置NAT)",
         "使用KCP代理TCP流(提高UDP丢包网络性能)"
     )
-    
     $selectedPerformance = Show-MultiSelectPrompt -Message "请选择性能选项:" -Options $performanceOptions -Helps $performanceHelps
-    
     # 处理选中的性能选项
     foreach ($index in $selectedPerformance) {
         switch ($index) {
@@ -498,7 +444,6 @@ function Get-AdvancedConfig {
     }
     return $options
 }
-
 function Get-EasyTierConfig {
     [CmdletBinding()]
     param()
@@ -511,10 +456,8 @@ function Get-EasyTierConfig {
         0 {
             # 基本网络配置
             $options += Get-BasicNetworkConfig
-    
             # 高级配置
             $options += Get-AdvancedConfig
-    
             # 专家选项
             if (Show-YesNoPrompt -Message "是否调整专家选项？" -DefaultIndex 1) {
                 $options += Get-ExtraAdvancedOptions
@@ -535,18 +478,14 @@ function Get-EasyTierConfig {
     }
     return $options
 }
-
 function Get-ExtraAdvancedOptions {
     [CmdletBinding()]
     param()
-    
     $options = @()
-
     # 检查并添加缺失的--no-tun参数
     if (Show-YesNoPrompt -Message "是否不创建TUN设备？" -DefaultIndex 1) {
         $options += "--no-tun"
     }
-
     # 检查并添加缺失的--mtu参数
     if (Show-YesNoPrompt -Message "是否自定义TUN设备MTU？" -DefaultIndex 1) {
         $mtu = Get-InputWithDefault -Prompt "MTU值(默认:加密1360/非加密1380)" -DefaultValue ""
@@ -554,7 +493,6 @@ function Get-ExtraAdvancedOptions {
             $options += "--mtu $mtu"
         }
     }
-
     # 日志配置
     if (Show-YesNoPrompt -Message "是否配置日志选项？" -DefaultIndex 1) {
         $logLevels = @("trace", "debug", "info", "warn", "error", "critical")
@@ -562,18 +500,15 @@ function Get-ExtraAdvancedOptions {
         $fileLog = Show-MultipleChoicePrompt -Message "选择文件日志级别" -Options $logLevels -DefaultIndex 2
         $options += "--console-log-level $($logLevels[$consoleLog])"
         $options += "--file-log-level $($logLevels[$fileLog])"
-        
         if (Show-YesNoPrompt -Message "是否指定日志目录？" -DefaultIndex 1) {
             $logDir = Get-InputWithDefault -Prompt "日志目录路径" -DefaultValue "$env:ProgramData\EasyTier\logs"
             $options += "--file-log-dir `"$logDir`""
         }
     }
-
     # 实例配置
     if (Show-YesNoPrompt -Message "是否指定实例名称？" -DefaultIndex 1) {
         $options += "--instance-name $(Get-InputWithNoNullOrWhiteSpace -Prompt "实例名称")"
     }
-
     # 网络高级选项
     $networkOptions = @(
         "禁用IPv6",
@@ -583,7 +518,6 @@ function Get-ExtraAdvancedOptions {
         "启用私有模式",
         "转发所有对等节点RPC"
     )
-    
     $networkHelps = @(
         "不使用IPv6",
         "禁用对等节点通信的加密",
@@ -592,9 +526,7 @@ function Get-ExtraAdvancedOptions {
         "不允许不同网络的节点通过本节点中转",
         "转发所有对等节点的RPC数据包"
     )
-    
     $selectedNetwork = Show-MultiSelectPrompt -Message "请选择网络高级选项:" -Options $networkOptions -Helps $networkHelps
-    
     foreach ($index in $selectedNetwork) {
         switch ($index) {
             0 { $options += "--disable-ipv6" }
@@ -605,7 +537,6 @@ function Get-ExtraAdvancedOptions {
             5 { $options += "--relay-all-peer-rpc" }
         }
     }
-
     # 端口转发
     if (Show-YesNoPrompt -Message "是否设置端口转发？" -DefaultIndex 1) {
         $forwards = @()
@@ -614,16 +545,13 @@ function Get-ExtraAdvancedOptions {
             $forward = Get-InputWithNoNullOrWhiteSpace -Prompt "端口转发(格式:协议://本地IP:端口/虚拟IP:端口)"
             $forwards += $forward
         } while (Show-YesNoPrompt -Message "是否添加更多端口转发？" -DefaultIndex 1)
-        
         $options += "--port-forward $($forwards -join ' ')"
     }
-
     # SOCKS5代理
     if (Show-YesNoPrompt -Message "是否启用SOCKS5代理？" -DefaultIndex 1) {
         $port = Get-InputWithDefault -Prompt "SOCKS5端口号" -DefaultValue "1080"
         $options += "--socks5 $port"
     }
-
     # 其他选项
     if (Show-YesNoPrompt -Message "是否配置其他高级选项？" -DefaultIndex 1) {
         $otherOptions = @(
@@ -638,7 +566,6 @@ function Get-ExtraAdvancedOptions {
             "手动分配路由CIDR",
             "启用出口节点"
         )
-        
         $otherHelps = @(
             "为子网代理和KCP代理启用smoltcp堆栈",
             "启用魔法DNS(hostname.et.net)",
@@ -651,9 +578,7 @@ function Get-ExtraAdvancedOptions {
             "手动分配路由CIDR(将禁用子网代理和wireguard路由)",
             "允许此节点成为出口节点"
         )
-        
         $selectedOther = Show-MultiSelectPrompt -Message "请选择其他高级选项:" -Options $otherOptions -Helps $otherHelps
-        
         foreach ($index in $selectedOther) {
             switch ($index) {
                 0 { $options += "--use-smoltcp" }
@@ -698,7 +623,6 @@ function Get-ExtraAdvancedOptions {
             }
         }
     }
-
     return $options
 }
 function Save-ServiceName {
@@ -706,7 +630,6 @@ function Save-ServiceName {
     param (
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
-
         [Parameter(Mandatory = $true)]
         [string]$ServiceName
     )
@@ -722,7 +645,6 @@ function Remove-ServiceName {
     param (
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
-
         [Parameter(Mandatory = $true)]
         [string]$ServiceName
     )
@@ -736,11 +658,9 @@ function Test-ServiceNameExists {
     param (
         [Parameter(Mandatory = $true)]
         [string]$FilePath,
-
         [Parameter(Mandatory = $true)]
         [string]$ServiceName
     )
-
     if (-Not (Test-Path $FilePath)) {
         Set-Content -Path $FilePath -Value "" -Encoding UTF8 -Force
         return $false
@@ -748,12 +668,10 @@ function Test-ServiceNameExists {
     $uniqueLines = Get-Content -Path $FilePath | Sort-Object -Unique
     return $uniqueLines -contains $ServiceName
 }
-
-$host.ui.rawui.WindowTitle = "安装EasyTier服务"
+$host.ui.rawui.WindowTitle = if ($Uninstall) { "卸载EasyTier服务" } else { "安装EasyTier服务" }  
 Clear-Host
 $ScriptRoot = (Get-Location).Path
 $ServicesPath = Join-Path $ScriptRoot "services"
-
 $RequiredFiles = @("easytier-core.exe", "easytier-cli.exe", "nssm.exe", "Packet.dll", "wintun.dll")
 foreach ($file in $RequiredFiles) {
     if (-not (Test-Path (Join-Path $ScriptRoot $file))) {
@@ -762,35 +680,80 @@ foreach ($file in $RequiredFiles) {
         exit 1
     }
 }
-
 try {
-    
-    $OPTIONS = Get-EasyTierConfig
     $nssm = Join-Path $ScriptRoot "nssm.exe"
-    $arguments = $OPTIONS -join ' '
-    Write-Host "`n生成的配置参数如下：" -ForegroundColor Yellow
-    Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
-    
-    if (Show-YesNoPrompt -Message "`n确认安装配置？" -DefaultIndex 1) {
-
-        & $nssm install $ServiceName (Join-Path $ScriptRoot "easytier-core.exe")
-        & $nssm set $ServiceName AppParameters $arguments
-        & $nssm set $ServiceName Description "EasyTier 核心服务"
-        & $nssm set $ServiceName AppDirectory $ScriptRoot
-        & $nssm set $ServiceName Start SERVICE_AUTO_START
-        & $nssm start $ServiceName
-        
-        Save-ServiceName -FilePath $ServicesPath -ServiceName $ServiceName
-        Write-Host "`n服务安装完成。" -ForegroundColor Green
-    }
-    else {
-        Write-Host "安装已取消。" -ForegroundColor Yellow
-    }
+    if ($Uninstall) {
+        $Force = $false
+        $Action = "designation"
+        if (-not (Test-ServiceNameExists -FilePath $ServicesPath -ServiceName $ServiceName)) {
+            Write-Host "服务未安装" -ForegroundColor Red
+            if (Show-YesNoPrompt -Message "是否强制卸载？" -DefaultIndex 1) {
+                $Force = $true
+                $Action = "all"
+            }
+            else {
+                Show-Pause -Text "按任意键退出..."    
+                exit 1
+            }
+        }
+        # 参数处理
+        if ($Action -eq "all") {
+            if (-not $Force) {
+                if (-not (Show-YesNoPrompt -Message "确定要完全卸载所有服务吗？" -DefaultIndex 1)) {
+                    Write-Host "已取消卸载操作" -ForegroundColor Yellow
+                    Show-Pause -Text "按任意键退出..."
+                    exit 0
+                }
+            }
+            Write-Host "正在卸载所有服务..." -ForegroundColor Cyan
+            # 读取所有服务名
+            $services = Get-Content $ServicesPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            if (-not $services) {
+                $services = @($ServiceName)
+            }
+        }
+        else {
+            $services = @($ServiceName)
+        }
+        foreach ($service in $services) {
+            # 停止服务
+            Write-Host "正在停止服务 $service ..."
+            & $nssm stop $service
+            # 删除服务（自动确认）
+            Write-Host "正在移除服务 $service ..."
+            & $nssm remove $service confirm
+            Remove-ServiceName -FilePath $ServicesPath -ServiceName $service
+            Write-Host "服务 $service 已卸载" -ForegroundColor Green
+        }
+        # 如果是完全卸载，删除服务记录文件
+        if ($Action -eq "all") {
+            Remove-Item $ServicesPath -Force
+            Write-Host "已删除服务列表文件" -ForegroundColor Green
+        }
+    } 
+    else { 
+        $OPTIONS = Get-EasyTierConfig
+        $arguments = $OPTIONS -join ' '
+        Write-Host "生成的配置参数如下：" -ForegroundColor Yellow
+        Write-Host ($OPTIONS -join " ") -ForegroundColor DarkGray
+        if (Show-YesNoPrompt -Message "确认安装配置？" -DefaultIndex 1) {
+            & $nssm install $ServiceName (Join-Path $ScriptRoot "easytier-core.exe")
+            & $nssm set $ServiceName AppParameters $arguments
+            & $nssm set $ServiceName Description "EasyTier 核心服务"
+            & $nssm set $ServiceName AppDirectory $ScriptRoot
+            & $nssm set $ServiceName Start SERVICE_AUTO_START
+            & $nssm start $ServiceName
+            Save-ServiceName -FilePath $ServicesPath -ServiceName $ServiceName
+            Write-Host "服务安装完成。" -ForegroundColor Green
+        }
+        else {
+            Write-Host "安装已取消。" -ForegroundColor Yellow
+        }
+    }  
 }
 catch {
-    Write-Host "`n安装过程中发生错误: $_" -ForegroundColor Red
+    Write-Host "$($host.ui.rawui.WindowTitle)发生错误: $_" -ForegroundColor Red
     exit 1
 }
-
 Show-Pause -Text "按任意键退出..."
 exit
