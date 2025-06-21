@@ -1,4 +1,4 @@
-use std::{fmt::Display, str::FromStr};
+use std::{fmt, str::FromStr};
 
 use anyhow::Context;
 
@@ -33,8 +33,14 @@ impl From<String> for Uuid {
     }
 }
 
-impl Display for Uuid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Uuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", uuid::Uuid::from(self.clone()))
+    }
+}
+
+impl fmt::Debug for Uuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", uuid::Uuid::from(self.clone()))
     }
 }
@@ -109,8 +115,8 @@ impl From<Ipv4Inet> for cidr::Ipv4Inet {
     }
 }
 
-impl std::fmt::Display for Ipv4Inet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Ipv4Inet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", cidr::Ipv4Inet::from(self.clone()))
     }
 }
@@ -149,8 +155,8 @@ impl FromStr for Url {
     }
 }
 
-impl Display for Url {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Url {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.url)
     }
 }
@@ -216,5 +222,19 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
         }
+    }
+}
+
+impl fmt::Debug for Ipv4Addr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let std_ipv4_addr = std::net::Ipv4Addr::from(self.clone());
+        write!(f, "{}", std_ipv4_addr)
+    }
+}
+
+impl fmt::Debug for Ipv6Addr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let std_ipv6_addr = std::net::Ipv6Addr::from(self.clone());
+        write!(f, "{}", std_ipv6_addr)
     }
 }

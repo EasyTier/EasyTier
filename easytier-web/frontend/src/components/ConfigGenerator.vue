@@ -82,7 +82,7 @@ const parseConfig = async () => {
                 <Textarea 
                     v-model="toml_config" 
                     spellcheck="false"
-                    class="w-full flex-grow p-2 bg-gray-100 whitespace-pre-wrap font-mono border-none focus:outline-none resize-none" 
+                    class="w-full flex-grow p-2 whitespace-pre-wrap font-mono resize-none" 
                     placeholder="Press 'Run Network' to generate TOML configuration, or paste your TOML configuration here to parse it"
                 ></Textarea>
                 <div class="mt-3 flex justify-center">
