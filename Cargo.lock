@@ -2112,7 +2112,6 @@ dependencies = [
 name = "easytier-ohrs"
 version = "0.1.0"
 dependencies = [
- "dashmap",
  "easytier",
  "lazy_static",
  "napi-build-ohos",

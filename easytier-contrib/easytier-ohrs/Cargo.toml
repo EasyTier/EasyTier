@@ -7,7 +7,6 @@ edition = "2024"
 crate-type=["cdylib"]
 
 [dependencies]
-dashmap = "6.0"
 ohos-hilog-binding = {version = "*", features = ["redirect"]}
 easytier = { path = "../../easytier" }
 napi-derive-ohos = "1.0.4"
@@ -43,3 +42,7 @@ debug = true
 [profile.release]
 panic = "unwind"
 debug = true
+lto = true
+codegen-units = 1
+opt-level = 3
+strip = true

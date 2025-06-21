@@ -20,11 +20,14 @@ pub fn init_panic_hook() {
 }
 
 #[napi]
-pub fn hilog_global_options() {
+pub fn hilog_global_options(
+    domain: u32,
+    tag: String,
+) {
     ohos_hilog_binding::forward_stdio_to_hilog();
     set_global_options(LogOptions{
-        domain: 0,
-        tag: "aa",
+        domain,
+        tag: Box::leak(tag.clone().into_boxed_str()),
     })
 }
 

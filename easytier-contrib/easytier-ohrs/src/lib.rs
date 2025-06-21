@@ -7,11 +7,10 @@ use lazy_static::lazy_static;
 use napi_derive_ohos::napi;
 use napi_ohos::bindgen_prelude::*;
 use napi_ohos::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
-use ohos_hilog_binding::{hilog_debug, hilog_error, hilog_warn};
+use ohos_hilog_binding::{hilog_debug, hilog_error};
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
-use std::sync::{Mutex, atomic};
+use std::sync::{atomic, Mutex};
 use std::time::Duration;
 use std::{format, thread};
 use uuid::Uuid;
@@ -63,9 +62,28 @@ pub struct KeyValuePair {
 }
 
 #[napi]
-pub fn set_global_tun(fd: i32) {
-    hilog_debug!("[Rust] init global tun {}", fd);
-    TUN_FD.store(fd, Ordering::SeqCst);
+pub fn set_tun_fd(
+    inst_id: String,
+    fd: i32,
+) -> bool {
+    match Uuid::try_parse(&inst_id) {
+        Ok(uuid) => {
+            match INSTANCE_MANAGER.set_tun_fd(&uuid, fd) {
+                Ok(_) => {
+                    hilog_debug!("[Rust] set tun fd {} to {}.", fd, inst_id);
+                    true
+                }
+                Err(e) => {
+                    hilog_error!("[Rust] cant set tun fd {} to {}. {}", fd, inst_id, e);
+                    false
+                }
+            }
+        }
+        Err(e) => {
+            hilog_error!("[Rust] cant covert {} to uuid. {}", inst_id, e);
+            false
+        }
+    }
 }
 
 #[napi]
@@ -103,23 +121,9 @@ pub fn run_network_instance(cfg_str: String) -> bool {
     {
         return false;
     }
-    let uuid = INSTANCE_MANAGER
+    INSTANCE_MANAGER
         .run_network_instance(cfg, ConfigSource::FFI)
         .unwrap();
-    let fd = TUN_FD.load(Ordering::SeqCst);
-    if fd > 0 {
-        match INSTANCE_MANAGER.set_tun_fd(&uuid, fd) {
-            Ok(_) => {
-                hilog_debug!("[Rust] set global tun:{} to {}", fd, inst_id);
-            }
-            Err(e) => {
-                hilog_error!("[Rust] set global tun:{} to {} failed {}", fd, inst_id, e);
-            }
-        }
-        hilog_debug!("[Rust] run_network_instance {}", inst_id);
-    } else {
-        hilog_warn!("[Rust] global tun is {}", fd);
-    }
     true
 }
 
