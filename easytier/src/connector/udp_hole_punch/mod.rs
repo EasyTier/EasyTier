@@ -1,4 +1,7 @@
-use std::sync::{atomic::AtomicBool, Arc};
+use std::{
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
+};
 
 use anyhow::{Context, Error};
 use both_easy_sym::{PunchBothEasySymHoleClient, PunchBothEasySymHoleServer};
@@ -37,7 +40,10 @@ pub(crate) mod sym_to_cone;
 
 // sym punch should be serialized
 static SYM_PUNCH_LOCK: Lazy<DashMap<PeerId, Arc<Mutex<()>>>> = Lazy::new(|| DashMap::new());
-static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
+pub static RUN_TESTING: Lazy<AtomicBool> = Lazy::new(|| AtomicBool::new(false));
+
+// Blacklist timeout in seconds
+pub const BLACKLIST_TIMEOUT_SEC: u64 = 3600;
 
 fn get_sym_punch_lock(peer_id: PeerId) -> Arc<Mutex<()>> {
     SYM_PUNCH_LOCK
@@ -174,24 +180,44 @@ impl BackOff {
     }
 }
 
+pub fn handle_rpc_result<T>(
+    ret: Result<T, rpc_types::error::Error>,
+    dst_peer_id: PeerId,
+    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+) -> Result<T, rpc_types::error::Error> {
+    match ret {
+        Ok(ret) => Ok(ret),
+        Err(e) => {
+            if matches!(e, rpc_types::error::Error::InvalidServiceKey(_, _)) {
+                blacklist.insert(dst_peer_id, (), Duration::from_secs(BLACKLIST_TIMEOUT_SEC));
+            }
+            Err(e)
+        }
+    }
+}
+
 struct UdpHoePunchConnectorData {
     cone_client: PunchConeHoleClient,
     sym_to_cone_client: PunchSymToConeHoleClient,
     both_easy_sym_client: PunchBothEasySymHoleClient,
     peer_mgr: Arc<PeerManager>,
+    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
 impl UdpHoePunchConnectorData {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
-        let cone_client = PunchConeHoleClient::new(peer_mgr.clone());
-        let sym_to_cone_client = PunchSymToConeHoleClient::new(peer_mgr.clone());
-        let both_easy_sym_client = PunchBothEasySymHoleClient::new(peer_mgr.clone());
+        let blacklist = Arc::new(timedmap::TimedMap::new());
+        let cone_client = PunchConeHoleClient::new(peer_mgr.clone(), blacklist.clone());
+        let sym_to_cone_client = PunchSymToConeHoleClient::new(peer_mgr.clone(), blacklist.clone());
+        let both_easy_sym_client =
+            PunchBothEasySymHoleClient::new(peer_mgr.clone(), blacklist.clone());
 
         Arc::new(Self {
             cone_client,
             sym_to_cone_client,
             both_easy_sym_client,
             peer_mgr,
+            blacklist,
         })
     }
 
@@ -402,9 +428,12 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
 
         let my_peer_id = data.peer_mgr.my_peer_id();
 
+        data.blacklist.cleanup();
+
         // collect peer list from peer manager and do some filter:
         // 1. peers without direct conns;
         // 2. peers is full cone (any restricted type);
+        // 3. peers not in blacklist;
         for route in data.peer_mgr.list_routes().await.iter() {
             if route
                 .feature_flag
@@ -425,6 +454,13 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
             let peer_nat_type = peer_nat_type.into();
 
             let peer_id: PeerId = route.peer_id;
+
+            // Check if peer is blacklisted
+            if data.blacklist.contains(&peer_id) {
+                tracing::debug!(?peer_id, "peer is blacklisted, skipping");
+                continue;
+            }
+
             let conns = data.peer_mgr.list_peer_conns(peer_id).await;
             if conns.is_some() && conns.unwrap().len() > 0 {
                 continue;
@@ -536,11 +572,17 @@ impl UdpHolePunchConnector {
 pub mod tests {
 
     use std::sync::Arc;
+    use std::time::Duration;
 
     use crate::common::stun::MockStunInfoCollector;
+    use crate::peers::{
+        peer_manager::PeerManager,
+        tests::{connect_peer_manager, create_mock_peer_manager, wait_route_appear},
+    };
     use crate::proto::common::NatType;
+    use crate::tunnel::common::tests::wait_for_condition;
 
-    use crate::peers::{peer_manager::PeerManager, tests::create_mock_peer_manager};
+    use super::{UdpHolePunchConnector, RUN_TESTING};
 
     pub fn replace_stun_info_collector(peer_mgr: Arc<PeerManager>, udp_nat_type: NatType) {
         let collector = Box::new(MockStunInfoCollector { udp_nat_type });
@@ -555,5 +597,38 @@ pub mod tests {
         let p_a = create_mock_peer_manager().await;
         replace_stun_info_collector(p_a.clone(), udp_nat_type);
         p_a
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    pub async fn test_hole_punching_blacklist(
+        #[values(NatType::Symmetric, NatType::PortRestricted, NatType::Unknown)] nat_type: NatType,
+    ) {
+        RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let p_a = create_mock_peer_manager_with_mock_stun(nat_type).await;
+        let p_b = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        let p_c = create_mock_peer_manager_with_mock_stun(NatType::PortRestricted).await;
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+        wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+
+        let mut hole_punching_a = UdpHolePunchConnector::new(p_a.clone());
+
+        hole_punching_a.run().await.unwrap();
+
+        hole_punching_a.client.run_immediately().await;
+
+        wait_for_condition(
+            || async {
+                hole_punching_a
+                    .client
+                    .data()
+                    .blacklist
+                    .contains(&p_c.my_peer_id())
+            },
+            Duration::from_secs(10),
+        )
+        .await;
     }
 }
