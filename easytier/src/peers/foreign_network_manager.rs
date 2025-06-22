@@ -36,6 +36,7 @@ use crate::{
         peer_rpc::DirectConnectorRpcServer,
     },
     tunnel::packet_def::{PacketType, ZCPacket},
+    use_global_var,
 };
 
 use super::{
@@ -553,6 +554,19 @@ impl ForeignNetworkManager {
 
         if new_added {
             self.start_event_handler(&entry).await;
+        } else {
+            if let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
+                let direct_conns_len = peer.get_directly_connections().len();
+                let max_count = use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK);
+                if direct_conns_len >= max_count as usize {
+                    return Err(anyhow::anyhow!(
+                        "too many direct conns, cur: {}, max: {}",
+                        direct_conns_len,
+                        max_count
+                    )
+                    .into());
+                }
+            }
         }
 
         Ok(entry.peer_map.add_new_peer_conn(peer_conn).await)
@@ -1204,5 +1218,32 @@ mod tests {
         assert_eq!(1, pma_net4.list_routes().await.len());
         assert_eq!(1, pmb_net4.list_routes().await.len());
         assert_eq!(1, pmc_net4.list_routes().await.len());
+    }
+
+    #[tokio::test]
+    async fn test_foreign_network_manager_cluster_max_direct_conns() {
+        set_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK, 1);
+
+        let pm_center1 = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        let pma_net1 = create_mock_peer_manager_for_foreign_network("net1").await;
+
+        connect_peer_manager(pma_net1.clone(), pm_center1.clone()).await;
+        wait_for_condition(
+            || async { pma_net1.list_routes().await.len() == 1 },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        println!("routes: {:?}", pma_net1.list_routes().await);
+
+        let (a_ring, b_ring) = crate::tunnel::ring::create_ring_tunnel_pair();
+        let a_mgr_copy = pma_net1.clone();
+        tokio::spawn(async move {
+            a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
+        });
+        let b_mgr_copy = pm_center1.clone();
+
+        assert!(b_mgr_copy.add_tunnel_as_server(b_ring, true).await.is_err());
     }
 }
