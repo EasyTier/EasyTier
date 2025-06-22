@@ -1,19 +1,24 @@
-# GUI for EasyTier
+# CONTRIBUTING
 
-this is a GUI implementation for EasyTier, based on Tauri2.
+Thank you for your interest in contributing to EasyTier! This document provides guidelines and instructions to help you set up your development environment and start contributing.
 
-## Compile
+## Development Setup
 
-### Install prerequisites (Mac)
+Before you start contributing to the project, you need to set up your development environment. Here are the steps you need to follow:
 
+### Prerequisites
+
+**Install Rust and Node.js**: Our project requires both Rust and Node.js. Please follow the instructions provided [here](https://tauri.app/v1/guides/getting-started/prerequisites) to install them on your system.
+
+### Install Node.js Package
+
+After installing Rust and Node.js, install the necessary Node.js and Node Package Manager:
+
+```shell
+npm install pnpm -g
 ```
-brew install rust
-brew install protobuf
-brew install npm
-npm install -g pnpm
-```
 
-### For Desktop (Win/Mac/Linux)
+### Compile For Desktop (Win/Mac/Linux)
 
 ```
 cd ./tauri-plugin-vpnservice
@@ -29,7 +34,7 @@ pnpm install
 pnpm tauri build
 ```
 
-### For Android
+### Compile For Android
 
 Need to install android SDK / emulator / NDK / Java (easy with android studio)
 
