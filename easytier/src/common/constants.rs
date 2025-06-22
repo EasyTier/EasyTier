@@ -25,6 +25,8 @@ define_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, u64, 10);
 
 define_global_var!(MACHINE_UID, Option<String>, None);
 
+define_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK, u32, 3);
+
 pub const UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID: u32 = 2;
 
 pub const WIN_SERVICE_WORK_DIR_REG_KEY: &str = "SOFTWARE\\EasyTier\\Service\\WorkDir";
