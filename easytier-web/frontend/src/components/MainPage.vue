@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Api, I18nUtils } from 'easytier-frontend-lib'
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, onUnmounted, nextTick } from 'vue';
 import { Button, TieredMenu } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
@@ -20,10 +20,6 @@ const api = computed<Api.ApiClient | undefined>(() => {
 });
 
 const dialog = useDialog();
-
-onMounted(async () => {
-    await I18nUtils.loadLanguageAsync('cn')
-});
 
 const userMenu = ref();
 const userMenuItems = ref([
@@ -59,6 +55,47 @@ const userMenuItems = ref([
 ])
 
 const forceShowSideBar = ref(false)
+const sidebarRef = ref<HTMLElement>()
+const toggleButtonRef = ref<HTMLElement>()
+
+// 处理点击外部区域关闭侧边栏
+const handleClickOutside = (event: Event) => {
+    const target = event.target as HTMLElement;
+    
+    // 如果侧边栏是隐藏的，不需要处理
+    if (!forceShowSideBar.value) return;
+    
+    // 检查点击是否在侧边栏内部或切换按钮上
+    const isClickInsideSidebar = sidebarRef.value?.contains(target);
+    const isClickOnToggleButton = toggleButtonRef.value?.contains(target);
+    
+    // 如果点击在侧边栏外部且不在切换按钮上，则关闭侧边栏
+    if (!isClickInsideSidebar && !isClickOnToggleButton) {
+        forceShowSideBar.value = false;
+    }
+};
+
+// 切换侧边栏显示状态
+const toggleSidebar = () => {
+    forceShowSideBar.value = !forceShowSideBar.value;
+};
+
+// 点击背景遮罩关闭侧边栏
+const closeSidebar = () => {
+    forceShowSideBar.value = false;
+};
+
+onMounted(async () => {
+    await I18nUtils.loadLanguageAsync('cn');
+    
+    // 等待 DOM 渲染完成后添加事件监听器
+    await nextTick();
+    document.addEventListener('click', handleClickOutside);
+});
+
+onUnmounted(() => {
+    document.removeEventListener('click', handleClickOutside);
+});
 
 </script>
 
@@ -69,8 +106,8 @@ const forceShowSideBar = ref(false)
             <div class="flex items-center justify-between">
                 <div class="flex items-center justify-start rtl:justify-end">
                     <div class="sm:hidden">
-                        <Button type="button" aria-haspopup="true" icon="pi pi-list" variant="text" size="large"
-                            severity="contrast" @click="forceShowSideBar = !forceShowSideBar" />
+                        <Button ref="toggleButtonRef" type="button" aria-haspopup="true" icon="pi pi-list" variant="text" size="large"
+                            severity="contrast" @click="toggleSidebar" />
                     </div>
                     <a href="https://easytier.top" class="flex ms-2 md:me-24">
                         <img :src="Icon" class="h-9 me-3" alt="FlowBite Logo" />
@@ -85,46 +122,19 @@ const forceShowSideBar = ref(false)
                                 aria-controls="user-menu" icon="pi pi-user" raised rounded />
                             <TieredMenu ref="userMenu" id="user-menu" :model="userMenuItems" popup />
                         </div>
-                        <div class="z-50 hidden my-4 text-base list-none bg-white divide-y divide-gray-100 rounded shadow dark:bg-gray-700 dark:divide-gray-600"
-                            id="dropdown-user">
-                            <div class="px-4 py-3" role="none">
-                                <p class="text-sm text-gray-900 dark:text-white" role="none">
-                                    Neil Sims
-                                </p>
-                                <p class="text-sm font-medium text-gray-900 truncate dark:text-gray-300" role="none">
-                                    neil.sims@flowbite.com
-                                </p>
-                            </div>
-                            <ul class="py-1" role="none">
-                                <li>
-                                    <a href="#"
-                                        class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
-                                        role="menuitem">Dashboard</a>
-                                </li>
-                                <li>
-                                    <a href="#"
-                                        class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
-                                        role="menuitem">Settings</a>
-                                </li>
-                                <li>
-                                    <a href="#"
-                                        class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
-                                        role="menuitem">Earnings</a>
-                                </li>
-                                <li>
-                                    <a href="#"
-                                        class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-white"
-                                        role="menuitem">Sign out</a>
-                                </li>
-                            </ul>
-                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </nav>
 
-    <aside id="logo-sidebar"
+    <!-- 背景遮罩 - 只在侧边栏显示时显示 -->
+    <div v-if="forceShowSideBar" 
+         class="fixed inset-0 z-30 bg-black bg-opacity-50 sm:hidden"
+         @click="closeSidebar">
+    </div>
+
+    <aside ref="sidebarRef" id="logo-sidebar"
         class="fixed top-1 left-0 z-40 w-64 h-screen pt-20 transition-transform bg-white border-r border-gray-201 sm:translate-x-0 dark:bg-gray-800 dark:border-gray-700"
         :class="{ '-translate-x-full': !forceShowSideBar }" aria-label="Sidebar">
         <div class="h-full px-3 pb-4 overflow-y-auto bg-white dark:bg-gray-800">
