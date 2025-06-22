@@ -670,7 +670,13 @@ impl NetworkOptions {
         };
         cfg.set_rpc_portal(rpc_portal);
 
-        cfg.set_rpc_portal_whitelist(self.rpc_portal_whitelist.clone());
+        if let Some(rpc_portal_whitelist) = &self.rpc_portal_whitelist {
+            let mut whitelist = cfg.get_rpc_portal_whitelist().unwrap_or_else(|| Vec::new());
+            for cidr in rpc_portal_whitelist {
+                whitelist.push((*cidr).clone());
+            }
+            cfg.set_rpc_portal_whitelist(Some(whitelist));
+        }
 
         if let Some(external_nodes) = self.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
