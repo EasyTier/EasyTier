@@ -18,6 +18,9 @@ const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 
+// 展开的设备ID集合
+const expandedDevices = ref<Set<string>>(new Set());
+
 const loadDevices = async () => {
     const resp = await api?.list_machines();
     let devices: Array<Utils.DeviceInfo> = [];
@@ -68,13 +71,38 @@ const selectedDeviceHostname = computed<string | undefined>(() => {
 
 // 处理设备管理
 const handleDeviceManagement = (device: Utils.DeviceInfo) => {
+    const instanceId = device.running_network_instances?.[0];
+    if (!instanceId) {
+        toast.add({ 
+            severity: 'warn', 
+            summary: 'No Network Instance', 
+            detail: 'This device has no running network instances to manage.', 
+            life: 3000 
+        });
+        return;
+    }
+    
     router.push({ 
         name: 'deviceManagement', 
         params: { 
             deviceId: device.machine_id, 
-            instanceId: device.running_network_instances[0] 
+            instanceId: instanceId
         } 
     });
+};
+
+// 切换设备展开状态
+const toggleDeviceExpansion = (deviceId: string) => {
+    if (expandedDevices.value.has(deviceId)) {
+        expandedDevices.value.delete(deviceId);
+    } else {
+        expandedDevices.value.add(deviceId);
+    }
+};
+
+// 检查设备是否已展开
+const isDeviceExpanded = (deviceId: string) => {
+    return expandedDevices.value.has(deviceId);
 };
 
 </script>
@@ -117,6 +145,77 @@ const handleDeviceManagement = (device: Utils.DeviceInfo) => {
         border-left: 1px solid #e5e7eb;
     }
 }
+
+/* 展开详情样式 */
+.expand-details {
+    background: #f8fafc;
+    border-top: 1px solid #e2e8f0;
+    padding: 1rem;
+    margin: 0;
+}
+
+.expand-details .detail-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.expand-details .detail-item:last-child {
+    border-bottom: none;
+}
+
+.expand-details .detail-label {
+    font-weight: 600;
+    color: #374151;
+    min-width: 120px;
+}
+
+.expand-details .detail-value {
+    color: #6b7280;
+    text-align: right;
+    flex: 1;
+    margin-left: 1rem;
+}
+
+/* 展开按钮样式 */
+.expand-button {
+    transition: transform 0.2s ease;
+}
+
+.expand-button.expanded {
+    transform: rotate(180deg);
+}
+
+/* 移动端卡片样式 */
+@media (max-width: 768px) {
+    .mobile-card {
+        border: 1px solid #e5e7eb;
+        border-radius: 0.5rem;
+        margin-bottom: 0.5rem;
+        background: white;
+        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
+    }
+    
+    .mobile-card-header {
+        padding: 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid #e5e7eb;
+    }
+    
+    .mobile-card-content {
+        padding: 1rem;
+    }
+    
+    .mobile-card-details {
+        background: #f9fafb;
+        border-top: 1px solid #e5e7eb;
+        padding: 1rem;
+    }
+}
 </style>
 
 <template>
@@ -124,9 +223,10 @@ const handleDeviceManagement = (device: Utils.DeviceInfo) => {
         <ProgressSpinner />
     </div>
 
+    <!-- 桌面端表格 -->
     <DataTable 
         :value="deviceList" 
-        class="mobile-table"
+        class="mobile-table hidden md:block"
         :metaKeySelection="true" 
         sortField="hostname"
         :sortOrder="-1" 
@@ -243,6 +343,91 @@ const handleDeviceManagement = (device: Utils.DeviceInfo) => {
             </div>
         </template>
     </DataTable>
+
+    <!-- 移动端卡片视图 -->
+    <div v-if="deviceList !== undefined" class="md:hidden">
+        <div class="text-xl font-bold mb-4">Device List</div>
+        
+        <div class="space-y-3">
+            <div 
+                v-for="device in deviceList" 
+                :key="device.machine_id"
+                class="mobile-card"
+            >
+                <!-- 卡片头部 -->
+                <div class="mobile-card-header">
+                    <div class="flex-1">
+                        <div class="font-semibold text-gray-900">{{ device.hostname }}</div>
+                        <div class="text-sm text-gray-500 mt-1">{{ device.public_ip }}</div>
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <!-- 网络数量徽章 -->
+                        <span class="inline-flex items-center justify-center w-6 h-6 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                            {{ device.running_network_count }}
+                        </span>
+                        
+                        <!-- 展开按钮 -->
+                        <Button 
+                            :icon="isDeviceExpanded(device.machine_id) ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
+                            @click="toggleDeviceExpansion(device.machine_id)"
+                            severity="secondary" 
+                            rounded
+                            size="small"
+                            class="w-8 h-8 expand-button"
+                            :class="{ expanded: isDeviceExpanded(device.machine_id) }"
+                            :title="isDeviceExpanded(device.machine_id) ? '收起详情' : '展开详情'"
+                        />
+                        
+                        <!-- 设置按钮 -->
+                        <Button 
+                            icon="pi pi-cog"
+                            @click="handleDeviceManagement(device)"
+                            severity="secondary" 
+                            rounded
+                            size="small"
+                            class="w-8 h-8"
+                            :title="`Manage ${device.hostname}`"
+                        />
+                    </div>
+                </div>
+                
+                <!-- 展开的详细信息 -->
+                <div v-if="isDeviceExpanded(device.machine_id)" class="mobile-card-details">
+                    <div class="space-y-3">
+                        <div class="detail-item">
+                            <span class="detail-label">Hostname:</span>
+                            <span class="detail-value">{{ device.hostname }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Public IP:</span>
+                            <span class="detail-value">{{ device.public_ip }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Running Networks:</span>
+                            <span class="detail-value">{{ device.running_network_count }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Last Report:</span>
+                            <span class="detail-value">{{ device.report_time }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">EasyTier Version:</span>
+                            <span class="detail-value">{{ device.easytier_version }}</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Machine ID:</span>
+                            <span class="detail-value text-xs font-mono">{{ device.machine_id }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 移动端底部按钮 -->
+        <div class="flex justify-end mt-4">
+            <Button icon="pi pi-refresh" label="Reload" severity="info" @click="loadDevices" />
+        </div>
+    </div>
 
     <Drawer v-model:visible="deviceManageVisible" :header="`Manage ${selectedDeviceHostname}`" position="right"
         :baseZIndex=1000 class="w-3/5 min-w-96">
