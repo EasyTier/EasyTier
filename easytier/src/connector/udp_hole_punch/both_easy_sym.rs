@@ -12,6 +12,7 @@ use crate::{
     connector::udp_hole_punch::common::{
         try_connect_with_socket, UdpHolePunchListener, HOLE_PUNCH_PACKET_BODY_LEN,
     },
+    connector::udp_hole_punch::handle_rpc_result,
     peers::peer_manager::PeerManager,
     proto::{
         peer_rpc::{
@@ -171,11 +172,18 @@ impl PunchBothEasySymHoleServer {
 #[derive(Debug)]
 pub(crate) struct PunchBothEasySymHoleClient {
     peer_mgr: Arc<PeerManager>,
+    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
 impl PunchBothEasySymHoleClient {
-    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
-        Self { peer_mgr }
+    pub(crate) fn new(
+        peer_mgr: Arc<PeerManager>,
+        blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+    ) -> Self {
+        Self {
+            peer_mgr,
+            blacklist,
+        }
     }
 
     #[tracing::instrument(ret)]
@@ -186,6 +194,12 @@ impl PunchBothEasySymHoleClient {
         peer_nat_info: UdpNatType,
         is_busy: &mut bool,
     ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
+        // Check if peer is blacklisted
+        if self.blacklist.contains(&dst_peer_id) {
+            tracing::debug!(?dst_peer_id, "peer is blacklisted, skipping hole punching");
+            return Ok(None);
+        }
+
         *is_busy = false;
 
         let udp_array = UdpSocketArray::new(
@@ -244,7 +258,10 @@ impl PunchBothEasySymHoleClient {
                     wait_time_ms: REMOTE_WAIT_TIME_MS as u32,
                 },
             )
-            .await?;
+            .await;
+
+        let remote_ret = handle_rpc_result(remote_ret, dst_peer_id, self.blacklist.clone())?;
+
         if remote_ret.is_busy {
             *is_busy = true;
             anyhow::bail!("remote is busy");

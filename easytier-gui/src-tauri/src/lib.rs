@@ -4,11 +4,9 @@
 use std::collections::BTreeMap;
 
 use easytier::{
-    common::config::{
-        ConfigLoader, FileLoggerConfig, LoggingConfigBuilder,
-    },
-    launcher::{ConfigSource, NetworkConfig, NetworkInstanceRunningInfo},
+    common::config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
     instance_manager::NetworkInstanceManager,
+    launcher::{ConfigSource, NetworkConfig, NetworkInstanceRunningInfo},
     utils::{self, NewFilterSender},
 };
 
@@ -42,6 +40,13 @@ fn is_autostart() -> Result<bool, String> {
 fn parse_network_config(cfg: NetworkConfig) -> Result<String, String> {
     let toml = cfg.gen_config().map_err(|e| e.to_string())?;
     Ok(toml.dump())
+}
+
+#[tauri::command]
+fn generate_network_config(toml_config: String) -> Result<NetworkConfig, String> {
+    let config = TomlConfigLoader::new_from_str(&toml_config).map_err(|e| e.to_string())?;
+    let cfg = NetworkConfig::new_from_config(&config).map_err(|e| e.to_string())?;
+    Ok(cfg)
 }
 
 #[tauri::command]
@@ -226,6 +231,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             parse_network_config,
+            generate_network_config,
             run_network_instance,
             retain_network_instance,
             collect_network_infos,

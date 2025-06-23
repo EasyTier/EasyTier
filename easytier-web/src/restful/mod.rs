@@ -11,7 +11,7 @@ use axum::{extract::State, routing::get, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
-use easytier::common::config::ConfigLoader;
+use easytier::common::config::{ConfigLoader, TomlConfigLoader};
 use easytier::common::scoped_task::ScopedTask;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::rpc_types;
@@ -66,6 +66,17 @@ struct GenerateConfigRequest {
 struct GenerateConfigResponse {
     error: Option<String>,
     toml_config: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ParseConfigRequest {
+    toml_config: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ParseConfigResponse {
+    error: Option<String>,
+    config: Option<NetworkConfig>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -158,6 +169,25 @@ impl RestfulServer {
         }
     }
 
+    async fn handle_parse_config(
+        Json(req): Json<ParseConfigRequest>,
+    ) -> Result<Json<ParseConfigResponse>, HttpHandleError> {
+        let config = TomlConfigLoader::new_from_str(&req.toml_config)
+            .and_then(|config| NetworkConfig::new_from_config(&config));
+        match config {
+            Ok(c) => Ok(ParseConfigResponse {
+                error: None,
+                config: Some(c),
+            }
+            .into()),
+            Err(e) => Ok(ParseConfigResponse {
+                error: Some(format!("{:?}", e)),
+                config: None,
+            }
+            .into()),
+        }
+    }
+
     pub async fn start(
         mut self,
     ) -> Result<
@@ -216,6 +246,7 @@ impl RestfulServer {
                 "/api/v1/generate-config",
                 post(Self::handle_generate_config),
             )
+            .route("/api/v1/parse-config", post(Self::handle_parse_config))
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())

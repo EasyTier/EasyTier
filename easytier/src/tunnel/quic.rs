@@ -2,14 +2,18 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
 
 use crate::tunnel::{
     common::{FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig};
+
+use quinn::{
+    congestion::BbrConfig, crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint,
+    ServerConfig, TransportConfig,
+};
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -17,10 +21,18 @@ use super::{
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
-fn configure_client() -> ClientConfig {
-    ClientConfig::new(Arc::new(
-        QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
-    ))
+pub fn configure_client() -> ClientConfig {
+    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
+    let mut client_config = ClientConfig::new(Arc::new(client_crypto));
+
+    // // Create a new TransportConfig and set BBR
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+    // Replace the default TransportConfig with the transport_config() method
+    client_config.transport_config(Arc::new(transport_config));
+
+    client_config
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
@@ -38,13 +50,15 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>)
 }
 
 /// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
+pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let (certs, key) = get_insecure_tls_cert();
 
     let mut server_config = ServerConfig::with_single_cert(certs.clone(), key.into())?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
+    // Setting BBR congestion control
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
 
     Ok((server_config, certs[0].to_vec()))
 }

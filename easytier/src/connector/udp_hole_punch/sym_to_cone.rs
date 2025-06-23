@@ -18,6 +18,7 @@ use crate::{
     connector::udp_hole_punch::common::{
         send_symmetric_hole_punch_packet, try_connect_with_socket, HOLE_PUNCH_PACKET_BODY_LEN,
     },
+    connector::udp_hole_punch::handle_rpc_result,
     defer,
     peers::peer_manager::PeerManager,
     proto::{
@@ -199,16 +200,21 @@ pub(crate) struct PunchSymToConeHoleClient {
     try_direct_connect: AtomicBool,
     punch_predicablely: AtomicBool,
     punch_randomly: AtomicBool,
+    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
 impl PunchSymToConeHoleClient {
-    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub(crate) fn new(
+        peer_mgr: Arc<PeerManager>,
+        blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+    ) -> Self {
         Self {
             peer_mgr,
             udp_array: RwLock::new(None),
             try_direct_connect: AtomicBool::new(true),
             punch_predicablely: AtomicBool::new(true),
             punch_randomly: AtomicBool::new(true),
+            blacklist,
         }
     }
 
@@ -394,6 +400,12 @@ impl PunchSymToConeHoleClient {
         last_port_idx: &mut usize,
         my_nat_info: UdpNatType,
     ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
+        // Check if peer is blacklisted
+        if self.blacklist.contains(&dst_peer_id) {
+            tracing::debug!(?dst_peer_id, "peer is blacklisted, skipping hole punching");
+            return Ok(None);
+        }
+
         let udp_array = self.prepare_udp_array().await?;
         let global_ctx = self.peer_mgr.get_global_ctx();
 
@@ -412,8 +424,10 @@ impl PunchSymToConeHoleClient {
                 BaseController::default(),
                 SelectPunchListenerRequest { force_new: false },
             )
-            .await
-            .with_context(|| "failed to select punch listener")?;
+            .await;
+
+        let resp = handle_rpc_result(resp, dst_peer_id, self.blacklist.clone())?;
+
         let remote_mapped_addr = resp.listener_mapped_addr.ok_or(anyhow::anyhow!(
             "select_punch_listener response missing listener_mapped_addr"
         ))?;

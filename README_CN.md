@@ -96,7 +96,7 @@
 
     ```sh
     brew tap brewforge/chinese
-    brew install --cask easytier
+    brew install --cask easytier-gui
     ```
 
 ## 快速开始

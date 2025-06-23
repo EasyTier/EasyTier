@@ -39,6 +39,8 @@ export interface NetworkConfig {
   use_smoltcp?: boolean
   enable_kcp_proxy?: boolean
   disable_kcp_input?: boolean
+  enable_quic_proxy?: boolean
+  disable_quic_input?: boolean
   disable_p2p?: boolean
   bind_device?: boolean
   no_tun?: boolean
@@ -105,6 +107,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     use_smoltcp: false,
     enable_kcp_proxy: false,
     disable_kcp_input: false,
+    enable_quic_proxy: false,
+    disable_quic_input: false,
     disable_p2p: false,
     bind_device: true,
     no_tun: false,

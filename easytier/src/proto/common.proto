@@ -35,6 +35,14 @@ message FlagsInConfig {
   bool accept_dns = 22;
   // enable private mode
   bool private_mode = 23;
+
+  // should we convert all tcp streams into quic streams
+  bool enable_quic_proxy = 24;
+  // does this peer allow quic input
+  bool disable_quic_input = 25;
+
+  // a global relay limit, only work for foreign network
+  uint64 foreign_relay_bps_limit = 26;
 }
 
 message RpcDescriptor {
@@ -170,4 +178,14 @@ message PortForwardConfigPb {
     SocketAddr bind_addr = 1;
     SocketAddr dst_addr = 2;
     SocketType socket_type = 3;
+}
+
+message ProxyDstInfo {
+  SocketAddr dst_addr = 1;
+}
+
+message LimiterConfig {
+  optional uint64 burst_rate = 1; // default 1 means no burst (capacity is same with bps)
+  optional uint64 bps = 2; // default 0 means no limit (unit is B/s)
+  optional uint64 fill_duration_ms = 3; // default 10ms, the period to fill the bucket
 }

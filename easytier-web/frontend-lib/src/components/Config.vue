@@ -147,6 +147,8 @@ const bool_flags: BoolFlag[] = [
   { field: 'use_smoltcp', help: 'use_smoltcp_help' },
   { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
+  { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
+  { field: 'disable_quic_input', help: 'disable_quic_input_help' },
   { field: 'disable_p2p', help: 'disable_p2p_help' },
   { field: 'bind_device', help: 'bind_device_help' },
   { field: 'no_tun', help: 'no_tun_help' },
@@ -200,7 +202,7 @@ const bool_flags: BoolFlag[] = [
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_secret">{{ t('network_secret') }}</label>
                   <Password id="network_secret" v-model="curNetwork.network_secret"
-                    aria-describedby="network_secret-help" toggleMask :feedback="false"/>
+                    aria-describedby="network_secret-help" toggleMask :feedback="false" />
                 </div>
               </div>
 
@@ -271,7 +273,7 @@ const bool_flags: BoolFlag[] = [
                       <div class="flex flex-col gap-2 basis-8/12 grow">
                         <InputGroup>
                           <InputText v-model="curNetwork.vpn_portal_client_network_addr"
-                                     :placeholder="t('vpn_portal_client_network')" />
+                            :placeholder="t('vpn_portal_client_network')" />
                           <InputGroupAddon>
                             <span>/{{ curNetwork.vpn_portal_client_network_len }}</span>
                           </InputGroupAddon>
@@ -279,7 +281,7 @@ const bool_flags: BoolFlag[] = [
                       </div>
                       <div class="flex flex-col gap-2 basis-3/12 grow">
                         <InputNumber v-model="curNetwork.vpn_portal_listen_port" :allow-empty="false" :format="false"
-                                     :min="0" :max="65535" fluid />
+                          :min="0" :max="65535" fluid />
                       </div>
                     </div>
                   </div>
@@ -325,11 +327,10 @@ const bool_flags: BoolFlag[] = [
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex">
                     <label for="mtu">{{ t('mtu') }}</label>
-                    <span class="pi pi-question-circle ml-2 self-center"
-                          v-tooltip="t('mtu_help')"></span>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mtu_help')"></span>
                   </div>
-                  <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help"
-                               :format="false" :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid/>
+                  <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
+                    :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
                 </div>
               </div>
 
@@ -338,15 +339,15 @@ const bool_flags: BoolFlag[] = [
                   <div class="flex">
                     <label for="relay_network_whitelist">{{ t('relay_network_whitelist') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center"
-                          v-tooltip="t('relay_network_whitelist_help')"></span>
+                      v-tooltip="t('relay_network_whitelist_help')"></span>
                   </div>
-                  <ToggleButton v-model="curNetwork.enable_relay_network_whitelist" on-icon="pi pi-check" off-icon="pi pi-times"
-                                :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                  <ToggleButton v-model="curNetwork.enable_relay_network_whitelist" on-icon="pi pi-check"
+                    off-icon="pi pi-times" :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="curNetwork.enable_relay_network_whitelist" class="items-center flex flex-row gap-x-4">
                     <div class="min-w-64 w-full">
                       <AutoComplete id="relay_network_whitelist" v-model="curNetwork.relay_network_whitelist"
-                                    :placeholder="t('relay_network_whitelist')" class="w-full" multiple fluid
-                                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                        :placeholder="t('relay_network_whitelist')" class="w-full" multiple fluid
+                        :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                     </div>
                   </div>
                 </div>
@@ -359,12 +360,12 @@ const bool_flags: BoolFlag[] = [
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('manual_routes_help')"></span>
                   </div>
                   <ToggleButton v-model="curNetwork.enable_manual_routes" on-icon="pi pi-check" off-icon="pi pi-times"
-                                :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="curNetwork.enable_manual_routes" class="items-center flex flex-row gap-x-4">
                     <div class="min-w-64 w-full">
                       <AutoComplete id="routes" v-model="curNetwork.routes"
-                                    :placeholder="t('chips_placeholder', ['192.168.0.0/16'])" class="w-full" multiple fluid
-                                    :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
+                        :placeholder="t('chips_placeholder', ['192.168.0.0/16'])" class="w-full" multiple fluid
+                        :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
                     </div>
                   </div>
                 </div>
@@ -377,11 +378,11 @@ const bool_flags: BoolFlag[] = [
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('socks5_help')"></span>
                   </div>
                   <ToggleButton v-model="curNetwork.enable_socks5" on-icon="pi pi-check" off-icon="pi pi-times"
-                                :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="curNetwork.enable_socks5" class="items-center flex flex-row gap-x-4">
                     <div class="min-w-64 w-full">
                       <InputNumber id="socks5_port" v-model="curNetwork.socks5_port" aria-describedby="rpc_port-help"
-                                   :format="false" :allow-empty="false" :min="0" :max="65535" class="w-full"/>
+                        :format="false" :allow-empty="false" :min="0" :max="65535" class="w-full" />
                     </div>
                   </div>
                 </div>
@@ -394,8 +395,8 @@ const bool_flags: BoolFlag[] = [
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('exit_nodes_help')"></span>
                   </div>
                   <AutoComplete id="exit_nodes" v-model="curNetwork.exit_nodes"
-                                :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
-                                :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
+                    :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
+                    :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
                 </div>
               </div>
 
@@ -406,8 +407,8 @@ const bool_flags: BoolFlag[] = [
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
                   </div>
                   <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
-                                :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full"
-                                multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                    :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full" multiple fluid
+                    :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
                 </div>
               </div>
 

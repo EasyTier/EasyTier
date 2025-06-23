@@ -23,6 +23,7 @@ declare global {
   const effectScope: typeof import('vue')['effectScope']
   const event2human: typeof import('./composables/utils')['event2human']
   const generateMenuItem: typeof import('./composables/tray')['generateMenuItem']
+  const generateNetworkConfig: typeof import('./composables/network')['generateNetworkConfig']
   const getActivePinia: typeof import('pinia')['getActivePinia']
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
@@ -134,6 +135,7 @@ declare module 'vue' {
     readonly defineStore: UnwrapRef<typeof import('pinia')['defineStore']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
     readonly generateMenuItem: UnwrapRef<typeof import('./composables/tray')['generateMenuItem']>
+    readonly generateNetworkConfig: UnwrapRef<typeof import('./composables/network')['generateNetworkConfig']>
     readonly getActivePinia: UnwrapRef<typeof import('pinia')['getActivePinia']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>

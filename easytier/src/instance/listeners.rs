@@ -142,6 +142,8 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
             if self.global_ctx.config.get_flags().enable_ipv6
                 && !is_url_host_ipv6(&l)
                 && is_url_host_unspecified(&l)
+                // quic enables dual-stack by default, may conflict with v4 listener
+                && l.scheme() != "quic"
             {
                 let mut ipv6_listener = l.clone();
                 ipv6_listener

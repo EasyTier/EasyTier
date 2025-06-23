@@ -4,11 +4,9 @@ use dashmap::DashMap;
 
 use crate::{
     common::{global_ctx::NetworkIdentity, PeerId},
-    proto::{
-        common::PeerFeatureFlag,
-        peer_rpc::{
-            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
-        },
+    proto::peer_rpc::{
+        ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
+        RoutePeerInfo,
     },
 };
 
@@ -107,7 +105,7 @@ pub trait Route {
 
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {}
 
-    async fn get_feature_flag(&self, peer_id: PeerId) -> Option<PeerFeatureFlag>;
+    async fn get_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo>;
 
     async fn get_peer_info_last_update_time(&self) -> std::time::Instant;
 

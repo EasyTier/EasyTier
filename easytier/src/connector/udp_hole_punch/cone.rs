@@ -11,6 +11,7 @@ use crate::{
     connector::udp_hole_punch::common::{
         try_connect_with_socket, UdpSocketArray, HOLE_PUNCH_PACKET_BODY_LEN,
     },
+    connector::udp_hole_punch::handle_rpc_result,
     peers::peer_manager::PeerManager,
     proto::{
         common::Void,
@@ -83,11 +84,18 @@ impl PunchConeHoleServer {
 
 pub(crate) struct PunchConeHoleClient {
     peer_mgr: Arc<PeerManager>,
+    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
 }
 
 impl PunchConeHoleClient {
-    pub(crate) fn new(peer_mgr: Arc<PeerManager>) -> Self {
-        Self { peer_mgr }
+    pub(crate) fn new(
+        peer_mgr: Arc<PeerManager>,
+        blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+    ) -> Self {
+        Self {
+            peer_mgr,
+            blacklist,
+        }
     }
 
     #[tracing::instrument(skip(self))]
@@ -95,6 +103,12 @@ impl PunchConeHoleClient {
         &self,
         dst_peer_id: PeerId,
     ) -> Result<Option<Box<dyn Tunnel>>, anyhow::Error> {
+        // Check if peer is blacklisted
+        if self.blacklist.contains(&dst_peer_id) {
+            tracing::debug!(?dst_peer_id, "peer is blacklisted, skipping hole punching");
+            return Ok(None);
+        }
+
         tracing::info!(?dst_peer_id, "start hole punching");
         let tid = rand::random();
 
@@ -138,8 +152,10 @@ impl PunchConeHoleClient {
                 BaseController::default(),
                 SelectPunchListenerRequest { force_new: false },
             )
-            .await
-            .with_context(|| "failed to select punch listener")?;
+            .await;
+
+        let resp = handle_rpc_result(resp, dst_peer_id, self.blacklist.clone())?;
+
         let remote_mapped_addr = resp.listener_mapped_addr.ok_or(anyhow::anyhow!(
             "select_punch_listener response missing listener_mapped_addr"
         ))?;
