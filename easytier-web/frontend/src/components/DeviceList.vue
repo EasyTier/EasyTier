@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Button, Drawer, ProgressSpinner, useToast, InputSwitch, Popover, Dropdown, Toolbar } from 'primevue';
 import Tooltip from 'primevue/tooltip';
 import { useRoute, useRouter } from 'vue-router';
 import { Api, Utils } from 'easytier-frontend-lib';
 import DeviceDetails from './DeviceDetails.vue';
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 declare const window: Window & typeof globalThis;
 
@@ -17,7 +20,13 @@ const props = defineProps({
 
 const detailPopover = ref();
 const selectedDevice = ref<Utils.DeviceInfo | null>(null);
-const showDetailedView = ref(false);
+// 从 localStorage 读取显示详情状态，默认为 false
+const showDetailedView = ref(localStorage.getItem('deviceList.showDetailedView') === 'true');
+
+// 监听显示详情状态变化，保存到 localStorage
+watch(showDetailedView, (newValue) => {
+    localStorage.setItem('deviceList.showDetailedView', newValue.toString());
+});
 
 const api = props.api;
 
@@ -119,9 +128,9 @@ const drawerHeight = computed(() => {
 
 // 排序相关
 const sortOptions = ref([
-    { name: '主机名', value: 'hostname', icon: 'pi pi-home' },
-    { name: '版本', value: 'version', icon: 'pi pi-tag' },
-    { name: '网络数量', value: 'networks', icon: 'pi pi-sitemap' }
+    { name: () => t('web.device.sort_by_hostname'), value: 'hostname', icon: 'pi pi-home' },
+    { name: () => t('web.device.sort_by_version'), value: 'version', icon: 'pi pi-tag' },
+    { name: () => t('web.device.sort_by_networks'), value: 'networks', icon: 'pi pi-sitemap' }
 ]);
 const selectedSortOption = ref(sortOptions.value[0]);
 // 排序方向 (true为升序，false为降序)
@@ -663,38 +672,40 @@ const handleResize = () => {
     <div class="flex flex-col gap-4">
         <!-- 标题和工具栏 -->
         <div class="text-xl font-bold">
-            <h1>Device List</h1>
+            <h1>{{ t('web.device.list') }}</h1>
         </div>
 
         <Toolbar class="mb-4 p-3 gap-4 surface-0 border-1 surface-border rounded-md">
             <template #start>
                 <div class="flex items-center gap-2">
-                    <label for="sort-by" class="text-sm text-500 hidden sm:block">排序依据：</label>
+                    <label for="sort-by" class="text-sm text-500 hidden sm:block">{{ t('web.device.sort_by') }}：</label>
                     <Dropdown id="sort-by" v-model="selectedSortOption" :options="sortOptions" optionLabel="name"
                         class="sort-dropdown text-sm !min-w-[120px] sm:!min-w-[140px]" panelClass="text-sm">
                         <template #value="slotProps">
                             <div class="flex items-center gap-2">
                                 <i :class="[slotProps.value.icon, 'text-600']"></i>
-                                <span class="text-600">{{ slotProps.value.name }}</span>
+                                <span class="text-600">{{ slotProps.value.name() }}</span>
                             </div>
                         </template>
                         <template #option="slotProps">
                             <div class="flex items-center gap-2">
                                 <i :class="[slotProps.option.icon, 'text-600']"></i>
-                                <span>{{ slotProps.option.name }}</span>
+                                <span>{{ slotProps.option.name() }}</span>
                             </div>
                         </template>
                     </Dropdown>
                     <Button :icon="ascending ? 'pi pi-sort-amount-up' : 'pi pi-sort-amount-down'" severity="secondary"
                         text rounded class="sort-direction-btn min-w-[2.5rem] h-[2.5rem]"
-                        v-tooltip.top="ascending ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序'" @click="toggleSortDirection" />
+                        v-tooltip.top="ascending ? t('web.device.sort_direction_asc') : t('web.device.sort_direction_desc')"
+                        @click="toggleSortDirection" />
                 </div>
             </template>
             <template #end>
                 <div class="flex items-center gap-3">
                     <div class="hidden sm:block border-r-1 surface-border h-4 mr-2"></div>
                     <div class="flex items-center gap-2">
-                        <label for="detailed-view" class="text-sm text-500 hidden sm:block">显示详情</label>
+                        <label for="detailed-view" class="text-sm text-500 hidden sm:block">{{
+                            t('web.device.show_detailed_view') }}</label>
                         <InputSwitch id="detailed-view" v-model="showDetailedView" />
                     </div>
                 </div>
@@ -715,7 +726,7 @@ const handleResize = () => {
                         <div class="flex justify-between items-center mb-2">
                             <!-- 设备名称 -->
                             <div class="font-semibold truncate card-title" :title="device.hostname">{{ device.hostname
-                                }}
+                            }}
                             </div>
 
                             <!-- 版本徽章 -->
@@ -734,14 +745,14 @@ const handleResize = () => {
                             <!-- 操作按钮组 -->
                             <div class="flex items-center space-x-2">
                                 <!-- 网络数量徽章 -->
-                                <span v-tooltip="'网络数量'"
+                                <span v-tooltip="t('web.device.network_count')"
                                     class="inline-flex items-center justify-center w-6 h-6 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
                                     {{ device.running_network_count }}
                                 </span>
 
                                 <!-- 详情按钮 -->
-                                <Button v-tooltip="'查看设备详情'" icon="pi pi-info-circle" severity="info" text rounded
-                                    class="w-9 h-9" v-if="!showDetailedView"
+                                <Button v-tooltip="t('web.device.show_detailed_view')" icon="pi pi-info-circle"
+                                    severity="info" text rounded class="w-9 h-9" v-if="!showDetailedView"
                                     @click="showDeviceDetails(device, $event)" />
 
                                 <!-- 设置按钮 -->

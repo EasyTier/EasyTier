@@ -1,5 +1,9 @@
 <script setup lang="ts">
 import { Utils } from 'easytier-frontend-lib';
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
+
 
 // 定义组件接收的 props
 defineProps<{
@@ -15,27 +19,27 @@ defineProps<{
 <template>
   <div :class="['device-details', containerClass, { 'compact': compact }]">
     <div class="detail-item hostname">
-      <div class="detail-label">Hostname</div>
+      <div class="detail-label">{{ t('web.device.hostname') }}</div>
       <div class="detail-value">{{ device.hostname }}</div>
     </div>
     <div class="detail-item public-ip">
-      <div class="detail-label">Public IP</div>
+      <div class="detail-label">{{ t('web.device.public_ip') }}</div>
       <div class="detail-value">{{ device.public_ip }}</div>
     </div>
     <div class="detail-item running-networks">
-      <div class="detail-label">Networks</div>
+      <div class="detail-label">{{ t('web.device.networks') }}</div>
       <div class="detail-value">{{ device.running_network_count }}</div>
     </div>
     <div class="detail-item last-report">
-      <div class="detail-label">Last Report</div>
+      <div class="detail-label">{{ t('web.device.last_report') }}</div>
       <div class="detail-value">{{ device.report_time }}</div>
     </div>
     <div class="detail-item version">
-      <div class="detail-label">Version</div>
+      <div class="detail-label">{{ t('web.device.version') }}</div>
       <div class="detail-value">{{ device.easytier_version }}</div>
     </div>
     <div class="detail-item machine-id">
-      <div class="detail-label">Machine ID</div>
+      <div class="detail-label">{{ t('web.device.machine_id') }}</div>
       <div class="detail-value">
         <span class="machine-id-value" :title="device.machine_id">{{ device.machine_id }}</span>
       </div>
@@ -125,27 +129,33 @@ defineProps<{
 
 /* 特定字段的样式 */
 .hostname .detail-label::before {
-  background-color: #3b82f6; /* 蓝色 */
+  background-color: #3b82f6;
+  /* 蓝色 */
 }
 
 .public-ip .detail-label::before {
-  background-color: #10b981; /* 绿色 */
+  background-color: #10b981;
+  /* 绿色 */
 }
 
 .running-networks .detail-label::before {
-  background-color: #f59e0b; /* 橙色 */
+  background-color: #f59e0b;
+  /* 橙色 */
 }
 
 .last-report .detail-label::before {
-  background-color: #8b5cf6; /* 紫色 */
+  background-color: #8b5cf6;
+  /* 紫色 */
 }
 
 .version .detail-label::before {
-  background-color: #ec4899; /* 粉色 */
+  background-color: #ec4899;
+  /* 粉色 */
 }
 
 .machine-id .detail-label::before {
-  background-color: #6b7280; /* 灰色 */
+  background-color: #6b7280;
+  /* 灰色 */
 }
 
 /* 机器ID特殊样式 */
@@ -198,7 +208,4 @@ defineProps<{
     border-color: var(--surface-border, #334155);
   }
 }
-
-
-
 </style>

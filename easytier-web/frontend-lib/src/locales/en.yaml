@@ -203,3 +203,115 @@ event:
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded
+
+web:
+  login:
+    title: Login
+    username: Username
+    password: Password
+    submit: Login
+    register: Register
+    remember_me: Remember Me
+    api_host: API Host
+    captcha: Captcha
+    back_to_login: Back to Login
+    login: Login
+
+  register:
+    title: Register
+    username: Username
+    password: Password
+    confirm_password: Confirm Password
+    submit: Register
+    login: Back to Login
+  
+  main:
+    dashboard: Dashboard
+    device_list: Device List
+    device_management: Device Management
+    login_page: Login Page
+    settings: Settings
+    logout: Logout
+    language: Language
+    change_password: Change Password
+
+  device:
+    list: Device List
+    management: Device Management
+    add: Add Device
+    delete: Delete Device
+    refresh: Refresh
+    status: Status
+    online: Online
+    offline: Offline
+    last_seen: Last Seen
+    no_devices: No Devices Found
+    sort_by: Sort By
+    sort_direction: Sort Direction
+    show_detailed_view: Show Details
+    hide_detailed_view: Hide Details
+    sort_by_hostname: Hostname
+    sort_by_public_ip: Public IP
+    sort_by_version: Version
+    sort_by_networks: Network Count
+    sort_direction_asc: Currently ascending, click to switch to descending
+    sort_direction_desc: Currently descending, click to switch to ascending
+    hostname: Hostname
+    public_ip: Public IP
+    networks: Network Count
+    last_report: Last Seen
+    version: Version
+    machine_id: Machine ID
+
+  device_management:
+    edit_network: Edit Network
+    export_config: Export Config
+    delete_network: Delete Network
+    network: Network
+    select_network: Select Network
+    create_network: Create Network
+    cancel_creation: Cancel Creation
+    more_actions: More Actions
+    edit_as_file: Edit as File
+    import_config: Import Config
+    create_new: Create New Network
+    network_status: Network Status
+    network_configuration: Network Configuration
+    loading_network_configuration: Loading Network Configuration
+    no_network_selected: No Network Selected
+    select_existing_network_or_create_new: Select an existing network instance or create a new one to manage network settings
+    disable_network: Disable Network
+
+  network:
+    title: Network
+    create: Create Network
+    delete: Delete Network
+    start: Start Network
+    stop: Stop Network
+    config: Network Config
+    status: Network Status
+    import: Import Config
+    export: Export Config
+
+  common:
+    confirm: Confirm
+    cancel: Cancel
+    save: Save
+    delete: Delete
+    edit: Edit
+    refresh: Refresh
+    loading: Loading...
+    error: Error
+    success: Success
+    warning: Warning
+    info: Info
+
+  settings:
+    title: Settings
+    change_password: Change Password
+    old_password: Old Password
+    new_password: New Password
+    confirm_password: Confirm New Password
+    language: Language
+    theme: Theme
+    logout: Logout 

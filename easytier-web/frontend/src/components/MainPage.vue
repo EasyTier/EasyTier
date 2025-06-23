@@ -6,7 +6,9 @@ import { useRoute, useRouter } from 'vue-router';
 import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
 import Icon from '../assets/easytier.png'
+import { useI18n } from 'vue-i18n'
 
+const { t } = useI18n()
 const route = useRoute();
 const router = useRouter();
 const api = computed<Api.ApiClient | undefined>(() => {
@@ -24,7 +26,7 @@ const dialog = useDialog();
 const userMenu = ref();
 const userMenuItems = ref([
     {
-        label: 'Change Password',
+        label: t('web.main.change_password'),
         icon: 'pi pi-key',
         command: () => {
             console.log('File');
@@ -41,7 +43,7 @@ const userMenuItems = ref([
         },
     },
     {
-        label: 'Logout',
+        label: t('web.main.logout'),
         icon: 'pi pi-sign-out',
         command: async () => {
             try {
@@ -61,14 +63,14 @@ const toggleButtonRef = ref<HTMLElement>()
 // 处理点击外部区域关闭侧边栏
 const handleClickOutside = (event: Event) => {
     const target = event.target as HTMLElement;
-    
+
     // 如果侧边栏是隐藏的，不需要处理
     if (!forceShowSideBar.value) return;
-    
+
     // 检查点击是否在侧边栏内部或切换按钮上
     const isClickInsideSidebar = sidebarRef.value?.contains(target);
     const isClickOnToggleButton = toggleButtonRef.value?.contains(target);
-    
+
     // 如果点击在侧边栏外部且不在切换按钮上，则关闭侧边栏
     if (!isClickInsideSidebar && !isClickOnToggleButton) {
         forceShowSideBar.value = false;
@@ -86,8 +88,6 @@ const closeSidebar = () => {
 };
 
 onMounted(async () => {
-    await I18nUtils.loadLanguageAsync('cn');
-    
     // 等待 DOM 渲染完成后添加事件监听器
     await nextTick();
     document.addEventListener('click', handleClickOutside);
@@ -101,13 +101,14 @@ onUnmounted(() => {
 
 <!-- https://flowbite.com/docs/components/sidebar/#sidebar-with-navbar -->
 <template>
-    <nav class="fixed top-0 z-50 w-full bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700 top-navbar">
+    <nav
+        class="fixed top-0 z-50 w-full bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700 top-navbar">
         <div class="px-3 py-3 lg:px-5 lg:pl-3">
             <div class="flex items-center justify-between">
                 <div class="flex items-center justify-start rtl:justify-end">
                     <div class="sm:hidden">
-                        <Button ref="toggleButtonRef" type="button" aria-haspopup="true" icon="pi pi-list" variant="text" size="large"
-                            severity="contrast" @click="toggleSidebar" />
+                        <Button ref="toggleButtonRef" type="button" aria-haspopup="true" icon="pi pi-list"
+                            variant="text" size="large" severity="contrast" @click="toggleSidebar" />
                     </div>
                     <a href="https://easytier.top" class="flex ms-2 md:me-24">
                         <img :src="Icon" class="h-9 me-3" alt="FlowBite Logo" />
@@ -116,6 +117,10 @@ onUnmounted(() => {
                     </a>
                 </div>
                 <div class="flex items-center">
+                    <div class="language-switch">
+                        <Button icon="pi pi-language" @click="I18nUtils.toggleLanguage" rounded severity="contrast" />
+                    </div>
+
                     <div class="flex items-center ms-3">
                         <div>
                             <Button type="button" @click="userMenu.toggle($event)" aria-haspopup="true"
@@ -129,9 +134,7 @@ onUnmounted(() => {
     </nav>
 
     <!-- 背景遮罩 - 只在侧边栏显示时显示 -->
-    <div v-if="forceShowSideBar" 
-         class="fixed inset-0 z-30 bg-black bg-opacity-50 sm:hidden"
-         @click="closeSidebar">
+    <div v-if="forceShowSideBar" class="fixed inset-0 z-30 bg-black bg-opacity-50 sm:hidden" @click="closeSidebar">
     </div>
 
     <aside ref="sidebarRef" id="logo-sidebar"
@@ -143,21 +146,21 @@ onUnmounted(() => {
                     <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
                         severity="contrast" @click="router.push({ name: 'dashboard' })">
                         <i class="pi pi-chart-pie text-xl"></i>
-                        <span class="mb-0.5">DashBoard</span>
+                        <span class="mb-0.5">{{ t('web.main.dashboard') }}</span>
                     </Button>
                 </li>
                 <li>
                     <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
                         severity="contrast" @click="router.push({ name: 'deviceList' })">
                         <i class="pi pi-server text-xl"></i>
-                        <span class="mb-0.5">Devices</span>
+                        <span class="mb-0.5">{{ t('web.main.device_list') }}</span>
                     </Button>
                 </li>
                 <li>
                     <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
                         severity="contrast" @click="router.push({ name: 'login' })">
                         <i class="pi pi-sign-in text-xl"></i>
-                        <span class="mb-0.5">Login Page</span>
+                        <span class="mb-0.5">{{ t('web.main.login_page') }}</span>
                     </Button>
                 </li>
             </ul>

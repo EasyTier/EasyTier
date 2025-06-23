@@ -3,6 +3,9 @@ import { IftaLabel, Select, Button, ConfirmPopup, useConfirm, useToast, Divider,
 import { NetworkTypes, Status, Utils, Api, ConfigEditDialog } from 'easytier-frontend-lib';
 import { watch, computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps<{
     api: Api.ApiClient;
@@ -327,21 +330,21 @@ const updateScreenWidth = () => {
 // 菜单引用和菜单项
 const menuRef = ref();
 const actionMenu = ref([
-    { 
-        label: '编辑网络', 
+    {
+        label: t('web.device_management.edit_network'),
         icon: 'pi pi-pencil',
-        command: () => editNetwork() 
+        command: () => editNetwork()
     },
-    { 
-        label: '导出配置', 
+    {
+        label: t('web.device_management.export_config'),
         icon: 'pi pi-download',
-        command: () => exportConfig() 
+        command: () => exportConfig()
     },
-    { 
-        label: '删除网络',
+    {
+        label: t('web.device_management.delete_network'),
         icon: 'pi pi-trash',
         class: 'p-error',
-        command: () => confirmDeleteNetwork(new Event('click')) 
+        command: () => confirmDeleteNetwork(new Event('click'))
     }
 ]);
 
@@ -355,14 +358,14 @@ let periodFunc = new Utils.PeriodicTask(async () => {
 
 onMounted(async () => {
     periodFunc.start();
-    
+
     // 添加屏幕尺寸监听
     window.addEventListener('resize', updateScreenWidth);
 });
 
 onUnmounted(() => {
     periodFunc.stop();
-    
+
     // 移除屏幕尺寸监听
     window.removeEventListener('resize', updateScreenWidth);
 });
@@ -380,47 +383,38 @@ onUnmounted(() => {
                 <!-- 网络选择 -->
                 <div class="flex-1 min-w-0">
                     <IftaLabel class="w-full">
-                        <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid" 
-                            class="w-full" inputId="dd-inst-id" placeholder="Select Network"
+                        <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid" class="w-full"
+                            inputId="dd-inst-id" :placeholder="t('web.device_management.select_network')"
                             :pt="{ root: { class: 'network-select-container' } }" />
-                        <label class="network-label mr-2 font-medium" for="dd-inst-id">Network</label>
+                        <label class="network-label mr-2 font-medium" for="dd-inst-id">{{
+                            t('web.device_management.network') }}</label>
                     </IftaLabel>
                 </div>
-                
+
                 <!-- 简化的按钮区域 - 无论屏幕大小都显示 -->
                 <div class="flex gap-2 shrink-0 button-container items-center">
                     <!-- Create/Cancel button based on state -->
-                    <Button v-if="!isCreatingNetwork" 
-                        @click="newNetwork" 
-                        icon="pi pi-plus" 
-                        :label="screenWidth > 640 ? 'Create New' : undefined" 
+                    <Button v-if="!isCreatingNetwork" @click="newNetwork" icon="pi pi-plus"
+                        :label="screenWidth > 640 ? t('web.device_management.create_new') : undefined"
                         :class="['create-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
-                        :tooltip="screenWidth <= 640 ? 'Create New Network' : undefined"
-                        tooltipOptions="{ position: 'bottom' }"
-                        severity="primary" />
-                    
-                    <Button v-else
-                        @click="cancelNetworkCreation" 
-                        icon="pi pi-times" 
-                        :label="screenWidth > 640 ? 'Cancel' : undefined" 
+                        :tooltip="screenWidth <= 640 ? t('web.device_management.create_network') : undefined"
+                        tooltipOptions="{ position: 'bottom' }" severity="primary" />
+
+                    <Button v-else @click="cancelNetworkCreation" icon="pi pi-times"
+                        :label="screenWidth > 640 ? t('web.device_management.cancel_creation') : undefined"
                         :class="['cancel-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
-                        :tooltip="screenWidth <= 640 ? 'Cancel Creation' : undefined"
-                        tooltipOptions="{ position: 'bottom' }"
-                        severity="secondary" />
-                    
+                        :tooltip="screenWidth <= 640 ? t('web.device_management.cancel_creation') : undefined"
+                        tooltipOptions="{ position: 'bottom' }" severity="secondary" />
+
                     <!-- More actions menu -->
                     <Menu ref="menuRef" :model="actionMenu" :popup="true" />
-                    <Button v-if="!isCreatingNetwork && selectedInstanceId"
-                        icon="pi pi-ellipsis-v" 
-                        class="p-button-rounded flex items-center justify-center" 
-                        severity="help"
+                    <Button v-if="!isCreatingNetwork && selectedInstanceId" icon="pi pi-ellipsis-v"
+                        class="p-button-rounded flex items-center justify-center" severity="help"
                         style="width: 3rem !important; height: 3rem !important; font-size: 1.2rem"
-                        @click="menuRef.toggle($event)"
-                        :aria-label="'More Actions'"
-                        :tooltip="'More Actions'"
-                        tooltipOptions="{ position: 'bottom' }" />
+                        @click="menuRef.toggle($event)" :aria-label="t('web.device_management.more_actions')"
+                        :tooltip="t('web.device_management.more_actions')" tooltipOptions="{ position: 'bottom' }" />
                 </div>
             </div>
         </div>
@@ -431,18 +425,19 @@ onUnmounted(() => {
             <div v-if="isCreatingNetwork" class="network-creation-container">
                 <div class="network-creation-header flex items-center gap-2 mb-3">
                     <i class="pi pi-plus-circle text-primary text-xl"></i>
-                    <h2 class="text-xl font-medium">{{ isEditing ? 'Edit Network' : 'Create New Network' }}</h2>
+                    <h2 class="text-xl font-medium">{{ isEditing ? t('web.device_management.edit_network') :
+                        t('web.device_management.create_network') }}</h2>
                 </div>
-                
+
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
-                    <Button @click="showConfigEditDialog = true" icon="pi pi-file-edit" 
-                        label="Edit as File" iconPos="left" severity="secondary" />
-                    <Button @click="importConfig" icon="pi pi-upload" 
-                        label="Import Config" iconPos="left" severity="help" />
+                    <Button @click="showConfigEditDialog = true" icon="pi pi-file-edit"
+                        :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" />
+                    <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
+                        iconPos="left" severity="help" />
                 </div>
-                
+
                 <Divider />
-                
+
                 <Config :cur-network="newNetworkConfig" @run-network="createNewNetwork"></Config>
             </div>
 
@@ -450,13 +445,13 @@ onUnmounted(() => {
             <div v-else-if="needShowNetworkStatus" class="network-status-container">
                 <div class="network-status-header flex items-center gap-2 mb-3">
                     <i class="pi pi-chart-line text-primary text-xl"></i>
-                    <h2 class="text-xl font-medium">Network Status</h2>
+                    <h2 class="text-xl font-medium">{{ t('web.device_management.network_status') }}</h2>
                 </div>
-                
+
                 <Status v-bind:cur-network-inst="curNetworkInfo" class="mb-4"></Status>
-                
+
                 <div class="text-center mt-4">
-                    <Button @click="updateNetworkState(true)" label="Disable Network" 
+                    <Button @click="updateNetworkState(true)" :label="t('web.device_management.disable_network')"
                         severity="warning" icon="pi pi-power-off" iconPos="left" />
                 </div>
             </div>
@@ -465,33 +460,36 @@ onUnmounted(() => {
             <div v-else-if="networkIsDisabled" class="network-config-container">
                 <div class="network-config-header flex items-center gap-2 mb-3">
                     <i class="pi pi-cog text-secondary text-xl"></i>
-                    <h2 class="text-xl font-medium">Network Configuration</h2>
+                    <h2 class="text-xl font-medium">{{ t('web.device_management.network_configuration') }}</h2>
                 </div>
-                
+
                 <div v-if="disabledNetworkConfig" class="mb-4">
                     <Config :cur-network="disabledNetworkConfig" @run-network="updateNetworkState(false)" />
                 </div>
                 <div v-else class="network-loading-placeholder text-center py-8">
                     <i class="pi pi-spin pi-spinner text-3xl text-primary mb-3"></i>
-                    <div class="text-xl text-secondary">Loading network configuration...</div>
+                    <div class="text-xl text-secondary">{{ t('web.device_management.loading_network_configuration') }}
+                    </div>
                 </div>
             </div>
 
             <!-- Empty State -->
             <div v-else class="empty-state flex flex-col items-center py-12">
                 <i class="pi pi-sitemap text-5xl text-secondary mb-4 opacity-50"></i>
-                <div class="text-xl text-center font-medium mb-3">No Network Selected</div>
+                <div class="text-xl text-center font-medium mb-3">{{ t('web.device_management.no_network_selected') }}
+                </div>
                 <p class="text-secondary text-center mb-6 max-w-md">
-                    Select an existing network instance or create a new one to manage network settings
+                    {{ t('web.device_management.select_existing_network_or_create_new') }}
                 </p>
-                <Button @click="newNetwork" label="Create Network" icon="pi pi-plus" iconPos="left" />
+                <Button @click="newNetwork" :label="t('web.device_management.create_network')" icon="pi pi-plus"
+                    iconPos="left" />
             </div>
         </div>
-        
+
         <!-- Keep only the config edit dialogs -->
         <ConfigEditDialog v-if="networkIsDisabled" v-model:visible="showCreateNetworkDialog"
             :cur-network="disabledNetworkConfig" :generate-config="generateConfig" :save-config="saveConfig" />
-            
+
         <ConfigEditDialog v-else v-model:visible="showConfigEditDialog" :cur-network="newNetworkConfig"
             :generate-config="generateConfig" :save-config="saveConfig" />
     </div>
@@ -540,7 +538,7 @@ onUnmounted(() => {
 }
 
 :deep(.p-menu .p-menuitem.p-error .p-menuitem-text,
-      .p-menu .p-menuitem.p-error .p-menuitem-icon) {
+    .p-menu .p-menuitem.p-error .p-menuitem-icon) {
     color: var(--red-500);
 }
 
@@ -588,7 +586,7 @@ onUnmounted(() => {
     :deep(.bg-surface-50) {
         background-color: var(--surface-ground, #0f172a);
     }
-    
+
     :deep(.bg-surface-0) {
         background-color: var(--surface-card, #1e293b);
     }
@@ -599,11 +597,11 @@ onUnmounted(() => {
     .network-header {
         padding: 0.75rem;
     }
-    
+
     .network-content {
         padding: 0.75rem;
     }
-    
+
     /* 在小屏幕上缩短网络标签文本 */
     .network-label {
         font-size: 0.9rem;
