@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Button, Drawer, ProgressSpinner, useToast, InputSwitch, Popover, Dropdown } from 'primevue';
+import { Button, Drawer, ProgressSpinner, useToast, InputSwitch, Popover, Dropdown, Toolbar } from 'primevue';
 import Tooltip from 'primevue/tooltip';
 import { useRoute, useRouter } from 'vue-router';
 import { Api, Utils } from 'easytier-frontend-lib';
@@ -98,12 +98,6 @@ const showDeviceDetails = (device: Utils.DeviceInfo, event: Event) => {
     selectedDevice.value = device;
     detailPopover.value.toggle(event);
 };
-
-
-
-
-
-
 
 // 检查是否为桌面设备
 const isDesktop = ref(false);
@@ -214,8 +208,6 @@ const handleResize = () => {
     position: relative;
     color: var(--text-color, #1f2937);
 }
-
-
 
 .device-details-popover {
     min-width: 280px;
@@ -538,8 +530,6 @@ const handleResize = () => {
     }
 }
 
-
-
 /* 移动端卡片样式 */
 @media (max-width: 768px) {
     .card-container {
@@ -638,136 +628,164 @@ const handleResize = () => {
         justify-content: flex-start;
     }
 }
+
+/* 工具栏样式优化 */
+:deep(.p-dropdown) {
+    background: transparent;
+    border: 1px solid var(--surface-border);
+    transition: all 0.2s;
+}
+
+:deep(.p-dropdown:hover) {
+    border-color: var(--primary-color);
+}
+
+:deep(.p-dropdown-panel) {
+    .p-dropdown-items .p-dropdown-item {
+        padding: 0.75rem 1rem;
+    }
+}
+
+:deep(.p-inputswitch) {
+    .p-inputswitch-slider {
+        background: var(--surface-200);
+    }
+}
+
+/* 确保所有按钮大小一致 */
+:deep(.p-button.p-button-icon-only) {
+    width: 2.5rem;
+    height: 2.5rem;
+}
 </style>
 
 <template>
-    <div v-if="deviceList === undefined" class="w-full flex justify-center">
-        <ProgressSpinner />
-    </div>
+    <div class="flex flex-col gap-4">
+        <!-- 标题和工具栏 -->
+        <div class="text-xl font-bold">
+            <h1>Device List</h1>
+        </div>
 
-    <div v-if="deviceList !== undefined">
-        <!-- 标题和控制区 -->
-        <div class="flex justify-between items-center mb-4">
-            <div class="flex items-center gap-4">
-                <div class="text-xl font-bold">
-                    <h1>Device List</h1>
+        <Toolbar class="mb-4 p-3 gap-4 surface-0 border-1 surface-border rounded-md">
+            <template #start>
+                <div class="flex items-center gap-2">
+                    <label for="sort-by" class="text-sm text-500 hidden sm:block">排序依据：</label>
+                    <Dropdown id="sort-by" v-model="selectedSortOption" :options="sortOptions" optionLabel="name"
+                        class="sort-dropdown text-sm !min-w-[120px] sm:!min-w-[140px]" panelClass="text-sm">
+                        <template #value="slotProps">
+                            <div class="flex items-center gap-2">
+                                <i :class="[slotProps.value.icon, 'text-600']"></i>
+                                <span class="text-600">{{ slotProps.value.name }}</span>
+                            </div>
+                        </template>
+                        <template #option="slotProps">
+                            <div class="flex items-center gap-2">
+                                <i :class="[slotProps.option.icon, 'text-600']"></i>
+                                <span>{{ slotProps.option.name }}</span>
+                            </div>
+                        </template>
+                    </Dropdown>
+                    <Button :icon="ascending ? 'pi pi-sort-amount-up' : 'pi pi-sort-amount-down'" severity="secondary"
+                        text rounded class="sort-direction-btn min-w-[2.5rem] h-[2.5rem]"
+                        v-tooltip.top="ascending ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序'" @click="toggleSortDirection" />
                 </div>
-            </div>
-            <div class="flex items-center gap-2">
-                <label for="detailed-view" class="text-sm">显示详情</label>
-                <InputSwitch id="detailed-view" v-model="showDetailedView" />
-            </div>
+            </template>
+            <template #end>
+                <div class="flex items-center gap-3">
+                    <div class="hidden sm:block border-r-1 surface-border h-4 mr-2"></div>
+                    <div class="flex items-center gap-2">
+                        <label for="detailed-view" class="text-sm text-500 hidden sm:block">显示详情</label>
+                        <InputSwitch id="detailed-view" v-model="showDetailedView" />
+                    </div>
+                </div>
+            </template>
+        </Toolbar>
+
+        <div v-if="deviceList === undefined" class="w-full flex justify-center">
+            <ProgressSpinner />
         </div>
 
-        <div class="sort-controls-row flex items-center mb-4">
-            <div class="flex items-center sort-controls">
-                <label for="sort-by" class="text-sm mr-2 sort-label">排序</label>
-                <Dropdown id="sort-by" v-model="selectedSortOption" :options="sortOptions" optionLabel="name"
-                    class="sort-dropdown text-sm" panelClass="text-sm">
-                    <template #value="slotProps">
-                        <div class="flex items-center gap-1">
-                            <i :class="[slotProps.value.icon, 'sort-icon']"></i>
-                            <span>{{ slotProps.value.name }}</span>
-                        </div>
-                    </template>
-                    <template #option="slotProps">
-                        <div class="flex items-center gap-2">
-                            <i :class="[slotProps.option.icon, 'sort-icon']"></i>
-                            <span>{{ slotProps.option.name }}</span>
-                        </div>
-                    </template>
-                </Dropdown>
-                <Button :icon="ascending ? 'pi pi-sort-amount-up' : 'pi pi-sort-amount-down'" severity="secondary" text
-                    rounded class="sort-direction-btn ml-1" v-tooltip.top="ascending ? '当前升序，点击切换为降序' : '当前降序，点击切换为升序'"
-                    @click="toggleSortDirection" />
-            </div>
-        </div>
+        <div v-if="deviceList !== undefined">
+            <!-- 卡片视图 (适用于所有屏幕尺寸) -->
+            <div class="card-container">
+                <div v-for="device in sortedDeviceList" :key="device.machine_id" class="device-card">
+                    <!-- 卡片头部 -->
+                    <div class="card-header">
+                        <!-- 上部区域：设备名称和版本徽章 -->
+                        <div class="flex justify-between items-center mb-2">
+                            <!-- 设备名称 -->
+                            <div class="font-semibold truncate card-title" :title="device.hostname">{{ device.hostname
+                                }}
+                            </div>
 
-        <!-- 卡片视图 (适用于所有屏幕尺寸) -->
-        <div class="card-container">
-            <div v-for="device in sortedDeviceList" :key="device.machine_id" class="device-card">
-                <!-- 卡片头部 -->
-                <div class="card-header">
-                    <!-- 上部区域：设备名称和版本徽章 -->
-                    <div class="flex justify-between items-center mb-2">
-                        <!-- 设备名称 -->
-                        <div class="font-semibold truncate card-title" :title="device.hostname">{{ device.hostname }}
+                            <!-- 版本徽章 -->
+                            <div class="text-xs version-badge" v-tooltip="`EasyTier ${device.easytier_version}`">
+                                v{{ device.easytier_version.split('-')[0] }}
+                            </div>
                         </div>
 
-                        <!-- 版本徽章 -->
-                        <div class="text-xs version-badge" v-tooltip="`EasyTier ${device.easytier_version}`">
-                            v{{ device.easytier_version.split('-')[0] }}
+                        <!-- 下部区域：IP地址和操作按钮 -->
+                        <div class="flex justify-between items-center">
+                            <!-- IP地址 -->
+                            <div class="text-sm truncate card-subtitle max-w-[60%]" :title="device.public_ip">
+                                {{ device.public_ip }}
+                            </div>
+
+                            <!-- 操作按钮组 -->
+                            <div class="flex items-center space-x-2">
+                                <!-- 网络数量徽章 -->
+                                <span v-tooltip="'网络数量'"
+                                    class="inline-flex items-center justify-center w-6 h-6 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
+                                    {{ device.running_network_count }}
+                                </span>
+
+                                <!-- 详情按钮 -->
+                                <Button v-tooltip="'查看设备详情'" icon="pi pi-info-circle" severity="info" text rounded
+                                    class="w-9 h-9" v-if="!showDetailedView"
+                                    @click="showDeviceDetails(device, $event)" />
+
+                                <!-- 设置按钮 -->
+                                <Button icon="pi pi-cog" @click="handleDeviceManagement(device)" severity="secondary"
+                                    rounded class="w-9 h-9" :title="`Manage ${device.hostname}`" />
+                            </div>
                         </div>
                     </div>
 
-                    <!-- 下部区域：IP地址和操作按钮 -->
-                    <div class="flex justify-between items-center">
-                        <!-- IP地址 -->
-                        <div class="text-sm truncate card-subtitle max-w-[60%]" :title="device.public_ip">
-                            {{ device.public_ip }}
-                        </div>
-
-                        <!-- 操作按钮组 -->
-                        <div class="flex items-center space-x-2">
-                            <!-- 网络数量徽章 -->
-                            <span v-tooltip="'网络数量'"
-                                class="inline-flex items-center justify-center w-6 h-6 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                                {{ device.running_network_count }}
-                            </span>
-
-                            <!-- 详情按钮 -->
-                            <Button v-tooltip="'查看设备详情'" icon="pi pi-info-circle" severity="info" text rounded
-                                class="w-9 h-9" v-if="!showDetailedView" @click="showDeviceDetails(device, $event)" />
-
-                            <!-- 设置按钮 -->
-                            <Button icon="pi pi-cog" @click="handleDeviceManagement(device)" severity="secondary"
-                                rounded class="w-9 h-9" :title="`Manage ${device.hostname}`" />
-                        </div>
+                    <!-- 详情区域 - 当开启详情显示时展示 -->
+                    <div v-if="showDetailedView" class="card-details border-t border-gray-200 fade-in">
+                        <DeviceDetails :device="device" containerClass="card-details-content" :compact="true" />
                     </div>
                 </div>
+            </div>
+        </div>
 
-
-                <!-- 详情区域 - 当开启详情显示时展示 -->
-                <div v-if="showDetailedView" class="card-details border-t border-gray-200 fade-in">
-                    <DeviceDetails :device="device" containerClass="card-details-content" :compact="true" />
+        <!-- 全局设备详情 Popover -->
+        <Popover ref="detailPopover" :showCloseIcon="true" :closeOnEscape="true" :autoHide="false" appendTo="body"
+            class="device-popover">
+            <template v-if="selectedDevice">
+                <div class="popover-header">
+                    <i class="pi pi-info-circle mr-2"></i>
+                    <span class="font-bold">设备详情</span>
                 </div>
+                <div class="device-details-popover">
+                    <DeviceDetails :device="selectedDevice" containerClass="popover-details-content" :compact="true" />
+                </div>
+            </template>
+        </Popover>
 
-            </div>
-        </div>
-
-        <!-- 底部按钮 -->
-        <div class="flex justify-end mt-4">
-            <!-- 刷新按钮 -->
-            <Button icon="pi pi-refresh" label="Reload" severity="info" @click="loadDevices" />
-        </div>
+        <Drawer v-model:visible="deviceManageVisible" :position="drawerPosition"
+            :header="`Manage ${selectedDeviceHostname}`" :baseZIndex=1000 class="" :class="drawerWidth"
+            :style="{ height: drawerHeight }">
+            <template #container="{ closeCallback }">
+                <div style="position: relative; height: 100%;" class="device-manage-drawer">
+                    <RouterView v-slot="{ Component }">
+                        <component :is="Component" :api="api" :deviceList="deviceList" @update="loadDevices" />
+                    </RouterView>
+                    <Button icon="pi pi-times" rounded severity="danger"
+                        class="fixed z-50 right-6 bottom-6 shadow-lg drawer-fab-close-btn"
+                        style="width: 3.2rem; height: 3.2rem; font-size: 1.5rem;" @click="closeCallback" />
+                </div>
+            </template>
+        </Drawer>
     </div>
-
-    <!-- 全局设备详情 Popover -->
-    <Popover ref="detailPopover" :showCloseIcon="true" :closeOnEscape="true" :autoHide="false" appendTo="body"
-        class="device-popover">
-        <template v-if="selectedDevice">
-            <div class="popover-header">
-                <i class="pi pi-info-circle mr-2"></i>
-                <span class="font-bold">设备详情</span>
-            </div>
-            <div class="device-details-popover">
-                <DeviceDetails :device="selectedDevice" containerClass="popover-details-content" :compact="true" />
-            </div>
-        </template>
-    </Popover>
-
-    <Drawer v-model:visible="deviceManageVisible" :position="drawerPosition"
-        :header="`Manage ${selectedDeviceHostname}`" :baseZIndex=1000 class="" :class="drawerWidth"
-        :style="{ height: drawerHeight }">
-        <template #container="{ closeCallback }">
-            <div style="position: relative; height: 100%;" class="device-manage-drawer">
-                <RouterView v-slot="{ Component }">
-                    <component :is="Component" :api="api" :deviceList="deviceList" @update="loadDevices" />
-                </RouterView>
-                <Button icon="pi pi-times" rounded severity="danger"
-                    class="fixed z-50 right-6 bottom-6 shadow-lg drawer-fab-close-btn"
-                    style="width: 3.2rem; height: 3.2rem; font-size: 1.5rem;" @click="closeCallback" />
-            </div>
-        </template>
-    </Drawer>
 </template>
