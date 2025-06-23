@@ -6,12 +6,14 @@ defineProps<{
   device: Utils.DeviceInfo;
   // 可以传入额外的样式类
   containerClass?: string;
+  // 是否使用紧凑布局
+  compact?: boolean;
 }>();
 
 </script>
 
 <template>
-  <div :class="['device-details', containerClass]">
+  <div :class="['device-details', containerClass, { 'compact': compact }]">
     <div class="detail-item hostname">
       <div class="detail-label">Hostname</div>
       <div class="detail-value">{{ device.hostname }}</div>
@@ -21,7 +23,7 @@ defineProps<{
       <div class="detail-value">{{ device.public_ip }}</div>
     </div>
     <div class="detail-item running-networks">
-      <div class="detail-label">Running Networks</div>
+      <div class="detail-label">Networks</div>
       <div class="detail-value">{{ device.running_network_count }}</div>
     </div>
     <div class="detail-item last-report">
@@ -29,7 +31,7 @@ defineProps<{
       <div class="detail-value">{{ device.report_time }}</div>
     </div>
     <div class="detail-item version">
-      <div class="detail-label">EasyTier Version</div>
+      <div class="detail-label">Version</div>
       <div class="detail-value">{{ device.easytier_version }}</div>
     </div>
     <div class="detail-item machine-id">
@@ -42,18 +44,20 @@ defineProps<{
 </template>
 
 <style scoped>
+/* 基础布局 */
 .device-details {
   display: grid;
   grid-template-columns: 1fr;
   gap: 0.75rem;
 }
 
+/* 标准布局的详情项样式 */
 .detail-item {
   position: relative;
-  margin-bottom: 0.5rem;
   border-bottom: 1px solid var(--surface-border, #e9ecef);
   padding-bottom: 0.75rem;
-  transition: background-color 0.2s;
+  transition: all 0.2s;
+  border-radius: 0.25rem;
 }
 
 .detail-item:hover {
@@ -62,17 +66,31 @@ defineProps<{
 
 .detail-item:last-child {
   border-bottom: none;
-  margin-bottom: 0;
-  padding-bottom: 0;
 }
 
 .detail-label {
   font-weight: 600;
   color: var(--text-color, #334155);
+  font-size: 0.95rem;
   margin-bottom: 0.375rem;
-  font-size: 0.875rem;
   display: flex;
   align-items: center;
+}
+
+/* 紧凑布局样式 */
+.device-details.compact {
+  gap: 0.4rem;
+}
+
+.compact .detail-item {
+  padding: 0.3rem 0.2rem;
+  display: grid;
+  grid-template-columns: 40% 60%;
+  align-items: center;
+}
+
+.compact .detail-label {
+  margin-bottom: 0;
 }
 
 .detail-label::before {
@@ -90,6 +108,19 @@ defineProps<{
   word-break: break-all;
   padding-left: 1rem;
   line-height: 1.4;
+  font-size: 0.95rem;
+}
+
+/* 紧凑布局的标签和值样式 */
+.compact .detail-label::before {
+  width: 3px;
+  height: 3px;
+  margin-right: 0.3rem;
+}
+
+.compact .detail-value {
+  padding-left: 0.3rem;
+  line-height: 1.2;
 }
 
 /* 特定字段的样式 */
@@ -120,7 +151,7 @@ defineProps<{
 /* 机器ID特殊样式 */
 .machine-id-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.8rem;
+  font-size: 0.95rem;
   background-color: var(--surface-ground, #f1f5f9);
   color: var(--text-color, #1f2937);
   padding: 0.25rem 0.5rem;
@@ -132,18 +163,42 @@ defineProps<{
   text-overflow: ellipsis;
 }
 
+/* 紧凑布局下的机器ID样式 */
+.compact .machine-id-value {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.3rem;
+  border-radius: 0.2rem;
+}
+
 /* 暗黑模式适配 */
-:root.dark .detail-value {
-  color: var(--text-color-secondary, #cbd5e1);
+@media (prefers-color-scheme: dark) {
+  .detail-item {
+    border-bottom: 1px solid var(--surface-border, #334155);
+  }
+
+  .detail-item:last-child {
+    border-bottom: none;
+  }
+
+  .detail-item:hover {
+    background-color: var(--surface-hover, rgba(30, 41, 59, 0.4));
+  }
+
+  .detail-value {
+    color: var(--text-color-secondary, #cbd5e1);
+  }
+
+  .detail-label {
+    color: var(--text-color, #e2e8f0);
+  }
+
+  .machine-id-value {
+    background-color: var(--surface-ground, #1e293b);
+    color: var(--text-color, #f1f5f9);
+    border-color: var(--surface-border, #334155);
+  }
 }
 
-:root.dark .detail-label {
-  color: var(--text-color, #e2e8f0);
-}
 
-:root.dark .machine-id-value {
-  background-color: var(--surface-ground, #1e293b);
-  color: var(--text-color, #f1f5f9);
-  border-color: var(--surface-border, #334155);
-}
+
 </style>
