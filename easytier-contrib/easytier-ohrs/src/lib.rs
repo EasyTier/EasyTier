@@ -2,58 +2,14 @@ mod native_log;
 
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
 use easytier::instance_manager::NetworkInstanceManager;
-use easytier::launcher::{ConfigSource, SOCKET_CREATE_CALLBACK};
-use lazy_static::lazy_static;
+use easytier::launcher::ConfigSource;
 use napi_derive_ohos::napi;
-use napi_ohos::bindgen_prelude::*;
-use napi_ohos::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use ohos_hilog_binding::{hilog_debug, hilog_error};
-use std::collections::HashSet;
-use std::net::SocketAddr;
-use std::sync::{atomic, Mutex};
-use std::time::Duration;
-use std::{format, thread};
+use std::format;
 use uuid::Uuid;
 
 static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
     once_cell::sync::Lazy::new(NetworkInstanceManager::new);
-
-static TUN_FD: atomic::AtomicI32 = atomic::AtomicI32::new(-1);
-
-lazy_static! {
-    static ref PROTECT_FN: Mutex<Option<ThreadsafeFunction<u32, Promise<()>>>> = Mutex::new(None);
-    static ref SOCKET_SET: Mutex<HashSet<i32>> = Mutex::new(HashSet::new());
-}
-
-pub fn protect_socket(fd: i32, socket_addr: &SocketAddr) -> bool {
-    if SOCKET_SET.lock().unwrap().contains(&fd) {
-        hilog_debug!("[Rust] fd {} has been protected", fd);
-        return true;
-    }
-    let guard = PROTECT_FN.lock().unwrap();
-    match &*guard {
-        Some(tsfn) => {
-            tsfn.call(Ok(fd as u32), ThreadsafeFunctionCallMode::Blocking);
-            thread::sleep(Duration::from_millis(10));
-            hilog_debug!("[Rust] successful protect fd {} to {}", fd, socket_addr);
-            SOCKET_SET.lock().unwrap().insert(fd);
-            true
-        }
-        None => {
-            hilog_error!("[Rust] protect_function is 404");
-            false
-        }
-    }
-}
-
-#[napi]
-pub fn init_protect_fn(func: ThreadsafeFunction<u32, Promise<()>>) {
-    hilog_debug!("[Rust] init_protect_fn");
-    let mut guard = PROTECT_FN.lock().unwrap();
-    *guard = Some(func);
-    let mut guard = SOCKET_CREATE_CALLBACK.lock().unwrap();
-    *guard = Some(protect_socket);
-}
 
 #[napi(object)]
 pub struct KeyValuePair {
@@ -138,9 +94,6 @@ pub fn stop_network_instance(inst_names: Vec<String>) {
         )
         .unwrap();
     hilog_debug!("[Rust] stop_network_instance");
-    if INSTANCE_MANAGER.list_network_instance_ids().is_empty() {
-        SOCKET_SET.lock().unwrap().clear()
-    }
 }
 
 #[napi]

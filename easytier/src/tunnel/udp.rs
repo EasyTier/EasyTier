@@ -11,6 +11,7 @@ use dashmap::DashMap;
 use futures::{stream::FuturesUnordered, StreamExt};
 use rand::{Rng, SeedableRng};
 use zerocopy::{AsBytes, FromBytes};
+
 use std::net::SocketAddr;
 use tokio::{
     net::UdpSocket,
@@ -811,12 +812,6 @@ impl UdpTunnelConnector {
         } else {
             UdpSocket::bind("[::]:0").await?
         };
-        #[cfg(target_env = "ohos")]
-        {
-            use crate::launcher::socket_create_callback;
-            use std::os::fd::AsRawFd;
-            socket_create_callback(socket.as_raw_fd(), &addr);
-        }
         return self.try_connect_with_socket(Arc::new(socket), addr).await;
     }
 

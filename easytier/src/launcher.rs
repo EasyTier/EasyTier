@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
 use crate::{
     common::{
         config::{
@@ -20,26 +20,6 @@ use crate::{
 use anyhow::Context;
 use chrono::{DateTime, Local};
 use tokio::{sync::broadcast, task::JoinSet};
-use lazy_static::lazy_static;
-use std::sync::Mutex;
-#[cfg(target_env = "ohos")]
-lazy_static! {
-    pub static ref SOCKET_CREATE_CALLBACK: Mutex<Option<fn(i32, &SocketAddr) -> bool>> = Mutex::new(None);
-}
-#[cfg(target_env = "ohos")]
-pub fn socket_create_callback_opt(fd: i32, addr: Option<&SocketAddr>) {
-    socket_create_callback(fd, addr.unwrap_or(&SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)));
-}
-
-#[cfg(target_env = "ohos")]
-pub fn socket_create_callback(fd: i32, addr: &SocketAddr) {
-    let protect_fn = SOCKET_CREATE_CALLBACK.lock().unwrap();
-    if let Some(callback) = protect_fn.as_ref() {
-        callback(fd, addr);
-    }else {
-        tracing::error!("[Tracing] socket_create_callback is not initialized");
-    }
-}
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -127,13 +107,11 @@ impl EasyTierLauncher {
         let arc_tun_fd = data.tun_fd.clone();
 
         tasks.spawn(async move {
-            let mut old_tun_fd = None;
-            tracing::debug!("old tun fd is {:?}", old_tun_fd.unwrap_or(-1));
+            let mut old_tun_fd = arc_tun_fd.read().unwrap().clone();
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 let tun_fd = arc_tun_fd.read().unwrap().clone();
                 if tun_fd != old_tun_fd && tun_fd.is_some() {
-                    tracing::debug!("get different tun fd {:?} -> {:?}",old_tun_fd.unwrap_or(-1),tun_fd.unwrap_or(-1));
                     let res = Instance::setup_nic_ctx_for_android(
                         nic_ctx.clone(),
                         global_ctx.clone(),

@@ -1995,7 +1995,6 @@ dependencies = [
  "jemalloc-sys",
  "jemallocator",
  "kcp-sys",
- "lazy_static",
  "machine-uid",
  "maplit",
  "mimalloc",
@@ -2113,7 +2112,6 @@ name = "easytier-ohrs"
 version = "0.1.0"
 dependencies = [
  "easytier",
- "lazy_static",
  "napi-build-ohos",
  "napi-derive-ohos",
  "napi-ohos",
