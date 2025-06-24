@@ -1,7 +1,6 @@
 use std::{fmt::Debug, str::FromStr as _, sync::Arc};
 
 use anyhow::Context;
-use dashmap;
 use easytier::{
     common::scoped_task::ScopedTask,
     proto::{
@@ -15,9 +14,7 @@ use easytier::{
     },
     tunnel::Tunnel,
 };
-use maxminddb::{self, geoip2};
 use tokio::sync::{broadcast, RwLock};
-use url::Url;
 
 use crate::db::ListNetworkProps;
 

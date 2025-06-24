@@ -168,8 +168,6 @@ impl ClientManager {
             return None;
         };
 
-        let ip = "180.165.13.133".parse().unwrap();
-
         // Skip lookup for private/special IPs
         let is_private = match ip {
             std::net::IpAddr::V4(ipv4) => {
@@ -191,7 +189,6 @@ impl ClientManager {
         let location = if let Some(db) = &*geoip_db {
             match db.lookup::<geoip2::City>(ip) {
                 Ok(city) => {
-                    println!("{:?}", city);
                     let country = city
                         .country
                         .and_then(|c| c.names)

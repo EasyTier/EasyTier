@@ -262,7 +262,8 @@ web:
     last_report: Last Seen
     version: Version
     machine_id: Machine ID
-
+    unknown_location: Unknown Location
+    
   device_management:
     edit_network: Edit Network
     export_config: Export Config

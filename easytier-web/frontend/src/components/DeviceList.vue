@@ -42,15 +42,7 @@ const loadDevices = async () => {
     const resp = await api?.list_machines();
     let devices: Array<Utils.DeviceInfo> = [];
     for (const device of (resp || [])) {
-        devices.push({
-            hostname: device.info?.hostname,
-            public_ip: device.client_url,
-            running_network_instances: device.info?.running_network_instances.map((instance: any) => Utils.UuidToStr(instance)),
-            running_network_count: device.info?.running_network_instances.length,
-            report_time: new Date(device.info?.report_time).toLocaleString(),
-            easytier_version: device.info?.easytier_version,
-            machine_id: Utils.UuidToStr(device.info?.machine_id),
-        });
+        devices.push(Utils.buildDeviceInfo(device));
     }
     console.debug("device list", deviceList.value);
     deviceList.value = devices;
@@ -666,6 +658,37 @@ const handleResize = () => {
     width: 2.5rem;
     height: 2.5rem;
 }
+
+/* 位置样式 */
+.location-icon {
+    color: var(--pink-500);
+    font-size: 0.9rem;
+}
+
+.location-text {
+    font-size: 0.875rem;
+    line-height: 1.25rem;
+    opacity: 0.9;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.location-separator {
+    opacity: 0.5;
+    font-weight: 300;
+    margin: 0 0.1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+    .location-text {
+        color: var(--text-color-secondary, #cbd5e1);
+    }
+
+    .location-icon {
+        color: var(--pink-400);
+    }
+}
 </style>
 
 <template>
@@ -737,9 +760,26 @@ const handleResize = () => {
 
                         <!-- 下部区域：IP地址和操作按钮 -->
                         <div class="flex justify-between items-center">
-                            <!-- IP地址 -->
-                            <div class="text-sm truncate card-subtitle max-w-[60%]" :title="device.public_ip">
-                                {{ device.public_ip }}
+                            <!-- IP地址和位置信息 -->
+                            <div class="text-sm truncate card-subtitle max-w-[60%] flex items-center gap-2"
+                                :title="device.location ? `${device.location.country}${device.location.region ? ' · ' + device.location.region : ''}${device.location.city ? ' · ' + device.location.city : ''}` : t('web.device.unknown_location')">
+                                <i class="pi pi-map-marker location-icon"></i>
+                                <span class="location-text">
+                                    <template v-if="device.location">
+                                        {{ device.location.country }}
+                                        <template v-if="device.location.region">
+                                            <span class="location-separator">·</span>
+                                            {{ device.location.region }}
+                                        </template>
+                                        <template v-if="device.location.city">
+                                            <span class="location-separator">·</span>
+                                            {{ device.location.city }}
+                                        </template>
+                                    </template>
+                                    <template v-else>
+                                        {{ t('web.device.unknown_location') }}
+                                    </template>
+                                </span>
                             </div>
 
                             <!-- 操作按钮组 -->

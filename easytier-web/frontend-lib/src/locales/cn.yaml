@@ -262,6 +262,7 @@ web:
     last_report: 最后在线
     version: 版本
     machine_id: 机器ID
+    unknown_location: 未知位置
 
   device_management:
     edit_network: 编辑网络
