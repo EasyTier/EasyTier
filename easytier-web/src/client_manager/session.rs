@@ -20,6 +20,13 @@ use crate::db::ListNetworkProps;
 
 use super::storage::{Storage, StorageToken, WeakRefStorage};
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Location {
+    pub country: String,
+    pub city: Option<String>,
+    pub region: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct SessionData {
     storage: WeakRefStorage,
@@ -28,10 +35,11 @@ pub struct SessionData {
     storage_token: Option<StorageToken>,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
+    location: Option<Location>,
 }
 
 impl SessionData {
-    fn new(storage: WeakRefStorage, client_url: url::Url) -> Self {
+    fn new(storage: WeakRefStorage, client_url: url::Url, location: Option<Location>) -> Self {
         let (tx, _rx1) = broadcast::channel(2);
 
         SessionData {
@@ -40,6 +48,7 @@ impl SessionData {
             storage_token: None,
             notifier: tx,
             req: None,
+            location,
         }
     }
 
@@ -49,6 +58,10 @@ impl SessionData {
 
     pub fn heartbeat_waiter(&self) -> broadcast::Receiver<HeartbeatRequest> {
         self.notifier.subscribe()
+    }
+
+    pub fn location(&self) -> Option<&Location> {
+        self.location.as_ref()
     }
 }
 
@@ -165,8 +178,8 @@ impl Debug for Session {
 type SessionRpcClient = Box<dyn WebClientService<Controller = BaseController> + Send>;
 
 impl Session {
-    pub fn new(storage: WeakRefStorage, client_url: url::Url) -> Self {
-        let session_data = SessionData::new(storage, client_url);
+    pub fn new(storage: WeakRefStorage, client_url: url::Url, location: Option<Location>) -> Self {
+        let session_data = SessionData::new(storage, client_url, location);
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =

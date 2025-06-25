@@ -14,6 +14,9 @@ dashmap = "6.1"
 url = "2.2"
 async-trait = "0.1"
 
+maxminddb = "0.24"
+once_cell = "1.18"
+
 axum = { version = "0.7", features = ["macros"] }
 axum-login = { version = "0.16" }
 password-auth = { version = "1.0.0" }
@@ -34,7 +37,7 @@ sea-orm-migration = { version = "1.1" }
 
 
 # for captcha
-rust-embed = { version = "8.5.0", features = ["debug-embed"] }
+rust-embed = { version = "8.5.0", features = ["debug-embed", "include-exclude"] }
 base64 = "0.22"
 rand = "0.8"
 image = { version = "0.24", default-features = false, features = ["png"] }

@@ -77,6 +77,12 @@ struct Cli {
     )]
     api_server_port: u16,
 
+    #[arg(
+        long,
+        help = t!("cli.geoip_db").to_string(),
+    )]
+    geoip_db: Option<String>,
+
     #[cfg(feature = "embed")]
     #[arg(
         long,
@@ -164,7 +170,7 @@ async fn main() {
 
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
-    let mut mgr = client_manager::ClientManager::new(db.clone());
+    let mut mgr = client_manager::ClientManager::new(db.clone(), cli.geoip_db);
     let (v6_listener, v4_listener) =
         get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
             .await
