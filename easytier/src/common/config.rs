@@ -43,6 +43,7 @@ pub fn gen_default_flags() -> Flags {
         enable_quic_proxy: false,
         disable_quic_input: false,
         foreign_relay_bps_limit: u64::MAX,
+        multi_thread_count: 2,
     }
 }
 

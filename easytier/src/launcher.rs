@@ -256,8 +256,9 @@ impl EasyTierLauncher {
 
         self.thread_handle = Some(std::thread::spawn(move || {
             let rt = if cfg.get_flags().multi_thread {
+                let worker_threads = 2.max(cfg.get_flags().multi_thread_count as usize);
                 tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
+                    .worker_threads(worker_threads)
                     .enable_all()
                     .build()
             } else {
