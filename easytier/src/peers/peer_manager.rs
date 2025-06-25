@@ -361,8 +361,8 @@ impl PeerManager {
         is_directly_connected: bool,
     ) -> Result<(), Error> {
         tracing::info!("add tunnel as server start");
-        let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
-        peer.do_handshake_as_server_ext(|peer, msg| {
+        let mut conn = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
+        conn.do_handshake_as_server_ext(|peer, msg| {
             if msg.network_name
                 == self.global_ctx.get_network_identity().network_name
             {
@@ -396,13 +396,14 @@ impl PeerManager {
         })
         .await?;
 
-        let peer_network_name = peer.get_network_identity().network_name.clone();
+        let peer_network_name = conn.get_network_identity().network_name.clone();
+
+        conn.set_is_hole_punched(!is_directly_connected);
 
         if peer_network_name == self.global_ctx.get_network_identity().network_name {
-            peer.set_is_hole_punched(!is_directly_connected);
-            self.add_new_peer_conn(peer).await?;
+            self.add_new_peer_conn(conn).await?;
         } else {
-            self.foreign_network_manager.add_peer_conn(peer).await?;
+            self.foreign_network_manager.add_peer_conn(conn).await?;
         }
 
         self.reserved_my_peer_id_map.remove(&peer_network_name);

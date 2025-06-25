@@ -6,6 +6,7 @@ import EasytierFrontendLib from 'easytier-frontend-lib'
 import PrimeVue from 'primevue/config'
 import Aura from '@primevue/themes/aura'
 import ConfirmationService from 'primevue/confirmationservice';
+import { I18nUtils } from 'easytier-frontend-lib'
 
 import { createRouter, createWebHashHistory } from 'vue-router'
 import MainPage from './components/MainPage.vue'
@@ -78,7 +79,12 @@ const router = createRouter({
     routes,
 })
 
-createApp(App).use(PrimeVue,
+const app = createApp(App)
+
+// Use i18n
+app.use(I18nUtils.i18n)
+
+app.use(PrimeVue,
     {
         theme: {
             preset: Aura,

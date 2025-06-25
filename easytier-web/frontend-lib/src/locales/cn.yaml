@@ -203,3 +203,116 @@ event:
   DhcpIpv4Changed: DHCP IPv4地址更改
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
   PortForwardAdded: 端口转发添加
+
+web:
+  login:
+    title: 登录
+    username: 用户名
+    password: 密码
+    submit: 登录
+    register: 注册
+    remember_me: 记住我
+    api_host: API主机
+    captcha: 验证码
+    back_to_login: 返回登录
+    login: 登录
+
+  register:
+    title: 注册
+    username: 用户名
+    password: 密码
+    confirm_password: 确认密码
+    submit: 注册
+    login: 返回登录
+  
+  main:
+    dashboard: 仪表盘
+    device_list: 设备列表
+    device_management: 设备管理
+    login_page: 登录页面
+    settings: 设置
+    logout: 退出登录
+    language: 语言
+    change_password: 修改密码
+
+  device:
+    list: 设备列表
+    management: 设备管理
+    add: 添加设备
+    delete: 删除设备
+    refresh: 刷新
+    status: 状态
+    online: 在线
+    offline: 离线
+    last_seen: 最后在线
+    no_devices: 未找到设备
+    sort_by: 排序依据
+    sort_direction: 排序方向
+    show_detailed_view: 显示详情
+    hide_detailed_view: 隐藏详情
+    sort_by_hostname: 主机名
+    sort_by_public_ip: 公网IP
+    sort_by_version: 版本
+    sort_by_networks: 网络数量
+    sort_direction_asc: 当前升序，点击切换为降序
+    sort_direction_desc: 当前降序，点击切换为升序
+    hostname: 主机名
+    public_ip: 公网IP
+    networks: 网络数量
+    last_report: 最后在线
+    version: 版本
+    machine_id: 机器ID
+    unknown_location: 未知位置
+
+  device_management:
+    edit_network: 编辑网络
+    export_config: 导出配置
+    delete_network: 删除网络
+    network: 网络
+    select_network: 选择网络
+    create_network: 创建网络
+    cancel_creation: 取消创建
+    more_actions: 更多操作
+    edit_as_file: 编辑为文件
+    import_config: 导入配置
+    create_new: 创建新网络
+    network_status: 网络状态
+    network_configuration: 网络配置
+    loading_network_configuration: 加载网络配置
+    no_network_selected: 未选择网络
+    select_existing_network_or_create_new: 选择现有网络实例或创建新网络以管理网络设置
+    disable_network: 禁用网络
+
+  network:
+    title: 网络
+    create: 创建网络
+    delete: 删除网络
+    start: 启动网络
+    stop: 停止网络
+    config: 网络配置
+    status: 网络状态
+    import: 导入配置
+    export: 导出配置
+
+  common:
+    confirm: 确认
+    cancel: 取消
+    save: 保存
+    delete: 删除
+    edit: 编辑
+    refresh: 刷新
+    loading: 加载中...
+    error: 错误
+    success: 成功
+    warning: 警告
+    info: 提示
+
+  settings:
+    title: 设置
+    change_password: 修改密码
+    old_password: 旧密码
+    new_password: 新密码
+    confirm_password: 确认新密码
+    language: 语言
+    theme: 主题
+    logout: 退出登录 

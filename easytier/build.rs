@@ -170,7 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .field_attribute(".web.NetworkConfig", "#[serde(default)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
-        .btree_map(["."]);
+        .btree_map(["."])
+        .skip_debug(&[".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
 
     config.compile_protos(&proto_files, &["src/proto/"])?;
 
