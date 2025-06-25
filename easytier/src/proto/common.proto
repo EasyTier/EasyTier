@@ -43,6 +43,8 @@ message FlagsInConfig {
 
   // a global relay limit, only work for foreign network
   uint64 foreign_relay_bps_limit = 26;
+
+  uint32 multi_thread_count = 27;
 }
 
 message RpcDescriptor {
