@@ -4118,7 +4118,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4979f22fdb869068da03c9f7528f8297c6fd2606bc3a4affe42e6a823fdb8da4"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -7325,8 +7325,8 @@ dependencies = [
 
 [[package]]
 name = "service-manager"
-version = "0.7.1"
-source = "git+https://github.com/chipsenkbeil/service-manager-rs.git?branch=main#13dae5e8160f91fdc9834d847165cc5ce0a72fb3"
+version = "0.8.0"
+source = "git+https://github.com/chipsenkbeil/service-manager-rs.git?branch=main#0294d3b9769c8ef7db8b4e831fb1c4f14b7d473b"
 dependencies = [
  "cfg-if",
  "dirs 4.0.0",
@@ -9696,7 +9696,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
