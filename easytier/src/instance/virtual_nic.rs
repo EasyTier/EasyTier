@@ -720,7 +720,7 @@ impl NicCtx {
         Ok(())
     }
 
-    pub async fn run(&mut self, ipv4_addr: cidr::Ipv4Inet) -> Result<(), Error> {
+    pub async fn run(&mut self, ipv4_addr: Option<cidr::Ipv4Inet>, ipv6_addr: Option<cidr::Ipv6Inet>) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
             match nic.create_dev().await {
@@ -757,7 +757,16 @@ impl NicCtx {
         self.do_forward_nic_to_peers_task(stream)?;
         self.do_forward_peers_to_nic(sink);
 
-        self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+        // Assign IPv4 address if provided
+        if let Some(ipv4_addr) = ipv4_addr {
+            self.assign_ipv4_to_tun_device(ipv4_addr).await?;
+        }
+        
+        // Assign IPv6 address if provided
+        if let Some(ipv6_addr) = ipv6_addr {
+            self.assign_ipv6_to_tun_device(ipv6_addr).await?;
+        }
+        
         self.run_proxy_cidrs_route_updater().await?;
 
         Ok(())

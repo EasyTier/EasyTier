@@ -194,6 +194,32 @@ impl NetlinkIfConfiger {
         )
     }
 
+    fn get_prefix_len_ipv6(name: &str, ip: Ipv6Addr) -> Result<u8, Error> {
+        let addrs = Self::list_addresses(name)?;
+        for addr in addrs {
+            if addr.address() == IpAddr::V6(ip) {
+                return Ok(addr.network_length());
+            }
+        }
+        Err(Error::NotFound)
+    }
+
+    fn remove_one_ipv6(name: &str, ip: Ipv6Addr, prefix_len: u8) -> Result<(), Error> {
+        let mut message = AddressMessage::default();
+        message.header.prefix_len = prefix_len;
+        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
+        message.header.family = AddressFamily::Inet6;
+
+        message
+            .attributes
+            .push(AddressAttribute::Address(std::net::IpAddr::V6(ip)));
+
+        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
+            RouteNetlinkMessage::DelAddress(message),
+            true,
+        )
+    }
+
     pub(crate) fn mtu_op<T: TryInto<Ioctl>>(
         name: &str,
         op: T,
@@ -466,6 +492,106 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
         Self::mtu_op(name, SIOCSIFMTU, mtu as libc::c_int)?;
+
+        Ok(())
+    }
+
+    async fn add_ipv6_ip(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let mut message = AddressMessage::default();
+
+        message.header.prefix_len = cidr_prefix;
+        message.header.index = NetlinkIfConfiger::get_interface_index(name)?;
+        message.header.family = AddressFamily::Inet6;
+
+        message
+            .attributes
+            .push(AddressAttribute::Address(std::net::IpAddr::V6(address)));
+
+        // For IPv6, we don't need IFA_LOCAL or IFA_BROADCAST
+        send_netlink_req_and_wait_one_resp::<RouteNetlinkMessage>(
+            RouteNetlinkMessage::NewAddress(message),
+            false,
+        )
+    }
+
+    async fn remove_ipv6(&self, name: &str, ip: Option<std::net::Ipv6Addr>) -> Result<(), Error> {
+        if ip.is_none() {
+            let addrs = Self::list_addresses(name)?;
+            for addr in addrs {
+                if let IpAddr::V6(ipv6) = addr.address() {
+                    let prefix_len = addr.network_length();
+                    Self::remove_one_ipv6(name, ipv6, prefix_len)?;
+                }
+            }
+        } else {
+            let ipv6 = ip.unwrap();
+            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6)?;
+            Self::remove_one_ipv6(name, ipv6, prefix_len)?;
+        }
+
+        Ok(())
+    }
+
+    async fn add_ipv6_route(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        let mut message = RouteMessage::default();
+
+        message.header.address_family = AddressFamily::Inet6;
+        message.header.destination_prefix_length = cidr_prefix;
+        message.header.table = RouteHeader::RT_TABLE_MAIN;
+        message.header.protocol = RouteProtocol::Static;
+        message.header.scope = RouteScope::Universe;
+        message.header.kind = RouteType::Unicast;
+
+        // Add metric (cost) if specified
+        if let Some(cost) = cost {
+            message
+                .attributes
+                .push(RouteAttribute::Priority(cost as u32));
+        }
+
+        message
+            .attributes
+            .push(RouteAttribute::Oif(NetlinkIfConfiger::get_interface_index(
+                name,
+            )?));
+
+        message
+            .attributes
+            .push(RouteAttribute::Destination(RouteAddress::Inet6(address)));
+
+        send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::NewRoute(message), false)
+    }
+
+    async fn remove_ipv6_route(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        let routes = Self::list_routes()?;
+        let ifidx = NetlinkIfConfiger::get_interface_index(name)?;
+
+        for msg in routes {
+            let other_route: Route = msg.clone().into();
+            if other_route.destination == std::net::IpAddr::V6(address)
+                && other_route.prefix == cidr_prefix
+                && other_route.ifindex == Some(ifidx)
+            {
+                send_netlink_req_and_wait_one_resp(RouteNetlinkMessage::DelRoute(msg), true)?;
+                return Ok(());
+            }
+        }
 
         Ok(())
     }
