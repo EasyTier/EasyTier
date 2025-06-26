@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     io,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     pin::Pin,
     sync::{Arc, Weak},
     task::{Context, Poll},
@@ -25,7 +25,7 @@ use byteorder::WriteBytesExt as _;
 use bytes::{BufMut, BytesMut};
 use futures::{lock::BiLock, ready, SinkExt, Stream, StreamExt};
 use pin_project_lite::pin_project;
-use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
     sync::Mutex,
@@ -434,9 +434,23 @@ impl VirtualNic {
         Ok(())
     }
 
+    pub async fn add_ipv6_route(&self, address: Ipv6Addr, cidr: u8) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg
+            .add_ipv6_route(self.ifname(), address, cidr, None)
+            .await?;
+        Ok(())
+    }
+
     pub async fn remove_ip(&self, ip: Option<Ipv4Addr>) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
+        Ok(())
+    }
+
+    pub async fn remove_ipv6(&self, ip: Option<Ipv6Addr>) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
         Ok(())
     }
 
@@ -444,6 +458,14 @@ impl VirtualNic {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg
             .add_ipv4_ip(self.ifname(), ip, cidr as u8)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn add_ipv6(&self, ip: Ipv6Addr, cidr: i32) -> Result<(), Error> {
+        let _g = self.global_ctx.net_ns.guard();
+        self.ifcfg
+            .add_ipv6_ip(self.ifname(), ip, cidr as u8)
             .await?;
         Ok(())
     }
@@ -496,6 +518,20 @@ impl NicCtx {
         Ok(())
     }
 
+    pub async fn assign_ipv6_to_tun_device(&self, ipv6_addr: cidr::Ipv6Inet) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.link_up().await?;
+        nic.remove_ipv6(None).await?;
+        nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
+            .await?;
+        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        {
+            nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn do_forward_nic_to_peers_ipv4(ret: ZCPacket, mgr: &PeerManager) {
         if let Some(ipv4) = Ipv4Packet::new(ret.payload()) {
             if ipv4.get_version() != 4 {
@@ -518,7 +554,44 @@ impl NicCtx {
         }
     }
 
-    fn do_forward_nic_to_peers(
+    async fn do_forward_nic_to_peers_ipv6(ret: ZCPacket, mgr: &PeerManager) {
+        if let Some(ipv6) = Ipv6Packet::new(ret.payload()) {
+            if ipv6.get_version() != 6 {
+                tracing::info!("[USER_PACKET] not ipv6 packet: {:?}", ipv6);
+                return;
+            }
+            let dst_ipv6 = ipv6.get_destination();
+            tracing::trace!(
+                ?ret,
+                "[USER_PACKET] recv new packet from tun device and forward to peers."
+            );
+
+            // TODO: use zero-copy and implement send_msg_ipv6
+            let send_ret = mgr.send_msg_ipv6(ret, dst_ipv6).await;
+            if send_ret.is_err() {
+                tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv6 failed")
+            }
+        } else {
+            tracing::warn!(?ret, "[USER_PACKET] not ipv6 packet");
+        }
+    }
+
+    async fn do_forward_nic_to_peers(ret: ZCPacket, mgr: &PeerManager) {
+        let payload = ret.payload();
+        if payload.is_empty() {
+            return;
+        }
+        
+        match payload[0] >> 4 {
+            4 => Self::do_forward_nic_to_peers_ipv4(ret, mgr).await,
+            6 => Self::do_forward_nic_to_peers_ipv6(ret, mgr).await,
+            _ => {
+                tracing::warn!(?ret, "[USER_PACKET] unknown IP version");
+            }
+        }
+    }
+
+    fn do_forward_nic_to_peers_task(
         &mut self,
         mut stream: Pin<Box<dyn ZCPacketStream>>,
     ) -> Result<(), Error> {
@@ -532,7 +605,7 @@ impl NicCtx {
                     tracing::error!("read from nic failed: {:?}", ret);
                     break;
                 }
-                Self::do_forward_nic_to_peers_ipv4(ret.unwrap(), mgr.as_ref()).await;
+                Self::do_forward_nic_to_peers(ret.unwrap(), mgr.as_ref()).await;
             }
             panic!("nic stream closed");
         });
@@ -681,7 +754,7 @@ impl NicCtx {
 
         let (stream, sink) = tunnel.split();
 
-        self.do_forward_nic_to_peers(stream)?;
+        self.do_forward_nic_to_peers_task(stream)?;
         self.do_forward_peers_to_nic(sink);
 
         self.assign_ipv4_to_tun_device(ipv4_addr).await?;
@@ -710,7 +783,7 @@ impl NicCtx {
 
         let (stream, sink) = tunnel.split();
 
-        self.do_forward_nic_to_peers(stream)?;
+        self.do_forward_nic_to_peers_task(stream)?;
         self.do_forward_peers_to_nic(sink);
 
         Ok(())

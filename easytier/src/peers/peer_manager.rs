@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak},
     time::{Instant, SystemTime},
 };
@@ -873,6 +873,43 @@ impl PeerManager {
         (dst_peers, is_exit_node)
     }
 
+    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
+        let mut is_exit_node = false;
+        let mut dst_peers = vec![];
+        let network_length = self
+            .global_ctx
+            .get_ipv6()
+            .map(|x| x.network_length())
+            .unwrap_or(64);
+        let ipv6_inet = cidr::Ipv6Inet::new(*ipv6_addr, network_length).unwrap();
+        if ipv6_addr.is_multicast() || *ipv6_addr == ipv6_inet.last_address() {
+            dst_peers.extend(
+                self.peers
+                    .list_routes()
+                    .await
+                    .iter()
+                    .map(|x| x.key().clone()),
+            );
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(&ipv6_addr).await {
+            dst_peers.push(peer_id);
+        } else {
+            // For IPv6, we'll need to implement exit node support later
+            // For now, just try to find any available peer for routing
+            if dst_peers.is_empty() {
+                dst_peers.extend(
+                    self.peers
+                        .list_routes()
+                        .await
+                        .iter()
+                        .map(|x| x.key().clone()),
+                );
+                is_exit_node = true;
+            }
+        }
+
+        (dst_peers, is_exit_node)
+    }
+
     pub async fn try_compress_and_encrypt(
         compress_algo: CompressorAlgo,
         encryptor: &Box<dyn Encryptor>,
@@ -915,6 +952,79 @@ impl PeerManager {
 
         if dst_peers.is_empty() {
             tracing::info!("no peer id for ipv4: {}", ipv4_addr);
+            return Ok(());
+        }
+
+        Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
+
+        let is_latency_first = self.global_ctx.get_flags().latency_first;
+        msg.mut_peer_manager_header()
+            .unwrap()
+            .set_latency_first(is_latency_first)
+            .set_exit_node(is_exit_node);
+
+        let mut errs: Vec<Error> = vec![];
+        let mut msg = Some(msg);
+        let total_dst_peers = dst_peers.len();
+        for i in 0..total_dst_peers {
+            let mut msg = if i == total_dst_peers - 1 {
+                msg.take().unwrap()
+            } else {
+                msg.clone().unwrap()
+            };
+
+            let peer_id = &dst_peers[i];
+            msg.mut_peer_manager_header()
+                .unwrap()
+                .to_peer_id
+                .set(*peer_id);
+
+            if let Err(e) =
+                Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, *peer_id)
+                    .await
+            {
+                errs.push(e);
+            }
+        }
+
+        tracing::trace!(?dst_peers, "do send_msg in peer manager done");
+
+        if errs.is_empty() {
+            Ok(())
+        } else {
+            tracing::error!(?errs, "send_msg has error");
+            Err(anyhow::anyhow!("send_msg has error: {:?}", errs).into())
+        }
+    }
+
+    pub async fn send_msg_ipv6(&self, mut msg: ZCPacket, ipv6_addr: Ipv6Addr) -> Result<(), Error> {
+        tracing::trace!(
+            "do send_msg in peer manager, msg: {:?}, ipv6_addr: {}",
+            msg,
+            ipv6_addr
+        );
+
+        msg.fill_peer_manager_hdr(
+            self.my_peer_id,
+            0,
+            tunnel::packet_def::PacketType::Data as u8,
+        );
+        self.run_nic_packet_process_pipeline(&mut msg).await;
+        let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
+        if cur_to_peer_id != 0 {
+            return Self::send_msg_internal(
+                &self.peers,
+                &self.foreign_network_client,
+                msg,
+                cur_to_peer_id,
+            )
+            .await;
+        }
+
+        let (dst_peers, is_exit_node) = self.get_msg_dst_peer_ipv6(&ipv6_addr).await;
+
+        if dst_peers.is_empty() {
+            tracing::info!("no peer id for ipv6: {}", ipv6_addr);
             return Ok(());
         }
 
