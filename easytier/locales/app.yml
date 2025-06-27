@@ -27,6 +27,9 @@ core_clap:
   ipv4:
     en: "ipv4 address of this vpn node, if empty, this node will only forward packets and no TUN device will be created"
     zh-CN: "此VPN节点的IPv4地址，如果为空，则此节点将仅转发数据包，不会创建TUN设备"
+  ipv6:
+    en: "ipv6 address of this vpn node, can be used together with ipv4 for dual-stack operation"
+    zh-CN: "此VPN节点的IPv6地址，可与IPv4一起使用以进行双栈操作"
   dhcp:
     en: "automatically determine and set IP address by Easytier, and the IP address starts from 10.0.0.1 by default. Warning, if there is an IP conflict in the network when using DHCP, the IP will be automatically changed."
     zh-CN: "由Easytier自动确定并设置IP地址，默认从10.0.0.1开始。警告：在使用DHCP时，如果网络中出现IP冲突，IP将自动更改。"

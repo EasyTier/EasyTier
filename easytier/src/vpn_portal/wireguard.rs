@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
 
@@ -128,7 +128,7 @@ impl WireGuardImpl {
             tracing::trace!(?i, "Received from wg client");
             let dst = i.get_destination();
             let _ = peer_mgr
-                .send_msg_ipv4(ZCPacket::new_with_payload(inner.as_ref()), dst)
+                .send_msg_by_ip(ZCPacket::new_with_payload(inner.as_ref()), IpAddr::V4(dst))
                 .await;
         }
 

@@ -7,7 +7,7 @@ mod windows;
 
 mod route;
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 use async_trait::async_trait;
 use tokio::process::Command;
@@ -41,10 +41,38 @@ pub trait IfConfiguerTrait: Send + Sync {
     ) -> Result<(), Error> {
         Ok(())
     }
+    async fn add_ipv6_route(
+        &self,
+        _name: &str,
+        _address: Ipv6Addr,
+        _cidr_prefix: u8,
+        _cost: Option<i32>,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+    async fn remove_ipv6_route(
+        &self,
+        _name: &str,
+        _address: Ipv6Addr,
+        _cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+    async fn add_ipv6_ip(
+        &self,
+        _name: &str,
+        _address: Ipv6Addr,
+        _cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
     async fn set_link_status(&self, _name: &str, _up: bool) -> Result<(), Error> {
         Ok(())
     }
     async fn remove_ip(&self, _name: &str, _ip: Option<Ipv4Addr>) -> Result<(), Error> {
+        Ok(())
+    }
+    async fn remove_ipv6(&self, _name: &str, _ip: Option<Ipv6Addr>) -> Result<(), Error> {
         Ok(())
     }
     async fn wait_interface_show(&self, _name: &str) -> Result<(), Error> {

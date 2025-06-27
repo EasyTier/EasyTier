@@ -34,7 +34,7 @@ pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>,
 
     let r = Arc::new(tokio::sync::Mutex::new(r));
     let mut virtual_nic = NicCtx::new(peer_mgr.get_global_ctx(), &peer_mgr, r);
-    virtual_nic.run(tun_ip).await.unwrap();
+    virtual_nic.run(Some(tun_ip), None).await.unwrap();
 
     (peer_mgr, virtual_nic)
 }

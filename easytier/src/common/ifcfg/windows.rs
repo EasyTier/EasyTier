@@ -169,6 +169,74 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         )
         .await
     }
+
+    async fn add_ipv6_ip(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        run_shell_cmd(
+            format!(
+                "netsh interface ipv6 add address {} {}/{}",
+                name, address, cidr_prefix
+            )
+            .as_str(),
+        )
+        .await
+    }
+
+    async fn remove_ipv6(&self, name: &str, ip: Option<std::net::Ipv6Addr>) -> Result<(), Error> {
+        if let Some(ip) = ip {
+            run_shell_cmd(
+                format!("netsh interface ipv6 delete address {} {}", name, ip).as_str(),
+            )
+            .await
+        } else {
+            // Remove all IPv6 addresses
+            run_shell_cmd(
+                format!("netsh interface ipv6 delete address {} all", name).as_str(),
+            )
+            .await
+        }
+    }
+
+    async fn add_ipv6_route(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        let cmd = if let Some(cost) = cost {
+            format!(
+                "netsh interface ipv6 add route {}/{} {} metric={}",
+                address, cidr_prefix, name, cost
+            )
+        } else {
+            format!(
+                "netsh interface ipv6 add route {}/{} {}",
+                address, cidr_prefix, name
+            )
+        };
+        run_shell_cmd(cmd.as_str()).await
+    }
+
+    async fn remove_ipv6_route(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        run_shell_cmd(
+            format!(
+                "netsh interface ipv6 delete route {}/{} {}",
+                address, cidr_prefix, name
+            )
+            .as_str(),
+        )
+        .await
+    }
 }
 
 pub struct RegistryManager;
