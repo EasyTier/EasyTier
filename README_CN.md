@@ -13,8 +13,8 @@
 一个简单、安全、去中心化的内网穿透 VPN 组网方案，使用 Rust 语言和 Tokio 框架实现。
 
 <p align="center">
-<img src="assets/image-6.png" width="300">
-<img src="assets/image-7.png" width="300">
+<img src="/assets/image-6.png" width="300">
+<img src="/assets/image-7.png" width="300">
 </p>
 
 ## 特点
@@ -166,7 +166,7 @@ nodea <-----> nodeb
     easytier-cli node
     ```
 
-    ![alt text](assets/image-10.png)
+    ![alt text](/assets/image-10.png)
 
 ---
 
@@ -356,5 +356,5 @@ EasyTier 根据 [Apache License 2.0](https://github.com/EasyTier/EasyTier/blob/m
 
 ## 赞助
 
-<img src="assets/image-8.png" width="300">
-<img src="assets/image-9.png" width="300">
+<img src="/assets/image-8.png" width="300">
+<img src="/assets/image-9.png" width="300">
