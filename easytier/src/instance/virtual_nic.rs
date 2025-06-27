@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     io,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     pin::Pin,
     sync::{Arc, Weak},
     task::{Context, Poll},
@@ -545,9 +545,9 @@ impl NicCtx {
             );
 
             // TODO: use zero-copy
-            let send_ret = mgr.send_msg_ipv4(ret, dst_ipv4).await;
+            let send_ret = mgr.send_msg_by_ip(ret, IpAddr::V4(dst_ipv4)).await;
             if send_ret.is_err() {
-                tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv4 failed")
+                tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
             }
         } else {
             tracing::warn!(?ret, "[USER_PACKET] not ipv4 packet");
@@ -566,10 +566,10 @@ impl NicCtx {
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
 
-            // TODO: use zero-copy and implement send_msg_ipv6
-            let send_ret = mgr.send_msg_ipv6(ret, dst_ipv6).await;
+            // TODO: use zero-copy
+            let send_ret = mgr.send_msg_by_ip(ret, IpAddr::V6(dst_ipv6)).await;
             if send_ret.is_err() {
-                tracing::trace!(?send_ret, "[USER_PACKET] send_msg_ipv6 failed")
+                tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
             }
         } else {
             tracing::warn!(?ret, "[USER_PACKET] not ipv6 packet");

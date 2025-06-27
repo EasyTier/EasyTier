@@ -557,7 +557,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
                     let dst = ipv4.get_destination();
                     let packet = ZCPacket::new_with_payload(&data);
-                    if let Err(e) = peer_mgr.send_msg_ipv4(packet, dst).await {
+                    if let Err(e) = peer_mgr.send_msg_by_ip(packet, IpAddr::V4(dst)).await {
                         tracing::error!("send to peer failed in smoltcp sender: {:?}", e);
                     }
                 }

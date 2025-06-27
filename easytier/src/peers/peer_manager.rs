@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak},
     time::{Instant, SystemTime},
 };
@@ -924,11 +924,11 @@ impl PeerManager {
         Ok(())
     }
 
-    pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+    pub async fn send_msg_by_ip(&self, mut msg: ZCPacket, ip_addr: IpAddr) -> Result<(), Error> {
         tracing::trace!(
-            "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
+            "do send_msg in peer manager, msg: {:?}, ip_addr: {}",
             msg,
-            ipv4_addr
+            ip_addr
         );
 
         msg.fill_peer_manager_hdr(
@@ -948,83 +948,13 @@ impl PeerManager {
             .await;
         }
 
-        let (dst_peers, is_exit_node) = self.get_msg_dst_peer(&ipv4_addr).await;
+        let (dst_peers, is_exit_node) = match ip_addr {
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer(&ipv4_addr).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr).await,
+        };
 
         if dst_peers.is_empty() {
-            tracing::info!("no peer id for ipv4: {}", ipv4_addr);
-            return Ok(());
-        }
-
-        Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
-
-        let is_latency_first = self.global_ctx.get_flags().latency_first;
-        msg.mut_peer_manager_header()
-            .unwrap()
-            .set_latency_first(is_latency_first)
-            .set_exit_node(is_exit_node);
-
-        let mut errs: Vec<Error> = vec![];
-        let mut msg = Some(msg);
-        let total_dst_peers = dst_peers.len();
-        for i in 0..total_dst_peers {
-            let mut msg = if i == total_dst_peers - 1 {
-                msg.take().unwrap()
-            } else {
-                msg.clone().unwrap()
-            };
-
-            let peer_id = &dst_peers[i];
-            msg.mut_peer_manager_header()
-                .unwrap()
-                .to_peer_id
-                .set(*peer_id);
-
-            if let Err(e) =
-                Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, *peer_id)
-                    .await
-            {
-                errs.push(e);
-            }
-        }
-
-        tracing::trace!(?dst_peers, "do send_msg in peer manager done");
-
-        if errs.is_empty() {
-            Ok(())
-        } else {
-            tracing::error!(?errs, "send_msg has error");
-            Err(anyhow::anyhow!("send_msg has error: {:?}", errs).into())
-        }
-    }
-
-    pub async fn send_msg_ipv6(&self, mut msg: ZCPacket, ipv6_addr: Ipv6Addr) -> Result<(), Error> {
-        tracing::trace!(
-            "do send_msg in peer manager, msg: {:?}, ipv6_addr: {}",
-            msg,
-            ipv6_addr
-        );
-
-        msg.fill_peer_manager_hdr(
-            self.my_peer_id,
-            0,
-            tunnel::packet_def::PacketType::Data as u8,
-        );
-        self.run_nic_packet_process_pipeline(&mut msg).await;
-        let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
-        if cur_to_peer_id != 0 {
-            return Self::send_msg_internal(
-                &self.peers,
-                &self.foreign_network_client,
-                msg,
-                cur_to_peer_id,
-            )
-            .await;
-        }
-
-        let (dst_peers, is_exit_node) = self.get_msg_dst_peer_ipv6(&ipv6_addr).await;
-
-        if dst_peers.is_empty() {
-            tracing::info!("no peer id for ipv6: {}", ipv6_addr);
+            tracing::info!("no peer id for ip: {}", ip_addr);
             return Ok(());
         }
 
