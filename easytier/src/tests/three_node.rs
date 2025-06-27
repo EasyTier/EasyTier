@@ -51,11 +51,12 @@ pub fn prepare_linux_namespaces() {
     add_ns_to_bridge("br_b", "net_d");
 }
 
-pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str) -> TomlConfigLoader {
+pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str, ipv6: &str) -> TomlConfigLoader {
     let config = TomlConfigLoader::default();
     config.set_inst_name(inst_name.to_owned());
     config.set_netns(ns.map(|s| s.to_owned()));
     config.set_ipv4(Some(ipv4.parse().unwrap()));
+    config.set_ipv6(Some(ipv6.parse().unwrap()));
     config.set_listeners(vec![
         "tcp://0.0.0.0:11010".parse().unwrap(),
         "udp://0.0.0.0:11010".parse().unwrap(),
@@ -82,16 +83,19 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
         "inst1",
         Some("net_a"),
         "10.144.144.1",
+        "fd00::1/64",
     )));
     let mut inst2 = Instance::new(cfg_cb(get_inst_config(
         "inst2",
         Some("net_b"),
         "10.144.144.2",
+        "fd00::2/64",
     )));
     let mut inst3 = Instance::new(cfg_cb(get_inst_config(
         "inst3",
         Some("net_c"),
         "10.144.144.3",
+        "fd00::3/64",
     )));
 
     inst1.run().await.unwrap();
@@ -232,6 +236,30 @@ async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize
     code.code().unwrap() == 0
 }
 
+async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let code = tokio::process::Command::new("ip")
+        .args(&[
+            "netns",
+            "exec",
+            from_netns,
+            "ping6",
+            "-c",
+            "1",
+            "-s",
+            payload_size.unwrap_or(56).to_string().as_str(),
+            "-W",
+            "1",
+            target_ip.to_string().as_str(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    code.code().unwrap() == 0
+}
+
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
@@ -250,9 +278,23 @@ pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] pr
         insts[0].get_peer_manager().list_routes().await,
     );
 
+    // Test IPv4 connectivity
     wait_for_condition(
         || async { ping_test("net_c", "10.144.144.1", None).await },
         Duration::from_secs(5000),
+    )
+    .await;
+
+    // Test IPv6 connectivity
+    wait_for_condition(
+        || async { ping6_test("net_c", "fd00::1", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping6_test("net_a", "fd00::3", None).await },
+        Duration::from_secs(5),
     )
     .await;
 
@@ -562,7 +604,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
     };
 
     let insts = init_three_node(proto).await;
-    let mut inst4 = Instance::new(get_inst_config("inst4", Some("net_d"), "10.144.144.4"));
+    let mut inst4 = Instance::new(get_inst_config("inst4", Some("net_d"), "10.144.144.4", "fd00::4/64"));
     if proto == "tcp" {
         inst4
             .get_conn_manager()
@@ -726,13 +768,13 @@ pub async fn udp_broadcast_test() {
 pub async fn foreign_network_forward_nic_data() {
     prepare_linux_namespaces();
 
-    let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
+    let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     center_node_config
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst = Instance::new(center_node_config);
 
-    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1"));
-    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2"));
+    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1", "fd00:1::1/64"));
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2", "fd00:1::2/64"));
 
     center_inst.run().await.unwrap();
     inst1.run().await.unwrap();
@@ -940,21 +982,21 @@ pub async fn foreign_network_functional_cluster() {
     crate::set_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, 1);
     prepare_linux_namespaces();
 
-    let center_node_config1 = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
+    let center_node_config1 = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     center_node_config1
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst1 = Instance::new(center_node_config1);
 
-    let center_node_config2 = get_inst_config("inst2", Some("net_b"), "10.144.144.2");
+    let center_node_config2 = get_inst_config("inst2", Some("net_b"), "10.144.144.2", "fd00::2/64");
     center_node_config2
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst2 = Instance::new(center_node_config2);
 
-    let inst1_config = get_inst_config("inst1", Some("net_c"), "10.144.145.1");
+    let inst1_config = get_inst_config("inst1", Some("net_c"), "10.144.145.1", "fd00:2::1/64");
     inst1_config.set_listeners(vec![]);
     let mut inst1 = Instance::new(inst1_config);
 
-    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_d"), "10.144.145.2"));
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_d"), "10.144.145.2", "fd00:2::2/64"));
 
     center_inst1.run().await.unwrap();
     center_inst2.run().await.unwrap();
@@ -1011,18 +1053,18 @@ pub async fn foreign_network_functional_cluster() {
 pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     prepare_linux_namespaces();
 
-    let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1");
+    let center_node_config = get_inst_config("inst1", Some("net_a"), "10.144.144.1", "fd00::1/64");
     if is_foreign {
         center_node_config
             .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     }
     let mut center_inst = Instance::new(center_node_config);
 
-    let inst1_config = get_inst_config("inst1", Some("net_b"), "10.144.145.1");
+    let inst1_config = get_inst_config("inst1", Some("net_b"), "10.144.145.1", "fd00:1::1/64");
     inst1_config.set_listeners(vec![]);
     let mut inst1 = Instance::new(inst1_config);
 
-    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2"));
+    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2", "fd00:1::2/64"));
 
     center_inst.run().await.unwrap();
     inst1.run().await.unwrap();
