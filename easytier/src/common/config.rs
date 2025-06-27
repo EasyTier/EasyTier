@@ -427,13 +427,6 @@ impl ConfigLoader for TomlConfigLoader {
             .as_ref()
             .map(|s| s.parse().ok())
             .flatten()
-            .map(|c: cidr::Ipv6Inet| {
-                if c.network_length() == 128 {
-                    cidr::Ipv6Inet::new(c.address(), 64).unwrap()
-                } else {
-                    c
-                }
-            })
     }
 
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
