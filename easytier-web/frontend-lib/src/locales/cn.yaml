@@ -45,7 +45,7 @@ logging_copy_dir: 复制日志路径
 disable_auto_launch: 关闭开机自启
 enable_auto_launch: 开启开机自启
 exit: 退出
-chips_placeholder: 例如： {0}, 按回车添加
+chips_placeholder: 例如： {0}, 输入后在下拉框中选择生效
 hostname_placeholder: '留空默认为主机名: {0}'
 dev_name_placeholder: 注意：当多个网络同时使用相同的TUN接口名称时，将会在设置TUN的IP时产生冲突，留空以自动生成随机名称
 off_text: 点击关闭

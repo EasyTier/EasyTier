@@ -46,7 +46,7 @@ disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 exit: Exit
 use_latency_first: Latency First Mode
-chips_placeholder: 'e.g: {0}, press Enter to add'
+chips_placeholder: 'e.g: {0}, select from the dropdown after input'
 hostname_placeholder: 'Leave blank and default to host name: {0}'
 dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
 off_text: Press to disable
