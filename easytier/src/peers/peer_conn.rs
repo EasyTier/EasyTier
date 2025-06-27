@@ -471,6 +471,7 @@ impl PeerConn {
             is_client: self.is_client.unwrap_or_default(),
             network_name: info.network_name.clone(),
             is_closed: self.close_event_notifier.is_closed(),
+            is_hole_punched: self.is_hole_punched,
         }
     }
 
