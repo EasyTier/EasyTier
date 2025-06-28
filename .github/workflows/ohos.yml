@@ -61,8 +61,8 @@ jobs:
           echo "OHOS_SDK_PATH=/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
           echo "OHOS_BASE_SDK_HOME=/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
           echo "OHOS_NDK_HOME=/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
-          echo "OHOS_SDK_NATIVE=/usr/local/ohos-sdk/linux/native"
-          echo "TARGET_ARCH="aarch64-linux-ohos" >> $GITHUB_ENV
+          echo "OHOS_SDK_NATIVE=/usr/local/ohos-sdk/linux/native" >> $GITHUB_ENV
+          echo "TARGET_ARCH=aarch64-linux-ohos" >> $GITHUB_ENV
           echo "OHOS_TOOLCHAIN_DIR=${OHOS_SDK_PATH}/native/llvm" >> $GITHUB_ENV
           echo "OHOS_SYSROOT=${OHOS_SDK_PATH}/native/sysroot" >> $GITHUB_ENV
           echo "CC=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
