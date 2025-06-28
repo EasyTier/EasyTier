@@ -42,15 +42,15 @@ jobs:
             -O sdk-full.tar.gz
 
           echo "Extracting native.tar.gz..."
-          tar -xzf sdk-full.tar.gz linux/native-linux-x64-5.1.0.107-Release.zip
+          tar -xzf sdk-full.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
 
           mkdir -p native
-          tar -xzf linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
+          tar -xzf ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
 
           ls -la native/llvm/bin/
           [ -f "native/llvm/bin/clang" ] || { echo "❌ clang不存在"; exit 1; }
 
-          rm -rf sdk-full.tar.gz linux/
+          rm -rf sdk-full.tar.gz ohos-sdk/
           echo "清理后目录结构："
           ls -la
 
