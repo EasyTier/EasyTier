@@ -812,6 +812,7 @@ impl UdpTunnelConnector {
         } else {
             UdpSocket::bind("[::]:0").await?
         };
+
         return self.try_connect_with_socket(Arc::new(socket), addr).await;
     }
 
