@@ -92,7 +92,8 @@ jobs:
         run: |
           echo "Checking toolchain at $HOME/ohos-sdk/linux/native/llvm/bin/"
           ls -la $HOME/ohos-sdk/linux/native
-          tree -a -C $HOME/ohos-sdk/linux
+          ls -la $HOME/ohos-sdk/linux/native/llvm
+          ls -la $HOME/ohos-sdk/linux/native/llvm/bin
           # 确认关键文件存在
           [ -f "$HOME/ohos-sdk/linux/native/llvm/bin/clang" ] || {
             echo "❌ Clang not found!";
