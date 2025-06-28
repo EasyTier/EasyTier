@@ -31,7 +31,7 @@ jobs:
           sudo apt-get clean
 
       - name: Download and extract native SDK
-        working-directory: $HOME
+        working-directory: /home/runner
         run: |
           wget -q \
             https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz
