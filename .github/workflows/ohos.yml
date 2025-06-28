@@ -52,7 +52,7 @@ jobs:
         run: |
           echo "Current directory: $(pwd)"
           ls -la .
-      # 配置交叉编译环境
+
       - name: Setup build environment
         env:
           OHOS_SDK_PATH: /usr/local/ohos-sdk/linux
@@ -87,7 +87,28 @@ jobs:
             "$@"
           EOF
           sudo chmod +x /usr/local/ohos-sdk/linux/native/llvm/aarch64-unknown-linux-ohos-clang.sh
+
+      - name: Verify OpenHarmony toolchain
+        run: |
+          echo "Checking toolchain at /usr/local/ohos-sdk/linux/native/llvm/bin/"
+          ls -la /usr/local/ohos-sdk/linux/native/llvm/bin/
           
+          # 确认关键文件存在
+          [ -f "/usr/local/ohos-sdk/linux/native/llvm/bin/clang" ] || {
+            echo "❌ Clang not found!";
+            exit 1;
+          }
+          [ -f "/usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang" ] || {
+            echo "⚠️  Cross-compiler not found, creating wrapper...";
+            sudo tee /usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang > /dev/null <<'EOF'
+            #!/bin/sh
+            exec /usr/local/ohos-sdk/linux/native/llvm/bin/clang \
+              -target aarch64-linux-ohos \
+              --sysroot=/usr/local/ohos-sdk/linux/native/sysroot \
+              "$@"
+            EOF
+            sudo chmod +x /usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang
+          }
 
       - name: Build
         working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
