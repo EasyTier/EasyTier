@@ -24,28 +24,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
-            curl \
             wget \
             unzip \
             git \
             pkg-config \
-            clang
           sudo apt-get clean
 
       - name: Download and extract native SDK
+        working-directory: $HOME
         run: |
-          wget -q --show-progress \
+          wget -q \
             https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz
-
           echo "Extracting native..."
           tar -xzf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
-
           mkdir -p native
           tar -xzf ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
-
           ls -la native/llvm/bin/
           [ -f "native/llvm/bin/clang" ] || { echo "❌ clang不存在"; exit 1; }
-
           rm -rf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/
 
       - name: Download and Extract Custom SDK
