@@ -37,82 +37,61 @@ jobs:
           wget -q \
             https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz -O sdk.tar.gz
           echo "Extracting native..."
-          tar -xzvf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
-          unzip -q ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d .
-          ls -la native/llvm/bin/
-          [ -f "native/llvm/bin/clang" ] || { echo "❌ clang不存在"; exit 1; }
+          mkdir sdk
+          tar -xzf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
+          tar -xzf sdk.tar.gz ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip
+          unzip --quiet ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d sdk
+          unzip --quiet ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip -d sdk
+          ls -la sdk/native/llvm/bin/
           rm -rf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/
 
       - name: Download and Extract Custom SDK
         run: |
           wget https://github.com/FrankHan052176/Easytier-OHOS-sdk/releases/download/v1/ohos-sdk.zip -O /tmp/ohos-sdk.zip
           sudo unzip -o /tmp/ohos-sdk.zip -d /tmp/custom-sdk
-          sudo cp -rf /tmp/custom-sdk/linux/native/* $OHOS_SDK_NATIVE
-          echo "Custom SDK files deployed to $HOME/ohos-sdk/linux/native"
-
-      - name: Verify SDK
-        run: |
-          ls -la $OHOS_SDK_NATIVE/sysroot/usr
+          sudo cp -rf /tmp/custom-sdk/linux/native/* $HOME/sdk/native
+          echo "Custom SDK files deployed to $HOME/sdk/native"
+          ls -a $HOME/sdk/native
 
       - name: Setup build environment
         env:
           OHOS_SDK_PATH: $HOME/ohos-sdk/linux
           TARGET_ARCH: aarch64-linux-ohos
         run: |
-          echo "OHOS_SDK_PATH=$HOME/ohos-sdk/linux" >> $GITHUB_ENV
-          echo "OHOS_BASE_SDK_HOME=$HOME/ohos-sdk/linux" >> $GITHUB_ENV
-          echo "OHOS_NDK_HOME=$HOME/ohos-sdk/linux" >> $GITHUB_ENV
-          echo "OHOS_SDK_NATIVE=$HOME/ohos-sdk/linux/native" >> $GITHUB_ENV
+          echo "OHOS_SDK_PATH=$HOME/sdk" >> $GITHUB_ENV
+          echo "OHOS_NDK_HOME=$HOME/sdk" >> $GITHUB_ENV
           echo "TARGET_ARCH=aarch64-linux-ohos" >> $GITHUB_ENV
-          echo "OHOS_TOOLCHAIN_DIR=$HOME/ohos-sdk/linux/native/llvm" >> $GITHUB_ENV
-          echo "OHOS_SYSROOT=$HOME/ohos-sdk/linux/native/sysroot" >> $GITHUB_ENV
-          echo "CC_aarch64-unknown-linux-ohos=$HOME/ohos-sdk/linux/native/llvm/bin/clang" >> $GITHUB_ENV
-          echo "CC=$HOME/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
-          echo "CXX_aarch64-unknown-linux-ohos=$HOME/ohos-sdk/linux/native/llvm/bin/clang++" >> $GITHUB_ENV
-          echo "CXX=$HOME/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang++" >> $GITHUB_ENV
-          echo "AR=$HOME/ohos-sdk/linux/native/llvm/bin/llvm-ar" >> $GITHUB_ENV
-          echo "LD=$HOME/ohos-sdk/linux/native/llvm/bin/ld.lld" >> $GITHUB_ENV
-          echo "CFLAGS=-fPIC -D__MUSL__=1 -march=armv8-a --target=aarch64-linux-ohos -Wno-error --sysroot=$HOME/ohos-sdk/linux/native/sysroot -I$HOME/ohos-sdk/linux/native/sysroot/usr/include/aarch64-linux-ohos" >> $GITHUB_ENV
-          echo "LDFLAGS=--sysroot=$HOME/ohos-sdk/linux/native/sysroot -L$HOME/ohos-sdk/linux/native/sysroot/usr/lib/aarch64-linux-ohos -fuse-ld=$HOME/ohos-sdk/linux/native/llvm/bin/ld.lld" >> $GITHUB_ENV
-          echo "PATH=$HOME/ohos-sdk/linux/native/llvm/bin:/home/runner/work/_actions/openharmony-rs/setup-ohos-sdk/v0.2:/bin:/home/runner/work/_actions/openharmony-rs/setup-ohos-sdk/v0.2:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:$HOME/.ghcup/bin:/home/runner/.dotnet/tools:$HOME/sbin:$HOME/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/games:/snap/bin" >> $GITHUB_ENV
+          echo "OHOS_TOOLCHAIN_DIR=$HOME/sdk/native/llvm" >> $GITHUB_ENV
+          echo "OHOS_SYSROOT=$HOME/sdk/native/sysroot" >> $GITHUB_ENV
+          echo "CC_aarch64-unknown-linux-ohos=$HOME/sdk/native/llvm/bin/clang" >> $GITHUB_ENV
+          echo "CC=$HOME/sdk/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64-unknown-linux-ohos=$HOME/sdk/native/llvm/bin/clang++" >> $GITHUB_ENV
+          echo "CXX=$HOME/sdk/native/llvm/bin/aarch64-unknown-linux-ohos-clang++" >> $GITHUB_ENV
+          echo "AR=$HOME/sdk/native/llvm/bin/llvm-ar" >> $GITHUB_ENV
+          echo "LD=$HOME/sdk/native/llvm/bin/ld.lld" >> $GITHUB_ENV
+          echo "CFLAGS=-fPIC -D__MUSL__=1 -march=armv8-a --target=aarch64-linux-ohos -Wno-error --sysroot=$HOME/sdk/native/sysroot -I$HOME/sdk/native/sysroot/usr/include/aarch64-linux-ohos" >> $GITHUB_ENV
+          echo "LDFLAGS=--sysroot=$HOME/sdk/native/sysroot -L$HOME/sdk/native/sysroot/usr/lib/aarch64-linux-ohos -fuse-ld=$HOME/sdk/native/llvm/bin/ld.lld" >> $GITHUB_ENV
+          echo "PATH=$HOME/sdk/native/llvm/bin:/home/runner/work/_actions/openharmony-rs/setup-ohos-sdk/v0.2:/bin:/home/runner/work/_actions/openharmony-rs/setup-ohos-sdk/v0.2:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:$HOME/.ghcup/bin:/home/runner/.dotnet/tools:$HOME/sbin:$HOME/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:$HOME/games:/snap/bin" >> $GITHUB_ENV
 
       - name: Create clang wrapper script
         run: |
-          sudo mkdir -p $OHOS_SDK_NATIVE/llvm
-          sudo tee $OHOS_SDK_NATIVE/llvm/aarch64-unknown-linux-ohos-clang.sh > /dev/null <<'EOF'
+          sudo mkdir -p $HOME/sdk/native/llvm
+          sudo tee $HOME/sdk/native/llvm/aarch64-unknown-linux-ohos-clang.sh > /dev/null <<'EOF'
           #!/bin/sh
-          exec $OHOS_SDK_NATIVE/llvm/bin/clang \
+          exec $HOME/sdk/native/llvm/bin/clang \
             -target aarch64-linux-ohos \
-            --sysroot=$OHOS_SDK_NATIVE/sysroot \
+            --sysroot=$HOME/sdk/native/sysroot \
             -D__MUSL__ \
             "$@"
           EOF
-          sudo chmod +x $OHOS_SDK_NATIVE/llvm/aarch64-unknown-linux-ohos-clang.sh
-
-      - name: Verify OpenHarmony toolchain
-        run: |
-          echo "Checking toolchain at $OHOS_SDK_NATIVE/llvm/bin/"
-          echo "$OHOS_SDK_NATIVE"
-          ls -la $OHOS_NDK_HOME
-          ls -la $OHOS_SDK_NATIVE
-          ls -la $OHOS_SDK_NATIVE/llvm
-          ls -la $OHOS_SDK_NATIVE/llvm/bin
-          # 确认关键文件存在
-          [ -f "$OHOS_SDK_NATIVE/llvm/bin/clang" ] || {
-            echo "❌ Clang not found!";
-            exit 1;
-          }
-          [ -f "$OHOS_SDK_NATIVE/llvm/bin/aarch64-unknown-linux-ohos-clang" ] || {
-            echo "⚠️  Cross-compiler not found, creating wrapper...";
-            exit 1;
-          }
+          sudo chmod +x $HOME/sdk/native/llvm/aarch64-unknown-linux-ohos-clang.sh
 
       - name: Build
-        working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
+        working-directory: ./easytier-contrib/easytier-ohrs
         run: |
           sudo apt-get install -y llvm clang lldb lld
           sudo apt-get install -y protobuf-compiler
-          bash ${{ github.workspace }}/.github/workflows/install_rust.sh
+          bash ./.github/workflows/install_rust.sh
           cargo install ohrs
           rustup target add aarch64-unknown-linux-ohos
           ohrs doctor
