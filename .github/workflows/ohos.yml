@@ -65,9 +65,9 @@ jobs:
           echo "TARGET_ARCH=aarch64-linux-ohos" >> $GITHUB_ENV
           echo "OHOS_TOOLCHAIN_DIR=${OHOS_SDK_PATH}/native/llvm" >> $GITHUB_ENV
           echo "OHOS_SYSROOT=${OHOS_SDK_PATH}/native/sysroot" >> $GITHUB_ENV
-          echo "CC_aarch64-unknown-linux-ohos=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
+          echo "CC_aarch64-unknown-linux-ohos=/usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
           echo "CC=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
-          echo "CXX_aarch64-unknown-linux-ohos=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang++" >> $GITHUB_ENV
+          echo "CXX_aarch64-unknown-linux-ohos=/usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang++" >> $GITHUB_ENV
           echo "CXX=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang++" >> $GITHUB_ENV
           echo "AR=${OHOS_TOOLCHAIN_DIR}/bin/llvm-ar" >> $GITHUB_ENV
           echo "LD=${OHOS_TOOLCHAIN_DIR}/bin/ld.lld" >> $GITHUB_ENV
