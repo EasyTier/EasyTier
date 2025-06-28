@@ -148,7 +148,6 @@ impl TcpTunnelConnector {
         }
     }
 
-
     async fn connect_with_default_bind(
         &mut self,
         addr: SocketAddr,
