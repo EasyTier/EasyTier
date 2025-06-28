@@ -23,7 +23,7 @@ jobs:
         uses: openharmony-rs/setup-ohos-sdk@v0.2
         with:
           version: "5.1.0"
-          components: "all"
+          components: "native"
 
       - name: Prepare SDK Directory
         run: |
@@ -34,12 +34,12 @@ jobs:
         run: |
           wget https://github.com/FrankHan052176/Easytier-OHOS-sdk/releases/download/v1/ohos-sdk.zip -O /tmp/ohos-sdk.zip
           sudo unzip -o /tmp/ohos-sdk.zip -d /tmp/custom-sdk
-          sudo cp -rf /tmp/custom-sdk/linux/native/* $HOME/ohos-sdk/linux/native/
+          sudo cp -rf /tmp/custom-sdk/linux/native/* $OHOS_SDK_NATIVE
           echo "Custom SDK files deployed to $HOME/ohos-sdk/linux/native"
 
       - name: Verify SDK
         run: |
-          ls -la $HOME/ohos-sdk/linux/native/sysroot/usr
+          ls -la $OHOS_SDK_NATIVE/sysroot/usr
 
       - name: Setup build environment
         env:
@@ -65,29 +65,30 @@ jobs:
 
       - name: Create clang wrapper script
         run: |
-          sudo mkdir -p $HOME/ohos-sdk/linux/native/llvm
-          sudo tee $HOME/ohos-sdk/linux/native/llvm/aarch64-unknown-linux-ohos-clang.sh > /dev/null <<'EOF'
+          sudo mkdir -p $OHOS_SDK_NATIVE/llvm
+          sudo tee $OHOS_SDK_NATIVE/llvm/aarch64-unknown-linux-ohos-clang.sh > /dev/null <<'EOF'
           #!/bin/sh
-          exec $HOME/ohos-sdk/linux/native/llvm/bin/clang \
+          exec $OHOS_SDK_NATIVE/llvm/bin/clang \
             -target aarch64-linux-ohos \
-            --sysroot=$HOME/ohos-sdk/linux/native/sysroot \
+            --sysroot=$OHOS_SDK_NATIVE/sysroot \
             -D__MUSL__ \
             "$@"
           EOF
-          sudo chmod +x $HOME/ohos-sdk/linux/native/llvm/aarch64-unknown-linux-ohos-clang.sh
+          sudo chmod +x $OHOS_SDK_NATIVE/llvm/aarch64-unknown-linux-ohos-clang.sh
 
       - name: Verify OpenHarmony toolchain
         run: |
-          echo "Checking toolchain at $HOME/ohos-sdk/linux/native/llvm/bin/"
-          ls -la $HOME/ohos-sdk/linux/native
-          ls -la $HOME/ohos-sdk/linux/native/llvm
-          ls -la $HOME/ohos-sdk/linux/native/llvm/bin
+          echo "Checking toolchain at $OHOS_SDK_NATIVE/llvm/bin/"
+          echo "$OHOS_SDK_NATIVE"
+          ls -la $OHOS_SDK_NATIVE
+          ls -la $OHOS_SDK_NATIVE/llvm
+          ls -la $OHOS_SDK_NATIVE/llvm/bin
           # 确认关键文件存在
-          [ -f "$HOME/ohos-sdk/linux/native/llvm/bin/clang" ] || {
+          [ -f "$OHOS_SDK_NATIVE/llvm/bin/clang" ] || {
             echo "❌ Clang not found!";
             exit 1;
           }
-          [ -f "$HOME/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang" ] || {
+          [ -f "$OHOS_SDK_NATIVE/llvm/bin/aarch64-unknown-linux-ohos-clang" ] || {
             echo "⚠️  Cross-compiler not found, creating wrapper...";
             exit 1;
           }
