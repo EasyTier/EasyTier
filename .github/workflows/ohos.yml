@@ -63,9 +63,9 @@ jobs:
           ls -la /usr/local/ohos-sdk/linux/native/sysroot/usr
 
       - name: Run env.sh
-        working-directory: easytier-contrib/easytier-ohrs
+        working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
           chmod +x env.sh
-          bash ./.github/workflows/install_rust.sh
+          bash ${{ github.workspace }}/.github/workflows/install_rust.sh
           source env.sh
           ohrs build --release --arch aarch
