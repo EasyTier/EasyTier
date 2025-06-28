@@ -1,9 +1,8 @@
 #!/bin/bash
 # 请修改为您的实际 SDK 路径
-export OHOS_SDK_PATH="/usr/local/ohos-sdk/linux"
-export OHOS_TOOLCHAIN_DIR="${OHOS_SDK_PATH}/native/llvm"
+export OHOS_TOOLCHAIN_DIR="${OHOS_NDK_HOME}/native/llvm"
 export TARGET_ARCH="aarch64-linux-ohos"
-export OHOS_SYSROOT="${OHOS_SDK_PATH}/native/sysroot"
+export OHOS_SYSROOT="${OHOS_NDK_HOME}/native/sysroot"
 export CC="${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang"
 export CXX="${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang++"
 export AS="${OHOS_TOOLCHAIN_DIR}/bin/llvm-as"
@@ -25,7 +24,7 @@ export BUILD_TRIPLET="$(dpkg-architecture -qDEB_BUILD_GNU_TYPE)"
 export PATH="${OHOS_TOOLCHAIN_DIR}/bin:${PATH}"
 
 echo "OpenHarmonyOS 环境变量已设置:"
-echo "OHOS_SDK_PATH: ${OHOS_SDK_PATH}"
+echo "OHOS_SDK_PATH: ${OHOS_NDK_HOME}"
 echo "OHOS_TOOLCHAIN_DIR: ${OHOS_TOOLCHAIN_DIR}"
 echo "OHOS_SYSROOT: ${OHOS_SYSROOT}"
 echo "PKG_CONFIG_PATH: ${PKG_CONFIG_PATH}"
