@@ -60,5 +60,6 @@ jobs:
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
           source env.sh
           cargo install ohrs
+          rustup target add aarch64-unknown-linux-ohos
           ohrs doctor
           ohrs build --release --arch aarch
