@@ -15,25 +15,10 @@ defaults:
     shell: bash
 
 jobs:
-  pre_job:
-    # continue-on-error: true # Uncomment once integration is finished
-    runs-on: ubuntu-latest
-    # Map a step output to a job output
-    outputs:
-      # do not skip push on branch starts with releases/
-      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
-    steps:
-      - id: skip_check
-        uses: fkirc/skip-duplicate-actions@v5
-        with:
-          # All of these options are optional, so you can remove them if you are happy with the defaults
-          concurrent_skipping: 'same_content_newer'
-          skip_after_successful_duplicate: 'true'
-          cancel_others: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/workflows/install_rust.sh"]'
   setup-sdk:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Setup OpenHarmony SDK (5.1.0 Native only)
         uses: openharmony-rs/setup-ohos-sdk@v0.2
         with:
@@ -63,13 +48,13 @@ jobs:
           ls -la /usr/local/ohos-sdk/linux/native/sysroot/usr
 
       - name: Debug Paths
-        working-directory: ${{ github.workspace }}/..
+        working-directory: ${{ github.workspace }}
         run: |
           echo "Current directory: $(pwd)"
           ls -la .
 
       - name: Run env.sh
-        working-directory: ${{ github.workspace }}/../easytier-contrib/easytier-ohrs
+        working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
           chmod +x env.sh
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
