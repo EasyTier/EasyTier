@@ -80,6 +80,7 @@ jobs:
         run: |
           echo "Checking toolchain at $OHOS_SDK_NATIVE/llvm/bin/"
           echo "$OHOS_SDK_NATIVE"
+          ls -la $OHOS_NDK_HOME
           ls -la $OHOS_SDK_NATIVE
           ls -la $OHOS_SDK_NATIVE/llvm
           ls -la $OHOS_SDK_NATIVE/llvm/bin
