@@ -1,4 +1,4 @@
-name: Main
+name: OpenHarmony
 
 on:
   push:
@@ -39,8 +39,15 @@ jobs:
         with:
           version: "5.1.0"
           components: "native"
-          install-dir: "/usr/local/ohos-sdk"
         
+      - name: Move Native SDK to /usr/local/ohos-sdk/linux/native
+        run: |
+          echo "Detected Native SDK path: ${{ steps.setup-sdk.outputs.ohos_sdk_native }}"
+          sudo mkdir -p /usr/local/ohos-sdk/linux
+          sudo cp -r "${{ steps.setup-sdk.outputs.ohos_sdk_native }}" /usr/local/ohos-sdk/linux/native
+          echo "Native SDK moved to /usr/local/ohos-sdk/linux/native"
+
       - name: Verify SDK installation
         run: |
-          ls -la /usr/local/ohos-sdk
+          ls -la /usr/local/ohos-sdk/linux/native
+          echo "Native SDK path: /usr/local/ohos-sdk/linux/native"
