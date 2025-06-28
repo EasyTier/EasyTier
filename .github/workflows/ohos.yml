@@ -40,8 +40,8 @@ jobs:
           mkdir sdk
           tar -xzf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
           tar -xzf sdk.tar.gz ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip
-          unzip --quiet ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d sdk
-          unzip --quiet ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip -d sdk
+          unzip -qq ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d sdk
+          unzip -qq ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip -d sdk
           ls -la sdk/native/llvm/bin/
           rm -rf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/
 
