@@ -31,12 +31,13 @@ jobs:
           sudo apt-get clean
 
       - name: Download and extract native SDK
-        working-directory: /home/runner
+        working-directory: ../../../
         run: |
+          echo $PWD
           wget -q \
-            https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz
+            https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz -O sdk.tar.gz
           echo "Extracting native..."
-          tar -xzf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
+          tar -xzvf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
           mkdir -p native
           tar -xzf ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
           ls -la native/llvm/bin/
