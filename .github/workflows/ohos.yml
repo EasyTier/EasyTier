@@ -23,7 +23,7 @@ jobs:
         uses: openharmony-rs/setup-ohos-sdk@v0.2
         with:
           version: "5.1.0"
-          components: "native"
+          components: "all"
 
       - name: Prepare SDK Directory
         run: |
