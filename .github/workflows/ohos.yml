@@ -92,6 +92,7 @@ jobs:
       - name: Build
         working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
+          sudo apt-get install -y llvm clang lldb lld
           sudo apt-get install -y protobuf-compiler
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
           cargo install ohrs
