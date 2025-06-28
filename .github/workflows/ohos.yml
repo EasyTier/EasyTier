@@ -34,8 +34,8 @@ jobs:
 
       - name: Download and extract native SDK
         run: |
-          mkdir -p /usr/local/ohos-sdk/linux
-          cd /usr/local/ohos-sdk/linux
+          mkdir -p $HOME/ohos-sdk/linux
+          cd $HOME/ohos-sdk/linux
 
           wget -q --show-progress \
             https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz \
