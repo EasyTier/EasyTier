@@ -75,6 +75,20 @@ jobs:
           echo "LDFLAGS=--sysroot=/usr/local/ohos-sdk/linux/native/sysroot -L/usr/local/ohos-sdk/linux/native/sysroot/usr/lib/aarch64-linux-ohos -fuse-ld=/usr/local/ohos-sdk/linux/native/llvm/bin/ld.lld" >> $GITHUB_ENV
           echo "PATH=/usr/local/ohos-sdk/linux/native/llvm/bin:/home/runner/work/_actions/openharmony-rs/setup-ohos-sdk/v0.2:/bin:/home/runner/work/_actions/openharmony-rs/setup-ohos-sdk/v0.2:/snap/bin:/home/runner/.local/bin:/opt/pipx_bin:/home/runner/.cargo/bin:/home/runner/.config/composer/vendor/bin:/usr/local/.ghcup/bin:/home/runner/.dotnet/tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin" >> $GITHUB_ENV
 
+      - name: Create clang wrapper script
+        run: |
+          sudo mkdir -p /usr/local/ohos-sdk/linux/native/llvm
+          sudo tee /usr/local/ohos-sdk/linux/native/llvm/aarch64-unknown-linux-ohos-clang.sh > /dev/null <<'EOF'
+          #!/bin/sh
+          exec /usr/local/ohos-sdk/linux/native/llvm/bin/clang \
+            -target aarch64-linux-ohos \
+            --sysroot=/usr/local/ohos-sdk/linux/native/sysroot \
+            -D__MUSL__ \
+            "$@"
+          EOF
+          sudo chmod +x /usr/local/ohos-sdk/linux/native/llvm/aarch64-unknown-linux-ohos-clang.sh
+          
+
       - name: Build
         working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
