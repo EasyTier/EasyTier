@@ -42,12 +42,16 @@ jobs:
         
       - name: Move Native SDK to /usr/local/ohos-sdk/linux/native
         run: |
-          echo "Detected Native SDK path: ${{ steps.setup-sdk.outputs.ohos_sdk_native }}"
+          echo "Detected Native SDK path: $OHOS_SDK_NATIVE"
           sudo mkdir -p /usr/local/ohos-sdk/linux
-          sudo cp -r "${{ steps.setup-sdk.outputs.ohos_sdk_native }}" /usr/local/ohos-sdk/linux/native
+          sudo cp -r "$OHOS_SDK_NATIVE" /usr/local/ohos-sdk/linux/native
           echo "Native SDK moved to /usr/local/ohos-sdk/linux/native"
+
+      - name: Update OHOS_SDK_NATIVE to new location
+        run: |
+          echo "OHOS_SDK_NATIVE=/usr/local/ohos-sdk/linux/native" >> $GITHUB_ENV
 
       - name: Verify SDK installation
         run: |
           ls -la /usr/local/ohos-sdk/linux/native
-          echo "Native SDK path: /usr/local/ohos-sdk/linux/native"
+          echo "Final Native SDK path: $OHOS_SDK_NATIVE"
