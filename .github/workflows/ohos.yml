@@ -91,8 +91,8 @@ jobs:
       - name: Verify OpenHarmony toolchain
         run: |
           echo "Checking toolchain at /usr/local/ohos-sdk/linux/native/llvm/bin/"
-          ls -la /usr/local/ohos-sdk/linux/native/llvm/bin/
-          
+          ls -la /usr/local/ohos-sdk/linux/native
+          tree -a -C /usr/local/ohos-sdk/linux
           # 确认关键文件存在
           [ -f "/usr/local/ohos-sdk/linux/native/llvm/bin/clang" ] || {
             echo "❌ Clang not found!";
@@ -100,14 +100,7 @@ jobs:
           }
           [ -f "/usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang" ] || {
             echo "⚠️  Cross-compiler not found, creating wrapper...";
-            sudo tee /usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang > /dev/null <<'EOF'
-            #!/bin/sh
-            exec /usr/local/ohos-sdk/linux/native/llvm/bin/clang \
-              -target aarch64-linux-ohos \
-              --sysroot=/usr/local/ohos-sdk/linux/native/sysroot \
-              "$@"
-            EOF
-            sudo chmod +x /usr/local/ohos-sdk/linux/native/llvm/bin/aarch64-unknown-linux-ohos-clang
+            exit 1;
           }
 
       - name: Build
