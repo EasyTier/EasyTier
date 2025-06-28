@@ -52,41 +52,38 @@ jobs:
         run: |
           echo "Current directory: $(pwd)"
           ls -la .
-
-      - name: Build
+      # 配置交叉编译环境
+      - name: Setup build environment
         env:
           OHOS_SDK_PATH: /usr/local/ohos-sdk/linux
-          OHOS_TOOLCHAIN_DIR: ${{ env.OHOS_SDK_PATH }}/native/llvm
           TARGET_ARCH: aarch64-linux-ohos
-          OHOS_SYSROOT: ${{ env.OHOS_SDK_PATH }}/native/sysroot
-          CC: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/aarch64-unknown-linux-ohos-clang
-          CXX: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/aarch64-unknown-linux-ohos-clang++
-          AS: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-as
-          AR: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-ar
-          LD: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/ld.lld
-          RANLIB: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-ranlib
-          STRIP: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-strip
-          OBJDUMP: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-objdump
-          OBJCOPY: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-objcopy
-          NM: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-nm
-          CFLAGS: -fPIC -D__MUSL__=1 -march=armv8-a --target=${{ env.TARGET_ARCH }} -Wno-error --sysroot=${{ env.OHOS_SYSROOT }} -I${{ env.OHOS_SYSROOT }}/usr/include/${{ env.TARGET_ARCH }}
-          CXXFLAGS: ${{ env.CFLAGS }}
-          LDFLAGS: --sysroot=${{ env.OHOS_SYSROOT }} -L${{ env.OHOS_SYSROOT }}/usr/lib/${{ env.TARGET_ARCH }} -fuse-ld=${{ env.LD }}
-          PKG_CONFIG_PATH: ${{ env.OHOS_SYSROOT }}/usr/lib/pkgconfig:${{ env.OHOS_SYSROOT }}/usr/local/lib/pkgconfig
-          PKG_CONFIG_LIBDIR: ${{ env.OHOS_SYSROOT }}/usr/lib:${{ env.OHOS_SYSROOT }}/usr/local/lib
-          PKG_CONFIG_SYSROOT_DIR: ${{ env.OHOS_SYSROOT }}
-          HOST_TRIPLET: ${{ env.TARGET_ARCH }}
-          PATH: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin:${{ env.PATH }}
+        run: |
+          echo "OHOS_SDK_PATH="/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
+          echo "TARGET_ARCH="aarch64-linux-ohos" >> $GITHUB_ENV
+          echo "OHOS_TOOLCHAIN_DIR=${OHOS_SDK_PATH}/native/llvm" >> $GITHUB_ENV
+          echo "OHOS_SYSROOT=${OHOS_SDK_PATH}/native/sysroot" >> $GITHUB_ENV
+          echo "CC=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang" >> $GITHUB_ENV
+          echo "CXX=${OHOS_TOOLCHAIN_DIR}/bin/aarch64-unknown-linux-ohos-clang++" >> $GITHUB_ENV
+          echo "AR=${OHOS_TOOLCHAIN_DIR}/bin/llvm-ar" >> $GITHUB_ENV
+          echo "LD=${OHOS_TOOLCHAIN_DIR}/bin/ld.lld" >> $GITHUB_ENV
+          echo "CFLAGS=-fPIC -D__MUSL__=1 -march=armv8-a --target=${TARGET_ARCH} -Wno-error --sysroot=${OHOS_SYSROOT} -I${OHOS_SYSROOT}/usr/include/${TARGET_ARCH}" >> $GITHUB_ENV
+          echo "LDFLAGS=--sysroot=${OHOS_SYSROOT} -L${OHOS_SYSROOT}/usr/lib/${TARGET_ARCH} -fuse-ld=${LD}" >> $GITHUB_ENV
+          echo "PATH=${OHOS_TOOLCHAIN_DIR}/bin:${PATH}" >> $GITHUB_ENV
+
+      - name: Build
         working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
           cargo install ohrs
           rustup target add aarch64-unknown-linux-ohos
           ohrs doctor
+          env | sort | grep -E 'OHOS|CC|CXX|AR|LD|CFLAGS|LDFLAGS|TARGET_ARCH|PATH'
           ohrs build --release --arch aarch
           
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: easytier-ohos
           path: ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
+          retention-days: 5
+          if-no-files-found: error
