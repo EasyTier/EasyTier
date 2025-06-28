@@ -58,7 +58,10 @@ jobs:
           OHOS_SDK_PATH: /usr/local/ohos-sdk/linux
           TARGET_ARCH: aarch64-linux-ohos
         run: |
-          echo "OHOS_SDK_PATH="/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
+          echo "OHOS_SDK_PATH=/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
+          echo "OHOS_BASE_SDK_HOME=/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
+          echo "OHOS_NDK_HOME=/usr/local/ohos-sdk/linux" >> $GITHUB_ENV
+          echo "OHOS_SDK_NATIVE=/usr/local/ohos-sdk/linux/native"
           echo "TARGET_ARCH="aarch64-linux-ohos" >> $GITHUB_ENV
           echo "OHOS_TOOLCHAIN_DIR=${OHOS_SDK_PATH}/native/llvm" >> $GITHUB_ENV
           echo "OHOS_SYSROOT=${OHOS_SDK_PATH}/native/sysroot" >> $GITHUB_ENV
@@ -73,6 +76,7 @@ jobs:
       - name: Build
         working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
+          sudo apt-get install -y protobuf-compiler
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
           cargo install ohrs
           rustup target add aarch64-unknown-linux-ohos
