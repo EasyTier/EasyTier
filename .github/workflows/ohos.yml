@@ -37,7 +37,7 @@ jobs:
           wget -q \
             https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz -O sdk.tar.gz
           echo "Extracting native..."
-          tar -xzvf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
+          tar -xzvf sdk.tar.gz
           mkdir -p native
           tar -xzf ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
           ls -la native/llvm/bin/
