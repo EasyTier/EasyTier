@@ -63,13 +63,13 @@ jobs:
           ls -la /usr/local/ohos-sdk/linux/native/sysroot/usr
 
       - name: Debug Paths
-        working-directory: ${{ github.workspace }}
+        working-directory: ${{ github.workspace }}/..
         run: |
           echo "Current directory: $(pwd)"
           ls -la .
 
       - name: Run env.sh
-        working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
+        working-directory: ${{ github.workspace }}/../easytier-contrib/easytier-ohrs
         run: |
           chmod +x env.sh
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
