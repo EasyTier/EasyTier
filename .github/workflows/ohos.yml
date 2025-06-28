@@ -27,7 +27,7 @@ jobs:
             wget \
             unzip \
             git \
-            pkg-config \
+            pkg-config
           sudo apt-get clean
 
       - name: Download and extract native SDK
