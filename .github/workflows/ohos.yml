@@ -40,18 +40,12 @@ jobs:
       - name: Move Native SDK to $HOME/ohos-sdk/linux/native
         run: |
           echo "Detected Native SDK path: $OHOS_SDK_NATIVE"
-          sudo cp -r "$OHOS_SDK_NATIVE" $HOME/ohos-sdk/linux/native
+          sudo mv -f /home/runner/ohos-sdk/linux/native $HOME/ohos-sdk/linux
           echo "Native SDK moved to $HOME/ohos-sdk/linux/native"
 
       - name: Verify SDK
         run: |
           ls -la $HOME/ohos-sdk/linux/native/sysroot/usr
-
-      - name: Debug Paths
-        working-directory: ${{ github.workspace }}
-        run: |
-          echo "Current directory: $(pwd)"
-          ls -la .
 
       - name: Setup build environment
         env:
