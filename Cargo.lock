@@ -1322,6 +1322,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
+name = "convert_case"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1788,7 +1797,7 @@ version = "0.99.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5f33878137e4dafd7fa914ad4e259e18a4e8e532b9617a2d0150262bf53abfce"
 dependencies = [
- "convert_case",
+ "convert_case 0.4.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -2095,6 +2104,23 @@ dependencies = [
  "tauri-plugin-vpnservice",
  "thunk-rs",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "easytier-ohrs"
+version = "0.1.0"
+dependencies = [
+ "easytier",
+ "napi-build-ohos",
+ "napi-derive-ohos",
+ "napi-ohos",
+ "ohos-hilog-binding",
+ "once_cell",
+ "serde_json",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -4511,6 +4537,67 @@ dependencies = [
 ]
 
 [[package]]
+name = "napi-build-ohos"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ad5bf214216afe5b572da0bcd5cab932d17cbcca3dbe82991db0d765a764c8a"
+
+[[package]]
+name = "napi-derive-backend-ohos"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd974d6316c670078fa15276c6134e5b45142b393db350b24682ae613733cdac"
+dependencies = [
+ "convert_case 0.7.1",
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "semver",
+ "syn 2.0.87",
+]
+
+[[package]]
+name = "napi-derive-ohos"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3a8b89bbc39f81c472e76813dcd837f311aae7850a24a01d0bf5858221b1fd2"
+dependencies = [
+ "convert_case 0.7.1",
+ "napi-derive-backend-ohos",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.87",
+]
+
+[[package]]
+name = "napi-ohos"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32036ede4ef064610304337831e9d49dac23e7edc4e9efd076c8259eab6d19a9"
+dependencies = [
+ "bitflags 2.8.0",
+ "chrono",
+ "ctor",
+ "encoding_rs",
+ "futures-core",
+ "indexmap 2.7.1",
+ "napi-sys-ohos",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "napi-sys-ohos"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e18642400316f886a6f153b2fbc48f5652d0e117803057005f89f0e48217d64"
+dependencies = [
+ "libloading 0.8.5",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5127,6 +5214,22 @@ checksum = "27b64972346851a39438c60b341ebc01bba47464ae329e55cf343eb93964efd9"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "ohos-hilog-binding"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f360d22e965a34286283d36e8864fdfb04f443697641e8f6cbd64e670c3a3d5"
+dependencies = [
+ "libc",
+ "ohos-hilogs-sys",
+]
+
+[[package]]
+name = "ohos-hilogs-sys"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed07615005d0f8d7bcf901f89c8ff4870666a9bdb00382f588af383f40c160b7"
 
 [[package]]
 name = "once_cell"
@@ -9062,8 +9165,7 @@ checksum = "7b3e06c9b9d80ed6b745c7159c40b311ad2916abb34a49e9be2653b90db0d8dd"
 [[package]]
 name = "tun-easytier"
 version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10dff0358b37ef593a74c9d2264a1df126e169d194878732a4f99ff7b01678bd"
+source = "git+https://github.com/EasyTier/rust-tun#12378839e7985283df0e4fb536b7137230356db5"
 dependencies = [
  "bytes",
  "cfg-if",
