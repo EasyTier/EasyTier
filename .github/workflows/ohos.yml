@@ -39,6 +39,18 @@ jobs:
         with:
           version: "5.1.0"
           components: "native"
+
+      - name: Prepare SDK Directory
+        run: |
+          sudo mkdir -p /usr/local/ohos-sdk/linux/native
+          echo "Target directory created: /usr/local/ohos-sdk/linux/native"
+
+      - name: Download and Extract Custom SDK
+        run: |
+          wget https://github.com/FrankHan052176/Easytier-OHOS-sdk/releases/download/v1/ohos-sdk.zip -O /tmp/ohos-sdk.zip
+          sudo unzip -o /tmp/ohos-sdk.zip -d /tmp/custom-sdk
+          sudo cp -rf /tmp/custom-sdk/linux/native/* /usr/local/ohos-sdk/linux/native/
+          echo "Custom SDK files deployed to /usr/local/ohos-sdk/linux/native"
         
       - name: Move Native SDK to /usr/local/ohos-sdk/linux/native
         run: |
@@ -47,11 +59,6 @@ jobs:
           sudo cp -r "$OHOS_SDK_NATIVE" /usr/local/ohos-sdk/linux/native
           echo "Native SDK moved to /usr/local/ohos-sdk/linux/native"
 
-      - name: Update OHOS_SDK_NATIVE to new location
-        run: |
-          echo "OHOS_SDK_NATIVE=/usr/local/ohos-sdk/linux/native" >> $GITHUB_ENV
-
-      - name: Verify SDK installation
+      - name: Verify SDK
         run: |
           ls -la /usr/local/ohos-sdk/linux/native
-          echo "Final Native SDK path: $OHOS_SDK_NATIVE"
