@@ -34,15 +34,11 @@ jobs:
 
       - name: Download and extract native SDK
         run: |
-          mkdir -p $HOME/ohos-sdk/linux
-          cd $HOME/ohos-sdk/linux
-
           wget -q --show-progress \
-            https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz \
-            -O sdk-full.tar.gz
+            https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz
 
-          echo "Extracting native.tar.gz..."
-          tar -xzf sdk-full.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
+          echo "Extracting native..."
+          tar -xzf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
 
           mkdir -p native
           tar -xzf ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
@@ -50,9 +46,7 @@ jobs:
           ls -la native/llvm/bin/
           [ -f "native/llvm/bin/clang" ] || { echo "❌ clang不存在"; exit 1; }
 
-          rm -rf sdk-full.tar.gz ohos-sdk/
-          echo "清理后目录结构："
-          ls -la
+          rm -rf ohos-sdk-windows_linux-public.tar.gz ohos-sdk/
 
       - name: Download and Extract Custom SDK
         run: |
