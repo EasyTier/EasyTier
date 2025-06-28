@@ -34,7 +34,7 @@ jobs:
 
       - name: Download and extract native SDK
         run: |
-          mkdir -r /usr/local/ohos-sdk/linux
+          mkdir -p /usr/local/ohos-sdk/linux
           cd /usr/local/ohos-sdk/linux
 
           wget -q --show-progress \
