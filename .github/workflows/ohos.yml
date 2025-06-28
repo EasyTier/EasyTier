@@ -19,16 +19,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Setup OpenHarmony SDK (5.1.0 Native only)
-        uses: openharmony-rs/setup-ohos-sdk@v0.2
-        with:
-          version: "5.1.0"
-          components: "all"
-
-      - name: Prepare SDK Directory
+      - name: Install dependencies
         run: |
-          mkdir -p $HOME/ohos-sdk/linux/native
-          echo "Target directory created: $HOME/ohos-sdk"
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            wget \
+            unzip \
+            git \
+            pkg-config \
+            clang
+          sudo apt-get clean
+
+      - name: Download and extract native SDK
+        run: |
+          mkdir -r /usr/local/ohos-sdk/linux
+          cd /usr/local/ohos-sdk/linux
+
+          wget -q --show-progress \
+            https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz \
+            -O sdk-full.tar.gz
+
+          echo "Extracting native.tar.gz..."
+          tar -xzf sdk-full.tar.gz linux/native-linux-x64-5.1.0.107-Release.zip
+
+          mkdir -p native
+          tar -xzf linux/native-linux-x64-5.1.0.107-Release.zip -C native --strip-components=1
+
+          ls -la native/llvm/bin/
+          [ -f "native/llvm/bin/clang" ] || { echo "❌ clang不存在"; exit 1; }
+
+          rm -rf sdk-full.tar.gz linux/
+          echo "清理后目录结构："
+          ls -la
 
       - name: Download and Extract Custom SDK
         run: |
