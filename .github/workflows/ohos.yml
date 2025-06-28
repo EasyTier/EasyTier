@@ -53,13 +53,40 @@ jobs:
           echo "Current directory: $(pwd)"
           ls -la .
 
-      - name: Run env.sh
+      - name: Build
+        env:
+          OHOS_SDK_PATH: /usr/local/ohos-sdk/linux
+          OHOS_TOOLCHAIN_DIR: ${{ env.OHOS_SDK_PATH }}/native/llvm
+          TARGET_ARCH: aarch64-linux-ohos
+          OHOS_SYSROOT: ${{ env.OHOS_SDK_PATH }}/native/sysroot
+          CC: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/aarch64-unknown-linux-ohos-clang
+          CXX: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/aarch64-unknown-linux-ohos-clang++
+          AS: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-as
+          AR: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-ar
+          LD: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/ld.lld
+          RANLIB: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-ranlib
+          STRIP: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-strip
+          OBJDUMP: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-objdump
+          OBJCOPY: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-objcopy
+          NM: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin/llvm-nm
+          CFLAGS: -fPIC -D__MUSL__=1 -march=armv8-a --target=${{ env.TARGET_ARCH }} -Wno-error --sysroot=${{ env.OHOS_SYSROOT }} -I${{ env.OHOS_SYSROOT }}/usr/include/${{ env.TARGET_ARCH }}
+          CXXFLAGS: ${{ env.CFLAGS }}
+          LDFLAGS: --sysroot=${{ env.OHOS_SYSROOT }} -L${{ env.OHOS_SYSROOT }}/usr/lib/${{ env.TARGET_ARCH }} -fuse-ld=${{ env.LD }}
+          PKG_CONFIG_PATH: ${{ env.OHOS_SYSROOT }}/usr/lib/pkgconfig:${{ env.OHOS_SYSROOT }}/usr/local/lib/pkgconfig
+          PKG_CONFIG_LIBDIR: ${{ env.OHOS_SYSROOT }}/usr/lib:${{ env.OHOS_SYSROOT }}/usr/local/lib
+          PKG_CONFIG_SYSROOT_DIR: ${{ env.OHOS_SYSROOT }}
+          HOST_TRIPLET: ${{ env.TARGET_ARCH }}
+          PATH: ${{ env.OHOS_TOOLCHAIN_DIR }}/bin:${{ env.PATH }}
         working-directory: ${{ github.workspace }}/easytier-contrib/easytier-ohrs
         run: |
-          chmod +x env.sh
           bash ${{ github.workspace }}/.github/workflows/install_rust.sh
-          source env.sh
           cargo install ohrs
           rustup target add aarch64-unknown-linux-ohos
           ohrs doctor
           ohrs build --release --arch aarch
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: easytier-ohos
+          path: ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
