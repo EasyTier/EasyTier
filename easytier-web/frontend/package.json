@@ -16,7 +16,9 @@
     "primevue": "4.3.3",
     "tailwindcss-primeui": "^0.3.4",
     "vue": "^3.5.12",
-    "vue-router": "4"
+    "vue-router": "4",
+    "vue-i18n": "^9.9.1",
+    "@modyfi/vite-plugin-yaml": "^1.1.0"
   },
   "devDependencies": {
     "@types/node": "^22.8.6",

@@ -185,8 +185,11 @@ struct InstallArgs {
     #[arg(long)]
     display_name: Option<String>,
 
-    #[arg(long, default_value = "false")]
-    disable_autostart: bool,
+    #[arg(long)]
+    disable_autostart: Option<bool>,
+
+    #[arg(long)]
+    disable_restart_on_failure: Option<bool>,
 
     #[arg(long, help = "path to easytier-core binary")]
     core_path: Option<PathBuf>,
@@ -697,6 +700,7 @@ impl CommandHandler<'_> {
     }
 }
 
+#[derive(Debug)]
 pub struct ServiceInstallOptions {
     pub program: PathBuf,
     pub args: Vec<OsString>,
@@ -704,6 +708,7 @@ pub struct ServiceInstallOptions {
     pub disable_autostart: bool,
     pub description: Option<String>,
     pub display_name: Option<String>,
+    pub disable_restart_on_failure: bool,
 }
 pub struct Service {
     lable: ServiceLabel,
@@ -719,6 +724,8 @@ impl Service {
         #[cfg(not(target_os = "windows"))]
         let service_manager = <dyn ServiceManager>::native()?;
         let kind = ServiceManagerKind::native()?;
+
+        println!("service manager kind: {:?}", kind);
 
         Ok(Self {
             lable: name.parse()?,
@@ -737,6 +744,7 @@ impl Service {
             username: None,
             working_directory: Some(options.work_directory.clone()),
             environment: None,
+            disable_restart_on_failure: options.disable_restart_on_failure,
         };
         if self.status()? != ServiceStatus::NotInstalled {
             return Err(anyhow::anyhow!(
@@ -1231,10 +1239,14 @@ async fn main() -> Result<(), Error> {
                         program: bin_path,
                         args: bin_args,
                         work_directory: work_dir,
-                        disable_autostart: install_args.disable_autostart,
+                        disable_autostart: install_args.disable_autostart.unwrap_or(false),
                         description: Some(install_args.description),
                         display_name: install_args.display_name,
+                        disable_restart_on_failure: install_args
+                            .disable_restart_on_failure
+                            .unwrap_or(false),
                     };
+                    println!("install_options: {:#?}", install_options);
                     service.install(&install_options)?;
                 }
                 ServiceSubCommand::Uninstall => {

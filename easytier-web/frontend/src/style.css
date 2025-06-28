@@ -10,11 +10,11 @@
 }
 
 .p-password {
-    width: 100%;
+  width: 100%;
 }
 
 .p-password>input {
-    width: 100%;
+  width: 100%;
 }
 
 :root {
@@ -23,11 +23,30 @@
   line-height: 24px;
   font-weight: 400;
 
-  color: #0f0f0f;
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   -webkit-text-size-adjust: 100%;
+}
+
+/* 顶部导航栏安全区适配（如有 .top-navbar 类） */
+.top-navbar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  padding-top: env(safe-area-inset-top, 0px);
+  background: #fff;
+}
+
+/* 全屏内容适配移动端浏览器可视区 */
+.fullscreen-content {
+  height: 100dvh;
+  min-height: 100vh;
+}
+
+/* 如导航栏类名不同，请将 .top-navbar 替换为实际类名 */
+
+.device-manage-drawer {
+  padding-top: env(safe-area-inset-top, 0px);
 }

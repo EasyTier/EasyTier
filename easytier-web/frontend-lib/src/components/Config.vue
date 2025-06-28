@@ -218,7 +218,7 @@ const bool_flags: BoolFlag[] = [
 
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
                       v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions"
-                      :virtual-scroller-options="{ itemSize: 38 }" class="grow" dropdown :complete-on-focus="true"
+                      class="grow" dropdown :complete-on-focus="false"
                       @complete="searchPresetPublicServers" />
                   </div>
                 </div>

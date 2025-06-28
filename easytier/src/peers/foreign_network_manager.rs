@@ -675,7 +675,7 @@ impl Drop for ForeignNetworkManager {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use crate::{
         common::global_ctx::tests::get_mock_global_ctx_with_network,
         connector::udp_hole_punch::tests::{
@@ -711,7 +711,7 @@ mod tests {
         peer_mgr
     }
 
-    async fn create_mock_peer_manager_for_foreign_network(network: &str) -> Arc<PeerManager> {
+    pub async fn create_mock_peer_manager_for_foreign_network(network: &str) -> Arc<PeerManager> {
         create_mock_peer_manager_for_foreign_network_ext(network, network).await
     }
 

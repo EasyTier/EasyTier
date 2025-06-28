@@ -10,7 +10,7 @@ use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
 use easytier::proto::web::*;
 
-use crate::client_manager::session::Session;
+use crate::client_manager::session::{Location, Session};
 use crate::client_manager::ClientManager;
 use crate::db::{ListNetworkProps, UserIdInDb};
 
@@ -66,6 +66,7 @@ struct ListNetworkInstanceIdsJsonResp {
 struct ListMachineItem {
     client_url: Option<url::Url>,
     info: Option<HeartbeatRequest>,
+    location: Option<Location>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -308,9 +309,11 @@ impl NetworkApi {
         for item in client_urls.iter() {
             let client_url = item.clone();
             let session = client_mgr.get_heartbeat_requests(&client_url).await;
+            let location = client_mgr.get_machine_location(&client_url).await;
             machines.push(ListMachineItem {
                 client_url: Some(client_url),
                 info: session,
+                location,
             });
         }
 

@@ -53,6 +53,12 @@ export function UuidToStr(uuid: UUID): string {
     return uint32ToUuid(uuid.part1, uuid.part2, uuid.part3, uuid.part4);
 }
 
+export interface Location {
+    country: string | undefined;
+    city: string | undefined;
+    region: string | undefined;
+}
+
 export interface DeviceInfo {
     hostname: string;
     public_ip: string;
@@ -61,6 +67,7 @@ export interface DeviceInfo {
     easytier_version: string;
     running_network_instances?: Array<string>;
     machine_id: string;
+    location: Location | undefined;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
@@ -72,6 +79,7 @@ export function buildDeviceInfo(device: any): DeviceInfo {
         report_time: device.info?.report_time,
         easytier_version: device.info?.easytier_version,
         machine_id: UuidToStr(device.info?.machine_id),
+        location: device.location,
     };
 
     return dev_info;
