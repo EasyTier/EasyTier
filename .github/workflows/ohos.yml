@@ -35,7 +35,10 @@ jobs:
         run: |
           echo $PWD
           wget -q \
-            https://repo.huaweicloud.com/openharmony/os/5.1.0-Release/ohos-sdk-windows_linux-public.tar.gz -O sdk.tar.gz
+            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.aa
+          wget -q \
+            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.ab
+          cat ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab > sdk.tar.gz
           echo "Extracting native..."
           mkdir sdk
           tar -xzf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
@@ -91,11 +94,10 @@ jobs:
         run: |
           sudo apt-get install -y llvm clang lldb lld
           sudo apt-get install -y protobuf-compiler
-          bash ./.github/workflows/install_rust.sh
+          bash ../../.github/workflows/install_rust.sh
           cargo install ohrs
           rustup target add aarch64-unknown-linux-ohos
           ohrs doctor
-          env | sort | grep -E 'OHOS|CC|CXX|AR|LD|CFLAGS|LDFLAGS|TARGET_ARCH|PATH'
           ohrs build --release --arch aarch
           
       - name: Upload artifact
