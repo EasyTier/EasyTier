@@ -30,6 +30,26 @@ fn set_error_msg(msg: &str) {
 }
 
 #[no_mangle]
+pub extern "C" fn set_tun_fd(
+    inst_name: *const std::ffi::c_char,
+    fd: std::ffi::c_int,
+) -> std::ffi::c_int {
+    let inst_name = unsafe {
+        assert!(!inst_name.is_null());
+        std::ffi::CStr::from_ptr(inst_name)
+            .to_string_lossy()
+            .into_owned()
+    };
+    if let Some(mut instance) = INSTANCE_MAP.get_mut(&inst_name) {
+        instance.set_tun_fd(fd);
+        return 0;
+    }
+
+    set_error_msg("instance not found");
+    -1
+}
+
+#[no_mangle]
 pub extern "C" fn get_error_msg(out: *mut *const std::ffi::c_char) {
     let msg_buf = ERROR_MSG.lock().unwrap();
     if msg_buf.is_empty() {
