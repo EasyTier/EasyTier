@@ -865,7 +865,7 @@ impl PeerManager {
         #[cfg(target_env = "ohos")]
         {
             if dst_peers.is_empty() {
-                tracing::info!("no peer id for ipv4: {}, set exit_node", ipv4_addr);
+                tracing::info!("no peer id for ipv4: {}, set exit_node for ohos", ipv4_addr);
                 dst_peers.push(self.my_peer_id.clone());
                 is_exit_node = true;
             }

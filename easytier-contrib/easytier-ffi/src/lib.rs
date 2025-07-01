@@ -40,13 +40,17 @@ pub extern "C" fn set_tun_fd(
             .to_string_lossy()
             .into_owned()
     };
-    if let Some(mut instance) = INSTANCE_MAP.get_mut(&inst_name) {
-        instance.set_tun_fd(fd);
-        return 0;
+    if !INSTANCE_NAME_ID_MAP.contains_key(&inst_name) {
+        return -1;
     }
-
-    set_error_msg("instance not found");
-    -1
+    match INSTANCE_MANAGER.set_tun_fd(&INSTANCE_NAME_ID_MAP.get(&inst_name).unwrap().value(), fd) {
+        Ok(_) => {
+            0
+        }
+        Err(_) => {
+            -1
+        }
+    }
 }
 
 #[no_mangle]
