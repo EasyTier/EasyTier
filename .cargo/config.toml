@@ -7,7 +7,7 @@ linker = "aarch64-linux-gnu-gcc"
 
 [target.aarch64-unknown-linux-ohos]
 ar = "/usr/local/ohos-sdk/linux/native/llvm/bin/llvm-ar"
-linker = "/root/.ohos/script/aarch64-unknown-linux-ohos-clang.sh"
+linker = "/home/runner/sdk/native/llvm/aarch64-unknown-linux-ohos-clang.sh"
 
 [target.aarch64-unknown-linux-ohos.env]
 PKG_CONFIG_PATH = "/usr/local/ohos-sdk/linux/native/sysroot/usr/lib/pkgconfig:/usr/local/ohos-sdk/linux/native/sysroot/usr/local/lib/pkgconfig"
