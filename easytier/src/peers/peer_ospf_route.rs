@@ -166,7 +166,7 @@ impl RoutePeerInfo {
                 .unwrap_or(24),
 
             quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
-            ipv6_addr: global_ctx.get_ipv6().map(|x| x.address().into()),
+            ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -223,6 +223,8 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
             next_hop_peer_id_latency_first: None,
             cost_latency_first: None,
             path_latency_latency_first: None,
+
+            ipv6_addr: self.ipv6_addr.map(Into::into),
         }
     }
 }
@@ -884,7 +886,7 @@ impl RouteTable {
                     .or_insert(*peer_id);
             }
 
-            if let Some(ipv6_addr) = info.ipv6_addr {
+            if let Some(ipv6_addr) = info.ipv6_addr.and_then(|x| x.address) {
                 self.ipv6_peer_id_map
                     .entry(ipv6_addr.into())
                     .and_modify(|v| {

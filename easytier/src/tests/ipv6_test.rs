@@ -43,7 +43,7 @@ async fn test_route_peer_info_ipv6() {
 
     // Verify IPv6 address is included
     assert!(updated_info.ipv6_addr.is_some());
-    let ipv6_addr: Ipv6Addr = updated_info.ipv6_addr.unwrap().into();
+    let ipv6_addr: Ipv6Addr = updated_info.ipv6_addr.unwrap().address.unwrap().into();
     assert_eq!(ipv6_addr, ipv6_cidr.address());
 }
 

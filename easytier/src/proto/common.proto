@@ -139,6 +139,11 @@ message Ipv4Inet {
   uint32 network_length = 2;
 }
 
+message Ipv6Inet {
+  Ipv6Addr address = 1;
+  uint32 network_length = 2;
+}
+
 message Url { string url = 1; }
 
 message SocketAddr {

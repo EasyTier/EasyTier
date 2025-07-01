@@ -65,6 +65,8 @@ message Route {
   optional uint32 next_hop_peer_id_latency_first = 12;
   optional int32 cost_latency_first = 13;
   optional int32 path_latency_latency_first = 14;
+
+  common.Ipv6Inet ipv6_addr = 15;
 }
 
 message PeerRoutePair {
