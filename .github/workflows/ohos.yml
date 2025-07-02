@@ -1,0 +1,111 @@
+name: EasyTier OHOS
+
+on:
+  push:
+    branches: ["develop", "main", "releases/**"]
+  pull_request:
+    branches: ["develop", "main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # necessary for windows
+    shell: bash
+
+jobs:
+  pre_job:
+    # continue-on-error: true # Uncomment once integration is finished
+    runs-on: ubuntu-latest
+    # Map a step output to a job output
+    outputs:
+      # do not skip push on branch starts with releases/
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          # All of these options are optional, so you can remove them if you are happy with the defaults
+          concurrent_skipping: 'same_content_newer'
+          skip_after_successful_duplicate: 'true'
+          cancel_others: 'true'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/workflows/install_rust.sh"]'
+  build-ohos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            wget \
+            unzip \
+            git \
+            pkg-config
+          sudo apt-get clean
+
+      - name: Download and extract native SDK
+        working-directory: ../../../
+        run: |
+          echo $PWD
+          wget -q \
+            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.aa
+          wget -q \
+            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.ab
+          cat ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab > sdk.tar.gz
+          echo "Extracting native..."
+          mkdir sdk
+          tar -xzf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
+          tar -xzf sdk.tar.gz ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip
+          unzip -qq ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d sdk
+          unzip -qq ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip -d sdk
+          ls -la sdk/native/llvm/bin/
+          rm -rf ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab ohos-sdk/
+
+      - name: Download and Extract Custom SDK
+        run: |
+          wget https://github.com/FrankHan052176/Easytier-OHOS-sdk/releases/download/v1/ohos-sdk.zip -O /tmp/ohos-sdk.zip
+          sudo unzip -o /tmp/ohos-sdk.zip -d /tmp/custom-sdk
+          sudo cp -rf /tmp/custom-sdk/linux/native/* $HOME/sdk/native
+          echo "Custom SDK files deployed to $HOME/sdk/native"
+          ls -a $HOME/sdk/native
+
+      - name: Setup build environment
+        run: |
+          echo "OHOS_NDK_HOME=$HOME/sdk" >> $GITHUB_ENV
+          echo "TARGET_ARCH=aarch64-linux-ohos" >> $GITHUB_ENV
+
+      - name: Create clang wrapper script
+        run: |
+          sudo mkdir -p $OHOS_NDK_HOME/native/llvm
+          sudo tee $OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh > /dev/null <<'EOF'
+          #!/bin/sh
+          exec $OHOS_NDK_HOME/native/llvm/bin/clang \
+            -target aarch64-linux-ohos \
+            --sysroot=$OHOS_NDK_HOME/native/sysroot \
+            -D__MUSL__ \
+            "$@"
+          EOF
+          sudo chmod +x $OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh
+
+      - name: Build
+        working-directory: ./easytier-contrib/easytier-ohrs
+        run: |
+          sudo apt-get install -y llvm clang lldb lld
+          sudo apt-get install -y protobuf-compiler
+          bash ../../.github/workflows/install_rust.sh
+          source env.sh
+          cargo install ohrs
+          rustup target add aarch64-unknown-linux-ohos
+          ohrs doctor
+          ohrs build --release --arch aarch
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-ohos
+          path: ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
+          retention-days: 5
+          if-no-files-found: error

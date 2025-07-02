@@ -16,14 +16,14 @@ struct InterfaceFilter {
     iface: NetworkInterface,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_env = "ohos"))]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
         true
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 impl InterfaceFilter {
     async fn is_tun_tap_device(&self) -> bool {
         let path = format!("/sys/class/net/{}/tun_flags", self.iface.name);
