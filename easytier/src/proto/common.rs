@@ -131,6 +131,41 @@ impl FromStr for Ipv4Inet {
     }
 }
 
+impl From<cidr::Ipv6Inet> for Ipv6Inet {
+    fn from(value: cidr::Ipv6Inet) -> Self {
+        Ipv6Inet {
+            address: Some(value.address().into()),
+            network_length: value.network_length() as u32,
+        }
+    }
+}
+
+impl From<Ipv6Inet> for cidr::Ipv6Inet {
+    fn from(value: Ipv6Inet) -> Self {
+        cidr::Ipv6Inet::new(
+            value.address.unwrap_or_default().into(),
+            value.network_length as u8,
+        )
+        .unwrap()
+    }
+}
+
+impl fmt::Display for Ipv6Inet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", cidr::Ipv6Inet::from(self.clone()))
+    }
+}
+
+impl FromStr for Ipv6Inet {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Ipv6Inet::from(
+            cidr::Ipv6Inet::from_str(s).with_context(|| "Failed to parse Ipv6Inet")?,
+        ))
+    }
+}
+
 impl From<url::Url> for Url {
     fn from(value: url::Url) -> Self {
         Url {

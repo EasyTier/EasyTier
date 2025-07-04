@@ -80,4 +80,62 @@ impl IfConfiguerTrait for MacIfConfiger {
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
         run_shell_cmd(format!("ifconfig {} mtu {}", name, mtu).as_str()).await
     }
+
+    async fn add_ipv6_ip(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        run_shell_cmd(
+            format!("ifconfig {} inet6 {}/{} add", name, address, cidr_prefix).as_str(),
+        )
+        .await
+    }
+
+    async fn remove_ipv6(&self, name: &str, ip: Option<std::net::Ipv6Addr>) -> Result<(), Error> {
+        if let Some(ip) = ip {
+            run_shell_cmd(format!("ifconfig {} inet6 {} delete", name, ip).as_str()).await
+        } else {
+            // Remove all IPv6 addresses is more complex on macOS, just succeed
+            Ok(())
+        }
+    }
+
+    async fn add_ipv6_route(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+        cost: Option<i32>,
+    ) -> Result<(), Error> {
+        let cmd = if let Some(cost) = cost {
+            format!(
+                "route -n add -inet6 {}/{} -interface {} -hopcount {}",
+                address, cidr_prefix, name, cost
+            )
+        } else {
+            format!(
+                "route -n add -inet6 {}/{} -interface {}",
+                address, cidr_prefix, name
+            )
+        };
+        run_shell_cmd(cmd.as_str()).await
+    }
+
+    async fn remove_ipv6_route(
+        &self,
+        name: &str,
+        address: std::net::Ipv6Addr,
+        cidr_prefix: u8,
+    ) -> Result<(), Error> {
+        run_shell_cmd(
+            format!(
+                "route -n delete -inet6 {}/{} -interface {}",
+                address, cidr_prefix, name
+            )
+            .as_str(),
+        )
+        .await
+    }
 }

@@ -1,4 +1,4 @@
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc};
 
 use dashmap::DashMap;
 
@@ -79,6 +79,10 @@ pub trait Route {
     async fn list_routes(&self) -> Vec<crate::proto::cli::Route>;
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
+        None
+    }
+
+    async fn get_peer_id_by_ipv6(&self, _ipv6: &Ipv6Addr) -> Option<PeerId> {
         None
     }
 

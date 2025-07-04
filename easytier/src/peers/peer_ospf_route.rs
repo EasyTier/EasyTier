@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     fmt::Debug,
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Weak,
@@ -125,6 +125,7 @@ impl RoutePeerInfo {
             peer_route_id: 0,
             network_length: 24,
             quic_port: None,
+            ipv6_addr: None,
         }
     }
 
@@ -165,6 +166,7 @@ impl RoutePeerInfo {
                 .unwrap_or(24),
 
             quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
+            ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -221,6 +223,8 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
             next_hop_peer_id_latency_first: None,
             cost_latency_first: None,
             path_latency_latency_first: None,
+
+            ipv6_addr: self.ipv6_addr.map(Into::into),
         }
     }
 }
@@ -635,6 +639,7 @@ struct RouteTable {
     peer_infos: DashMap<PeerId, RoutePeerInfo>,
     next_hop_map: NextHopMap,
     ipv4_peer_id_map: DashMap<Ipv4Addr, PeerId>,
+    ipv6_peer_id_map: DashMap<Ipv6Addr, PeerId>,
     cidr_peer_id_map: DashMap<cidr::IpCidr, PeerId>,
     next_hop_map_version: AtomicVersion,
 }
@@ -645,6 +650,7 @@ impl RouteTable {
             peer_infos: DashMap::new(),
             next_hop_map: DashMap::new(),
             ipv4_peer_id_map: DashMap::new(),
+            ipv6_peer_id_map: DashMap::new(),
             cidr_peer_id_map: DashMap::new(),
             next_hop_map_version: AtomicVersion::new(),
         }
@@ -740,6 +746,10 @@ impl RouteTable {
         });
         self.ipv4_peer_id_map.retain(|_, v| {
             // remove ipv4 map for peers we cannot reach.
+            self.next_hop_map.contains_key(v)
+        });
+        self.ipv6_peer_id_map.retain(|_, v| {
+            // remove ipv6 map for peers we cannot reach.
             self.next_hop_map.contains_key(v)
         });
         self.cidr_peer_id_map.retain(|_, v| {
@@ -868,6 +878,17 @@ impl RouteTable {
             if let Some(ipv4_addr) = info.ipv4_addr {
                 self.ipv4_peer_id_map
                     .entry(ipv4_addr.into())
+                    .and_modify(|v| {
+                        if *v != *peer_id && is_new_peer_better(*v) {
+                            *v = *peer_id;
+                        }
+                    })
+                    .or_insert(*peer_id);
+            }
+
+            if let Some(ipv6_addr) = info.ipv6_addr.and_then(|x| x.address) {
+                self.ipv6_peer_id_map
+                    .entry(ipv6_addr.into())
                     .and_modify(|v| {
                         if *v != *peer_id && is_new_peer_better(*v) {
                             *v = *peer_id;
@@ -2264,6 +2285,21 @@ impl Route for PeerRoute {
         }
 
         tracing::debug!(?ipv4_addr, "no peer id for ipv4");
+        None
+    }
+
+    async fn get_peer_id_by_ipv6(&self, ipv6_addr: &Ipv6Addr) -> Option<PeerId> {
+        let route_table = &self.service_impl.route_table;
+        if let Some(peer_id) = route_table.ipv6_peer_id_map.get(ipv6_addr) {
+            return Some(*peer_id);
+        }
+
+        // TODO: Add proxy support for IPv6 similar to IPv4
+        // if let Some(peer_id) = route_table.get_peer_id_for_proxy_ipv6(ipv6_addr) {
+        //     return Some(peer_id);
+        // }
+
+        tracing::debug!(?ipv6_addr, "no peer id for ipv6");
         None
     }
 

@@ -149,6 +149,13 @@ struct NetworkOptions {
     ipv4: Option<String>,
 
     #[arg(
+        long,
+        env = "ET_IPV6",
+        help = t!("core_clap.ipv6").to_string()
+    )]
+    ipv6: Option<String>,
+
+    #[arg(
         short,
         long,
         env = "ET_DHCP",
@@ -612,6 +619,12 @@ impl NetworkOptions {
         if let Some(ipv4) = &self.ipv4 {
             cfg.set_ipv4(Some(ipv4.parse().with_context(|| {
                 format!("failed to parse ipv4 address: {}", ipv4)
+            })?))
+        }
+
+        if let Some(ipv6) = &self.ipv6 {
+            cfg.set_ipv6(Some(ipv6.parse().with_context(|| {
+                format!("failed to parse ipv6 address: {}", ipv6)
             })?))
         }
 

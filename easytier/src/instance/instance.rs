@@ -484,7 +484,7 @@ impl Instance {
                             &peer_manager_c,
                             _peer_packet_receiver.clone(),
                         );
-                        if let Err(e) = new_nic_ctx.run(ip).await {
+                        if let Err(e) = new_nic_ctx.run(Some(ip), global_ctx_c.get_ipv6()).await {
                             tracing::error!(
                                 ?current_dhcp_ip,
                                 ?candidate_ipv4_addr,
@@ -532,24 +532,29 @@ impl Instance {
 
         if !self.global_ctx.config.get_flags().no_tun {
             #[cfg(not(any(target_os = "android", target_env = "ohos")))]
-            if let Some(ipv4_addr) = self.global_ctx.get_ipv4() {
-                let mut new_nic_ctx = NicCtx::new(
-                    self.global_ctx.clone(),
-                    &self.peer_manager,
-                    self.peer_packet_receiver.clone(),
-                );
-                new_nic_ctx.run(ipv4_addr).await?;
-                let ifname = new_nic_ctx.ifname().await;
-                Self::use_new_nic_ctx(
-                    self.nic_ctx.clone(),
-                    new_nic_ctx,
-                    Self::create_magic_dns_runner(
-                        self.peer_manager.clone(),
-                        ifname,
-                        ipv4_addr.clone(),
-                    ),
-                )
-                .await;
+            {
+                let ipv4_addr = self.global_ctx.get_ipv4();
+                let ipv6_addr = self.global_ctx.get_ipv6();
+
+                // Only run if we have at least one IP address (IPv4 or IPv6)
+                if ipv4_addr.is_some() || ipv6_addr.is_some() {
+                    let mut new_nic_ctx = NicCtx::new(
+                        self.global_ctx.clone(),
+                        &self.peer_manager,
+                        self.peer_packet_receiver.clone(),
+                    );
+
+                    new_nic_ctx.run(ipv4_addr, ipv6_addr).await?;
+                    let ifname = new_nic_ctx.ifname().await;
+
+                    // Create Magic DNS runner only if we have IPv4
+                    let dns_runner = if let Some(ipv4) = ipv4_addr {
+                        Self::create_magic_dns_runner(self.peer_manager.clone(), ifname, ipv4)
+                    } else {
+                        None
+                    };
+                    Self::use_new_nic_ctx(self.nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                }
             }
         }
 
@@ -852,7 +857,7 @@ impl Drop for Instance {
             };
 
             let now = std::time::Instant::now();
-            while now.elapsed().as_secs() < 1 {
+            while now.elapsed().as_secs() < 10 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 if pm.strong_count() == 0 {
                     tracing::info!(

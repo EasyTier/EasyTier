@@ -24,6 +24,7 @@ message RoutePeerInfo {
   uint32 network_length = 13;
 
   optional uint32 quic_port = 14;
+  optional common.Ipv6Inet ipv6_addr = 15;
 }
 
 message PeerIdVersion {

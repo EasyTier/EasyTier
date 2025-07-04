@@ -1,6 +1,8 @@
 #[cfg(target_os = "linux")]
 mod three_node;
 
+mod ipv6_test;
+
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
 

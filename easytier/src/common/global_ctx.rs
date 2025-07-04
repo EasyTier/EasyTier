@@ -61,6 +61,7 @@ pub struct GlobalCtx {
     event_bus: EventBus,
 
     cached_ipv4: AtomicCell<Option<cidr::Ipv4Inet>>,
+    cached_ipv6: AtomicCell<Option<cidr::Ipv6Inet>>,
     cached_proxy_cidrs: AtomicCell<Option<Vec<ProxyNetworkConfig>>>,
 
     ip_collector: Mutex<Option<Arc<IPCollector>>>,
@@ -124,6 +125,7 @@ impl GlobalCtx {
 
             event_bus,
             cached_ipv4: AtomicCell::new(None),
+            cached_ipv6: AtomicCell::new(None),
             cached_proxy_cidrs: AtomicCell::new(None),
 
             ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(
@@ -189,6 +191,20 @@ impl GlobalCtx {
     pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
         self.config.set_ipv4(addr);
         self.cached_ipv4.store(None);
+    }
+
+    pub fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
+        if let Some(ret) = self.cached_ipv6.load() {
+            return Some(ret);
+        }
+        let addr = self.config.get_ipv6();
+        self.cached_ipv6.store(addr.clone());
+        return addr;
+    }
+
+    pub fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
+        self.config.set_ipv6(addr);
+        self.cached_ipv6.store(None);
     }
 
     pub fn get_id(&self) -> uuid::Uuid {

@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::Ipv4Addr,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{Arc, Weak},
     time::{Instant, SystemTime},
 };
@@ -873,6 +873,43 @@ impl PeerManager {
         (dst_peers, is_exit_node)
     }
 
+    pub async fn get_msg_dst_peer_ipv6(&self, ipv6_addr: &Ipv6Addr) -> (Vec<PeerId>, bool) {
+        let mut is_exit_node = false;
+        let mut dst_peers = vec![];
+        let network_length = self
+            .global_ctx
+            .get_ipv6()
+            .map(|x| x.network_length())
+            .unwrap_or(64);
+        let ipv6_inet = cidr::Ipv6Inet::new(*ipv6_addr, network_length).unwrap();
+        if ipv6_addr.is_multicast() || *ipv6_addr == ipv6_inet.last_address() {
+            dst_peers.extend(
+                self.peers
+                    .list_routes()
+                    .await
+                    .iter()
+                    .map(|x| x.key().clone()),
+            );
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(&ipv6_addr).await {
+            dst_peers.push(peer_id);
+        } else {
+            // For IPv6, we'll need to implement exit node support later
+            // For now, just try to find any available peer for routing
+            if dst_peers.is_empty() {
+                dst_peers.extend(
+                    self.peers
+                        .list_routes()
+                        .await
+                        .iter()
+                        .map(|x| x.key().clone()),
+                );
+                is_exit_node = true;
+            }
+        }
+
+        (dst_peers, is_exit_node)
+    }
+
     pub async fn try_compress_and_encrypt(
         compress_algo: CompressorAlgo,
         encryptor: &Box<dyn Encryptor>,
@@ -887,11 +924,11 @@ impl PeerManager {
         Ok(())
     }
 
-    pub async fn send_msg_ipv4(&self, mut msg: ZCPacket, ipv4_addr: Ipv4Addr) -> Result<(), Error> {
+    pub async fn send_msg_by_ip(&self, mut msg: ZCPacket, ip_addr: IpAddr) -> Result<(), Error> {
         tracing::trace!(
-            "do send_msg in peer manager, msg: {:?}, ipv4_addr: {}",
+            "do send_msg in peer manager, msg: {:?}, ip_addr: {}",
             msg,
-            ipv4_addr
+            ip_addr
         );
 
         msg.fill_peer_manager_hdr(
@@ -911,10 +948,13 @@ impl PeerManager {
             .await;
         }
 
-        let (dst_peers, is_exit_node) = self.get_msg_dst_peer(&ipv4_addr).await;
+        let (dst_peers, is_exit_node) = match ip_addr {
+            IpAddr::V4(ipv4_addr) => self.get_msg_dst_peer(&ipv4_addr).await,
+            IpAddr::V6(ipv6_addr) => self.get_msg_dst_peer_ipv6(&ipv6_addr).await,
+        };
 
         if dst_peers.is_empty() {
-            tracing::info!("no peer id for ipv4: {}", ipv4_addr);
+            tracing::info!("no peer id for ip: {}", ip_addr);
             return Ok(());
         }
 

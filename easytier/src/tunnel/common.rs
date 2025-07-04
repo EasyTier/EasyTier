@@ -388,7 +388,12 @@ pub(crate) fn setup_sokcet2_ext(
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux", target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_env = "ohos"
+    ))]
     if let Some(dev_name) = bind_dev {
         tracing::trace!(dev_name = ?dev_name, "bind device");
         socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
