@@ -36,6 +36,11 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
             .chain(self.global_ctx.get_running_listeners().into_iter())
             .map(Into::into)
             .collect();
+        // remove et ipv6 from the interface ipv6 list
+        if let Some(et_ipv6) = self.global_ctx.get_ipv6() {
+            let et_ipv6: crate::proto::common::Ipv6Addr = et_ipv6.address().into();
+            ret.interface_ipv6s.retain(|x| *x != et_ipv6);
+        }
         tracing::trace!(
             "get_ip_list: public_ipv4: {:?}, public_ipv6: {:?}, listeners: {:?}",
             ret.public_ipv4,

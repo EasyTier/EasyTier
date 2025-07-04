@@ -857,7 +857,7 @@ impl Drop for Instance {
             };
 
             let now = std::time::Instant::now();
-            while now.elapsed().as_secs() < 1 {
+            while now.elapsed().as_secs() < 10 {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 if pm.strong_count() == 0 {
                     tracing::info!(

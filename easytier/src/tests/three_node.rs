@@ -51,7 +51,12 @@ pub fn prepare_linux_namespaces() {
     add_ns_to_bridge("br_b", "net_d");
 }
 
-pub fn get_inst_config(inst_name: &str, ns: Option<&str>, ipv4: &str, ipv6: &str) -> TomlConfigLoader {
+pub fn get_inst_config(
+    inst_name: &str,
+    ns: Option<&str>,
+    ipv4: &str,
+    ipv6: &str,
+) -> TomlConfigLoader {
     let config = TomlConfigLoader::default();
     config.set_inst_name(inst_name.to_owned());
     config.set_netns(ns.map(|s| s.to_owned()));
@@ -604,7 +609,12 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
     };
 
     let insts = init_three_node(proto).await;
-    let mut inst4 = Instance::new(get_inst_config("inst4", Some("net_d"), "10.144.144.4", "fd00::4/64"));
+    let mut inst4 = Instance::new(get_inst_config(
+        "inst4",
+        Some("net_d"),
+        "10.144.144.4",
+        "fd00::4/64",
+    ));
     if proto == "tcp" {
         inst4
             .get_conn_manager()
@@ -669,16 +679,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .iter()
                         .find(|r| **r == inst4.peer_id())
                         .is_none();
-                    if !ret {
-                        println!(
-                            "conn info: {:?}",
-                            insts[2]
-                                .get_peer_manager()
-                                .get_peer_map()
-                                .list_peer_conns(inst4.peer_id())
-                                .await
-                        );
-                    }
+
                     ret
                 },
                 // 0 down, assume last packet is recv in -0.01
@@ -773,8 +774,18 @@ pub async fn foreign_network_forward_nic_data() {
         .set_network_identity(NetworkIdentity::new("center".to_string(), "".to_string()));
     let mut center_inst = Instance::new(center_node_config);
 
-    let mut inst1 = Instance::new(get_inst_config("inst1", Some("net_b"), "10.144.145.1", "fd00:1::1/64"));
-    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2", "fd00:1::2/64"));
+    let mut inst1 = Instance::new(get_inst_config(
+        "inst1",
+        Some("net_b"),
+        "10.144.145.1",
+        "fd00:1::1/64",
+    ));
+    let mut inst2 = Instance::new(get_inst_config(
+        "inst2",
+        Some("net_c"),
+        "10.144.145.2",
+        "fd00:1::2/64",
+    ));
 
     center_inst.run().await.unwrap();
     inst1.run().await.unwrap();
@@ -996,7 +1007,12 @@ pub async fn foreign_network_functional_cluster() {
     inst1_config.set_listeners(vec![]);
     let mut inst1 = Instance::new(inst1_config);
 
-    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_d"), "10.144.145.2", "fd00:2::2/64"));
+    let mut inst2 = Instance::new(get_inst_config(
+        "inst2",
+        Some("net_d"),
+        "10.144.145.2",
+        "fd00:2::2/64",
+    ));
 
     center_inst1.run().await.unwrap();
     center_inst2.run().await.unwrap();
@@ -1064,7 +1080,12 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
     inst1_config.set_listeners(vec![]);
     let mut inst1 = Instance::new(inst1_config);
 
-    let mut inst2 = Instance::new(get_inst_config("inst2", Some("net_c"), "10.144.145.2", "fd00:1::2/64"));
+    let mut inst2 = Instance::new(get_inst_config(
+        "inst2",
+        Some("net_c"),
+        "10.144.145.2",
+        "fd00:1::2/64",
+    ));
 
     center_inst.run().await.unwrap();
     inst1.run().await.unwrap();
