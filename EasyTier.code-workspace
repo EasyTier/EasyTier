@@ -42,5 +42,7 @@
 		"i18n-ally.sortKeys": true,
 		// Disable the default formatter
 		"prettier.enable": false,
+		"editor.formatOnSave": true,
+		"editor.formatOnSaveMode": "modifications",
 	}
 }

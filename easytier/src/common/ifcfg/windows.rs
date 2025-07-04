@@ -3,35 +3,76 @@ use once_cell::sync::Lazy;
 use std::{
     io,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    ptr::null_mut, sync::{Arc, Mutex, MutexGuard},
+    ptr::null_mut,
+    sync::Mutex,
 };
 use windows_sys::Win32::{
-    Foundation::{ERROR_SUCCESS, NO_ERROR},
+    Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS, NO_ERROR},
     NetworkManagement::{
         IpHelper::{
             AddIPAddress, CreateUnicastIpAddressEntry, DeleteIPAddress,
-            DeleteUnicastIpAddressEntry, GetAdaptersAddresses, GetIfEntry, GetIpAddrTable,
-            SetIfEntry, GAA_FLAG_INCLUDE_PREFIX, IP_ADAPTER_ADDRESSES_LH, MIB_IFROW,
-            MIB_IPADDRTABLE, MIB_UNICASTIPADDRESS_ROW,
+            DeleteUnicastIpAddressEntry, GetAdaptersAddresses, GetAdaptersInfo, GetIfEntry,
+            SetIfEntry, GAA_FLAG_INCLUDE_PREFIX, IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_INFO,
+            MIB_IFROW, MIB_UNICASTIPADDRESS_ROW,
         },
         Ndis::NET_LUID_LH as NET_LUID,
     },
-    Networking::WinSock::{
-        AF_INET, AF_INET6, IN6_ADDR, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_INET,
+    Networking::WinSock::{AF_INET6, SOCKADDR_IN6, SOCKADDR_INET},
+    System::Diagnostics::Debug::{
+        FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
     },
 };
 use winreg::{
-    enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS, KEY_READ, KEY_WRITE},
+    enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
     RegKey,
 };
 use winroute::{Route, RouteManager};
 
-use super::{cidr_to_subnet_mask, run_shell_cmd, Error, IfConfiguerTrait};
+use super::{cidr_to_subnet_mask, Error, IfConfiguerTrait};
 
-static route_manager: Lazy<Mutex<Option<RouteManager>>> = Lazy::new(|| Mutex::new(RouteManager::new().ok()));
+static ROUTE_MANAGER: Lazy<Mutex<Option<RouteManager>>> = Lazy::new(|| {
+    let manager = RouteManager::new();
+    if manager.is_err() {
+        println!(
+            "Failed to create route manager, cannot manage route table, error: {}",
+            manager.as_ref().err().unwrap()
+        );
+    }
+    Mutex::new(manager.ok())
+});
 
-pub struct WindowsIfConfiger {
+pub struct WindowsIfConfiger {}
 
+fn format_win_error(error: u32) -> String {
+    // use FormatMessageW to get the error message
+    let mut buffer = vec![0; 1024];
+    let size = buffer.len() as u32;
+    let flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+
+    unsafe {
+        FormatMessageW(
+            flags,
+            null_mut(),
+            error,
+            0,
+            buffer.as_mut_ptr() as *mut u16,
+            size,
+            null_mut(),
+        );
+    }
+    let str_end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+    format!(
+        "{} (code: {})",
+        String::from_utf16_lossy(&buffer[..str_end])
+            .trim()
+            .to_string(),
+        error
+    )
+}
+
+fn ipv4_to_u32(ip: &Ipv4Addr) -> u32 {
+    let octets = ip.octets();
+    u32::from_ne_bytes(octets)
 }
 
 impl WindowsIfConfiger {
@@ -39,63 +80,127 @@ impl WindowsIfConfiger {
         crate::arch::windows::find_interface_index(name).ok()
     }
 
+    #[tracing::instrument(err, ret)]
     async fn add_ip_address(name: &str, addr: Ipv4Addr, prefix_len: u8) -> Result<(), Error> {
-        let Some(if_index) = Self::get_interface_index(name) else {
-            return Err(Error::NotFound);
-        };
+        let if_index = Self::get_interface_index(name).ok_or(Error::NotFound)?;
 
-        let addr_bytes = addr.octets();
-        let mask = cidr_to_subnet_mask(prefix_len).octets();
+        // 直接使用网络字节序（大端序）
+        let ip_u32 = ipv4_to_u32(&addr);
+        let mask_u32 = ipv4_to_u32(&cidr_to_subnet_mask(prefix_len));
 
         unsafe {
             let mut context = 0;
-            let result = AddIPAddress(
-                u32::from_be_bytes(addr_bytes) as _,
-                u32::from_be_bytes(mask) as _,
-                if_index as _,
-                &mut context,
-                std::ptr::null_mut(),
-            );
+            let mut instance = 0;
+            let result = AddIPAddress(ip_u32, mask_u32, if_index as _, &mut context, &mut instance);
 
             if result == NO_ERROR {
-                Ok(())
+                tracing::info!(
+                    "AddIPAddress success. Context: {}, Instance: {}",
+                    context,
+                    instance
+                );
+                return Ok(());
             } else {
+                tracing::error!(
+                    "AddIPAddress failed with error: {}",
+                    format_win_error(result)
+                );
                 Err(Error::RouteError(Some(format!(
                     "AddIPAddress failed with error: {}",
-                    result
+                    format_win_error(result)
                 ))))
             }
         }
     }
 
+    #[tracing::instrument(err, ret)]
     async fn remove_ip_address(name: &str, addr: Option<Ipv4Addr>) -> Result<(), Error> {
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+
         unsafe {
-            let mut table_size = 0;
-            GetIpAddrTable(std::ptr::null_mut(), &mut table_size, 0);
+            let mut size: u32 = 0;
 
-            let mut buffer = vec![0u8; table_size as usize];
-            let table = buffer.as_mut_ptr() as *mut MIB_IPADDRTABLE;
+            // First call to get required buffer size
+            let status = GetAdaptersInfo(std::ptr::null_mut(), &mut size);
+            if status != ERROR_BUFFER_OVERFLOW {
+                return Err(anyhow::anyhow!(
+                    "GetAdaptersInfo failed with error: {}",
+                    format_win_error(status)
+                )
+                .into());
+            }
 
-            if GetIpAddrTable(table, &mut table_size, 0) == NO_ERROR {
-                let table = &*table;
-                for i in 0..table.dwNumEntries {
-                    let entry = &table.table[i as usize];
-                    if let Some(target_addr) = addr {
-                        let entry_addr = Ipv4Addr::from(u32::from_be(entry.dwAddr as u32));
-                        if entry_addr == target_addr {
-                            DeleteIPAddress(entry.dwIndex);
+            let mut buffer = vec![0u8; size as usize];
+            let p_info = buffer.as_mut_ptr() as *mut IP_ADAPTER_INFO;
+
+            let status = GetAdaptersInfo(p_info, &mut size);
+            if status != ERROR_SUCCESS {
+                return Err(anyhow::anyhow!(
+                    "GetAdaptersInfo failed with error: {}",
+                    format_win_error(status)
+                )
+                .into());
+            }
+
+            let mut adapter = p_info;
+            let mut found = false;
+
+            while !adapter.is_null() {
+                if (*adapter).Index == if_index {
+                    found = true;
+                    let mut ip_entry = &(*adapter).IpAddressList;
+                    loop {
+                        let ip_str = std::ffi::CStr::from_ptr(
+                            ip_entry.IpAddress.String.as_ptr() as *const i8
+                        )
+                        .to_string_lossy()
+                        .into_owned();
+
+                        let Ok(current_ip) = ip_str.parse::<Ipv4Addr>() else {
+                            continue;
+                        };
+
+                        if (addr.is_none() || addr == Some(current_ip))
+                            && !current_ip.is_unspecified()
+                        {
+                            let context = ip_entry.Context;
+                            let result = DeleteIPAddress(context);
+                            if result != 0 {
+                                return Err(anyhow::anyhow!(
+                                    "DeleteIPAddress failed with error: {}, ip: {}",
+                                    format_win_error(result),
+                                    current_ip
+                                )
+                                .into());
+                            }
+                            tracing::info!("DeleteIPAddress success. ip: {}", current_ip);
                         }
-                    } else {
-                        DeleteIPAddress(entry.dwIndex);
+
+                        if ip_entry.Next.is_null() {
+                            break;
+                        }
+                        ip_entry = &*ip_entry.Next;
                     }
                 }
-                Ok(())
-            } else {
-                Err(Error::RouteError(Some("Failed to get IP address table".into())))
+
+                if !found {
+                    adapter = (*adapter).Next;
+                } else {
+                    break;
+                }
             }
+
+            if !found {
+                return Err(Error::NotFound);
+            }
+
+            Ok(())
         }
     }
 
+    #[tracing::instrument(err, ret)]
     async fn set_interface_status(name: &str, up: bool) -> Result<(), Error> {
         let Some(if_index) = Self::get_interface_index(name) else {
             return Err(Error::NotFound);
@@ -133,20 +238,22 @@ impl WindowsIfConfiger {
                 if SetIfEntry(&if_row) == NO_ERROR {
                     Ok(())
                 } else {
-                    Err(Error::RouteError(Some("Failed to set interface status".into())))
+                    Err(anyhow::anyhow!("Failed to set interface status").into())
                 }
             } else {
-                Err(Error::RouteError(Some("Failed to get interface entry".into())))
+                Err(anyhow::anyhow!("Failed to get interface entry").into())
             }
         }
     }
 
+    #[tracing::instrument(err, ret)]
     async fn set_interface_mtu(name: &str, mtu: u32) -> Result<(), Error> {
         let Some(if_index) = Self::get_interface_index(name) else {
             return Err(Error::NotFound);
         };
 
         unsafe {
+            // 设置接口的 MTU（同时影响 IPv4 和 IPv6）
             let mut if_row = MIB_IFROW {
                 wszName: [0; 256],
                 dwIndex: if_index,
@@ -174,26 +281,37 @@ impl WindowsIfConfiger {
                 bDescr: [0; 256],
             };
 
-            if GetIfEntry(&mut if_row) == NO_ERROR {
+            let result = GetIfEntry(&mut if_row);
+            if result == NO_ERROR {
                 if_row.dwMtu = mtu;
-                if SetIfEntry(&if_row) == NO_ERROR {
-                    Ok(())
-                } else {
-                    Err(Error::RouteError(Some("Failed to set interface MTU".into())))
+                let result = SetIfEntry(&if_row);
+                if result != NO_ERROR {
+                    return Err(anyhow::anyhow!(
+                        "Failed to set interface MTU: {}",
+                        format_win_error(result)
+                    )
+                    .into());
                 }
+                tracing::info!("Successfully set interface MTU to {}", mtu);
+                Ok(())
             } else {
-                Err(Error::RouteError(Some("Failed to get interface entry".into())))
+                Err(anyhow::anyhow!(
+                    "Failed to get interface entry: {}",
+                    format_win_error(result)
+                )
+                .into())
             }
         }
     }
 
+    #[tracing::instrument(err, ret)]
     async fn add_ipv6_address(name: &str, addr: Ipv6Addr, prefix_len: u8) -> Result<(), Error> {
         let Some(if_index) = Self::get_interface_index(name) else {
             return Err(Error::NotFound);
         };
 
         unsafe {
-            let mut row = MIB_UNICASTIPADDRESS_ROW {
+            let row = MIB_UNICASTIPADDRESS_ROW {
                 InterfaceLuid: NET_LUID { Value: 0 },
                 InterfaceIndex: if_index,
                 PrefixOrigin: 1, // IpPrefixOriginManual
@@ -205,7 +323,7 @@ impl WindowsIfConfiger {
                 DadState: 0, // IpDadStatePreferred
                 ScopeId: std::mem::zeroed(),
                 CreationTimeStamp: 0,
-                Address: unsafe {
+                Address: {
                     let mut addr_inet: SOCKADDR_INET = std::mem::zeroed();
                     addr_inet.Ipv6.sin6_family = AF_INET6 as u16;
                     addr_inet.Ipv6.sin6_addr.u.Byte = addr.octets();
@@ -213,14 +331,19 @@ impl WindowsIfConfiger {
                 },
             };
 
-            if CreateUnicastIpAddressEntry(&row) == NO_ERROR {
+            let result = CreateUnicastIpAddressEntry(&row);
+            if result == NO_ERROR {
                 Ok(())
             } else {
-                Err(Error::RouteError(Some("Failed to add IPv6 address".into())))
+                Err(
+                    anyhow::anyhow!("Failed to add IPv6 address: {}", format_win_error(result))
+                        .into(),
+                )
             }
         }
     }
 
+    #[tracing::instrument(err, ret)]
     async fn remove_ipv6_address(name: &str, addr: Option<Ipv6Addr>) -> Result<(), Error> {
         let Some(if_index) = Self::get_interface_index(name) else {
             return Err(Error::NotFound);
@@ -259,10 +382,10 @@ impl WindowsIfConfiger {
                                 let sockaddr_in6 = &*(sockaddr as *const SOCKADDR_IN6);
                                 let current_addr = Ipv6Addr::from(sockaddr_in6.sin6_addr.u.Byte);
                                 if current_addr == target_addr {
-                                    let mut row = MIB_UNICASTIPADDRESS_ROW {
+                                    let row = MIB_UNICASTIPADDRESS_ROW {
                                         InterfaceLuid: NET_LUID { Value: 0 },
                                         InterfaceIndex: if_index,
-                                        Address: unsafe {
+                                        Address: {
                                             let mut addr_inet: SOCKADDR_INET = std::mem::zeroed();
                                             addr_inet.Ipv6 = *sockaddr_in6;
                                             addr_inet
@@ -282,10 +405,10 @@ impl WindowsIfConfiger {
                             } else {
                                 let sockaddr = addr_entry.Address.lpSockaddr;
                                 let sockaddr_in6 = &*(sockaddr as *const SOCKADDR_IN6);
-                                let mut row = MIB_UNICASTIPADDRESS_ROW {
+                                let row = MIB_UNICASTIPADDRESS_ROW {
                                     InterfaceLuid: NET_LUID { Value: 0 },
                                     InterfaceIndex: if_index,
-                                    Address: unsafe {
+                                    Address: {
                                         let mut addr_inet: SOCKADDR_INET = std::mem::zeroed();
                                         addr_inet.Ipv6 = *sockaddr_in6;
                                         addr_inet
@@ -310,7 +433,9 @@ impl WindowsIfConfiger {
                 }
                 Ok(())
             } else {
-                Err(Error::RouteError(Some("Failed to get adapter addresses".into())))
+                Err(Error::RouteError(Some(
+                    "Failed to get adapter addresses".into(),
+                )))
             }
         }
     }
@@ -329,13 +454,17 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             return Err(Error::NotFound);
         };
 
-        let mut route = Route::new(IpAddr::V4(address), cidr_prefix);
-        route.ifindex = Some(if_index);
-        route.metric = Some(cost.unwrap_or(9000) as u32);
+        let route = Route::new(IpAddr::V4(address), cidr_prefix)
+            .ifindex(if_index)
+            .metric(cost.unwrap_or(9000) as u32);
 
-        route_manager.lock().unwrap().as_ref().ok_or(anyhow::anyhow!("route manager not initialized"))?
+        ROUTE_MANAGER
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(anyhow::anyhow!("route manager not initialized"))?
             .add_route(&route)
-            .map_err(|e| Error::RouteError(Some(e.to_string())))
+            .map_err(|e| anyhow::anyhow!("Failed to add route: {}", e).into())
     }
 
     async fn remove_ipv4_route(
@@ -348,11 +477,15 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             return Err(Error::NotFound);
         };
 
-        let mut route = Route::new(IpAddr::V4(address), cidr_prefix).ifindex(if_index);
+        let route = Route::new(IpAddr::V4(address), cidr_prefix).ifindex(if_index);
 
-        route_manager.lock().unwrap().as_ref().ok_or(anyhow::anyhow!("route manager not initialized"))?
+        ROUTE_MANAGER
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(anyhow::anyhow!("route manager not initialized"))?
             .delete_route(&route)
-            .map_err(|e| Error::RouteError(Some(e.to_string())))
+            .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", e).into())
     }
 
     async fn add_ipv4_ip(
@@ -389,6 +522,7 @@ impl IfConfiguerTrait for WindowsIfConfiger {
     }
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
+        println!("set_mtu: {} {}", name, mtu);
         Self::set_interface_mtu(name, mtu).await
     }
 
@@ -416,11 +550,17 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             return Err(Error::NotFound);
         };
 
-        let mut route = Route::new(IpAddr::V6(address), cidr_prefix).ifindex(if_index).metric(9000);
+        let route = Route::new(IpAddr::V6(address), cidr_prefix)
+            .ifindex(if_index)
+            .metric(cost.unwrap_or(9000) as u32);
 
-        route_manager.lock().unwrap().as_ref().ok_or(anyhow::anyhow!("route manager not initialized"))?
+        ROUTE_MANAGER
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(anyhow::anyhow!("route manager not initialized"))?
             .add_route(&route)
-            .map_err(|e| Error::RouteError(Some(e.to_string())))
+            .map_err(|e| anyhow::anyhow!("Failed to add route: {}", e).into())
     }
 
     async fn remove_ipv6_route(
@@ -433,11 +573,15 @@ impl IfConfiguerTrait for WindowsIfConfiger {
             return Err(Error::NotFound);
         };
 
-        let mut route = Route::new(IpAddr::V6(address), cidr_prefix).ifindex(if_index);
+        let route = Route::new(IpAddr::V6(address), cidr_prefix).ifindex(if_index);
 
-        route_manager.lock().unwrap().as_ref().ok_or(anyhow::anyhow!("route manager not initialized"))?
+        ROUTE_MANAGER
+            .lock()
+            .unwrap()
+            .as_ref()
+            .ok_or(anyhow::anyhow!("route manager not initialized"))?
             .delete_route(&route)
-            .map_err(|e| Error::RouteError(Some(e.to_string())))
+            .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", e).into())
     }
 }
 
