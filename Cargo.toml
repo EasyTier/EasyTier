@@ -19,3 +19,12 @@ lto = true
 codegen-units = 1
 opt-level = 3
 strip = true
+
+[dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis", 
+    "Win32_Networking_WinSock",
+    "Win32_Foundation"
+]}
+winroute = "0.1"
