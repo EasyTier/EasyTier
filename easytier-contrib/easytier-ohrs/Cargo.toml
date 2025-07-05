@@ -8,7 +8,7 @@ crate-type=["cdylib"]
 
 [dependencies]
 ohos-hilog-binding = {version = "*", features = ["redirect"]}
-easytier = { path = "../../easytier" }
+easytier = { git = "https://github.com/EasyTier/EasyTier.git" }
 napi-derive-ohos = "1.0.4"
 napi-ohos = { version = "1.0.4", default-features = false, features = [
     "serde-json",

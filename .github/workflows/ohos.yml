@@ -33,6 +33,8 @@ jobs:
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/workflows/install_rust.sh"]'
   build-ohos:
     runs-on: ubuntu-latest
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
@@ -99,6 +101,7 @@ jobs:
           source env.sh
           cargo install ohrs
           rustup target add aarch64-unknown-linux-ohos
+          cargo update easytier
           ohrs doctor
           ohrs build --release --arch aarch
           
