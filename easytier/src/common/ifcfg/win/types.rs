@@ -1,6 +1,3 @@
-#![cfg(windows)]
-#![allow(dead_code)]
-
 //
 // Port supporting code for wireguard-nt from wireguard-windows v0.5.3 to Rust
 // This file replicates parts of wireguard-windows/tunnel/winipcfg/types.go
@@ -8,7 +5,7 @@
 
 use cidr::{Ipv4Inet, Ipv6Inet};
 use std::ffi::OsString;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::os::windows::prelude::*;
 use winapi::shared::ws2def::*;
 use winapi::shared::ws2ipdef::*;

@@ -1,12 +1,8 @@
-#![cfg(windows)]
-#![allow(dead_code)]
-
 //
 // Port supporting code for wireguard-nt from wireguard-windows v0.5.3 to Rust
 // This file replicates the functionality of wireguard-windows/tunnel/winipcfg/netsh.go
 //
 
-use futures::{AsyncBufReadExt};
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     process::{Command, Stdio},

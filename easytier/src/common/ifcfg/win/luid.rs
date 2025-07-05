@@ -1,6 +1,3 @@
-#![cfg(windows)]
-#![allow(dead_code)]
-
 //
 // Port supporting code from wireguard-windows, as used by 3rd-party/wireguard-go, to Rust
 // This file implements functionality similar to: wireguard-windows/tunnel/winipcfg/luid.go
@@ -13,8 +10,7 @@ use super::types::*;
 use cidr::Ipv4Inet;
 use cidr::Ipv6Inet;
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::{mem, ptr};
-use winapi::shared::ifdef::NET_LUID_LH;
+use std::ptr;
 use winapi::shared::{
     guiddef::GUID, ifdef::NET_LUID, netioapi::*, nldef::*, winerror::*, ws2def::*, ws2ipdef::*,
 };
