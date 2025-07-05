@@ -211,10 +211,7 @@ impl DirectConnectorManagerData {
                 dst_peer_id,
                 peer_id
             );
-            self.peer_manager
-                .get_peer_map()
-                .close_peer_conn(peer_id, &conn_id)
-                .await?;
+            self.peer_manager.close_peer_conn(peer_id, &conn_id).await?;
             return Err(Error::InvalidUrl(addr));
         }
 
