@@ -17,6 +17,7 @@ use crate::common::scoped_task::ScopedTask;
 use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
+use crate::connector::cache::CacheConnectorManager;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
@@ -225,6 +226,7 @@ pub struct Instance {
     peer_manager: Arc<PeerManager>,
     listener_manager: Arc<Mutex<ListenerManager<PeerManager>>>,
     conn_manager: Arc<ManualConnectorManager>,
+    cache_conn_manager: Arc<CacheConnectorManager>,
     direct_conn_manager: Arc<DirectConnectorManager>,
     udp_hole_puncher: Arc<Mutex<UdpHolePunchConnector>>,
 
@@ -283,6 +285,8 @@ impl Instance {
 
         let udp_hole_puncher = UdpHolePunchConnector::new(peer_manager.clone());
 
+        let cache_conn_manager = Arc::new(CacheConnectorManager::new(global_ctx.clone(), peer_manager.clone()));
+
         let peer_center = Arc::new(PeerCenterInstance::new(peer_manager.clone()));
 
         #[cfg(feature = "wireguard")]
@@ -309,6 +313,7 @@ impl Instance {
             peer_manager,
             listener_manager,
             conn_manager,
+            cache_conn_manager,
             direct_conn_manager: Arc::new(direct_conn_manager),
             udp_hole_puncher: Arc::new(Mutex::new(udp_hole_puncher)),
 
@@ -338,6 +343,7 @@ impl Instance {
 
     async fn add_initial_peers(&mut self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
+            tracing::debug!("add initial peer from config: {:?}", peer);
             self.get_conn_manager()
                 .add_connector_by_url(peer.uri.as_str())
                 .await?;
