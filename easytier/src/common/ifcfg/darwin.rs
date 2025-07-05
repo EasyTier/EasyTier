@@ -1,8 +1,8 @@
 use std::net::Ipv4Addr;
 
-use async_trait::async_trait;
-
 use super::{cidr_to_subnet_mask, run_shell_cmd, Error, IfConfiguerTrait};
+use async_trait::async_trait;
+use cidr::{Ipv4Inet, Ipv6Inet};
 
 pub struct MacIfConfiger {}
 #[async_trait]
@@ -66,12 +66,17 @@ impl IfConfiguerTrait for MacIfConfiger {
             .await
     }
 
-    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Addr>) -> Result<(), Error> {
+    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         if ip.is_none() {
             run_shell_cmd(format!("ifconfig {} inet delete", name).as_str()).await
         } else {
             run_shell_cmd(
-                format!("ifconfig {} inet {} delete", name, ip.unwrap().to_string()).as_str(),
+                format!(
+                    "ifconfig {} inet {} delete",
+                    name,
+                    ip.unwrap().address().to_string()
+                )
+                .as_str(),
             )
             .await
         }
@@ -87,15 +92,13 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
-            format!("ifconfig {} inet6 {}/{} add", name, address, cidr_prefix).as_str(),
-        )
-        .await
+        run_shell_cmd(format!("ifconfig {} inet6 {}/{} add", name, address, cidr_prefix).as_str())
+            .await
     }
 
-    async fn remove_ipv6(&self, name: &str, ip: Option<std::net::Ipv6Addr>) -> Result<(), Error> {
+    async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         if let Some(ip) = ip {
-            run_shell_cmd(format!("ifconfig {} inet6 {} delete", name, ip).as_str()).await
+            run_shell_cmd(format!("ifconfig {} inet6 {} delete", name, ip.address()).as_str()).await
         } else {
             // Remove all IPv6 addresses is more complex on macOS, just succeed
             Ok(())
