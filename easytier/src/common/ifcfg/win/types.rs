@@ -42,9 +42,9 @@ pub fn convert_ipv4addr_to_inaddr(ip: &Ipv4Addr) -> winapi::shared::inaddr::in_a
 #[inline]
 pub fn convert_ipv6addr_to_inaddr(ip: &Ipv6Addr) -> winapi::shared::in6addr::in6_addr {
     let mut winaddr = winapi::shared::in6addr::in6_addr::default();
-
-    for i in 0..7 {
-        unsafe { winaddr.u.Word_mut()[i] = ip.segments()[i] };
+    let octets = ip.octets();
+    for i in 0..octets.len() {
+        unsafe { winaddr.u.Byte_mut()[i] = octets[i] };
     }
 
     winaddr
