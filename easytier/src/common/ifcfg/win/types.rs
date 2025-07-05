@@ -6,7 +6,7 @@
 // This file replicates parts of wireguard-windows/tunnel/winipcfg/types.go
 //
 
-use cidr::{ Ipv4Cidr, Ipv6Cidr};
+use cidr::{Ipv4Inet, Ipv6Inet};
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::windows::prelude::*;
@@ -15,14 +15,14 @@ use winapi::shared::ws2ipdef::*;
 
 #[derive(Hash, Eq, PartialEq, Debug)]
 pub struct RouteDataIpv4 {
-    pub destination: Ipv4Cidr,
+    pub destination: Ipv4Inet,
     pub next_hop: Ipv4Addr,
     pub metric: u32,
 }
 
 #[derive(Hash, Eq, PartialEq, Debug)]
 pub struct RouteDataIpv6 {
-    pub destination: Ipv6Cidr,
+    pub destination: Ipv6Inet,
     pub next_hop: Ipv6Addr,
     pub metric: u32,
 }

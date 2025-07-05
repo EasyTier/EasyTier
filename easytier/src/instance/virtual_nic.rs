@@ -23,6 +23,7 @@ use crate::{
 
 use byteorder::WriteBytesExt as _;
 use bytes::{BufMut, BytesMut};
+use cidr::{Ipv4Inet, Ipv6Inet};
 use futures::{lock::BiLock, ready, SinkExt, Stream, StreamExt};
 use pin_project_lite::pin_project;
 use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
@@ -442,13 +443,13 @@ impl VirtualNic {
         Ok(())
     }
 
-    pub async fn remove_ip(&self, ip: Option<Ipv4Addr>) -> Result<(), Error> {
+    pub async fn remove_ip(&self, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg.remove_ip(self.ifname(), ip).await?;
         Ok(())
     }
 
-    pub async fn remove_ipv6(&self, ip: Option<Ipv6Addr>) -> Result<(), Error> {
+    pub async fn remove_ipv6(&self, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         let _g = self.global_ctx.net_ns.guard();
         self.ifcfg.remove_ipv6(self.ifname(), ip).await?;
         Ok(())

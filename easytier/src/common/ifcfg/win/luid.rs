@@ -10,9 +10,11 @@
 
 use super::netsh;
 use super::types::*;
-use cidr::{Ipv4Cidr, Ipv6Cidr};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use cidr::Ipv4Inet;
+use cidr::Ipv6Inet;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{mem, ptr};
+use winapi::shared::ifdef::NET_LUID_LH;
 use winapi::shared::{
     guiddef::GUID, ifdef::NET_LUID, netioapi::*, nldef::*, winerror::*, ws2def::*, ws2ipdef::*,
 };
@@ -166,7 +168,7 @@ impl InterfaceLuid {
 
     /// add_ipv4_address method adds new unicast IP address to the interface. Corresponds to CreateUnicastIpAddressEntry function
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-createunicastipaddressentry).
-    pub fn add_ipv4_address(&self, address: &Ipv4Cidr) -> Result<(), NETIO_STATUS> {
+    pub fn add_ipv4_address(&self, address: &Ipv4Inet) -> Result<(), NETIO_STATUS> {
         let mut row = MIB_UNICASTIPADDRESS_ROW::default();
         unsafe { InitializeUnicastIpAddressEntry(&mut row) };
 
@@ -175,7 +177,7 @@ impl InterfaceLuid {
         row.ValidLifetime = 0xffffffff;
         row.PreferredLifetime = 0xffffffff;
 
-        unsafe { *row.Address.Ipv4_mut() = convert_ipv4addr_to_sockaddr(&address.first_address()) };
+        unsafe { *row.Address.Ipv4_mut() = convert_ipv4addr_to_sockaddr(&address.address()) };
         row.OnLinkPrefixLength = address.network_length();
 
         let result = unsafe { CreateUnicastIpAddressEntry(&row) };
@@ -189,7 +191,7 @@ impl InterfaceLuid {
 
     /// add_ipv6_address method adds new unicast IP address to the interface. Corresponds to CreateUnicastIpAddressEntry function
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-createunicastipaddressentry).
-    pub fn add_ipv6_address(&self, address: &Ipv6Cidr) -> Result<(), NETIO_STATUS> {
+    pub fn add_ipv6_address(&self, address: &Ipv6Inet) -> Result<(), NETIO_STATUS> {
         let mut row = MIB_UNICASTIPADDRESS_ROW::default();
         unsafe { InitializeUnicastIpAddressEntry(&mut row) };
 
@@ -198,7 +200,7 @@ impl InterfaceLuid {
         row.ValidLifetime = 0xffffffff;
         row.PreferredLifetime = 0xffffffff;
 
-        unsafe { *row.Address.Ipv6_mut() = convert_ipv6addr_to_sockaddr(&address.first_address()) };
+        unsafe { *row.Address.Ipv6_mut() = convert_ipv6addr_to_sockaddr(&address.address()) };
         row.OnLinkPrefixLength = address.network_length();
 
         let result = unsafe { CreateUnicastIpAddressEntry(&row) };
@@ -214,7 +216,7 @@ impl InterfaceLuid {
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-createunicastipaddressentry).
     pub fn add_ipv4_addresses(
         &self,
-        addresses: impl IntoIterator<Item = Ipv4Cidr>,
+        addresses: impl IntoIterator<Item = Ipv4Inet>,
     ) -> Result<(), NETIO_STATUS> {
         for ip in addresses.into_iter().enumerate() {
             self.add_ipv4_address(&ip.1)?;
@@ -226,7 +228,7 @@ impl InterfaceLuid {
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-createunicastipaddressentry).
     pub fn add_ipv6_addresses(
         &self,
-        addresses: impl IntoIterator<Item = Ipv6Cidr>,
+        addresses: impl IntoIterator<Item = Ipv6Inet>,
     ) -> Result<(), NETIO_STATUS> {
         for ip in addresses.into_iter().enumerate() {
             self.add_ipv6_address(&ip.1)?;
@@ -237,7 +239,7 @@ impl InterfaceLuid {
     /// set_ipv4_addresses method sets new unicast IP addresses to the interface.
     pub fn set_ipv4_addresses(
         &self,
-        addresses: impl IntoIterator<Item = Ipv4Cidr>,
+        addresses: impl IntoIterator<Item = Ipv4Inet>,
     ) -> Result<(), NETIO_STATUS> {
         self.flush_ipv4_addresses()?;
         self.add_ipv4_addresses(addresses)?;
@@ -247,7 +249,7 @@ impl InterfaceLuid {
     /// set_ipv6_addresses method sets new unicast IP addresses to the interface.
     pub fn set_ipv6_addresses(
         &self,
-        addresses: impl IntoIterator<Item = Ipv6Cidr>,
+        addresses: impl IntoIterator<Item = Ipv6Inet>,
     ) -> Result<(), NETIO_STATUS> {
         self.flush_ipv6_addresses()?;
         self.add_ipv6_addresses(addresses)?;
@@ -256,7 +258,7 @@ impl InterfaceLuid {
 
     /// delete_ipv4_address method deletes interface's unicast IP address. Corresponds to DeleteUnicastIpAddressEntry function
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-deleteunicastipaddressentry).
-    pub fn delete_ipv4_address(&self, address: &Ipv4Cidr) -> Result<(), NETIO_STATUS> {
+    pub fn delete_ipv4_address(&self, address: &Ipv4Inet) -> Result<(), NETIO_STATUS> {
         let mut row = MIB_UNICASTIPADDRESS_ROW::default();
         unsafe { InitializeUnicastIpAddressEntry(&mut row) };
 
@@ -265,7 +267,7 @@ impl InterfaceLuid {
         row.ValidLifetime = 0xffffffff;
         row.PreferredLifetime = 0xffffffff;
 
-        unsafe { *row.Address.Ipv4_mut() = convert_ipv4addr_to_sockaddr(&address.first_address()) };
+        unsafe { *row.Address.Ipv4_mut() = convert_ipv4addr_to_sockaddr(&address.address()) };
         row.OnLinkPrefixLength = address.network_length();
 
         let result = unsafe { DeleteUnicastIpAddressEntry(&row) };
@@ -307,7 +309,7 @@ impl InterfaceLuid {
 
     /// delete_ipv6_address method deletes interface's unicast IP address. Corresponds to DeleteUnicastIpAddressEntry function
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-deleteunicastipaddressentry).
-    pub fn delete_ipv6_address(&self, address: &Ipv6Cidr) -> Result<(), NETIO_STATUS> {
+    pub fn delete_ipv6_address(&self, address: &Ipv6Inet) -> Result<(), NETIO_STATUS> {
         let mut row = MIB_UNICASTIPADDRESS_ROW::default();
         unsafe { InitializeUnicastIpAddressEntry(&mut row) };
 
@@ -316,7 +318,7 @@ impl InterfaceLuid {
         row.ValidLifetime = 0xffffffff;
         row.PreferredLifetime = 0xffffffff;
 
-        unsafe { *row.Address.Ipv6_mut() = convert_ipv6addr_to_sockaddr(&address.first_address()) };
+        unsafe { *row.Address.Ipv6_mut() = convert_ipv6addr_to_sockaddr(&address.address()) };
         row.OnLinkPrefixLength = address.network_length();
 
         let result = unsafe { DeleteUnicastIpAddressEntry(&row) };
@@ -394,7 +396,7 @@ impl InterfaceLuid {
     /// NOTE: If the corresponding route isn't found, the method will return error.
     pub fn route_ipv4(
         &self,
-        destination: &Ipv4Cidr,
+        destination: &Ipv4Inet,
         next_hop: &Ipv4Addr,
     ) -> Result<MIB_IPFORWARD_ROW2, NETIO_STATUS> {
         let mut row = MIB_IPFORWARD_ROW2::default();
@@ -406,7 +408,7 @@ impl InterfaceLuid {
 
         unsafe {
             *row.DestinationPrefix.Prefix.Ipv4_mut() =
-                convert_ipv4addr_to_sockaddr(&destination.first_address())
+                convert_ipv4addr_to_sockaddr(&destination.address())
         };
         row.DestinationPrefix.PrefixLength = destination.network_length();
 
@@ -426,7 +428,7 @@ impl InterfaceLuid {
     /// NOTE: If the corresponding route isn't found, the method will return error.
     pub fn route_ipv6(
         &self,
-        destination: &Ipv6Cidr,
+        destination: &Ipv6Inet,
         next_hop: &Ipv6Addr,
     ) -> Result<MIB_IPFORWARD_ROW2, NETIO_STATUS> {
         let mut row = MIB_IPFORWARD_ROW2::default();
@@ -438,7 +440,7 @@ impl InterfaceLuid {
 
         unsafe {
             *row.DestinationPrefix.Prefix.Ipv6_mut() =
-                convert_ipv6addr_to_sockaddr(&destination.first_address())
+                convert_ipv6addr_to_sockaddr(&destination.address())
         };
         row.DestinationPrefix.PrefixLength = destination.network_length();
 
@@ -457,7 +459,7 @@ impl InterfaceLuid {
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-createipforwardentry2)
     pub fn add_route_ipv4(
         &self,
-        destination: &Ipv4Cidr,
+        destination: &Ipv4Inet,
         next_hop: &Ipv4Addr,
         metric: u32,
     ) -> Result<(), NETIO_STATUS> {
@@ -470,7 +472,7 @@ impl InterfaceLuid {
 
         unsafe {
             *row.DestinationPrefix.Prefix.Ipv4_mut() =
-                convert_ipv4addr_to_sockaddr(&destination.first_address())
+                convert_ipv4addr_to_sockaddr(&destination.address())
         };
         row.DestinationPrefix.PrefixLength = destination.network_length();
 
@@ -491,7 +493,7 @@ impl InterfaceLuid {
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-createipforwardentry2)
     pub fn add_route_ipv6(
         &self,
-        destination: &Ipv6Cidr,
+        destination: &Ipv6Inet,
         next_hop: &Ipv6Addr,
         metric: u32,
     ) -> Result<(), NETIO_STATUS> {
@@ -504,7 +506,7 @@ impl InterfaceLuid {
 
         unsafe {
             *row.DestinationPrefix.Prefix.Ipv6_mut() =
-                convert_ipv6addr_to_sockaddr(&destination.first_address())
+                convert_ipv6addr_to_sockaddr(&destination.address())
         };
         row.DestinationPrefix.PrefixLength = destination.network_length();
 
@@ -567,7 +569,7 @@ impl InterfaceLuid {
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-deleteipforwardentry2).
     pub fn delete_route_ipv4(
         &self,
-        destination: &Ipv4Cidr,
+        destination: &Ipv4Inet,
         next_hop: &Ipv4Addr,
     ) -> Result<(), NETIO_STATUS> {
         let mut row = MIB_IPFORWARD_ROW2::default();
@@ -577,7 +579,7 @@ impl InterfaceLuid {
 
         unsafe {
             *row.DestinationPrefix.Prefix.Ipv4_mut() =
-                convert_ipv4addr_to_sockaddr(&destination.first_address())
+                convert_ipv4addr_to_sockaddr(&destination.address())
         };
         row.DestinationPrefix.PrefixLength = destination.network_length();
 
@@ -600,7 +602,7 @@ impl InterfaceLuid {
     /// (https://docs.microsoft.com/en-us/windows/desktop/api/netioapi/nf-netioapi-deleteipforwardentry2).
     pub fn delete_route_ipv6(
         &self,
-        destination: &Ipv6Cidr,
+        destination: &Ipv6Inet,
         next_hop: &Ipv6Addr,
     ) -> Result<(), NETIO_STATUS> {
         let mut row = MIB_IPFORWARD_ROW2::default();
@@ -610,7 +612,7 @@ impl InterfaceLuid {
 
         unsafe {
             *row.DestinationPrefix.Prefix.Ipv6_mut() =
-                convert_ipv6addr_to_sockaddr(&destination.first_address())
+                convert_ipv6addr_to_sockaddr(&destination.address())
         };
         row.DestinationPrefix.PrefixLength = destination.network_length();
 
@@ -695,5 +697,53 @@ impl InterfaceLuid {
     /// flush_dns_ipv6 method clears all DNS servers associated with the adapter.
     pub fn flush_dns_ipv6(&self) -> Result<(), String> {
         self.flush_dns(AF_INET6 as _)
+    }
+
+    /// Sets MTU on the interface
+    /// TODO: Set IP and other things in here too, so the code is more organized
+    pub fn set_iface_config(&self, mtu: u32) -> Result<(), NETIO_STATUS> {
+        // SAFETY: Both NET_LUID_LH unions should be the same. We're just copying out
+        // the u64 value and re-wrapping it, since wintun doesn't refer to the windows
+        // crate's version of NET_LUID_LH.
+        self.try_set_mtu(AF_INET as ADDRESS_FAMILY, mtu)?;
+        self.try_set_mtu(AF_INET6 as ADDRESS_FAMILY, mtu)?;
+        Ok(())
+    }
+
+    fn try_set_mtu(&self, family: ADDRESS_FAMILY, mut mtu: u32) -> Result<(), NETIO_STATUS> {
+        let mut row = MIB_IPINTERFACE_ROW {
+            Family: family,
+            InterfaceLuid: self.luid,
+            ..Default::default()
+        };
+
+        // SAFETY: TODO
+        let error = unsafe { GetIpInterfaceEntry(&mut row) };
+        if error != NO_ERROR {
+            if family == (AF_INET6 as ADDRESS_FAMILY) && error == ERROR_NOT_FOUND {
+                tracing::debug!(?family, "Couldn't set MTU, maybe IPv6 is disabled.");
+            } else {
+                tracing::warn!(?family, "Couldn't set MTU: {}", error);
+            }
+            return Err(error);
+        }
+
+        if family == (AF_INET6 as ADDRESS_FAMILY) {
+            // ipv6 mtu must be at least 1280
+            mtu = 1280.max(mtu);
+        }  
+
+        // https://stackoverflow.com/questions/54857292/setipinterfaceentry-returns-error-invalid-parameter
+        row.SitePrefixLength = 0;
+
+        row.NlMtu = mtu;
+
+        // SAFETY: TODO
+        let ret = unsafe { SetIpInterfaceEntry(&mut row) };
+        if NO_ERROR == ret {
+            Ok(())
+        } else {
+            Err(ret)
+        }
     }
 }
