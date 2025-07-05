@@ -1,61 +1,185 @@
-use std::{io, net::Ipv4Addr};
+use crate::common::ifcfg::win::types::{RouteDataIpv4, RouteDataIpv6};
 
+use super::win::luid::InterfaceLuid;
 use async_trait::async_trait;
+use cidr::{Ipv4Inet, Ipv6Inet};
+use std::{
+    io,
+    net::{Ipv4Addr, Ipv6Addr},
+    ptr::null_mut,
+};
+use windows_sys::Win32::{
+    Foundation::NO_ERROR,
+    NetworkManagement::IpHelper::{GetIfEntry, SetIfEntry, MIB_IFROW},
+    System::Diagnostics::Debug::{
+        FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
+    },
+};
 use winreg::{
     enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE},
     RegKey,
 };
 
-use super::{cidr_to_subnet_mask, run_shell_cmd, Error, IfConfiguerTrait};
-
+use super::{Error, IfConfiguerTrait};
 pub struct WindowsIfConfiger {}
+
+fn format_win_error(error: u32) -> String {
+    // use FormatMessageW to get the error message
+    let mut buffer = vec![0; 1024];
+    let size = buffer.len() as u32;
+    let flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+
+    unsafe {
+        FormatMessageW(
+            flags,
+            null_mut(),
+            error,
+            0,
+            buffer.as_mut_ptr() as *mut u16,
+            size,
+            null_mut(),
+        );
+    }
+    let str_end = buffer.iter().position(|&b| b == 0).unwrap_or(buffer.len());
+    format!(
+        "{} (code: {})",
+        String::from_utf16_lossy(&buffer[..str_end])
+            .trim()
+            .to_string(),
+        error
+    )
+}
 
 impl WindowsIfConfiger {
     pub fn get_interface_index(name: &str) -> Option<u32> {
         crate::arch::windows::find_interface_index(name).ok()
     }
 
-    async fn list_ipv4(name: &str) -> Result<Vec<Ipv4Addr>, Error> {
-        use anyhow::Context;
-        use network_interface::NetworkInterfaceConfig;
-        use std::net::IpAddr;
-        let ret = network_interface::NetworkInterface::show().with_context(|| "show interface")?;
-        let addrs = ret
-            .iter()
-            .filter_map(|x| {
-                if x.name != name {
-                    return None;
-                }
-                Some(x.addr.clone())
-            })
-            .flat_map(|x| x)
-            .map(|x| x.ip())
-            .filter_map(|x| {
-                if let IpAddr::V4(ipv4) = x {
-                    Some(ipv4)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        Ok(addrs)
+    #[tracing::instrument(err, ret)]
+    async fn add_ip_address(name: &str, addr: Ipv4Inet) -> Result<(), Error> {
+        let if_index = Self::get_interface_index(name).ok_or(Error::NotFound)?;
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+        luid.add_ipv4_address(&addr)
+            .map_err(|e| anyhow::anyhow!("Failed to add IPv4 address: {}", format_win_error(e)))?;
+        Ok(())
     }
 
-    async fn remove_one_ipv4(name: &str, ip: Ipv4Addr) -> Result<(), Error> {
-        run_shell_cmd(
-            format!(
-                "netsh interface ipv4 delete address {} address={}",
-                name,
-                ip.to_string()
-            )
-            .as_str(),
-        )
-        .await
+    #[tracing::instrument(err, ret)]
+    async fn remove_ip_address(name: &str, addr: Option<Ipv4Inet>) -> Result<(), Error> {
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+        if let Some(addr) = addr {
+            luid.delete_ipv4_address(&addr).map_err(|e| {
+                anyhow::anyhow!("Failed to delete IPv4 address: {}", format_win_error(e))
+            })?;
+        } else {
+            luid.flush_ipv4_addresses().map_err(|e| {
+                anyhow::anyhow!("Failed to flush IPv4 addresses: {}", format_win_error(e))
+            })?;
+        }
+        Ok(())
+    }
+
+    #[tracing::instrument(err, ret)]
+    async fn set_interface_status(name: &str, up: bool) -> Result<(), Error> {
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+
+        unsafe {
+            let mut if_row = MIB_IFROW {
+                wszName: [0; 256],
+                dwIndex: if_index,
+                dwType: 0,
+                dwMtu: 0,
+                dwSpeed: 0,
+                dwPhysAddrLen: 0,
+                bPhysAddr: [0; 8],
+                dwAdminStatus: if up { 1 } else { 2 }, // 1 = up, 2 = down
+                dwOperStatus: 0,
+                dwLastChange: 0,
+                dwInOctets: 0,
+                dwInUcastPkts: 0,
+                dwInNUcastPkts: 0,
+                dwInDiscards: 0,
+                dwInErrors: 0,
+                dwInUnknownProtos: 0,
+                dwOutOctets: 0,
+                dwOutUcastPkts: 0,
+                dwOutNUcastPkts: 0,
+                dwOutDiscards: 0,
+                dwOutErrors: 0,
+                dwOutQLen: 0,
+                dwDescrLen: 0,
+                bDescr: [0; 256],
+            };
+
+            if GetIfEntry(&mut if_row) == NO_ERROR {
+                if SetIfEntry(&if_row) == NO_ERROR {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("Failed to set interface status").into())
+                }
+            } else {
+                Err(anyhow::anyhow!("Failed to get interface entry").into())
+            }
+        }
+    }
+
+    #[tracing::instrument(err, ret)]
+    async fn set_interface_mtu(name: &str, mtu: u32) -> Result<(), Error> {
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+        luid.set_iface_config(mtu).map_err(|e| {
+            anyhow::anyhow!("Failed to set interface config: {}", format_win_error(e))
+        })?;
+        Ok(())
+    }
+
+    #[tracing::instrument(err, ret)]
+    async fn add_ipv6_address(name: &str, addr: Ipv6Inet) -> Result<(), Error> {
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+        luid.add_ipv6_address(&addr)
+            .map_err(|e| anyhow::anyhow!("Failed to add IPv6 address: {}", format_win_error(e)))?;
+        Ok(())
+    }
+
+    #[tracing::instrument(err, ret)]
+    async fn remove_ipv6_address(name: &str, addr: Option<Ipv6Inet>) -> Result<(), Error> {
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+        if let Some(addr) = addr {
+            luid.delete_ipv6_address(&addr).map_err(|e| {
+                anyhow::anyhow!("Failed to delete IPv6 address: {}", format_win_error(e))
+            })?;
+        } else {
+            luid.flush_ipv6_addresses().map_err(|e| {
+                anyhow::anyhow!("Failed to flush IPv6 addresses: {}", format_win_error(e))
+            })?;
+        }
+        Ok(())
     }
 }
 
-#[cfg(target_os = "windows")]
 #[async_trait]
 impl IfConfiguerTrait for WindowsIfConfiger {
     async fn add_ipv4_route(
@@ -65,20 +189,20 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let Some(idx) = Self::get_interface_index(name) else {
+        let Some(if_index) = Self::get_interface_index(name) else {
             return Err(Error::NotFound);
         };
-        run_shell_cmd(
-            format!(
-                "route ADD {} MASK {} 10.1.1.1 IF {} METRIC {}",
-                address,
-                cidr_to_subnet_mask(cidr_prefix),
-                idx,
-                cost.unwrap_or(9000)
-            )
-            .as_str(),
-        )
-        .await
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+
+        luid.add_routes_ipv4([RouteDataIpv4 {
+            destination: Ipv4Inet::new(address, cidr_prefix).unwrap(),
+            next_hop: Ipv4Addr::UNSPECIFIED,
+            metric: cost.unwrap_or(9000) as u32,
+        }])
+        .map_err(|e| anyhow::anyhow!("Failed to add route: {}", format_win_error(e)))?;
+        Ok(())
     }
 
     async fn remove_ipv4_route(
@@ -87,19 +211,18 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        let Some(idx) = Self::get_interface_index(name) else {
+        let Some(if_index) = Self::get_interface_index(name) else {
             return Err(Error::NotFound);
         };
-        run_shell_cmd(
-            format!(
-                "route DELETE {} MASK {} IF {}",
-                address,
-                cidr_to_subnet_mask(cidr_prefix),
-                idx
-            )
-            .as_str(),
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+        luid.delete_route_ipv4(
+            &Ipv4Inet::new(address, cidr_prefix).unwrap(),
+            &Ipv4Addr::UNSPECIFIED,
         )
-        .await
+        .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
+        Ok(())
     }
 
     async fn add_ipv4_ip(
@@ -108,39 +231,15 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         address: Ipv4Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
-            format!(
-                "netsh interface ipv4 add address {} address={} mask={}",
-                name,
-                address,
-                cidr_to_subnet_mask(cidr_prefix)
-            )
-            .as_str(),
-        )
-        .await
+        Self::add_ip_address(name, Ipv4Inet::new(address, cidr_prefix).unwrap()).await
     }
 
     async fn set_link_status(&self, name: &str, up: bool) -> Result<(), Error> {
-        run_shell_cmd(
-            format!(
-                "netsh interface set interface {} {}",
-                name,
-                if up { "enable" } else { "disable" }
-            )
-            .as_str(),
-        )
-        .await
+        Self::set_interface_status(name, up).await
     }
 
-    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Addr>) -> Result<(), Error> {
-        if ip.is_none() {
-            for ip in Self::list_ipv4(name).await?.iter() {
-                Self::remove_one_ipv4(name, *ip).await?;
-            }
-            Ok(())
-        } else {
-            Self::remove_one_ipv4(name, ip.unwrap()).await
-        }
+    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
+        Self::remove_ip_address(name, ip).await
     }
 
     async fn wait_interface_show(&self, name: &str) -> Result<(), Error> {
@@ -160,82 +259,66 @@ impl IfConfiguerTrait for WindowsIfConfiger {
     }
 
     async fn set_mtu(&self, name: &str, mtu: u32) -> Result<(), Error> {
-        let _ = run_shell_cmd(
-            format!("netsh interface ipv6 set subinterface {} mtu={}", name, mtu).as_str(),
-        )
-        .await;
-        run_shell_cmd(
-            format!("netsh interface ipv4 set subinterface {} mtu={}", name, mtu).as_str(),
-        )
-        .await
+        Self::set_interface_mtu(name, mtu).await
     }
 
     async fn add_ipv6_ip(
         &self,
         name: &str,
-        address: std::net::Ipv6Addr,
+        address: Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
-            format!(
-                "netsh interface ipv6 add address {} {}/{}",
-                name, address, cidr_prefix
-            )
-            .as_str(),
-        )
-        .await
+        Self::add_ipv6_address(name, Ipv6Inet::new(address, cidr_prefix).unwrap()).await
     }
 
-    async fn remove_ipv6(&self, name: &str, ip: Option<std::net::Ipv6Addr>) -> Result<(), Error> {
-        if let Some(ip) = ip {
-            run_shell_cmd(
-                format!("netsh interface ipv6 delete address {} {}", name, ip).as_str(),
-            )
-            .await
-        } else {
-            // Remove all IPv6 addresses
-            run_shell_cmd(
-                format!("netsh interface ipv6 delete address {} all", name).as_str(),
-            )
-            .await
-        }
+    async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
+        Self::remove_ipv6_address(name, ip).await
     }
 
     async fn add_ipv6_route(
         &self,
         name: &str,
-        address: std::net::Ipv6Addr,
+        address: Ipv6Addr,
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
-        let cmd = if let Some(cost) = cost {
-            format!(
-                "netsh interface ipv6 add route {}/{} {} metric={}",
-                address, cidr_prefix, name, cost
-            )
-        } else {
-            format!(
-                "netsh interface ipv6 add route {}/{} {}",
-                address, cidr_prefix, name
-            )
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
         };
-        run_shell_cmd(cmd.as_str()).await
+
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+
+        luid.add_routes_ipv6([RouteDataIpv6 {
+            destination: Ipv6Inet::new(address, cidr_prefix).unwrap(),
+            next_hop: Ipv6Addr::UNSPECIFIED,
+            metric: cost.unwrap_or(9000) as u32,
+        }])
+        .map_err(|e| anyhow::anyhow!("Failed to add route: {}", format_win_error(e)))?;
+        Ok(())
     }
 
     async fn remove_ipv6_route(
         &self,
         name: &str,
-        address: std::net::Ipv6Addr,
+        address: Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
-            format!(
-                "netsh interface ipv6 delete route {}/{} {}",
-                address, cidr_prefix, name
-            )
-            .as_str(),
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+
+        let luid = InterfaceLuid::luid_from_index(if_index).map_err(|e| {
+            anyhow::anyhow!("Failed to get interface luid: {}", format_win_error(e))
+        })?;
+
+        luid.delete_route_ipv6(
+            &Ipv6Inet::new(address, cidr_prefix).unwrap(),
+            &Ipv6Addr::UNSPECIFIED,
         )
-        .await
+        .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
+        Ok(())
     }
 }
 

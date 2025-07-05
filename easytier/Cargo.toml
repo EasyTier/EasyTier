@@ -246,6 +246,13 @@ windows = { version = "0.52.0", features = [
 encoding = "0.2"
 winreg = "0.52"
 windows-service = "0.7.0"
+windows-sys = { version = "0.52", features = [
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis", 
+    "Win32_Networking_WinSock",
+    "Win32_Foundation"
+]}
+winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [build-dependencies]
 tonic-build = "0.12"

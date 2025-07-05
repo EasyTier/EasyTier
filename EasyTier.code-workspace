@@ -4,12 +4,28 @@
 			"path": "."
 		},
 		{
+			"name": "core",
+			"path": "easytier"
+		},
+		{
 			"name": "gui",
 			"path": "easytier-gui"
 		},
 		{
-			"name": "core",
-			"path": "easytier"
+			"name": "web",
+			"path": "easytier-web"
+		},
+		{
+			"name": "ffi",
+			"path": "easytier-contrib/easytier-ffi"
+		},
+		{
+			"name": "magisk",
+			"path": "easytier-contrib/easytier-magisk"
+		},
+		{
+			"name": "openharmony",
+			"path": "easytier-contrib/easytier-ohrs"
 		},
 		{
 			"name": "vpnservice",
@@ -26,5 +42,7 @@
 		"i18n-ally.sortKeys": true,
 		// Disable the default formatter
 		"prettier.enable": false,
+		"editor.formatOnSave": true,
+		"editor.formatOnSaveMode": "modifications",
 	}
 }

@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Context;
 use async_trait::async_trait;
-use cidr::IpInet;
+use cidr::{IpInet, Ipv4Inet, Ipv6Inet};
 use netlink_packet_core::{
     NetlinkDeserializable, NetlinkHeader, NetlinkMessage, NetlinkPayload, NetlinkSerializable,
     NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REQUEST,
@@ -473,7 +473,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         Ok(())
     }
 
-    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Addr>) -> Result<(), Error> {
+    async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
         if ip.is_none() {
             let addrs = Self::list_addresses(name)?;
             for addr in addrs {
@@ -483,8 +483,8 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             }
         } else {
             let ip = ip.unwrap();
-            let prefix_len = Self::get_prefix_len(name, ip)?;
-            Self::remove_one_ip(name, ip, prefix_len)?;
+            let prefix_len = Self::get_prefix_len(name, ip.address())?;
+            Self::remove_one_ip(name, ip.address(), prefix_len)?;
         }
 
         Ok(())
@@ -519,7 +519,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
         )
     }
 
-    async fn remove_ipv6(&self, name: &str, ip: Option<std::net::Ipv6Addr>) -> Result<(), Error> {
+    async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         if ip.is_none() {
             let addrs = Self::list_addresses(name)?;
             for addr in addrs {
@@ -530,8 +530,8 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
             }
         } else {
             let ipv6 = ip.unwrap();
-            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6)?;
-            Self::remove_one_ipv6(name, ipv6, prefix_len)?;
+            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
+            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
         }
 
         Ok(())
