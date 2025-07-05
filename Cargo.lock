@@ -2058,6 +2058,7 @@ dependencies = [
  "version-compare",
  "which 7.0.3",
  "wildmatch",
+ "winapi",
  "windows 0.52.0",
  "windows-service",
  "windows-sys 0.52.0",

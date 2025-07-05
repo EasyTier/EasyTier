@@ -12,12 +12,13 @@ use windows_sys::Win32::{
         IpHelper::{
             AddIPAddress, CreateUnicastIpAddressEntry, DeleteIPAddress,
             DeleteUnicastIpAddressEntry, GetAdaptersAddresses, GetAdaptersInfo, GetIfEntry,
-            SetIfEntry, GAA_FLAG_INCLUDE_PREFIX, IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_INFO,
-            MIB_IFROW, MIB_UNICASTIPADDRESS_ROW,
+            GetIpInterfaceEntry, SetIfEntry, SetIpInterfaceEntry, GAA_FLAG_INCLUDE_PREFIX,
+            IP_ADAPTER_ADDRESSES_LH, IP_ADAPTER_INFO, MIB_IFROW, MIB_IPINTERFACE_ROW,
+            MIB_UNICASTIPADDRESS_ROW,
         },
         Ndis::NET_LUID_LH as NET_LUID,
     },
-    Networking::WinSock::{AF_INET6, SOCKADDR_IN6, SOCKADDR_INET},
+    Networking::WinSock::{AF_INET, AF_INET6, SOCKADDR_IN6, SOCKADDR_INET},
     System::Diagnostics::Debug::{
         FormatMessageW, FORMAT_MESSAGE_FROM_SYSTEM, FORMAT_MESSAGE_IGNORE_INSERTS,
     },
@@ -253,54 +254,67 @@ impl WindowsIfConfiger {
         };
 
         unsafe {
-            // 设置接口的 MTU（同时影响 IPv4 和 IPv6）
-            let mut if_row = MIB_IFROW {
-                wszName: [0; 256],
-                dwIndex: if_index,
-                dwType: 0,
-                dwMtu: mtu,
-                dwSpeed: 0,
-                dwPhysAddrLen: 0,
-                bPhysAddr: [0; 8],
-                dwAdminStatus: 0,
-                dwOperStatus: 0,
-                dwLastChange: 0,
-                dwInOctets: 0,
-                dwInUcastPkts: 0,
-                dwInNUcastPkts: 0,
-                dwInDiscards: 0,
-                dwInErrors: 0,
-                dwInUnknownProtos: 0,
-                dwOutOctets: 0,
-                dwOutUcastPkts: 0,
-                dwOutNUcastPkts: 0,
-                dwOutDiscards: 0,
-                dwOutErrors: 0,
-                dwOutQLen: 0,
-                dwDescrLen: 0,
-                bDescr: [0; 256],
-            };
+            unsafe fn set_ip_mtu(
+                if_index: u32,
+                mtu: u32,
+                family: u16,
+            ) -> windows_sys::Win32::Foundation::WIN32_ERROR {
+                let mut row = MIB_IPINTERFACE_ROW {
+                    Family: family,
+                    InterfaceLuid: NET_LUID { Value: 0 },
+                    InterfaceIndex: if_index,
+                    ..std::mem::zeroed()
+                };
 
-            let result = GetIfEntry(&mut if_row);
-            if result == NO_ERROR {
-                if_row.dwMtu = mtu;
-                let result = SetIfEntry(&if_row);
-                if result != NO_ERROR {
-                    return Err(anyhow::anyhow!(
-                        "Failed to set interface MTU: {}",
-                        format_win_error(result)
-                    )
-                    .into());
+                let result = GetIpInterfaceEntry(&mut row);
+                if result == NO_ERROR {
+                    println!(
+                        "current mtu: {}, luid: {}, ifid: {}, family: {}, new_mtu: {}",
+                        row.NlMtu, row.InterfaceLuid.Value, row.InterfaceIndex, row.Family, mtu
+                    );
+                    row.NlMtu = mtu;
+                    // https://stackoverflow.com/questions/54857292/setipinterfaceentry-returns-error-invalid-parameter
+                    row.SitePrefixLength = 0;
+                    SetIpInterfaceEntry(&mut row)
+                } else {
+                    println!("GetIpInterfaceEntry failed: {}", format_win_error(result));
+                    result
                 }
-                tracing::info!("Successfully set interface MTU to {}", mtu);
-                Ok(())
-            } else {
-                Err(anyhow::anyhow!(
-                    "Failed to get interface entry: {}",
-                    format_win_error(result)
-                )
-                .into())
             }
+
+            // Set IPv4 MTU
+            let ipv4_result = set_ip_mtu(if_index, mtu, AF_INET as u16);
+            if ipv4_result == NO_ERROR {
+                tracing::info!("Successfully set IPv4 interface MTU to {}", mtu);
+            } else {
+                tracing::warn!(
+                    "Failed to set IPv4 interface MTU: {}",
+                    format_win_error(ipv4_result)
+                );
+            }
+
+            // Set IPv6 MTU
+            let ipv6_result = set_ip_mtu(if_index, mtu, AF_INET6 as u16);
+            if ipv6_result == NO_ERROR {
+                tracing::info!("Successfully set IPv6 interface MTU to {}", mtu);
+            } else {
+                tracing::warn!(
+                    "Failed to set IPv6 interface MTU: {}",
+                    format_win_error(ipv6_result)
+                );
+            }
+
+            // Return error only if both IPv4 and IPv6 failed
+            if ipv4_result != NO_ERROR && ipv6_result != NO_ERROR {
+                return Err(anyhow::anyhow!(
+                    "Failed to set interface MTU. IPv4 error: {}, IPv6 error: {}",
+                    format_win_error(ipv4_result),
+                    format_win_error(ipv6_result)
+                )
+                .into());
+            }
+
+            Ok(())
         }
     }
 
