@@ -6,9 +6,11 @@ members = [
     "easytier-rpc-build",
     "easytier-web",
     "easytier-contrib/easytier-ffi",
-    "easytier-contrib/easytier-ohrs",
 ]
 default-members = ["easytier", "easytier-web"]
+exclude = [
+    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
+]
 
 [profile.dev]
 panic = "unwind"
