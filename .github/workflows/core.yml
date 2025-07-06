@@ -40,12 +40,12 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 21
+          node-version: 22
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10
           run_install: false
 
       - name: Get pnpm store directory
@@ -157,7 +157,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Setup protoc
-        uses: arduino/setup-protoc@v2
+        uses: arduino/setup-protoc@v3
         with:
           # GitHub repo token to use to avoid rate limiter
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -244,7 +244,7 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ ]]; then
-            UPX_VERSION=4.2.4
+            UPX_VERSION=5.0.1
             curl -L https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz -s | tar xJvf -
             cp upx-${UPX_VERSION}-amd64_linux/upx .
             ./upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"

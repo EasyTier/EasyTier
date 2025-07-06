@@ -1,11 +1,11 @@
-FROM alpine:latest AS builder
+FROM alpine:latest AS base
+FROM base AS builder
 
 ARG TARGETPLATFORM
 
 COPY . /tmp/artifacts
-RUN mkdir -p /tmp/output; \
-    cd /tmp/artifacts; \
-    ARTIFACT_ARCH=""; \
+WORKDIR /tmp/output
+RUN ARTIFACT_ARCH=""; \
     if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
         ARTIFACT_ARCH="x86_64"; \
     elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
@@ -16,14 +16,14 @@ RUN mkdir -p /tmp/output; \
     fi; \
     cp /tmp/artifacts/easytier-linux-${ARTIFACT_ARCH}/* /tmp/output;
 
-FROM alpine:latest
+FROM base
 
 RUN apk add --no-cache tzdata tini
 WORKDIR /app
 COPY --from=builder --chmod=755 /tmp/output/* /usr/local/bin
 
 # users can use "-e TZ=xxx" to adjust it
-ENV TZ Asia/Shanghai
+ENV TZ=Asia/Shanghai
 
 # tcp
 EXPOSE 11010/tcp
