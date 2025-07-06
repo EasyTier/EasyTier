@@ -10,7 +10,7 @@ use std::{
     time::SystemTime,
 };
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::{
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -367,14 +367,14 @@ impl Drop for ForeignNetworkEntry {
 
 struct ForeignNetworkManagerData {
     network_peer_maps: DashMap<String, Arc<ForeignNetworkEntry>>,
-    peer_network_map: DashMap<PeerId, String>,
+    peer_network_map: DashMap<PeerId, DashSet<String>>,
     network_peer_last_update: DashMap<String, SystemTime>,
     accessor: Arc<Box<dyn GlobalForeignNetworkAccessor>>,
     lock: std::sync::Mutex<()>,
 }
 
 impl ForeignNetworkManagerData {
-    fn get_peer_network(&self, peer_id: PeerId) -> Option<String> {
+    fn get_peer_network(&self, peer_id: PeerId) -> Option<DashSet<String>> {
         self.peer_network_map.get(&peer_id).map(|v| v.clone())
     }
 
@@ -384,7 +384,10 @@ impl ForeignNetworkManagerData {
 
     fn remove_peer(&self, peer_id: PeerId, network_name: &String) {
         let _l = self.lock.lock().unwrap();
-        self.peer_network_map.remove(&peer_id);
+        self.peer_network_map.remove_if(&peer_id, |_, v| {
+            let _ = v.remove(network_name);
+            v.is_empty()
+        });
         if let Some(_) = self
             .network_peer_maps
             .remove_if(network_name, |_, v| v.peer_map.is_empty())
@@ -406,7 +409,10 @@ impl ForeignNetworkManagerData {
 
     fn remove_network(&self, network_name: &String) {
         let _l = self.lock.lock().unwrap();
-        self.peer_network_map.retain(|_, v| v != network_name);
+        self.peer_network_map.iter().for_each(|v| {
+            v.value().remove(network_name);
+        });
+        self.peer_network_map.retain(|_, v| !v.is_empty());
         self.network_peer_maps.remove(network_name);
         self.network_peer_last_update.remove(network_name);
     }
@@ -439,7 +445,9 @@ impl ForeignNetworkManagerData {
             .clone();
 
         self.peer_network_map
-            .insert(dst_peer_id, network_identity.network_name.clone());
+            .entry(dst_peer_id)
+            .or_insert_with(|| DashSet::new())
+            .insert(network_identity.network_name.clone());
 
         self.network_peer_last_update
             .insert(network_identity.network_name.clone(), SystemTime::now());
@@ -664,6 +672,23 @@ impl ForeignNetworkManager {
         } else {
             Err(Error::RouteError(Some("network not found".to_string())))
         }
+    }
+
+    pub async fn close_peer_conn(
+        &self,
+        peer_id: PeerId,
+        conn_id: &super::peer_conn::PeerConnId,
+    ) -> Result<(), Error> {
+        let network_names = self.data.get_peer_network(peer_id).unwrap_or_default();
+        for network_name in network_names {
+            if let Some(entry) = self.data.get_network_entry(&network_name) {
+                let ret = entry.peer_map.close_peer_conn(peer_id, conn_id).await;
+                if ret.is_ok() || !matches!(ret.as_ref().unwrap_err(), Error::NotFound) {
+                    return ret;
+                }
+            }
+        }
+        Err(Error::NotFound)
     }
 }
 
