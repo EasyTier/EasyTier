@@ -54,12 +54,17 @@ pub struct NetConfig {
 }
 
 impl NetConfig {
-    pub fn new(interface_config: Config, ip_addr: IpCidr, gateway: Vec<IpAddress>) -> Self {
+    pub fn new(
+        interface_config: Config,
+        ip_addr: IpCidr,
+        gateway: Vec<IpAddress>,
+        buffer_size: Option<BufferSize>,
+    ) -> Self {
         Self {
             interface_config,
             ip_addr,
             gateway,
-            buffer_size: Default::default(),
+            buffer_size: buffer_size.unwrap_or_default(),
         }
     }
 }

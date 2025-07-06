@@ -21,7 +21,7 @@ use crate::{
         },
         ip_reassembler::IpReassembler,
         kcp_proxy::NatDstKcpConnector,
-        tokio_smoltcp::{channel_device, Net, NetConfig},
+        tokio_smoltcp::{channel_device, BufferSize, Net, NetConfig},
     },
     tunnel::packet_def::{PacketType, ZCPacket},
 };
@@ -318,6 +318,11 @@ impl Socks5ServerNet {
                     .parse()
                     .unwrap(),
                 vec![format!("{}", ipv4_addr.address()).parse().unwrap()],
+                Some(BufferSize {
+                    tcp_rx_size: 1024 * 128,
+                    tcp_tx_size: 1024 * 128,
+                    ..Default::default()
+                }),
             ),
         );
 
