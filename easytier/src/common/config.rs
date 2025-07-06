@@ -70,7 +70,11 @@ pub trait ConfigLoader: Send + Sync {
     fn get_dhcp(&self) -> bool;
     fn set_dhcp(&self, dhcp: bool);
 
-    fn add_proxy_cidr(&self, cidr: cidr::Ipv4Cidr, mapped_cidr: Option<cidr::Ipv4Cidr>);
+    fn add_proxy_cidr(
+        &self,
+        cidr: cidr::Ipv4Cidr,
+        mapped_cidr: Option<cidr::Ipv4Cidr>,
+    ) -> Result<(), anyhow::Error>;
     fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr);
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig>;
 
@@ -445,17 +449,23 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().dhcp = Some(dhcp);
     }
 
-    fn add_proxy_cidr(&self, cidr: cidr::Ipv4Cidr, mapped_cidr: Option<cidr::Ipv4Cidr>) {
+    fn add_proxy_cidr(
+        &self,
+        cidr: cidr::Ipv4Cidr,
+        mapped_cidr: Option<cidr::Ipv4Cidr>,
+    ) -> Result<(), anyhow::Error> {
         let mut locked_config = self.config.lock().unwrap();
         if locked_config.proxy_network.is_none() {
             locked_config.proxy_network = Some(vec![]);
         }
         if let Some(mapped_cidr) = mapped_cidr.as_ref() {
-            assert_eq!(
-                cidr.network_length(),
-                mapped_cidr.network_length(),
-                "Mapped CIDR must have the same network length as the original CIDR",
-            );
+            if cidr.network_length() != mapped_cidr.network_length() {
+                return Err(anyhow::anyhow!(
+                    "Mapped CIDR must have the same network length as the original CIDR: {} != {}",
+                    cidr.network_length(),
+                    mapped_cidr.network_length()
+                ));
+            }
         }
         // insert if no duplicate
         if !locked_config
@@ -475,6 +485,7 @@ impl ConfigLoader for TomlConfigLoader {
                     allow: None,
                 });
         }
+        Ok(())
     }
 
     fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr) {

@@ -658,6 +658,7 @@ impl NetworkOptions {
         }
 
         if !self.mapped_listeners.is_empty() {
+            let mut errs = Vec::new();
             cfg.set_mapped_listeners(Some(
                 self.mapped_listeners
                     .iter()
@@ -668,12 +669,21 @@ impl NetworkOptions {
                     })
                     .map(|s: url::Url| {
                         if s.port().is_none() {
-                            panic!("mapped listener port is missing: {}", s);
+                            errs.push(anyhow::anyhow!("mapped listener port is missing: {}", s));
                         }
                         s
                     })
-                    .collect(),
+                    .collect::<Vec<_>>(),
             ));
+            if !errs.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "{}",
+                    errs.iter()
+                        .map(|x| format!("{}", x))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
         }
 
         for n in self.proxy_networks.iter() {

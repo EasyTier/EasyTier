@@ -483,7 +483,7 @@ pub fn add_proxy_network_to_config(
     } else {
         None
     };
-    cfg.add_proxy_cidr(real_cidr, mapped_cidr);
+    cfg.add_proxy_cidr(real_cidr, mapped_cidr)?;
     Ok(())
 }
 
@@ -1003,7 +1003,7 @@ mod tests {
                     } else {
                         None
                     };
-                    config.add_proxy_cidr(network, mapped_network);
+                    config.add_proxy_cidr(network, mapped_network).unwrap();
                 }
             }
 
