@@ -523,6 +523,8 @@ impl<C: NatDstConnector> TcpProxy<C> {
             || cfg!(any(target_os = "android", target_env = "ohos"))
         {
             // use smoltcp network stack
+
+            use crate::gateway::tokio_smoltcp::BufferSize;
             self.local_port
                 .store(8899, std::sync::atomic::Ordering::Relaxed);
 
@@ -573,6 +575,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         .parse()
                         .unwrap(),
                     vec![format!("{}", self.get_local_ip().unwrap()).parse().unwrap()],
+                    Some(BufferSize {
+                        tcp_rx_size: 1024 * 16,
+                        tcp_tx_size: 1024 * 16,
+                        ..Default::default()
+                    }),
                 ),
             );
             net.set_any_ip(true);
