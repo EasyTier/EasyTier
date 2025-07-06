@@ -2,18 +2,7 @@
 
 version: 2
 updates:
-  - package-ecosystem: cargo
-    directories:
-      - "/"
-      - "easytier"
-      - "easytier-contrib/easytier-ffi"
-      - "easytier-contrib/easytier-ohrs"
-      - "easytier-gui/src-tauri"
-      - "easytier-rpc-build"
-      - "easytier-web"
-      - "tauri-plugin-vpnservice"
-    schedule:
-      interval: weekly
+  # cargo updates are considered unstable without greater CI coverage
   - package-ecosystem: gradle
     directories:
       - "easytier-gui/src-tauri/gen/android"
@@ -36,10 +25,6 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: github-actions
-    directory: "/"
-    schedule:
-      interval: weekly
-  - package-ecosystem: gitsubmodule
     directory: "/"
     schedule:
       interval: weekly
