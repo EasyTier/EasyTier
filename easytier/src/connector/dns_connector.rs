@@ -168,13 +168,23 @@ impl DNSTunnelConnector {
 impl super::TunnelConnector for DNSTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         let mut conn = if self.addr.scheme() == "txt" {
-            self.handle_txt_record(self.addr.host_str().as_ref().unwrap())
-                .await
-                .with_context(|| "get txt record url failed")?
+            self.handle_txt_record(
+                self.addr
+                    .host_str()
+                    .as_ref()
+                    .ok_or(anyhow::anyhow!("host should not be empty in txt url"))?,
+            )
+            .await
+            .with_context(|| "get txt record url failed")?
         } else if self.addr.scheme() == "srv" {
-            self.handle_srv_record(self.addr.host_str().as_ref().unwrap())
-                .await
-                .with_context(|| "get srv record url failed")?
+            self.handle_srv_record(
+                self.addr
+                    .host_str()
+                    .as_ref()
+                    .ok_or(anyhow::anyhow!("host should not be empty in srv url"))?,
+            )
+            .await
+            .with_context(|| "get srv record url failed")?
         } else {
             return Err(anyhow::anyhow!(
                 "unsupported dns scheme: {}, expecting txt or srv",

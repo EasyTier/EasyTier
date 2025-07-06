@@ -448,7 +448,8 @@ pub async fn quic_proxy() {
         "udp",
         |cfg| {
             if cfg.get_inst_name() == "inst3" {
-                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
             }
             cfg
         },
@@ -498,11 +499,13 @@ pub async fn subnet_proxy_three_node_test(
                 flags.disable_quic_input = disable_quic_input;
                 flags.enable_quic_proxy = dst_enable_quic_proxy;
                 cfg.set_flags(flags);
-                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
                 cfg.add_proxy_cidr(
                     "10.1.2.0/24".parse().unwrap(),
                     Some("10.1.3.0/24".parse().unwrap()),
-                );
+                )
+                .unwrap();
             }
 
             if cfg.get_inst_name() == "inst2" && relay_by_public_server {
@@ -1181,7 +1184,8 @@ pub async fn port_forward_test(
                     },
                 ]);
             } else if cfg.get_inst_name() == "inst3" {
-                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None);
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
             }
             let mut flags = cfg.get_flags();
             flags.no_tun = no_tun;
