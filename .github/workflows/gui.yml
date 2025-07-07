@@ -128,7 +128,7 @@ jobs:
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
 
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Set current ref as env variable
         run: |

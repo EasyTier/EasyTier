@@ -34,7 +34,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
