@@ -40,8 +40,7 @@ chrono = { version = "0.4.37", features = ["serde"] }
 
 once_cell = "1.18.0"
 dashmap = "6.0"
-
-privilege = "0.3"
+elevated-command = "1.1.2"
 gethostname = "0.5"
 
 dunce = "1.0.4"
