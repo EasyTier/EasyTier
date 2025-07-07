@@ -128,18 +128,20 @@ fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(not(target_os = "android"))]
 fn check_sudo() -> bool {
-    use std::env::current_exe;
-    let is_elevated = privilege::user::privileged();
+    let is_elevated = elevated_command::Command::is_elevated();
     if !is_elevated {
-        let Ok(exe) = current_exe() else {
-            return true;
-        };
+        let exe_path = std::env::var("APPIMAGE")
+            .ok()
+            .or_else(|| std::env::args().next())
+            .unwrap_or_default();
         let args: Vec<String> = std::env::args().collect();
-        let mut elevated_cmd = privilege::runas::Command::new(exe);
+        let mut stdcmd = std::process::Command::new(&exe_path);
         if args.contains(&AUTOSTART_ARG.to_owned()) {
-            elevated_cmd.arg(AUTOSTART_ARG);
+            stdcmd.arg(AUTOSTART_ARG);
         }
-        let _ = elevated_cmd.force_prompt(true).hide(true).gui(true).run();
+        elevated_command::Command::new(stdcmd)
+            .output()
+            .expect("Failed to run elevated command");
     }
     is_elevated
 }

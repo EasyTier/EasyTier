@@ -2080,9 +2080,9 @@ dependencies = [
  "dashmap",
  "dunce",
  "easytier",
+ "elevated-command",
  "gethostname 0.5.0",
  "once_cell",
- "privilege",
  "serde",
  "serde_json",
  "tauri",
@@ -2166,6 +2166,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "60b1af1c220855b6ceac025d3f6ecdd2b7c4894bfe9cd9bda4fbb4bc7c0d4cf0"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "elevated-command"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54c410eccdcc5b759704fdb6a792afe6b01ab8a062e2c003ff2567e2697a94aa"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "libc",
+ "log",
+ "winapi",
+ "windows 0.52.0",
 ]
 
 [[package]]
@@ -5830,18 +5844,6 @@ checksum = "5f12335488a2f3b0a83b14edad48dca9879ce89b2edd10e80237e4e852dd645e"
 dependencies = [
  "proc-macro2",
  "syn 2.0.87",
-]
-
-[[package]]
-name = "privilege"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "765ec92721e112ffe07f5c06fb0654da0b708990888981d05cf12a7c9909df30"
-dependencies = [
- "libc",
- "security-framework-sys",
- "which 4.4.2",
- "windows-sys 0.48.0",
 ]
 
 [[package]]
