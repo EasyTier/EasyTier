@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download Core Artifact
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
@@ -50,7 +50,7 @@ jobs:
           path: release_assets
 
       - name: Download GUI Artifact
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.gui_run_id }}
@@ -58,7 +58,7 @@ jobs:
           path: release_assets_nozip
 
       - name: Download Mobile Artifact
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.mobile_run_id }}
