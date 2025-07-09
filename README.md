@@ -11,104 +11,85 @@
 
 [简体中文](/README_CN.md) | [English](/README.md)
 
-**Please visit the [EasyTier Official Website](https://easytier.cn/en/) to view the full documentation.**
-
-EasyTier is a simple, safe and decentralized VPN networking solution implemented with the Rust language and Tokio framework.
+> ✨ A simple, secure, decentralized networking solution powered by Rust and Tokio
 
 <p align="center">
 <img src="assets/image-5.png" width="300">
 <img src="assets/image-4.png" width="300">
 </p>
 
+📚 **[Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 💬 **[Community](https://github.com/EasyTier/EasyTier/discussions)** | 📝 **[Changelog](https://easytier.cn/en/changelog)**
+
 ## Features
 
-- **Decentralized**: No need to rely on centralized services, nodes are equal and independent.
-- **Safe**: Use WireGuard protocol to encrypt data.
-- **High Performance**: Full-link zero-copy, with performance comparable to mainstream networking software.
-- **Cross-platform**: Supports MacOS/Linux/Windows/Android, will support IOS in the future. The executable file is statically linked, making deployment simple.
-- **Networking without public IP**: Supports networking using shared public nodes, refer to [Configuration Guide](#Networking-without-public-IP)
-- **NAT traversal**: Supports UDP-based NAT traversal, able to establish stable connections even in complex network environments.
-- **Subnet Proxy (Point-to-Network)**: Nodes can expose accessible network segments as proxies to the VPN subnet, allowing other nodes to access these subnets through the node.
-- **Smart Routing**: Selects links based on traffic to reduce latency and increase throughput.
-- **TCP Support**: Provides reliable data transmission through concurrent TCP links when UDP is limited, optimizing performance.
-- **High Availability**: Supports multi-path and switches to healthy paths when high packet loss or network errors are detected.
-- **IPv6 Support**: Supports networking using IPv6.
-- **Multiple Protocol Types**: Supports communication between nodes using protocols such as WebSocket and QUIC.
-- **Web Management Interface**: Provides a [web-based management](https://easytier.cn/web) interface for easy configuration and monitoring.
+### Core Features
+- 🔒 **Decentralized**: Nodes are equal and independent, no centralized services required
+- 🚀 **Easy to Use**: Multiple operation methods via web, client, and command line
+- 🌍 **Cross-Platform**: Supports Win/MacOS/Linux/FreeBSD/Android and X86/ARM/MIPS architectures
+- 🔐 **Secure**: AES-GCM or WireGuard encryption, prevents man-in-the-middle attacks
 
-## Installation
+### Advanced Capabilities
+- 🔌 **Efficient NAT Traversal**: Supports UDP and IPv6 traversal, works with NAT4-NAT4 networks
+- 🌐 **Subnet Proxy**: Nodes can share subnets for other nodes to access
+- 🔄 **Intelligent Routing**: Latency priority and automatic route selection for best network experience
+- ⚡ **High Performance**: Zero-copy throughout the entire link, supports TCP/UDP/WSS/WG protocols
 
-1. **Download the precompiled binary file**
-
-    Visit the [GitHub Release page](https://github.com/EasyTier/EasyTier/releases) to download the binary file suitable for your operating system. Release includes both command-line programs and GUI programs in the compressed package.
-
-2. **Install via crates.io**
-
-    ```sh
-    cargo install easytier
-    ```
-
-3. **Install from source code**
-
-    ```sh
-    cargo install --git https://github.com/EasyTier/EasyTier.git easytier
-    ```
-
-4. **Install by Docker Compose**
-
-    Please visit the [EasyTier Official Website](https://easytier.cn/en/) to view the full documentation.
-
-5. **Install by script (For Linux Only)**
-
-    ```sh
-    wget -O /tmp/easytier.sh "https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh" && bash /tmp/easytier.sh install
-    ```
-
-    The script supports the following commands and options:
-
-    Commands:
-    - `install`: Install EasyTier
-    - `uninstall`: Uninstall EasyTier
-    - `update`: Update EasyTier to the latest version
-    - `help`: Show help message
-
-    Options:
-    - `--skip-folder-verify`: Skip folder verification during installation
-    - `--skip-folder-fix`: Skip automatic folder path fixing
-    - `--no-gh-proxy`: Disable GitHub proxy
-    - `--gh-proxy`: Set custom GitHub proxy URL (default: https://ghfast.top/)
-
-    Examples:
-    ```sh
-    # Show help
-    bash /tmp/easytier.sh help
-
-    # Install with options
-    bash /tmp/easytier.sh install --skip-folder-verify
-    bash /tmp/easytier.sh install --no-gh-proxy
-    bash /tmp/easytier.sh install --gh-proxy https://your-proxy.com/
-
-    # Update EasyTier
-    bash /tmp/easytier.sh update
-
-    # Uninstall EasyTier
-    bash /tmp/easytier.sh uninstall
-    ```
-
-6. **Install by Homebrew (For MacOS Only)**
-
-    ```sh
-    brew tap brewforge/chinese
-    brew install --cask easytier-gui
-    ```
+### Network Optimization
+- 📊 **UDP Loss Resistance**: KCP/QUIC proxy optimizes latency and bandwidth in high packet loss environments
+- 🔧 **Web Management**: Easy configuration and monitoring through web interface
+- 🛠 **Zero Config**: Simple deployment with statically linked executables
 
 ## Quick Start
 
-> The following text only describes the use of the command-line tool; the GUI program can be configured by referring to the following concepts.
+### 📥 Installation
 
-Make sure EasyTier is installed according to the [Installation Guide](#Installation), and both easytier-core and easytier-cli commands are available.
+Choose the installation method that best suits your needs:
 
-### Two-node Networking
+```bash
+# 1. Download pre-built binary (Recommended)
+# Visit https://github.com/EasyTier/EasyTier/releases
+
+# 2. Install via cargo
+cargo install easytier
+
+# 3. Install via Docker Compose
+# See https://easytier.cn/en/ for Docker instructions
+
+# 4. Linux Quick Install
+wget -O- https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh | sudo bash
+
+# 5. MacOS via Homebrew
+brew tap brewforge/chinese
+brew install --cask easytier-gui
+```
+
+### 🚀 Basic Usage
+
+1. **Start First Node**
+```bash
+sudo easytier-core --ipv4 10.144.144.1
+```
+
+2. **Connect Second Node**
+```bash
+sudo easytier-core --ipv4 10.144.144.2 --peers udp://FIRST_NODE_IP:11010
+```
+
+3. **Verify Connection**
+```bash
+ping 10.144.144.2
+easytier-cli peer  # View connected peers
+```
+
+### 🔍 Advanced Features
+
+- **[Subnet Proxy Guide](https://easytier.cn/en/docs/advanced/subnet-proxy)**
+- **[WireGuard Integration](https://easytier.cn/en/docs/advanced/wireguard)**
+- **[Public Node Setup](https://easytier.cn/en/docs/advanced/public-node)**
+
+📚 **[View Full Documentation](https://easytier.cn/en/)**
+
+## Two-node Networking
 
 Assuming the network topology of the two nodes is as follows
 
@@ -327,34 +308,26 @@ sudo easytier-core --network-name easytier --network-secret easytier -p tcp://pu
 
 You can use ``easytier-core --help`` to view all configuration items
 
-## Roadmap
+## Related Links
 
-- [ ] Support features such TCP hole punching, KCP, FEC etc.
-- [ ] Support iOS.
+- 📖 **[Community Documentation](https://easytier.cn/en/docs)**: Maintained by community volunteers, a plain language guide to using EasyTier
+- 🌐 **[Public Server Node List](https://easytier.cn/en/nodes)**: Community-maintained list of public server nodes and status queries
+- 💬 **[Telegram Group](https://t.me/easytier)**
+- 👥 **[QQ Group: 949700262](https://qm.qq.com/cgi-bin/qm/qr?k=kC8YJ6Jb8vWJIDbZrZJB8pB5YZgPJA5-)**
 
-## Community and Contribution
+## Acknowledgments
 
-We welcome and encourage community contributions! If you want to get involved, please submit a [GitHub PR](https://github.com/EasyTier/EasyTier/pulls). Detailed contribution guidelines can be found in [CONTRIBUTING.md](https://github.com/EasyTier/EasyTier/blob/main/CONTRIBUTING.md).
-
-## Related Projects and Resources
-
-- [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices.
-- [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration.
-- [vpncloud](https://github.com/dswd/vpncloud): A P2P Mesh VPN
-- [Candy](https://github.com/lanthora/candy): A reliable, low-latency, and anti-censorship virtual private network
+Special thanks to Langlang Cloud for sponsoring our public servers.
 
 ## License
 
 EasyTier is released under the [Apache License 2.0](https://github.com/EasyTier/EasyTier/blob/main/LICENSE).
 
-## Contact
-
-- Ask questions or report problems: [GitHub Issues](https://github.com/EasyTier/EasyTier/issues)
-- Discussion and exchange: [GitHub Discussions](https://github.com/EasyTier/EasyTier/discussions)
-- Telegram：https://t.me/easytier
-- QQ Group: 949700262
-
 ## Sponsor
 
+If you find EasyTier helpful, please consider sponsoring us. Software development and maintenance require a lot of time and effort, and your sponsorship will help us better maintain and improve EasyTier.
+
+<p align="center">
 <img src="assets/image-8.png" width="300">
 <img src="assets/image-9.png" width="300">
+</p>
