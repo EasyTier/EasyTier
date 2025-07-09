@@ -14,8 +14,8 @@
 > ✨ 一个由 Rust 和 Tokio 驱动的简单、安全、去中心化的异地组网方案
 
 <p align="center">
-<img src="assets/config-page.png" width="250" alt="配置页面">
-<img src="assets/running-page.png" width="250" alt="运行页面">
+<img src="assets/config-page.png" width="300" alt="配置页面">
+<img src="assets/running-page.png" width="300" alt="运行页面">
 </p>
 
 📚 **[完整文档](https://easytier.cn)** | 🖥️ **[Web 控制台](https://easytier.cn/web)** | 📝 **[下载发布版本](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[第三方工具](https://easytier.cn/guide/installation_gui.html#%E7%AC%AC%E4%B8%89%E6%96%B9%E5%9B%BE%E5%BD%A2%E7%95%8C%E9%9D%A2)** | ❤️ **[赞助](#赞助)**
@@ -268,6 +268,8 @@ easytier-cli vpn-portal
 # 公共共享节点无需指定 IPv4 地址
 sudo easytier-core --network-name mysharednode --network-secret mysharednode
 ```
+
+网络设置成功后，您可以轻松配置它以在系统启动时自动启动。请参阅 [一键注册服务指南](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) 了解如何将 EasyTier 注册为系统服务。
 
 ## 相关项目
 

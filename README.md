@@ -14,8 +14,8 @@
 > ✨ A simple, secure, decentralized virtual private network solution powered by Rust and Tokio
 
 <p align="center">
-<img src="assets/config-page.png" width="250" alt="config page">
-<img src="assets/running-page.png" width="250" alt="running page">
+<img src="assets/config-page.png" width="300" alt="config page">
+<img src="assets/running-page.png" width="300" alt="running page">
 </p>
 
 📚 **[Full Documentation](https://easytier.cn/en/)** | 🖥️ **[Web Console](https://easytier.cn/web)** | 📝 **[Download Releases](https://github.com/EasyTier/EasyTier/releases)** | 🧩 **[Third Party Tools](https://easytier.cn/en/guide/installation_gui.html#third-party-graphical-interfaces)** | ❤️ **[Sponsor](#sponsor)**
@@ -121,6 +121,8 @@ To improve availability, you can connect to multiple shared nodes simultaneously
 # Connect to multiple shared nodes
 sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010 -p udp://public.easytier.cn:11010
 ```
+
+Once your network is set up successfully, you can easily configure it to start automatically on system boot. Refer to the [One-Click Register Service guide](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) for step-by-step instructions on registering EasyTier as a system service.
 
 #### Decentralized Networking
 
@@ -290,9 +292,9 @@ EasyTier is released under the [LGPL-3.0](https://github.com/EasyTier/EasyTier/b
 CDN acceleration and security protection for this project are sponsored by Tencent EdgeOne.
 
 <p align="center">
-<a href="https://edgeone.ai/?from=github" target="_blank">
-<img src="assets/edgeone.png" width="200">
-</a>
+  <a href="https://edgeone.ai/?from=github" target="_blank">
+    <img src="assets/edgeone.png" width="200" alt="EdgeOne Logo">
+  </a>
 </p>
 
 Special thanks to [Langlang Cloud](https://langlang.cloud/) for sponsoring our public servers.
