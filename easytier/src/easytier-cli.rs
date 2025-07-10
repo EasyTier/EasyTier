@@ -64,9 +64,6 @@ struct Cli {
     )]
     output_format: OutputFormat,
 
-    #[clap(long, help = t!("core_clap.generate").to_string())]
-    generate: Option<Shell>,
-
     #[command(subcommand)]
     sub_command: SubCommand,
 }
@@ -91,6 +88,10 @@ enum SubCommand {
     Service(ServiceArgs),
     #[command(about = "show tcp/kcp proxy status")]
     Proxy,
+    #[command(about = t!("core_clap.generate").to_string())]
+    Generate{
+        shell:Shell
+    },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
@@ -991,11 +992,7 @@ where
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
-     if let Some(generate) = cli.generate {
-        let mut cmd = Cli::command();
-        easytier::print_completions(generate, &mut cmd, "easytier-cli");
-        return Ok(());
-    }
+   
     let client = RpcClient::new(TcpTunnelConnector::new(
         format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
             .parse()
@@ -1324,6 +1321,10 @@ async fn main() -> Result<(), Error> {
                 .collect::<Vec<_>>();
 
             print_output(&table_rows, &cli.output_format)?;
+        }
+        SubCommand::Generate { shell } => {
+            let mut cmd = Cli::command();
+            easytier::print_completions(shell, &mut cmd, "easytier-cli");
         }
     }
 
