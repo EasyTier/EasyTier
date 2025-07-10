@@ -70,6 +70,7 @@ brew install --cask easytier-gui
 
 # 7. (Optional) Install shell completions:
 easytier-core --generate fish > ~/.config/fish/completions/easytier-core.fish
+easytier-cli generate fish > ~/.config/fish/completions/easytier-cli.fish
 
 ```
 
