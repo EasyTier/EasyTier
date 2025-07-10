@@ -991,6 +991,8 @@ where
 #[tokio::main]
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
+    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+    rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
    
     let client = RpcClient::new(TcpTunnelConnector::new(
