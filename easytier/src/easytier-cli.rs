@@ -11,8 +11,10 @@ use std::{
 
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use clap::{command, Args, Parser, Subcommand};
+use clap::{command, Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use humansize::format_size;
+use rust_i18n::t;
 use service_manager::*;
 use tabled::settings::Style;
 use tokio::time::timeout;
@@ -61,6 +63,9 @@ struct Cli {
         help = "output format"
     )]
     output_format: OutputFormat,
+
+    #[clap(long, help = t!("core_clap.generate").to_string())]
+    generate: Option<Shell>,
 
     #[command(subcommand)]
     sub_command: SubCommand,
@@ -986,6 +991,11 @@ where
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
     let cli = Cli::parse();
+     if let Some(generate) = cli.generate {
+        let mut cmd = Cli::command();
+        easytier::print_completions(generate, &mut cmd, "easytier-cli");
+        return Ok(());
+    }
     let client = RpcClient::new(TcpTunnelConnector::new(
         format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
             .parse()

@@ -4,14 +4,14 @@
 extern crate rust_i18n;
 
 use std::{
-    io, net::{Ipv4Addr, SocketAddr}, path::PathBuf, process::ExitCode, sync::Arc
+    net::{Ipv4Addr, SocketAddr}, path::PathBuf, process::ExitCode, sync::Arc
 };
 
 use anyhow::Context;
 use cidr::IpCidr;
-use clap::{Command, CommandFactory, Parser};
+use clap::{CommandFactory, Parser};
 
-use clap_complete::{Generator, Shell};
+use clap_complete::Shell;
 use easytier::{
     common::{
         config::{
@@ -1132,9 +1132,7 @@ fn memory_monitor() {
         }
     }
 }
-fn print_completions<G: Generator>(generator: G, cmd: &mut Command) {
-    clap_complete::generate(generator, cmd, "easytier-core", &mut io::stdout());
-}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
@@ -1163,7 +1161,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
     if let Some(generate) = cli.generate {
         let mut cmd = Cli::command();
-        print_completions(generate, &mut cmd);
+        easytier::print_completions(generate, &mut cmd, "easytier-core");
         return ExitCode::SUCCESS;
     }
     let mut ret_code = 0;
