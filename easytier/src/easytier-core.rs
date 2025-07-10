@@ -4,16 +4,14 @@
 extern crate rust_i18n;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    process::ExitCode,
-    sync::Arc,
+    io, net::{Ipv4Addr, SocketAddr}, path::PathBuf, process::ExitCode, sync::Arc
 };
 
 use anyhow::Context;
 use cidr::IpCidr;
-use clap::Parser;
+use clap::{Command, CommandFactory, Parser};
 
+use clap_complete::{Generator, Shell};
 use easytier::{
     common::{
         config::{
@@ -122,6 +120,9 @@ struct Cli {
 
     #[command(flatten)]
     logging_options: LoggingOptions,
+
+    #[clap(long, help = t!("core_clap.generate").to_string())]
+    generate: Option<Shell>,
 }
 
 #[derive(Parser, Debug)]
@@ -1131,7 +1132,9 @@ fn memory_monitor() {
         }
     }
 }
-
+fn print_completions<G: Generator>(generator: G, cmd: &mut Command) {
+    clap_complete::generate(generator, cmd, "easytier-core", &mut io::stdout());
+}
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
@@ -1158,6 +1161,11 @@ async fn main() -> ExitCode {
     let _monitor = std::thread::spawn(memory_monitor);
 
     let cli = Cli::parse();
+    if let Some(generate) = cli.generate {
+        let mut cmd = Cli::command();
+        print_completions(generate, &mut cmd);
+        return ExitCode::SUCCESS;
+    }
     let mut ret_code = 0;
 
     if let Err(e) = run_main(cli).await {
