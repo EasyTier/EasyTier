@@ -67,6 +67,12 @@ brew install --cask easytier-gui
 
 # 6. OpenWrt Luci Web 界面
 # 访问 https://github.com/EasyTier/luci-app-easytier
+
+# 7.（可选）安装 Shell 补全功能：
+# Fish 补全
+easytier-core --generate fish > ~/.config/fish/completions/easytier-core.fish
+easytier-cli generate fish > ~/.config/fish/completions/easytier-cli.fish
+
 ```
 
 ### 🚀 基本用法
