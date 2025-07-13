@@ -30,6 +30,10 @@ use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
 use crate::proto::cli::VpnPortalRpc;
 use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
+use crate::proto::cli::{
+    MappedListenerManageRpc, MappedListener, ListMappedListenerRequest, ListMappedListenerResponse,
+    ManageMappedListenerRequest, MappedListenerManageAction, ManageMappedListenerResponse
+};
 use crate::proto::common::TunnelInfo;
 use crate::proto::peer_rpc::PeerCenterRpcServer;
 use crate::proto::rpc_impl::standalone::{RpcServerHook, StandAloneServer};
@@ -715,6 +719,52 @@ impl Instance {
         }
     }
 
+    fn get_mapped_listener_manager_rpc_service(&self) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone {
+        #[derive(Clone)]
+        pub struct MappedListenerManagerRpcService(Arc<GlobalCtx>);
+
+        #[async_trait::async_trait]
+        impl MappedListenerManageRpc for MappedListenerManagerRpcService {
+            type Controller = BaseController;
+
+            async fn list_mapped_listener(
+                &self,
+                _: BaseController,
+                _request: ListMappedListenerRequest,
+            ) -> Result<ListMappedListenerResponse, rpc_types::error::Error> {
+                let mut ret = ListMappedListenerResponse::default();
+                let urls = self.0.config.get_mapped_listeners();
+                let mapped_listeners: Vec<MappedListener> = urls
+                    .into_iter()
+                    .map(|u|MappedListener{url: Some(u.into())})
+                    .collect();
+                ret.mappedlisteners = mapped_listeners;
+                Ok(ret)
+            }
+
+            async fn manage_mapped_listener(
+                &self,
+                _: BaseController,
+                req: ManageMappedListenerRequest,
+            ) -> Result<ManageMappedListenerResponse, rpc_types::error::Error> {
+                let url: url::Url = req.url.ok_or(anyhow::anyhow!("url is empty"))?.into();
+
+                let urls = self.0.config.get_mapped_listeners();
+                let mut set_urls: HashSet<url::Url> = urls.into_iter().collect();
+                if req.action == MappedListenerManageAction::MappedListenerRemove as i32 {
+                    set_urls.remove(&url);
+                } else if req.action == MappedListenerManageAction::MappedListenerAdd as i32 {
+                    set_urls.insert(url);
+                }
+                let urls: Vec<url::Url> = set_urls.into_iter().collect();
+                self.0.config.set_mapped_listeners(Some(urls));
+                Ok(ManageMappedListenerResponse::default())
+            }
+        }
+
+        MappedListenerManagerRpcService(self.global_ctx.clone())
+    }
+
     async fn run_rpc_server(&mut self) -> Result<(), Error> {
         let Some(_) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
@@ -727,6 +777,7 @@ impl Instance {
         let conn_manager = self.conn_manager.clone();
         let peer_center = self.peer_center.clone();
         let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
+        let mapped_listener_manager_rpc = self.get_mapped_listener_manager_rpc_service();
 
         let s = self.rpc_server.as_mut().unwrap();
         s.registry().register(
@@ -742,6 +793,8 @@ impl Instance {
             .register(PeerCenterRpcServer::new(peer_center.get_rpc_service()), "");
         s.registry()
             .register(VpnPortalRpcServer::new(vpn_portal_rpc), "");
+        s.registry()
+            .register(MappedListenerManageRpcServer::new(mapped_listener_manager_rpc), "");
 
         if let Some(ip_proxy) = self.ip_proxy.as_ref() {
             s.registry().register(
