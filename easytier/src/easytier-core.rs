@@ -121,8 +121,8 @@ struct Cli {
     #[command(flatten)]
     logging_options: LoggingOptions,
 
-    #[clap(long, help = t!("core_clap.generate").to_string())]
-    generate: Option<Shell>,
+    #[clap(long, help = t!("core_clap.generate_completions").to_string())]
+    gen_autocomplete: Option<Shell>,
 }
 
 #[derive(Parser, Debug)]
@@ -1159,9 +1159,9 @@ async fn main() -> ExitCode {
     let _monitor = std::thread::spawn(memory_monitor);
 
     let cli = Cli::parse();
-    if let Some(generate) = cli.generate {
+    if let Some(shell) = cli.gen_autocomplete {
         let mut cmd = Cli::command();
-        easytier::print_completions(generate, &mut cmd, "easytier-core");
+        easytier::print_completions(shell, &mut cmd, "easytier-core");
         return ExitCode::SUCCESS;
     }
     let mut ret_code = 0;

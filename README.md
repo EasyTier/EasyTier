@@ -69,8 +69,8 @@ brew install --cask easytier-gui
 # Visit https://github.com/EasyTier/luci-app-easytier
 
 # 7. (Optional) Install shell completions:
-easytier-core --generate fish > ~/.config/fish/completions/easytier-core.fish
-easytier-cli generate fish > ~/.config/fish/completions/easytier-cli.fish
+easytier-core --gen-autocomplete fish > ~/.config/fish/completions/easytier-core.fish
+easytier-cli gen-autocomplete fish > ~/.config/fish/completions/easytier-cli.fish
 
 ```
 

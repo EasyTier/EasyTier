@@ -88,8 +88,8 @@ enum SubCommand {
     Service(ServiceArgs),
     #[command(about = "show tcp/kcp proxy status")]
     Proxy,
-    #[command(about = t!("core_clap.generate").to_string())]
-    Generate{
+    #[command(about = t!("core_clap.generate_completions").to_string())]
+    GenAutocomplete{
         shell:Shell
     },
 }
@@ -1324,7 +1324,7 @@ async fn main() -> Result<(), Error> {
 
             print_output(&table_rows, &cli.output_format)?;
         }
-        SubCommand::Generate { shell } => {
+        SubCommand::GenAutocomplete { shell } => {
             let mut cmd = Cli::command();
             easytier::print_completions(shell, &mut cmd, "easytier-cli");
         }
