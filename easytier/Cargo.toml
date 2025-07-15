@@ -132,7 +132,7 @@ clap = { version = "4.5.30", features = [
     "wrap_help",
     "env",
 ] }
-clap_complete = {version = "4.5.55"}
+clap_complete = { version = "4.5.55" }
 
 async-recursion = "1.0.5"
 
