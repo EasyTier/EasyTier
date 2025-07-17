@@ -1307,3 +1307,24 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
 
     drop_insts(insts).await;
 }
+
+#[tokio::test]
+async fn avoid_tunnel_loop_back_to_virtual_network() {
+    let insts = init_three_node("udp").await;
+
+    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap());
+    insts[0]
+        .get_peer_manager()
+        .try_direct_connect(tcp_connector)
+        .await
+        .unwrap_err();
+
+    let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:11010".parse().unwrap());
+    insts[0]
+        .get_peer_manager()
+        .try_direct_connect(udp_connector)
+        .await
+        .unwrap_err();
+
+    drop_insts(insts).await;
+}
