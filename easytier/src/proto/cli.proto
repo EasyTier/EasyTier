@@ -172,6 +172,31 @@ service ConnectorManageRpc {
   rpc ManageConnector(ManageConnectorRequest) returns (ManageConnectorResponse);
 }
 
+message MappedListener {
+  common.Url url = 1;
+}
+
+message ListMappedListenerRequest {}
+
+message ListMappedListenerResponse { repeated MappedListener mappedlisteners = 1; }
+
+enum MappedListenerManageAction {
+  MAPPED_LISTENER_ADD = 0;
+  MAPPED_LISTENER_REMOVE = 1;
+}
+
+message ManageMappedListenerRequest {
+  MappedListenerManageAction action = 1;
+  common.Url url = 2;
+}
+
+message ManageMappedListenerResponse {}
+
+service MappedListenerManageRpc {
+  rpc ListMappedListener(ListMappedListenerRequest) returns (ListMappedListenerResponse);
+  rpc ManageMappedListener(ManageMappedListenerRequest) returns (ManageMappedListenerResponse);
+}
+
 message VpnPortalInfo {
   string vpn_type = 1;
   string client_config = 2;

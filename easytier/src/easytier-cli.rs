@@ -33,6 +33,7 @@ use easytier::{
             PeerManageRpcClientFactory, ShowNodeInfoRequest, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
             VpnPortalRpcClientFactory,
+            ManageMappedListenerRequest, MappedListenerManageRpc, MappedListenerManageRpcClientFactory, ListMappedListenerRequest, MappedListenerManageAction
         },
         common::NatType,
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -74,6 +75,8 @@ enum SubCommand {
     Peer(PeerArgs),
     #[command(about = "manage connectors")]
     Connector(ConnectorArgs),
+    #[command(about = "manage mapped listeners")]
+    MappedListener(MappedListenerArgs),
     #[command(about = "do stun test")]
     Stun,
     #[command(about = "show route info")]
@@ -143,6 +146,26 @@ struct ConnectorArgs {
 enum ConnectorSubCommand {
     Add,
     Remove,
+    List,
+}
+
+#[derive(Args, Debug)]
+struct MappedListenerArgs {
+    #[command(subcommand)]
+    sub_command: Option<MappedListenerSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum MappedListenerSubCommand {
+    /// Add Mapped Listerner
+    Add {
+        url: String
+    },
+    /// Remove Mapped Listener
+    Remove {
+        url: String
+    },
+    /// List Existing Mapped Listener
     List,
 }
 
@@ -244,6 +267,18 @@ impl CommandHandler<'_> {
             .scoped_client::<ConnectorManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get connector manager client")?)
+    }
+
+    async fn get_mapped_listener_manager_client(
+        &self,
+    ) -> Result<Box<dyn MappedListenerManageRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .unwrap()
+            .scoped_client::<MappedListenerManageRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get mapped listener manager client")?)
     }
 
     async fn get_peer_center_client(
@@ -704,6 +739,56 @@ impl CommandHandler<'_> {
         println!("response: {:#?}", response);
         Ok(())
     }
+
+    async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
+        let client = self.get_mapped_listener_manager_client().await?;
+        let request = ListMappedListenerRequest::default();
+        let response = client
+            .list_mapped_listener(BaseController::default(), request)
+            .await?;
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&response.mappedlisteners)?);
+            return Ok(());
+        }
+        println!("response: {:#?}", response);
+        Ok(())
+    }
+
+    async fn handle_mapped_listener_add(&self, url: &String) -> Result<(), Error> {
+        let url = Self::mapped_listener_validate_url(url)?;
+        let client = self.get_mapped_listener_manager_client().await?;
+        let request = ManageMappedListenerRequest {
+            action: MappedListenerManageAction::MappedListenerAdd as i32,
+            url: Some(url.into())
+        };
+        let _response = client
+            .manage_mapped_listener(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    async fn handle_mapped_listener_remove(&self, url: &String) -> Result<(), Error> {
+        let url = Self::mapped_listener_validate_url(url)?;
+        let client = self.get_mapped_listener_manager_client().await?;
+        let request = ManageMappedListenerRequest {
+            action: MappedListenerManageAction::MappedListenerRemove as i32,
+            url: Some(url.into())
+        };
+        let _response = client
+            .manage_mapped_listener(BaseController::default(), request)
+            .await?;
+        Ok(())
+    }
+
+    fn mapped_listener_validate_url(url: &String) -> Result<url::Url, Error> {
+        let url = url::Url::parse(url)?;
+        if url.scheme() != "tcp" && url.scheme() != "udp" {
+            return Err(anyhow::anyhow!("Url ({url}) must start with tcp:// or udp://"))
+        } else if url.port().is_none() {
+            return Err(anyhow::anyhow!("Url ({url}) is missing port num"))
+        }
+        Ok(url)
+    }
 }
 
 #[derive(Debug)]
@@ -1039,6 +1124,19 @@ async fn main() -> Result<(), Error> {
             }
             None => {
                 handler.handle_connector_list().await?;
+            }
+        },
+        SubCommand::MappedListener(mapped_listener_args) => match mapped_listener_args.sub_command {
+            Some(MappedListenerSubCommand::Add { url }) => {
+                handler.handle_mapped_listener_add(&url).await?;
+                println!("add mapped listener: {url}");
+            }
+            Some(MappedListenerSubCommand::Remove { url }) => {
+                handler.handle_mapped_listener_remove(&url).await?;
+                println!("remove mapped listener: {url}");
+            }
+            Some(MappedListenerSubCommand::List) | None => {
+                handler.handle_mapped_listener_list().await?;
             }
         },
         SubCommand::Route(route_args) => match route_args.sub_command {
