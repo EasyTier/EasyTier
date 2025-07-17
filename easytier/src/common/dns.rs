@@ -127,7 +127,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_socket_addrs() {
-        let url = url::Url::parse("tcp://public.easytier.cn:80").unwrap();
+        let url = url::Url::parse("tcp://github-ci-test.easytier.cn:80").unwrap();
         let addrs = socket_addrs(&url, || Some(80)).await.unwrap();
         assert_eq!(2, addrs.len(), "addrs: {:?}", addrs);
         println!("addrs: {:?}", addrs);
