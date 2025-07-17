@@ -31,8 +31,9 @@ use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvCha
 use crate::proto::cli::VpnPortalRpc;
 use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::proto::cli::{
-    MappedListenerManageRpc, MappedListener, ListMappedListenerRequest, ListMappedListenerResponse,
-    ManageMappedListenerRequest, MappedListenerManageAction, ManageMappedListenerResponse
+    ListMappedListenerRequest, ListMappedListenerResponse, ManageMappedListenerRequest,
+    ManageMappedListenerResponse, MappedListener, MappedListenerManageAction,
+    MappedListenerManageRpc,
 };
 use crate::proto::common::TunnelInfo;
 use crate::proto::peer_rpc::PeerCenterRpcServer;
@@ -270,6 +271,8 @@ impl Instance {
             global_ctx.clone(),
             peer_packet_sender.clone(),
         ));
+
+        peer_manager.set_allow_loopback_tunnel(false);
 
         let listener_manager = Arc::new(Mutex::new(ListenerManager::new(
             global_ctx.clone(),
@@ -719,7 +722,9 @@ impl Instance {
         }
     }
 
-    fn get_mapped_listener_manager_rpc_service(&self) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone {
+    fn get_mapped_listener_manager_rpc_service(
+        &self,
+    ) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone {
         #[derive(Clone)]
         pub struct MappedListenerManagerRpcService(Arc<GlobalCtx>);
 
@@ -736,7 +741,9 @@ impl Instance {
                 let urls = self.0.config.get_mapped_listeners();
                 let mapped_listeners: Vec<MappedListener> = urls
                     .into_iter()
-                    .map(|u|MappedListener{url: Some(u.into())})
+                    .map(|u| MappedListener {
+                        url: Some(u.into()),
+                    })
                     .collect();
                 ret.mappedlisteners = mapped_listeners;
                 Ok(ret)
@@ -793,8 +800,10 @@ impl Instance {
             .register(PeerCenterRpcServer::new(peer_center.get_rpc_service()), "");
         s.registry()
             .register(VpnPortalRpcServer::new(vpn_portal_rpc), "");
-        s.registry()
-            .register(MappedListenerManageRpcServer::new(mapped_listener_manager_rpc), "");
+        s.registry().register(
+            MappedListenerManageRpcServer::new(mapped_listener_manager_rpc),
+            "",
+        );
 
         if let Some(ip_proxy) = self.ip_proxy.as_ref() {
             s.registry().register(
