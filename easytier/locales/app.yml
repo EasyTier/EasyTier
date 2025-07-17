@@ -18,6 +18,9 @@ core_clap:
   config_file:
     en: "path to the config file, NOTE: the options set by cmdline args will override options in config file"
     zh-CN: "配置文件路径，注意：命令行中的配置的选项会覆盖配置文件中的选项"
+  generate_completions:
+    en: "generate shell completions"
+    zh-CN: "生成 shell 补全脚本"
   network_name:
     en: "network name to identify this vpn network"
     zh-CN: "用于标识此VPN网络的网络名称"

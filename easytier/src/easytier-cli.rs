@@ -11,8 +11,10 @@ use std::{
 
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use clap::{command, Args, Parser, Subcommand};
+use clap::{command, Args, CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use humansize::format_size;
+use rust_i18n::t;
 use service_manager::*;
 use tabled::settings::Style;
 use tokio::time::timeout;
@@ -86,6 +88,10 @@ enum SubCommand {
     Service(ServiceArgs),
     #[command(about = "show tcp/kcp proxy status")]
     Proxy,
+    #[command(about = t!("core_clap.generate_completions").to_string())]
+    GenAutocomplete{
+        shell:Shell
+    },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
@@ -985,7 +991,10 @@ where
 #[tokio::main]
 #[tracing::instrument]
 async fn main() -> Result<(), Error> {
+    let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
+    rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
+   
     let client = RpcClient::new(TcpTunnelConnector::new(
         format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
             .parse()
@@ -1314,6 +1323,10 @@ async fn main() -> Result<(), Error> {
                 .collect::<Vec<_>>();
 
             print_output(&table_rows, &cli.output_format)?;
+        }
+        SubCommand::GenAutocomplete { shell } => {
+            let mut cmd = Cli::command();
+            easytier::print_completions(shell, &mut cmd, "easytier-cli");
         }
     }
 

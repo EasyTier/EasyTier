@@ -4,16 +4,14 @@
 extern crate rust_i18n;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    process::ExitCode,
-    sync::Arc,
+    net::{Ipv4Addr, SocketAddr}, path::PathBuf, process::ExitCode, sync::Arc
 };
 
 use anyhow::Context;
 use cidr::IpCidr;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
+use clap_complete::Shell;
 use easytier::{
     common::{
         config::{
@@ -122,6 +120,9 @@ struct Cli {
 
     #[command(flatten)]
     logging_options: LoggingOptions,
+
+    #[clap(long, help = t!("core_clap.generate_completions").to_string())]
+    gen_autocomplete: Option<Shell>,
 }
 
 #[derive(Parser, Debug)]
@@ -1158,6 +1159,11 @@ async fn main() -> ExitCode {
     let _monitor = std::thread::spawn(memory_monitor);
 
     let cli = Cli::parse();
+    if let Some(shell) = cli.gen_autocomplete {
+        let mut cmd = Cli::command();
+        easytier::print_completions(shell, &mut cmd, "easytier-core");
+        return ExitCode::SUCCESS;
+    }
     let mut ret_code = 0;
 
     if let Err(e) = run_main(cli).await {
