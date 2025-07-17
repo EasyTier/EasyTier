@@ -10,7 +10,7 @@ use kcp_sys::{endpoint::KcpEndpoint, stream::KcpStream};
 use crate::{
     common::{
         config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background,
-        scoped_task::ScopedTask,
+        netns::NetNS, scoped_task::ScopedTask,
     },
     gateway::{
         fast_socks5::{
@@ -23,7 +23,10 @@ use crate::{
         kcp_proxy::NatDstKcpConnector,
         tokio_smoltcp::{channel_device, BufferSize, Net, NetConfig},
     },
-    tunnel::packet_def::{PacketType, ZCPacket},
+    tunnel::{
+        common::setup_sokcet2,
+        packet_def::{PacketType, ZCPacket},
+    },
 };
 use anyhow::Context;
 use dashmap::DashMap;
@@ -32,8 +35,7 @@ use pnet::packet::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::TcpListener,
-    net::UdpSocket,
+    net::{TcpListener, TcpSocket, UdpSocket},
     select,
     sync::{mpsc, Mutex},
     task::JoinSet,
@@ -248,6 +250,38 @@ impl AsyncTcpConnector for Socks5KcpConnector {
             .map_err(|e| super::fast_socks5::SocksError::Other(e.into()))?;
         Ok(SocksTcpStream::KcpStream(ret))
     }
+}
+
+fn bind_tcp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<TcpListener, Error> {
+    let _g = net_ns.guard();
+    let socket2_socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+
+    setup_sokcet2(&socket2_socket, &addr)?;
+
+    let socket = TcpSocket::from_std_stream(socket2_socket.into());
+
+    if let Err(e) = socket.set_nodelay(true) {
+        tracing::warn!(?e, "set_nodelay fail in listen");
+    }
+
+    Ok(socket.listen(1024)?)
+}
+
+fn bind_udp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<UdpSocket, Error> {
+    let _g = net_ns.guard();
+    let socket2_socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+
+    setup_sokcet2(&socket2_socket, &addr)?;
+
+    Ok(UdpSocket::from_std(socket2_socket.into())?)
 }
 
 struct Socks5ServerNet {
@@ -555,10 +589,10 @@ impl Socks5Server {
                 proxy_url.port().unwrap()
             );
 
-            let listener = {
-                let _g = self.global_ctx.net_ns.guard();
-                TcpListener::bind(bind_addr.parse::<SocketAddr>().unwrap()).await?
-            };
+            let listener = bind_tcp_socket(
+                bind_addr.parse::<SocketAddr>().unwrap(),
+                self.global_ctx.net_ns.clone(),
+            )?;
 
             let net = self.net.clone();
             self.tasks.lock().unwrap().spawn(async move {
@@ -651,10 +685,7 @@ impl Socks5Server {
         bind_addr: SocketAddr,
         dst_addr: SocketAddr,
     ) -> Result<(), Error> {
-        let listener = {
-            let _g = self.global_ctx.net_ns.guard();
-            TcpListener::bind(bind_addr).await?
-        };
+        let listener = bind_tcp_socket(bind_addr, self.global_ctx.net_ns.clone())?;
 
         let net = self.net.clone();
         let entries = self.entries.clone();
@@ -721,10 +752,7 @@ impl Socks5Server {
         bind_addr: SocketAddr,
         dst_addr: SocketAddr,
     ) -> Result<(), Error> {
-        let socket = {
-            let _g = self.global_ctx.net_ns.guard();
-            Arc::new(UdpSocket::bind(bind_addr).await?)
-        };
+        let socket = Arc::new(bind_udp_socket(bind_addr, self.global_ctx.net_ns.clone())?);
 
         let entries = self.entries.clone();
         let net_ns = self.global_ctx.net_ns.clone();
