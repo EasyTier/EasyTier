@@ -23,31 +23,113 @@ body:
   - type: textarea
     id: description
     attributes:
-      label: 描述问题 / Describe the bug
-      description: 对 bug 的明确描述。如果条件允许，请包括屏幕截图。 / A clear description of what the bug is. Include screenshots if applicable.
-      placeholder: 问题描述 / Bug description
+      label: 问题简要描述 / Brief Description
+      description: 对问题的简要描述，包括期望的行为和实际发生的情况。 / A brief description of the issue, including expected vs actual behavior.
+      placeholder: |
+        例如：节点 A 无法连接到节点 B，期望能够正常建立连接
+        Example: Node A cannot connect to Node B, expected to establish connection normally
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment-info
+    attributes:
+      label: 环境信息 / Environment Information
+      description: 请提供网络拓扑、节点信息和系统环境详情。 / Please provide network topology, node information and system environment details.
+      placeholder: |
+        **EasyTier 版本（非常重要）/ EasyTier Version (Very Important):** v1.2.0
+        
+        **网络拓扑 / Network Topology:**
+        - 节点 A (10.1.1.1): Windows 11 Pro 22H2, Wifi，有 IPV6 地址
+        - 节点 B (10.1.1.2): Ubuntu 22.04.3 LTS (Linux 5.15.0-72-generic), 公网 IP
+        - 节点 C (10.1.1.3): macOS Ventura 13.4.1, 5G 流量，无 IPV6 地址
+        
+        **Network Topology:**
+        - Node A (10.1.1.1): Windows 11 Pro 22H2, Wifi, has IPV6 address
+        - Node B (10.1.1.2): Ubuntu 22.04.3 LTS (Linux 5.15.0-72-generic), public IP
+        - Node C (10.1.1.3): macOS Ventura 13.4.1, 5G traffic, no IPV6 address
+    validations:
+      required: true
+
+  - type: textarea
+    id: node-configs
+    attributes:
+      label: 节点配置 / Node Configurations
+      description: 请提供每个节点的配置文件或启动参数。 / Please provide configuration files or startup parameters for each node.
+      placeholder: |
+        **节点 A 配置 / Node A Config:**
+        ```
+        easytier-core --config-file config.toml
+        ```
+        
+        **节点 B 配置 / Node B Config:**
+        ```
+        easytier-core --ipv4 10.1.1.2 --peers tcp://1.2.3.4:11010
+        ```
+        
+        请贴出完整的配置文件内容或命令行参数
+        Please paste complete configuration file contents or command line arguments
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志信息 / Log Information
+      description: 请提供相关的日志信息，包括 GUI 的事件日志或命令行的控制台输出。 / Please provide relevant log information, including GUI event logs or command line console output.
+      placeholder: |
+        请粘贴相关的日志信息：
+        - GUI 用户：请提供事件日志中的错误信息
+        - 命令行用户：请提供控制台输出的详细日志
+        - 一般情况下，提供默认输出的事件日志即可
+        - 如果能提供 --file-log-level debug 输出的日志，会更方便 debug
+        
+        Please paste relevant log information:
+        - GUI users: Please provide error messages from event logs
+        - CLI users: Please provide detailed console output logs
+        - Default log output is usually sufficient
+        - If possible, logs with --file-log-level debug would be more helpful for debugging
+        
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: 重现步骤 / Reproduction
-      description: 能够重现行为的步骤或指向能够复现的存储库链接。 / A link to a reproduction repo or steps to reproduce the behaviour.
+      label: 重现步骤 / Reproduction Steps
+      description: 请提供详细的步骤来重现这个问题。 / Please provide detailed steps to reproduce this issue.
       placeholder: |
-        请提供一个最小化的复现示例或复现步骤，请参考这个指南 https://stackoverflow.com/help/minimal-reproducible-example
-        Please provide a minimal reproduction or steps to reproduce, see this guide https://stackoverflow.com/help/minimal-reproducible-example
-        为什么需要重现（问题）？请参阅这篇文章 https://antfu.me/posts/why-reproductions-are-required
-        Why reproduction is required? see this article https://antfu.me/posts/why-reproductions-are-required
+        1. 启动节点 A，使用配置 xxx / Start Node A with config xxx
+        2. 启动节点 B，使用配置 yyy / Start Node B with config yyy  
+        3. 尝试从节点 A ping 节点 B / Try to ping Node B from Node A
+        4. 观察到错误：xxx / Observe error: xxx
+        
+        请提供详细的操作步骤，以便我们能够重现问题
+        Please provide detailed steps so we can reproduce the issue
+    validations:
+      required: true
 
   - type: textarea
     id: expected-behavior
     attributes:
-      label: 预期结果 / Expected behavior
+      label: 预期结果 / Expected Behavior
       description: 清楚地描述您期望发生的事情。 / A clear description of what you expected to happen.
+      placeholder: |
+        例如：节点 A 应该能够成功 ping 通节点 B，延迟在 100ms 以内
+        Example: Node A should be able to ping Node B successfully with latency under 100ms
 
   - type: textarea
-    id: context
+    id: additional-context
     attributes:
-      label: 额外上下文 / Additional context 
-      description:  在这里添加关于问题的任何其他上下文。 / Add any other context about the problem here.
+      label: 额外信息 / Additional Context
+      description: 在这里添加关于问题的任何其他上下文信息。 / Add any other context about the problem here.
+      placeholder: |
+        例如：
+        - 这个问题是否在特定时间出现？
+        - 是否有网络环境的特殊配置？
+        - 是否尝试过其他解决方案？
+        
+        Example:
+        - Does this issue occur at specific times?
+        - Are there any special network environment configurations?
+        - Have you tried any other solutions?

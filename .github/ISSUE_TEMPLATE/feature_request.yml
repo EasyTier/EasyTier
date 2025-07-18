@@ -3,36 +3,177 @@
 
 name: 💡 新功能请求 / Feature Request
 title: '[feat] '
-description: 提出一个想法 /  Suggest an idea
+description: 提出一个想法 / Suggest an idea
 labels: ['type: feature request']
 
 body:
-  - type: textarea
-    id: problem
+  - type: markdown
     attributes:
-      label: 描述问题 / Describe the problem
-      description: 明确描述此功能将解决的问题 / A clear description of the problem this feature would solve
-      placeholder: "我总是在...感觉困惑 / I'm always frustrated when..."
+      value: |
+        ## 提交功能请求前请注意 / Before Submitting
+        1. 请先搜索 [现有的功能请求](https://github.com/EasyTier/EasyTier/issues?q=is%3Aissue+label%3A%22type%3A+feature+request%22) 确保您的想法尚未被提出。
+        1. Please search [existing feature requests](https://github.com/EasyTier/EasyTier/issues?q=is%3Aissue+label%3A%22type%3A+feature+request%22) to ensure your idea hasn't been suggested already.
+        2. 请确保这个功能确实适合 EasyTier 项目的目标和范围。
+        2. Please ensure this feature fits within EasyTier's goals and scope.
+        3. 考虑这个功能是否能让更多用户受益，而不只是解决个人需求。
+        3. Consider whether this feature would benefit many users, not just personal needs.
+
+  - type: dropdown
+    id: feature-category
+    attributes:
+      label: 功能类别 / Feature Category
+      description: 请选择这个功能请求属于哪个类别 / Please select which category this feature request belongs to
+      options:
+        - 网络连接 / Network Connectivity
+        - 安全和加密 / Security & Encryption  
+        - 性能优化 / Performance Optimization
+        - 用户界面 / User Interface
+        - 配置管理 / Configuration Management
+        - 监控和日志 / Monitoring & Logging
+        - 平台支持 / Platform Support
+        - API 和集成 / API & Integration
+        - 其他 / Other
     validations:
       required: true
 
   - type: textarea
-    id: solution
+    id: use-case
     attributes:
-      label: "描述您想要的解决方案 / Describe the solution you'd like"
-      description: 明确说明您希望做出的改变 / A clear description of what change you would like
-      placeholder: '我希望... / I would like to...'
+      label: 使用场景 / Use Case
+      description: 描述您希望这个功能解决的具体使用场景或问题 / Describe the specific use case or problem you want this feature to solve
+      placeholder: |
+        例如：
+        - 作为企业用户，我需要在多个分支机构之间建立安全的网络连接
+        - 作为开发者，我希望能够通过 API 监控网络状态
+        - 作为系统管理员，我需要更详细的连接日志来排查问题
+        
+        Example:
+        - As an enterprise user, I need to establish secure network connections between multiple branch offices
+        - As a developer, I want to monitor network status through APIs
+        - As a system administrator, I need more detailed connection logs for troubleshooting
     validations:
       required: true
+
+  - type: textarea
+    id: current-limitations
+    attributes:
+      label: 当前限制 / Current Limitations
+      description: 描述当前 EasyTier 的哪些限制阻止了您实现这个使用场景 / Describe what current limitations in EasyTier prevent you from achieving this use case
+      placeholder: |
+        例如：
+        - 目前不支持基于用户角色的访问控制
+        - 缺少对 IPv6 的完整支持
+        - 没有提供 REST API 来获取网络状态
+        
+        Example:
+        - Currently lacks role-based access control
+        - Missing complete IPv6 support
+        - No REST API available for network status
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: 建议的解决方案 / Proposed Solution
+      description: 详细描述您希望添加的功能以及它应该如何工作 / Describe in detail the feature you'd like to add and how it should work
+      placeholder: |
+        请描述：
+        - 功能的具体实现方式
+        - 用户界面或 API 设计
+        - 配置选项和参数
+        - 与现有功能的集成方式
+        
+        Please describe:
+        - Specific implementation approach
+        - User interface or API design
+        - Configuration options and parameters  
+        - Integration with existing features
+    validations:
+      required: true
+
+  - type: textarea
+    id: benefits
+    attributes:
+      label: 预期收益 / Expected Benefits
+      description: 说明这个功能会带来什么好处，会影响哪些用户群体 / Explain what benefits this feature would bring and which user groups it would affect
+      placeholder: |
+        例如：
+        - 提高网络连接的稳定性和性能
+        - 简化大规模部署的管理复杂度
+        - 增强企业用户的安全性需求
+        - 降低新用户的学习成本
+        
+        Example:
+        - Improve network connection stability and performance
+        - Simplify management complexity for large-scale deployments
+        - Enhance security requirements for enterprise users
+        - Reduce learning curve for new users
+
+  - type: textarea
+    id: technical-considerations
+    attributes:
+      label: 技术考虑 / Technical Considerations
+      description: 如果您了解技术细节，请分享相关的技术考虑或约束 / If you have technical knowledge, please share relevant technical considerations or constraints
+      placeholder: |
+        例如：
+        - 可能需要修改网络协议栈
+        - 需要考虑跨平台兼容性
+        - 可能影响现有性能
+        - 依赖第三方库或协议
+        
+        Example:
+        - May require modifications to network protocol stack
+        - Cross-platform compatibility needs consideration
+        - Potential impact on existing performance
+        - Dependencies on third-party libraries or protocols
 
   - type: textarea
     id: alternatives
     attributes:
-      label: 替代方案 / Alternatives considered
-      description: "您考虑过的任何替代解决方案 / Any alternative solutions you've considered"
+      label: 备选方案 / Alternative Solutions
+      description: 您是否考虑过其他解决方案？是否有现有的替代方案？ / Have you considered other solutions? Are there existing alternatives?
+      placeholder: |
+        例如：
+        - 使用第三方工具 X 可以部分解决，但缺少 Y 功能
+        - 通过脚本workaround可以实现，但不够优雅
+        - 其他类似项目 Z 有这个功能，可以参考其实现
+        
+        Example:
+        - Third-party tool X can partially solve this, but lacks Y functionality
+        - Can be achieved through script workarounds, but not elegant
+        - Similar project Z has this feature, could reference its implementation
 
   - type: textarea
-    id: context
+    id: implementation-priority
     attributes:
-      label: 额外上下文 / Additional context
-      description: 在此处添加有关问题的任何其他上下文。 / Add any other context about the problem here.
+      label: 实现优先级 / Implementation Priority
+      description: 这个功能对您有多重要？是否有时间要求？ / How important is this feature to you? Any time requirements?
+      placeholder: |
+        例如：
+        - 高优先级：阻碍了我们的生产部署
+        - 中优先级：会显著改善用户体验
+        - 低优先级：锦上添花的功能
+        
+        Example:
+        - High priority: Blocking our production deployment
+        - Medium priority: Would significantly improve user experience
+        - Low priority: Nice-to-have feature
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: 补充信息 / Additional Context
+      description: 添加任何其他相关信息，如截图、链接、参考资料等 / Add any other relevant information such as screenshots, links, or references
+      placeholder: |
+        例如：
+        - 相关的 RFC 或技术规范
+        - 其他项目的实现示例
+        - 用户调研或反馈数据
+        - 设计草图或流程图
+        
+        Example:
+        - Relevant RFCs or technical specifications
+        - Implementation examples from other projects
+        - User research or feedback data
+        - Design sketches or flowcharts
