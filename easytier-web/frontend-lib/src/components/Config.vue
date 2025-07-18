@@ -145,6 +145,7 @@ interface BoolFlag {
 const bool_flags: BoolFlag[] = [
   { field: 'latency_first', help: 'latency_first_help' },
   { field: 'use_smoltcp', help: 'use_smoltcp_help' },
+  { field: 'disable_ipv6', help: 'disable_ipv6_help' },
   { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
   { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
   { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },

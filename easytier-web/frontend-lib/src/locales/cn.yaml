@@ -83,6 +83,9 @@ latency_first_help: 忽略中转跳数，选择总延迟最低的路径
 use_smoltcp: 使用用户态协议栈
 use_smoltcp_help: 使用用户态 TCP/IP 协议栈，避免操作系统防火墙问题导致无法子网代理 / KCP代理。
 
+disable_ipv6: 禁用IPv6
+disable_ipv6_help: 禁用此节点的IPv6功能，仅使用IPv4进行网络通信。
+
 enable_kcp_proxy: 启用 KCP 代理
 enable_kcp_proxy_help: 将 TCP 流量转为 KCP 流量，降低传输延迟，提升传输速度。
 

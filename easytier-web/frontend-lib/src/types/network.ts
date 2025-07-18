@@ -37,6 +37,7 @@ export interface NetworkConfig {
   dev_name: string
 
   use_smoltcp?: boolean
+  disable_ipv6?: boolean
   enable_kcp_proxy?: boolean
   disable_kcp_input?: boolean
   enable_quic_proxy?: boolean
@@ -105,6 +106,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     dev_name: '',
 
     use_smoltcp: false,
+    disable_ipv6: false,
     enable_kcp_proxy: false,
     disable_kcp_input: false,
     enable_quic_proxy: false,
