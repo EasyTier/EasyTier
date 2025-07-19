@@ -207,13 +207,25 @@ service PeerCenterRpc {
       returns (GetGlobalPeerMapResponse);
 }
 
+message ChallengeRequest {
+  bytes nonce = 1; // 32-byte random nonce
+}
+
+message ChallengeResponse {
+  bytes response = 1; // HMAC-SHA256 result
+}
+
 message HandshakeRequest {
   uint32 magic = 1;
   uint32 my_peer_id = 2;
   uint32 version = 3;
   repeated string features = 4;
   string network_name = 5;
-  bytes network_secret_digrest = 6;
+  // bytes network_secret_digrest = 6; // Removed - no longer needed
+  
+  // New fields for 4-way handshake
+  optional ChallengeRequest challenge_request = 7;
+  optional ChallengeResponse challenge_response = 8;
 }
 
 message KcpConnData {
