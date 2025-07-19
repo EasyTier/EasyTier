@@ -7,8 +7,9 @@ use windows::{
     Win32::{
         Foundation::{BOOL, FALSE},
         NetworkManagement::WindowsFirewall::{
-            INetFwPolicy2, INetFwRule, NET_FW_ACTION_ALLOW, NET_FW_PROFILE2_PRIVATE,
-            NET_FW_PROFILE2_PUBLIC, NET_FW_RULE_DIR_IN, NET_FW_RULE_DIR_OUT,
+            INetFwPolicy2, INetFwRule, NET_FW_ACTION_ALLOW, NET_FW_PROFILE2_DOMAIN,
+            NET_FW_PROFILE2_PRIVATE, NET_FW_PROFILE2_PUBLIC, NET_FW_RULE_DIR_IN,
+            NET_FW_RULE_DIR_OUT,
         },
         Networking::WinSock::{
             htonl, setsockopt, WSAGetLastError, WSAIoctl, IPPROTO_IP, IPPROTO_IPV6,
@@ -164,7 +165,7 @@ impl Drop for ComInitializer {
 
 pub fn do_add_self_to_firewall_allowlist(inbound: bool) -> anyhow::Result<()> {
     let _com = ComInitializer::new()?;
-    // 创建防火墙策略实例
+    // Create firewall policy instance
     let policy: INetFwPolicy2 = unsafe {
         CoCreateInstance(
             &windows::Win32::NetworkManagement::WindowsFirewall::NetFwPolicy2,
@@ -173,7 +174,7 @@ pub fn do_add_self_to_firewall_allowlist(inbound: bool) -> anyhow::Result<()> {
         )
     }?;
 
-    // 创建防火墙规则实例
+    // Create firewall rule instance
     let rule: INetFwRule = unsafe {
         CoCreateInstance(
             &windows::Win32::NetworkManagement::WindowsFirewall::NetFwRule,
@@ -182,7 +183,7 @@ pub fn do_add_self_to_firewall_allowlist(inbound: bool) -> anyhow::Result<()> {
         )
     }?;
 
-    // 设置规则属性
+    // Set rule properties
     let exe_path = std::env::current_exe()
         .with_context(|| "Failed to get current executable path when adding firewall rule")?
         .to_string_lossy()
@@ -202,17 +203,19 @@ pub fn do_add_self_to_firewall_allowlist(inbound: bool) -> anyhow::Result<()> {
         rule.SetApplicationName(&app_path)?;
         rule.SetAction(NET_FW_ACTION_ALLOW)?;
         if inbound {
-            rule.SetDirection(NET_FW_RULE_DIR_IN)?; // 允许入站连接
+            rule.SetDirection(NET_FW_RULE_DIR_IN)?; // Allow inbound connections
         } else {
-            rule.SetDirection(NET_FW_RULE_DIR_OUT)?; // 允许出站连接
+            rule.SetDirection(NET_FW_RULE_DIR_OUT)?; // Allow outbound connections
         }
         rule.SetEnabled(windows::Win32::Foundation::VARIANT_TRUE)?;
-        rule.SetProfiles(NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_PUBLIC.0)?;
+        rule.SetProfiles(
+            NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_PUBLIC.0 | NET_FW_PROFILE2_DOMAIN.0,
+        )?;
         rule.SetGrouping(&BSTR::from("EasyTier"))?;
 
-        // 获取规则集合并添加新规则
+        // Get rule collection and add new rule
         let rules = policy.Rules()?;
-        rules.Remove(&name)?; // 先删除同名规则
+        rules.Remove(&name)?; // Remove existing rule with same name first
         rules.Add(&rule)?;
     }
 
@@ -225,6 +228,266 @@ pub fn add_self_to_firewall_allowlist() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Add firewall rules for specified network interface to allow all traffic
+pub fn add_interface_to_firewall_allowlist(interface_name: &str) -> anyhow::Result<()> {
+    let _com = ComInitializer::new()?;
+
+    // Create firewall policy instance
+    let policy: INetFwPolicy2 = unsafe {
+        CoCreateInstance(
+            &windows::Win32::NetworkManagement::WindowsFirewall::NetFwPolicy2,
+            None,
+            CLSCTX_ALL,
+        )
+    }?;
+
+    tracing::info!(
+        "Adding comprehensive firewall rules for interface: {}",
+        interface_name
+    );
+
+    // Create rules for each protocol type
+    add_protocol_firewall_rules(&policy, interface_name, "TCP", 6)?; // TCP protocol number 6
+    tracing::debug!("Added TCP firewall rules for interface: {}", interface_name);
+
+    add_protocol_firewall_rules(&policy, interface_name, "UDP", 17)?; // UDP protocol number 17
+    tracing::debug!("Added UDP firewall rules for interface: {}", interface_name);
+
+    add_protocol_firewall_rules(&policy, interface_name, "ICMP", 1)?; // ICMP protocol number 1
+    tracing::debug!(
+        "Added ICMP firewall rules for interface: {}",
+        interface_name
+    );
+
+    // Add fallback rules for all protocols
+    add_all_protocols_firewall_rules(&policy, interface_name)?;
+    tracing::debug!(
+        "Added fallback all-protocols rules for interface: {}",
+        interface_name
+    );
+
+    tracing::info!(
+        "Successfully created all firewall rules for interface: {}",
+        interface_name
+    );
+
+    Ok(())
+}
+
+/// Add firewall rules for a specific protocol
+fn add_protocol_firewall_rules(
+    policy: &INetFwPolicy2,
+    interface_name: &str,
+    protocol_name: &str,
+    protocol_number: i32,
+) -> anyhow::Result<()> {
+    // Create rules for both inbound and outbound traffic
+    for (is_inbound, direction_name) in [(true, "Inbound"), (false, "Outbound")] {
+        // Create firewall rule instance
+        let rule: INetFwRule = unsafe {
+            CoCreateInstance(
+                &windows::Win32::NetworkManagement::WindowsFirewall::NetFwRule,
+                None,
+                CLSCTX_ALL,
+            )
+        }?;
+
+        let rule_name = format!(
+            "EasyTier {} - {} Protocol ({})",
+            interface_name, protocol_name, direction_name
+        );
+        let description = format!(
+            "Allow {} traffic on EasyTier interface {}",
+            protocol_name, interface_name
+        );
+
+        let name_bstr = BSTR::from(&rule_name);
+        let desc_bstr = BSTR::from(&description);
+
+        unsafe {
+            rule.SetName(&name_bstr)?;
+            rule.SetDescription(&desc_bstr)?;
+            rule.SetProtocol(protocol_number)?;
+            rule.SetAction(NET_FW_ACTION_ALLOW)?;
+
+            if is_inbound {
+                rule.SetDirection(NET_FW_RULE_DIR_IN)?;
+            } else {
+                rule.SetDirection(NET_FW_RULE_DIR_OUT)?;
+            }
+
+            rule.SetEnabled(windows::Win32::Foundation::VARIANT_TRUE)?;
+            rule.SetProfiles(
+                NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_PUBLIC.0 | NET_FW_PROFILE2_DOMAIN.0,
+            )?;
+            rule.SetGrouping(&BSTR::from("EasyTier"))?;
+
+            // Get rule collection and add new rule
+            let rules = policy.Rules()?;
+            rules.Remove(&name_bstr)?; // Remove existing rule with same name first
+            rules.Add(&rule)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Add fallback rules for all protocols
+fn add_all_protocols_firewall_rules(
+    policy: &INetFwPolicy2,
+    interface_name: &str,
+) -> anyhow::Result<()> {
+    // Create rules for both inbound and outbound traffic
+    for (is_inbound, direction_name) in [(true, "Inbound"), (false, "Outbound")] {
+        // Create firewall rule instance
+        let rule: INetFwRule = unsafe {
+            CoCreateInstance(
+                &windows::Win32::NetworkManagement::WindowsFirewall::NetFwRule,
+                None,
+                CLSCTX_ALL,
+            )
+        }?;
+
+        let rule_name = format!(
+            "EasyTier {} - All Protocols ({})",
+            interface_name, direction_name
+        );
+        let description = format!(
+            "Allow all protocol traffic on EasyTier interface {}",
+            interface_name
+        );
+
+        let name_bstr = BSTR::from(&rule_name);
+        let desc_bstr = BSTR::from(&description);
+
+        unsafe {
+            rule.SetName(&name_bstr)?;
+            rule.SetDescription(&desc_bstr)?;
+            // Don't set protocol - allows all protocols by default
+            rule.SetAction(NET_FW_ACTION_ALLOW)?;
+
+            if is_inbound {
+                rule.SetDirection(NET_FW_RULE_DIR_IN)?;
+            } else {
+                rule.SetDirection(NET_FW_RULE_DIR_OUT)?;
+            }
+
+            rule.SetEnabled(windows::Win32::Foundation::VARIANT_TRUE)?;
+            rule.SetProfiles(
+                NET_FW_PROFILE2_PRIVATE.0 | NET_FW_PROFILE2_PUBLIC.0 | NET_FW_PROFILE2_DOMAIN.0,
+            )?;
+            rule.SetGrouping(&BSTR::from("EasyTier"))?;
+
+            // Get rule collection and add new rule
+            let rules = policy.Rules()?;
+            rules.Remove(&name_bstr)?; // Remove existing rule with same name first
+            rules.Add(&rule)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Remove firewall rules for specified interface
+pub fn remove_interface_firewall_rules(interface_name: &str) -> anyhow::Result<()> {
+    let _com = ComInitializer::new()?;
+
+    let policy: INetFwPolicy2 = unsafe {
+        CoCreateInstance(
+            &windows::Win32::NetworkManagement::WindowsFirewall::NetFwPolicy2,
+            None,
+            CLSCTX_ALL,
+        )
+    }?;
+
+    let rules = unsafe { policy.Rules()? };
+
+    // Remove protocol-specific rules
+    for protocol_name in ["TCP", "UDP", "ICMP"] {
+        for direction in ["Inbound", "Outbound"] {
+            let rule_name = format!(
+                "EasyTier {} - {} Protocol ({})",
+                interface_name, protocol_name, direction
+            );
+            let name_bstr = BSTR::from(&rule_name);
+            unsafe {
+                let _ = rules.Remove(&name_bstr); // Ignore errors, rule might not exist
+            }
+        }
+    }
+
+    // Remove fallback protocol rules
+    for direction in ["Inbound", "Outbound"] {
+        let rule_name = format!(
+            "EasyTier {} - All Protocols ({})",
+            interface_name, direction
+        );
+        let name_bstr = BSTR::from(&rule_name);
+        unsafe {
+            let _ = rules.Remove(&name_bstr); // Ignore errors, rule might not exist
+        }
+    }
+
+    Ok(())
+}
+
+/// List EasyTier firewall rules for specified interface (for debugging)
+#[allow(dead_code)]
+pub fn list_interface_firewall_rules(interface_name: &str) -> anyhow::Result<Vec<String>> {
+    let _com = ComInitializer::new()?;
+
+    let policy: INetFwPolicy2 = unsafe {
+        CoCreateInstance(
+            &windows::Win32::NetworkManagement::WindowsFirewall::NetFwPolicy2,
+            None,
+            CLSCTX_ALL,
+        )
+    }?;
+
+    let rules = unsafe { policy.Rules()? };
+    let mut found_rules = Vec::new();
+
+    // Check protocol-specific rules
+    for protocol_name in ["TCP", "UDP", "ICMP"] {
+        for direction in ["Inbound", "Outbound"] {
+            let rule_name = format!(
+                "EasyTier {} - {} Protocol ({})",
+                interface_name, protocol_name, direction
+            );
+            if check_rule_exists(&rules, &rule_name)? {
+                found_rules.push(rule_name);
+            }
+        }
+    }
+
+    // Check fallback protocol rules
+    for direction in ["Inbound", "Outbound"] {
+        let rule_name = format!(
+            "EasyTier {} - All Protocols ({})",
+            interface_name, direction
+        );
+        if check_rule_exists(&rules, &rule_name)? {
+            found_rules.push(rule_name);
+        }
+    }
+
+    Ok(found_rules)
+}
+
+/// Check if a firewall rule with specified name exists
+fn check_rule_exists(
+    rules: &windows::Win32::NetworkManagement::WindowsFirewall::INetFwRules,
+    rule_name: &str,
+) -> anyhow::Result<bool> {
+    let name_bstr = BSTR::from(rule_name);
+    unsafe {
+        match rules.Item(&name_bstr) {
+            Ok(_) => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +496,72 @@ mod tests {
     fn test_add_self_to_firewall_allowlist() {
         let res = add_self_to_firewall_allowlist();
         assert!(res.is_ok());
+    }
+
+    #[test]
+    #[ignore] // Requires administrator privileges, ignored by default
+    fn test_interface_firewall_rules() {
+        let test_interface = "test_interface";
+
+        // Add firewall rules
+        let add_result = add_interface_to_firewall_allowlist(test_interface);
+        assert!(
+            add_result.is_ok(),
+            "Failed to add interface firewall rules: {:?}",
+            add_result
+        );
+
+        println!(
+            "✓ Added comprehensive firewall rules for interface: {}",
+            test_interface
+        );
+
+        // Verify rules were created
+        let rules = list_interface_firewall_rules(test_interface).unwrap();
+        println!("Created {} firewall rules:", rules.len());
+        for rule in &rules {
+            println!("  - {}", rule);
+        }
+
+        // Verify required protocol rules are all created
+        let expected_protocols = ["TCP", "UDP", "ICMP"];
+        let expected_directions = ["Inbound", "Outbound"];
+
+        for protocol in &expected_protocols {
+            for direction in &expected_directions {
+                let rule_name = format!(
+                    "EasyTier {} - {} Protocol ({})",
+                    test_interface, protocol, direction
+                );
+                assert!(
+                    rules.contains(&rule_name),
+                    "Missing required rule: {}",
+                    rule_name
+                );
+            }
+        }
+
+        println!("✓ All required protocol rules (TCP/UDP/ICMP) are present");
+
+        // Remove firewall rules
+        let remove_result = remove_interface_firewall_rules(test_interface);
+        assert!(
+            remove_result.is_ok(),
+            "Failed to remove interface firewall rules: {:?}",
+            remove_result
+        );
+
+        // Verify rules were removed
+        let remaining_rules = list_interface_firewall_rules(test_interface).unwrap();
+        assert!(
+            remaining_rules.is_empty(),
+            "Some rules were not removed: {:?}",
+            remaining_rules
+        );
+
+        println!(
+            "✓ Successfully removed all firewall rules for interface: {}",
+            test_interface
+        );
     }
 }
