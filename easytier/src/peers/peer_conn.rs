@@ -23,7 +23,7 @@ use zerocopy::AsBytes;
 
 use crate::{
     common::{
-        config::{NetworkIdentity, NetworkSecretDigest},
+        config::NetworkIdentity,
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
@@ -32,7 +32,7 @@ use crate::{
     proto::{
         cli::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
-        peer_rpc::HandshakeRequest,
+        peer_rpc::{ChallengeRequest, ChallengeResponse, HandshakeRequest},
     },
     tunnel::{
         filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter},
@@ -42,6 +42,9 @@ use crate::{
         Tunnel, TunnelError, ZCPacketStream,
     },
 };
+
+use rand::RngCore;
+use ring::hmac;
 
 use super::{peer_conn_ping::PeerConnPinger, PacketRecvChan};
 
@@ -179,6 +182,62 @@ impl PeerConn {
         self.is_hole_punched
     }
 
+    // Generate a 32-byte random challenge nonce
+    fn generate_challenge() -> [u8; 32] {
+        let mut nonce = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut nonce);
+        nonce
+    }
+
+    // Compute HMAC-SHA256 challenge response
+    fn compute_challenge_response(
+        challenge: &[u8],
+        network_secret: &str,
+        my_peer_id: u32,
+        remote_peer_id: u32,
+        network_name: &str,
+        is_client: bool,
+    ) -> [u8; 32] {
+        let key = hmac::Key::new(hmac::HMAC_SHA256, network_secret.as_bytes());
+        
+        // Combine all components for HMAC
+        let mut data = Vec::new();
+        data.extend_from_slice(challenge);
+        data.extend_from_slice(&my_peer_id.to_be_bytes());
+        data.extend_from_slice(&remote_peer_id.to_be_bytes());
+        data.extend_from_slice(network_name.as_bytes());
+        data.extend_from_slice(if is_client { b"CLIENT" } else { b"SERVER" });
+        data.extend_from_slice(b"EASYTIER_HANDSHAKE");
+        
+        let signature = hmac::sign(&key, &data);
+        let mut response = [0u8; 32];
+        response.copy_from_slice(signature.as_ref());
+        response
+    }
+
+    // Verify challenge response
+    fn verify_challenge_response(
+        challenge: &[u8],
+        response: &[u8],
+        expected_secret: &str,
+        my_peer_id: u32,
+        remote_peer_id: u32,
+        network_name: &str,
+        is_client: bool,
+    ) -> bool {
+        let expected = Self::compute_challenge_response(
+            challenge,
+            expected_secret,
+            my_peer_id,
+            remote_peer_id,
+            network_name,
+            is_client,
+        );
+        
+        // Constant-time comparison
+        response.len() == expected.len() && response == &expected[..]
+    }
+
     async fn wait_handshake(&mut self, need_retry: &mut bool) -> Result<HandshakeRequest, Error> {
         *need_retry = false;
 
@@ -219,12 +278,6 @@ impl PeerConn {
             Error::WaitRespError(format!("decode handshake response error: {:?}", e))
         })?;
 
-        if rsp.network_secret_digrest.len() != std::mem::size_of::<NetworkSecretDigest>() {
-            return Err(Error::WaitRespError(
-                "invalid network secret digest".to_owned(),
-            ));
-        }
-
         return Ok(rsp);
     }
 
@@ -249,16 +302,50 @@ impl PeerConn {
 
     async fn send_handshake(&mut self) -> Result<(), Error> {
         let network = self.global_ctx.get_network_identity();
-        let mut req = HandshakeRequest {
+        let req = HandshakeRequest {
             magic: MAGIC,
             my_peer_id: self.my_peer_id,
             version: VERSION,
             features: Vec::new(),
             network_name: network.network_name.clone(),
-            ..Default::default()
+            challenge_request: None,
+            challenge_response: None,
         };
-        req.network_secret_digrest
-            .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
+
+        let hs_req = req.encode_to_vec();
+        let mut zc_packet = ZCPacket::new_with_payload(hs_req.as_bytes());
+        zc_packet.fill_peer_manager_hdr(
+            self.my_peer_id,
+            PeerId::default(),
+            PacketType::HandShake as u8,
+        );
+
+        self.sink.send(zc_packet).await.map_err(|e| {
+            tracing::warn!("send handshake request error: {:?}", e);
+            Error::WaitRespError("send handshake request error".to_owned())
+        })?;
+
+        // yield to send the response packet
+        tokio::task::yield_now().await;
+
+        Ok(())
+    }
+
+    async fn send_handshake_with_challenge(
+        &mut self,
+        challenge_request: Option<ChallengeRequest>,
+        challenge_response: Option<ChallengeResponse>,
+    ) -> Result<(), Error> {
+        let network = self.global_ctx.get_network_identity();
+        let req = HandshakeRequest {
+            magic: MAGIC,
+            my_peer_id: self.my_peer_id,
+            version: VERSION,
+            features: Vec::new(),
+            network_name: network.network_name.clone(),
+            challenge_request,
+            challenge_response,
+        };
 
         let hs_req = req.encode_to_vec();
         let mut zc_packet = ZCPacket::new_with_payload(hs_req.as_bytes());
@@ -287,15 +374,77 @@ impl PeerConn {
     where
         Fn: FnMut(&mut Self, &HandshakeRequest) -> Result<(), Error> + Send,
     {
-        let rsp = self.wait_handshake_loop().await?;
+        // Step 1: Wait for client's initial HandshakeRequest
+        let client_handshake = self.wait_handshake_loop().await?;
+        
+        // Call the custom handler
+        handshake_recved(self, &client_handshake)?;
+        
+        tracing::info!("received client handshake request");
 
-        handshake_recved(self, &rsp)?;
+        // Step 2: Generate challenge and send HandshakeRequest with ChallengeRequest
+        let server_challenge = Self::generate_challenge();
+        self.send_handshake_with_challenge(
+            Some(ChallengeRequest {
+                nonce: server_challenge.to_vec(),
+            }),
+            None,
+        ).await?;
+        tracing::info!("sent server handshake with challenge");
 
-        tracing::info!("handshake request: {:?}", rsp);
-        self.info = Some(rsp);
+        // Step 3: Wait for client's ChallengeResponse and ChallengeRequest
+        let client_response_msg = self.wait_handshake_loop().await?;
+        tracing::info!("received client challenge response and request");
+        
+        let client_response = client_response_msg
+            .challenge_response
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("client didn't send challenge response".to_owned()))?;
+        
+        let client_challenge = client_response_msg
+            .challenge_request
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("client didn't send challenge request".to_owned()))?;
+
+        // Get network secret
+        let network = self.global_ctx.get_network_identity();
+        let network_secret = network.network_secret.as_ref()
+            .ok_or_else(|| Error::WaitRespError("network secret not found".to_owned()))?;
+
+        // Verify client's response
+        if !Self::verify_challenge_response(
+            &server_challenge,
+            &client_response.response,
+            network_secret,
+            client_handshake.my_peer_id, // client's peer_id
+            self.my_peer_id,             // my peer_id
+            &network.network_name,
+            true, // is_client = true (verifying client's response)
+        ) {
+            return Err(Error::WaitRespError("client challenge response verification failed".to_owned()));
+        }
+
+        // Step 4: Compute and send our response to client's challenge
+        let server_response = Self::compute_challenge_response(
+            &client_challenge.nonce,
+            network_secret,
+            self.my_peer_id,
+            client_handshake.my_peer_id,
+            &network.network_name,
+            false, // is_client = false
+        );
+
+        self.send_handshake_with_challenge(
+            None,
+            Some(ChallengeResponse {
+                response: server_response.to_vec(),
+            }),
+        ).await?;
+        tracing::info!("sent server challenge response");
+
+        tracing::info!("handshake completed successfully");
+        self.info = Some(client_handshake);
         self.is_client = Some(false);
-
-        self.send_handshake().await?;
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
@@ -306,11 +455,73 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
-        let rsp = self.wait_handshake_loop().await?;
-        tracing::info!("handshake request: {:?}", rsp);
-        self.info = Some(rsp);
+        // Step 1: Wait for client's initial HandshakeRequest
+        let client_handshake = self.wait_handshake_loop().await?;
+        tracing::info!("received client handshake request");
+
+        // Step 2: Generate challenge and send HandshakeRequest with ChallengeRequest
+        let server_challenge = Self::generate_challenge();
+        self.send_handshake_with_challenge(
+            Some(ChallengeRequest {
+                nonce: server_challenge.to_vec(),
+            }),
+            None,
+        ).await?;
+        tracing::info!("sent server handshake with challenge");
+
+        // Step 3: Wait for client's ChallengeResponse and ChallengeRequest
+        let client_response_msg = self.wait_handshake_loop().await?;
+        tracing::info!("received client challenge response and request");
+        
+        let client_response = client_response_msg
+            .challenge_response
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("client didn't send challenge response".to_owned()))?;
+        
+        let client_challenge = client_response_msg
+            .challenge_request
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("client didn't send challenge request".to_owned()))?;
+
+        // Get network secret
+        let network = self.global_ctx.get_network_identity();
+        let network_secret = network.network_secret.as_ref()
+            .ok_or_else(|| Error::WaitRespError("network secret not found".to_owned()))?;
+
+        // Verify client's response
+        if !Self::verify_challenge_response(
+            &server_challenge,
+            &client_response.response,
+            network_secret,
+            client_handshake.my_peer_id, // client's peer_id
+            self.my_peer_id,             // my peer_id
+            &network.network_name,
+            true, // is_client = true (verifying client's response)
+        ) {
+            return Err(Error::WaitRespError("client challenge response verification failed".to_owned()));
+        }
+
+        // Step 4: Compute and send our response to client's challenge
+        let server_response = Self::compute_challenge_response(
+            &client_challenge.nonce,
+            network_secret,
+            self.my_peer_id,
+            client_handshake.my_peer_id,
+            &network.network_name,
+            false, // is_client = false
+        );
+
+        self.send_handshake_with_challenge(
+            None,
+            Some(ChallengeResponse {
+                response: server_response.to_vec(),
+            }),
+        ).await?;
+        tracing::info!("sent server challenge response");
+
+        tracing::info!("handshake completed successfully");
+        self.info = Some(client_handshake);
         self.is_client = Some(false);
-        self.send_handshake().await?;
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
@@ -321,11 +532,71 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
+        // Step 1: Send initial HandshakeRequest
         self.send_handshake().await?;
-        tracing::info!("waiting for handshake request from server");
-        let rsp = self.wait_handshake_loop().await?;
-        tracing::info!("handshake response: {:?}", rsp);
-        self.info = Some(rsp);
+        tracing::info!("sent initial handshake request");
+
+        // Step 2: Wait for server's HandshakeRequest with ChallengeRequest
+        let server_handshake = self.wait_handshake_loop().await?;
+        tracing::info!("received server handshake with challenge");
+        
+        let server_challenge = server_handshake
+            .challenge_request
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("server didn't send challenge".to_owned()))?;
+
+        // Get network secret
+        let network = self.global_ctx.get_network_identity();
+        let network_secret = network.network_secret.as_ref()
+            .ok_or_else(|| Error::WaitRespError("network secret not found".to_owned()))?;
+
+        // Step 3: Compute response and generate our challenge
+        let server_response = Self::compute_challenge_response(
+            &server_challenge.nonce,
+            network_secret,
+            self.my_peer_id,
+            server_handshake.my_peer_id,
+            &network.network_name,
+            true, // is_client = true
+        );
+
+        let client_challenge = Self::generate_challenge();
+        
+        // Send ChallengeResponse + ChallengeRequest
+        self.send_handshake_with_challenge(
+            Some(ChallengeRequest {
+                nonce: client_challenge.to_vec(),
+            }),
+            Some(ChallengeResponse {
+                response: server_response.to_vec(),
+            }),
+        ).await?;
+        tracing::info!("sent challenge response and client challenge");
+
+        // Step 4: Wait for server's ChallengeResponse
+        let final_response = self.wait_handshake_loop().await?;
+        tracing::info!("received server's challenge response");
+        
+        let client_response = final_response
+            .challenge_response
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("server didn't send challenge response".to_owned()))?;
+
+        // Verify server's response
+        if !Self::verify_challenge_response(
+            &client_challenge,
+            &client_response.response,
+            network_secret,
+            server_handshake.my_peer_id, // server's peer_id
+            self.my_peer_id,             // my peer_id
+            &network.network_name,
+            false, // is_client = false (verifying server's response)
+        ) {
+            return Err(Error::WaitRespError("server challenge response verification failed".to_owned()));
+        }
+
+        tracing::info!("handshake completed successfully");
+        self.info = Some(server_handshake);
         self.is_client = Some(true);
 
         if self.get_peer_id() == self.my_peer_id {
@@ -430,16 +701,11 @@ impl PeerConn {
 
     pub fn get_network_identity(&self) -> NetworkIdentity {
         let info = self.info.as_ref().unwrap();
-        let mut ret = NetworkIdentity {
+        NetworkIdentity {
             network_name: info.network_name.clone(),
-            ..Default::default()
-        };
-        ret.network_secret_digest = Some([0u8; 32]);
-        ret.network_secret_digest
-            .as_mut()
-            .unwrap()
-            .copy_from_slice(&info.network_secret_digrest);
-        ret
+            network_secret: None,
+            network_secret_digest: None, // We don't exchange digest anymore
+        }
     }
 
     pub fn get_close_notifier(&self) -> Arc<PeerConnCloseNotify> {
@@ -549,11 +815,15 @@ mod tests {
         c_ret.unwrap();
         s_ret.unwrap();
 
-        assert_eq!(c_recorder.sent.lock().unwrap().len(), 1);
-        assert_eq!(c_recorder.received.lock().unwrap().len(), 1);
+        // Client sends 2 messages: initial handshake + challenge response
+        assert_eq!(c_recorder.sent.lock().unwrap().len(), 2);
+        // Client receives 2 messages: server handshake with challenge + server response
+        assert_eq!(c_recorder.received.lock().unwrap().len(), 2);
 
-        assert_eq!(s_recorder.sent.lock().unwrap().len(), 1);
-        assert_eq!(s_recorder.received.lock().unwrap().len(), 1);
+        // Server sends 2 messages: handshake with challenge + challenge response
+        assert_eq!(s_recorder.sent.lock().unwrap().len(), 2);
+        // Server receives 2 messages: initial handshake + client challenge response
+        assert_eq!(s_recorder.received.lock().unwrap().len(), 2);
 
         assert_eq!(c_peer.get_peer_id(), s_peer_id);
         assert_eq!(s_peer.get_peer_id(), c_peer_id);
