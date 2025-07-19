@@ -248,6 +248,20 @@ pub struct VirtualNic {
     ifcfg: Box<dyn IfConfiguerTrait + Send + Sync + 'static>,
 }
 
+impl Drop for VirtualNic {
+    fn drop(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(ref ifname) = self.ifname {
+                // Try to clean up firewall rules, but don't panic in destructor
+                if let Err(e) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
+                    eprintln!("Warning: Failed to remove firewall rules for interface {}: {}", ifname, e);
+                }
+            }
+        }
+    }
+}
+
 impl VirtualNic {
     pub fn new(global_ctx: ArcGlobalCtx) -> Self {
         Self {
@@ -414,6 +428,25 @@ impl VirtualNic {
         );
 
         self.ifname = Some(ifname.to_owned());
+
+        #[cfg(target_os = "windows")]
+        {
+            // Add firewall rules for virtual NIC interface to allow all traffic
+            match crate::arch::windows::add_interface_to_firewall_allowlist(&ifname) {
+                Ok(_) => {
+                    tracing::info!("Successfully configured Windows Firewall for interface: {}", ifname);
+                    tracing::info!("All protocols (TCP/UDP/ICMP) are now allowed on interface: {}", ifname);
+                },
+                Err(e) => {
+                    tracing::warn!("Failed to configure Windows Firewall for {}: {}", ifname, e);
+                    println!("⚠ Warning: Failed to configure Windows Firewall for interface {}.", ifname);
+                    println!("  This may cause connectivity issues with ping and other network functions.");
+                    println!("  Please run as Administrator or manually configure Windows Firewall.");
+                    println!("  Alternatively, you can disable Windows Firewall for testing purposes.");
+                }
+            }
+        }
+
         Ok(Box::new(ft))
     }
 
