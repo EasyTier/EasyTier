@@ -82,6 +82,9 @@ latency_first_help: Ignore hop count and select the path with the lowest total l
 use_smoltcp: Use User-Space Protocol Stack
 use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating system firewalls blocking subnet or KCP proxy functionality.
 
+disable_ipv6: Disable IPv6
+disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for network communication.
+
 enable_kcp_proxy: Enable KCP Proxy
 enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
 
