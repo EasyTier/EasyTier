@@ -13,6 +13,7 @@ use anyhow::Context;
 use cidr::Ipv4Inet;
 use clap::{command, Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
+use dashmap::DashMap;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
@@ -28,12 +29,13 @@ use easytier::{
         cli::{
             list_peer_route_pair, ConnectorManageRpc, ConnectorManageRpcClientFactory,
             DumpRouteRequest, GetVpnPortalInfoRequest, ListConnectorRequest,
-            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListPeerRequest,
-            ListPeerResponse, ListRouteRequest, ListRouteResponse, NodeInfo, PeerManageRpc,
+            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
+            ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse,
+            ManageMappedListenerRequest, MappedListenerManageAction, MappedListenerManageRpc,
+            MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, ShowNodeInfoRequest, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
             VpnPortalRpcClientFactory,
-            ManageMappedListenerRequest, MappedListenerManageRpc, MappedListenerManageRpcClientFactory, ListMappedListenerRequest, MappedListenerManageAction
         },
         common::NatType,
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -92,9 +94,7 @@ enum SubCommand {
     #[command(about = "show tcp/kcp proxy status")]
     Proxy,
     #[command(about = t!("core_clap.generate_completions").to_string())]
-    GenAutocomplete{
-        shell:Shell
-    },
+    GenAutocomplete { shell: Shell },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
@@ -158,13 +158,9 @@ struct MappedListenerArgs {
 #[derive(Subcommand, Debug)]
 enum MappedListenerSubCommand {
     /// Add Mapped Listerner
-    Add {
-        url: String
-    },
+    Add { url: String },
     /// Remove Mapped Listener
-    Remove {
-        url: String
-    },
+    Remove { url: String },
     /// List Existing Mapped Listener
     List,
 }
@@ -616,109 +612,61 @@ impl CommandHandler<'_> {
             });
 
             let route = p.route.clone().unwrap_or_default();
-            if route.cost == 1 {
-                items.push(RouteTableItem {
-                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
-                    hostname: route.hostname.clone(),
-                    proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
-
-                    next_hop_ipv4: "DIRECT".to_string(),
-                    next_hop_hostname: "".to_string(),
-                    next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                    path_len: route.cost,
-                    path_latency: next_hop_pair.get_latency_ms().unwrap_or_default() as i32,
-
-                    next_hop_ipv4_lat_first: next_hop_pair_latency_first
-                        .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
-                        .unwrap_or_default()
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    next_hop_hostname_lat_first: next_hop_pair_latency_first
-                        .map(|pair| pair.route.clone().unwrap_or_default().hostname)
-                        .unwrap_or_default()
-                        .clone(),
-                    path_latency_lat_first: next_hop_pair_latency_first
-                        .map(|pair| {
-                            pair.route
-                                .clone()
-                                .unwrap_or_default()
-                                .path_latency_latency_first
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default(),
-                    path_len_lat_first: next_hop_pair_latency_first
-                        .map(|pair| {
-                            pair.route
-                                .clone()
-                                .unwrap_or_default()
-                                .cost_latency_first
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default(),
-
-                    version: if route.version.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        route.version.to_string()
-                    },
-                });
-            } else {
-                items.push(RouteTableItem {
-                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
-                    hostname: route.hostname.clone(),
-                    proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
-                    next_hop_ipv4: next_hop_pair
+            items.push(RouteTableItem {
+                ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                hostname: route.hostname.clone(),
+                proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
+                next_hop_ipv4: if route.cost == 1 {
+                    "DIRECT".to_string()
+                } else {
+                    next_hop_pair
                         .route
                         .clone()
                         .unwrap_or_default()
                         .ipv4_addr
                         .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    next_hop_hostname: next_hop_pair
+                        .unwrap_or_default()
+                },
+                next_hop_hostname: if route.cost == 1 {
+                    "DIRECT".to_string()
+                } else {
+                    next_hop_pair
                         .route
                         .clone()
                         .unwrap_or_default()
                         .hostname
-                        .clone(),
-                    next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                    path_len: route.cost,
-                    path_latency: p.route.clone().unwrap_or_default().path_latency as i32,
+                        .clone()
+                },
+                next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
+                path_len: route.cost,
+                path_latency: route.path_latency,
 
-                    next_hop_ipv4_lat_first: next_hop_pair_latency_first
+                next_hop_ipv4_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
+                    "DIRECT".to_string()
+                } else {
+                    next_hop_pair_latency_first
                         .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
                         .unwrap_or_default()
                         .map(|ip| ip.to_string())
-                        .unwrap_or_default(),
-                    next_hop_hostname_lat_first: next_hop_pair_latency_first
+                        .unwrap_or_default()
+                },
+                next_hop_hostname_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
+                    "DIRECT".to_string()
+                } else {
+                    next_hop_pair_latency_first
                         .map(|pair| pair.route.clone().unwrap_or_default().hostname)
                         .unwrap_or_default()
-                        .clone(),
-                    path_latency_lat_first: next_hop_pair_latency_first
-                        .map(|pair| {
-                            pair.route
-                                .clone()
-                                .unwrap_or_default()
-                                .path_latency_latency_first
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default(),
-                    path_len_lat_first: next_hop_pair_latency_first
-                        .map(|pair| {
-                            pair.route
-                                .clone()
-                                .unwrap_or_default()
-                                .cost_latency_first
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default(),
+                        .clone()
+                },
+                path_latency_lat_first: route.path_latency_latency_first.unwrap_or_default(),
+                path_len_lat_first: route.cost_latency_first.unwrap_or_default(),
 
-                    version: if route.version.is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        route.version.to_string()
-                    },
-                });
-            }
+                version: if route.version.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    route.version.to_string()
+                },
+            });
         }
 
         print_output(&items, self.output_format)?;
@@ -747,7 +695,10 @@ impl CommandHandler<'_> {
             .list_mapped_listener(BaseController::default(), request)
             .await?;
         if self.verbose || *self.output_format == OutputFormat::Json {
-            println!("{}", serde_json::to_string_pretty(&response.mappedlisteners)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&response.mappedlisteners)?
+            );
             return Ok(());
         }
         println!("response: {:#?}", response);
@@ -759,7 +710,7 @@ impl CommandHandler<'_> {
         let client = self.get_mapped_listener_manager_client().await?;
         let request = ManageMappedListenerRequest {
             action: MappedListenerManageAction::MappedListenerAdd as i32,
-            url: Some(url.into())
+            url: Some(url.into()),
         };
         let _response = client
             .manage_mapped_listener(BaseController::default(), request)
@@ -772,7 +723,7 @@ impl CommandHandler<'_> {
         let client = self.get_mapped_listener_manager_client().await?;
         let request = ManageMappedListenerRequest {
             action: MappedListenerManageAction::MappedListenerRemove as i32,
-            url: Some(url.into())
+            url: Some(url.into()),
         };
         let _response = client
             .manage_mapped_listener(BaseController::default(), request)
@@ -783,9 +734,11 @@ impl CommandHandler<'_> {
     fn mapped_listener_validate_url(url: &String) -> Result<url::Url, Error> {
         let url = url::Url::parse(url)?;
         if url.scheme() != "tcp" && url.scheme() != "udp" {
-            return Err(anyhow::anyhow!("Url ({url}) must start with tcp:// or udp://"))
+            return Err(anyhow::anyhow!(
+                "Url ({url}) must start with tcp:// or udp://"
+            ));
         } else if url.port().is_none() {
-            return Err(anyhow::anyhow!("Url ({url}) is missing port num"))
+            return Err(anyhow::anyhow!("Url ({url}) is missing port num"));
         }
         Ok(url)
     }
@@ -1079,7 +1032,7 @@ async fn main() -> Result<(), Error> {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);
     let cli = Cli::parse();
-   
+
     let client = RpcClient::new(TcpTunnelConnector::new(
         format!("tcp://{}:{}", cli.rpc_portal.ip(), cli.rpc_portal.port())
             .parse()
@@ -1126,19 +1079,21 @@ async fn main() -> Result<(), Error> {
                 handler.handle_connector_list().await?;
             }
         },
-        SubCommand::MappedListener(mapped_listener_args) => match mapped_listener_args.sub_command {
-            Some(MappedListenerSubCommand::Add { url }) => {
-                handler.handle_mapped_listener_add(&url).await?;
-                println!("add mapped listener: {url}");
+        SubCommand::MappedListener(mapped_listener_args) => {
+            match mapped_listener_args.sub_command {
+                Some(MappedListenerSubCommand::Add { url }) => {
+                    handler.handle_mapped_listener_add(&url).await?;
+                    println!("add mapped listener: {url}");
+                }
+                Some(MappedListenerSubCommand::Remove { url }) => {
+                    handler.handle_mapped_listener_remove(&url).await?;
+                    println!("remove mapped listener: {url}");
+                }
+                Some(MappedListenerSubCommand::List) | None => {
+                    handler.handle_mapped_listener_list().await?;
+                }
             }
-            Some(MappedListenerSubCommand::Remove { url }) => {
-                handler.handle_mapped_listener_remove(&url).await?;
-                println!("remove mapped listener: {url}");
-            }
-            Some(MappedListenerSubCommand::List) | None => {
-                handler.handle_mapped_listener_list().await?;
-            }
-        },
+        }
         SubCommand::Route(route_args) => match route_args.sub_command {
             Some(RouteSubCommand::List) | None => handler.handle_route_list().await?,
             Some(RouteSubCommand::Dump) => handler.handle_route_dump().await?,
@@ -1173,10 +1128,53 @@ async fn main() -> Result<(), Error> {
                     GetGlobalPeerMapRequest::default(),
                 )
                 .await?;
+            let route_infos = handler.list_peer_route_pair().await?;
+            struct PeerCenterNodeInfo {
+                hostname: String,
+                ipv4: String,
+            }
+            let node_id_to_node_info = DashMap::new();
+            let node_info = handler
+                .get_peer_manager_client()
+                .await?
+                .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+                .await?
+                .node_info
+                .ok_or(anyhow::anyhow!("node info not found"))?;
+            node_id_to_node_info.insert(
+                node_info.peer_id,
+                PeerCenterNodeInfo {
+                    hostname: node_info.hostname.clone(),
+                    ipv4: node_info.ipv4_addr.clone(),
+                },
+            );
+            for route_info in route_infos {
+                let Some(peer_id) = route_info.route.as_ref().map(|x| x.peer_id) else {
+                    continue;
+                };
+                node_id_to_node_info.insert(
+                    peer_id,
+                    PeerCenterNodeInfo {
+                        hostname: route_info
+                            .route
+                            .as_ref()
+                            .map(|x| x.hostname.clone())
+                            .unwrap_or_default(),
+                        ipv4: route_info
+                            .route
+                            .as_ref()
+                            .and_then(|x| x.ipv4_addr)
+                            .map(|x| x.to_string())
+                            .unwrap_or_default(),
+                    },
+                );
+            }
 
             #[derive(tabled::Tabled, serde::Serialize)]
             struct PeerCenterTableItem {
                 node_id: String,
+                hostname: String,
+                ipv4: String,
                 #[tabled(rename = "direct_peers")]
                 #[serde(skip_serializing)]
                 direct_peers_str: String,
@@ -1187,27 +1185,50 @@ async fn main() -> Result<(), Error> {
             #[derive(serde::Serialize)]
             struct DirectPeerItem {
                 node_id: String,
+                hostname: String,
+                ipv4: String,
                 latency_ms: i32,
             }
 
             let mut table_rows = vec![];
             for (k, v) in resp.global_peer_map.iter() {
                 let node_id = k;
-                let direct_peers_strs = v
-                    .direct_peers
-                    .iter()
-                    .map(|(k, v)| format!("{}: {:?}ms", k, v.latency_ms,))
-                    .collect::<Vec<_>>();
                 let direct_peers: Vec<_> = v
                     .direct_peers
                     .iter()
                     .map(|(k, v)| DirectPeerItem {
                         node_id: k.to_string(),
+                        hostname: node_id_to_node_info
+                            .get(k)
+                            .map(|x| x.hostname.clone())
+                            .unwrap_or_default(),
+                        ipv4: node_id_to_node_info
+                            .get(k)
+                            .map(|x| x.ipv4.clone())
+                            .unwrap_or_default(),
                         latency_ms: v.latency_ms,
                     })
                     .collect();
+                let direct_peers_strs = direct_peers
+                    .iter()
+                    .map(|x| {
+                        format!(
+                            "{}({}[{}]): {}ms",
+                            x.node_id, x.hostname, x.ipv4, x.latency_ms,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
                 table_rows.push(PeerCenterTableItem {
                     node_id: node_id.to_string(),
+                    hostname: node_id_to_node_info
+                        .get(node_id)
+                        .map(|x| x.hostname.clone())
+                        .unwrap_or_default(),
+                    ipv4: node_id_to_node_info
+                        .get(node_id)
+                        .map(|x| x.ipv4.clone())
+                        .unwrap_or_default(),
                     direct_peers_str: direct_peers_strs.join("\n"),
                     direct_peers,
                 });

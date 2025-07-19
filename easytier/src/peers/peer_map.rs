@@ -1,7 +1,10 @@
-use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+};
 
 use anyhow::Context;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -10,7 +13,10 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
         PeerId,
     },
-    proto::{cli::PeerConnInfo, peer_rpc::RoutePeerInfo},
+    proto::{
+        cli::{self, PeerConnInfo},
+        peer_rpc::RoutePeerInfo,
+    },
     tunnel::{packet_def::ZCPacket, TunnelError},
 };
 
@@ -89,6 +95,14 @@ impl PeerMap {
 
     pub fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
         self.peer_map.get(&peer_id).map(|v| v.clone())
+    }
+
+    pub fn get_directly_connections_by_peer_id(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
+        if let Some(peer) = self.get_peer_by_id(peer_id) {
+            return peer.get_directly_connections();
+        }
+
+        DashSet::new()
     }
 
     pub fn has_peer(&self, peer_id: PeerId) -> bool {
@@ -324,6 +338,13 @@ impl PeerMap {
         route_map
     }
 
+    pub async fn list_route_infos(&self) -> Vec<cli::Route> {
+        for route in self.routes.read().await.iter() {
+            return route.list_routes().await;
+        }
+        vec![]
+    }
+
     pub async fn need_relay_by_foreign_network(&self, dst_peer_id: PeerId) -> Result<bool, Error> {
         // if gateway_peer_id is not connected to me, means need relay by foreign network
         let gateway_id = self
@@ -342,6 +363,14 @@ impl PeerMap {
             .iter()
             .map(|v| (v.key().clone(), v.value().clone()))
             .collect()
+    }
+
+    pub fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
+    }
+
+    pub fn get_global_ctx(&self) -> ArcGlobalCtx {
+        self.global_ctx.clone()
     }
 }
 
