@@ -29,6 +29,7 @@ use crate::{
         token_bucket::TokenBucket,
         PeerId,
     },
+    peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::route_trait::{Route, RouteInterface},
     proto::{
         cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
@@ -73,6 +74,8 @@ struct ForeignNetworkEntry {
 
     bps_limiter: Arc<TokenBucket>,
 
+    peer_center: Arc<PeerCenterInstance>,
+
     tasks: Mutex<JoinSet<()>>,
 
     pub lock: Mutex<()>,
@@ -116,6 +119,13 @@ impl ForeignNetworkEntry {
             .token_bucket_manager()
             .get_or_create(&network.network_name, limiter_config.into());
 
+        let peer_center = Arc::new(PeerCenterInstance::new(Arc::new(
+            PeerMapWithPeerRpcManager {
+                peer_map: peer_map.clone(),
+                rpc_mgr: peer_rpc.clone(),
+            },
+        )));
+
         Self {
             my_peer_id,
 
@@ -133,6 +143,8 @@ impl ForeignNetworkEntry {
             bps_limiter,
 
             tasks: Mutex::new(JoinSet::new()),
+
+            peer_center,
 
             lock: Mutex::new(()),
         }
@@ -270,6 +282,10 @@ impl ForeignNetworkEntry {
             .await
             .unwrap();
 
+        route
+            .set_route_cost_fn(self.peer_center.get_cost_calculator())
+            .await;
+
         self.peer_map.add_route(Arc::new(Box::new(route))).await;
     }
 
@@ -351,6 +367,7 @@ impl ForeignNetworkEntry {
         self.prepare_route(accessor).await;
         self.start_packet_recv().await;
         self.peer_rpc.run();
+        self.peer_center.init().await;
     }
 }
 

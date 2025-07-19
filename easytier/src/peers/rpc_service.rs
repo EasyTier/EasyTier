@@ -22,17 +22,17 @@ impl PeerManagerRpcService {
         PeerManagerRpcService { peer_manager }
     }
 
-    pub async fn list_peers(&self) -> Vec<PeerInfo> {
-        let mut peers = self.peer_manager.get_peer_map().list_peers().await;
+    pub async fn list_peers(peer_manager: &PeerManager) -> Vec<PeerInfo> {
+        let mut peers = peer_manager.get_peer_map().list_peers().await;
         peers.extend(
-            self.peer_manager
+            peer_manager
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
                 .await
                 .iter(),
         );
-        let peer_map = self.peer_manager.get_peer_map();
+        let peer_map = peer_manager.get_peer_map();
         let mut peer_infos = Vec::new();
         for peer in peers {
             let mut peer_info = PeerInfo::default();
@@ -41,17 +41,15 @@ impl PeerManagerRpcService {
                 .get_peer_default_conn_id(peer)
                 .await
                 .map(Into::into);
-            peer_info.directly_connected_conns = self
-                .peer_manager
-                .get_directly_connections(peer)
+            peer_info.directly_connected_conns = peer_map
+                .get_directly_connections_by_peer_id(peer)
                 .into_iter()
                 .map(Into::into)
                 .collect();
 
             if let Some(conns) = peer_map.list_peer_conns(peer).await {
                 peer_info.conns = conns;
-            } else if let Some(conns) = self
-                .peer_manager
+            } else if let Some(conns) = peer_manager
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peer_conns(peer)
@@ -77,7 +75,7 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<ListPeerResponse, rpc_types::error::Error> {
         let mut reply = ListPeerResponse::default();
 
-        let peers = self.list_peers().await;
+        let peers = PeerManagerRpcService::list_peers(&self.peer_manager).await;
         for peer in peers {
             reply.peer_infos.push(peer);
         }

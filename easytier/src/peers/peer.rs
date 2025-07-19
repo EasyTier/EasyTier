@@ -201,14 +201,17 @@ impl Peer {
     }
 
     pub fn has_directly_connected_conn(&self) -> bool {
-        self.conns.iter().any(|entry|!(entry.value()).is_hole_punched())
+        self.conns
+            .iter()
+            .any(|entry| !(entry.value()).is_hole_punched())
     }
 
     pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
-        self.conns.iter()
-        .filter(|entry| !(entry.value()).is_hole_punched())
-        .map(|entry|(entry.value()).get_conn_id())
-        .collect()
+        self.conns
+            .iter()
+            .filter(|entry| !(entry.value()).is_hole_punched())
+            .map(|entry| (entry.value()).get_conn_id())
+            .collect()
     }
 
     pub fn get_default_conn_id(&self) -> PeerConnId {

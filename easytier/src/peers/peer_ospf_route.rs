@@ -2264,7 +2264,7 @@ impl Route for PeerRoute {
 
             route.next_hop_peer_id_latency_first =
                 next_hop_peer_latency_first.map(|x| x.next_hop_peer_id);
-            route.cost_latency_first = next_hop_peer_latency_first.map(|x| x.path_latency);
+            route.cost_latency_first = next_hop_peer_latency_first.map(|x| x.path_len as i32);
             route.path_latency_latency_first = next_hop_peer_latency_first.map(|x| x.path_latency);
 
             route.feature_flag = item.feature_flag.clone();

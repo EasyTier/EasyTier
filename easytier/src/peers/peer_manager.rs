@@ -8,7 +8,7 @@ use std::{
 use anyhow::Context;
 use async_trait::async_trait;
 
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 
 use tokio::{
     sync::{
@@ -1182,14 +1182,6 @@ impl PeerManager {
         while !self.tasks.lock().await.is_empty() {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
-    }
-
-    pub fn get_directly_connections(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
-        if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
-            return peer.get_directly_connections();
-        }
-
-        DashSet::new()
     }
 
     pub async fn clear_resources(&self) {
