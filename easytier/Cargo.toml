@@ -89,7 +89,7 @@ tun = { package = "tun-easytier", git="https://github.com/EasyTier/rust-tun", fe
     "async",
 ], optional = true }
 # for net ns
-nix = { version = "0.29.0", features = ["sched", "socket", "ioctl", "net"] }
+nix = { version = "0.29.0", features = ["sched", "socket", "ioctl", "net", "fs"] }
 
 uuid = { version = "1.5.0", features = [
     "v4",
