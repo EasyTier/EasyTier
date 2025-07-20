@@ -4,7 +4,10 @@
 extern crate rust_i18n;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr}, path::PathBuf, process::ExitCode, sync::Arc
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    process::ExitCode,
+    sync::Arc,
 };
 
 use anyhow::Context;
@@ -42,7 +45,7 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
 
-#[cfg(feature = "jemalloc")]
+#[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
 
 #[cfg(feature = "jemalloc")]
@@ -50,7 +53,7 @@ use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 fn set_prof_active(_active: bool) {
-    #[cfg(feature = "jemalloc")]
+    #[cfg(feature = "jemalloc-prof")]
     {
         const PROF_ACTIVE: &'static [u8] = b"prof.active\0";
         let name = PROF_ACTIVE.name();
@@ -59,7 +62,7 @@ fn set_prof_active(_active: bool) {
 }
 
 fn dump_profile(_cur_allocated: usize) {
-    #[cfg(feature = "jemalloc")]
+    #[cfg(feature = "jemalloc-prof")]
     {
         const PROF_DUMP: &'static [u8] = b"prof.dump\0";
         static mut PROF_DUMP_FILE_NAME: [u8; 128] = [0; 128];
@@ -811,7 +814,6 @@ impl NetworkOptions {
         if let Some(dev_name) = &self.dev_name {
             f.dev_name = dev_name.clone()
         }
-        println!("mtu: {}, {:?}", f.mtu, self.mtu);
         if let Some(mtu) = self.mtu {
             f.mtu = mtu as u32;
         }
@@ -1094,7 +1096,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn memory_monitor() {
-    #[cfg(feature = "jemalloc")]
+    #[cfg(feature = "jemalloc-prof")]
     {
         let mut last_peak_size = 0;
         let e = epoch::mib().unwrap();

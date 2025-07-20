@@ -15,7 +15,6 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::select;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
@@ -210,66 +209,61 @@ impl ProxyTcpStream {
     }
 }
 
+type SmolTcpAcceptResult = Result<(tokio_smoltcp::TcpStream, SocketAddr)>;
 #[cfg(feature = "smoltcp")]
 struct SmolTcpListener {
-    listener_task: JoinSet<()>,
-    listen_count: usize,
+    stream_tx: mpsc::UnboundedSender<SmolTcpAcceptResult>,
+    stream_rx: mpsc::UnboundedReceiver<SmolTcpAcceptResult>,
 
-    stream_rx: mpsc::UnboundedReceiver<Result<(tokio_smoltcp::TcpStream, SocketAddr)>>,
+    tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
 }
 
 #[cfg(feature = "smoltcp")]
 impl SmolTcpListener {
-    pub async fn new(net: Arc<Mutex<Option<Net>>>, listen_count: usize) -> Self {
-        let mut tasks = JoinSet::new();
+    pub async fn new() -> Self {
+        let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone(), "smoltcp listener".to_owned());
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let locked_net = net.lock().await;
-        for _ in 0..listen_count {
-            let mut tcp = locked_net
-                .as_ref()
-                .unwrap()
-                .tcp_bind("0.0.0.0:8899".parse().unwrap())
-                .await
-                .unwrap();
-            let tx = tx.clone();
-            tasks.spawn(async move {
-                let mut not_listening_count = 0;
-                loop {
-                    select! {
-                        _ = tokio::time::sleep(Duration::from_secs(2)) => {
-                            if tcp.is_listening() {
-                                not_listening_count = 0;
-                                continue;
-                            }
-
-                            not_listening_count += 1;
-                            if not_listening_count >= 2 {
-                                tracing::error!("smol tcp listener not listening");
-                                tcp.relisten();
-                            }
-                        }
-                        accept_ret = tcp.accept() => {
-                            tx.send(accept_ret.map_err(|e| {
-                                anyhow::anyhow!("smol tcp listener accept failed: {:?}", e).into()
-                            }))
-                            .unwrap();
-                            not_listening_count = 0;
-                        }
-                    }
-                }
-            });
-        }
 
         Self {
-            listener_task: tasks,
-            listen_count,
+            stream_tx: tx,
             stream_rx: rx,
+            tasks,
         }
     }
 
-    pub async fn accept(&mut self) -> Result<(tokio_smoltcp::TcpStream, SocketAddr)> {
+    pub async fn accept(&mut self) -> SmolTcpAcceptResult {
         self.stream_rx.recv().await.unwrap()
+    }
+
+    pub fn stream_tx(&self) -> mpsc::UnboundedSender<SmolTcpAcceptResult> {
+        self.stream_tx.clone()
+    }
+
+    pub async fn add_listener(
+        tx: mpsc::UnboundedSender<SmolTcpAcceptResult>,
+        net: Arc<Mutex<Option<Net>>>,
+        tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
+    ) {
+        let locked_net = net.lock().await;
+        let mut tcp = locked_net
+            .as_ref()
+            .unwrap()
+            .tcp_bind("0.0.0.0:8899".parse().unwrap())
+            .await
+            .unwrap();
+        tasks.lock().unwrap().spawn(async move {
+            let ret = timeout(Duration::from_secs(10), tcp.accept()).await;
+            if let Ok(accept_ret) = ret {
+                tx.send(accept_ret.map_err(|e| {
+                    anyhow::anyhow!("smol tcp listener accept failed: {:?}", e).into()
+                }))
+                .unwrap();
+            } else {
+                tracing::error!("smol tcp listener accept timeout");
+            }
+        });
     }
 }
 
@@ -323,6 +317,7 @@ pub struct TcpProxy<C: NatDstConnector> {
     smoltcp_stack_receiver: Arc<Mutex<Option<mpsc::Receiver<ZCPacket>>>>,
     #[cfg(feature = "smoltcp")]
     smoltcp_net: Arc<Mutex<Option<Net>>>,
+    smoltcp_listener_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<SmolTcpAcceptResult>>>,
     enable_smoltcp: Arc<AtomicBool>,
 
     connector: C,
@@ -332,10 +327,7 @@ pub struct TcpProxy<C: NatDstConnector> {
 impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
         if let Some(_) = self.try_handle_peer_packet(&mut packet).await {
-            if self
-                .enable_smoltcp
-                .load(std::sync::atomic::Ordering::Relaxed)
-            {
+            if self.is_smoltcp_enabled() {
                 let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
@@ -455,6 +447,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
             #[cfg(feature = "smoltcp")]
             smoltcp_net: Arc::new(Mutex::new(None)),
+            smoltcp_listener_tx: std::sync::Mutex::new(None),
 
             enable_smoltcp: Arc::new(AtomicBool::new(true)),
 
@@ -584,7 +577,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
             );
             net.set_any_ip(true);
             self.smoltcp_net.lock().await.replace(net);
-            let tcp = SmolTcpListener::new(self.smoltcp_net.clone(), 64).await;
+            let tcp = SmolTcpListener::new().await;
+            self.smoltcp_listener_tx
+                .lock()
+                .unwrap()
+                .replace(tcp.stream_tx());
 
             self.enable_smoltcp
                 .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -865,6 +862,18 @@ impl<C: NatDstConnector> TcpProxy<C> {
                 .syn_map
                 .insert(src, Arc::new(NatDstEntry::new(src, real_dst, mapped_dst)));
             tracing::info!(src = ?src, ?real_dst, ?mapped_dst, old_entry = ?old_val, "tcp syn received");
+
+            // if smoltcp is enabled, add the listener to the net
+            if self.is_smoltcp_enabled() {
+                let smoltcp_listener_tx = self.smoltcp_listener_tx.lock().unwrap().clone().unwrap();
+                SmolTcpListener::add_listener(
+                    smoltcp_listener_tx,
+                    self.smoltcp_net.clone(),
+                    self.tasks.clone(),
+                )
+                .await;
+                tracing::info!("smol tcp listener added for src: {:?}", src);
+            }
         } else if !self.addr_conn_map.contains_key(&src) && !self.syn_map.contains_key(&src) {
             // if not in syn map and addr conn map, may forwarding n2n packet
             return None;

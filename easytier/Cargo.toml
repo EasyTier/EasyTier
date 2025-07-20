@@ -8,7 +8,7 @@ edition = "2021"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.84.0"
+rust-version = "1.87.0"
 license-file = "LICENSE"
 readme = "README.md"
 
@@ -213,12 +213,12 @@ humantime-serde = "1.1.1"
 multimap = "0.10.0"
 version-compare = "0.2.0"
 
-jemallocator = { version = "0.5.4", optional = true }
-jemalloc-ctl = { version = "0.5.4", optional = true }
-jemalloc-sys = { version = "0.5.4", features = [
-    "stats",
-    "profiling",
-    "unprefixed_malloc_on_supported_platforms",
+jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true }
+jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
+] }
+jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
+    "background_threads_runtime_support",
+    "background_threads",
 ], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
@@ -289,11 +289,11 @@ tokio-socks = "0.5.2"
 
 
 [features]
-default = ["wireguard", "mimalloc", "websocket", "smoltcp", "tun", "socks5", "quic"]
+default = ["wireguard", "jemalloc", "websocket", "smoltcp", "tun", "socks5", "quic"]
 full = [
     "websocket",
     "wireguard",
-    "mimalloc",
+    "jemalloc",
     "aes-gcm",
     "smoltcp",
     "tun",
@@ -313,4 +313,5 @@ websocket = [
 ]
 smoltcp = ["dep:smoltcp", "dep:parking_lot"]
 socks5 = ["dep:smoltcp"]
-jemalloc = ["dep:jemallocator", "dep:jemalloc-ctl", "dep:jemalloc-sys"]
+jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
+jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]

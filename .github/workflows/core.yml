@@ -212,8 +212,8 @@ jobs:
 
             rustup set auto-self-update disable
 
-            rustup install 1.86
-            rustup default 1.86
+            rustup install 1.87
+            rustup default 1.87
 
             export CC=clang
             export CXX=clang++
