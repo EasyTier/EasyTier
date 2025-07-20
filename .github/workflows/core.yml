@@ -224,7 +224,7 @@ jobs:
 
             cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
             mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
-            cargo build --release --verbose --target $TARGET --features=jemalloc
+            cargo build --release --verbose --target $TARGET --features=mimalloc
 
       - name: Compress
         run: |
