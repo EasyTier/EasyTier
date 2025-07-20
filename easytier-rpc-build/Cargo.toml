@@ -8,7 +8,7 @@ repository = "https://github.com/EasyTier/EasyTier"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.84.0"
+rust-version = "1.87.0"
 license-file = "LICENSE"
 readme = "README.md"
 

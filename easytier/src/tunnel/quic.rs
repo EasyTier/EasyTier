@@ -2,7 +2,9 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{error::Error, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
+};
 
 use crate::tunnel::{
     common::{FramedReader, FramedWriter, TunnelWrapper},
@@ -11,8 +13,8 @@ use crate::tunnel::{
 use anyhow::Context;
 
 use quinn::{
-    congestion::BbrConfig, crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint,
-    ServerConfig, TransportConfig,
+    congestion::BbrConfig, crypto::rustls::QuicClientConfig, udp::RecvMeta, AsyncUdpSocket,
+    ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
 };
 
 use super::{
@@ -35,6 +37,48 @@ pub fn configure_client() -> ClientConfig {
     client_config
 }
 
+#[derive(Clone, Debug)]
+struct NoGroAsyncUdpSocket {
+    inner: Arc<dyn AsyncUdpSocket>,
+}
+
+impl AsyncUdpSocket for NoGroAsyncUdpSocket {
+    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
+        self.inner.clone().create_io_poller()
+    }
+
+    fn try_send(&self, transmit: &quinn::udp::Transmit) -> std::io::Result<()> {
+        self.inner.try_send(transmit)
+    }
+
+    /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future
+    fn poll_recv(
+        &self,
+        cx: &mut std::task::Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> Poll<std::io::Result<usize>> {
+        self.inner.poll_recv(cx, bufs, meta)
+    }
+
+    /// Look up the local IP address and port used by this socket
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
+    }
+
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+
+    fn max_receive_segments(&self) -> usize {
+        1
+    }
+}
+
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
 /// and port.
 ///
@@ -45,7 +89,20 @@ pub fn configure_client() -> ClientConfig {
 #[allow(unused)]
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
     let (server_config, server_cert) = configure_server()?;
-    let endpoint = Endpoint::server(server_config, bind_addr)?;
+    let socket = std::net::UdpSocket::bind(bind_addr)?;
+    let runtime = quinn::default_runtime()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no async runtime found"))?;
+    let mut endpoint_config = EndpointConfig::default();
+    endpoint_config.max_udp_payload_size(1200)?;
+    let socket = NoGroAsyncUdpSocket {
+        inner: runtime.wrap_udp_socket(socket)?,
+    };
+    let endpoint = Endpoint::new_with_abstract_socket(
+        endpoint_config,
+        Some(server_config),
+        Arc::new(socket),
+        runtime,
+    )?;
     Ok((endpoint, server_cert))
 }
 

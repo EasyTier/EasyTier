@@ -242,7 +242,7 @@ impl ManualConnectorManager {
 
                         tasks.lock().unwrap().spawn(async move {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone(), connector.clone()).await;
-                            sender.send(reconn_ret).await.unwrap();
+                            let _ = sender.send(reconn_ret).await;
 
                             data_clone.reconnecting.remove(&dead_url).unwrap();
                             data_clone.connectors.insert(dead_url.clone(), connector);
@@ -373,7 +373,20 @@ impl ManualConnectorManager {
         if u.scheme() == "ring" || u.scheme() == "txt" || u.scheme() == "srv" {
             ip_versions.push(IpVersion::Both);
         } else {
-            let addrs = u.socket_addrs(|| Some(1000))?;
+            let addrs = match u.socket_addrs(|| Some(1000)) {
+                Ok(addrs) => addrs,
+                Err(e) => {
+                    data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
+                        dead_url.clone(),
+                        format!("{:?}", IpVersion::Both),
+                        format!("{:?}", e),
+                    ));
+                    return Err(Error::AnyhowError(anyhow::anyhow!(
+                        "get ip from url failed: {:?}",
+                        e
+                    )));
+                }
+            };
             tracing::info!(?addrs, ?dead_url, "get ip from url done");
             let mut has_ipv4 = false;
             let mut has_ipv6 = false;
