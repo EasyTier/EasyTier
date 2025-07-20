@@ -190,7 +190,7 @@ service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.gi
 
 zstd = { version = "0.13" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys" }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "0f0a0558391ba391c089806c23f369651f6c9eeb" }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
@@ -212,14 +212,6 @@ derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.0"
 version-compare = "0.2.0"
-
-jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true }
-jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
-] }
-jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
-    "background_threads_runtime_support",
-    "background_threads",
-], optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
@@ -255,6 +247,15 @@ windows-sys = { version = "0.52", features = [
 ]}
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
+[target.'cfg(not(windows))'.dependencies]
+jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true }
+jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
+] }
+jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
+    "background_threads_runtime_support",
+    "background_threads",
+], optional = true }
+
 [build-dependencies]
 tonic-build = "0.12"
 globwalk = "0.8.1"
@@ -289,11 +290,10 @@ tokio-socks = "0.5.2"
 
 
 [features]
-default = ["wireguard", "jemalloc", "websocket", "smoltcp", "tun", "socks5", "quic"]
+default = ["wireguard", "websocket", "smoltcp", "tun", "socks5", "quic"]
 full = [
     "websocket",
     "wireguard",
-    "jemalloc",
     "aes-gcm",
     "smoltcp",
     "tun",

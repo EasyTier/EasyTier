@@ -175,14 +175,17 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier
+            cargo +nightly build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
           else
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
+              CORE_FEATURES="--features=mimalloc"
+            else
+              CORE_FEATURES="--features=jemalloc"
             fi
             cargo build --release --target $TARGET --package=easytier-web --features=embed
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
-            cargo build --release --target $TARGET
+            cargo build --release --target $TARGET $CORE_FEATURES
           fi
 
       # Copied and slightly modified from @lmq8267 (https://github.com/lmq8267)
@@ -221,7 +224,7 @@ jobs:
 
             cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
             mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
-            cargo build --release --verbose --target $TARGET
+            cargo build --release --verbose --target $TARGET --features=jemalloc
 
       - name: Compress
         run: |

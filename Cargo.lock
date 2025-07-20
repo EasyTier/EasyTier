@@ -4004,7 +4004,7 @@ dependencies = [
 [[package]]
 name = "kcp-sys"
 version = "0.1.0"
-source = "git+https://github.com/EasyTier/kcp-sys#0f0a0558391ba391c089806c23f369651f6c9eeb"
+source = "git+https://github.com/EasyTier/kcp-sys?rev=0f0a0558391ba391c089806c23f369651f6c9eeb#0f0a0558391ba391c089806c23f369651f6c9eeb"
 dependencies = [
  "anyhow",
  "auto_impl",

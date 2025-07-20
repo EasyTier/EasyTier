@@ -242,7 +242,7 @@ impl ManualConnectorManager {
 
                         tasks.lock().unwrap().spawn(async move {
                             let reconn_ret = Self::conn_reconnect(data_clone.clone(), dead_url.clone(), connector.clone()).await;
-                            sender.send(reconn_ret).await.unwrap();
+                            let _ = sender.send(reconn_ret).await;
 
                             data_clone.reconnecting.remove(&dead_url).unwrap();
                             data_clone.connectors.insert(dead_url.clone(), connector);
