@@ -15,7 +15,7 @@ use tokio::{
 };
 
 use crate::{
-    common::{join_joinset_background, PeerId},
+    common::{dns::socket_addrs, join_joinset_background, PeerId},
     peers::peer_conn::PeerConnId,
     proto::{
         cli::{
@@ -373,7 +373,7 @@ impl ManualConnectorManager {
         if u.scheme() == "ring" || u.scheme() == "txt" || u.scheme() == "srv" {
             ip_versions.push(IpVersion::Both);
         } else {
-            let addrs = match u.socket_addrs(|| Some(1000)) {
+            let addrs = match socket_addrs(&u, || Some(1000)).await {
                 Ok(addrs) => addrs,
                 Err(e) => {
                     data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
