@@ -159,7 +159,7 @@ pub struct AclProcessor {
     config: Arc<AsyncRwLock<Acl>>,
 
     // Statistics
-    stats: Arc<DashMap<String, u64>>,
+    stats: Arc<DashMap<AclStatKey, u64>>,
 }
 
 impl AclProcessor {
@@ -300,7 +300,7 @@ impl AclProcessor {
                 .unwrap()
                 .as_secs();
 
-            self.increment_stat("cache_hits");
+            self.increment_stat(AclStatKey::CacheHits);
             return AclResult {
                 action: cached.action.clone(),
                 matched_rule: Some(cached.matched_rule.clone()),
@@ -379,13 +379,13 @@ impl AclProcessor {
                 // Cache the result for frequently accessed patterns
                 self.cache_result(&cache_key, &result);
 
-                self.increment_stat("rule_matches");
+                self.increment_stat(AclStatKey::RuleMatches);
                 return result;
             }
         }
 
         // No rule matched, return default drop
-        self.increment_stat("default_drops");
+        self.increment_stat(AclStatKey::DefaultDrops);
         let result = AclResult {
             action: Action::Drop,
             matched_rule: None,
@@ -614,9 +614,9 @@ impl AclProcessor {
     }
 
     /// Increment statistics counter
-    pub fn increment_stat(&self, key: &str) {
+    pub fn increment_stat(&self, key: AclStatKey) {
         self.stats
-            .entry(key.to_string())
+            .entry(key)
             .and_modify(|counter| *counter += 1)
             .or_insert(1);
     }
@@ -626,12 +626,15 @@ impl AclProcessor {
         let mut stats = self
             .stats
             .iter()
-            .map(|entry| (entry.key().clone(), *entry.value()))
+            .map(|entry| (entry.key().as_str(), *entry.value()))
             .collect::<HashMap<_, _>>();
 
-        // Add cache statistics
-        stats.insert("cache_size".to_string(), self.rule_cache.len() as u64);
-        stats.insert("cache_max_size".to_string(), self.cache_max_size as u64);
+        // Add cache statistics using enum keys
+        stats.insert(AclStatKey::CacheSize.as_str(), self.rule_cache.len() as u64);
+        stats.insert(
+            AclStatKey::CacheMaxSize.as_str(),
+            self.cache_max_size as u64,
+        );
 
         stats
     }
@@ -668,13 +671,13 @@ impl AclProcessor {
     pub fn get_cache_hit_rate(&self) -> f64 {
         let cache_hits = self
             .stats
-            .get("cache_hits")
+            .get(&AclStatKey::CacheHits)
             .map(|v| *v.value())
             .unwrap_or(0);
         let total_requests = cache_hits
             + self
                 .stats
-                .get("rule_matches")
+                .get(&AclStatKey::RuleMatches)
                 .map(|v| *v.value())
                 .unwrap_or(0);
 
@@ -684,6 +687,82 @@ impl AclProcessor {
             cache_hits as f64 / total_requests as f64
         }
     }
+}
+
+// Statistics key enum for better performance
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum AclStatKey {
+    // Cache statistics
+    CacheHits,
+    CacheSize,
+    CacheMaxSize,
+    RuleMatches,
+    DefaultDrops,
+
+    // Global packet statistics
+    PacketsTotal,
+    PacketsAllowed,
+    PacketsDropped,
+    PacketsNoop,
+
+    // Per-chain statistics
+    InboundPacketsTotal,
+    InboundPacketsAllowed,
+    InboundPacketsDropped,
+    InboundPacketsNoop,
+
+    OutboundPacketsTotal,
+    OutboundPacketsAllowed,
+    OutboundPacketsDropped,
+    OutboundPacketsNoop,
+
+    ForwardPacketsTotal,
+    ForwardPacketsAllowed,
+    ForwardPacketsDropped,
+    ForwardPacketsNoop,
+
+    UnknownPacketsTotal,
+    UnknownPacketsAllowed,
+    UnknownPacketsDropped,
+    UnknownPacketsNoop,
+}
+
+impl AclStatKey {
+    pub fn as_str(&self) -> String {
+        format!("{:?}", self)
+    }
+
+    pub fn from_chain_and_action(chain_type: ChainType, stat_type: AclStatType) -> Self {
+        match (chain_type, stat_type) {
+            (ChainType::Inbound, AclStatType::Total) => AclStatKey::InboundPacketsTotal,
+            (ChainType::Inbound, AclStatType::Allowed) => AclStatKey::InboundPacketsAllowed,
+            (ChainType::Inbound, AclStatType::Dropped) => AclStatKey::InboundPacketsDropped,
+            (ChainType::Inbound, AclStatType::Noop) => AclStatKey::InboundPacketsNoop,
+
+            (ChainType::Outbound, AclStatType::Total) => AclStatKey::OutboundPacketsTotal,
+            (ChainType::Outbound, AclStatType::Allowed) => AclStatKey::OutboundPacketsAllowed,
+            (ChainType::Outbound, AclStatType::Dropped) => AclStatKey::OutboundPacketsDropped,
+            (ChainType::Outbound, AclStatType::Noop) => AclStatKey::OutboundPacketsNoop,
+
+            (ChainType::Forward, AclStatType::Total) => AclStatKey::ForwardPacketsTotal,
+            (ChainType::Forward, AclStatType::Allowed) => AclStatKey::ForwardPacketsAllowed,
+            (ChainType::Forward, AclStatType::Dropped) => AclStatKey::ForwardPacketsDropped,
+            (ChainType::Forward, AclStatType::Noop) => AclStatKey::ForwardPacketsNoop,
+
+            (_, AclStatType::Total) => AclStatKey::UnknownPacketsTotal,
+            (_, AclStatType::Allowed) => AclStatKey::UnknownPacketsAllowed,
+            (_, AclStatType::Dropped) => AclStatKey::UnknownPacketsDropped,
+            (_, AclStatType::Noop) => AclStatKey::UnknownPacketsNoop,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AclStatType {
+    Total,
+    Allowed,
+    Dropped,
+    Noop,
 }
 
 #[cfg(test)]
@@ -800,32 +879,58 @@ mod tests {
 
         // Check cache statistics
         let stats = processor.get_stats();
-        assert_eq!(stats.get("cache_hits").unwrap_or(&0), &1);
+        assert_eq!(stats.get(&AclStatKey::CacheHits.as_str()).unwrap_or(&0), &1);
         assert!(processor.get_cache_hit_rate() > 0.0);
     }
 
     #[tokio::test]
     async fn test_cache_cleanup() {
         let acl_config = create_test_acl_config();
-        let mut processor = AclProcessor::new(acl_config);
-        processor.cache_max_size = 5; // Set very small cache for testing
+        let mut processor = AclProcessor::new_with_async_init(acl_config).await;
+        processor.cache_max_size = 2; // Small cache for testing
 
-        // Fill cache beyond max size
-        for i in 0..10 {
-            let mut packet_info = create_test_packet_info();
-            packet_info.src_port = Some(1000 + i);
+        let packet_info1 = PacketInfo {
+            src_ip: "192.168.1.1".parse().unwrap(),
+            dst_ip: "192.168.1.2".parse().unwrap(),
+            src_port: Some(80),
+            dst_port: Some(443),
+            protocol: 6,
+            packet_size: 1024,
+        };
+        let packet_info2 = PacketInfo {
+            src_ip: "192.168.1.3".parse().unwrap(),
+            dst_ip: "192.168.1.4".parse().unwrap(),
+            src_port: Some(80),
+            dst_port: Some(443),
+            protocol: 6,
+            packet_size: 1024,
+        };
+        let packet_info3 = PacketInfo {
+            src_ip: "192.168.1.5".parse().unwrap(),
+            dst_ip: "192.168.1.6".parse().unwrap(),
+            src_port: Some(80),
+            dst_port: Some(443),
+            protocol: 6,
+            packet_size: 1024,
+        };
 
-            processor
-                .process_packet(&packet_info, ChainType::Inbound)
-                .await;
-        }
+        // Process packets to fill cache beyond max size
+        processor
+            .process_packet(&packet_info1, ChainType::Inbound)
+            .await;
+        processor
+            .process_packet(&packet_info2, ChainType::Inbound)
+            .await;
+        processor
+            .process_packet(&packet_info3, ChainType::Inbound)
+            .await;
 
-        // Trigger cleanup
+        // Trigger cache cleanup
         processor.cleanup_cache_now().await;
 
         // Cache should be reduced
         let stats = processor.get_stats();
-        let cache_size = stats.get("cache_size").unwrap_or(&0);
+        let cache_size = stats.get(&AclStatKey::CacheSize.as_str()).unwrap_or(&0);
         assert!(*cache_size <= processor.cache_max_size as u64);
     }
 
@@ -903,9 +1008,10 @@ mod tests {
     async fn test_statistics_tracking() {
         let acl_config = create_test_acl_config();
         let processor = AclProcessor::new_with_async_init(acl_config).await;
+
         let packet_info = create_test_packet_info();
 
-        // Process same packet multiple times
+        // Process same packet multiple times to test caching and statistics
         for _ in 0..5 {
             processor
                 .process_packet(&packet_info, ChainType::Inbound)
@@ -915,12 +1021,15 @@ mod tests {
         let stats = processor.get_stats();
 
         // Should have 1 rule match and 4 cache hits
-        assert_eq!(stats.get("rule_matches").unwrap_or(&0), &1);
-        assert_eq!(stats.get("cache_hits").unwrap_or(&0), &4);
+        assert_eq!(
+            stats.get(&AclStatKey::RuleMatches.as_str()).unwrap_or(&0),
+            &1
+        );
+        assert_eq!(stats.get(&AclStatKey::CacheHits.as_str()).unwrap_or(&0), &4);
 
         // Cache hit rate should be 0.8 (4/5)
         let hit_rate = processor.get_cache_hit_rate();
-        assert!((hit_rate - 0.8).abs() < 0.01);
+        assert!((hit_rate - 0.8).abs() < 0.001);
     }
 
     #[tokio::test]
@@ -976,5 +1085,61 @@ mod tests {
         let unsupported_context = AclLogContext::UnsupportedChainType;
         let message = unsupported_context.to_message();
         assert_eq!(message, "Unsupported chain type");
+    }
+
+    #[tokio::test]
+    async fn test_enum_based_statistics() {
+        let acl_config = create_test_acl_config();
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+
+        // Test enum-based statistics
+        processor.increment_stat(AclStatKey::PacketsTotal);
+        processor.increment_stat(AclStatKey::PacketsAllowed);
+        processor.increment_stat(AclStatKey::InboundPacketsTotal);
+        processor.increment_stat(AclStatKey::OutboundPacketsDropped);
+
+        let stats = processor.get_stats();
+
+        // Verify enum keys are properly converted to strings
+        assert_eq!(
+            stats.get(&AclStatKey::PacketsTotal.as_str()).unwrap_or(&0),
+            &1
+        );
+        assert_eq!(
+            stats
+                .get(&AclStatKey::PacketsAllowed.as_str())
+                .unwrap_or(&0),
+            &1
+        );
+        assert_eq!(
+            stats
+                .get(&AclStatKey::InboundPacketsTotal.as_str())
+                .unwrap_or(&0),
+            &1
+        );
+        assert_eq!(
+            stats
+                .get(&AclStatKey::OutboundPacketsDropped.as_str())
+                .unwrap_or(&0),
+            &1
+        );
+
+        // Test helper function for chain-specific stats
+        let inbound_total_key =
+            AclStatKey::from_chain_and_action(ChainType::Inbound, AclStatType::Total);
+        assert_eq!(inbound_total_key, AclStatKey::InboundPacketsTotal);
+
+        let outbound_dropped_key =
+            AclStatKey::from_chain_and_action(ChainType::Outbound, AclStatType::Dropped);
+        assert_eq!(outbound_dropped_key, AclStatKey::OutboundPacketsDropped);
+
+        let forward_allowed_key =
+            AclStatKey::from_chain_and_action(ChainType::Forward, AclStatType::Allowed);
+        assert_eq!(forward_allowed_key, AclStatKey::ForwardPacketsAllowed);
+
+        // Test unknown chain type
+        let unknown_key =
+            AclStatKey::from_chain_and_action(ChainType::UnspecifiedChain, AclStatType::Noop);
+        assert_eq!(unknown_key, AclStatKey::UnknownPacketsNoop);
     }
 }

@@ -7,7 +7,7 @@ use pnet::packet::{
 
 use crate::{
     common::{
-        acl_processor::{AclProcessor, AclResult, PacketInfo},
+        acl_processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
         global_ctx::ArcGlobalCtx,
     },
     peers::{NicPacketFilter, PeerPacketFilter},
@@ -95,38 +95,45 @@ impl AclFilter {
         }
 
         // Update global statistics in the ACL processor
-        let chain_name = match chain_type {
-            ChainType::Inbound => "inbound",
-            ChainType::Outbound => "outbound",
-            ChainType::Forward => "forward",
-            _ => "unknown",
-        };
-
         match result.action {
             Action::Allow => {
-                self.acl_processor.increment_stat("packets_allowed");
                 self.acl_processor
-                    .increment_stat(&format!("{}_packets_allowed", chain_name));
+                    .increment_stat(AclStatKey::PacketsAllowed);
+                self.acl_processor
+                    .increment_stat(AclStatKey::from_chain_and_action(
+                        chain_type,
+                        AclStatType::Allowed,
+                    ));
                 tracing::trace!("ACL: Packet allowed");
             }
             Action::Drop => {
-                self.acl_processor.increment_stat("packets_dropped");
                 self.acl_processor
-                    .increment_stat(&format!("{}_packets_dropped", chain_name));
+                    .increment_stat(AclStatKey::PacketsDropped);
+                self.acl_processor
+                    .increment_stat(AclStatKey::from_chain_and_action(
+                        chain_type,
+                        AclStatType::Dropped,
+                    ));
                 tracing::debug!("ACL: Packet dropped");
             }
             Action::Noop => {
-                self.acl_processor.increment_stat("packets_noop");
+                self.acl_processor.increment_stat(AclStatKey::PacketsNoop);
                 self.acl_processor
-                    .increment_stat(&format!("{}_packets_noop", chain_name));
+                    .increment_stat(AclStatKey::from_chain_and_action(
+                        chain_type,
+                        AclStatType::Noop,
+                    ));
                 tracing::trace!("ACL: No operation");
             }
         }
 
         // Track total packets processed per chain
         self.acl_processor
-            .increment_stat(&format!("{}_packets_total", chain_name));
-        self.acl_processor.increment_stat("packets_total");
+            .increment_stat(AclStatKey::from_chain_and_action(
+                chain_type,
+                AclStatType::Total,
+            ));
+        self.acl_processor.increment_stat(AclStatKey::PacketsTotal);
     }
 
     /// Common ACL processing logic
@@ -381,10 +388,13 @@ mod tests {
         let stats = acl_processor.get_stats();
 
         // Should have rule matches for both chains
-        assert_eq!(stats.get("rule_matches").unwrap_or(&0), &2);
+        assert_eq!(
+            stats.get(&AclStatKey::RuleMatches.as_str()).unwrap_or(&0),
+            &2
+        );
 
         // Verify basic statistics exist (we can't easily test the filter stats without proper integration)
-        assert!(stats.contains_key("cache_size"));
-        assert!(stats.contains_key("cache_max_size"));
+        assert!(stats.contains_key(&AclStatKey::CacheSize.as_str()));
+        assert!(stats.contains_key(&AclStatKey::CacheMaxSize.as_str()));
     }
 }
