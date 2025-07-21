@@ -40,6 +40,7 @@ tracing-appender = "0.2.3"
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"
+arc-swap = "1.7"
 time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }

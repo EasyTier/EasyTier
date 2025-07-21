@@ -1955,6 +1955,7 @@ version = "2.3.2"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "arc-swap",
  "async-recursion",
  "async-ringbuf",
  "async-stream",
