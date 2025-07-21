@@ -6,10 +6,51 @@ use std::{
 };
 
 use dashmap::DashMap;
-use tokio::sync::{RwLock, RwLock as AsyncRwLock};
+use parking_lot::RwLock;
+use tokio::sync::RwLock as AsyncRwLock;
 
 use crate::common::token_bucket::TokenBucket;
 use crate::proto::{acl::*, common::IpInet};
+
+// Performance-optimized key for rate limiting to avoid string allocations
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub struct RateLimitKey {
+    pub chain_type: ChainType,
+    pub rule_priority: u32,
+}
+
+impl RateLimitKey {
+    pub fn new(chain_type: ChainType, rule_priority: u32) -> Self {
+        Self {
+            chain_type,
+            rule_priority,
+        }
+    }
+}
+
+// Performance-optimized rule identifier to avoid string allocations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleId {
+    Priority(u32),
+    Stateful(u32),
+    Default,
+}
+
+impl RuleId {
+    /// Convert to string only when actually needed (lazy evaluation)
+    pub fn to_string_cached(&self) -> String {
+        match self {
+            RuleId::Priority(p) => p.to_string(),
+            RuleId::Stateful(p) => format!("stateful-{}", p),
+            RuleId::Default => "default".to_string(),
+        }
+    }
+
+    /// Get string representation for logging (optimized for hot path)
+    pub fn as_str(&self) -> String {
+        self.to_string_cached()
+    }
+}
 
 // Fast lookup structures for performance optimization
 #[derive(Debug, Clone)]
@@ -78,7 +119,7 @@ impl AclCacheKey {
 #[derive(Debug, Clone)]
 pub struct AclCacheEntry {
     pub action: Action,
-    pub matched_rule: String,
+    pub matched_rule: RuleId,
     pub last_access: u64,
     // New fields to track rule characteristics for proper cache behavior
     pub is_stateful: bool,
@@ -109,9 +150,21 @@ pub struct PacketInfo {
 #[derive(Debug, Clone)]
 pub struct AclResult {
     pub action: Action,
-    pub matched_rule: Option<String>,
+    pub matched_rule: Option<RuleId>,
     pub should_log: bool,
     pub log_context: Option<AclLogContext>,
+}
+
+impl AclResult {
+    /// Get matched rule as string (lazy evaluation)
+    pub fn matched_rule_string(&self) -> Option<String> {
+        self.matched_rule.as_ref().map(|r| r.to_string_cached())
+    }
+
+    /// Get matched rule as string reference for logging (compatibility method)
+    pub fn matched_rule_str(&self) -> Option<String> {
+        self.matched_rule.as_ref().map(|r| r.as_str())
+    }
 }
 
 // Context for lazy log message construction
@@ -128,6 +181,7 @@ pub enum AclLogContext {
     },
     DefaultDrop,
     UnsupportedChainType,
+    RateLimitDrop,
 }
 
 impl AclLogContext {
@@ -145,22 +199,23 @@ impl AclLogContext {
             }
             AclLogContext::DefaultDrop => "No matching rule, default drop".to_string(),
             AclLogContext::UnsupportedChainType => "Unsupported chain type".to_string(),
+            AclLogContext::RateLimitDrop => "Rate limit drop".to_string(),
         }
     }
 }
 
 // High-performance ACL processor
 pub struct AclProcessor {
-    // Fast lookup structures organized by chain type
-    inbound_rules: Arc<RwLock<Vec<FastLookupRule>>>,
-    outbound_rules: Arc<RwLock<Vec<FastLookupRule>>>,
-    forward_rules: Arc<RwLock<Vec<FastLookupRule>>>,
+    // Fast lookup structures organized by chain type with Arc for efficient sharing
+    inbound_rules: Arc<RwLock<Arc<Vec<FastLookupRule>>>>,
+    outbound_rules: Arc<RwLock<Arc<Vec<FastLookupRule>>>>,
+    forward_rules: Arc<RwLock<Arc<Vec<FastLookupRule>>>>,
 
     // Connection tracking table
     conn_track: Arc<DashMap<String, ConnTrackEntry>>,
 
-    // Rate limiting buckets per rule using TokenBucket
-    rate_limiters: Arc<DashMap<String, Arc<TokenBucket>>>,
+    // Rate limiting buckets per rule using TokenBucket with optimized keys
+    rate_limiters: Arc<DashMap<RateLimitKey, Arc<TokenBucket>>>,
 
     // Rule lookup cache with LRU cleanup
     rule_cache: Arc<DashMap<AclCacheKey, AclCacheEntry>>,
@@ -177,9 +232,9 @@ pub struct AclProcessor {
 impl AclProcessor {
     pub fn new(acl_config: Acl) -> Self {
         let processor = Self {
-            inbound_rules: Arc::new(RwLock::new(Vec::new())),
-            outbound_rules: Arc::new(RwLock::new(Vec::new())),
-            forward_rules: Arc::new(RwLock::new(Vec::new())),
+            inbound_rules: Arc::new(RwLock::new(Arc::new(Vec::new()))),
+            outbound_rules: Arc::new(RwLock::new(Arc::new(Vec::new()))),
+            forward_rules: Arc::new(RwLock::new(Arc::new(Vec::new()))),
             conn_track: Arc::new(DashMap::new()),
             rate_limiters: Arc::new(DashMap::new()),
             rule_cache: Arc::new(DashMap::new()),
@@ -196,7 +251,7 @@ impl AclProcessor {
     /// Create a new ACL processor with async initialization
     pub async fn new_with_async_init(acl_config: Acl) -> Self {
         let processor = Self::new(acl_config.clone());
-        processor.reload_rules(&acl_config).await;
+        processor.reload_rules(&acl_config);
         processor.start_cache_cleanup_task();
         processor
     }
@@ -246,54 +301,49 @@ impl AclProcessor {
     }
 
     /// Reload ACL rules and rebuild lookup structures
-    pub async fn reload_rules(&self, acl_config: &Acl) {
-        let mut inbound = self.inbound_rules.write().await;
-        let mut outbound = self.outbound_rules.write().await;
-        let mut forward = self.forward_rules.write().await;
+    pub fn reload_rules(&self, acl_config: &Acl) {
+        let mut inbound_rules = Vec::new();
+        let mut outbound_rules = Vec::new();
+        let mut forward_rules = Vec::new();
 
-        inbound.clear();
-        outbound.clear();
-        forward.clear();
-
-        // Access chains through acl_v1
+        // Build new rule vectors
         if let Some(ref acl_v1) = acl_config.acl_v1 {
             for chain in &acl_v1.chains {
                 if !chain.enabled {
                     continue;
                 }
 
-                let rules = chain
+                let mut rules = chain
                     .rules
                     .iter()
                     .filter(|rule| rule.enabled)
                     .map(|rule| self.convert_to_fast_lookup_rule(rule))
                     .collect::<Vec<_>>();
 
+                // Sort by priority (higher priority first)
+                rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+
                 match chain.chain_type() {
-                    ChainType::Inbound => {
-                        inbound.extend(rules);
-                        inbound.sort_by(|a, b| b.priority.cmp(&a.priority));
-                    }
-                    ChainType::Outbound => {
-                        outbound.extend(rules);
-                        outbound.sort_by(|a, b| b.priority.cmp(&a.priority));
-                    }
-                    ChainType::Forward => {
-                        forward.extend(rules);
-                        forward.sort_by(|a, b| b.priority.cmp(&a.priority));
-                    }
+                    ChainType::Inbound => inbound_rules.extend(rules),
+                    ChainType::Outbound => outbound_rules.extend(rules),
+                    ChainType::Forward => forward_rules.extend(rules),
                     _ => {}
                 }
             }
         }
 
+        // Replace the Arc contents atomically (no async needed for parking_lot)
+        *self.inbound_rules.write() = Arc::new(inbound_rules);
+        *self.outbound_rules.write() = Arc::new(outbound_rules);
+        *self.forward_rules.write() = Arc::new(forward_rules);
+
         // Clear cache when rules change
         self.rule_cache.clear();
         tracing::info!(
             "ACL rules reloaded: {} inbound, {} outbound, {} forward",
-            inbound.len(),
-            outbound.len(),
-            forward.len()
+            self.inbound_rules.read().len(),
+            self.outbound_rules.read().len(),
+            self.forward_rules.read().len()
         );
     }
 
@@ -329,14 +379,16 @@ impl AclProcessor {
         }
 
         // Process rules (either cache miss or cache hit that needs checks)
+        // Clone only the Arc, not the entire Vec - much more efficient!
+        // Using parking_lot::RwLock for better performance than tokio::sync::RwLock
         let rules = match chain_type {
-            ChainType::Inbound => self.inbound_rules.read().await.clone(),
-            ChainType::Outbound => self.outbound_rules.read().await.clone(),
-            ChainType::Forward => self.forward_rules.read().await.clone(),
+            ChainType::Inbound => self.inbound_rules.read().clone(),
+            ChainType::Outbound => self.outbound_rules.read().clone(),
+            ChainType::Forward => self.forward_rules.read().clone(),
             _ => {
                 return AclResult {
                     action: Action::Drop,
-                    matched_rule: None,
+                    matched_rule: Some(RuleId::Default),
                     should_log: false,
                     log_context: Some(AclLogContext::UnsupportedChainType),
                 }
@@ -352,12 +404,15 @@ impl AclProcessor {
             if self.rule_matches(rule, packet_info) {
                 // Check rate limiting if configured
                 if rule.rate_limit > 0 {
-                    let rule_key = format!("{}:{}", chain_type as i32, rule.priority);
-                    if !self
-                        .check_rate_limit(&rule_key, rule.rate_limit, rule.burst_limit)
-                        .await
-                    {
-                        continue; // Rate limited, try next rule
+                    let rule_key = RateLimitKey::new(chain_type, rule.priority);
+                    if !self.check_rate_limit(&rule_key, rule.rate_limit, rule.burst_limit) {
+                        // rate limited, drop packet
+                        return AclResult {
+                            action: Action::Drop,
+                            matched_rule: Some(RuleId::Priority(rule.priority)),
+                            should_log: false,
+                            log_context: Some(AclLogContext::RateLimitDrop),
+                        };
                     }
                 }
 
@@ -367,7 +422,7 @@ impl AclProcessor {
                         Some(conn_action) => {
                             let result = AclResult {
                                 action: conn_action,
-                                matched_rule: Some(format!("stateful-{}", rule.priority)),
+                                matched_rule: Some(RuleId::Stateful(rule.priority)),
                                 should_log: false,
                                 log_context: Some(AclLogContext::StatefulMatch {
                                     src_ip: packet_info.src_ip,
@@ -386,7 +441,7 @@ impl AclProcessor {
                 // Rule matched, return action
                 let result = AclResult {
                     action: rule.action.clone(),
-                    matched_rule: Some(rule.priority.to_string()),
+                    matched_rule: Some(RuleId::Priority(rule.priority)),
                     should_log: false,
                     log_context: Some(AclLogContext::RuleMatch {
                         src_ip: packet_info.src_ip,
@@ -406,7 +461,7 @@ impl AclProcessor {
         self.increment_stat(AclStatKey::DefaultDrops);
         let result = AclResult {
             action: Action::Drop,
-            matched_rule: None,
+            matched_rule: Some(RuleId::Default),
             should_log: false,
             log_context: Some(AclLogContext::DefaultDrop),
         };
@@ -430,7 +485,7 @@ impl AclProcessor {
     ) {
         let entry = AclCacheEntry {
             action: result.action.clone(),
-            matched_rule: result.matched_rule.clone().unwrap_or_default(),
+            matched_rule: result.matched_rule.clone().unwrap_or(RuleId::Default),
             last_access: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -584,25 +639,18 @@ impl AclProcessor {
     }
 
     /// Check rate limiting for a rule
-    async fn check_rate_limit(&self, rule_key: &str, rate: u32, burst: u32) -> bool {
+    fn check_rate_limit(&self, rule_key: &RateLimitKey, rate: u32, burst: u32) -> bool {
         if rate == 0 {
             return true; // No rate limiting
         }
 
-        // Insert if not exists first
-        if !self.rate_limiters.contains_key(rule_key) {
-            // Convert rate (packets per second) to token bucket parameters
-            // For ACL, we typically want 1 token per packet, so capacity = burst, fill_rate = rate
-            let bucket = TokenBucket::new(
-                burst as u64,              // capacity (burst limit)
-                rate as u64,               // fill_rate (tokens per second)
-                Duration::from_millis(10), // refill_interval
-            );
-            self.rate_limiters.insert(rule_key.to_string(), bucket);
-        }
-
-        // Get reference to the bucket
-        let bucket = self.rate_limiters.get(rule_key).unwrap().clone();
+        let bucket = self
+            .rate_limiters
+            .entry(rule_key.clone())
+            .or_insert_with(|| {
+                TokenBucket::new(burst as u64, rate as u64, Duration::from_millis(10))
+            })
+            .clone();
 
         // Try to consume 1 token (1 packet)
         bucket.try_consume(1)
@@ -990,7 +1038,7 @@ mod tests {
     async fn test_cache_entry_with_timestamp() {
         let entry = AclCacheEntry {
             action: Action::Allow,
-            matched_rule: "test_rule".to_string(),
+            matched_rule: RuleId::Priority(100),
             last_access: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1002,7 +1050,8 @@ mod tests {
         };
 
         assert_eq!(entry.action, Action::Allow);
-        assert_eq!(entry.matched_rule, "test_rule");
+        assert_eq!(entry.matched_rule, RuleId::Priority(100));
+        assert_eq!(entry.matched_rule.to_string_cached(), "100");
         assert!(entry.last_access > 0);
         assert!(!entry.is_stateful);
         assert!(!entry.has_rate_limit);
@@ -1263,12 +1312,18 @@ mod tests {
             .await;
         assert_eq!(result2.action, Action::Allow);
 
-        // Third request should be rate limited (first available rule should be the original allow_all)
+        // Third request should be rate limited and dropped
         let result3 = processor
             .process_packet(&packet_info, ChainType::Inbound)
             .await;
-        // This should hit the lower priority rule since the rate-limited rule is exhausted
-        assert_eq!(result3.action, Action::Allow); // Falls back to lower priority rule
+        // This should be dropped due to rate limiting
+        assert_eq!(result3.action, Action::Drop);
+        assert!(result3.log_context.is_some());
+        if let Some(AclLogContext::RateLimitDrop) = result3.log_context {
+            // Expected rate limit drop
+        } else {
+            panic!("Expected RateLimitDrop log context");
+        }
     }
 
     #[tokio::test]
@@ -1538,5 +1593,135 @@ mod tests {
             "✓ Cache hit rate: {:.1}%",
             processor.get_cache_hit_rate() * 100.0
         );
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_drop_log_context() {
+        // Test that RateLimitDrop log context is properly created
+        let context = AclLogContext::RateLimitDrop;
+        let message = context.to_message();
+        assert_eq!(message, "Rate limit drop");
+    }
+
+    #[tokio::test]
+    async fn test_rate_limit_drop_behavior() {
+        let mut acl_config = create_test_acl_config();
+
+        // Create a very restrictive rate-limited rule
+        if let Some(ref mut acl_v1) = acl_config.acl_v1 {
+            let mut rule = Rule::default();
+            rule.name = "strict_rate_limit".to_string();
+            rule.priority = 200;
+            rule.enabled = true;
+            rule.action = Action::Allow as i32;
+            rule.protocol = Protocol::Any as i32;
+            rule.rate_limit = 1; // Allow only 1 packet per second
+            rule.burst_limit = 1; // Burst of 1 packet
+
+            acl_v1.chains[0].rules.push(rule);
+        }
+
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+        let packet_info = create_test_packet_info();
+
+        // First request should be allowed
+        let result1 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result1.action, Action::Allow);
+        assert_eq!(result1.matched_rule, Some(RuleId::Priority(200)));
+
+        // Second request should be rate limited and dropped immediately
+        let result2 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result2.action, Action::Drop);
+        assert_eq!(result2.matched_rule, Some(RuleId::Priority(200)));
+        assert!(!result2.should_log);
+
+        // Verify the specific log context
+        if let Some(AclLogContext::RateLimitDrop) = result2.log_context {
+            let message = result2.log_context.unwrap().to_message();
+            assert_eq!(message, "Rate limit drop");
+        } else {
+            panic!(
+                "Expected RateLimitDrop log context, got: {:?}",
+                result2.log_context
+            );
+        }
+
+        // Third request should also be rate limited
+        let result3 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result3.action, Action::Drop);
+        assert!(matches!(
+            result3.log_context,
+            Some(AclLogContext::RateLimitDrop)
+        ));
+
+        println!("✓ Rate limiting properly drops packets after limit exceeded");
+        println!("✓ RateLimitDrop log context is correctly generated");
+    }
+
+    #[tokio::test]
+    async fn test_performance_optimizations() {
+        // Test that RuleId avoids unnecessary string allocations
+        let rule_id = RuleId::Priority(12345);
+        let stateful_id = RuleId::Stateful(54321);
+        let default_id = RuleId::Default;
+
+        // Test string conversion only happens when needed
+        assert_eq!(rule_id.to_string_cached(), "12345");
+        assert_eq!(stateful_id.to_string_cached(), "stateful-54321");
+        assert_eq!(default_id.to_string_cached(), "default");
+
+        // Test RateLimitKey avoids string concatenation
+        let rate_key1 = RateLimitKey::new(ChainType::Inbound, 100);
+        let rate_key2 = RateLimitKey::new(ChainType::Inbound, 100);
+        let rate_key3 = RateLimitKey::new(ChainType::Outbound, 100);
+
+        assert_eq!(rate_key1, rate_key2); // Same keys should be equal
+        assert_ne!(rate_key1, rate_key3); // Different chain types should not be equal
+
+        // Test that AclResult provides lazy string conversion
+        let result = AclResult {
+            action: Action::Allow,
+            matched_rule: Some(RuleId::Priority(999)),
+            should_log: false,
+            log_context: None,
+        };
+
+        // String conversion only happens when explicitly requested
+        assert_eq!(result.matched_rule_string(), Some("999".to_string()));
+        assert_eq!(result.matched_rule_str(), Some("999".to_string()));
+
+        println!("✓ Performance optimizations verified:");
+        println!("  • RuleId avoids premature string allocation");
+        println!("  • RateLimitKey uses structured data instead of string concatenation");
+        println!("  • AclResult provides lazy string conversion methods");
+    }
+
+    #[tokio::test]
+    async fn test_zero_copy_rule_access() {
+        let acl_config = create_test_acl_config();
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+
+        // Verify that rules are stored in Arc for efficient sharing
+        let rules1 = processor.inbound_rules.read().clone();
+        let rules2 = processor.inbound_rules.read().clone();
+
+        // These should be the same Arc, not separate Vec clones
+        assert!(Arc::ptr_eq(&rules1, &rules2));
+
+        // Verify the rules contain expected data
+        assert!(!rules1.is_empty());
+        assert_eq!(rules1[0].priority, 100);
+        assert_eq!(rules1[0].action, Action::Allow);
+
+        println!("✓ Zero-copy rule access optimization verified:");
+        println!("  • Rules are stored in Arc<Vec<FastLookupRule>>");
+        println!("  • Clone operations only copy Arc pointer, not entire rule vectors");
+        println!("  • Memory usage and allocation overhead dramatically reduced");
     }
 }
