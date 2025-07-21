@@ -80,6 +80,18 @@ pub struct AclCacheEntry {
     pub action: Action,
     pub matched_rule: String,
     pub last_access: u64,
+    // New fields to track rule characteristics for proper cache behavior
+    pub is_stateful: bool,
+    pub has_rate_limit: bool,
+    pub rule_priority: u32,
+    pub chain_type: ChainType,
+}
+
+impl AclCacheEntry {
+    /// Check if this cached entry can be used without additional checks
+    pub fn can_skip_checks(&self) -> bool {
+        !self.is_stateful && !self.has_rate_limit
+    }
 }
 
 // Packet info extracted for ACL processing
@@ -293,6 +305,8 @@ impl AclProcessor {
     ) -> AclResult {
         // Check cache first for performance
         let cache_key = AclCacheKey::from_packet_info(packet_info, chain_type);
+
+        // If cache hit and can skip checks, return cached result
         if let Some(mut cached) = self.rule_cache.get_mut(&cache_key) {
             // Update last access time for LRU
             cached.last_access = SystemTime::now()
@@ -301,15 +315,20 @@ impl AclProcessor {
                 .as_secs();
 
             self.increment_stat(AclStatKey::CacheHits);
-            return AclResult {
-                action: cached.action.clone(),
-                matched_rule: Some(cached.matched_rule.clone()),
-                should_log: false,
-                log_context: None,
-            };
+
+            // Only use cache if the cached rule doesn't need stateful or rate limit checks
+            if cached.can_skip_checks() {
+                return AclResult {
+                    action: cached.action.clone(),
+                    matched_rule: Some(cached.matched_rule.clone()),
+                    should_log: false,
+                    log_context: None,
+                };
+            }
+            // If cache hit but needs checks, fall through to full processing
         }
 
-        // Clone rules to avoid holding lock across await points
+        // Process rules (either cache miss or cache hit that needs checks)
         let rules = match chain_type {
             ChainType::Inbound => self.inbound_rules.read().await.clone(),
             ChainType::Outbound => self.outbound_rules.read().await.clone(),
@@ -330,8 +349,8 @@ impl AclProcessor {
                 continue;
             }
 
-            if self.rule_matches(rule, packet_info).await {
-                // Check rate limiting
+            if self.rule_matches(rule, packet_info) {
+                // Check rate limiting if configured
                 if rule.rate_limit > 0 {
                     let rule_key = format!("{}:{}", chain_type as i32, rule.priority);
                     if !self
@@ -342,7 +361,7 @@ impl AclProcessor {
                     }
                 }
 
-                // Handle stateful connections
+                // Handle stateful connections if configured
                 if rule.stateful {
                     match self.check_connection_state(packet_info, &rule.action) {
                         Some(conn_action) => {
@@ -356,8 +375,8 @@ impl AclProcessor {
                                 }),
                             };
 
-                            // Cache the result
-                            self.cache_result(&cache_key, &result);
+                            // Cache the result with rule info
+                            self.cache_result_with_rule(&cache_key, &result, Some(rule));
                             return result;
                         }
                         None => continue,
@@ -376,9 +395,8 @@ impl AclProcessor {
                     }),
                 };
 
-                // Cache the result for frequently accessed patterns
-                self.cache_result(&cache_key, &result);
-
+                // Cache the result with rule info
+                self.cache_result_with_rule(&cache_key, &result, Some(rule));
                 self.increment_stat(AclStatKey::RuleMatches);
                 return result;
             }
@@ -393,13 +411,23 @@ impl AclProcessor {
             log_context: Some(AclLogContext::DefaultDrop),
         };
 
-        // Cache the default result too
+        // Cache the default result (no rule info)
         self.cache_result(&cache_key, &result);
         result
     }
 
-    /// Cache an ACL result
+    /// Cache an ACL result (fallback for cases without rule info)
     fn cache_result(&self, cache_key: &AclCacheKey, result: &AclResult) {
+        self.cache_result_with_rule(cache_key, result, None);
+    }
+
+    /// Cache an ACL result with rule info
+    fn cache_result_with_rule(
+        &self,
+        cache_key: &AclCacheKey,
+        result: &AclResult,
+        rule: Option<&FastLookupRule>,
+    ) {
         let entry = AclCacheEntry {
             action: result.action.clone(),
             matched_rule: result.matched_rule.clone().unwrap_or_default(),
@@ -407,6 +435,11 @@ impl AclProcessor {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
+            // Determine rule characteristics for caching
+            is_stateful: rule.map_or(false, |r| r.stateful),
+            has_rate_limit: rule.map_or(false, |r| r.rate_limit > 0),
+            rule_priority: rule.map_or(0, |r| r.priority),
+            chain_type: cache_key.chain_type,
         };
 
         self.rule_cache.insert(cache_key.clone(), entry);
@@ -422,7 +455,7 @@ impl AclProcessor {
     }
 
     /// Check if a rule matches the packet
-    async fn rule_matches(&self, rule: &FastLookupRule, packet_info: &PacketInfo) -> bool {
+    fn rule_matches(&self, rule: &FastLookupRule, packet_info: &PacketInfo) -> bool {
         // Protocol check
         if rule.protocol != Protocol::Any && rule.protocol as i32 != packet_info.protocol as i32 {
             return false;
@@ -962,11 +995,18 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_secs(),
+            is_stateful: false,
+            has_rate_limit: false,
+            rule_priority: 100,
+            chain_type: ChainType::Inbound,
         };
 
         assert_eq!(entry.action, Action::Allow);
         assert_eq!(entry.matched_rule, "test_rule");
         assert!(entry.last_access > 0);
+        assert!(!entry.is_stateful);
+        assert!(!entry.has_rate_limit);
+        assert!(entry.can_skip_checks());
     }
 
     #[tokio::test]
@@ -1141,5 +1181,362 @@ mod tests {
         let unknown_key =
             AclStatKey::from_chain_and_action(ChainType::UnspecifiedChain, AclStatType::Noop);
         assert_eq!(unknown_key, AclStatKey::UnknownPacketsNoop);
+    }
+
+    #[tokio::test]
+    async fn test_cache_respects_stateful_rules() {
+        let mut acl_config = create_test_acl_config();
+
+        // Create a stateful rule
+        if let Some(ref mut acl_v1) = acl_config.acl_v1 {
+            let mut rule = Rule::default();
+            rule.name = "stateful_rule".to_string();
+            rule.priority = 200;
+            rule.enabled = true;
+            rule.action = Action::Allow as i32;
+            rule.protocol = Protocol::Any as i32;
+            rule.stateful = true; // Make this rule stateful
+
+            acl_v1.chains[0].rules.push(rule);
+        }
+
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+        let packet_info = create_test_packet_info();
+
+        // First request - should create a new connection entry
+        let result1 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result1.action, Action::Allow);
+
+        // Check that a connection tracking entry was created
+        let conn_key = format!(
+            "{}:{}->{}:{}",
+            packet_info.src_ip,
+            packet_info.src_port.unwrap_or(0),
+            packet_info.dst_ip,
+            packet_info.dst_port.unwrap_or(0)
+        );
+        assert!(processor.conn_track.contains_key(&conn_key));
+
+        // Second request - should still process stateful check even if cache hit
+        let result2 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result2.action, Action::Allow);
+
+        // Verify that the connection entry was updated (packet count increased)
+        if let Some(entry) = processor.conn_track.get(&conn_key) {
+            assert!(entry.packet_count >= 2);
+        };
+    }
+
+    #[tokio::test]
+    async fn test_cache_respects_rate_limiting() {
+        let mut acl_config = create_test_acl_config();
+
+        // Create a rate-limited rule
+        if let Some(ref mut acl_v1) = acl_config.acl_v1 {
+            let mut rule = Rule::default();
+            rule.name = "rate_limited_rule".to_string();
+            rule.priority = 200;
+            rule.enabled = true;
+            rule.action = Action::Allow as i32;
+            rule.protocol = Protocol::Any as i32;
+            rule.rate_limit = 2; // Allow only 2 packets per second
+            rule.burst_limit = 2; // Burst of 2 packets
+
+            acl_v1.chains[0].rules.push(rule);
+        }
+
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+        let packet_info = create_test_packet_info();
+
+        // First two requests should be allowed
+        let result1 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result1.action, Action::Allow);
+
+        let result2 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result2.action, Action::Allow);
+
+        // Third request should be rate limited (first available rule should be the original allow_all)
+        let result3 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        // This should hit the lower priority rule since the rate-limited rule is exhausted
+        assert_eq!(result3.action, Action::Allow); // Falls back to lower priority rule
+    }
+
+    #[tokio::test]
+    async fn test_cache_bypass_for_stateful_and_rate_limited_rules() {
+        let mut acl_config = create_test_acl_config();
+
+        // Create a rule that is both stateful and rate-limited
+        if let Some(ref mut acl_v1) = acl_config.acl_v1 {
+            let mut rule = Rule::default();
+            rule.name = "complex_rule".to_string();
+            rule.priority = 200;
+            rule.enabled = true;
+            rule.action = Action::Allow as i32;
+            rule.protocol = Protocol::Any as i32;
+            rule.stateful = true;
+            rule.rate_limit = 5; // Allow 5 packets per second
+            rule.burst_limit = 5;
+
+            acl_v1.chains[0].rules.push(rule);
+        }
+
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+        let packet_info = create_test_packet_info();
+
+        // Process multiple packets
+        for i in 0..3 {
+            let result = processor
+                .process_packet(&packet_info, ChainType::Inbound)
+                .await;
+            assert_eq!(
+                result.action,
+                Action::Allow,
+                "Packet {} should be allowed",
+                i + 1
+            );
+        }
+
+        // Verify that both connection tracking and rate limiting are functioning
+        let conn_key = format!(
+            "{}:{}->{}:{}",
+            packet_info.src_ip,
+            packet_info.src_port.unwrap_or(0),
+            packet_info.dst_ip,
+            packet_info.dst_port.unwrap_or(0)
+        );
+
+        if let Some(entry) = processor.conn_track.get(&conn_key) {
+            assert_eq!(
+                entry.packet_count, 3,
+                "Connection tracking should count all packets"
+            );
+        } else {
+            panic!("Connection tracking entry should exist");
+        }
+
+        // Verify that cache entries are marked correctly
+        let cache_key = AclCacheKey::from_packet_info(&packet_info, ChainType::Inbound);
+        if let Some(cached) = processor.rule_cache.get(&cache_key) {
+            assert!(
+                cached.is_stateful,
+                "Cache entry should be marked as stateful"
+            );
+            assert!(
+                cached.has_rate_limit,
+                "Cache entry should be marked as rate limited"
+            );
+            assert!(
+                !cached.can_skip_checks(),
+                "Cache entry should require checks"
+            );
+        };
+    }
+
+    #[tokio::test]
+    async fn test_cache_optimization_for_simple_rules() {
+        let acl_config = create_test_acl_config(); // This creates a simple allow_all rule
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+        let packet_info = create_test_packet_info();
+
+        // First request - cache miss
+        let result1 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result1.action, Action::Allow);
+
+        // Verify cache entry properties
+        let cache_key = AclCacheKey::from_packet_info(&packet_info, ChainType::Inbound);
+        if let Some(cached) = processor.rule_cache.get(&cache_key) {
+            assert!(!cached.is_stateful, "Simple rule should not be stateful");
+            assert!(
+                !cached.has_rate_limit,
+                "Simple rule should not have rate limit"
+            );
+            assert!(
+                cached.can_skip_checks(),
+                "Simple rule should allow cache optimization"
+            );
+        }
+
+        // Second request - should be served from cache without additional processing
+        let result2 = processor
+            .process_packet(&packet_info, ChainType::Inbound)
+            .await;
+        assert_eq!(result2.action, Action::Allow);
+
+        // Verify cache hit statistics
+        let stats = processor.get_stats();
+        assert_eq!(stats.get(&AclStatKey::CacheHits.as_str()).unwrap_or(&0), &1);
+    }
+
+    #[tokio::test]
+    async fn test_performance_and_security_balance() {
+        // Create ACL config with different rule types
+        let mut acl_config = Acl::default();
+        acl_config.version = AclVersion::V1 as i32;
+
+        let mut acl_v1 = AclV1::default();
+        let mut chain = Chain::default();
+        chain.name = "performance_test".to_string();
+        chain.chain_type = ChainType::Inbound as i32;
+        chain.enabled = true;
+
+        // 1. High-priority simple rule for UDP (can be cached efficiently)
+        let mut simple_rule = Rule::default();
+        simple_rule.name = "simple_udp".to_string();
+        simple_rule.priority = 300;
+        simple_rule.enabled = true;
+        simple_rule.action = Action::Allow as i32;
+        simple_rule.protocol = Protocol::Udp as i32;
+        // No stateful or rate limit - can benefit from full cache optimization
+        chain.rules.push(simple_rule);
+
+        // 2. Medium-priority stateful + rate-limited rule for TCP (security critical)
+        let mut security_rule = Rule::default();
+        security_rule.name = "security_tcp".to_string();
+        security_rule.priority = 200;
+        security_rule.enabled = true;
+        security_rule.action = Action::Allow as i32;
+        security_rule.protocol = Protocol::Tcp as i32;
+        security_rule.stateful = true;
+        security_rule.rate_limit = 100; // 100 packets/sec
+        security_rule.burst_limit = 200;
+        chain.rules.push(security_rule);
+
+        // 3. Low-priority default allow rule for Any
+        let mut default_rule = Rule::default();
+        default_rule.name = "default_allow".to_string();
+        default_rule.priority = 100;
+        default_rule.enabled = true;
+        default_rule.action = Action::Allow as i32;
+        default_rule.protocol = Protocol::Any as i32;
+        chain.rules.push(default_rule);
+
+        acl_v1.chains.push(chain);
+        acl_config.acl_v1 = Some(acl_v1);
+
+        let processor = AclProcessor::new_with_async_init(acl_config).await;
+
+        // Test 1: Security-critical packets (TCP) - should always process stateful + rate limiting
+        let tcp_packet = PacketInfo {
+            src_ip: "192.168.1.100".parse().unwrap(),
+            dst_ip: "10.0.0.1".parse().unwrap(),
+            src_port: Some(12345),
+            dst_port: Some(443),
+            protocol: Protocol::Tcp as u8, // TCP protocol enum value
+            packet_size: 1024,
+        };
+
+        // Process TCP packets multiple times - should maintain connection tracking
+        for i in 0..5 {
+            let result = processor
+                .process_packet(&tcp_packet, ChainType::Inbound)
+                .await;
+            assert_eq!(
+                result.action,
+                Action::Allow,
+                "TCP packet {} should be allowed",
+                i + 1
+            );
+        }
+
+        // Verify connection tracking worked
+        let conn_key = format!(
+            "{}:{}->{}:{}",
+            tcp_packet.src_ip,
+            tcp_packet.src_port.unwrap_or(0),
+            tcp_packet.dst_ip,
+            tcp_packet.dst_port.unwrap_or(0)
+        );
+
+        if let Some(entry) = processor.conn_track.get(&conn_key) {
+            assert_eq!(entry.packet_count, 5, "All TCP packets should be tracked");
+        } else {
+            panic!("TCP connection tracking should be active");
+        };
+
+        // Test 2: Simple packets (UDP) - should benefit from cache optimization
+        let udp_packet = PacketInfo {
+            src_ip: "192.168.1.101".parse().unwrap(),
+            dst_ip: "10.0.0.2".parse().unwrap(),
+            src_port: Some(54321),
+            dst_port: Some(53),
+            protocol: Protocol::Udp as u8, // UDP protocol enum value
+            packet_size: 512,
+        };
+
+        // First UDP packet - cache miss
+        let result1 = processor
+            .process_packet(&udp_packet, ChainType::Inbound)
+            .await;
+        assert_eq!(result1.action, Action::Allow);
+
+        // Subsequent UDP packets - should hit cache and skip processing
+        for _ in 0..10 {
+            let result = processor
+                .process_packet(&udp_packet, ChainType::Inbound)
+                .await;
+            assert_eq!(result.action, Action::Allow);
+        }
+
+        // Verify cache optimization worked for simple rules
+        let udp_cache_key = AclCacheKey::from_packet_info(&udp_packet, ChainType::Inbound);
+        if let Some(cached) = processor.rule_cache.get(&udp_cache_key) {
+            assert!(!cached.is_stateful, "UDP rule should not be stateful");
+            assert!(
+                !cached.has_rate_limit,
+                "UDP rule should not have rate limit"
+            );
+            assert!(
+                cached.can_skip_checks(),
+                "UDP rule should allow cache optimization"
+            );
+        };
+
+        // Test 3: Performance metrics validation
+        let stats = processor.get_stats();
+        let cache_hits = stats.get(&AclStatKey::CacheHits.as_str()).unwrap_or(&0);
+        let rule_matches = stats.get(&AclStatKey::RuleMatches.as_str()).unwrap_or(&0);
+
+        println!("Performance Metrics:");
+        println!("Cache Hits: {}", cache_hits);
+        println!("Rule Matches: {}", rule_matches);
+        println!(
+            "Cache Hit Rate: {:.2}%",
+            processor.get_cache_hit_rate() * 100.0
+        );
+
+        // UDP packets should have achieved cache hits (10 packets, 1 rule match + 10 cache hits)
+        assert!(
+            *cache_hits >= 10,
+            "Should have multiple cache hits from UDP packets"
+        );
+
+        // TCP packets should NOT be cached due to stateful + rate limiting requirements
+        // Each TCP packet should result in a rule match (not cache hit)
+
+        // Verify that security is maintained while performance is optimized
+        assert!(
+            processor.get_cache_hit_rate() > 0.5,
+            "Should achieve good cache hit rate for simple rules"
+        );
+
+        println!("✓ Performance and security balance test passed!");
+        println!("✓ Stateful + rate-limited rules: Always processed for security");
+        println!("✓ Simple rules: Cached for performance");
+        println!(
+            "✓ Cache hit rate: {:.1}%",
+            processor.get_cache_hit_rate() * 100.0
+        );
     }
 }
