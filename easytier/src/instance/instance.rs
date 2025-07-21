@@ -526,6 +526,19 @@ impl Instance {
         });
     }
 
+    async fn run_quic_dst(&mut self) -> Result<(), Error> {
+        if !self.global_ctx.get_flags().enable_quic_proxy {
+            return Ok(());
+        }
+
+        let quic_dst = QUICProxyDst::new(self.global_ctx.clone())?;
+        quic_dst.start().await?;
+        self.global_ctx
+            .set_quic_proxy_port(Some(quic_dst.local_addr()?.port()));
+        self.quic_proxy_dst = Some(quic_dst);
+        Ok(())
+    }
+
     pub async fn run(&mut self) -> Result<(), Error> {
         self.listener_manager
             .lock()
@@ -588,11 +601,12 @@ impl Instance {
         }
 
         if !self.global_ctx.get_flags().disable_quic_input {
-            let quic_dst = QUICProxyDst::new(self.global_ctx.clone())?;
-            quic_dst.start().await?;
-            self.global_ctx
-                .set_quic_proxy_port(Some(quic_dst.local_addr()?.port()));
-            self.quic_proxy_dst = Some(quic_dst);
+            if let Err(e) = self.run_quic_dst().await {
+                eprintln!(
+                    "quic input start failed: {:?} (some platforms may not support)",
+                    e
+                );
+            }
         }
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10

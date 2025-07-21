@@ -270,7 +270,7 @@ impl UdpHoePunchConnectorData {
 
     #[tracing::instrument(skip(self))]
     async fn cone_to_cone(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![0, 1000, 2000, 4000, 4000, 8000, 8000, 16000]);
+        let mut backoff = BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000]);
 
         loop {
             backoff.sleep_for_next_backoff().await;
@@ -293,7 +293,8 @@ impl UdpHoePunchConnectorData {
 
     #[tracing::instrument(skip(self))]
     async fn sym_to_cone(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![0, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
+        let mut backoff =
+            BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
         let mut round = 0;
         let mut port_idx = rand::random();
 
@@ -338,7 +339,8 @@ impl UdpHoePunchConnectorData {
 
     #[tracing::instrument(skip(self))]
     async fn both_easy_sym(self: Arc<Self>, task_info: PunchTaskInfo) -> Result<(), Error> {
-        let mut backoff = BackOff::new(vec![0, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
+        let mut backoff =
+            BackOff::new(vec![1000, 1000, 2000, 4000, 4000, 8000, 8000, 16000, 64000]);
 
         loop {
             backoff.sleep_for_next_backoff().await;

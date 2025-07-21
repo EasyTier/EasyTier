@@ -8486,8 +8486,8 @@ dependencies = [
 
 [[package]]
 name = "thunk-rs"
-version = "0.3.4"
-source = "git+https://github.com/easytier/thunk.git#403f0d26d3d5bcfdfd76c23e36e517f19fe891e0"
+version = "0.3.5"
+source = "git+https://github.com/easytier/thunk.git#cbbeec75a66b7b3cf0824ae890d9d06bcfb9d1f3"
 
 [[package]]
 name = "tiff"

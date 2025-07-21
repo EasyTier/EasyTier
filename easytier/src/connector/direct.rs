@@ -12,7 +12,10 @@ use std::{
 };
 
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait, PeerId},
+    common::{
+        dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
+        PeerId,
+    },
     peers::{
         peer_conn::PeerConnId,
         peer_manager::PeerManager,
@@ -281,14 +284,14 @@ impl DirectConnectorManagerData {
         }
     }
 
-    fn spawn_direct_connect_task(
+    async fn spawn_direct_connect_task(
         self: &Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         ip_list: &GetIpListResponse,
         listener: &url::Url,
         tasks: &mut JoinSet<Result<(), Error>>,
     ) {
-        let Ok(mut addrs) = listener.socket_addrs(|| None) else {
+        let Ok(mut addrs) = socket_addrs(listener, || None).await else {
             tracing::error!(?listener, "failed to parse socket address from listener");
             return;
         };
@@ -432,7 +435,8 @@ impl DirectConnectorManagerData {
                     &ip_list,
                     &listener,
                     &mut tasks,
-                );
+                )
+                .await;
 
                 listener_list.push(listener.clone().to_string());
                 available_listeners.pop();

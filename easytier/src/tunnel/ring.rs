@@ -12,10 +12,7 @@ use async_trait::async_trait;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use once_cell::sync::Lazy;
 
-use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    Mutex,
-};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use uuid::Uuid;
 
@@ -184,14 +181,17 @@ struct Connection {
     server: Arc<RingTunnel>,
 }
 
-static CONNECTION_MAP: Lazy<Arc<Mutex<HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+static CONNECTION_MAP: Lazy<
+    Arc<std::sync::Mutex<HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>>>,
+> = Lazy::new(|| Arc::new(std::sync::Mutex::new(HashMap::new())));
 
 #[derive(Debug)]
 pub struct RingTunnelListener {
     listerner_addr: url::Url,
     conn_sender: UnboundedSender<Arc<Connection>>,
     conn_receiver: UnboundedReceiver<Arc<Connection>>,
+
+    key_in_conn_map: Option<uuid::Uuid>,
 }
 
 impl RingTunnelListener {
@@ -201,6 +201,7 @@ impl RingTunnelListener {
             listerner_addr: key,
             conn_sender,
             conn_receiver,
+            key_in_conn_map: None,
         }
     }
 }
@@ -244,10 +245,12 @@ impl RingTunnelListener {
 impl TunnelListener for RingTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         tracing::info!("listen new conn of key: {}", self.listerner_addr);
+        let addr = self.get_addr().await?;
         CONNECTION_MAP
             .lock()
-            .await
-            .insert(self.get_addr().await?, self.conn_sender.clone());
+            .unwrap()
+            .insert(addr, self.conn_sender.clone());
+        self.key_in_conn_map = Some(addr);
         Ok(())
     }
 
@@ -276,6 +279,14 @@ impl TunnelListener for RingTunnelListener {
     }
 }
 
+impl Drop for RingTunnelListener {
+    fn drop(&mut self) {
+        if let Some(addr) = self.key_in_conn_map {
+            CONNECTION_MAP.lock().unwrap().remove(&addr);
+        }
+    }
+}
+
 pub struct RingTunnelConnector {
     remote_addr: url::Url,
 }
@@ -297,7 +308,7 @@ impl TunnelConnector for RingTunnelConnector {
         .await?;
         let entry = CONNECTION_MAP
             .lock()
-            .await
+            .unwrap()
             .get(&remote_addr)
             .unwrap()
             .clone();

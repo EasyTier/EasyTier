@@ -179,11 +179,13 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
         peer_manager: Weak<H>,
         global_ctx: ArcGlobalCtx,
     ) {
+        let mut err_count = 0;
         loop {
             let mut l = (creator)();
             let _g = global_ctx.net_ns.guard();
             match l.listen().await {
                 Ok(_) => {
+                    err_count = 0;
                     global_ctx.add_running_listener(l.local_url());
                     global_ctx.issue_event(GlobalCtxEvent::ListenerAdded(l.local_url()));
                 }
@@ -193,8 +195,11 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                         l.local_url(),
                         format!("error: {:?}, retry listen later...", e),
                     ));
+                    err_count += 1;
+                    if err_count > 5 {
+                        return;
+                    }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    continue;
                 }
             }
             loop {
