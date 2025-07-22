@@ -6,6 +6,7 @@ use std::{
 
 use crate::common::config::ProxyNetworkConfig;
 use crate::common::token_bucket::TokenBucketManager;
+use crate::peers::acl_filter::AclFilter;
 use crate::proto::cli::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crossbeam::atomic::AtomicCell;
@@ -81,6 +82,8 @@ pub struct GlobalCtx {
     quic_proxy_port: AtomicCell<Option<u16>>,
 
     token_bucket_manager: TokenBucketManager,
+
+    acl_filter: Arc<AclFilter>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -108,7 +111,7 @@ impl GlobalCtx {
 
         let stun_info_collection = Arc::new(StunInfoCollector::new_with_default_servers());
 
-        let enable_exit_node = config_fs.get_flags().enable_exit_node || cfg!(target_env= "ohos");
+        let enable_exit_node = config_fs.get_flags().enable_exit_node || cfg!(target_env = "ohos");
         let proxy_forward_by_system = config_fs.get_flags().proxy_forward_by_system;
         let no_tun = config_fs.get_flags().no_tun;
 
@@ -147,6 +150,8 @@ impl GlobalCtx {
             quic_proxy_port: AtomicCell::new(None),
 
             token_bucket_manager: TokenBucketManager::new(),
+
+            acl_filter: Arc::new(AclFilter::new()),
         }
     }
 
@@ -316,6 +321,10 @@ impl GlobalCtx {
 
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {
         &self.token_bucket_manager
+    }
+
+    pub fn get_acl_filter(&self) -> &Arc<AclFilter> {
+        &self.acl_filter
     }
 }
 

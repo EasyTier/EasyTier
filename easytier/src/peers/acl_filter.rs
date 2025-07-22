@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::{
     net::IpAddr,
@@ -5,17 +6,13 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use async_trait::async_trait;
 use pnet::packet::{
     ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
 };
 
+use crate::tunnel::packet_def::PacketType;
 use crate::{
-    common::{
-        acl_processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
-        global_ctx::ArcGlobalCtx,
-    },
-    peers::{NicPacketFilter, PeerPacketFilter},
+    common::acl_processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
     proto::acl::{Acl, Action, ChainType},
     tunnel::packet_def::ZCPacket,
 };
@@ -25,15 +22,13 @@ use crate::{
 pub struct AclFilter {
     // Use ArcSwap for lock-free atomic replacement during hot reload
     acl_processor: ArcSwap<AclProcessor>,
-    global_ctx: ArcGlobalCtx,
     acl_enabled: Arc<AtomicBool>,
 }
 
 impl AclFilter {
-    pub fn new(acl_processor: Arc<AclProcessor>, global_ctx: ArcGlobalCtx) -> Self {
+    pub fn new() -> Self {
         Self {
-            acl_processor: ArcSwap::from(acl_processor),
-            global_ctx,
+            acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -69,6 +64,11 @@ impl AclFilter {
     /// Get current processor for processing packets
     fn get_processor(&self) -> Arc<AclProcessor> {
         self.acl_processor.load_full()
+    }
+
+    pub fn get_stats(&self) -> HashMap<String, u64> {
+        let processor = self.get_processor();
+        processor.get_stats()
     }
 
     /// Extract packet information for ACL processing
@@ -174,8 +174,12 @@ impl AclFilter {
     }
 
     /// Common ACL processing logic
-    fn process_packet_with_acl(&self, packet: &ZCPacket, chain_type: ChainType) -> bool {
+    pub fn process_packet_with_acl(&self, packet: &ZCPacket, chain_type: ChainType) -> bool {
         if !self.acl_enabled.load(Ordering::Relaxed) {
+            return true;
+        }
+
+        if packet.peer_manager_header().unwrap().packet_type != PacketType::Data as u8 {
             return true;
         }
 
@@ -187,7 +191,8 @@ impl AclFilter {
             Some(info) => info,
             None => {
                 tracing::warn!("Failed to extract packet info from {:?} packet", chain_type);
-                return false;
+                // allow all unknown packets
+                return true;
             }
         };
 
@@ -210,32 +215,6 @@ impl AclFilter {
 
                 false
             }
-        }
-    }
-}
-
-#[async_trait]
-impl PeerPacketFilter for AclFilter {
-    async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        // Process through ACL rules for inbound traffic
-        let result = self.process_packet_with_acl(&packet, ChainType::Inbound);
-
-        match result {
-            true => Some(packet), // Continue processing
-            false => None, // Drop packet (logging already handled in process_packet_with_acl)
-        }
-    }
-}
-
-#[async_trait]
-impl NicPacketFilter for AclFilter {
-    async fn try_process_packet_from_nic(&self, packet: &mut ZCPacket) -> bool {
-        // Process through ACL rules for outbound traffic
-        let result = self.process_packet_with_acl(packet, ChainType::Outbound);
-
-        match result {
-            true => false, // Continue processing in pipeline
-            false => true, // Consume packet (logging already handled in process_packet_with_acl)
         }
     }
 }

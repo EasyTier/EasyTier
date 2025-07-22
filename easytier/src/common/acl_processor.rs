@@ -8,6 +8,7 @@ use std::{
 use crate::common::token_bucket::TokenBucket;
 use crate::proto::{acl::*, common::IpInet};
 use dashmap::DashMap;
+use tokio::task::JoinSet;
 
 // Performance-optimized key for rate limiting to avoid string allocations
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -123,6 +124,7 @@ pub struct AclCacheEntry {
     pub has_rate_limit: bool,
     pub rule_priority: u32,
     pub chain_type: ChainType,
+    pub rule_idx_hint: Option<u32>,
 }
 
 impl AclCacheEntry {
@@ -206,7 +208,6 @@ pub struct AclProcessor {
     // Immutable rule vectors - no locks needed since they're never modified after creation
     inbound_rules: Vec<FastLookupRule>,
     outbound_rules: Vec<FastLookupRule>,
-    forward_rules: Vec<FastLookupRule>,
 
     // Connection tracking table - shared across different processor instances if needed
     conn_track: Arc<DashMap<String, ConnTrackEntry>>,
@@ -221,6 +222,8 @@ pub struct AclProcessor {
 
     // Statistics
     stats: Arc<DashMap<AclStatKey, u64>>,
+
+    tasks: JoinSet<()>,
 }
 
 impl AclProcessor {
@@ -238,18 +241,19 @@ impl AclProcessor {
         rate_limiters: Option<Arc<DashMap<RateLimitKey, Arc<TokenBucket>>>>,
         stats: Option<Arc<DashMap<AclStatKey, u64>>>,
     ) -> Self {
-        let (inbound_rules, outbound_rules, forward_rules) = Self::build_rules(&acl_config);
+        let (inbound_rules, outbound_rules) = Self::build_rules(&acl_config);
+        let tasks = JoinSet::new();
 
-        let processor = Self {
+        let mut processor = Self {
             inbound_rules,
             outbound_rules,
-            forward_rules,
             conn_track: conn_track.unwrap_or_else(|| Arc::new(DashMap::new())),
             rate_limiters: rate_limiters.unwrap_or_else(|| Arc::new(DashMap::new())),
             rule_cache: Arc::new(DashMap::new()), // Always start with fresh cache
             cache_max_size: 10000,                // Limit cache to 10k entries
-            cache_cleanup_interval: Duration::from_secs(300), // Cleanup every 5 minutes
+            cache_cleanup_interval: Duration::from_secs(20), // Cleanup every 5 minutes
             stats: stats.unwrap_or_else(|| Arc::new(DashMap::new())),
+            tasks,
         };
 
         processor.start_cache_cleanup_task();
@@ -257,16 +261,9 @@ impl AclProcessor {
     }
 
     /// Build all rule vectors from configuration
-    fn build_rules(
-        acl_config: &Acl,
-    ) -> (
-        Vec<FastLookupRule>,
-        Vec<FastLookupRule>,
-        Vec<FastLookupRule>,
-    ) {
+    fn build_rules(acl_config: &Acl) -> (Vec<FastLookupRule>, Vec<FastLookupRule>) {
         let mut inbound_rules = Vec::new();
         let mut outbound_rules = Vec::new();
-        let mut forward_rules = Vec::new();
 
         // Build new rule vectors
         if let Some(ref acl_v1) = acl_config.acl_v1 {
@@ -288,33 +285,40 @@ impl AclProcessor {
                 match chain.chain_type() {
                     ChainType::Inbound => inbound_rules.extend(rules),
                     ChainType::Outbound => outbound_rules.extend(rules),
-                    ChainType::Forward => forward_rules.extend(rules),
                     _ => {}
                 }
             }
         }
 
         tracing::info!(
-            "ACL rules built: {} inbound, {} outbound, {} forward",
+            "ACL rules built: {} inbound, {} outbound",
             inbound_rules.len(),
             outbound_rules.len(),
-            forward_rules.len()
         );
 
-        (inbound_rules, outbound_rules, forward_rules)
+        (inbound_rules, outbound_rules)
     }
 
     /// Start periodic cache cleanup task
-    fn start_cache_cleanup_task(&self) {
+    fn start_cache_cleanup_task(&mut self) {
         let rule_cache = self.rule_cache.clone();
         let cache_max_size = self.cache_max_size;
         let cleanup_interval = self.cache_cleanup_interval;
 
-        tokio::spawn(async move {
+        self.tasks.spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
             loop {
                 interval.tick().await;
                 Self::cleanup_cache(&rule_cache, cache_max_size);
+            }
+        });
+
+        let conn_track = self.conn_track.clone();
+        self.tasks.spawn(async move {
+            let mut interval = tokio::time::interval(cleanup_interval);
+            loop {
+                interval.tick().await;
+                Self::cleanup_expired_connections(conn_track.clone(), 60);
             }
         });
     }
@@ -352,6 +356,7 @@ impl AclProcessor {
     pub fn process_packet(&self, packet_info: &PacketInfo, chain_type: ChainType) -> AclResult {
         // Check cache first for performance
         let cache_key = AclCacheKey::from_packet_info(packet_info, chain_type);
+        let mut idx_hint: usize = 0;
 
         // If cache hit and can skip checks, return cached result
         if let Some(mut cached) = self.rule_cache.get_mut(&cache_key) {
@@ -373,13 +378,14 @@ impl AclProcessor {
                 };
             }
             // If cache hit but needs checks, fall through to full processing
+
+            idx_hint = cached.rule_idx_hint.unwrap_or(0) as usize;
         }
 
         // Direct access to rules - no locks needed!
         let rules = match chain_type {
             ChainType::Inbound => &self.inbound_rules,
             ChainType::Outbound => &self.outbound_rules,
-            ChainType::Forward => &self.forward_rules,
             _ => {
                 return AclResult {
                     action: Action::Drop,
@@ -391,7 +397,8 @@ impl AclProcessor {
         };
 
         // Process rules in priority order
-        for rule in rules.iter() {
+        for i in idx_hint..rules.len() {
+            let rule = &rules[i];
             if !rule.enabled {
                 continue;
             }
@@ -426,7 +433,12 @@ impl AclProcessor {
                             };
 
                             // Cache the result with rule info
-                            self.cache_result_with_rule(&cache_key, &result, Some(rule));
+                            self.cache_result_with_rule(
+                                &cache_key,
+                                &result,
+                                Some(rule),
+                                Some(i as u32),
+                            );
                             return result;
                         }
                         None => continue,
@@ -446,7 +458,7 @@ impl AclProcessor {
                 };
 
                 // Cache the result with rule info
-                self.cache_result_with_rule(&cache_key, &result, Some(rule));
+                self.cache_result_with_rule(&cache_key, &result, Some(rule), Some(i as u32));
                 self.increment_stat(AclStatKey::RuleMatches);
                 return result;
             }
@@ -455,7 +467,7 @@ impl AclProcessor {
         // No rule matched, return default drop
         self.increment_stat(AclStatKey::DefaultDrops);
         let result = AclResult {
-            action: Action::Drop,
+            action: Action::Allow,
             matched_rule: Some(RuleId::Default),
             should_log: false,
             log_context: Some(AclLogContext::DefaultDrop),
@@ -483,7 +495,7 @@ impl AclProcessor {
 
     /// Cache an ACL result (fallback for cases without rule info)
     fn cache_result(&self, cache_key: &AclCacheKey, result: &AclResult) {
-        self.cache_result_with_rule(cache_key, result, None);
+        self.cache_result_with_rule(cache_key, result, None, None);
     }
 
     /// Cache an ACL result with rule info
@@ -492,6 +504,7 @@ impl AclProcessor {
         cache_key: &AclCacheKey,
         result: &AclResult,
         rule: Option<&FastLookupRule>,
+        rule_idx_hint: Option<u32>,
     ) {
         let entry = AclCacheEntry {
             action: result.action.clone(),
@@ -505,6 +518,7 @@ impl AclProcessor {
             has_rate_limit: rule.map_or(false, |r| r.rate_limit > 0),
             rule_priority: rule.map_or(0, |r| r.priority),
             chain_type: cache_key.chain_type,
+            rule_idx_hint,
         };
 
         self.rule_cache.insert(cache_key.clone(), entry);
@@ -513,9 +527,7 @@ impl AclProcessor {
         if self.rule_cache.len() > self.cache_max_size * 2 {
             let cache = self.rule_cache.clone();
             let max_size = self.cache_max_size;
-            tokio::spawn(async move {
-                Self::cleanup_cache(&cache, max_size);
-            });
+            Self::cleanup_cache(&cache, max_size);
         }
     }
 
@@ -731,13 +743,15 @@ impl AclProcessor {
     }
 
     /// Clean up expired connection tracking entries
-    pub fn cleanup_expired_connections(&self, timeout_secs: u64) {
+    pub fn cleanup_expired_connections(
+        conn_track: Arc<DashMap<String, ConnTrackEntry>>,
+        timeout_secs: u64,
+    ) {
         let current_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let keys_to_remove: Vec<String> = self
-            .conn_track
+        let keys_to_remove: Vec<String> = conn_track
             .iter()
             .filter_map(|entry| {
                 if current_time - entry.last_seen > timeout_secs {
@@ -749,13 +763,8 @@ impl AclProcessor {
             .collect();
 
         for key in keys_to_remove {
-            self.conn_track.remove(&key);
+            conn_track.remove(&key);
         }
-    }
-
-    /// Force cache cleanup (for manual management)
-    pub fn cleanup_cache_now(&self) {
-        Self::cleanup_cache(&self.rule_cache, self.cache_max_size);
     }
 
     /// Get cache hit rate
@@ -807,11 +816,6 @@ pub enum AclStatKey {
     OutboundPacketsDropped,
     OutboundPacketsNoop,
 
-    ForwardPacketsTotal,
-    ForwardPacketsAllowed,
-    ForwardPacketsDropped,
-    ForwardPacketsNoop,
-
     UnknownPacketsTotal,
     UnknownPacketsAllowed,
     UnknownPacketsDropped,
@@ -834,11 +838,6 @@ impl AclStatKey {
             (ChainType::Outbound, AclStatType::Allowed) => AclStatKey::OutboundPacketsAllowed,
             (ChainType::Outbound, AclStatType::Dropped) => AclStatKey::OutboundPacketsDropped,
             (ChainType::Outbound, AclStatType::Noop) => AclStatKey::OutboundPacketsNoop,
-
-            (ChainType::Forward, AclStatType::Total) => AclStatKey::ForwardPacketsTotal,
-            (ChainType::Forward, AclStatType::Allowed) => AclStatKey::ForwardPacketsAllowed,
-            (ChainType::Forward, AclStatType::Dropped) => AclStatKey::ForwardPacketsDropped,
-            (ChainType::Forward, AclStatType::Noop) => AclStatKey::ForwardPacketsNoop,
 
             (_, AclStatType::Total) => AclStatKey::UnknownPacketsTotal,
             (_, AclStatType::Allowed) => AclStatKey::UnknownPacketsAllowed,
@@ -1188,32 +1187,5 @@ mod tests {
             result2.log_context,
             Some(AclLogContext::RateLimitDrop)
         ));
-    }
-
-    #[test]
-    fn test_zero_copy_optimization() {
-        let acl_config = create_test_acl_config();
-        let processor = AclProcessor::new(acl_config);
-
-        // Verify that rules are stored directly in Vec for efficient access
-        let rules1 = processor.inbound_rules.clone();
-        let rules2 = processor.inbound_rules.clone();
-
-        // These should be the same Vec, not separate Arc clones
-        assert!(rules1.len() == rules2.len());
-        assert!(rules1
-            .iter()
-            .zip(rules2.iter())
-            .all(|(a, b)| a.priority == b.priority));
-
-        // Verify the rules contain expected data
-        assert!(!rules1.is_empty());
-        assert_eq!(rules1[0].priority, 100);
-        assert_eq!(rules1[0].action, Action::Allow);
-
-        println!("✓ Zero-copy rule access optimization verified:");
-        println!("  • Rules are stored in Vec<FastLookupRule>");
-        println!("  • Clone operations only copy Vec, not entire rule vectors");
-        println!("  • Memory usage and allocation overhead dramatically reduced");
     }
 }

@@ -29,9 +29,6 @@ enum ChainType {
   UnspecifiedChain = 0;
   Inbound = 1;
   Outbound = 2;
-  // forward take effect when forward packet both inside virtual network and to
-  // subnet proxy
-  Forward = 3;
 }
 
 // Time-based access control

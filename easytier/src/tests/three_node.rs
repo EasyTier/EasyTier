@@ -1328,3 +1328,105 @@ async fn avoid_tunnel_loop_back_to_virtual_network() {
 
     drop_insts(insts).await;
 }
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn acl_rule_test_inbound() {
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
+    };
+    use rand::Rng;
+    let insts = init_three_node("udp").await;
+
+    // 构造 ACL 配置
+    use crate::proto::acl::*;
+    let mut acl = Acl::default();
+    acl.version = AclVersion::V1 as i32;
+    let mut acl_v1 = AclV1::default();
+
+    let mut chain = Chain::default();
+    chain.name = "test_inbound".to_string();
+    chain.chain_type = ChainType::Inbound as i32;
+    chain.enabled = true;
+
+    // 禁止 8080
+    let mut deny_rule = Rule::default();
+    deny_rule.name = "deny_8080".to_string();
+    deny_rule.priority = 200;
+    deny_rule.enabled = true;
+    deny_rule.action = Action::Drop as i32;
+    deny_rule.protocol = Protocol::Any as i32;
+    let mut port_range = PortRange::default();
+    port_range.port_start = 8080;
+    port_range.port_end = 8080;
+    deny_rule.port_range = Some(port_range);
+    chain.rules.push(deny_rule);
+
+    // 允许其他
+    let mut allow_rule = Rule::default();
+    allow_rule.name = "allow_all".to_string();
+    allow_rule.priority = 100;
+    allow_rule.enabled = true;
+    allow_rule.action = Action::Allow as i32;
+    allow_rule.protocol = Protocol::Any as i32;
+    chain.rules.push(allow_rule);
+
+    acl_v1.chains.push(chain);
+    acl.acl_v1 = Some(acl_v1);
+
+    insts[2]
+        .get_global_ctx()
+        .get_acl_filter()
+        .reload_rules(Some(&acl));
+
+    // 2. 在 inst2 上监听 8080 和 8081
+    let listener_8080 = TcpTunnelListener::new("tcp://0.0.0.0:8080".parse().unwrap());
+    let listener_8081 = TcpTunnelListener::new("tcp://0.0.0.0:8081".parse().unwrap());
+
+    // 3. inst1 作为客户端，尝试连接 inst2 的 8080（应被拒绝）和 8081（应被允许）
+    let connector_8080 =
+        TcpTunnelConnector::new(format!("tcp://{}:8080", "10.144.144.3").parse().unwrap());
+    let connector_8081 =
+        TcpTunnelConnector::new(format!("tcp://{}:8081", "10.144.144.3").parse().unwrap());
+
+    // 4. 构造测试数据
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    // 5. 8081 应该可以 pingpong 成功
+    _tunnel_pingpong_netns(
+        listener_8081,
+        connector_8081,
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+        buf.clone(),
+    )
+    .await;
+
+    // 6. 8080 应该连接失败（被 ACL 拦截）
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(200),
+        _tunnel_pingpong_netns(
+            listener_8080,
+            connector_8080,
+            NetNS::new(Some("net_c".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+        ),
+    )
+    .await;
+
+    assert!(result.is_err(), "连接 8080 应被 ACL 拦截，不能成功");
+
+    let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+    println!("stats: {:?}", stats);
+
+    // remove acl, 8080 should succ
+    insts[2]
+        .get_global_ctx()
+        .get_acl_filter()
+        .reload_rules(None);
+
+    drop_insts(insts).await;
+}
