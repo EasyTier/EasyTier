@@ -10,6 +10,7 @@ use pnet::packet::{
     ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
 };
 
+use crate::proto::acl::AclStats;
 use crate::tunnel::packet_def::PacketType;
 use crate::{
     common::acl_processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
@@ -66,9 +67,17 @@ impl AclFilter {
         self.acl_processor.load_full()
     }
 
-    pub fn get_stats(&self) -> HashMap<String, u64> {
+    pub fn get_stats(&self) -> AclStats {
         let processor = self.get_processor();
-        processor.get_stats()
+        let global_stats = processor.get_stats();
+        let (conn_track, _, _) = processor.get_shared_state();
+        let rules_stats = processor.get_rules_stats();
+
+        AclStats {
+            global: global_stats.into_iter().map(|(k, v)| (k, v)).collect(),
+            conn_track: conn_track.iter().map(|x| x.value().clone()).collect(),
+            rules: rules_stats,
+        }
     }
 
     /// Extract packet information for ACL processing
@@ -216,62 +225,5 @@ impl AclFilter {
                 false
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::proto::acl::*;
-
-    #[tokio::test]
-    async fn test_lock_free_reload_demo() {
-        println!("\n=== Lock-Free Reload 演示 ===");
-
-        // Create a simple ACL configuration using the new structure
-        let mut acl_config = Acl::default();
-        acl_config.version = AclVersion::V1 as i32;
-
-        let mut acl_v1 = AclV1::default();
-
-        let mut chain = Chain::default();
-        chain.name = "test_inbound".to_string();
-        chain.chain_type = ChainType::Inbound as i32;
-        chain.enabled = true;
-
-        let mut rule = Rule::default();
-        rule.name = "allow_all".to_string();
-        rule.priority = 100;
-        rule.enabled = true;
-        rule.action = Action::Allow as i32;
-        rule.protocol = Protocol::Any as i32;
-
-        chain.rules.push(rule);
-        acl_v1.chains.push(chain);
-        acl_config.acl_v1 = Some(acl_v1);
-
-        let _processor = Arc::new(AclProcessor::new(acl_config.clone()));
-
-        // This demonstrates the API design without actually creating the filter
-        // In real usage: let filter = AclFilter::new(processor, global_ctx);
-
-        println!("✓ AclFilter 创建完成 - 不需要 mut");
-
-        // This shows the key benefit - no mut needed!
-        // filter.reload_rules(&new_config); // <- 不需要 &mut self!
-
-        println!("✓ reload_rules() 不需要 &mut self");
-        println!("✓ 使用 ArcSwap 实现完全无锁的原子替换");
-        println!("✓ 性能优势：");
-        println!("  - 读取性能极佳：load_full() 只是一个原子指针读取");
-        println!("  - 写入性能优良：store() 只是一个原子指针交换");
-        println!("  - 内存开销极小：只有一个额外的原子指针");
-        println!("  - 线程安全：完全无锁，无竞争条件");
-    }
-
-    #[tokio::test]
-    async fn test_acl_filter_basic() {
-        // This would be a more complete test with proper dependencies
-        // For now, just showing the API design
     }
 }

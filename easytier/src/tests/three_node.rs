@@ -1369,6 +1369,7 @@ pub async fn acl_rule_test_inbound() {
     allow_rule.enabled = true;
     allow_rule.action = Action::Allow as i32;
     allow_rule.protocol = Protocol::Any as i32;
+    allow_rule.stateful = true;
     chain.rules.push(allow_rule);
 
     // 禁止 src ip 为 10.144.144.2 的流量
@@ -1378,7 +1379,7 @@ pub async fn acl_rule_test_inbound() {
     deny_rule.enabled = true;
     deny_rule.action = Action::Drop as i32;
     deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.source_ips = vec![crate::proto::common::IpInet::from_str("10.144.144.2/32").unwrap()];
+    deny_rule.source_ips = vec!["10.144.144.2/32".to_string()];
     chain.rules.push(deny_rule);
 
     acl_v1.chains.push(chain);
@@ -1498,7 +1499,7 @@ pub async fn acl_rule_test_inbound() {
         assert!(result.is_err(), "UDP 连接 8080 应被 ACL 拦截，不能成功");
 
         let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
-        println!("stats: {:?}", stats);
+        println!("stats: {}", stats);
     }
 
     // remove acl, 8080 should succ

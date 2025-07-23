@@ -48,22 +48,21 @@ message Rule {
   // Core matching criteria
   Protocol protocol = 5;
   repeated string ports = 6;
-  repeated common.IpInet source_ips = 7;      // Source IP ranges
-  repeated common.IpInet destination_ips = 8; // Destination IP ranges
+  repeated string source_ips = 7;      // Source IP ranges
+  repeated string destination_ips = 8; // Destination IP ranges
 
   // Enhanced matching criteria
   repeated string source_ports = 9; // Source port range
-  TimeWindow time_window = 10;      // Time-based restrictions
 
   // Action and logging
-  Action action = 11;
+  Action action = 10;
 
   // Rate limiting (packets per second)
-  uint32 rate_limit = 12;  // 0 = no limit
-  uint32 burst_limit = 13; // Burst allowance
+  uint32 rate_limit = 11;  // 0 = no limit
+  uint32 burst_limit = 12; // Burst allowance
 
   // Connection tracking
-  bool stateful = 14; // Enable connection tracking
+  bool stateful = 13; // Enable connection tracking
 }
 
 // Rule chain with metadata and optimization hints
@@ -87,8 +86,43 @@ enum AclVersion {
   V1 = 0;
 }
 
+enum ConnState {
+  New = 0;
+  Established = 1;
+  Related = 2;
+  Invalid = 3;
+}
+
+// Connection tracking entry for stateful ACLs
+message ConnTrackEntry {
+  common.SocketAddr src_addr = 1;
+  common.SocketAddr dst_addr = 2;
+  uint32 protocol = 3; // IP protocol number (e.g., 6 = TCP, 17 = UDP)
+  ConnState state = 4;
+  uint64 created_at = 5; // Unix timestamp (seconds)
+  uint64 last_seen = 6;  // Unix timestamp (seconds)
+  uint64 packet_count = 7;
+  uint64 byte_count = 8;
+}
+
 // Top-level ACL configuration
 message Acl {
   AclVersion version = 1;
   AclV1 acl_v1 = 2;
+}
+
+message StatItem {
+  uint64 packet_count = 1;
+  uint64 byte_count = 2;
+}
+
+message RuleStats {
+  Rule rule = 1;
+  StatItem stat = 2;
+}
+
+message AclStats {
+  repeated RuleStats rules = 1;
+  repeated ConnTrackEntry conn_track = 2;
+  map<string, uint64> global = 3;
 }
