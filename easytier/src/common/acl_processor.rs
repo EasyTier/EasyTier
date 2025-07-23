@@ -7,8 +7,7 @@ use std::{
 };
 
 use crate::common::token_bucket::TokenBucket;
-use crate::proto::{acl::*, common::IpInet};
-use cidr::IpCidr;
+use crate::proto::acl::*;
 use dashmap::DashMap;
 use tokio::task::JoinSet;
 
@@ -73,7 +72,7 @@ pub struct FastLookupRule {
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct AclCacheKey {
     pub chain_type: ChainType,
-    pub protocol: u8,
+    pub protocol: Protocol,
     pub src_ip: IpAddr,
     pub dst_ip: IpAddr,
     pub src_port: u16,
@@ -114,7 +113,7 @@ pub struct PacketInfo {
     pub dst_ip: IpAddr,
     pub src_port: Option<u16>,
     pub dst_port: Option<u16>,
-    pub protocol: u8,
+    pub protocol: Protocol,
     pub packet_size: usize,
 }
 
@@ -942,7 +941,7 @@ mod tests {
             dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             src_port: Some(12345),
             dst_port: Some(80),
-            protocol: 6, // TCP
+            protocol: Protocol::Tcp,
             packet_size: 1024,
         }
     }
@@ -953,7 +952,7 @@ mod tests {
         let cache_key = AclCacheKey::from_packet_info(&packet_info, ChainType::Inbound);
 
         assert_eq!(cache_key.chain_type, ChainType::Inbound);
-        assert_eq!(cache_key.protocol, 6);
+        assert_eq!(cache_key.protocol, Protocol::Tcp);
         assert_eq!(
             cache_key.src_ip,
             IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100))
@@ -1130,8 +1129,8 @@ mod tests {
             src_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
             dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             src_port: Some(12345),
-            dst_port: Some(53), // DNS
-            protocol: 17,       // UDP
+            dst_port: Some(53),      // DNS
+            protocol: Protocol::Udp, // UDP
             packet_size: 512,
         };
 
@@ -1140,8 +1139,8 @@ mod tests {
             src_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)),
             dst_ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
             src_port: Some(12345),
-            dst_port: Some(80), // HTTP
-            protocol: 6,        // TCP
+            dst_port: Some(80),      // HTTP
+            protocol: Protocol::Tcp, // TCP
             packet_size: 1024,
         };
 

@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "common.proto";
 import "peer_rpc.proto";
+import "acl.proto";
 
 package cli;
 
@@ -250,4 +251,14 @@ message ListTcpProxyEntryResponse {
 service TcpProxyRpc {
   rpc ListTcpProxyEntry(ListTcpProxyEntryRequest)
       returns (ListTcpProxyEntryResponse);
+}
+
+message GetAclStatsRequest {}
+
+message GetAclStatsResponse {
+  acl.AclStats acl_stats = 1;
+}
+
+service AclManageRpc {
+  rpc GetAclStats(GetAclStatsRequest) returns (GetAclStatsResponse);
 }

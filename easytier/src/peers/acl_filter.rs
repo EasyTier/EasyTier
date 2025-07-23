@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::{
     net::IpAddr,
@@ -10,7 +9,7 @@ use pnet::packet::{
     ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
 };
 
-use crate::proto::acl::AclStats;
+use crate::proto::acl::{AclStats, Protocol};
 use crate::tunnel::packet_def::PacketType;
 use crate::{
     common::acl_processor::{AclProcessor, AclResult, AclStatKey, AclStatType, PacketInfo},
@@ -111,12 +110,20 @@ impl AclFilter {
             _ => (None, None),
         };
 
+        let acl_protocol = match protocol {
+            IpNextHeaderProtocols::Tcp => Protocol::Tcp,
+            IpNextHeaderProtocols::Udp => Protocol::Udp,
+            IpNextHeaderProtocols::Icmp => Protocol::Icmp,
+            IpNextHeaderProtocols::Icmpv6 => Protocol::IcmPv6,
+            _ => Protocol::Unspecified,
+        };
+
         Some(PacketInfo {
             src_ip,
             dst_ip,
             src_port,
             dst_port,
-            protocol: protocol.0,
+            protocol: acl_protocol,
             packet_size: payload.len(),
         })
     }
@@ -137,7 +144,7 @@ impl AclFilter {
                     dst_ip = %packet_info.dst_ip,
                     src_port = packet_info.src_port,
                     dst_port = packet_info.dst_port,
-                    protocol = packet_info.protocol,
+                    protocol = ?packet_info.protocol,
                     action = ?result.action,
                     rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
                     chain_type = ?chain_type,
@@ -215,7 +222,7 @@ impl AclFilter {
             Action::Allow | Action::Noop => true,
             Action::Drop => {
                 tracing::trace!(
-                    "ACL: Dropping {} packet from {} to {}, chain_type: {:?}",
+                    "ACL: Dropping {:?} packet from {} to {}, chain_type: {:?}",
                     packet_info.protocol,
                     packet_info.src_ip,
                     packet_info.dst_ip,
