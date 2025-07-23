@@ -4,11 +4,6 @@ import "common.proto";
 
 package acl;
 
-message PortRange {
-  uint32 port_start = 1;
-  uint32 port_end = 2;
-}
-
 // Enhanced protocol enum with more granular options
 enum Protocol {
   Unspecified = 0;
@@ -52,13 +47,13 @@ message Rule {
 
   // Core matching criteria
   Protocol protocol = 5;
-  PortRange port_range = 6;
+  repeated string ports = 6;
   repeated common.IpInet source_ips = 7;      // Source IP ranges
   repeated common.IpInet destination_ips = 8; // Destination IP ranges
 
   // Enhanced matching criteria
-  PortRange source_port_range = 9; // Source port range
-  TimeWindow time_window = 10;     // Time-based restrictions
+  repeated string source_ports = 9; // Source port range
+  TimeWindow time_window = 10;      // Time-based restrictions
 
   // Action and logging
   Action action = 11;

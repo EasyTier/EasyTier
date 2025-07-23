@@ -57,10 +57,8 @@ pub struct FastLookupRule {
     pub protocol: Protocol,
     pub src_ip_ranges: Vec<cidr::IpCidr>,
     pub dst_ip_ranges: Vec<cidr::IpCidr>,
-    pub src_port_start: Option<u16>,
-    pub src_port_end: Option<u16>,
-    pub dst_port_start: Option<u16>,
-    pub dst_port_end: Option<u16>,
+    pub src_port_ranges: Vec<(u16, u16)>,
+    pub dst_port_ranges: Vec<(u16, u16)>,
     pub action: Action,
     pub enabled: bool,
     pub stateful: bool,
@@ -569,20 +567,28 @@ impl AclProcessor {
         }
 
         // Source port check
-        if let (Some(src_port), Some(start), Some(end)) =
-            (packet_info.src_port, rule.src_port_start, rule.src_port_end)
-        {
-            if src_port < start || src_port > end {
-                return false;
+        if let Some(src_port) = packet_info.src_port {
+            if !rule.src_port_ranges.is_empty() {
+                let matches = rule
+                    .src_port_ranges
+                    .iter()
+                    .any(|(start, end)| src_port >= *start && src_port <= *end);
+                if !matches {
+                    return false;
+                }
             }
         }
 
         // Destination port check
-        if let (Some(dst_port), Some(start), Some(end)) =
-            (packet_info.dst_port, rule.dst_port_start, rule.dst_port_end)
-        {
-            if dst_port < start || dst_port > end {
-                return false;
+        if let Some(dst_port) = packet_info.dst_port {
+            if !rule.dst_port_ranges.is_empty() {
+                let matches = rule
+                    .dst_port_ranges
+                    .iter()
+                    .any(|(start, end)| dst_port >= *start && dst_port <= *end);
+                if !matches {
+                    return false;
+                }
             }
         }
 
@@ -692,15 +698,37 @@ impl AclProcessor {
             .filter_map(|ip_inet| Self::convert_ip_inet_to_cidr(ip_inet))
             .collect();
 
+        let src_port_ranges = rule
+            .source_ports
+            .iter()
+            .filter_map(|port_range| {
+                if let Some((start, end)) = parse_port_range(port_range) {
+                    Some((start, end))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let dst_port_ranges = rule
+            .ports
+            .iter()
+            .filter_map(|port_range| {
+                if let Some((start, end)) = parse_port_range(port_range) {
+                    Some((start, end))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
         FastLookupRule {
             priority: rule.priority,
             protocol: rule.protocol(),
             src_ip_ranges,
             dst_ip_ranges,
-            src_port_start: rule.source_port_range.as_ref().map(|r| r.port_start as u16),
-            src_port_end: rule.source_port_range.as_ref().map(|r| r.port_end as u16),
-            dst_port_start: rule.port_range.as_ref().map(|r| r.port_start as u16),
-            dst_port_end: rule.port_range.as_ref().map(|r| r.port_end as u16),
+            src_port_ranges,
+            dst_port_ranges,
             action: rule.action(),
             enabled: rule.enabled,
             stateful: rule.stateful,
@@ -786,6 +814,34 @@ impl AclProcessor {
         } else {
             cache_hits as f64 / total_requests as f64
         }
+    }
+}
+
+// 新增辅助函数
+fn parse_port_start(
+    port_strs: &::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+) -> Option<u16> {
+    port_strs
+        .iter()
+        .filter_map(|s| parse_port_range(s).map(|(start, _)| start))
+        .min()
+}
+fn parse_port_end(
+    port_strs: &::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+) -> Option<u16> {
+    port_strs
+        .iter()
+        .filter_map(|s| parse_port_range(s).map(|(_, end)| end))
+        .max()
+}
+fn parse_port_range(s: &str) -> Option<(u16, u16)> {
+    if let Some((start, end)) = s.split_once('-') {
+        let start = start.trim().parse().ok()?;
+        let end = end.trim().parse().ok()?;
+        Some((start, end))
+    } else {
+        let port = s.trim().parse().ok()?;
+        Some((port, port))
     }
 }
 

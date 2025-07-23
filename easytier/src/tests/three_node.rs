@@ -32,6 +32,8 @@ use crate::{
     vpn_portal::wireguard::get_wg_config_for_portal,
 };
 
+use crate::proto::common::Ipv4Inet;
+
 pub fn prepare_linux_namespaces() {
     del_netns("net_a");
     del_netns("net_b");
@@ -1359,13 +1361,7 @@ pub async fn acl_rule_test_inbound() {
     deny_rule.enabled = true;
     deny_rule.action = Action::Drop as i32;
     deny_rule.protocol = Protocol::Any as i32;
-    deny_rule
-        .source_ips
-        .push(Ipv4Inet::from_str("0.0.0.0/0").unwrap().into());
-    let mut port_range = PortRange::default();
-    port_range.port_start = 8080;
-    port_range.port_end = 8080;
-    deny_rule.port_range = Some(port_range);
+    deny_rule.ports = vec!["8080".to_string()];
     chain.rules.push(deny_rule);
 
     // 允许其他
