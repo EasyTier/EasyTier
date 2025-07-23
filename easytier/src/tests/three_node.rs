@@ -32,8 +32,6 @@ use crate::{
     vpn_portal::wireguard::get_wg_config_for_portal,
 };
 
-use crate::proto::common::Ipv4Inet;
-
 pub fn prepare_linux_namespaces() {
     del_netns("net_a");
     del_netns("net_b");
@@ -1373,6 +1371,16 @@ pub async fn acl_rule_test_inbound() {
     allow_rule.protocol = Protocol::Any as i32;
     chain.rules.push(allow_rule);
 
+    // 禁止 src ip 为 10.144.144.2 的流量
+    let mut deny_rule = Rule::default();
+    deny_rule.name = "deny_10.144.144.2".to_string();
+    deny_rule.priority = 200;
+    deny_rule.enabled = true;
+    deny_rule.action = Action::Drop as i32;
+    deny_rule.protocol = Protocol::Any as i32;
+    deny_rule.source_ips = vec![crate::proto::common::IpInet::from_str("10.144.144.2/32").unwrap()];
+    chain.rules.push(deny_rule);
+
     acl_v1.chains.push(chain);
     acl.acl_v1 = Some(acl_v1);
 
@@ -1390,12 +1398,15 @@ pub async fn acl_rule_test_inbound() {
         // 2. 在 inst2 上监听 8080 和 8081
         let listener_8080 = TcpTunnelListener::new("tcp://0.0.0.0:8080".parse().unwrap());
         let listener_8081 = TcpTunnelListener::new("tcp://0.0.0.0:8081".parse().unwrap());
+        let listener_8082 = TcpTunnelListener::new("tcp://0.0.0.0:8082".parse().unwrap());
 
         // 3. inst1 作为客户端，尝试连接 inst2 的 8080（应被拒绝）和 8081（应被允许）
         let connector_8080 =
             TcpTunnelConnector::new(format!("tcp://{}:8080", "10.144.144.3").parse().unwrap());
         let connector_8081 =
             TcpTunnelConnector::new(format!("tcp://{}:8081", "10.144.144.3").parse().unwrap());
+        let connector_8082 =
+            TcpTunnelConnector::new(format!("tcp://{}:8082", "10.144.144.3").parse().unwrap());
 
         // 4. 构造测试数据
         let mut buf = vec![0; 32];
@@ -1425,6 +1436,21 @@ pub async fn acl_rule_test_inbound() {
         .await;
 
         assert!(result.is_err(), "TCP 连接 8080 应被 ACL 拦截，不能成功");
+
+        // 7. 从 10.144.144.2 连接 8082 应该连接失败（被 ACL 拦截）
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            _tunnel_pingpong_netns(
+                listener_8082,
+                connector_8082,
+                NetNS::new(Some("net_c".into())),
+                NetNS::new(Some("net_b".into())),
+                buf.clone(),
+            ),
+        )
+        .await;
+
+        assert!(result.is_err(), "TCP 连接 8082 应被 ACL 拦截，不能成功");
 
         let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
         println!("stats: {:?}", stats);
