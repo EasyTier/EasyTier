@@ -35,7 +35,6 @@ use crate::{
         PeerPacketFilter,
     },
     proto::{
-        acl::ChainType,
         cli::{
             self, list_global_foreign_network_response::OneForeignNetwork,
             ListGlobalForeignNetworkResponse,
@@ -575,6 +574,7 @@ impl PeerManager {
         let encryptor = self.encryptor.clone();
         let compress_algo = self.data_compress_algo;
         let acl_filter = self.global_ctx.get_acl_filter().clone();
+        let global_ctx = self.global_ctx.clone();
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
@@ -633,7 +633,12 @@ impl PeerManager {
                         continue;
                     }
 
-                    if !acl_filter.process_packet_with_acl(&ret, ChainType::Inbound) {
+                    if !acl_filter.process_packet_with_acl(
+                        &ret,
+                        true,
+                        global_ctx.get_ipv4().map(|x| x.address()),
+                        global_ctx.get_ipv6().map(|x| x.address()),
+                    ) {
                         continue;
                     }
 
@@ -854,7 +859,7 @@ impl PeerManager {
         if !self
             .global_ctx
             .get_acl_filter()
-            .process_packet_with_acl(data, ChainType::Outbound)
+            .process_packet_with_acl(data, false, None, None)
         {
             return;
         }

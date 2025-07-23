@@ -180,6 +180,7 @@ pub struct AclProcessor {
     // Immutable rule vectors - no locks needed since they're never modified after creation
     inbound_rules: Vec<FastLookupRule>,
     outbound_rules: Vec<FastLookupRule>,
+    forward_rules: Vec<FastLookupRule>,
     default_rule_stats: Arc<RuleStats>,
 
     // Connection tracking table - shared across different processor instances if needed
@@ -214,12 +215,13 @@ impl AclProcessor {
         rate_limiters: Option<Arc<DashMap<RateLimitKey, Arc<TokenBucket>>>>,
         stats: Option<Arc<DashMap<AclStatKey, u64>>>,
     ) -> Self {
-        let (inbound_rules, outbound_rules) = Self::build_rules(&acl_config);
+        let (inbound_rules, outbound_rules, forward_rules) = Self::build_rules(&acl_config);
         let tasks = JoinSet::new();
 
         let mut processor = Self {
             inbound_rules,
             outbound_rules,
+            forward_rules,
             default_rule_stats: Arc::new(RuleStats {
                 rule: None,
                 stat: Some(StatItem {
@@ -241,9 +243,16 @@ impl AclProcessor {
     }
 
     /// Build all rule vectors from configuration
-    fn build_rules(acl_config: &Acl) -> (Vec<FastLookupRule>, Vec<FastLookupRule>) {
+    fn build_rules(
+        acl_config: &Acl,
+    ) -> (
+        Vec<FastLookupRule>,
+        Vec<FastLookupRule>,
+        Vec<FastLookupRule>,
+    ) {
         let mut inbound_rules = Vec::new();
         let mut outbound_rules = Vec::new();
+        let mut forward_rules = Vec::new();
 
         // Build new rule vectors
         if let Some(ref acl_v1) = acl_config.acl_v1 {
@@ -265,18 +274,20 @@ impl AclProcessor {
                 match chain.chain_type() {
                     ChainType::Inbound => inbound_rules.extend(rules),
                     ChainType::Outbound => outbound_rules.extend(rules),
+                    ChainType::Forward => forward_rules.extend(rules),
                     _ => {}
                 }
             }
         }
 
         tracing::info!(
-            "ACL rules built: {} inbound, {} outbound",
+            "ACL rules built: {} inbound, {} outbound, {} forward",
             inbound_rules.len(),
             outbound_rules.len(),
+            forward_rules.len(),
         );
 
-        (inbound_rules, outbound_rules)
+        (inbound_rules, outbound_rules, forward_rules)
     }
 
     /// Start periodic cache cleanup task
@@ -375,6 +386,9 @@ impl AclProcessor {
             stats.push((*rule.rule_stats).clone());
         }
         for rule in self.outbound_rules.iter() {
+            stats.push((*rule.rule_stats).clone());
+        }
+        for rule in self.forward_rules.iter() {
             stats.push((*rule.rule_stats).clone());
         }
         stats
@@ -863,6 +877,11 @@ pub enum AclStatKey {
     OutboundPacketsDropped,
     OutboundPacketsNoop,
 
+    ForwardPacketsTotal,
+    ForwardPacketsAllowed,
+    ForwardPacketsDropped,
+    ForwardPacketsNoop,
+
     UnknownPacketsTotal,
     UnknownPacketsAllowed,
     UnknownPacketsDropped,
@@ -885,6 +904,11 @@ impl AclStatKey {
             (ChainType::Outbound, AclStatType::Allowed) => AclStatKey::OutboundPacketsAllowed,
             (ChainType::Outbound, AclStatType::Dropped) => AclStatKey::OutboundPacketsDropped,
             (ChainType::Outbound, AclStatType::Noop) => AclStatKey::OutboundPacketsNoop,
+
+            (ChainType::Forward, AclStatType::Total) => AclStatKey::ForwardPacketsTotal,
+            (ChainType::Forward, AclStatType::Allowed) => AclStatKey::ForwardPacketsAllowed,
+            (ChainType::Forward, AclStatType::Dropped) => AclStatKey::ForwardPacketsDropped,
+            (ChainType::Forward, AclStatType::Noop) => AclStatKey::ForwardPacketsNoop,
 
             (_, AclStatType::Total) => AclStatKey::UnknownPacketsTotal,
             (_, AclStatType::Allowed) => AclStatKey::UnknownPacketsAllowed,

@@ -1,3 +1,4 @@
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::Ordering;
 use std::{
     net::IpAddr,
@@ -5,6 +6,7 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
     ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
 };
@@ -82,33 +84,62 @@ impl AclFilter {
     /// Extract packet information for ACL processing
     fn extract_packet_info(&self, packet: &ZCPacket) -> Option<PacketInfo> {
         let payload = packet.payload();
-        let ipv4_packet = Ipv4Packet::new(payload)?;
 
-        if ipv4_packet.get_version() != 4 {
+        let src_ip;
+        let dst_ip;
+        let src_port;
+        let dst_port;
+        let protocol;
+
+        let ipv4_packet = Ipv4Packet::new(payload)?;
+        if ipv4_packet.get_version() == 4 {
+            src_ip = IpAddr::V4(ipv4_packet.get_source());
+            dst_ip = IpAddr::V4(ipv4_packet.get_destination());
+            protocol = ipv4_packet.get_next_level_protocol();
+
+            (src_port, dst_port) = match protocol {
+                IpNextHeaderProtocols::Tcp => {
+                    let tcp_packet = TcpPacket::new(ipv4_packet.payload())?;
+                    (
+                        Some(tcp_packet.get_source()),
+                        Some(tcp_packet.get_destination()),
+                    )
+                }
+                IpNextHeaderProtocols::Udp => {
+                    let udp_packet = UdpPacket::new(ipv4_packet.payload())?;
+                    (
+                        Some(udp_packet.get_source()),
+                        Some(udp_packet.get_destination()),
+                    )
+                }
+                _ => (None, None),
+            };
+        } else if ipv4_packet.get_version() == 6 {
+            let ipv6_packet = Ipv6Packet::new(payload)?;
+            src_ip = IpAddr::V6(ipv6_packet.get_source());
+            dst_ip = IpAddr::V6(ipv6_packet.get_destination());
+            protocol = ipv6_packet.get_next_header();
+
+            (src_port, dst_port) = match protocol {
+                IpNextHeaderProtocols::Tcp => {
+                    let tcp_packet = TcpPacket::new(ipv6_packet.payload())?;
+                    (
+                        Some(tcp_packet.get_source()),
+                        Some(tcp_packet.get_destination()),
+                    )
+                }
+                IpNextHeaderProtocols::Udp => {
+                    let udp_packet = UdpPacket::new(ipv6_packet.payload())?;
+                    (
+                        Some(udp_packet.get_source()),
+                        Some(udp_packet.get_destination()),
+                    )
+                }
+                _ => (None, None),
+            };
+        } else {
             return None;
         }
-
-        let src_ip = IpAddr::V4(ipv4_packet.get_source());
-        let dst_ip = IpAddr::V4(ipv4_packet.get_destination());
-        let protocol = ipv4_packet.get_next_level_protocol();
-
-        let (src_port, dst_port) = match protocol {
-            IpNextHeaderProtocols::Tcp => {
-                let tcp_packet = TcpPacket::new(ipv4_packet.payload())?;
-                (
-                    Some(tcp_packet.get_source()),
-                    Some(tcp_packet.get_destination()),
-                )
-            }
-            IpNextHeaderProtocols::Udp => {
-                let udp_packet = UdpPacket::new(ipv4_packet.payload())?;
-                (
-                    Some(udp_packet.get_source()),
-                    Some(udp_packet.get_destination()),
-                )
-            }
-            _ => (None, None),
-        };
 
         let acl_protocol = match protocol {
             IpNextHeaderProtocols::Tcp => Protocol::Tcp,
@@ -190,7 +221,13 @@ impl AclFilter {
     }
 
     /// Common ACL processing logic
-    pub fn process_packet_with_acl(&self, packet: &ZCPacket, chain_type: ChainType) -> bool {
+    pub fn process_packet_with_acl(
+        &self,
+        packet: &ZCPacket,
+        is_in: bool,
+        my_ipv4: Option<Ipv4Addr>,
+        my_ipv6: Option<Ipv6Addr>,
+    ) -> bool {
         if !self.acl_enabled.load(Ordering::Relaxed) {
             return true;
         }
@@ -199,18 +236,34 @@ impl AclFilter {
             return true;
         }
 
-        // Get current processor atomically
-        let processor = self.get_processor();
-
         // Extract packet information
         let packet_info = match self.extract_packet_info(packet) {
             Some(info) => info,
             None => {
-                tracing::warn!("Failed to extract packet info from {:?} packet", chain_type);
+                tracing::warn!(
+                    "Failed to extract packet info from {:?} packet, header: {:?}",
+                    if is_in { "inbound" } else { "outbound" },
+                    packet.peer_manager_header()
+                );
                 // allow all unknown packets
                 return true;
             }
         };
+
+        let chain_type = if is_in {
+            if packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
+                || packet_info.dst_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED)
+            {
+                ChainType::Inbound
+            } else {
+                ChainType::Forward
+            }
+        } else {
+            ChainType::Outbound
+        };
+
+        // Get current processor atomically
+        let processor = self.get_processor();
 
         // Process through ACL rules
         let acl_result = processor.process_packet(&packet_info, chain_type);

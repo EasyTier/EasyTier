@@ -22,8 +22,12 @@ enum Action {
 
 enum ChainType {
   UnspecifiedChain = 0;
+  // send to this node
   Inbound = 1;
+  // send from this node
   Outbound = 2;
+  // subnet proxy
+  Forward = 3;
 }
 
 // Time-based access control

@@ -4,7 +4,6 @@ use std::{
     time::Duration,
 };
 
-use cidr::IpInet;
 use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet};
 
