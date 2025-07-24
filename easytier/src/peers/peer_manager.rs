@@ -573,6 +573,8 @@ impl PeerManager {
         let foreign_mgr = self.foreign_network_manager.clone();
         let encryptor = self.encryptor.clone();
         let compress_algo = self.data_compress_algo;
+        let acl_filter = self.global_ctx.get_acl_filter().clone();
+        let global_ctx = self.global_ctx.clone();
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
@@ -628,6 +630,15 @@ impl PeerManager {
                     let compressor = DefaultCompressor {};
                     if let Err(e) = compressor.decompress(&mut ret).await {
                         tracing::error!(?e, "decompress failed");
+                        continue;
+                    }
+
+                    if !acl_filter.process_packet_with_acl(
+                        &ret,
+                        true,
+                        global_ctx.get_ipv4().map(|x| x.address()),
+                        global_ctx.get_ipv6().map(|x| x.address()),
+                    ) {
                         continue;
                     }
 
@@ -845,6 +856,14 @@ impl PeerManager {
     }
 
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
+        if !self
+            .global_ctx
+            .get_acl_filter()
+            .process_packet_with_acl(data, false, None, None)
+        {
+            return;
+        }
+
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
             let _ = pipeline.try_process_packet_from_nic(data).await;
         }

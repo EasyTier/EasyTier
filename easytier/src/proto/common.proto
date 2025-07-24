@@ -18,7 +18,8 @@ message FlagsInConfig {
   bool disable_p2p = 11;
   bool relay_all_peer_rpc = 12;
   bool disable_udp_hole_punching = 13;
-  // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345 instead
+  // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
+  // instead
   bool multi_thread = 15;
   CompressionAlgoPb data_compress_algo = 16;
   bool bind_device = 17;
@@ -144,6 +145,13 @@ message Ipv6Inet {
   uint32 network_length = 2;
 }
 
+message IpInet {
+  oneof ip {
+    Ipv4Inet ipv4 = 1;
+    Ipv6Inet ipv6 = 2;
+  };
+}
+
 message Url { string url = 1; }
 
 message SocketAddr {
@@ -173,7 +181,7 @@ message PeerFeatureFlag {
   bool is_public_server = 1;
   bool avoid_relay_data = 2;
   bool kcp_input = 3;
-  bool no_relay_kcp  = 4;
+  bool no_relay_kcp = 4;
 }
 
 enum SocketType {
@@ -182,17 +190,17 @@ enum SocketType {
 }
 
 message PortForwardConfigPb {
-    SocketAddr bind_addr = 1;
-    SocketAddr dst_addr = 2;
-    SocketType socket_type = 3;
+  SocketAddr bind_addr = 1;
+  SocketAddr dst_addr = 2;
+  SocketType socket_type = 3;
 }
 
-message ProxyDstInfo {
-  SocketAddr dst_addr = 1;
-}
+message ProxyDstInfo { SocketAddr dst_addr = 1; }
 
 message LimiterConfig {
-  optional uint64 burst_rate = 1; // default 1 means no burst (capacity is same with bps)
+  optional uint64 burst_rate =
+      1; // default 1 means no burst (capacity is same with bps)
   optional uint64 bps = 2; // default 0 means no limit (unit is B/s)
-  optional uint64 fill_duration_ms = 3; // default 10ms, the period to fill the bucket
+  optional uint64 fill_duration_ms =
+      3; // default 10ms, the period to fill the bucket
 }

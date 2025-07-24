@@ -10,6 +10,7 @@ use tracing::Instrument;
 
 use crate::{set_global_var, use_global_var};
 
+pub mod acl_processor;
 pub mod compressor;
 pub mod config;
 pub mod constants;

@@ -1,4 +1,7 @@
-use std::{fmt, str::FromStr};
+use std::{
+    fmt::{self, Display},
+    str::FromStr,
+};
 
 use anyhow::Context;
 
@@ -163,6 +166,43 @@ impl FromStr for Ipv6Inet {
         Ok(Ipv6Inet::from(
             cidr::Ipv6Inet::from_str(s).with_context(|| "Failed to parse Ipv6Inet")?,
         ))
+    }
+}
+
+impl From<cidr::IpInet> for IpInet {
+    fn from(value: cidr::IpInet) -> Self {
+        match value {
+            cidr::IpInet::V4(v4) => IpInet {
+                ip: Some(ip_inet::Ip::Ipv4(Ipv4Inet::from(v4))),
+            },
+            cidr::IpInet::V6(v6) => IpInet {
+                ip: Some(ip_inet::Ip::Ipv6(Ipv6Inet::from(v6))),
+            },
+        }
+    }
+}
+
+impl From<IpInet> for cidr::IpInet {
+    fn from(value: IpInet) -> Self {
+        match value.ip {
+            Some(ip_inet::Ip::Ipv4(v4)) => cidr::IpInet::V4(v4.into()),
+            Some(ip_inet::Ip::Ipv6(v6)) => cidr::IpInet::V6(v6.into()),
+            None => panic!("IpInet is None"),
+        }
+    }
+}
+
+impl Display for IpInet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", cidr::IpInet::from(self.clone()))
+    }
+}
+
+impl FromStr for IpInet {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(IpInet::from(cidr::IpInet::from_str(s)?))
     }
 }
 

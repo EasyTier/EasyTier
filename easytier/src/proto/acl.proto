@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package acl;
+
+// Enhanced protocol enum with more granular options
+enum Protocol {
+  Unspecified = 0;
+  TCP = 1;
+  UDP = 2;
+  ICMP = 3;
+  ICMPv6 = 4;
+  Any = 5;
+}
+
+enum Action {
+  Noop = 0;
+  Allow = 1;
+  Drop = 2; // Silent drop (no response)
+}
+
+enum ChainType {
+  UnspecifiedChain = 0;
+  // send to this node
+  Inbound = 1;
+  // send from this node
+  Outbound = 2;
+  // subnet proxy
+  Forward = 3;
+}
+
+// Time-based access control
+message TimeWindow {
+  // Days of week: 0=Sunday, 1=Monday, ..., 6=Saturday
+  repeated uint32 days_of_week = 1;
+  // Time in minutes from midnight (0-1439)
+  uint32 start_time = 2;
+  uint32 end_time = 3;
+  // Timezone offset in minutes from UTC
+  int32 timezone_offset = 4;
+}
+
+// Enhanced rule with priority and metadata
+message Rule {
+  // Rule identification and metadata
+  string name = 1;        // Human-readable rule name
+  string description = 2; // Rule description
+  uint32 priority = 3;    // Higher number = higher priority (0-65535)
+  bool enabled = 4;       // Rule enabled/disabled state
+
+  // Core matching criteria
+  Protocol protocol = 5;
+  repeated string ports = 6;
+  repeated string source_ips = 7;      // Source IP ranges
+  repeated string destination_ips = 8; // Destination IP ranges
+
+  // Enhanced matching criteria
+  repeated string source_ports = 9; // Source port range
+
+  // Action and logging
+  Action action = 10;
+
+  // Rate limiting (packets per second)
+  uint32 rate_limit = 11;  // 0 = no limit
+  uint32 burst_limit = 12; // Burst allowance
+
+  // Connection tracking
+  bool stateful = 13; // Enable connection tracking
+}
+
+// Rule chain with metadata and optimization hints
+message Chain {
+  // Chain identification
+  string name = 1; // Human-readable chain name
+  ChainType chain_type = 2;
+  string description = 3; // Chain description
+  bool enabled = 4;       // Chain enabled/disabled state
+
+  // Rules in priority order (highest priority first)
+  repeated Rule rules = 5;
+
+  // Default action when no rules match
+  Action default_action = 6;
+}
+
+message AclV1 { repeated Chain chains = 1; }
+
+enum ConnState {
+  New = 0;
+  Established = 1;
+  Related = 2;
+  Invalid = 3;
+}
+
+// Connection tracking entry for stateful ACLs
+message ConnTrackEntry {
+  common.SocketAddr src_addr = 1;
+  common.SocketAddr dst_addr = 2;
+  Protocol protocol = 3; // IP protocol number (e.g., 6 = TCP, 17 = UDP)
+  ConnState state = 4;
+  uint64 created_at = 5; // Unix timestamp (seconds)
+  uint64 last_seen = 6;  // Unix timestamp (seconds)
+  uint64 packet_count = 7;
+  uint64 byte_count = 8;
+}
+
+// Top-level ACL configuration
+message Acl {
+  AclV1 acl_v1 = 2;
+}
+
+message StatItem {
+  uint64 packet_count = 1;
+  uint64 byte_count = 2;
+}
+
+message RuleStats {
+  Rule rule = 1;
+  StatItem stat = 2;
+}
+
+message AclStats {
+  repeated RuleStats rules = 1;
+  repeated ConnTrackEntry conn_track = 2;
+  map<string, uint64> global = 3;
+}

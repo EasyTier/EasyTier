@@ -10,7 +10,10 @@ use cidr::IpCidr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    proto::common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
+    proto::{
+        acl::Acl,
+        common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
+    },
     tunnel::generate_digest_from_str,
 };
 
@@ -115,6 +118,9 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_port_forwards(&self) -> Vec<PortForwardConfig>;
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
+
+    fn get_acl(&self) -> Option<Acl>;
+    fn set_acl(&self, acl: Option<Acl>);
 
     fn dump(&self) -> String;
 }
@@ -291,6 +297,8 @@ struct Config {
 
     #[serde(skip)]
     flags_struct: Option<Flags>,
+
+    acl: Option<Acl>,
 }
 
 #[derive(Debug, Clone)]
@@ -647,6 +655,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>) {
         self.config.lock().unwrap().port_forward = Some(forwards);
+    }
+
+    fn get_acl(&self) -> Option<Acl> {
+        self.config.lock().unwrap().acl.clone()
+    }
+
+    fn set_acl(&self, acl: Option<Acl>) {
+        self.config.lock().unwrap().acl = acl;
     }
 
     fn dump(&self) -> String {

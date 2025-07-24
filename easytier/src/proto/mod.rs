@@ -1,6 +1,7 @@
 pub mod rpc_impl;
 pub mod rpc_types;
 
+pub mod acl;
 pub mod cli;
 pub mod common;
 pub mod error;

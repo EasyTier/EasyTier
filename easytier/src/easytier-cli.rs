@@ -27,11 +27,12 @@ use easytier::{
     },
     proto::{
         cli::{
-            list_peer_route_pair, ConnectorManageRpc, ConnectorManageRpcClientFactory,
-            DumpRouteRequest, GetVpnPortalInfoRequest, ListConnectorRequest,
-            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
-            ListPeerRequest, ListPeerResponse, ListRouteRequest, ListRouteResponse,
-            ManageMappedListenerRequest, MappedListenerManageAction, MappedListenerManageRpc,
+            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
+            ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
+            GetVpnPortalInfoRequest, ListConnectorRequest, ListForeignNetworkRequest,
+            ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
+            ListPeerResponse, ListRouteRequest, ListRouteResponse, ManageMappedListenerRequest,
+            MappedListenerManageAction, MappedListenerManageRpc,
             MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, ShowNodeInfoRequest, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
@@ -93,6 +94,8 @@ enum SubCommand {
     Service(ServiceArgs),
     #[command(about = "show tcp/kcp proxy status")]
     Proxy,
+    #[command(about = "show ACL rules statistics")]
+    Acl(AclArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: Shell },
 }
@@ -177,6 +180,17 @@ enum NodeSubCommand {
 struct NodeArgs {
     #[command(subcommand)]
     sub_command: Option<NodeSubCommand>,
+}
+
+#[derive(Args, Debug)]
+struct AclArgs {
+    #[command(subcommand)]
+    sub_command: Option<AclSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum AclSubCommand {
+    Stats,
 }
 
 #[derive(Args, Debug)]
@@ -299,6 +313,18 @@ impl CommandHandler<'_> {
             .scoped_client::<VpnPortalRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
+    }
+
+    async fn get_acl_manager_client(
+        &self,
+    ) -> Result<Box<dyn AclManageRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .unwrap()
+            .scoped_client::<AclManageRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get acl manager client")?)
     }
 
     async fn get_tcp_proxy_client(
@@ -685,6 +711,26 @@ impl CommandHandler<'_> {
             return Ok(());
         }
         println!("response: {:#?}", response);
+        Ok(())
+    }
+
+    async fn handle_acl_stats(&self) -> Result<(), Error> {
+        let client = self.get_acl_manager_client().await?;
+        let request = GetAclStatsRequest::default();
+        let response = client
+            .get_acl_stats(BaseController::default(), request)
+            .await?;
+
+        if let Some(acl_stats) = response.acl_stats {
+            if self.output_format == &OutputFormat::Json {
+                println!("{}", serde_json::to_string_pretty(&acl_stats)?);
+            } else {
+                println!("{}", acl_stats);
+            }
+        } else {
+            println!("No ACL statistics available");
+        }
+
         Ok(())
     }
 
@@ -1443,6 +1489,11 @@ async fn main() -> Result<(), Error> {
 
             print_output(&table_rows, &cli.output_format)?;
         }
+        SubCommand::Acl(acl_args) => match &acl_args.sub_command {
+            Some(AclSubCommand::Stats) | None => {
+                handler.handle_acl_stats().await?;
+            }
+        },
         SubCommand::GenAutocomplete { shell } => {
             let mut cmd = Cli::command();
             easytier::print_completions(shell, &mut cmd, "easytier-cli");

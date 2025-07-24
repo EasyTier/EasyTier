@@ -609,6 +609,10 @@ impl Instance {
             }
         }
 
+        if let Some(acl) = self.global_ctx.config.get_acl() {
+            self.global_ctx.get_acl_filter().reload_rules(Some(&acl));
+        }
+
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.ip_proxy = Some(IpProxy::new(
             self.get_global_ctx(),
@@ -801,10 +805,11 @@ impl Instance {
         let mapped_listener_manager_rpc = self.get_mapped_listener_manager_rpc_service();
 
         let s = self.rpc_server.as_mut().unwrap();
-        s.registry().register(
-            PeerManageRpcServer::new(PeerManagerRpcService::new(peer_mgr)),
-            "",
-        );
+        let peer_mgr_rpc_service = PeerManagerRpcService::new(peer_mgr.clone());
+        s.registry()
+            .register(PeerManageRpcServer::new(peer_mgr_rpc_service.clone()), "");
+        s.registry()
+            .register(AclManageRpcServer::new(peer_mgr_rpc_service), "");
         s.registry().register(
             ConnectorManageRpcServer::new(ConnectorManagerRpcService(conn_manager)),
             "",

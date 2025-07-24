@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use crate::proto::{
     cli::{
-        DumpRouteRequest, DumpRouteResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
-        ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
-        ListPeerResponse, ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc,
-        ShowNodeInfoRequest, ShowNodeInfoResponse,
+        AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest, GetAclStatsResponse,
+        ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
+        ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
+        ListRouteResponse, PeerInfo, PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
     },
     rpc_types::{self, controller::BaseController},
 };
@@ -131,6 +131,26 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<ShowNodeInfoResponse, rpc_types::error::Error> {
         Ok(ShowNodeInfoResponse {
             node_info: Some(self.peer_manager.get_my_info().await),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl AclManageRpc for PeerManagerRpcService {
+    type Controller = BaseController;
+
+    async fn get_acl_stats(
+        &self,
+        _: BaseController,
+        _request: GetAclStatsRequest,
+    ) -> Result<GetAclStatsResponse, rpc_types::error::Error> {
+        let acl_stats = self
+            .peer_manager
+            .get_global_ctx()
+            .get_acl_filter()
+            .get_stats();
+        Ok(GetAclStatsResponse {
+            acl_stats: Some(acl_stats),
         })
     }
 }
