@@ -86,10 +86,6 @@ message Chain {
 
 message AclV1 { repeated Chain chains = 1; }
 
-enum AclVersion {
-  V1 = 0;
-}
-
 enum ConnState {
   New = 0;
   Established = 1;
@@ -101,7 +97,7 @@ enum ConnState {
 message ConnTrackEntry {
   common.SocketAddr src_addr = 1;
   common.SocketAddr dst_addr = 2;
-  uint32 protocol = 3; // IP protocol number (e.g., 6 = TCP, 17 = UDP)
+  Protocol protocol = 3; // IP protocol number (e.g., 6 = TCP, 17 = UDP)
   ConnState state = 4;
   uint64 created_at = 5; // Unix timestamp (seconds)
   uint64 last_seen = 6;  // Unix timestamp (seconds)
@@ -111,7 +107,6 @@ message ConnTrackEntry {
 
 // Top-level ACL configuration
 message Acl {
-  AclVersion version = 1;
   AclV1 acl_v1 = 2;
 }
 

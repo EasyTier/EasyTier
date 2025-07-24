@@ -1,7 +1,5 @@
 use std::fmt::Display;
 
-use pnet::packet::ip::IpNextHeaderProtocol;
-
 include!(concat!(env!("OUT_DIR"), "/acl.rs"));
 
 impl Display for ConnTrackEntry {
@@ -16,15 +14,23 @@ impl Display for ConnTrackEntry {
             .as_ref()
             .map(|a| a.to_string())
             .unwrap_or_else(|| "-".to_string());
+        let last_seen = chrono::DateTime::<chrono::Utc>::from_timestamp(self.last_seen as i64, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        let created_at = chrono::DateTime::<chrono::Utc>::from_timestamp(self.created_at as i64, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
         write!(
             f,
-            "[src: {}, dst: {}, proto: {}, state: {:?}, pkts: {}, bytes: {}]",
+            "[src: {}, dst: {}, proto: {:?}, state: {:?}, pkts: {}, bytes: {}, created: {}, last_seen: {}]",
             src,
             dst,
-            IpNextHeaderProtocol::new(self.protocol as u8),
+            Protocol::try_from(self.protocol).unwrap_or(Protocol::Unspecified),
             ConnState::try_from(self.state).unwrap_or(ConnState::Invalid),
             self.packet_count,
-            self.byte_count
+            self.byte_count,
+            created_at,
+            last_seen
         )
     }
 }

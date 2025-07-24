@@ -1343,7 +1343,6 @@ pub async fn acl_rule_test_inbound() {
     // 构造 ACL 配置
     use crate::proto::acl::*;
     let mut acl = Acl::default();
-    acl.version = AclVersion::V1 as i32;
     let mut acl_v1 = AclV1::default();
 
     let mut chain = Chain::default();

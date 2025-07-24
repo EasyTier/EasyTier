@@ -151,6 +151,7 @@ pub enum AclLogContext {
         action: Action,
     },
     DefaultDrop,
+    DefaultAllow,
     UnsupportedChainType,
     RateLimitDrop,
 }
@@ -169,6 +170,7 @@ impl AclLogContext {
                 format!("Rule match: {} -> {} action: {:?}", src_ip, dst_ip, action)
             }
             AclLogContext::DefaultDrop => "No matching rule, default drop".to_string(),
+            AclLogContext::DefaultAllow => "No matching rule, default allow".to_string(),
             AclLogContext::UnsupportedChainType => "Unsupported chain type".to_string(),
             AclLogContext::RateLimitDrop => "Rate limit drop".to_string(),
         }
@@ -181,6 +183,11 @@ pub struct AclProcessor {
     inbound_rules: Vec<FastLookupRule>,
     outbound_rules: Vec<FastLookupRule>,
     forward_rules: Vec<FastLookupRule>,
+
+    default_inbound_action: Action,
+    default_outbound_action: Action,
+    default_forward_action: Action,
+
     default_rule_stats: Arc<RuleStats>,
 
     // Connection tracking table - shared across different processor instances if needed
@@ -216,12 +223,19 @@ impl AclProcessor {
         stats: Option<Arc<DashMap<AclStatKey, u64>>>,
     ) -> Self {
         let (inbound_rules, outbound_rules, forward_rules) = Self::build_rules(&acl_config);
+        let (default_inbound_action, default_outbound_action, default_forward_action) =
+            Self::build_default_actions(&acl_config);
         let tasks = JoinSet::new();
 
         let mut processor = Self {
             inbound_rules,
             outbound_rules,
             forward_rules,
+
+            default_inbound_action,
+            default_outbound_action,
+            default_forward_action,
+
             default_rule_stats: Arc::new(RuleStats {
                 rule: None,
                 stat: Some(StatItem {
@@ -240,6 +254,47 @@ impl AclProcessor {
 
         processor.start_cache_cleanup_task();
         processor
+    }
+
+    fn build_default_actions(acl_config: &Acl) -> (Action, Action, Action) {
+        let default_inbound_action = acl_config
+            .acl_v1
+            .as_ref()
+            .and_then(|v1| {
+                v1.chains
+                    .iter()
+                    .find(|c| c.chain_type == ChainType::Inbound as i32)
+            })
+            .map(|c| c.default_action())
+            .unwrap_or(Action::Allow);
+
+        let default_outbound_action = acl_config
+            .acl_v1
+            .as_ref()
+            .and_then(|v1| {
+                v1.chains
+                    .iter()
+                    .find(|c| c.chain_type == ChainType::Outbound as i32)
+            })
+            .map(|c| c.default_action())
+            .unwrap_or(Action::Allow);
+
+        let default_forward_action = acl_config
+            .acl_v1
+            .as_ref()
+            .and_then(|v1| {
+                v1.chains
+                    .iter()
+                    .find(|c| c.chain_type == ChainType::Forward as i32)
+            })
+            .map(|c| c.default_action())
+            .unwrap_or(Action::Allow);
+
+        (
+            default_inbound_action,
+            default_outbound_action,
+            default_forward_action,
+        )
     }
 
     /// Build all rule vectors from configuration
@@ -500,17 +555,35 @@ impl AclProcessor {
             return cache_entry.acl_result.clone().unwrap();
         }
 
+        let default_action = match chain_type {
+            ChainType::Inbound => self.default_inbound_action,
+            ChainType::Outbound => self.default_outbound_action,
+            ChainType::Forward => self.default_forward_action,
+            _ => Action::Allow,
+        };
+
         // No rule matched, return default drop
-        self.increment_stat(AclStatKey::DefaultAllows);
+        if default_action == Action::Drop {
+            self.increment_stat(AclStatKey::DefaultDrops);
+        } else {
+            self.increment_stat(AclStatKey::DefaultAllows);
+        }
+
+        let log_context = if default_action == Action::Drop {
+            AclLogContext::DefaultDrop
+        } else {
+            AclLogContext::DefaultAllow
+        };
+
         cache_entry
             .rule_stats_vec
             .push(self.default_rule_stats.clone());
         cache_entry.matched_rule = RuleId::Default;
         cache_entry.acl_result = Some(AclResult {
-            action: Action::Allow,
+            action: default_action,
             matched_rule: Some(RuleId::Default),
             should_log: false,
-            log_context: Some(AclLogContext::DefaultDrop),
+            log_context: Some(log_context),
         });
 
         // Cache the default result (no rule info)
@@ -642,7 +715,7 @@ impl AclProcessor {
                 dst_addr: Some(
                     SocketAddr::new(packet_info.dst_ip, packet_info.dst_port.unwrap_or(0)).into(),
                 ),
-                protocol: packet_info.protocol as u32,
+                protocol: packet_info.protocol as i32,
                 state: ConnState::New as i32,
                 created_at: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -859,6 +932,7 @@ pub enum AclStatKey {
     CacheMaxSize,
     RuleMatches,
     DefaultAllows,
+    DefaultDrops,
 
     // Global packet statistics
     PacketsTotal,
@@ -934,7 +1008,6 @@ mod tests {
 
     fn create_test_acl_config() -> Acl {
         let mut acl_config = Acl::default();
-        acl_config.version = AclVersion::V1 as i32;
 
         let mut acl_v1 = AclV1::default();
 
@@ -1104,7 +1177,6 @@ mod tests {
     async fn test_performance_and_security_balance() {
         // Create ACL config with different rule types
         let mut acl_config = Acl::default();
-        acl_config.version = AclVersion::V1 as i32;
 
         let mut acl_v1 = AclV1::default();
         let mut chain = Chain::default();
