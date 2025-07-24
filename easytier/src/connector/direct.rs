@@ -31,6 +31,7 @@ use crate::{
         rpc_types::controller::BaseController,
     },
     tunnel::{udp::UdpTunnelConnector, IpVersion},
+    use_global_var,
 };
 
 use crate::proto::cli::PeerConnInfo;
@@ -57,12 +58,14 @@ pub trait PeerManagerForDirectConnector {
 impl PeerManagerForDirectConnector for PeerManager {
     async fn list_peers(&self) -> Vec<PeerId> {
         let mut ret = vec![];
+        let allow_public_server = use_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER);
 
         let routes = self.list_routes().await;
-        for r in routes
-            .iter()
-            .filter(|r| r.feature_flag.map(|r| !r.is_public_server).unwrap_or(true))
-        {
+        for r in routes.iter().filter(|r| {
+            r.feature_flag
+                .map(|r| allow_public_server || !r.is_public_server)
+                .unwrap_or(true)
+        }) {
             ret.push(r.peer_id);
         }
 
@@ -483,10 +486,17 @@ impl DirectConnectorManagerData {
                 self.global_ctx.get_network_name(),
             );
 
-            let ip_list = rpc_stub
+            let ip_list = match rpc_stub
                 .get_ip_list(BaseController::default(), GetIpListRequest {})
                 .await
-                .with_context(|| format!("get ip list from peer {}", dst_peer_id))?;
+                .with_context(|| format!("get ip list from peer {}", dst_peer_id))
+            {
+                Ok(ip_list) => ip_list,
+                Err(e) => {
+                    tracing::error!(?e, "failed to get ip list from peer");
+                    continue;
+                }
+            };
 
             tracing::info!(ip_list = ?ip_list, dst_peer_id = ?dst_peer_id, "got ip list");
 

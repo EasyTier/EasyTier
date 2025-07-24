@@ -81,12 +81,13 @@ impl PeerRpcManagerTransport for RpcTransport {
 
     async fn send(&self, mut msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         let peers = self.peers.upgrade().ok_or(Error::Unknown)?;
-        // NOTE: if route info is not exchanged, this will return error. treat it as need relay
-        if !peers
-            .need_relay_by_foreign_network(dst_peer_id)
+        // NOTE: if route info is not exchanged, this will return None. treat it as public server.
+        let is_dst_peer_public_server = peers
+            .get_route_peer_info(dst_peer_id)
             .await
-            .unwrap_or(true)
-        {
+            .and_then(|x| x.feature_flag.map(|x| x.is_public_server))
+            .unwrap_or(true);
+        if !is_dst_peer_public_server {
             self.encryptor
                 .encrypt(&mut msg)
                 .with_context(|| "encrypt failed")?;

@@ -25,7 +25,6 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
         join_joinset_background,
-        stun::MockStunInfoCollector,
         token_bucket::TokenBucket,
         PeerId,
     },
@@ -33,7 +32,7 @@ use crate::{
     peers::route_trait::{Route, RouteInterface},
     proto::{
         cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
-        common::{LimiterConfig, NatType},
+        common::LimiterConfig,
         peer_rpc::DirectConnectorRpcServer,
     },
     tunnel::packet_def::{PacketType, ZCPacket},
@@ -159,9 +158,8 @@ impl ForeignNetworkEntry {
         config.set_hostname(Some(format!("PublicServer_{}", global_ctx.get_hostname())));
 
         let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
-        foreign_global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }));
+        foreign_global_ctx
+            .replace_stun_info_collector(Box::new(global_ctx.get_stun_info_collector().clone()));
 
         let mut feature_flag = global_ctx.get_feature_flags();
         feature_flag.is_public_server = true;
