@@ -1,6 +1,6 @@
 [package]
 name = "easytier-web"
-version = "2.3.2"
+version = "2.4.0"
 edition = "2021"
 description = "Config server for easytier. easytier-core gets config from this and web frontend use it as restful api server."
 

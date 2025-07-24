@@ -1010,7 +1010,7 @@ dependencies = [
 
 [[package]]
 name = "easytier"
-version = "2.3.2"
+version = "2.4.0"
 source = "git+https://github.com/EasyTier/EasyTier.git#a4bb555fac1046d0099c44676fa9d0d8cca55c99"
 dependencies = [
  "anyhow",
