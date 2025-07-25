@@ -86,7 +86,8 @@ impl PeerRpcManagerTransport for RpcTransport {
             .get_route_peer_info(dst_peer_id)
             .await
             .and_then(|x| x.feature_flag.map(|x| x.is_public_server))
-            .unwrap_or(true);
+            // if dst is directly connected, it's must not public server
+            .unwrap_or(!peers.has_peer(dst_peer_id));
         if !is_dst_peer_public_server {
             self.encryptor
                 .encrypt(&mut msg)
