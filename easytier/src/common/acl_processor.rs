@@ -470,6 +470,7 @@ impl AclProcessor {
         let rules = match chain_type {
             ChainType::Inbound => &self.inbound_rules,
             ChainType::Outbound => &self.outbound_rules,
+            ChainType::Forward => &self.forward_rules,
             _ => {
                 return AclResult {
                     action: Action::Drop,

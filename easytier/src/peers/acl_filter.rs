@@ -64,7 +64,7 @@ impl AclFilter {
     }
 
     /// Get current processor for processing packets
-    fn get_processor(&self) -> Arc<AclProcessor> {
+    pub fn get_processor(&self) -> Arc<AclProcessor> {
         self.acl_processor.load_full()
     }
 
@@ -160,7 +160,7 @@ impl AclFilter {
     }
 
     /// Process ACL result and log if needed
-    fn handle_acl_result(
+    pub fn handle_acl_result(
         &self,
         result: &AclResult,
         packet_info: &PacketInfo,
