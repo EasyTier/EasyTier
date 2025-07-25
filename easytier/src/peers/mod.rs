@@ -23,6 +23,8 @@ pub mod peer_task;
 #[cfg(test)]
 pub mod tests;
 
+use std::sync::Arc;
+
 use crate::tunnel::packet_def::ZCPacket;
 
 #[async_trait::async_trait]
@@ -43,8 +45,8 @@ pub trait NicPacketFilter {
     }
 }
 
-type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
-type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
+type BoxPeerPacketFilter = Arc<dyn PeerPacketFilter + Send + Sync>;
+type BoxNicPacketFilter = Arc<dyn NicPacketFilter + Send + Sync>;
 
 // pub type PacketRecvChan = tachyonix::Sender<ZCPacket>;
 // pub type PacketRecvChanReceiver = tachyonix::Receiver<ZCPacket>;

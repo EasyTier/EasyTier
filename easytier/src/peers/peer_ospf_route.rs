@@ -55,7 +55,6 @@ use super::{
         DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
         RouteCostCalculatorInterface,
     },
-    PeerPacketFilter,
 };
 
 static SERVICE_ID: u32 = 7;
@@ -2368,8 +2367,6 @@ impl Route for PeerRoute {
         self.service_impl.get_peer_info_last_update()
     }
 }
-
-impl PeerPacketFilter for Arc<PeerRoute> {}
 
 #[cfg(test)]
 mod tests {

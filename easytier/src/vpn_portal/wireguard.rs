@@ -203,7 +203,7 @@ impl WireGuardImpl {
         }
 
         self.peer_mgr
-            .add_packet_process_pipeline(Box::new(PeerPacketFilterForVpnPortal {
+            .add_packet_process_pipeline(Arc::new(PeerPacketFilterForVpnPortal {
                 wg_peer_ip_table: self.wg_peer_ip_table.clone(),
             }))
             .await;

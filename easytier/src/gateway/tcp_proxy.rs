@@ -476,10 +476,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
         self.run_listener().await?;
         if add_pipeline {
             self.peer_manager
-                .add_packet_process_pipeline(Box::new(self.clone()))
+                .add_packet_process_pipeline(self.clone())
                 .await;
             self.peer_manager
-                .add_nic_packet_process_pipeline(Box::new(self.clone()))
+                .add_nic_packet_process_pipeline(self.clone())
                 .await;
         }
         join_joinset_background(self.tasks.clone(), "TcpProxy".to_owned());

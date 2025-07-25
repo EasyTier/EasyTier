@@ -341,13 +341,13 @@ impl KcpProxySrc {
 
     pub async fn start(&self) {
         self.peer_manager
-            .add_nic_packet_process_pipeline(Box::new(self.tcp_proxy.clone()))
+            .add_nic_packet_process_pipeline(Arc::new(self.tcp_proxy.clone()))
             .await;
         self.peer_manager
-            .add_packet_process_pipeline(Box::new(self.tcp_proxy.0.clone()))
+            .add_packet_process_pipeline(Arc::new(self.tcp_proxy.0.clone()))
             .await;
         self.peer_manager
-            .add_packet_process_pipeline(Box::new(KcpEndpointFilter {
+            .add_packet_process_pipeline(Arc::new(KcpEndpointFilter {
                 kcp_endpoint: self.kcp_endpoint.clone(),
                 is_src: true,
             }))
@@ -484,7 +484,7 @@ impl KcpProxyDst {
     pub async fn start(&mut self) {
         self.run_accept_task().await;
         self.peer_manager
-            .add_packet_process_pipeline(Box::new(KcpEndpointFilter {
+            .add_packet_process_pipeline(Arc::new(KcpEndpointFilter {
                 kcp_endpoint: self.kcp_endpoint.clone(),
                 is_src: false,
             }))

@@ -404,9 +404,7 @@ impl MagicDnsServerInstance {
             .register(MagicDnsServerRpcServer::new(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
-        peer_mgr
-            .add_nic_packet_process_pipeline(Box::new(data.clone()))
-            .await;
+        peer_mgr.add_nic_packet_process_pipeline(data.clone()).await;
 
         let data_clone = data.clone();
         tokio::task::spawn_blocking(move || data_clone.do_system_config(DEFAULT_ET_DNS_ZONE))

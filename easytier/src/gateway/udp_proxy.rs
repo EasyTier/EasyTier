@@ -404,7 +404,7 @@ impl UdpProxy {
 
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
         self.peer_manager
-            .add_packet_process_pipeline(Box::new(self.clone()))
+            .add_packet_process_pipeline(self.clone())
             .await;
 
         // clean up nat table

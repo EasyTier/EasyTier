@@ -621,7 +621,7 @@ impl Socks5Server {
 
         if need_start {
             self.peer_manager
-                .add_packet_process_pipeline(Box::new(self.clone()))
+                .add_packet_process_pipeline(self.clone())
                 .await;
 
             self.run_net_update_task().await;

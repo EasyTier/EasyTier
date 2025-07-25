@@ -306,7 +306,7 @@ impl IcmpProxy {
             return Err(anyhow::anyhow!("peer manager is gone").into());
         };
 
-        pm.add_packet_process_pipeline(Box::new(self.clone())).await;
+        pm.add_packet_process_pipeline(self.clone()).await;
         Ok(())
     }
 

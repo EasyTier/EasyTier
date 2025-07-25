@@ -227,10 +227,10 @@ impl QUICProxySrc {
 
     pub async fn start(&self) {
         self.peer_manager
-            .add_nic_packet_process_pipeline(Box::new(self.tcp_proxy.clone()))
+            .add_nic_packet_process_pipeline(Arc::new(self.tcp_proxy.clone()))
             .await;
         self.peer_manager
-            .add_packet_process_pipeline(Box::new(self.tcp_proxy.0.clone()))
+            .add_packet_process_pipeline(Arc::new(self.tcp_proxy.0.clone()))
             .await;
         self.tcp_proxy.0.start(false).await.unwrap();
     }
