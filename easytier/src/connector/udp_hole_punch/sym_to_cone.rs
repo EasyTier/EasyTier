@@ -14,11 +14,15 @@ use tokio::{net::UdpSocket, sync::RwLock};
 use tracing::Level;
 
 use crate::{
-    common::{scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId},
-    connector::udp_hole_punch::common::{
-        send_symmetric_hole_punch_packet, try_connect_with_socket, HOLE_PUNCH_PACKET_BODY_LEN,
+    common::{
+        global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId,
     },
-    connector::udp_hole_punch::handle_rpc_result,
+    connector::udp_hole_punch::{
+        common::{
+            send_symmetric_hole_punch_packet, try_connect_with_socket, HOLE_PUNCH_PACKET_BODY_LEN,
+        },
+        handle_rpc_result,
+    },
     defer,
     peers::peer_manager::PeerManager,
     proto::{
@@ -350,6 +354,7 @@ impl PunchSymToConeHoleClient {
     }
 
     async fn check_hole_punch_result<T>(
+        global_ctx: ArcGlobalCtx,
         udp_array: &Arc<UdpSocketArray>,
         packet: &[u8],
         tid: u32,
@@ -376,7 +381,13 @@ impl PunchSymToConeHoleClient {
             };
 
             // if hole punched but tunnel creation failed, need to retry entire process.
-            match try_connect_with_socket(socket.socket.clone(), remote_mapped_addr.into()).await {
+            match try_connect_with_socket(
+                global_ctx.clone(),
+                socket.socket.clone(),
+                remote_mapped_addr.into(),
+            )
+            .await
+            {
                 Ok(tunnel) => {
                     ret_tunnel.replace(tunnel);
                     break;
@@ -435,6 +446,7 @@ impl PunchSymToConeHoleClient {
         // try direct connect first
         if self.try_direct_connect.load(Ordering::Relaxed) {
             if let Ok(tunnel) = try_connect_with_socket(
+                global_ctx.clone(),
                 Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
                 remote_mapped_addr.into(),
             )
@@ -478,6 +490,7 @@ impl PunchSymToConeHoleClient {
                 ))
                 .into();
             let ret_tunnel = Self::check_hole_punch_result(
+                global_ctx.clone(),
                 &udp_array,
                 &packet,
                 tid,
@@ -505,6 +518,7 @@ impl PunchSymToConeHoleClient {
             ))
             .into();
         let ret_tunnel = Self::check_hole_punch_result(
+            global_ctx,
             &udp_array,
             &packet,
             tid,
