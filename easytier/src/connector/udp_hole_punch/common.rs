@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::Duration,
 };
@@ -582,7 +582,33 @@ pub(crate) async fn send_symmetric_hole_punch_packet(
     Ok(cur_port_idx % ports.len())
 }
 
+async fn check_udp_socket_local_addr(
+    global_ctx: ArcGlobalCtx,
+    remote_mapped_addr: SocketAddr,
+) -> Result<(), Error> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    socket.connect(remote_mapped_addr).await?;
+    if let Ok(local_addr) = socket.local_addr() {
+        // local_addr should not be equal to virtual ipv4 or virtual ipv6
+        match local_addr.ip() {
+            IpAddr::V4(ip) => {
+                if global_ctx.get_ipv4().map(|ip| ip.address()) == Some(ip) {
+                    return Err(anyhow::anyhow!("local address is virtual ipv4").into());
+                }
+            }
+            IpAddr::V6(ip) => {
+                if global_ctx.get_ipv6().map(|ip| ip.address()) == Some(ip) {
+                    return Err(anyhow::anyhow!("local address is virtual ipv6").into());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn try_connect_with_socket(
+    global_ctx: ArcGlobalCtx,
     socket: Arc<UdpSocket>,
     remote_mapped_addr: SocketAddr,
 ) -> Result<Box<dyn Tunnel>, Error> {
@@ -596,6 +622,9 @@ pub(crate) async fn try_connect_with_socket(
         .parse()
         .unwrap(),
     );
+
+    check_udp_socket_local_addr(global_ctx, remote_mapped_addr).await?;
+
     connector
         .try_connect_with_socket(socket, remote_mapped_addr)
         .await

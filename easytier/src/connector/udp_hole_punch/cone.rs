@@ -223,8 +223,12 @@ impl PunchConeHoleClient {
             tracing::debug!(?socket, ?tid, "punched socket found, try connect with it");
 
             for _ in 0..2 {
-                match try_connect_with_socket(socket.socket.clone(), remote_mapped_addr.into())
-                    .await
+                match try_connect_with_socket(
+                    global_ctx.clone(),
+                    socket.socket.clone(),
+                    remote_mapped_addr.into(),
+                )
+                .await
                 {
                     Ok(tunnel) => {
                         tracing::info!(?tunnel, "hole punched");
