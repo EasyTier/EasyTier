@@ -63,7 +63,13 @@ pub struct NatDstTcpConnector;
 impl NatDstConnector for NatDstTcpConnector {
     type DstStream = TcpStream;
     async fn connect(&self, _src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
-        let socket = TcpSocket::new_v4().unwrap();
+        let socket = match TcpSocket::new_v4() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("create v4 socket failed: {:?}", e);
+                return Err(e.into());
+            }
+        };
         if let Err(e) = socket.set_nodelay(true) {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
