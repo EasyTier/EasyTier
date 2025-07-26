@@ -647,10 +647,8 @@ impl NetworkOptions {
                     ));
                 }
 
-                // Add individual ports in the range
-                for port in start..=end {
-                    ports.push(port.to_string());
-                }
+                // acl can handle port range
+                ports.push(port_spec.clone());
             } else {
                 // Handle single port
                 let port: u16 = port_spec
