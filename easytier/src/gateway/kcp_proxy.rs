@@ -20,7 +20,12 @@ use pnet::packet::{
     Packet as _,
 };
 use prost::Message;
-use tokio::{io::copy_bidirectional, select, task::JoinSet};
+use tokio::{
+    io::{copy_bidirectional, AsyncRead, AsyncWrite},
+    select,
+    task::JoinSet,
+};
+use tokio_util::io::InspectReader;
 
 use super::{
     tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy},
@@ -28,11 +33,13 @@ use super::{
 };
 use crate::{
     common::{
+        acl_processor::PacketInfo,
         error::Result,
         global_ctx::{ArcGlobalCtx, GlobalCtx},
     },
-    peers::{peer_manager::PeerManager, NicPacketFilter, PeerPacketFilter},
+    peers::{acl_filter::AclFilter, peer_manager::PeerManager, NicPacketFilter, PeerPacketFilter},
     proto::{
+        acl::{Action, ChainType, Protocol},
         cli::{
             ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc,
@@ -372,6 +379,50 @@ pub struct KcpProxyDst {
     tasks: JoinSet<()>,
 }
 
+#[derive(Clone)]
+pub struct ProxyAclHandler {
+    pub acl_filter: Arc<AclFilter>,
+    pub packet_info: PacketInfo,
+    pub chain_type: ChainType,
+}
+
+impl ProxyAclHandler {
+    pub fn handle_packet(&self, buf: &[u8]) -> Result<()> {
+        let mut packet_info = self.packet_info.clone();
+        packet_info.packet_size = buf.len();
+        let ret = self
+            .acl_filter
+            .get_processor()
+            .process_packet(&packet_info, self.chain_type);
+        self.acl_filter.handle_acl_result(
+            &ret,
+            &packet_info,
+            self.chain_type,
+            &self.acl_filter.get_processor(),
+        );
+        if !matches!(ret.action, Action::Allow) {
+            return Err(anyhow::anyhow!("acl denied").into());
+        }
+
+        Ok(())
+    }
+
+    pub async fn copy_bidirection_with_acl(
+        &self,
+        src: impl AsyncRead + AsyncWrite + Unpin,
+        mut dst: impl AsyncRead + AsyncWrite + Unpin,
+    ) -> Result<()> {
+        let (src_reader, src_writer) = tokio::io::split(src);
+        let src_reader = InspectReader::new(src_reader, |buf| {
+            let _ = self.handle_packet(buf);
+        });
+        let mut src = tokio::io::join(src_reader, src_writer);
+
+        copy_bidirectional(&mut src, &mut dst).await?;
+        Ok(())
+    }
+}
+
 impl KcpProxyDst {
     pub async fn new(peer_manager: Arc<PeerManager>) -> Self {
         let mut kcp_endpoint = create_kcp_endpoint();
@@ -396,7 +447,7 @@ impl KcpProxyDst {
 
     #[tracing::instrument(ret)]
     async fn handle_one_in_stream(
-        mut kcp_stream: KcpStream,
+        kcp_stream: KcpStream,
         global_ctx: ArcGlobalCtx,
         proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
         cidr_set: Arc<CidrSet>,
@@ -411,6 +462,7 @@ impl KcpProxyDst {
                 parsed_conn_data
             ))?
             .into();
+        let src_socket: SocketAddr = parsed_conn_data.src.unwrap_or_default().into();
 
         match dst_socket.ip() {
             IpAddr::V4(dst_v4_ip) => {
@@ -437,17 +489,36 @@ impl KcpProxyDst {
             proxy_entries.remove(&conn_id);
         }
 
-        if Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
-            && global_ctx.no_tun()
-        {
+        let send_to_self =
+            Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()));
+
+        if send_to_self && global_ctx.no_tun() {
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
+
+        let acl_handler = ProxyAclHandler {
+            acl_filter: global_ctx.get_acl_filter().clone(),
+            packet_info: PacketInfo {
+                src_ip: src_socket.ip(),
+                dst_ip: dst_socket.ip(),
+                src_port: Some(src_socket.port()),
+                dst_port: Some(dst_socket.port()),
+                protocol: Protocol::Tcp,
+                packet_size: conn_data.len(),
+            },
+            chain_type: if send_to_self {
+                ChainType::Inbound
+            } else {
+                ChainType::Forward
+            },
+        };
+        acl_handler.handle_packet(&conn_data)?;
 
         tracing::debug!("kcp connect to dst socket: {:?}", dst_socket);
 
         let _g = global_ctx.net_ns.guard();
         let connector = NatDstTcpConnector {};
-        let mut ret = connector
+        let ret = connector
             .connect("0.0.0.0:0".parse().unwrap(), dst_socket)
             .await?;
 
@@ -455,7 +526,10 @@ impl KcpProxyDst {
             e.state = TcpProxyEntryState::Connected.into();
         }
 
-        copy_bidirectional(&mut ret, &mut kcp_stream).await?;
+        acl_handler
+            .copy_bidirection_with_acl(kcp_stream, ret)
+            .await?;
+
         Ok(())
     }
 

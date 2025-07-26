@@ -1329,16 +1329,33 @@ async fn avoid_tunnel_loop_back_to_virtual_network() {
     drop_insts(insts).await;
 }
 
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn acl_rule_test_inbound() {
+pub async fn acl_rule_test_inbound(
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
     use crate::tunnel::{
         common::tests::_tunnel_pingpong_netns,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
     use rand::Rng;
-    let insts = init_three_node("udp").await;
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.enable_kcp_proxy = enable_kcp_proxy;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                cfg.set_flags(flags);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
 
     // 构造 ACL 配置
     use crate::proto::acl::*;
@@ -1422,7 +1439,7 @@ pub async fn acl_rule_test_inbound() {
         .await;
 
         // 6. 8080 应该连接失败（被 ACL 拦截）
-        let result = tokio::time::timeout(
+        let result = tokio::spawn(tokio::time::timeout(
             std::time::Duration::from_millis(200),
             _tunnel_pingpong_netns(
                 listener_8080,
@@ -1431,10 +1448,13 @@ pub async fn acl_rule_test_inbound() {
                 NetNS::new(Some("net_a".into())),
                 buf.clone(),
             ),
-        )
+        ))
         .await;
 
-        assert!(result.is_err(), "TCP 连接 8080 应被 ACL 拦截，不能成功");
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "TCP 连接 8080 应被 ACL 拦截，不能成功"
+        );
 
         // 7. 从 10.144.144.2 连接 8082 应该连接失败（被 ACL 拦截）
         let result = tokio::time::timeout(
@@ -1505,6 +1525,239 @@ pub async fn acl_rule_test_inbound() {
         .get_global_ctx()
         .get_acl_filter()
         .reload_rules(None);
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn acl_rule_test_subnet_proxy(
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
+        udp::{UdpTunnelConnector, UdpTunnelListener},
+    };
+    use rand::Rng;
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.enable_kcp_proxy = enable_kcp_proxy;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst3" {
+                // 添加子网代理配置
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    // 等待代理路由出现
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.3/24",
+        insts[2].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    // Test IPv4 connectivity
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // 构造 ACL 配置 - 针对子网代理流量
+    use crate::proto::acl::*;
+    let mut acl = Acl::default();
+    let mut acl_v1 = AclV1::default();
+
+    let mut chain = Chain::default();
+    chain.name = "test_subnet_proxy_inbound".to_string();
+    chain.chain_type = ChainType::Forward as i32;
+    chain.enabled = true;
+
+    // 禁止访问子网代理中的 8080 端口
+    let mut deny_rule = Rule::default();
+    deny_rule.name = "deny_subnet_8080".to_string();
+    deny_rule.priority = 200;
+    deny_rule.enabled = true;
+    deny_rule.action = Action::Drop as i32;
+    deny_rule.protocol = Protocol::Any as i32;
+    deny_rule.ports = vec!["8080".to_string()];
+    deny_rule.destination_ips = vec!["10.1.2.0/24".to_string()];
+    chain.rules.push(deny_rule);
+
+    // 禁止来自 inst1 (10.144.144.1) 访问子网代理中的 8081 端口
+    let mut deny_src_rule = Rule::default();
+    deny_src_rule.name = "deny_inst1_to_subnet_8081".to_string();
+    deny_src_rule.priority = 200;
+    deny_src_rule.enabled = true;
+    deny_src_rule.action = Action::Drop as i32;
+    deny_src_rule.protocol = Protocol::Any as i32;
+    deny_src_rule.ports = vec!["8081".to_string()];
+    deny_src_rule.source_ips = vec!["10.144.144.1/32".to_string()];
+    deny_src_rule.destination_ips = vec!["10.1.2.0/24".to_string()];
+    chain.rules.push(deny_src_rule);
+
+    // 允许其他流量
+    let mut allow_rule = Rule::default();
+    allow_rule.name = "allow_all".to_string();
+    allow_rule.priority = 100;
+    allow_rule.enabled = true;
+    allow_rule.action = Action::Allow as i32;
+    allow_rule.protocol = Protocol::Any as i32;
+    allow_rule.stateful = true;
+    chain.rules.push(allow_rule);
+
+    acl_v1.chains.push(chain);
+    acl.acl_v1 = Some(acl_v1);
+
+    // 在 inst3 上应用 ACL 规则
+    insts[2]
+        .get_global_ctx()
+        .get_acl_filter()
+        .reload_rules(Some(&acl));
+
+    // TCP 测试部分 - 测试子网代理的 ACL 规则
+    {
+        // 在 net_d (10.1.2.4) 上监听多个端口
+        let listener_8080 = TcpTunnelListener::new("tcp://0.0.0.0:8080".parse().unwrap());
+        let listener_8081 = TcpTunnelListener::new("tcp://0.0.0.0:8081".parse().unwrap());
+        let listener_8082 = TcpTunnelListener::new("tcp://0.0.0.0:8082".parse().unwrap());
+
+        // 从 inst1 (net_a) 连接到子网代理
+        let connector_8080 = TcpTunnelConnector::new("tcp://10.1.2.4:8080".parse().unwrap());
+        let connector_8081 = TcpTunnelConnector::new("tcp://10.1.2.4:8081".parse().unwrap());
+        let connector_8082 = TcpTunnelConnector::new("tcp://10.1.2.4:8082".parse().unwrap());
+
+        let mut buf = vec![0; 32];
+        rand::thread_rng().fill(&mut buf[..]);
+
+        // 8082 应该可以连接成功（不被 ACL 拦截）
+        _tunnel_pingpong_netns(
+            listener_8082,
+            connector_8082,
+            NetNS::new(Some("net_d".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+        )
+        .await;
+
+        // 8080 应该连接失败（被 ACL 拦截 - 禁止访问子网代理的 8080）
+        let result = tokio::spawn(tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            _tunnel_pingpong_netns(
+                listener_8080,
+                connector_8080,
+                NetNS::new(Some("net_d".into())),
+                NetNS::new(Some("net_a".into())),
+                buf.clone(),
+            ),
+        ))
+        .await;
+
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "TCP 连接子网代理 8080 应被 ACL 拦截，不能成功"
+        );
+
+        // 8081 应该连接失败（被 ACL 拦截 - 禁止 inst1 访问子网代理的 8081）
+        let result = tokio::spawn(tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            _tunnel_pingpong_netns(
+                listener_8081,
+                connector_8081,
+                NetNS::new(Some("net_d".into())),
+                NetNS::new(Some("net_a".into())),
+                buf.clone(),
+            ),
+        ))
+        .await;
+
+        assert!(
+            result.is_err() || result.unwrap().is_err(),
+            "TCP 连接子网代理 8081 应被 ACL 拦截，不能成功"
+        );
+
+        let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+        println!("ACL stats after TCP tests: {:?}", stats);
+    }
+
+    // UDP 测试部分 - 测试子网代理的 ACL 规则
+    {
+        let listener_8080 = UdpTunnelListener::new("udp://0.0.0.0:8080".parse().unwrap());
+        let listener_8082 = UdpTunnelListener::new("udp://0.0.0.0:8082".parse().unwrap());
+
+        let connector_8080 = UdpTunnelConnector::new("udp://10.1.2.4:8080".parse().unwrap());
+        let connector_8082 = UdpTunnelConnector::new("udp://10.1.2.4:8082".parse().unwrap());
+
+        let mut buf = vec![0; 32];
+        rand::thread_rng().fill(&mut buf[..]);
+
+        // 8082 应该可以连接成功
+        _tunnel_pingpong_netns(
+            listener_8082,
+            connector_8082,
+            NetNS::new(Some("net_d".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+        )
+        .await;
+
+        // 8080 应该连接失败（被 ACL 拦截）
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            _tunnel_pingpong_netns(
+                listener_8080,
+                connector_8080,
+                NetNS::new(Some("net_d".into())),
+                NetNS::new(Some("net_a".into())),
+                buf.clone(),
+            ),
+        )
+        .await;
+
+        let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+        println!("ACL stats after UDP tests: {}", stats);
+
+        assert!(
+            result.is_err(),
+            "UDP 连接子网代理 8080 应被 ACL 拦截，不能成功"
+        );
+    }
+
+    // 测试 ICMP 到子网代理（应该被拒绝，因为 Any 协议被拒绝）
+    tokio::spawn(wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(1),
+    ))
+    .await
+    .unwrap_err();
+
+    // 移除 ACL 规则
+    insts[2]
+        .get_global_ctx()
+        .get_acl_filter()
+        .reload_rules(None);
+
+    // 验证移除 ACL 后，ICMP 可以正常工作
+    wait_for_condition(
+        || async { ping_test("net_a", "10.1.2.4", None).await },
+        Duration::from_secs(5),
+    )
+    .await;
 
     drop_insts(insts).await;
 }

@@ -7,19 +7,21 @@ use dashmap::DashMap;
 use pnet::packet::ipv4::Ipv4Packet;
 use prost::Message as _;
 use quinn::{Endpoint, Incoming};
-use tokio::io::{copy_bidirectional, AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
+use crate::common::acl_processor::PacketInfo;
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
 use crate::defer;
-use crate::gateway::kcp_proxy::TcpProxyForKcpSrcTrait;
+use crate::gateway::kcp_proxy::{ProxyAclHandler, TcpProxyForKcpSrcTrait};
 use crate::gateway::tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy};
 use crate::gateway::CidrSet;
 use crate::peers::peer_manager::PeerManager;
+use crate::proto::acl::{ChainType, Protocol};
 use crate::proto::cli::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
     TcpProxyEntryTransportType, TcpProxyRpc,
@@ -322,12 +324,13 @@ impl QUICProxyDst {
         .await;
 
         match ret {
-            Ok(Ok((mut quic_stream, mut tcp_stream))) => {
-                let ret = copy_bidirectional(&mut quic_stream, &mut tcp_stream).await;
+            Ok(Ok((quic_stream, tcp_stream, acl))) => {
+                let remote_addr = quic_stream.connection.as_ref().map(|c| c.remote_address());
+                let ret = acl.copy_bidirection_with_acl(quic_stream, tcp_stream).await;
                 tracing::info!(
                     "QUIC connection handled, result: {:?}, remote addr: {:?}",
                     ret,
-                    quic_stream.connection.as_ref().map(|c| c.remote_address())
+                    remote_addr,
                 );
             }
             Ok(Err(e)) => {
@@ -345,7 +348,7 @@ impl QUICProxyDst {
         cidr_set: Arc<CidrSet>,
         proxy_entry_key: SocketAddr,
         proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
-    ) -> Result<(QUICStream, TcpStream)> {
+    ) -> Result<(QUICStream, TcpStream, ProxyAclHandler)> {
         let conn = incoming.await.with_context(|| "accept failed")?;
         let addr = conn.remote_address();
         tracing::info!("Accepted QUIC connection from {}", addr);
@@ -376,7 +379,8 @@ impl QUICProxyDst {
             dst_socket.set_ip(real_ip);
         }
 
-        if Some(*dst_socket.ip()) == ctx.get_ipv4().map(|ip| ip.address()) && ctx.no_tun() {
+        let send_to_self = Some(*dst_socket.ip()) == ctx.get_ipv4().map(|ip| ip.address());
+        if send_to_self && ctx.no_tun() {
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
 
@@ -390,6 +394,24 @@ impl QUICProxyDst {
                 transport_type: TcpProxyEntryTransportType::Quic.into(),
             },
         );
+
+        let acl_handler = ProxyAclHandler {
+            acl_filter: ctx.get_acl_filter().clone(),
+            packet_info: PacketInfo {
+                src_ip: addr.ip(),
+                dst_ip: (*dst_socket.ip()).into(),
+                src_port: Some(addr.port()),
+                dst_port: Some(dst_socket.port()),
+                protocol: Protocol::Tcp,
+                packet_size: len as usize,
+            },
+            chain_type: if send_to_self {
+                ChainType::Inbound
+            } else {
+                ChainType::Forward
+            },
+        };
+        acl_handler.handle_packet(&buf)?;
 
         let connector = NatDstTcpConnector {};
 
@@ -411,7 +433,7 @@ impl QUICProxyDst {
             receiver: r,
         };
 
-        Ok((quic_stream, dst_stream))
+        Ok((quic_stream, dst_stream, acl_handler))
     }
 }
 
