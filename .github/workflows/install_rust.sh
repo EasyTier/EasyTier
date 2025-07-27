@@ -15,6 +15,8 @@ if [[ $OS =~ ^ubuntu.*$ ]]; then
     # if target is mips or mipsel, we should use soft-float version of musl
     if [[ $TARGET =~ ^mips.*$ || $TARGET =~ ^mipsel.*$ ]]; then
         MUSL_TARGET=${TARGET}sf
+    elif [[ $TARGET =~ ^riscv64gc-.*$ ]]; then
+        MUSL_TARGET=${TARGET/#riscv64gc-/riscv64-}
     fi
     if [[ $MUSL_TARGET =~ musl ]]; then
         mkdir -p ./musl_gcc
