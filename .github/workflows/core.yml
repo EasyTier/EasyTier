@@ -83,6 +83,9 @@ jobs:
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-x86_64
+          - TARGET: riscv64gc-unknown-linux-musl
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-riscv64
           - TARGET: mips-unknown-linux-musl
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-mips
@@ -189,6 +192,8 @@ jobs:
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
               CORE_FEATURES="--features=mimalloc"
+            elif [[ $TARGET =~ ^riscv64.*$ ]]; then
+              CORE_FEATURES="--features=mimalloc"
             else
               CORE_FEATURES="--features=jemalloc"
             fi
@@ -255,7 +260,7 @@ jobs:
             TAG=$GITHUB_SHA
           fi
 
-          if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ && ! $TARGET =~ ^loongarch.*$ ]]; then
+          if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ && ! $TARGET =~ ^loongarch.*$ && ! $TARGET =~ ^riscv64.*$ ]]; then
             UPX_VERSION=4.2.4
             curl -L https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz -s | tar xJvf -
             cp upx-${UPX_VERSION}-amd64_linux/upx .

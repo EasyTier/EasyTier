@@ -19,6 +19,10 @@ SYSROOT = "/usr/local/ohos-sdk/linux/native/sysroot"
 linker = "aarch64-unknown-linux-musl-gcc"
 rustflags = ["-C", "target-feature=+crt-static"]
 
+[target.riscv64gc-unknown-linux-musl]
+linker = "riscv64-unknown-linux-musl-gcc"
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
 
