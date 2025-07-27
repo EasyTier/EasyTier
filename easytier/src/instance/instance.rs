@@ -10,6 +10,7 @@ use cidr::{IpCidr, Ipv4Inet};
 use tokio::{sync::Mutex, task::JoinSet};
 use tokio_util::sync::CancellationToken;
 
+use crate::common::acl_processor::AclRuleBuilder;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Error;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
@@ -29,13 +30,15 @@ use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
 use crate::proto::cli::VpnPortalRpc;
-use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::proto::cli::{
-    ListMappedListenerRequest, ListMappedListenerResponse, ManageMappedListenerRequest,
-    ManageMappedListenerResponse, MappedListener, MappedListenerManageAction,
-    MappedListenerManageRpc,
+    AddPortForwardRequest, AddPortForwardResponse, ListMappedListenerRequest,
+    ListMappedListenerResponse, ListPortForwardRequest, ListPortForwardResponse,
+    ManageMappedListenerRequest, ManageMappedListenerResponse, MappedListener,
+    MappedListenerManageAction, MappedListenerManageRpc, PortForwardManageRpc,
+    RemovePortForwardRequest, RemovePortForwardResponse,
 };
-use crate::proto::common::TunnelInfo;
+use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
+use crate::proto::common::{PortForwardConfigPb, TunnelInfo};
 use crate::proto::peer_rpc::PeerCenterRpcServer;
 use crate::proto::rpc_impl::standalone::{RpcServerHook, StandAloneServer};
 use crate::proto::rpc_types;
@@ -609,9 +612,9 @@ impl Instance {
             }
         }
 
-        if let Some(acl) = self.global_ctx.config.get_acl() {
-            self.global_ctx.get_acl_filter().reload_rules(Some(&acl));
-        }
+        self.global_ctx
+            .get_acl_filter()
+            .reload_rules(AclRuleBuilder::build(&self.global_ctx)?.as_ref());
 
         // run after tun device created, so listener can bind to tun device, which may be required by win 10
         self.ip_proxy = Some(IpProxy::new(
@@ -790,6 +793,85 @@ impl Instance {
         MappedListenerManagerRpcService(self.global_ctx.clone())
     }
 
+    fn get_port_forward_manager_rpc_service(
+        &self,
+    ) -> impl PortForwardManageRpc<Controller = BaseController> + Clone {
+        #[derive(Clone)]
+        pub struct PortForwardManagerRpcService {
+            global_ctx: ArcGlobalCtx,
+            socks5_server: Weak<Socks5Server>,
+        }
+
+        #[async_trait::async_trait]
+        impl PortForwardManageRpc for PortForwardManagerRpcService {
+            type Controller = BaseController;
+
+            async fn add_port_forward(
+                &self,
+                _: BaseController,
+                request: AddPortForwardRequest,
+            ) -> Result<AddPortForwardResponse, rpc_types::error::Error> {
+                let Some(socks5_server) = self.socks5_server.upgrade() else {
+                    return Err(anyhow::anyhow!("socks5 server not available").into());
+                };
+                if let Some(cfg) = request.cfg {
+                    tracing::info!("Port forward rule added: {:?}", cfg);
+                    let mut current_forwards = self.global_ctx.config.get_port_forwards();
+                    current_forwards.push(cfg.into());
+                    self.global_ctx
+                        .config
+                        .set_port_forwards(current_forwards.clone());
+                    socks5_server
+                        .reload_port_forwards(&current_forwards)
+                        .await
+                        .with_context(|| "Failed to reload port forwards")?;
+                }
+                Ok(AddPortForwardResponse {})
+            }
+
+            async fn remove_port_forward(
+                &self,
+                _: BaseController,
+                request: RemovePortForwardRequest,
+            ) -> Result<RemovePortForwardResponse, rpc_types::error::Error> {
+                let Some(socks5_server) = self.socks5_server.upgrade() else {
+                    return Err(anyhow::anyhow!("socks5 server not available").into());
+                };
+                let Some(cfg) = request.cfg else {
+                    return Err(anyhow::anyhow!("port forward config is empty").into());
+                };
+                let cfg = cfg.into();
+                let mut current_forwards = self.global_ctx.config.get_port_forwards();
+                current_forwards.retain(|e| *e != cfg);
+                self.global_ctx
+                    .config
+                    .set_port_forwards(current_forwards.clone());
+                socks5_server
+                    .reload_port_forwards(&current_forwards)
+                    .await
+                    .with_context(|| "Failed to reload port forwards")?;
+
+                tracing::info!("Port forward rule removed: {:?}", cfg);
+                Ok(RemovePortForwardResponse {})
+            }
+
+            async fn list_port_forward(
+                &self,
+                _: BaseController,
+                _request: ListPortForwardRequest,
+            ) -> Result<ListPortForwardResponse, rpc_types::error::Error> {
+                let forwards = self.global_ctx.config.get_port_forwards();
+                let cfgs: Vec<PortForwardConfigPb> = forwards.into_iter().map(Into::into).collect();
+                Ok(ListPortForwardResponse { cfgs })
+            }
+        }
+
+        PortForwardManagerRpcService {
+            global_ctx: self.global_ctx.clone(),
+            socks5_server: Arc::downgrade(&self.socks5_server),
+        }
+    }
+
     async fn run_rpc_server(&mut self) -> Result<(), Error> {
         let Some(_) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
@@ -803,6 +885,7 @@ impl Instance {
         let peer_center = self.peer_center.clone();
         let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
         let mapped_listener_manager_rpc = self.get_mapped_listener_manager_rpc_service();
+        let port_forward_manager_rpc = self.get_port_forward_manager_rpc_service();
 
         let s = self.rpc_server.as_mut().unwrap();
         let peer_mgr_rpc_service = PeerManagerRpcService::new(peer_mgr.clone());
@@ -821,6 +904,10 @@ impl Instance {
             .register(VpnPortalRpcServer::new(vpn_portal_rpc), "");
         s.registry().register(
             MappedListenerManageRpcServer::new(mapped_listener_manager_rpc),
+            "",
+        );
+        s.registry().register(
+            PortForwardManageRpcServer::new(port_forward_manager_rpc),
             "",
         );
 

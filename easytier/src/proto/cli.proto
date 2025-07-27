@@ -261,4 +261,44 @@ message GetAclStatsResponse {
 
 service AclManageRpc {
   rpc GetAclStats(GetAclStatsRequest) returns (GetAclStatsResponse);
+  rpc SetWhitelist(SetWhitelistRequest) returns (SetWhitelistResponse);
+  rpc GetWhitelist(GetWhitelistRequest) returns (GetWhitelistResponse);
+}
+
+message SetWhitelistRequest {
+  repeated string tcp_ports = 1;
+  repeated string udp_ports = 2;
+}
+
+message SetWhitelistResponse {}
+
+message GetWhitelistRequest {}
+
+message GetWhitelistResponse {
+  repeated string tcp_ports = 1;
+  repeated string udp_ports = 2;
+}
+
+message AddPortForwardRequest {
+  common.PortForwardConfigPb cfg = 1;
+}
+
+message AddPortForwardResponse {}
+
+message RemovePortForwardRequest {
+  common.PortForwardConfigPb cfg = 1;
+}
+
+message RemovePortForwardResponse {}
+
+message ListPortForwardRequest {}
+
+message ListPortForwardResponse {
+  repeated common.PortForwardConfigPb cfgs = 1;
+}
+
+service PortForwardManageRpc {
+  rpc AddPortForward(AddPortForwardRequest) returns (AddPortForwardResponse);
+  rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
+  rpc ListPortForward(ListPortForwardRequest) returns (ListPortForwardResponse);
 }
