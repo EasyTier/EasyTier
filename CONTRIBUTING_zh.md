@@ -45,7 +45,6 @@
 # 核心构建依赖
 sudo apt-get update && sudo apt-get install -y \
     musl-tools \
-    libappindicator3-dev \
     llvm \
     clang \
     protobuf-compiler
@@ -61,6 +60,7 @@ sudo apt install -y \
     librsvg2-dev \
     libxdo-dev \
     libssl-dev \
+    libappindicator3-dev \
     patchelf
 
 # 测试依赖

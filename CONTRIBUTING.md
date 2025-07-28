@@ -37,7 +37,6 @@ Thank you for your interest in contributing to EasyTier! This document provides 
 # Core build dependencies
 sudo apt-get update && sudo apt-get install -y \
     musl-tools \
-    libappindicator3-dev \
     llvm \
     clang \
     protobuf-compiler
@@ -53,6 +52,7 @@ sudo apt install -y \
     librsvg2-dev \
     libxdo-dev \
     libssl-dev \
+    libappindicator3-dev \
     patchelf
 
 # Testing dependencies
