@@ -12,6 +12,7 @@ target-*/
 
 .vscode
 /.idea
+/.direnv/
 
 # perf & flamegraph
 perf.data
