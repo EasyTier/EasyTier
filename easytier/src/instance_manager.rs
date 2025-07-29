@@ -48,7 +48,6 @@ impl NetworkInstanceManager {
         }
 
         let instance_stop_notifier = instance.get_stop_notifier();
-        let instance_config_source = instance.get_config_source();
         let instance_event_receiver = match instance.get_config_source() {
             ConfigSource::Cli | ConfigSource::File | ConfigSource::Web => {
                 Some(instance.subscribe_event())
@@ -78,14 +77,8 @@ impl NetworkInstanceManager {
                         eprintln!("instance {} stopped with error: {}", instance_id, e);
                     }
                 }
-                match instance_config_source {
-                    ConfigSource::Cli | ConfigSource::File => {
-                        instance_map.remove(&instance_id);
-                    }
-                    ConfigSource::Web | ConfigSource::GUI | ConfigSource::FFI => {}
-                }
+                stop_check_notifier.notify_one();
                 instance_stop_tasks.remove(&instance_id);
-                stop_check_notifier.notify_waiters();
             })),
         );
         Ok(())
@@ -160,7 +153,11 @@ impl NetworkInstanceManager {
     }
 
     pub async fn wait(&self) {
-        while self.instance_map.len() > 0 {
+        while self
+            .instance_map
+            .iter()
+            .any(|item| item.value().is_easytier_running())
+        {
             self.stop_check_notifier.notified().await;
         }
     }
@@ -338,6 +335,7 @@ mod tests {
     use crate::common::config::*;
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn it_works() {
         let manager = NetworkInstanceManager::new();
         let cfg_str = r#"
@@ -404,6 +402,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_no_tokio_runtime() {
         let manager = NetworkInstanceManager::new();
         let cfg_str = r#"
@@ -466,6 +465,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_single_instance_failed() {
         let free_tcp_port =
             crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
@@ -491,7 +491,7 @@ mod tests {
 
             tokio::select! {
                 _ = manager.wait() => {
-                    assert_eq!(manager.list_network_instance_ids().len(), 0);
+                    assert_eq!(manager.list_network_instance_ids().len(), 1);
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
                     panic!("instance manager with single failed instance({:?}) should not running", config_source);
@@ -522,6 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_multiple_instances_one_failed() {
         let free_tcp_port =
             crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
@@ -557,7 +558,7 @@ mod tests {
                 panic!("instance manager with multiple instances one failed should still running");
             }
             _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {
-                assert_eq!(manager.list_network_instance_ids().len(), 1);
+                assert_eq!(manager.list_network_instance_ids().len(), 2);
             }
         }
     }
