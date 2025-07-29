@@ -219,9 +219,9 @@ impl IcmpProxy {
     fn create_raw_socket(self: &Arc<Self>) -> Result<Socket, Error> {
         let _g = self.global_ctx.net_ns.guard();
         let socket = socket2::Socket::new(
-            socket2::Domain::IPV4,
-            socket2::Type::RAW,
-            Some(socket2::Protocol::ICMPV4),
+            socket2::Domain::IPV4.into(),
+            socket2::Type::RAW.into(),
+            Some(socket2::Protocol::ICMPV4.into()),
         )?;
         socket.bind(&socket2::SockAddr::from(SocketAddrV4::new(
             std::net::Ipv4Addr::UNSPECIFIED,
