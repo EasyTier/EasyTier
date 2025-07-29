@@ -22,23 +22,25 @@ use tokio::time::timeout;
 
 use easytier::{
     common::{
+        config::PortForwardConfig,
         constants::EASYTIER_VERSION,
         stun::{StunInfoCollector, StunInfoCollectorTrait},
     },
     proto::{
         cli::{
-            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
-            ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
-            GetVpnPortalInfoRequest, ListConnectorRequest, ListForeignNetworkRequest,
-            ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
-            ListPeerResponse, ListRouteRequest, ListRouteResponse, ManageMappedListenerRequest,
-            MappedListenerManageAction, MappedListenerManageRpc,
-            MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
-            PeerManageRpcClientFactory, ShowNodeInfoRequest, TcpProxyEntryState,
+            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
+            ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
+            GetAclStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
+            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
+            ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
+            ListRouteResponse, ManageMappedListenerRequest, MappedListenerManageAction,
+            MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
+            PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
+            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
             VpnPortalRpcClientFactory,
         },
-        common::NatType,
+        common::{NatType, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
@@ -96,6 +98,10 @@ enum SubCommand {
     Proxy,
     #[command(about = "show ACL rules statistics")]
     Acl(AclArgs),
+    #[command(about = "manage port forwarding")]
+    PortForward(PortForwardArgs),
+    #[command(about = "manage TCP/UDP whitelist")]
+    Whitelist(WhitelistArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: Shell },
 }
@@ -191,6 +197,62 @@ struct AclArgs {
 #[derive(Subcommand, Debug)]
 enum AclSubCommand {
     Stats,
+}
+
+#[derive(Args, Debug)]
+struct PortForwardArgs {
+    #[command(subcommand)]
+    sub_command: Option<PortForwardSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum PortForwardSubCommand {
+    /// Add port forward rule
+    Add {
+        #[arg(help = "Protocol (tcp/udp)")]
+        protocol: String,
+        #[arg(help = "Local bind address (e.g., 0.0.0.0:8080)")]
+        bind_addr: String,
+        #[arg(help = "Destination address (e.g., 10.1.1.1:80)")]
+        dst_addr: String,
+    },
+    /// Remove port forward rule
+    Remove {
+        #[arg(help = "Protocol (tcp/udp)")]
+        protocol: String,
+        #[arg(help = "Local bind address (e.g., 0.0.0.0:8080)")]
+        bind_addr: String,
+        #[arg(help = "Optional Destination address (e.g., 10.1.1.1:80)")]
+        dst_addr: Option<String>,
+    },
+    /// List port forward rules
+    List,
+}
+
+#[derive(Args, Debug)]
+struct WhitelistArgs {
+    #[command(subcommand)]
+    sub_command: Option<WhitelistSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum WhitelistSubCommand {
+    /// Set TCP port whitelist
+    SetTcp {
+        #[arg(help = "TCP ports (e.g., 80,443,8000-9000)")]
+        ports: String,
+    },
+    /// Set UDP port whitelist
+    SetUdp {
+        #[arg(help = "UDP ports (e.g., 53,5000-6000)")]
+        ports: String,
+    },
+    /// Clear TCP whitelist
+    ClearTcp,
+    /// Clear UDP whitelist
+    ClearUdp,
+    /// Show current whitelist configuration
+    Show,
 }
 
 #[derive(Args, Debug)]
@@ -338,6 +400,18 @@ impl CommandHandler<'_> {
             .scoped_client::<TcpProxyRpcClientFactory<BaseController>>(transport_type.to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
+    }
+
+    async fn get_port_forward_manager_client(
+        &self,
+    ) -> Result<Box<dyn PortForwardManageRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .unwrap()
+            .scoped_client::<PortForwardManageRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get port forward manager client")?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -787,6 +861,265 @@ impl CommandHandler<'_> {
             return Err(anyhow::anyhow!("Url ({url}) is missing port num"));
         }
         Ok(url)
+    }
+
+    async fn handle_port_forward_add(
+        &self,
+        protocol: &str,
+        bind_addr: &str,
+        dst_addr: &str,
+    ) -> Result<(), Error> {
+        let bind_addr: std::net::SocketAddr = bind_addr
+            .parse()
+            .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
+        let dst_addr: std::net::SocketAddr = dst_addr
+            .parse()
+            .with_context(|| format!("Invalid destination address: {}", dst_addr))?;
+
+        if protocol != "tcp" && protocol != "udp" {
+            return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'"));
+        }
+
+        let client = self.get_port_forward_manager_client().await?;
+        let request = AddPortForwardRequest {
+            cfg: Some(
+                PortForwardConfig {
+                    proto: protocol.to_string(),
+                    bind_addr: bind_addr.into(),
+                    dst_addr: dst_addr.into(),
+                }
+                .into(),
+            ),
+        };
+
+        client
+            .add_port_forward(BaseController::default(), request)
+            .await?;
+        println!(
+            "Port forward rule added: {} {} -> {}",
+            protocol, bind_addr, dst_addr
+        );
+        Ok(())
+    }
+
+    async fn handle_port_forward_remove(
+        &self,
+        protocol: &str,
+        bind_addr: &str,
+        dst_addr: Option<&str>,
+    ) -> Result<(), Error> {
+        let bind_addr: std::net::SocketAddr = bind_addr
+            .parse()
+            .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
+
+        if protocol != "tcp" && protocol != "udp" {
+            return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'"));
+        }
+
+        let client = self.get_port_forward_manager_client().await?;
+        let request = RemovePortForwardRequest {
+            cfg: Some(
+                PortForwardConfig {
+                    proto: protocol.to_string(),
+                    bind_addr: bind_addr.into(),
+                    dst_addr: dst_addr
+                        .map(|s| s.parse::<SocketAddr>().unwrap())
+                        .map(Into::into)
+                        .unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap().into()),
+                }
+                .into(),
+            ),
+        };
+
+        client
+            .remove_port_forward(BaseController::default(), request)
+            .await?;
+        println!("Port forward rule removed: {} {}", protocol, bind_addr);
+        Ok(())
+    }
+
+    async fn handle_port_forward_list(&self) -> Result<(), Error> {
+        let client = self.get_port_forward_manager_client().await?;
+        let request = ListPortForwardRequest::default();
+        let response = client
+            .list_port_forward(BaseController::default(), request)
+            .await?;
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct PortForwardTableItem {
+            protocol: String,
+            bind_addr: String,
+            dst_addr: String,
+        }
+
+        let items: Vec<PortForwardTableItem> = response
+            .cfgs
+            .into_iter()
+            .map(|rule| PortForwardTableItem {
+                protocol: format!(
+                    "{:?}",
+                    SocketType::try_from(rule.socket_type).unwrap_or(SocketType::Tcp)
+                ),
+                bind_addr: rule
+                    .bind_addr
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_default(),
+                dst_addr: rule
+                    .dst_addr
+                    .map(|addr| addr.to_string())
+                    .unwrap_or_default(),
+            })
+            .collect();
+
+        print_output(&items, self.output_format)?;
+        Ok(())
+    }
+
+    async fn handle_whitelist_set_tcp(&self, ports: &str) -> Result<(), Error> {
+        let tcp_ports = Self::parse_port_list(ports)?;
+        let client = self.get_acl_manager_client().await?;
+
+        // Get current UDP ports to preserve them
+        let current = client
+            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
+            .await?;
+        let request = SetWhitelistRequest {
+            tcp_ports,
+            udp_ports: current.udp_ports,
+        };
+
+        client
+            .set_whitelist(BaseController::default(), request)
+            .await?;
+        println!("TCP whitelist updated: {}", ports);
+        Ok(())
+    }
+
+    async fn handle_whitelist_set_udp(&self, ports: &str) -> Result<(), Error> {
+        let udp_ports = Self::parse_port_list(ports)?;
+        let client = self.get_acl_manager_client().await?;
+
+        // Get current TCP ports to preserve them
+        let current = client
+            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
+            .await?;
+        let request = SetWhitelistRequest {
+            tcp_ports: current.tcp_ports,
+            udp_ports,
+        };
+
+        client
+            .set_whitelist(BaseController::default(), request)
+            .await?;
+        println!("UDP whitelist updated: {}", ports);
+        Ok(())
+    }
+
+    async fn handle_whitelist_clear_tcp(&self) -> Result<(), Error> {
+        let client = self.get_acl_manager_client().await?;
+
+        // Get current UDP ports to preserve them
+        let current = client
+            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
+            .await?;
+        let request = SetWhitelistRequest {
+            tcp_ports: vec![],
+            udp_ports: current.udp_ports,
+        };
+
+        client
+            .set_whitelist(BaseController::default(), request)
+            .await?;
+        println!("TCP whitelist cleared");
+        Ok(())
+    }
+
+    async fn handle_whitelist_clear_udp(&self) -> Result<(), Error> {
+        let client = self.get_acl_manager_client().await?;
+
+        // Get current TCP ports to preserve them
+        let current = client
+            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
+            .await?;
+        let request = SetWhitelistRequest {
+            tcp_ports: current.tcp_ports,
+            udp_ports: vec![],
+        };
+
+        client
+            .set_whitelist(BaseController::default(), request)
+            .await?;
+        println!("UDP whitelist cleared");
+        Ok(())
+    }
+
+    async fn handle_whitelist_show(&self) -> Result<(), Error> {
+        let client = self.get_acl_manager_client().await?;
+        let request = GetWhitelistRequest::default();
+        let response = client
+            .get_whitelist(BaseController::default(), request)
+            .await?;
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&response)?);
+            return Ok(());
+        }
+
+        println!(
+            "TCP Whitelist: {}",
+            if response.tcp_ports.is_empty() {
+                "None".to_string()
+            } else {
+                response.tcp_ports.join(", ")
+            }
+        );
+
+        println!(
+            "UDP Whitelist: {}",
+            if response.udp_ports.is_empty() {
+                "None".to_string()
+            } else {
+                response.udp_ports.join(", ")
+            }
+        );
+
+        Ok(())
+    }
+
+    fn parse_port_list(ports_str: &str) -> Result<Vec<String>, Error> {
+        let mut ports = Vec::new();
+        for port_spec in ports_str.split(',') {
+            let port_spec = port_spec.trim();
+            if port_spec.contains('-') {
+                // Handle port range
+                let parts: Vec<&str> = port_spec.split('-').collect();
+                if parts.len() != 2 {
+                    return Err(anyhow::anyhow!("Invalid port range: {}", port_spec));
+                }
+                let start: u16 = parts[0]
+                    .parse()
+                    .with_context(|| format!("Invalid start port: {}", parts[0]))?;
+                let end: u16 = parts[1]
+                    .parse()
+                    .with_context(|| format!("Invalid end port: {}", parts[1]))?;
+                if start > end {
+                    return Err(anyhow::anyhow!("Invalid port range: start > end"));
+                }
+                ports.push(format!("{}-{}", start, end));
+            } else {
+                // Handle single port
+                let port: u16 = port_spec
+                    .parse()
+                    .with_context(|| format!("Invalid port number: {}", port_spec))?;
+                ports.push(port.to_string());
+            }
+        }
+        Ok(ports)
     }
 }
 
@@ -1492,6 +1825,46 @@ async fn main() -> Result<(), Error> {
         SubCommand::Acl(acl_args) => match &acl_args.sub_command {
             Some(AclSubCommand::Stats) | None => {
                 handler.handle_acl_stats().await?;
+            }
+        },
+        SubCommand::PortForward(port_forward_args) => match &port_forward_args.sub_command {
+            Some(PortForwardSubCommand::Add {
+                protocol,
+                bind_addr,
+                dst_addr,
+            }) => {
+                handler
+                    .handle_port_forward_add(protocol, bind_addr, dst_addr)
+                    .await?;
+            }
+            Some(PortForwardSubCommand::Remove {
+                protocol,
+                bind_addr,
+                dst_addr,
+            }) => {
+                handler
+                    .handle_port_forward_remove(protocol, bind_addr, dst_addr.as_deref())
+                    .await?;
+            }
+            Some(PortForwardSubCommand::List) | None => {
+                handler.handle_port_forward_list().await?;
+            }
+        },
+        SubCommand::Whitelist(whitelist_args) => match &whitelist_args.sub_command {
+            Some(WhitelistSubCommand::SetTcp { ports }) => {
+                handler.handle_whitelist_set_tcp(ports).await?;
+            }
+            Some(WhitelistSubCommand::SetUdp { ports }) => {
+                handler.handle_whitelist_set_udp(ports).await?;
+            }
+            Some(WhitelistSubCommand::ClearTcp) => {
+                handler.handle_whitelist_clear_tcp().await?;
+            }
+            Some(WhitelistSubCommand::ClearUdp) => {
+                handler.handle_whitelist_clear_udp().await?;
+            }
+            Some(WhitelistSubCommand::Show) | None => {
+                handler.handle_whitelist_show().await?;
             }
         },
         SubCommand::GenAutocomplete { shell } => {
