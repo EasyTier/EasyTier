@@ -115,7 +115,7 @@ byteorder = "1.5.0"
 
 # for proxy
 cidr = { version = "0.2.2", features = ["serde"] }
-socket2 = "0.5.5"
+socket2 = { version = "0.5.10", features = ["all"] }
 
 # for hole punching
 stun_codec = "0.3.4"
