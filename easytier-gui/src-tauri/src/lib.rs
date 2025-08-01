@@ -1,6 +1,8 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod elevate;
+
 use std::collections::BTreeMap;
 
 use easytier::{
@@ -128,7 +130,7 @@ fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 
 #[cfg(not(target_os = "android"))]
 fn check_sudo() -> bool {
-    let is_elevated = elevated_command::Command::is_elevated();
+    let is_elevated = elevate::Command::is_elevated();
     if !is_elevated {
         let exe_path = std::env::var("APPIMAGE")
             .ok()
@@ -139,7 +141,7 @@ fn check_sudo() -> bool {
         if args.contains(&AUTOSTART_ARG.to_owned()) {
             stdcmd.arg(AUTOSTART_ARG);
         }
-        elevated_command::Command::new(stdcmd)
+        elevate::Command::new(stdcmd)
             .output()
             .expect("Failed to run elevated command");
     }
