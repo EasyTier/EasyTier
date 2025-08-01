@@ -302,13 +302,17 @@ CDN acceleration and security protection for this project are sponsored by Tence
   </a>
 </p>
 
-Special thanks to [Langlang Cloud](https://langlang.cloud/) for sponsoring our public servers.
+Special thanks to [Langlang Cloud](https://langlangy.cn/?i26c5a5)  and [RainCloud](https://www.rainyun.com/NjM0NzQ1_) for sponsoring our public servers.
 
 <p align="center">
 <a href="https://langlangy.cn/?i26c5a5" target="_blank">
 <img src="assets/langlang.png" width="200">
 </a>
+<a href="https://langlangy.cn/?i26c5a5" target="_blank">
+<img src="assets/raincloud.png" width="200">
+</a>
 </p>
+
 
 If you find EasyTier helpful, please consider sponsoring us. Software development and maintenance require a lot of time and effort, and your sponsorship will help us better maintain and improve EasyTier.
 
