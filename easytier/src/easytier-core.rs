@@ -1111,6 +1111,14 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     tokio::select! {
         _ = manager.wait() => {
+            let infos = manager.collect_network_infos()?;
+            let errs = infos
+                .into_values()
+                .filter_map(|info| info.error_msg)
+                .collect::<Vec<_>>();
+            if errs.len() > 0 {
+                return Err(anyhow::anyhow!("some instances stopped with errors"));
+            }
         }
         _ = tokio::signal::ctrl_c() => {
             println!("ctrl-c received, exiting...");

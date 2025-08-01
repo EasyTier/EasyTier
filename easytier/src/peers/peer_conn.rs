@@ -247,7 +247,7 @@ impl PeerConn {
         .await?
     }
 
-    async fn send_handshake(&mut self) -> Result<(), Error> {
+    async fn send_handshake(&mut self, send_secret_digest: bool) -> Result<(), Error> {
         let network = self.global_ctx.get_network_identity();
         let mut req = HandshakeRequest {
             magic: MAGIC,
@@ -257,8 +257,16 @@ impl PeerConn {
             network_name: network.network_name.clone(),
             ..Default::default()
         };
-        req.network_secret_digrest
-            .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
+
+        // only send network secret digest if the network is the same
+        if send_secret_digest {
+            req.network_secret_digrest
+                .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
+        } else {
+            // fill zero
+            req.network_secret_digrest
+                .extend_from_slice(&[0u8; std::mem::size_of::<NetworkSecretDigest>()]);
+        }
 
         let hs_req = req.encode_to_vec();
         let mut zc_packet = ZCPacket::new_with_payload(hs_req.as_bytes());
@@ -295,7 +303,8 @@ impl PeerConn {
         self.info = Some(rsp);
         self.is_client = Some(false);
 
-        self.send_handshake().await?;
+        let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
+        self.send_handshake(send_digest).await?;
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError("peer id conflict".to_owned()))
@@ -310,10 +319,14 @@ impl PeerConn {
         tracing::info!("handshake request: {:?}", rsp);
         self.info = Some(rsp);
         self.is_client = Some(false);
-        self.send_handshake().await?;
+
+        let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
+        self.send_handshake(send_digest).await?;
 
         if self.get_peer_id() == self.my_peer_id {
-            Err(Error::WaitRespError("peer id conflict".to_owned()))
+            Err(Error::WaitRespError(
+                "peer id conflict, are you connecting to yourself?".to_owned(),
+            ))
         } else {
             Ok(())
         }
@@ -321,7 +334,7 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
-        self.send_handshake().await?;
+        self.send_handshake(true).await?;
         tracing::info!("waiting for handshake request from server");
         let rsp = self.wait_handshake_loop().await?;
         tracing::info!("handshake response: {:?}", rsp);
@@ -329,7 +342,9 @@ impl PeerConn {
         self.is_client = Some(true);
 
         if self.get_peer_id() == self.my_peer_id {
-            Err(Error::WaitRespError("peer id conflict".to_owned()))
+            Err(Error::WaitRespError(
+                "peer id conflict, are you connecting to yourself?".to_owned(),
+            ))
         } else {
             Ok(())
         }
