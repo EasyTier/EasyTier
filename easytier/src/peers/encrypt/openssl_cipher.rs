@@ -6,7 +6,7 @@ mod openssl_impl {
 
     use crate::tunnel::packet_def::ZCPacket;
 
-    use super::{Encryptor, Error};
+    use crate::peers::encrypt::{Encryptor, Error};
 
 // OpenSSL 加密尾部结构
 #[repr(C, packed)]
@@ -167,7 +167,8 @@ impl Encryptor for OpenSslCipher {
         
         // 对于 AEAD 模式，添加 tag
         if is_aead {
-            let tag = encrypter.tag().map_err(|_| Error::EncryptionFailed)?;
+            let mut tag = vec![0u8; 16]; // GCM 标签通常是 16 字节
+            encrypter.get_tag(&mut tag).map_err(|_| Error::EncryptionFailed)?;
             zc_packet.mut_inner().extend_from_slice(&tag);
         }
 
@@ -178,10 +179,6 @@ impl Encryptor for OpenSslCipher {
         pm_header.set_encrypted(true);
 
         Ok(())
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
