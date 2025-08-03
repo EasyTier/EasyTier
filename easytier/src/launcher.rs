@@ -627,7 +627,7 @@ impl NetworkConfig {
         }
 
         if self.exit_nodes.len() > 0 {
-            let mut exit_nodes = Vec::<std::net::Ipv4Addr>::with_capacity(self.exit_nodes.len());
+            let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
             for node in self.exit_nodes.iter() {
                 exit_nodes.push(
                     node.parse()
@@ -891,7 +891,7 @@ impl NetworkConfig {
 mod tests {
     use crate::common::config::ConfigLoader;
     use rand::Rng;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     fn gen_default_config() -> crate::common::config::TomlConfigLoader {
         let config = crate::common::config::TomlConfigLoader::default();
@@ -1073,7 +1073,19 @@ mod tests {
                         rng.gen_range(0..255),
                         rng.gen_range(1..254),
                     );
-                    nodes.push(ip);
+                    nodes.push(IpAddr::V4(ip));
+                    // gen ipv6
+                    let ip = Ipv6Addr::new(
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                    );
+                    nodes.push(IpAddr::V6(ip));
                 }
                 config.set_exit_nodes(nodes);
             }

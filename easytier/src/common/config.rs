@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
     u64,
@@ -107,8 +107,8 @@ pub trait ConfigLoader: Send + Sync {
     fn get_flags(&self) -> Flags;
     fn set_flags(&self, flags: Flags);
 
-    fn get_exit_nodes(&self) -> Vec<Ipv4Addr>;
-    fn set_exit_nodes(&self, nodes: Vec<Ipv4Addr>);
+    fn get_exit_nodes(&self) -> Vec<IpAddr>;
+    fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
 
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
@@ -283,7 +283,7 @@ struct Config {
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
-    exit_nodes: Option<Vec<Ipv4Addr>>,
+    exit_nodes: Option<Vec<IpAddr>>,
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
@@ -624,7 +624,7 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().flags_struct = Some(flags);
     }
 
-    fn get_exit_nodes(&self) -> Vec<Ipv4Addr> {
+    fn get_exit_nodes(&self) -> Vec<IpAddr> {
         self.config
             .lock()
             .unwrap()
@@ -633,7 +633,7 @@ impl ConfigLoader for TomlConfigLoader {
             .unwrap_or_default()
     }
 
-    fn set_exit_nodes(&self, nodes: Vec<Ipv4Addr>) {
+    fn set_exit_nodes(&self, nodes: Vec<IpAddr>) {
         self.config.lock().unwrap().exit_nodes = Some(nodes);
     }
 

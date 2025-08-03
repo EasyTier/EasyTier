@@ -142,7 +142,7 @@ pub struct PeerManager {
     encryptor: Arc<Box<dyn Encryptor>>,
     data_compress_algo: CompressorAlgo,
 
-    exit_nodes: Vec<Ipv4Addr>,
+    exit_nodes: Vec<IpAddr>,
 
     reserved_my_peer_id_map: DashMap<String, PeerId>,
 
@@ -948,6 +948,9 @@ impl PeerManager {
             dst_peers.push(peer_id);
         } else {
             for exit_node in &self.exit_nodes {
+                let IpAddr::V4(exit_node) = exit_node else {
+                    continue;
+                };
                 if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_node).await {
                     dst_peers.push(peer_id);
                     is_exit_node = true;
@@ -985,18 +988,17 @@ impl PeerManager {
             );
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(&ipv6_addr).await {
             dst_peers.push(peer_id);
-        } else {
-            // For IPv6, we'll need to implement exit node support later
-            // For now, just try to find any available peer for routing
-            if dst_peers.is_empty() {
-                dst_peers.extend(
-                    self.peers
-                        .list_routes()
-                        .await
-                        .iter()
-                        .map(|x| x.key().clone()),
-                );
-                is_exit_node = true;
+        } else if !ipv6_addr.is_unicast_link_local() {
+            // NOTE: never route link local address to exit node.
+            for exit_node in &self.exit_nodes {
+                let IpAddr::V6(exit_node) = exit_node else {
+                    continue;
+                };
+                if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(exit_node).await {
+                    dst_peers.push(peer_id);
+                    is_exit_node = true;
+                    break;
+                }
             }
         }
 
