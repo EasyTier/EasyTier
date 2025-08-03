@@ -6,6 +6,15 @@ pub mod ring_aes_gcm;
 #[cfg(feature = "aes-gcm")]
 pub mod aes_gcm;
 
+#[cfg(feature = "chacha20-cipher")]
+pub mod chacha20_cipher;
+
+#[cfg(feature = "openssl-crypto")]
+pub mod openssl_cipher;
+
+#[cfg(feature = "xor-cipher")]
+pub mod xor_cipher;
+
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("packet is too short. len: {0}")]
@@ -36,6 +45,72 @@ impl Encryptor for NullCipher {
             return Err(Error::DecryptionFailed);
         } else {
             Ok(())
+        }
+    }
+}
+
+/// Create an encryptor based on the algorithm name
+pub fn create_encryptor(algorithm: &str, key_128: [u8; 16], key_256: [u8; 32]) -> Box<dyn Encryptor> {
+    match algorithm {
+        // 空字符串使用默认的 AES-GCM-128
+        "" => {
+            #[cfg(feature = "wireguard")]
+            {
+                Box::new(ring_aes_gcm::AesGcmCipher::new_128(key_128))
+            }
+            #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
+            {
+                Box::new(aes_gcm::AesGcmCipher::new_128(key_128))
+            }
+            #[cfg(all(not(feature = "wireguard"), not(feature = "aes-gcm")))]
+            {
+                compile_error!("wireguard or aes-gcm feature must be enabled for default encryption");
+            }
+        },
+
+        #[cfg(feature = "xor-cipher")]
+        "xor" => Box::new(xor_cipher::XorCipher::new(&key_128)),
+
+        #[cfg(feature = "chacha20-cipher")]
+        "chacha20" => Box::new(chacha20_cipher::ChaCha20Cipher::new(key_256)),
+
+        #[cfg(feature = "openssl-crypto")]
+        "openssl-aes128-gcm" => Box::new(openssl_cipher::OpenSslCipher::new_aes128_gcm(key_128)),
+
+        #[cfg(feature = "openssl-crypto")]
+        "openssl-aes256-gcm" => Box::new(openssl_cipher::OpenSslCipher::new_aes256_gcm(key_256)),
+
+        #[cfg(feature = "openssl-crypto")]
+        "openssl-chacha20" => Box::new(openssl_cipher::OpenSslCipher::new_chacha20(key_256)),
+
+        // 显式指定 AES-GCM 算法
+        #[cfg(feature = "wireguard")]
+        "aes-gcm" => Box::new(ring_aes_gcm::AesGcmCipher::new_128(key_128)),
+
+        #[cfg(feature = "wireguard")]
+        "aes-gcm-256" => Box::new(ring_aes_gcm::AesGcmCipher::new_256(key_256)),
+
+        #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
+        "aes-gcm" => Box::new(aes_gcm::AesGcmCipher::new_128(key_128)),
+
+        #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
+        "aes-gcm-256" => Box::new(aes_gcm::AesGcmCipher::new_256(key_256)),
+
+        _ => {
+            tracing::warn!("Unknown encryption algorithm: {}, falling back to default AES-GCM", algorithm);
+            // 未知算法回退到默认的 AES-GCM
+            #[cfg(feature = "wireguard")]
+            {
+                Box::new(ring_aes_gcm::AesGcmCipher::new_128(key_128))
+            }
+            #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
+            {
+                Box::new(aes_gcm::AesGcmCipher::new_128(key_128))
+            }
+            #[cfg(all(not(feature = "wireguard"), not(feature = "aes-gcm")))]
+            {
+                compile_error!("wireguard or aes-gcm feature must be enabled for fallback encryption");
+            }
         }
     }
 }

@@ -184,25 +184,18 @@ impl PeerManager {
             my_peer_id,
         ));
 
-        let mut encryptor: Arc<Box<dyn Encryptor>> = Arc::new(Box::new(NullCipher));
-        if global_ctx.get_flags().enable_encryption {
-            #[cfg(feature = "wireguard")]
-            {
-                use super::encrypt::ring_aes_gcm::AesGcmCipher;
-                encryptor = Arc::new(Box::new(AesGcmCipher::new_128(global_ctx.get_128_key())));
-            }
-
-            #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
-            {
-                use super::encrypt::aes_gcm::AesGcmCipher;
-                encryptor = Arc::new(Box::new(AesGcmCipher::new_128(global_ctx.get_128_key())));
-            }
-
-            #[cfg(all(not(feature = "wireguard"), not(feature = "aes-gcm")))]
-            {
-                compile_error!("wireguard or aes-gcm feature must be enabled for encryption");
-            }
-        }
+        let encryptor: Arc<Box<dyn Encryptor>> = if global_ctx.get_flags().enable_encryption {
+            // 只有在启用加密时才使用工厂函数选择算法
+            let algorithm = &global_ctx.get_flags().encryption_algorithm;
+            Arc::new(super::encrypt::create_encryptor(
+                algorithm,
+                global_ctx.get_128_key(),
+                global_ctx.get_256_key(),
+            ))
+        } else {
+            // disable_encryption = true 时使用 NullCipher
+            Arc::new(Box::new(NullCipher))
+        };
 
         if global_ctx
             .check_network_in_whitelist(&global_ctx.get_network_name())

@@ -47,6 +47,7 @@ pub fn gen_default_flags() -> Flags {
         disable_quic_input: false,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
+        encryption_algorithm: "".to_string(), // 空字符串表示使用默认的 AES-GCM
     }
 }
 

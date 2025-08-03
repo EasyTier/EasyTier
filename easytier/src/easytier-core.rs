@@ -285,6 +285,13 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_ENCRYPTION_ALGORITHM",
+        help = t!("core_clap.encryption_algorithm").to_string()
+    )]
+    encryption_algorithm: Option<String>,
+
+    #[arg(
+        long,
         env = "ET_MULTI_THREAD",
         help = t!("core_clap.multi_thread").to_string(),
         num_args = 0..=1,
@@ -827,6 +834,9 @@ impl NetworkOptions {
         };
         if let Some(v) = self.disable_encryption {
             f.enable_encryption = !v;
+        }
+        if let Some(algorithm) = &self.encryption_algorithm {
+            f.encryption_algorithm = algorithm.clone();
         }
         if let Some(v) = self.disable_ipv6 {
             f.enable_ipv6 = !v;

@@ -46,6 +46,9 @@ message FlagsInConfig {
   uint64 foreign_relay_bps_limit = 26;
 
   uint32 multi_thread_count = 27;
+
+  // encryption algorithm to use, empty string means default (aes-gcm)
+  string encryption_algorithm = 28;
 }
 
 message RpcDescriptor {
