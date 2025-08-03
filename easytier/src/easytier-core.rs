@@ -4,7 +4,7 @@
 extern crate rust_i18n;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
     sync::Arc,
@@ -333,7 +333,7 @@ struct NetworkOptions {
         help = t!("core_clap.exit_nodes").to_string(),
         num_args = 0..
     )]
-    exit_nodes: Vec<Ipv4Addr>,
+    exit_nodes: Vec<IpAddr>,
 
     #[arg(
         long,
