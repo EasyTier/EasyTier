@@ -545,6 +545,18 @@ impl CommandHandler<'_> {
             items.push(p.into());
         }
 
+        // Sort items by ipv4 (using IpAddr for proper numeric comparison) first, then by hostname
+        items.sort_by(|a, b| {
+            use std::net::IpAddr;
+            use std::str::FromStr;
+            let a_ip = IpAddr::from_str(&a.ipv4).unwrap_or(IpAddr::from([0, 0, 0, 0]));
+            let b_ip = IpAddr::from_str(&b.ipv4).unwrap_or(IpAddr::from([0, 0, 0, 0]));
+            match a_ip.cmp(&b_ip) {
+                std::cmp::Ordering::Equal => a.hostname.cmp(&b.hostname),
+                other => other,
+            }
+        });
+
         print_output(&items, self.output_format)?;
 
         Ok(())
