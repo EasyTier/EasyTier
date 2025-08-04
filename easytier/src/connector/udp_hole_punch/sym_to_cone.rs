@@ -342,7 +342,7 @@ impl PunchSymToConeHoleClient {
     async fn get_rpc_stub(
         &self,
         dst_peer_id: PeerId,
-    ) -> Box<(dyn UdpHolePunchRpc<Controller = BaseController> + std::marker::Send + 'static)> {
+    ) -> Box<dyn UdpHolePunchRpc<Controller = BaseController> + std::marker::Send + 'static> {
         self.peer_mgr
             .get_peer_rpc_mgr()
             .rpc_client()
