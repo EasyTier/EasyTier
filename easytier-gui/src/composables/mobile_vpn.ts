@@ -133,12 +133,6 @@ async function onNetworkInstanceChange() {
   }
 
   // if use no tun mode, stop the vpn service
-  const no_tun = networkStore.isNoTunEnabled(insts[0])
-  if (no_tun) {
-    console.error('no tun mode, stop vpn service')
-    await doStopVpn()
-    return
-  }
 
   let network_length = curNetworkInfo?.my_node_info?.virtual_ipv4.network_length
   if (!network_length) {
@@ -187,12 +181,29 @@ async function watchNetworkInstance() {
   console.error('vpn service watch network instance')
 }
 
+function isNoTunEnabled() {
+  const insts = networkStore.networkInstanceIds
+  if (!insts) {
+    return
+  }
+  const no_tun = networkStore.isNoTunEnabled(insts[0])
+  if (no_tun) {
+    return true
+  }
+}
+
 export async function initMobileVpnService() {
+  if (isNoTunEnabled()) {
+    return
+  }
   await registerVpnServiceListener()
   await watchNetworkInstance()
 }
 
 export async function prepareVpnService() {
+  if (isNoTunEnabled()) {
+    return
+  }
   console.log('prepare vpn')
   const prepare_ret = await prepare_vpn()
   console.log('prepare vpn', JSON.stringify((prepare_ret)))
