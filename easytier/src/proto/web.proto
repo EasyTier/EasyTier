@@ -72,6 +72,7 @@ message NetworkConfig {
 
     optional bool enable_quic_proxy = 45;
     optional bool disable_quic_input = 46;
+    repeated string port_forwards = 48;
 }
 
 message MyNodeInfo {

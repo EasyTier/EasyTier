@@ -20,6 +20,7 @@ use crate::{
 use anyhow::Context;
 use chrono::{DateTime, Local};
 use tokio::{sync::broadcast, task::JoinSet};
+use crate::common::config::PortForwardConfig;
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -588,6 +589,26 @@ impl NetworkConfig {
             ));
         }
 
+        if self.port_forwards.is_empty() {} else {
+            cfg.set_port_forwards(self.port_forwards
+                .iter()
+                .map(|pf| {
+                    let (protocol, rest) = pf.split_once("://").expect("Invalid format: missing '://'");
+                    let parts: Vec<&str> = rest.splitn(2, '/').collect();
+                    if parts.len() < 2 {
+                        panic!("Invalid format: expect address1/address2");
+                    }
+
+                    PortForwardConfig {
+                        bind_addr: parts[0].to_string().parse().unwrap(),
+                        dst_addr: parts[1].to_string().parse().unwrap(),
+                        proto: protocol.to_string(),
+                    }
+                })
+                .collect::<Vec<_>>()
+            );
+        }
+
         if self.enable_vpn_portal.unwrap_or_default() {
             let cidr = format!(
                 "{}/{}",
@@ -818,6 +839,14 @@ impl NetworkConfig {
 
         if let Some(whitelist) = config.get_rpc_portal_whitelist() {
             result.rpc_portal_whitelists = whitelist.iter().map(|w| w.to_string()).collect();
+        }
+        
+        if let port_forwards = config.get_port_forwards() { 
+            result.port_forwards = port_forwards.iter()
+                .map(|f| {
+                    format!("{}://{}/{}", f.proto, f.bind_addr, f.dst_addr)
+                }).
+                collect();
         }
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {

@@ -151,6 +151,9 @@ socks5_help: |
 exit_nodes: Exit Nodes
 exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
 
+port_forwards: Port Forward
+port_forwards_help: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
+
 mtu: MTU
 mtu_help: |
   MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380

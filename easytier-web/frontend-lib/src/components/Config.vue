@@ -79,6 +79,74 @@ function searchPeerSuggestions(e: { query: string }) {
   peerSuggestions.value = searchUrlSuggestions(e)
 }
 
+const portForwardsSuggestions = ref([''])
+
+function searchPortForwardsSuggestions(e: { query: string }) {
+  portForwardsSuggestions.value = check(e);
+  
+  function check(e: { query: string }) {
+    const ret : string[] = [];
+
+    // Check for matches that start with tcp:// or udp:// followed by two addresses in the "ip:port" format
+    const mappedListenerRegex = /^(tcp|udp):\/\/(?:\d{1,3}\.){3}\d{1,3}:\d+\/(?:\d{1,3}\.){3}\d{1,3}:\d+$/;
+
+    if (mappedListenerRegex.test(e.query)) {
+      // Further verify the validity of the IP address and port number
+      try {
+        const parts = e.query.split('://');
+        const protocol = parts[0];
+        const addresses = parts[1].split('/');
+
+        // Check if the protocol is TCP or UDP
+        if (protocol !== 'tcp' && protocol !== 'udp') {
+          return ret;
+        }
+
+        // Verify the formatting of both address sections
+        const addressRegex = /^(?:\d{1,3}\.){3}\d{1,3}:\d+$/;
+        if (addresses.length === 2 &&
+            addressRegex.test(addresses[0]) &&
+            addressRegex.test(addresses[1])) {
+
+          // Verify IP and port separately
+          const validateAddress = (address: string): boolean => {
+            const [ip, port] = address.split(':');
+            const portNum = parseInt(port, 10);
+
+            // Verify the port number range
+            if (portNum < 1 || portNum > 65535) {
+              return false;
+            }
+
+            // Verify the IP address format
+            const ipParts = ip.split('.');
+            if (ipParts.length !== 4) {
+              return false;
+            }
+
+            for (const part of ipParts) {
+              const num = parseInt(part, 10);
+              if (num < 0 || num > 255) {
+                return false;
+              }
+            }
+
+            return true;
+          };
+
+          if (validateAddress(addresses[0]) && validateAddress(addresses[1])) {
+            ret.push(e.query);
+          }
+        }
+      } catch (e) {
+        // If parsing is wrong, return an empty array
+      }
+    }
+
+    return ret;
+  }
+}
+
 const inetSuggestions = ref([''])
 
 function searchInetSuggestions(e: { query: string }) {
@@ -410,6 +478,18 @@ const bool_flags: BoolFlag[] = [
                   <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
                     :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full" multiple fluid
                     :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="port_forwards">{{ t('port_forwards') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('port_forwards_help')"></span>
+                  </div>
+                  <AutoComplete id="port_forwards" v-model="curNetwork.port_forwards"
+                    :placeholder="t('chips_placeholder', ['udp://0.0.0.0:12345/10.126.126.1:23456'])" class="w-full" multiple fluid
+                    :suggestions="portForwardsSuggestions" @complete="searchPortForwardsSuggestions" />
                 </div>
               </div>
 

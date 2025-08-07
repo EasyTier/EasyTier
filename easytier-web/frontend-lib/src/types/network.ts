@@ -70,6 +70,8 @@ export interface NetworkConfig {
   enable_private_mode?: boolean
 
   rpc_portal_whitelists: string[]
+  
+  port_forwards: string[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -132,6 +134,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_magic_dns: false,
     enable_private_mode: false,
     rpc_portal_whitelists: [],
+    port_forwards: [],
   }
 }
 
