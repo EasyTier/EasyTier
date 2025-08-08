@@ -192,6 +192,7 @@ mod tests {
     use super::OPENSSL_ENCRYPTION_RESERVED;
 
     #[test]
+    #[cfg(feature = "openssl-crypto")]
     fn test_openssl_aes128_gcm() {
         let key = [0u8; 16];
         let cipher = OpenSslCipher::new_aes128_gcm(key);
@@ -211,6 +212,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "openssl-crypto")]
     fn test_openssl_chacha20() {
         let key = [0u8; 32];
         let cipher = OpenSslCipher::new_chacha20(key);
