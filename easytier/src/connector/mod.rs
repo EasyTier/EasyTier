@@ -149,14 +149,12 @@ pub async fn create_connector_by_url(
             Box::new(connector)
         }
         "txt" | "srv" => {
-            if url.host_str().is_none() {
-                return Err(Error::InvalidUrl(format!(
-                    "host should not be empty in txt or srv url: {}",
-                    url
-                )));
-            }
-            let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
-            Box::new(connector)
+            // DNS-based peer discovery has been moved to multi_connector module
+            // These URLs should be handled by ConnectorAllocator in Instance::add_initial_peers
+            return Err(Error::InvalidUrl(format!(
+                "DNS URLs (txt:// and srv://) should be configured as peer URLs in configuration, not used directly as connectors. URL: {}",
+                url
+            )));
         }
         _ => {
             return Err(Error::InvalidUrl(url.into()));
