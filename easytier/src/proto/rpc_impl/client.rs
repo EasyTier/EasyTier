@@ -10,7 +10,10 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
-use crate::common::PeerId;
+use crate::common::{
+    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
+    PeerId,
+};
 use crate::defer;
 use crate::proto::common::{
     CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
@@ -66,6 +69,7 @@ pub struct Client {
     inflight_requests: InflightRequestTable,
     peer_info: PeerInfoTable,
     tasks: Mutex<JoinSet<()>>,
+    stats_manager: Option<Arc<StatsManager>>,
 }
 
 impl Client {
@@ -77,6 +81,19 @@ impl Client {
             inflight_requests: Arc::new(DashMap::new()),
             peer_info: Arc::new(DashMap::new()),
             tasks: Mutex::new(JoinSet::new()),
+            stats_manager: None,
+        }
+    }
+
+    pub fn new_with_stats_manager(stats_manager: Arc<StatsManager>) -> Self {
+        let (ring_a, ring_b) = create_ring_tunnel_pair();
+        Self {
+            mpsc: Mutex::new(MpscTunnel::new(ring_a, None)),
+            transport: Mutex::new(MpscTunnel::new(ring_b, None)),
+            inflight_requests: Arc::new(DashMap::new()),
+            peer_info: Arc::new(DashMap::new()),
+            tasks: Mutex::new(JoinSet::new()),
+            stats_manager: Some(stats_manager),
         }
     }
 
@@ -168,6 +185,7 @@ impl Client {
             zc_packet_sender: MpscTunnelSender,
             inflight_requests: InflightRequestTable,
             peer_info: PeerInfoTable,
+            stats_manager: Option<Arc<StatsManager>>,
             _phan: PhantomData<F>,
         }
 
@@ -196,6 +214,7 @@ impl Client {
                 method: <Self::Descriptor as ServiceDescriptor>::Method,
                 input: bytes::Bytes,
             ) -> Result<bytes::Bytes> {
+                let start_time = std::time::Instant::now();
                 let transaction_id = CUR_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 let key = InflightRequestKey {
@@ -203,6 +222,13 @@ impl Client {
                     to_peer_id: self.to_peer_id,
                     transaction_id,
                 };
+                let desc = self.service_descriptor();
+                let labels = LabelSet::new()
+                    .with_label_type(LabelType::NetworkName(self.domain_name.to_string()))
+                    .with_label_type(LabelType::SrcPeerId(self.from_peer_id))
+                    .with_label_type(LabelType::DstPeerId(self.to_peer_id))
+                    .with_label_type(LabelType::ServiceName(desc.name().to_string()))
+                    .with_label_type(LabelType::MethodName(method.name().to_string()));
 
                 defer!(self.inflight_requests.remove(&key););
                 self.inflight_requests.insert(
@@ -210,11 +236,16 @@ impl Client {
                     InflightRequest {
                         sender: tx,
                         merger: PacketMerger::new(),
-                        start_time: std::time::Instant::now(),
+                        start_time,
                     },
                 );
 
-                let desc = self.service_descriptor();
+                // Record RPC client TX stats
+                if let Some(ref stats_manager) = self.stats_manager {
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcClientTx, labels.clone())
+                        .inc();
+                }
 
                 let rpc_desc = RpcDescriptor {
                     domain_name: self.domain_name.clone(),
@@ -281,11 +312,43 @@ impl Client {
                 let rpc_resp = RpcResponse::decode(Bytes::from(rpc_packet.body))?;
 
                 if let Some(err) = &rpc_resp.error {
+                    // Record RPC error stats
+                    if let Some(ref stats_manager) = self.stats_manager {
+                        let labels = labels
+                            .clone()
+                            .with_label_type(LabelType::ErrorType(format!("{:?}", err.error_kind)))
+                            .with_label_type(LabelType::Status("error".to_string()));
+
+                        stats_manager
+                            .get_counter(MetricName::PeerRpcErrors, labels.clone())
+                            .inc();
+
+                        let duration_ms = start_time.elapsed().as_millis() as u64;
+                        stats_manager
+                            .get_counter(MetricName::PeerRpcDuration, labels)
+                            .add(duration_ms);
+                    }
                     return Err(err.into());
                 }
 
                 let raw_output = Bytes::from(rpc_resp.response.clone());
                 ctrl.set_raw_output(raw_output.clone());
+
+                // Record RPC client RX and duration stats
+                if let Some(ref stats_manager) = self.stats_manager {
+                    let labels = labels
+                        .clone()
+                        .with_label_type(LabelType::Status("success".to_string()));
+
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcClientRx, labels.clone())
+                        .inc();
+
+                    let duration_ms = start_time.elapsed().as_millis() as u64;
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcDuration, labels)
+                        .add(duration_ms);
+                }
 
                 Ok(raw_output)
             }
@@ -298,6 +361,7 @@ impl Client {
             zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),
             inflight_requests: self.inflight_requests.clone(),
             peer_info: self.peer_info.clone(),
+            stats_manager: self.stats_manager.clone(),
             _phan: PhantomData,
         })
     }

@@ -25,6 +25,7 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
         join_joinset_background,
+        stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         token_bucket::TokenBucket,
         PeerId,
     },
@@ -75,6 +76,8 @@ struct ForeignNetworkEntry {
 
     peer_center: Arc<PeerCenterInstance>,
 
+    stats_mgr: Arc<StatsManager>,
+
     tasks: Mutex<JoinSet<()>>,
 
     pub lock: Mutex<()>,
@@ -89,6 +92,7 @@ impl ForeignNetworkEntry {
         relay_data: bool,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
+        let stats_mgr = global_ctx.stats_manager().clone();
         let foreign_global_ctx = Self::build_foreign_global_ctx(&network, global_ctx.clone());
 
         let (packet_sender, packet_recv) = create_packet_recv_chan();
@@ -140,6 +144,8 @@ impl ForeignNetworkEntry {
             packet_recv: Mutex::new(Some(packet_recv)),
 
             bps_limiter,
+
+            stats_mgr,
 
             tasks: Mutex::new(JoinSet::new()),
 
@@ -297,8 +303,24 @@ impl ForeignNetworkEntry {
         let network_name = self.network.network_name.clone();
         let bps_limiter = self.bps_limiter.clone();
 
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
+        let forward_bytes = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
+        let forward_packets = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
+        let rx_bytes = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
+        let rx_packets = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficPacketsRx, label_set.clone());
+
         self.tasks.lock().await.spawn(async move {
             while let Ok(zc_packet) = recv_packet_from_chan(&mut recv).await {
+                let buf_len = zc_packet.buf_len();
                 let Some(hdr) = zc_packet.peer_manager_header() else {
                     tracing::warn!("invalid packet, skip");
                     continue;
@@ -310,6 +332,8 @@ impl ForeignNetworkEntry {
                         || hdr.packet_type == PacketType::RpcReq as u8
                         || hdr.packet_type == PacketType::RpcResp as u8
                     {
+                        rx_bytes.add(buf_len as u64);
+                        rx_packets.inc();
                         rpc_sender.send(zc_packet).unwrap();
                         continue;
                     }
@@ -326,6 +350,9 @@ impl ForeignNetworkEntry {
                             continue;
                         }
                     }
+
+                    forward_bytes.add(buf_len as u64);
+                    forward_packets.inc();
 
                     let gateway_peer_id = peer_map
                         .get_gateway_peer_id(to_peer_id, NextHopPolicy::LeastHop)

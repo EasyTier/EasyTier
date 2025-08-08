@@ -9,7 +9,8 @@ use crate::{
     tunnel::{packet_def::PacketType, ring::create_ring_tunnel_pair, Tunnel},
 };
 
-use super::{client::Client, server::Server};
+use super::{client::Client, server::Server, service_registry::ServiceRegistry};
+use crate::common::stats_manager::StatsManager;
 
 pub struct BidirectRpcManager {
     rpc_client: Client,
@@ -28,6 +29,20 @@ impl BidirectRpcManager {
         Self {
             rpc_client: Client::new(),
             rpc_server: Server::new(),
+
+            rx_timeout: None,
+            error: Arc::new(Mutex::new(None)),
+            tunnel: Mutex::new(None),
+            running: Arc::new(AtomicBool::new(false)),
+
+            tasks: Mutex::new(None),
+        }
+    }
+
+    pub fn new_with_stats_manager(stats_manager: Arc<StatsManager>) -> Self {
+        Self {
+            rpc_client: Client::new_with_stats_manager(stats_manager.clone()),
+            rpc_server: Server::new_with_registry_and_stats_manager(Arc::new(ServiceRegistry::new()), stats_manager),
 
             rx_timeout: None,
             error: Arc::new(Mutex::new(None)),
