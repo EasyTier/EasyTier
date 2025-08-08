@@ -3,11 +3,11 @@ use crate::tunnel::packet_def::ZCPacket;
 #[cfg(feature = "wireguard")]
 pub mod ring_aes_gcm;
 
+#[cfg(any(feature = "wireguard", feature = "ring-chacha20"))]
+pub mod ring_chacha20;
+
 #[cfg(feature = "aes-gcm")]
 pub mod aes_gcm;
-
-#[cfg(feature = "chacha20-cipher")]
-pub mod chacha20_cipher;
 
 #[cfg(feature = "openssl-crypto")]
 pub mod openssl_cipher;
@@ -52,7 +52,6 @@ impl Encryptor for NullCipher {
 /// Create an encryptor based on the algorithm name
 pub fn create_encryptor(algorithm: &str, key_128: [u8; 16], key_256: [u8; 32]) -> Box<dyn Encryptor> {
     match algorithm {
-        // 空字符串使用默认的 AES-GCM-128
         "" => {
             #[cfg(feature = "wireguard")]
             {
@@ -71,8 +70,8 @@ pub fn create_encryptor(algorithm: &str, key_128: [u8; 16], key_256: [u8; 32]) -
         #[cfg(feature = "xor-cipher")]
         "xor" => Box::new(xor_cipher::XorCipher::new(&key_128)),
 
-        #[cfg(feature = "chacha20-cipher")]
-        "chacha20" => Box::new(chacha20_cipher::ChaCha20Cipher::new(key_256)),
+        #[cfg(any(feature = "wireguard", feature = "ring-chacha20"))]
+        "chacha20" => Box::new(ring_chacha20::RingChaCha20Cipher::new(key_256)),
 
         #[cfg(feature = "openssl-crypto")]
         "openssl-aes128-gcm" => Box::new(openssl_cipher::OpenSslCipher::new_aes128_gcm(key_128)),
@@ -83,7 +82,6 @@ pub fn create_encryptor(algorithm: &str, key_128: [u8; 16], key_256: [u8; 32]) -
         #[cfg(feature = "openssl-crypto")]
         "openssl-chacha20" => Box::new(openssl_cipher::OpenSslCipher::new_chacha20(key_256)),
 
-        // 显式指定 AES-GCM 算法
         #[cfg(feature = "wireguard")]
         "aes-gcm" => Box::new(ring_aes_gcm::AesGcmCipher::new_128(key_128)),
 
