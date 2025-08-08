@@ -136,7 +136,7 @@ pub trait TunnelConnector: Send {
     
     // Enable downcasting for SRV multi-connection support
     fn as_any(&self) -> &dyn std::any::Any {
-        panic!("as_any not implemented for this TunnelConnector")
+        panic!("as_any not implemented for TunnelConnector: {}", std::any::type_name::<Self>())
     }
 }
 
