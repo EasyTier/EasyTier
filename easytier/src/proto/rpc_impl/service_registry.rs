@@ -78,6 +78,14 @@ impl ServiceRegistry {
         self.table.insert(key, entry);
     }
 
+    pub fn get_method_name(&self, rpc_desc: &RpcDescriptor) -> Option<String> {
+        let service_key = ServiceKey::from(rpc_desc);
+        let entry = self.table.get(&service_key)?;
+        let method_index = rpc_desc.method_index as u8;
+        let method_name = entry.service.get_method_name(method_index).ok()?;
+        Some(method_name)
+    }
+
     pub fn unregister<H: Handler<Controller = RpcController>>(
         &self,
         h: H,

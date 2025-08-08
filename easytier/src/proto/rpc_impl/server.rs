@@ -10,7 +10,11 @@ use tokio::{task::JoinSet, time::timeout};
 use tokio_stream::StreamExt;
 
 use crate::{
-    common::{join_joinset_background, PeerId},
+    common::{
+        join_joinset_background,
+        stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
+        PeerId,
+    },
     proto::{
         common::{
             self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
@@ -46,6 +50,7 @@ pub struct Server {
 
     tasks: Arc<Mutex<JoinSet<()>>>,
     packet_mergers: Arc<DashMap<PacketMergerKey, PacketMerger>>,
+    stats_manager: Option<Arc<StatsManager>>,
 }
 
 impl Server {
@@ -62,6 +67,23 @@ impl Server {
             transport: Mutex::new(MpscTunnel::new(ring_b, None)),
             tasks: Arc::new(Mutex::new(JoinSet::new())),
             packet_mergers: Arc::new(DashMap::new()),
+            stats_manager: None,
+        }
+    }
+
+    pub fn new_with_registry_and_stats_manager(
+        registry: Arc<ServiceRegistry>,
+        stats_manager: Arc<StatsManager>,
+    ) -> Self {
+        let (ring_a, ring_b) = create_ring_tunnel_pair();
+
+        Self {
+            registry,
+            mpsc: Mutex::new(Some(MpscTunnel::new(ring_a, None))),
+            transport: Mutex::new(MpscTunnel::new(ring_b, None)),
+            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            packet_mergers: Arc::new(DashMap::new()),
+            stats_manager: Some(stats_manager),
         }
     }
 
@@ -85,6 +107,7 @@ impl Server {
 
         let packet_merges = self.packet_mergers.clone();
         let reg = self.registry.clone();
+        let stats_manager = self.stats_manager.clone();
         let t = Arc::downgrade(&tasks);
         let tunnel_info = mpsc.tunnel_info();
         tasks.lock().unwrap().spawn(async move {
@@ -133,6 +156,7 @@ impl Server {
                             packet,
                             reg.clone(),
                             tunnel_info.clone(),
+                            stats_manager.clone(),
                         ));
                     }
                     Ok(None) => {}
@@ -189,12 +213,27 @@ impl Server {
         packet: RpcPacket,
         reg: Arc<ServiceRegistry>,
         tunnel_info: Option<TunnelInfo>,
+        stats_manager: Option<Arc<StatsManager>>,
     ) {
         let from_peer = packet.from_peer;
         let to_peer = packet.to_peer;
         let transaction_id = packet.transaction_id;
         let trace_id = packet.trace_id;
         let desc = packet.descriptor.clone().unwrap();
+        let method_name = reg.get_method_name(&desc).unwrap_or("<Nil>".to_owned());
+        let labels = LabelSet::new()
+            .with_label_type(LabelType::NetworkName(desc.domain_name.to_string()))
+            .with_label_type(LabelType::SrcPeerId(from_peer))
+            .with_label_type(LabelType::DstPeerId(to_peer))
+            .with_label_type(LabelType::ServiceName(desc.service_name.to_string()))
+            .with_label_type(LabelType::MethodName(method_name));
+
+        // Record RPC server RX stats
+        if let Some(ref stats_manager) = stats_manager {
+            stats_manager
+                .get_counter(MetricName::PeerRpcServerRx, labels.clone())
+                .inc();
+        }
 
         let mut resp_msg = RpcResponse::default();
         let now = std::time::Instant::now();
@@ -205,9 +244,41 @@ impl Server {
         match &resp_bytes {
             Ok(r) => {
                 resp_msg.response = r.clone().into();
+
+                // Record successful RPC server TX and duration stats
+                if let Some(ref stats_manager) = stats_manager {
+                    let labels = labels
+                        .clone()
+                        .with_label_type(LabelType::Status("success".to_string()));
+
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcServerTx, labels.clone())
+                        .inc();
+
+                    let duration_ms = now.elapsed().as_millis() as u64;
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcDuration, labels)
+                        .add(duration_ms);
+                }
             }
             Err(err) => {
                 resp_msg.error = Some(err.into());
+
+                // Record RPC server error stats
+                if let Some(ref stats_manager) = stats_manager {
+                    let labels = labels
+                        .clone()
+                        .with_label_type(LabelType::Status("error".to_string()));
+
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcErrors, labels.clone())
+                        .inc();
+
+                    let duration_ms = now.elapsed().as_millis() as u64;
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcDuration, labels)
+                        .add(duration_ms);
+                }
             }
         };
         resp_msg.runtime_us = now.elapsed().as_micros() as u64;

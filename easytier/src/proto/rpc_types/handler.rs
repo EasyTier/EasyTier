@@ -1,4 +1,6 @@
 //! Traits for defining generic RPC handlers.
+use crate::proto::rpc_types::descriptor::MethodDescriptor;
+
 use super::{
     controller::Controller,
     descriptor::{self, ServiceDescriptor},
@@ -49,6 +51,8 @@ pub trait HandlerExt: Send + Sync + 'static {
         method_index: u8,
         input: bytes::Bytes,
     ) -> super::error::Result<bytes::Bytes>;
+
+    fn get_method_name(&self, method_index: u8) -> super::error::Result<String>;
 }
 
 #[async_trait::async_trait]
@@ -63,5 +67,11 @@ impl<C: Controller, T: Handler<Controller = C>> HandlerExt for T {
     ) -> super::error::Result<bytes::Bytes> {
         let method = self.get_method_from_index(method_index)?;
         self.call(ctrl, method, input).await
+    }
+
+    fn get_method_name(&self, method_index: u8) -> super::error::Result<String> {
+        let method = self.get_method_from_index(method_index)?;
+        let name = method.name().to_string();
+        Ok(name)
     }
 }

@@ -30,13 +30,13 @@ use easytier::{
         cli::{
             list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
             ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetAclStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
+            GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
             ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
             ListRouteResponse, ManageMappedListenerRequest, MappedListenerManageAction,
             MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, TcpProxyEntryState,
+            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
             VpnPortalRpcClientFactory,
         },
@@ -102,6 +102,8 @@ enum SubCommand {
     PortForward(PortForwardArgs),
     #[command(about = "manage TCP/UDP whitelist")]
     Whitelist(WhitelistArgs),
+    #[command(about = "show statistics information")]
+    Stats(StatsArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: Shell },
 }
@@ -253,6 +255,20 @@ enum WhitelistSubCommand {
     ClearUdp,
     /// Show current whitelist configuration
     Show,
+}
+
+#[derive(Args, Debug)]
+struct StatsArgs {
+    #[command(subcommand)]
+    sub_command: Option<StatsSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum StatsSubCommand {
+    /// Show general statistics
+    Show,
+    /// Show statistics in Prometheus format
+    Prometheus,
 }
 
 #[derive(Args, Debug)]
@@ -412,6 +428,18 @@ impl CommandHandler<'_> {
             .scoped_client::<PortForwardManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get port forward manager client")?)
+    }
+
+    async fn get_stats_client(
+        &self,
+    ) -> Result<Box<dyn StatsRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .unwrap()
+            .scoped_client::<StatsRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get stats client")?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -1877,6 +1905,71 @@ async fn main() -> Result<(), Error> {
             }
             Some(WhitelistSubCommand::Show) | None => {
                 handler.handle_whitelist_show().await?;
+            }
+        },
+        SubCommand::Stats(stats_args) => match &stats_args.sub_command {
+            Some(StatsSubCommand::Show) | None => {
+                let client = handler.get_stats_client().await?;
+                let request = GetStatsRequest {};
+                let response = client
+                    .get_stats(BaseController::default(), request)
+                    .await?;
+
+                if cli.output_format == OutputFormat::Json {
+                    println!("{}", serde_json::to_string_pretty(&response.metrics)?);
+                } else {
+                    #[derive(tabled::Tabled, serde::Serialize)]
+                    struct StatsTableRow {
+                        #[tabled(rename = "Metric Name")]
+                        name: String,
+                        #[tabled(rename = "Value")]
+                        value: String,
+                        #[tabled(rename = "Labels")]
+                        labels: String,
+                    }
+
+                    let table_rows: Vec<StatsTableRow> = response
+                        .metrics
+                        .iter()
+                        .map(|metric| {
+                            let labels_str = if metric.labels.is_empty() {
+                                "-".to_string()
+                            } else {
+                                metric
+                                    .labels
+                                    .iter()
+                                    .map(|(k, v)| format!("{}={}", k, v))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            };
+                            
+                            let formatted_value = if metric.name.contains("bytes") {
+                                format_size(metric.value, humansize::BINARY)
+                            } else if metric.name.contains("duration") {
+                                format!("{} ms", metric.value)
+                            } else {
+                                metric.value.to_string()
+                            };
+
+                            StatsTableRow {
+                                name: metric.name.clone(),
+                                value: formatted_value,
+                                labels: labels_str,
+                            }
+                        })
+                        .collect();
+
+                    print_output(&table_rows, &cli.output_format)?
+                }
+            }
+            Some(StatsSubCommand::Prometheus) => {
+                let client = handler.get_stats_client().await?;
+                let request = GetPrometheusStatsRequest {};
+                let response = client
+                    .get_prometheus_stats(BaseController::default(), request)
+                    .await?;
+
+                println!("{}", response.prometheus_text);
             }
         },
         SubCommand::GenAutocomplete { shell } => {
