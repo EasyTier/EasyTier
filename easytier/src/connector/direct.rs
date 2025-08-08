@@ -16,6 +16,7 @@ use crate::{
         dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
         PeerId,
     },
+    connector::udp_hole_punch::handle_rpc_result,
     peers::{
         peer_conn::PeerConnId,
         peer_manager::PeerManager,
@@ -91,6 +92,7 @@ struct DirectConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
     dst_listener_blacklist: timedmap::TimedMap<DstListenerUrlBlackListItem, ()>,
+    peer_black_list: timedmap::TimedMap<PeerId, ()>,
 }
 
 impl DirectConnectorManagerData {
@@ -99,6 +101,7 @@ impl DirectConnectorManagerData {
             global_ctx,
             peer_manager,
             dst_listener_blacklist: timedmap::TimedMap::new(),
+            peer_black_list: timedmap::TimedMap::new(),
         }
     }
 
@@ -473,7 +476,17 @@ impl DirectConnectorManagerData {
     ) -> Result<(), Error> {
         let mut backoff =
             udp_hole_punch::BackOff::new(vec![1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000]);
+        let mut attempt = 0;
         loop {
+            if self.peer_black_list.contains(&dst_peer_id) {
+                return Err(anyhow::anyhow!("peer {} is blacklisted", dst_peer_id).into());
+            }
+
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(backoff.next_backoff())).await;
+            }
+            attempt += 1;
+
             let peer_manager = self.peer_manager.clone();
             tracing::debug!("try direct connect to peer: {}", dst_peer_id);
 
@@ -486,17 +499,11 @@ impl DirectConnectorManagerData {
                 self.global_ctx.get_network_name(),
             );
 
-            let ip_list = match rpc_stub
+            let ip_list = rpc_stub
                 .get_ip_list(BaseController::default(), GetIpListRequest {})
-                .await
-                .with_context(|| format!("get ip list from peer {}", dst_peer_id))
-            {
-                Ok(ip_list) => ip_list,
-                Err(e) => {
-                    tracing::error!(?e, "failed to get ip list from peer");
-                    continue;
-                }
-            };
+                .await;
+            let ip_list = handle_rpc_result(ip_list, dst_peer_id, &self.peer_black_list)
+                .with_context(|| format!("get ip list from peer {}", dst_peer_id))?;
 
             tracing::info!(ip_list = ?ip_list, dst_peer_id = ?dst_peer_id, "got ip list");
 
@@ -512,8 +519,6 @@ impl DirectConnectorManagerData {
                 );
                 return Ok(());
             }
-
-            tokio::time::sleep(Duration::from_millis(backoff.next_backoff())).await;
         }
     }
 }
@@ -547,13 +552,16 @@ impl PeerTaskLauncher for DirectConnectorLauncher {
     }
 
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
+        data.peer_black_list.cleanup();
         let my_peer_id = data.peer_manager.my_peer_id();
         data.peer_manager
             .list_peers()
             .await
             .into_iter()
             .filter(|peer_id| {
-                *peer_id != my_peer_id && !data.peer_manager.has_directly_connected_conn(*peer_id)
+                *peer_id != my_peer_id
+                    && !data.peer_manager.has_directly_connected_conn(*peer_id)
+                    && !data.peer_black_list.contains(peer_id)
             })
             .collect()
     }
