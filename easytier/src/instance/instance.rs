@@ -348,33 +348,47 @@ impl Instance {
     }
 
     async fn add_initial_peers(&mut self) -> Result<(), Error> {
-        for peer in self.global_ctx.config.get_peers().iter() {
-            let target_url = peer.uri.to_string();
-            tracing::info!(
-                target_url = %target_url,
-                "Processing peer URL with ConnectorAllocator"
-            );
-            
-            // Use ConnectorAllocator to handle all peer URLs
-            match ConnectorAllocator::allocate_and_resolve(&target_url, &self.conn_manager, &self.global_ctx).await {
-                Ok(added_count) => {
-                    tracing::info!(
-                        target_url = %target_url,
-                        peer_count = added_count,
-                        "Peer URL processed successfully via ConnectorAllocator"
-                    );
-                }
-                Err(e) => {
-                    tracing::error!(
-                        target_url = %target_url,
-                        error = ?e,
-                        "Failed to process peer URL with ConnectorAllocator"
-                    );
-                    return Err(e);
-                }
+        let total_peers: usize = {
+            let mut sum = 0;
+            for peer in self.global_ctx.config.get_peers().iter() {
+                let target_url = peer.uri.to_string();
+                tracing::info!(
+                    target_url = %target_url,
+                    "Processing peer URL with ConnectorAllocator"
+                );
+                
+                sum += match ConnectorAllocator::allocate_and_resolve(&target_url, &self.conn_manager, &self.global_ctx).await {
+                    Ok(added_count) => {
+                        tracing::info!(
+                            target_url = %target_url,
+                            peer_count = added_count,
+                            "Peer URL processed successfully via ConnectorAllocator"
+                        );
+                        added_count
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            target_url = %target_url,
+                            error = ?e,
+                            "Failed to process peer URL with ConnectorAllocator"
+                        );
+                        0
+                    }
+                };
             }
+            sum
+        };
+
+        if total_peers == 0 {
+            Err(anyhow::anyhow!("No peer connections were successfully resolved").into())
+        } else {
+            tracing::info!(
+                total_peers = total_peers,
+                "Successfully established {} peer connections",
+                total_peers
+            );
+            Ok(())
         }
-        Ok(())
     }
 
     // use a mock nic ctx to consume packets.
