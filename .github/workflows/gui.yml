@@ -35,15 +35,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-22.04
-            GUI_TARGET: aarch64-unknown-linux-gnu
-            ARTIFACT_NAME: linux-aarch64
+          # Linux target
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-22.04
             GUI_TARGET: x86_64-unknown-linux-gnu
             ARTIFACT_NAME: linux-x86_64
 
+          # macOS targets
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
             GUI_TARGET: x86_64-apple-darwin
@@ -53,6 +51,7 @@ jobs:
             GUI_TARGET: aarch64-apple-darwin
             ARTIFACT_NAME: macos-aarch64
 
+          # Windows targets
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             GUI_TARGET: x86_64-pc-windows-msvc
@@ -78,7 +77,7 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
-      - name: Install GUI dependencies (x86 only)
+      - name: Install GUI dependencies (Linux x86_64 only)
         if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
         run: |
           sudo apt update
@@ -92,41 +91,6 @@ jobs:
               libxdo-dev \
               libssl-dev \
               patchelf
-
-      - name: Install GUI cross compile (aarch64 only)
-        if: ${{ matrix.TARGET == 'aarch64-unknown-linux-musl' }}
-        run: |
-          # see https://tauri.app/v1/guides/building/linux/
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy main restricted" | sudo tee /etc/apt/sources.list
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://archive.ubuntu.com/ubuntu/ jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=amd64] http://security.ubuntu.com/ubuntu/ jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
-
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main restricted" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security universe" | sudo tee -a /etc/apt/sources.list
-          echo "deb [arch=armhf,arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security multiverse" | sudo tee -a /etc/apt/sources.list
-
-          sudo dpkg --add-architecture arm64
-          sudo apt update
-          sudo apt install aptitude
-          sudo aptitude install -y libgstreamer1.0-0:arm64 gstreamer1.0-plugins-base:arm64 gstreamer1.0-plugins-good:arm64 \
-            libgstreamer-gl1.0-0:arm64 libgstreamer-plugins-base1.0-0:arm64 libgstreamer-plugins-good1.0-0:arm64 libwebkit2gtk-4.1-0:arm64 \
-            libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
-          echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v3
 
@@ -195,8 +159,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: ./easytier-gui
-          # https://tauri.app/v1/guides/building/linux/#cross-compiling-tauri-applications-for-arm-based-devices
-          args: --verbose --target ${{ matrix.GUI_TARGET }} ${{ matrix.OS == 'ubuntu-22.04' && contains(matrix.TARGET, 'aarch64') && '--bundles deb' || ''  }}
+          args: --verbose --target ${{ matrix.GUI_TARGET }}
 
       - name: Compress
         run: |
@@ -212,10 +175,10 @@ jobs:
               mv ./target/$GUI_TARGET/release/bundle/nsis/*.exe ./artifacts/objects/
           elif [[ $OS =~ ^macos.*$ ]]; then
               mv ./target/$GUI_TARGET/release/bundle/dmg/*.dmg ./artifacts/objects/
-          elif [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^mips.*$ ]]; then
+          elif [[ $OS =~ ^ubuntu.*$ ]]; then
               mv ./target/$GUI_TARGET/release/bundle/deb/*.deb ./artifacts/objects/
+              # currently only x86 appimage is supported
               if [[ $GUI_TARGET =~ ^x86_64.*$ ]]; then
-                # currently only x86 appimage is supported
                 mv ./target/$GUI_TARGET/release/bundle/appimage/*.AppImage ./artifacts/objects/
               fi
           fi
