@@ -636,17 +636,6 @@ impl MultiConnector {
         }
     }
 
-    /// Check if a string is a domain reference (not a URL)
-    fn is_domain_reference(s: &str) -> bool {
-        // If it contains "://", it's a URL
-        // If it doesn't contain "://" and looks like a domain, it's a domain reference
-        !s.contains("://") && (s.contains('.') || s.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-'))
-    }
-
-    /// Check if a string is a valid URL
-    fn is_valid_url(s: &str) -> bool {
-        s.contains("://") && s.len() > 6
-
     fn handle_one_srv_record(
         record: &hickory_resolver::proto::rr::rdata::SRV,
         _protocol: &str,
