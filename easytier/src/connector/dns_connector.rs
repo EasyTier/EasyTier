@@ -41,33 +41,33 @@ impl MinPriorityRecords {
     fn add_record(&mut self, record: SrvRecord, protocol: String) {
         match self.records.get_mut(&protocol) {
             None => {
-                //如果是第一个记录或者这个协议是新的，初始化对应的vector
+                //If it is the first record or this protocol is new, initialize the corresponding vector
                 self.records.entry(protocol.clone())
                     .or_insert_with(Vec::new)
                     .push(record);
             }
             Some(mut current_record) if record.priority < current_record[0].priority => {
-                // 发现更小的priority，清空所有现有记录，重新开始
+                //Find a smaller priority, clear all existing records, and start over.
                 current_record.clear();
                 current_record.push(record.clone());
             }
             Some(mut current_record) if record.priority == current_record[0].priority => {
-                // 相同priority，添加到对应协议的记录中
+                // If the priority is the same, add to the corresponding protocol's records
                 current_record.push(record.clone());
             }
             Some(_) => {
-                // 忽略其余情况
+                // Ignore the rest
             }
         }
     }
 
-    // 从所有协议中选择最终的记录，返回包含多个协议的URL数组
+    //Selects the final record from all protocols, returning an array of URLs containing multiple protocols
     fn select_by_weight(&self) -> Option<Vec<String>> {
         if self.records.is_empty() {
             return None;
         }
         let final_records: DashMap<String, SrvRecord> = DashMap::new();
-        // 根据RFC 2782的建议，从每个协议中选出一个记录
+        //Select a record from each protocol as recommended in RFC 2782
         for srv_records_of_same_protocol in self.records.iter() {
             let total_weight: u32 = srv_records_of_same_protocol.value()
                 .iter()
@@ -75,9 +75,9 @@ impl MinPriorityRecords {
                 .sum();
             
             if total_weight > 0 {
-                // 使用权重随机选择
+                // Randomly select using weights
                 let mut rng = rand::thread_rng();
-                let rand_val = rng.gen_range(1..=total_weight);
+                let rand_val = rng.gen_range(0..=total_weight);
                 let mut accumulated_weight = 0u32;
 
                 for record in srv_records_of_same_protocol.value().iter() {
@@ -88,7 +88,7 @@ impl MinPriorityRecords {
                     }
                 }
             } else {
-                // 如果所有权重都是0，随机选择
+                // Randomly select if all weights are zero
                 if let Some(record) = srv_records_of_same_protocol.value().choose(&mut rand::thread_rng()) {
                     final_records.insert(srv_records_of_same_protocol.key().clone(), record.clone());
                 }
@@ -99,7 +99,7 @@ impl MinPriorityRecords {
         if final_records.is_empty() {
             return None;
         } else {
-            // 从 final_records 中生成 URL 数组
+            // From the final records, generate URLs for each protocol
             let urls: Vec<String> = final_records
                 .iter()
                 .map(|entry| {
@@ -148,7 +148,7 @@ impl MultiURLTunnelConnector {
 #[async_trait::async_trait]
 impl super::TunnelConnector for MultiURLTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        // 尝试连接所有URL，返回第一个成功的连接
+        // Try to connect to all URLs, returning the first successful connection
         let mut last_error = None;
         
         for url in &self.urls {
@@ -172,7 +172,7 @@ impl super::TunnelConnector for MultiURLTunnelConnector {
                 }
                 Err(e) => {
                     tracing::warn!(url = %url, error = ?e, "failed to create connector for URL");
-                    // Error 包含 TunnelError 变体，可以直接转换
+                    // Error contains TunnelError variant and can be directly converted
                     last_error = Some(match e {
                         crate::common::error::Error::TunnelError(te) => te,
                         other => TunnelError::from(anyhow::Error::from(other)),
@@ -187,7 +187,7 @@ impl super::TunnelConnector for MultiURLTunnelConnector {
     }
 
     fn remote_url(&self) -> url::Url {
-        // 返回第一个URL，或者可以返回一个特殊的multi:// URL
+        // Return the first URL, or a special multi:// URL
         self.urls.first()
             .and_then(|s| url::Url::parse(s).ok())
             .unwrap_or_else(|| url::Url::parse("multi://unknown").unwrap())
@@ -330,7 +330,7 @@ impl DNSTunnelConnector {
         match selected_urls {
             Some(urls) => {
                 tracing::info!(urls = ?urls, "selected srv record URLs from all protocols");
-                // 返回多URL连接器而不是随机选择一个
+                // Return a MultiURLTunnelConnector with the selected URLs
                 let multi_connector = MultiURLTunnelConnector::new(urls, self.global_ctx.clone());
                 Ok(Box::new(multi_connector))
             }
