@@ -184,12 +184,13 @@ async function watchNetworkInstance() {
 function isNoTunEnabled() {
   const insts = networkStore.networkInstanceIds
   if (!insts) {
-    return
+    return false
   }
   const no_tun = networkStore.isNoTunEnabled(insts[0])
   if (no_tun) {
     return true
   }
+  return false
 }
 
 export async function initMobileVpnService() {
