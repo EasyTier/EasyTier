@@ -115,6 +115,10 @@ function getRoutesForVpn(routes: Route[]): string[] {
 async function onNetworkInstanceChange() {
   console.error('vpn service watch network instance change ids', JSON.stringify(networkStore.networkInstanceIds))
   const insts = networkStore.networkInstanceIds
+  const no_tun = networkStore.isNoTunEnabled(insts[0])
+  if (no_tun) {
+    return
+  }
   if (!insts) {
     await doStopVpn()
     return
@@ -181,12 +185,11 @@ async function watchNetworkInstance() {
   console.error('vpn service watch network instance')
 }
 
-function isNoTunEnabled() {
-  const insts = networkStore.networkInstanceIds
-  if (!insts) {
+function isNoTunEnabled(instanceId: string | undefined) {
+  if (!instanceId) {
     return false
   }
-  const no_tun = networkStore.isNoTunEnabled(insts[0])
+  const no_tun = networkStore.isNoTunEnabled(instanceId)
   if (no_tun) {
     return true
   }
@@ -194,15 +197,12 @@ function isNoTunEnabled() {
 }
 
 export async function initMobileVpnService() {
-  if (isNoTunEnabled()) {
-    return
-  }
   await registerVpnServiceListener()
   await watchNetworkInstance()
 }
 
-export async function prepareVpnService() {
-  if (isNoTunEnabled()) {
+export async function prepareVpnService(instanceId: string) {
+  if (isNoTunEnabled(instanceId)) {
     return
   }
   console.log('prepare vpn')
