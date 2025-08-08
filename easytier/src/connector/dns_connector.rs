@@ -1,4 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
+use dashmap::DashMap;
 
 use crate::{
     common::{
@@ -19,75 +20,185 @@ use super::{create_connector_by_url, http_connector::TunnelWithInfo};
 
 #[derive(Debug, Clone)]
 struct SrvRecord {
-    url: url::Url,
+    target: String,
+    port: u16,
     priority: u16,
     weight: u16,
 }
 
-//Struct to keep srv records with minimum priority(i.e. the most wanted dst)
 #[derive(Debug)]
 struct MinPriorityRecords {
-    records: Vec<SrvRecord>,
-    current_min_priority: Option<u16>,
+    records: DashMap<String, Vec<SrvRecord>>,
 }
 
 impl MinPriorityRecords {
     fn new() -> Self {
         Self {
-            records: Vec::new(),
-            current_min_priority: None,
+            records: DashMap::new(),
         }
     }
 
-    fn add_record(&mut self, record: SrvRecord) {
-        match self.current_min_priority {
+    fn add_record(&mut self, record: SrvRecord, protocol: String) {
+        match self.records.get_mut(&protocol) {
             None => {
-                // As first record
-                self.current_min_priority = Some(record.priority);
-                self.records.push(record);
+                //如果是第一个记录或者这个协议是新的，初始化对应的vector
+                self.records.entry(protocol.clone())
+                    .or_insert_with(Vec::new)
+                    .push(record);
             }
-            Some(current_min) => {
-                if record.priority < current_min {
-                    // Remove all the exisitng records as append the new on as the first record, when a record with smaller priority is found
-                    self.records.clear();
-                    self.current_min_priority = Some(record.priority);
-                    self.records.push(record);
-                } else if record.priority == current_min {
-                    // append the record to the array if they're in same priority
-                    self.records.push(record);
-                }
-                // if priority > current_min，ignore
+            Some(mut current_record) if record.priority < current_record[0].priority => {
+                // 发现更小的priority，清空所有现有记录，重新开始
+                current_record.clear();
+                current_record.push(record.clone());
+            }
+            Some(mut current_record) if record.priority == current_record[0].priority => {
+                // 相同priority，添加到对应协议的记录中
+                current_record.push(record.clone());
+            }
+            Some(_) => {
+                // 忽略其余情况
             }
         }
     }
 
-    // select the record by weight according to RFC 2782
-    fn select_by_weight(&self) -> Option<&SrvRecord> {
+    // 从所有协议中选择最终的记录，返回包含多个协议的URL数组
+    fn select_by_weight(&self) -> Option<Vec<String>> {
         if self.records.is_empty() {
             return None;
         }
+        let final_records: DashMap<String, SrvRecord> = DashMap::new();
+        // 根据RFC 2782的建议，从每个协议中选出一个记录
+        for srv_records_of_same_protocol in self.records.iter() {
+            let total_weight: u32 = srv_records_of_same_protocol.value()
+                .iter()
+                .map(|r| r.weight as u32)
+                .sum();
+            
+            if total_weight > 0 {
+                // 使用权重随机选择
+                let mut rng = rand::thread_rng();
+                let rand_val = rng.gen_range(1..=total_weight);
+                let mut accumulated_weight = 0u32;
 
-        let total_weight: u32 = self.records.iter().map(|r| r.weight as u32).sum();
+                for record in srv_records_of_same_protocol.value().iter() {
+                    accumulated_weight += record.weight as u32;
+                    if accumulated_weight >= rand_val {
+                        final_records.insert(srv_records_of_same_protocol.key().clone(), record.clone());
+                        break;
+                    }
+                }
+            } else {
+                // 如果所有权重都是0，随机选择
+                if let Some(record) = srv_records_of_same_protocol.value().choose(&mut rand::thread_rng()) {
+                    final_records.insert(srv_records_of_same_protocol.key().clone(), record.clone());
+                }
+            }
 
-        // randomly pick if all of the records weight 0
-        if total_weight == 0 {
-            return self.records.choose(&mut rand::thread_rng());
         }
 
-        // Otherwise, use the classical method which pick a random number x ∈ [1, total_weight]
-        let mut rng = rand::thread_rng();
-        let rand_val = rng.gen_range(1..=total_weight);
-        let mut accumulated_weight = 0u32;
+        if final_records.is_empty() {
+            return None;
+        } else {
+            // 从 final_records 中生成 URL 数组
+            let urls: Vec<String> = final_records
+                .iter()
+                .map(|entry| {
+                    let protocol = entry.key();
+                    let record = entry.value();
+                    let url = format!("{}://{}:{}", protocol, record.target, record.port);
+                    tracing::info!(
+                        protocol = %protocol,
+                        target = %record.target,
+                        port = record.port,
+                        priority = record.priority,
+                        weight = record.weight,
+                        url = %url,
+                        "Selected record for protocol"
+                    );
+                    url
+                })
+                .collect();
+            
+            tracing::info!(urls = ?urls, total_protocols = urls.len(), "Generated URLs from all protocols");
+            Some(urls)
+        }
+    }
+    
+}
 
-        for record in &self.records {
-            accumulated_weight += record.weight as u32;
-            if accumulated_weight >= rand_val {
-                return Some(record);
+#[derive(Debug)]
+pub struct MultiURLTunnelConnector {
+    urls: Vec<String>,
+    bind_addrs: Vec<SocketAddr>,
+    global_ctx: ArcGlobalCtx,
+    ip_version: IpVersion,
+}
+
+impl MultiURLTunnelConnector {
+    pub fn new(urls: Vec<String>, global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            urls,
+            bind_addrs: Vec::new(),
+            global_ctx,
+            ip_version: IpVersion::Both,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl super::TunnelConnector for MultiURLTunnelConnector {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
+        // 尝试连接所有URL，返回第一个成功的连接
+        let mut last_error = None;
+        
+        for url in &self.urls {
+            tracing::info!(url = %url, "attempting to connect to URL");
+            
+            match create_connector_by_url(url, &self.global_ctx, self.ip_version).await {
+                Ok(mut connector) => {
+                    connector.set_bind_addrs(self.bind_addrs.clone());
+                    connector.set_ip_version(self.ip_version);
+                    
+                    match connector.connect().await {
+                        Ok(tunnel) => {
+                            tracing::info!(url = %url, "successfully connected");
+                            return Ok(tunnel);
+                        }
+                        Err(e) => {
+                            tracing::warn!(url = %url, error = ?e, "failed to connect to URL");
+                            last_error = Some(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(url = %url, error = ?e, "failed to create connector for URL");
+                    // Error 包含 TunnelError 变体，可以直接转换
+                    last_error = Some(match e {
+                        crate::common::error::Error::TunnelError(te) => te,
+                        other => TunnelError::from(anyhow::Error::from(other)),
+                    });
+                }
             }
         }
+        
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("no URLs available for connection").into()
+        }))
+    }
 
-        // Ensure there is at least an return for any unknown case
-        self.records.first()
+    fn remote_url(&self) -> url::Url {
+        // 返回第一个URL，或者可以返回一个特殊的multi:// URL
+        self.urls.first()
+            .and_then(|s| url::Url::parse(s).ok())
+            .unwrap_or_else(|| url::Url::parse("multi://unknown").unwrap())
+    }
+
+    fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
+        self.bind_addrs = addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
     }
 }
 
@@ -139,25 +250,18 @@ impl DNSTunnelConnector {
         Ok(connector)
     }
 
-    fn handle_one_srv_record(record: &SRV, protocol: &str) -> Result<SrvRecord, Error> {
+    fn handle_one_srv_record(record: &SRV, _protocol: &str) -> Result<SrvRecord, Error> {
         // port must be non-zero
         if record.port() == 0 {
             return Err(anyhow::anyhow!("port must be non-zero").into());
         }
 
         let connector_dst = record.target().to_utf8();
-        let dst_url = format!("{}://{}:{}", protocol, connector_dst, record.port());
+        let target_host = connector_dst.trim_end_matches('.');
 
         Ok(SrvRecord {
-            url: dst_url.parse().with_context(|| {
-                format!(
-                    "parse dst_url failed, protocol: {}, connector_dst: {}, port: {}, dst_url: {}",
-                    protocol,
-                    connector_dst,
-                    record.port(),
-                    dst_url
-                )
-            })?,
+            target: target_host.to_string(),
+            port: record.port(),
             priority: record.priority(),
             weight: record.weight(),
         })
@@ -185,7 +289,7 @@ impl DNSTunnelConnector {
                 let resolver = RESOLVER.clone();
                 let min_priority_records = min_priority_records.clone();
                 let srv_domain = srv_domain.clone();
-                let protocol = protocol.clone();
+                let protocol = *protocol;
                 async move {
                     match resolver.srv_lookup(&srv_domain).await {
                         Ok(response) => {
@@ -195,7 +299,7 @@ impl DNSTunnelConnector {
                                     Ok(srv_record) => {
                                         tracing::info!(?srv_record, ?srv_domain, "parsed_record");
                                         // using add_record to process the new record fund
-                                        min_priority_records.lock().unwrap().add_record(srv_record);
+                                        min_priority_records.lock().unwrap().add_record(srv_record, protocol.to_string());
                                     }
                                     Err(e) => {
                                         tracing::warn!(?e, ?srv_domain, "invalid srv record");
@@ -218,21 +322,17 @@ impl DNSTunnelConnector {
         let _ = futures::future::join_all(srv_lookup_tasks).await;
 
         // comes up with the final srv 
-        let selected_record = min_priority_records
+        let selected_urls = min_priority_records
             .lock()
             .unwrap()
-            .select_by_weight()
-            .cloned();
+            .select_by_weight();
 
-        match selected_record {
-            Some(record) => {
-                tracing::info!(?record, "selected srv record");
-                let connector = create_connector_by_url(
-                    record.url.as_str(), 
-                    &self.global_ctx, 
-                    self.ip_version
-                ).await?;
-                Ok(connector)
+        match selected_urls {
+            Some(urls) => {
+                tracing::info!(urls = ?urls, "selected srv record URLs from all protocols");
+                // 返回多URL连接器而不是随机选择一个
+                let multi_connector = MultiURLTunnelConnector::new(urls, self.global_ctx.clone());
+                Ok(Box::new(multi_connector))
             }
             None => {
                 Err(anyhow::anyhow!("no srv record found").into())
