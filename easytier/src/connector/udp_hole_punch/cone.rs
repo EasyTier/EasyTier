@@ -154,7 +154,7 @@ impl PunchConeHoleClient {
             )
             .await;
 
-        let resp = handle_rpc_result(resp, dst_peer_id, self.blacklist.clone())?;
+        let resp = handle_rpc_result(resp, dst_peer_id, &self.blacklist)?;
 
         let remote_mapped_addr = resp.listener_mapped_addr.ok_or(anyhow::anyhow!(
             "select_punch_listener response missing listener_mapped_addr"

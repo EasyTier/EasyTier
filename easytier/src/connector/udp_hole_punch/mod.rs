@@ -183,7 +183,7 @@ impl BackOff {
 pub fn handle_rpc_result<T>(
     ret: Result<T, rpc_types::error::Error>,
     dst_peer_id: PeerId,
-    blacklist: Arc<timedmap::TimedMap<PeerId, ()>>,
+    blacklist: &timedmap::TimedMap<PeerId, ()>,
 ) -> Result<T, rpc_types::error::Error> {
     match ret {
         Ok(ret) => Ok(ret),
