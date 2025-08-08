@@ -1,23 +1,27 @@
-use std::{net::SocketAddr, sync::Arc};
-use dashmap::DashMap;
+use std::net::SocketAddr;
+// use dashmap::DashMap;
 
 use crate::{
     common::{
-        dns::{resolve_txt_record, RESOLVER},
+        dns::resolve_txt_record,
         error::Error,
         global_ctx::ArcGlobalCtx,
     },
-    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
+    tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError},
 };
 use anyhow::Context;
-use hickory_resolver::proto::rr::rdata::SRV;
-use rand::{seq::SliceRandom, Rng as _};
-use std::sync::Mutex;
+// use hickory_resolver::proto::rr::rdata::SRV;
+use rand::seq::SliceRandom;
+// use std::sync::Mutex;
 
 use crate::proto::common::TunnelInfo;
 
 use super::{create_connector_by_url, http_connector::TunnelWithInfo};
 
+// SRV functionality has been moved to multi_connector.rs
+// Commenting out SRV-related code to avoid conflicts
+
+/*
 #[derive(Debug, Clone)]
 struct SrvRecord {
     target: String,
@@ -39,24 +43,69 @@ impl MinPriorityRecords {
     }
 
     fn add_record(&mut self, record: SrvRecord, protocol: String) {
+        tracing::info!(
+            protocol = %protocol,
+            target = %record.target,
+            port = record.port,
+            priority = record.priority,
+            weight = record.weight,
+            "Processing SRV record for protocol"
+        );
+
         match self.records.get_mut(&protocol) {
             None => {
-                //If it is the first record or this protocol is new, initialize the corresponding vector
+                // If it is the first record or this protocol is new, initialize the corresponding vector
+                tracing::info!(
+                    protocol = %protocol,
+                    srv_domain = %format!("_easytier._{}.domain.name", protocol),
+                    target = %record.target,
+                    priority = record.priority,
+                    "First record for protocol, initializing new vector"
+                );
                 self.records.entry(protocol.clone())
                     .or_insert_with(Vec::new)
                     .push(record);
             }
             Some(mut current_record) if record.priority < current_record[0].priority => {
-                //Find a smaller priority, clear all existing records, and start over.
+                // Find a smaller priority, clear all existing records, and start over.
+                let old_priority = current_record[0].priority;
+                tracing::info!(
+                    protocol = %protocol,
+                    srv_domain = %format!("_easytier._{}.domain.name", protocol),
+                    target = %record.target,
+                    old_priority = old_priority,
+                    new_priority = record.priority,
+                    cleared_records = current_record.len(),
+                    "Clear current records due to found smaller priority record (old value {} > new value {})",
+                    old_priority, record.priority
+                );
                 current_record.clear();
                 current_record.push(record.clone());
             }
             Some(mut current_record) if record.priority == current_record[0].priority => {
                 // If the priority is the same, add to the corresponding protocol's records
+                tracing::info!(
+                    protocol = %protocol,
+                    srv_domain = %format!("_easytier._{}.domain.name", protocol),
+                    target = %record.target,
+                    priority = record.priority,
+                    current_count = current_record.len(),
+                    "Push same priority record to current record vector"
+                );
                 current_record.push(record.clone());
             }
-            Some(_) => {
-                // Ignore the rest
+            Some(current_record) => {
+                // Ignore higher priority records
+                let current_priority = current_record[0].priority;
+                tracing::info!(
+                    protocol = %protocol,
+                    srv_domain = %format!("_easytier._{}.domain.name", protocol),
+                    target = %record.target,
+                    old_priority = current_priority,
+                    new_priority = record.priority,
+                    "Ignore higher priority record (old value {} < new value {})",
+                    current_priority, record.priority
+                );
             }
         }
     }
@@ -64,12 +113,28 @@ impl MinPriorityRecords {
     //Selects the final record from all protocols, returning an array of URLs containing multiple protocols
     fn select_by_weight(&self) -> Option<Vec<String>> {
         if self.records.is_empty() {
+            tracing::info!("No SRV records available for weight selection");
             return None;
         }
+
+        tracing::info!(
+            total_protocols = self.records.len(),
+            "Starting weight-based selection for all protocols"
+        );
+
         let final_records: DashMap<String, SrvRecord> = DashMap::new();
-        //Select a record from each protocol as recommended in RFC 2782
+        // Select a record from each protocol as recommended in RFC 2782
         for srv_records_of_same_protocol in self.records.iter() {
-            let total_weight: u32 = srv_records_of_same_protocol.value()
+            let protocol = srv_records_of_same_protocol.key();
+            let records = srv_records_of_same_protocol.value();
+            
+            tracing::info!(
+                protocol = %protocol,
+                candidate_records = records.len(),
+                "Processing protocol for weight selection"
+            );
+
+            let total_weight: u32 = records
                 .iter()
                 .map(|r| r.weight as u32)
                 .sum();
@@ -77,26 +142,56 @@ impl MinPriorityRecords {
             if total_weight > 0 {
                 // Randomly select using weights
                 let mut rng = rand::thread_rng();
-                let rand_val = rng.gen_range(0..=total_weight);
+                let rand_val = rng.gen_range(1..=total_weight);
                 let mut accumulated_weight = 0u32;
 
-                for record in srv_records_of_same_protocol.value().iter() {
+                tracing::info!(
+                    protocol = %protocol,
+                    total_weight = total_weight,
+                    random_value = rand_val,
+                    "Using weight-based selection for protocol"
+                );
+
+                for record in records.iter() {
                     accumulated_weight += record.weight as u32;
                     if accumulated_weight >= rand_val {
-                        final_records.insert(srv_records_of_same_protocol.key().clone(), record.clone());
+                        tracing::error!(
+                            protocol = %protocol,
+                            target = %record.target,
+                            port = record.port,
+                            priority = record.priority,
+                            weight = record.weight,
+                            accumulated_weight = accumulated_weight,
+                            random_value = rand_val,
+                            "Selected final SRV record for protocol using weight"
+                        );
+                        final_records.insert(protocol.clone(), record.clone());
                         break;
                     }
                 }
             } else {
                 // Randomly select if all weights are zero
-                if let Some(record) = srv_records_of_same_protocol.value().choose(&mut rand::thread_rng()) {
-                    final_records.insert(srv_records_of_same_protocol.key().clone(), record.clone());
+                tracing::info!(
+                    protocol = %protocol,
+                    "All weights are zero, using random selection"
+                );
+                
+                if let Some(record) = records.choose(&mut rand::thread_rng()) {
+                    tracing::error!(
+                        protocol = %protocol,
+                        target = %record.target,
+                        port = record.port,
+                        priority = record.priority,
+                        weight = record.weight,
+                        "Selected final SRV record for protocol using random selection (zero weights)"
+                    );
+                    final_records.insert(protocol.clone(), record.clone());
                 }
             }
-
         }
 
         if final_records.is_empty() {
+            tracing::error!("No final records selected from any protocol");
             return None;
         } else {
             // From the final records, generate URLs for each protocol
@@ -113,94 +208,19 @@ impl MinPriorityRecords {
                         priority = record.priority,
                         weight = record.weight,
                         url = %url,
-                        "Selected record for protocol"
+                        "Generated URL from selected SRV record"
                     );
                     url
                 })
                 .collect();
             
-            tracing::info!(urls = ?urls, total_protocols = urls.len(), "Generated URLs from all protocols");
+            tracing::error!(urls = ?urls, total_protocols = urls.len(), "SRV resolution completed, final URL group generated");
             Some(urls)
         }
     }
     
 }
-
-#[derive(Debug)]
-pub struct MultiURLTunnelConnector {
-    urls: Vec<String>,
-    bind_addrs: Vec<SocketAddr>,
-    global_ctx: ArcGlobalCtx,
-    ip_version: IpVersion,
-}
-
-impl MultiURLTunnelConnector {
-    pub fn new(urls: Vec<String>, global_ctx: ArcGlobalCtx) -> Self {
-        Self {
-            urls,
-            bind_addrs: Vec::new(),
-            global_ctx,
-            ip_version: IpVersion::Both,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl super::TunnelConnector for MultiURLTunnelConnector {
-    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
-        // Try to connect to all URLs, returning the first successful connection
-        let mut last_error = None;
-        
-        for url in &self.urls {
-            tracing::info!(url = %url, "attempting to connect to URL");
-            
-            match create_connector_by_url(url, &self.global_ctx, self.ip_version).await {
-                Ok(mut connector) => {
-                    connector.set_bind_addrs(self.bind_addrs.clone());
-                    connector.set_ip_version(self.ip_version);
-                    
-                    match connector.connect().await {
-                        Ok(tunnel) => {
-                            tracing::info!(url = %url, "successfully connected");
-                            return Ok(tunnel);
-                        }
-                        Err(e) => {
-                            tracing::warn!(url = %url, error = ?e, "failed to connect to URL");
-                            last_error = Some(e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(url = %url, error = ?e, "failed to create connector for URL");
-                    // Error contains TunnelError variant and can be directly converted
-                    last_error = Some(match e {
-                        crate::common::error::Error::TunnelError(te) => te,
-                        other => TunnelError::from(anyhow::Error::from(other)),
-                    });
-                }
-            }
-        }
-        
-        Err(last_error.unwrap_or_else(|| {
-            anyhow::anyhow!("no URLs available for connection").into()
-        }))
-    }
-
-    fn remote_url(&self) -> url::Url {
-        // Return the first URL, or a special multi:// URL
-        self.urls.first()
-            .and_then(|s| url::Url::parse(s).ok())
-            .unwrap_or_else(|| url::Url::parse("multi://unknown").unwrap())
-    }
-
-    fn set_bind_addrs(&mut self, addrs: Vec<SocketAddr>) {
-        self.bind_addrs = addrs;
-    }
-
-    fn set_ip_version(&mut self, ip_version: IpVersion) {
-        self.ip_version = ip_version;
-    }
-}
+*/
 
 #[derive(Debug)]
 pub struct DNSTunnelConnector {
@@ -250,6 +270,7 @@ impl DNSTunnelConnector {
         Ok(connector)
     }
 
+    /*
     fn handle_one_srv_record(record: &SRV, _protocol: &str) -> Result<SrvRecord, Error> {
         // port must be non-zero
         if record.port() == 0 {
@@ -272,13 +293,13 @@ impl DNSTunnelConnector {
         &self,
         domain_name: &str,
     ) -> Result<Box<dyn TunnelConnector>, Error> {
-        tracing::info!("handle_srv_record: {}", domain_name);
+        tracing::info!("Starting SRV record resolution for domain: {}", domain_name);
 
         let srv_domains = PROTO_PORT_OFFSET
             .iter()
             .map(|(p, _)| (format!("_easytier._{}.{}", p, domain_name), *p))
             .collect::<Vec<_>>();
-        tracing::info!("build srv_domains: {:?}", srv_domains);
+        tracing::info!(srv_domains = ?srv_domains, "Built SRV domain lookup list");
         
         // I think my variable naming should be quite straight forward......
         let min_priority_records = Arc::new(Mutex::new(MinPriorityRecords::new()));
@@ -291,18 +312,49 @@ impl DNSTunnelConnector {
                 let srv_domain = srv_domain.clone();
                 let protocol = *protocol;
                 async move {
+                    tracing::info!(srv_domain = %srv_domain, protocol = %protocol, "Starting DNS SRV lookup");
+                    
                     match resolver.srv_lookup(&srv_domain).await {
                         Ok(response) => {
-                            tracing::info!(?response, ?srv_domain, "srv_lookup response");
-                            for record in response.iter() {
+                            let record_count = response.iter().count();
+                            tracing::info!(
+                                srv_domain = %srv_domain,
+                                protocol = %protocol,
+                                record_count = record_count,
+                                "NSLookup success on {}: found {} records",
+                                srv_domain, record_count
+                            );
+                            
+                            for (index, record) in response.iter().enumerate() {
+                                tracing::info!(
+                                    srv_domain = %srv_domain,
+                                    protocol = %protocol,
+                                    record_index = index + 1,
+                                    target = %record.target().to_utf8().trim_end_matches('.'),
+                                    port = record.port(),
+                                    priority = record.priority(),
+                                    weight = record.weight(),
+                                    "Found SRV record"
+                                );
+                                
                                 match Self::handle_one_srv_record(record, &protocol) {
                                     Ok(srv_record) => {
-                                        tracing::info!(?srv_record, ?srv_domain, "parsed_record");
+                                        tracing::info!(
+                                            srv_domain = %srv_domain,
+                                            protocol = %protocol,
+                                            ?srv_record,
+                                            "Successfully parsed SRV record"
+                                        );
                                         // using add_record to process the new record fund
                                         min_priority_records.lock().unwrap().add_record(srv_record, protocol.to_string());
                                     }
                                     Err(e) => {
-                                        tracing::warn!(?e, ?srv_domain, "invalid srv record");
+                                        tracing::warn!(
+                                            srv_domain = %srv_domain,
+                                            protocol = %protocol,
+                                            error = ?e,
+                                            "Failed to parse SRV record, skipping"
+                                        );
                                         continue;
                                     }
                                 }
@@ -310,7 +362,13 @@ impl DNSTunnelConnector {
                             Ok::<_, Error>(())
                         }
                         Err(e) => {
-                            tracing::debug!(?e, ?srv_domain, "srv_lookup failed");
+                            tracing::info!(
+                                srv_domain = %srv_domain,
+                                protocol = %protocol,
+                                error = ?e,
+                                "NSLookup failed for {}, ignoring",
+                                srv_domain
+                            );
                             Ok(()) // ignore any failure
                         }
                     }
@@ -318,9 +376,11 @@ impl DNSTunnelConnector {
             })
             .collect::<Vec<_>>();
         
+        tracing::info!("Waiting for all SRV lookup tasks to complete");
         // wait for all srv lookup finish
         let _ = futures::future::join_all(srv_lookup_tasks).await;
 
+        tracing::info!("All SRV lookups completed, starting final selection");
         // comes up with the final srv 
         let selected_urls = min_priority_records
             .lock()
@@ -329,16 +389,19 @@ impl DNSTunnelConnector {
 
         match selected_urls {
             Some(urls) => {
-                tracing::info!(urls = ?urls, "selected srv record URLs from all protocols");
-                // Return a MultiURLTunnelConnector with the selected URLs
-                let multi_connector = MultiURLTunnelConnector::new(urls, self.global_ctx.clone());
-                Ok(Box::new(multi_connector))
+                tracing::error!(urls = ?urls, total_protocols = urls.len(), "SRV record resolution completed successfully, selected URLs from all protocols");
+                
+                // 统一使用SrvConnector，无论单协议还是多协议
+                let srv_connector = SrvConnector::new(urls, self.global_ctx.clone());
+                Ok(Box::new(srv_connector))
             }
             None => {
+                tracing::error!("SRV record resolution failed: no valid records found");
                 Err(anyhow::anyhow!("no srv record found").into())
             }
         }
     }
+    */
 }
 
 #[async_trait::async_trait]
@@ -353,18 +416,19 @@ impl super::TunnelConnector for DNSTunnelConnector {
             )
             .await
             .with_context(|| "get txt record url failed")?
-        } else if self.addr.scheme() == "srv" {
-            self.handle_srv_record(
-                self.addr
-                    .host_str()
-                    .as_ref()
-                    .ok_or(anyhow::anyhow!("host should not be empty in srv url"))?,
-            )
-            .await
-            .with_context(|| "get srv record url failed")?
+        // SRV handling is now done in multi_connector.rs at the instance level
+        // } else if self.addr.scheme() == "srv" {
+        //     self.handle_srv_record(
+        //         self.addr
+        //             .host_str()
+        //             .as_ref()
+        //             .ok_or(anyhow::anyhow!("host should not be empty in srv url"))?,
+        //     )
+        //     .await
+        //     .with_context(|| "get srv record url failed")?
         } else {
             return Err(anyhow::anyhow!(
-                "unsupported dns scheme: {}, expecting txt or srv",
+                "unsupported dns scheme: {}, expecting txt. SRV is handled by multi_connector",
                 self.addr.scheme()
             )
             .into());
@@ -398,6 +462,139 @@ impl super::TunnelConnector for DNSTunnelConnector {
     }
 }
 
+/*
+#[derive(Debug)]
+pub struct SrvConnector {
+    urls: Vec<String>,
+    global_ctx: ArcGlobalCtx,
+    ip_version: IpVersion,
+    bind_addrs: Vec<SocketAddr>,
+}
+
+impl SrvConnector {
+    pub fn new(urls: Vec<String>, global_ctx: ArcGlobalCtx) -> Self {
+        Self {
+            urls,
+            global_ctx,
+            ip_version: IpVersion::Both,
+            bind_addrs: Vec::new(),
+        }
+    }
+    
+    pub fn get_urls(&self) -> &Vec<String> {
+        &self.urls
+    }
+}
+
+#[async_trait::async_trait]
+impl TunnelConnector for SrvConnector {
+    async fn connect(&mut self) -> Result<Box<dyn Tunnel>, crate::tunnel::TunnelError> {
+        tracing::error!(urls = ?self.urls, url_count = self.urls.len(), "SrvConnector: Starting connection attempts for {} protocol(s)", self.urls.len());
+        
+        // 为每个URL创建连接任务
+        let mut connect_tasks = Vec::new();
+        let mut connectors = Vec::new();
+        
+        for url in &self.urls {
+            let url_clone = url.clone();
+            let global_ctx = self.global_ctx.clone();
+            let bind_addrs = self.bind_addrs.clone();
+            let ip_version = self.ip_version;
+            
+            // 创建连接器
+            match create_connector_by_url(&url_clone, &global_ctx, ip_version).await {
+                Ok(mut connector) => {
+                    connector.set_bind_addrs(bind_addrs);
+                    connector.set_ip_version(ip_version);
+                    connectors.push((url_clone.clone(), connector));
+                }
+                Err(e) => {
+                    tracing::error!(url = %url_clone, error = ?e, "Failed to create connector for URL");
+                    continue;
+                }
+            }
+        }
+        
+        if connectors.is_empty() {
+            tracing::error!("No valid connectors created for any URL");
+            return Err(anyhow::anyhow!("No valid connectors created").into());
+        }
+        
+        // Try all peers
+        for (url, mut connector) in connectors {
+            let task = tokio::spawn(async move {
+                tracing::error!(url = %url, "Attempting connection");
+                match connector.connect().await {
+                    Ok(tunnel) => {
+                        tracing::error!(url = %url, tunnel_info = ?tunnel.info(), "Successfully connected via protocol");
+                        Ok((url, tunnel))
+                    }
+                    Err(e) => {
+                        tracing::error!(url = %url, error = ?e, "Failed to connect via protocol");
+                        Err((url, e))
+                    }
+                }
+            });
+            connect_tasks.push(task);
+        }
+        
+        // 使用tokio::select!等待第一个成功的连接
+        let mut remaining_tasks = connect_tasks;
+        
+        while !remaining_tasks.is_empty() {
+            let (result, _index, remaining) = futures::future::select_all(remaining_tasks).await;
+            remaining_tasks = remaining;
+            
+            match result {
+                Ok(Ok((url, tunnel))) => {
+                    tracing::error!(url = %url, remaining_attempts = remaining_tasks.len(), 
+                        "SrvConnector: Connection successful, {} other attempts still running in background",
+                        remaining_tasks.len());
+                    
+                    // Return the first successful tunnel
+
+                    /* 
+                    At this stage, other conenction tasks will continue running in the background, but we need to kill them since easytier only supports one tunnel at a time, but if multi-tunnelling is supported in future, we can add some stuff here. 
+                    */
+                    for task in remaining_tasks {
+                        task.abort();
+                    }
+                    
+                    return Ok(tunnel);
+                }
+                Ok(Err((url, e))) => {
+                    tracing::error!(url = %url, error = ?e, remaining_attempts = remaining_tasks.len(),
+                        "Connection attempt failed, {} attempts remaining", remaining_tasks.len());
+                    continue;
+                }
+                Err(e) => {
+                    tracing::error!(error = ?e, "Task panicked");
+                    continue;
+                }
+            }
+        }
+        
+        tracing::error!("All SRV connection attempts failed");
+        Err(anyhow::anyhow!("All SRV connection attempts failed").into())
+    }
+
+    fn remote_url(&self) -> url::Url {
+        // Return the first URL
+        self.urls.first()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_else(|| "srv://unknown".parse().unwrap())
+    }
+
+    fn set_bind_addrs(&mut self, bind_addrs: Vec<std::net::SocketAddr>) {
+        self.bind_addrs = bind_addrs;
+    }
+
+    fn set_ip_version(&mut self, ip_version: IpVersion) {
+        self.ip_version = ip_version;
+    }
+}
+*/
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,6 +619,7 @@ mod tests {
         }
     }
 
+    /*
     #[tokio::test]
     async fn test_srv() {
         let url = "srv://easytier.cn";
@@ -440,4 +638,5 @@ mod tests {
             }
         }
     }
+    */
 }

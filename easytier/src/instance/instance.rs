@@ -18,6 +18,7 @@ use crate::common::scoped_task::ScopedTask;
 use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
+use crate::connector::allocator::ConnectorAllocator;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
@@ -348,9 +349,30 @@ impl Instance {
 
     async fn add_initial_peers(&mut self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
-            self.get_conn_manager()
-                .add_connector_by_url(peer.uri.as_str())
-                .await?;
+            let target_url = peer.uri.to_string();
+            tracing::info!(
+                target_url = %target_url,
+                "Processing peer URL with ConnectorAllocator"
+            );
+            
+            // Use ConnectorAllocator to handle all peer URLs
+            match ConnectorAllocator::allocate_and_resolve(&target_url, &self.conn_manager, &self.global_ctx).await {
+                Ok(added_count) => {
+                    tracing::info!(
+                        target_url = %target_url,
+                        peer_count = added_count,
+                        "Peer URL processed successfully via ConnectorAllocator"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target_url = %target_url,
+                        error = ?e,
+                        "Failed to process peer URL with ConnectorAllocator"
+                    );
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }

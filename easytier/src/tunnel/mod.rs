@@ -133,6 +133,11 @@ pub trait TunnelConnector: Send {
     fn remote_url(&self) -> url::Url;
     fn set_bind_addrs(&mut self, _addrs: Vec<SocketAddr>) {}
     fn set_ip_version(&mut self, _ip_version: IpVersion) {}
+    
+    // Enable downcasting for SRV multi-connection support
+    fn as_any(&self) -> &dyn std::any::Any {
+        panic!("as_any not implemented for this TunnelConnector")
+    }
 }
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
