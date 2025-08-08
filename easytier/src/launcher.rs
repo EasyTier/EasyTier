@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
-
+use std::net::SocketAddr;
 use crate::{
     common::{
         config::{
@@ -21,6 +21,7 @@ use anyhow::Context;
 use chrono::{DateTime, Local};
 use tokio::{sync::broadcast, task::JoinSet};
 use crate::common::config::PortForwardConfig;
+use crate::proto::web;
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -590,19 +591,21 @@ impl NetworkConfig {
         }
 
         if self.port_forwards.is_empty() {} else {
-            cfg.set_port_forwards(self.port_forwards
+            cfg.set_port_forwards(
+                self.port_forwards
                 .iter()
-                .map(|pf| {
-                    let (protocol, rest) = pf.split_once("://").expect("Invalid format: missing '://'");
-                    let parts: Vec<&str> = rest.splitn(2, '/').collect();
-                    if parts.len() < 2 {
-                        panic!("Invalid format: expect address1/address2");
-                    }
+                .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
+                .filter_map(|pf| {
+                    let bind_addr = format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
+                    let dst_addr = format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
 
-                    PortForwardConfig {
-                        bind_addr: parts[0].to_string().parse().unwrap(),
-                        dst_addr: parts[1].to_string().parse().unwrap(),
-                        proto: protocol.to_string(),
+                    match (bind_addr, dst_addr) {
+                        (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
+                            bind_addr,
+                            dst_addr,
+                            proto: pf.proto.clone(),
+                        }),
+                        _ => None,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -840,11 +843,18 @@ impl NetworkConfig {
         if let Some(whitelist) = config.get_rpc_portal_whitelist() {
             result.rpc_portal_whitelists = whitelist.iter().map(|w| w.to_string()).collect();
         }
-        
-        if let port_forwards = config.get_port_forwards() { 
+
+        let port_forwards = config.get_port_forwards();
+        if !port_forwards.is_empty() {
             result.port_forwards = port_forwards.iter()
                 .map(|f| {
-                    format!("{}://{}/{}", f.proto, f.bind_addr, f.dst_addr)
+                    web::PortForwardConfig {
+                        proto: f.proto.clone(),
+                        bind_ip: f.bind_addr.ip().to_string(),
+                        bind_port: f.bind_addr.port() as u32,
+                        dst_ip: f.dst_addr.ip().to_string(),
+                        dst_port: f.dst_addr.port() as u32,
+                    }
                 }).
                 collect();
         }

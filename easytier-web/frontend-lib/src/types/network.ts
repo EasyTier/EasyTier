@@ -71,7 +71,7 @@ export interface NetworkConfig {
 
   rpc_portal_whitelists: string[]
   
-  port_forwards: string[]
+  port_forwards: PortForwardConfig[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -257,6 +257,30 @@ export interface PeerConnStats {
   tx_packets: number
   latency_us: number
 }
+
+export interface PortForwardConfig {
+  bind_ip: string,
+  bind_port: number,
+  dst_ip: string,
+  dst_port: number,
+  proto: string
+}
+
+// 添加新行
+export const addRow = (rows: PortForwardConfig[]) => {
+  rows.push({
+    proto: 'tcp',
+    bind_ip: '',
+    bind_port: 65535,
+    dst_ip: '',
+    dst_port: 65535,
+  });
+};
+
+// 删除行
+export const removeRow = (index: number, rows: PortForwardConfig[]) => {
+  rows.splice(index, 1);
+};
 
 export enum EventType {
   TunDeviceReady = 'TunDeviceReady', // string
