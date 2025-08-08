@@ -146,7 +146,7 @@ impl MinPriorityRecords {
             if total_weight > 0 {
                 // Randomly select using weights
                 let mut rng = rand::thread_rng();
-                let rand_val = rng.gen_range(0..=total_weight);
+                let rand_val = rng.gen_range(1..=total_weight);
                 let mut accumulated_weight = 0u32;
 
                 tracing::debug!(
