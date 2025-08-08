@@ -646,7 +646,6 @@ impl MultiConnector {
     /// Check if a string is a valid URL
     fn is_valid_url(s: &str) -> bool {
         s.contains("://") && s.len() > 6
-    }
 
     fn handle_one_srv_record(
         record: &hickory_resolver::proto::rr::rdata::SRV,
