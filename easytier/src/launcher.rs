@@ -590,25 +590,25 @@ impl NetworkConfig {
             ));
         }
 
-        if self.port_forwards.is_empty() {} else {
+        if !self.port_forwards.is_empty() {
             cfg.set_port_forwards(
                 self.port_forwards
-                .iter()
-                .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
-                .filter_map(|pf| {
-                    let bind_addr = format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
-                    let dst_addr = format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
+                    .iter()
+                    .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
+                    .filter_map(|pf| {
+                        let bind_addr = format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
+                        let dst_addr = format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
 
-                    match (bind_addr, dst_addr) {
-                        (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
-                            bind_addr,
-                            dst_addr,
-                            proto: pf.proto.clone(),
-                        }),
-                        _ => None,
-                    }
-                })
-                .collect::<Vec<_>>()
+                        match (bind_addr, dst_addr) {
+                            (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
+                                bind_addr,
+                                dst_addr,
+                                proto: pf.proto.clone(),
+                            }),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
             );
         }
 
