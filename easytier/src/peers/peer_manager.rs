@@ -24,6 +24,7 @@ use crate::{
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, NetworkIdentity},
+        stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         stun::StunInfoCollectorTrait,
         PeerId,
     },
@@ -116,6 +117,13 @@ enum RouteAlgoInst {
     None,
 }
 
+struct SelfTxCounters {
+    self_tx_packets: CounterHandle,
+    self_tx_bytes: CounterHandle,
+    compress_tx_bytes_before: CounterHandle,
+    compress_tx_bytes_after: CounterHandle,
+}
+
 pub struct PeerManager {
     my_peer_id: PeerId,
 
@@ -147,6 +155,8 @@ pub struct PeerManager {
     reserved_my_peer_id_map: DashMap<String, PeerId>,
 
     allow_loopback_tunnel: AtomicBool,
+
+    self_tx_counters: SelfTxCounters,
 }
 
 impl Debug for PeerManager {
@@ -214,7 +224,10 @@ impl PeerManager {
             peer_rpc_tspt_sender,
             encryptor: encryptor.clone(),
         });
-        let peer_rpc_mgr = Arc::new(PeerRpcManager::new(rpc_tspt.clone()));
+        let peer_rpc_mgr = Arc::new(PeerRpcManager::new_with_stats_manager(
+            rpc_tspt.clone(),
+            global_ctx.stats_manager().clone(),
+        ));
 
         let route_algo_inst = match route_algo {
             RouteAlgoType::Ospf => RouteAlgoInst::Ospf(PeerRoute::new(
@@ -245,6 +258,30 @@ impl PeerManager {
             .expect("invalid data compress algo, maybe some features not enabled");
 
         let exit_nodes = global_ctx.config.get_exit_nodes();
+
+        let stats_manager = global_ctx.stats_manager();
+        let self_tx_counters = SelfTxCounters {
+            self_tx_packets: stats_manager.get_counter(
+                MetricName::TrafficPacketsSelfTx,
+                LabelSet::new()
+                    .with_label_type(LabelType::NetworkName(global_ctx.get_network_name())),
+            ),
+            self_tx_bytes: stats_manager.get_counter(
+                MetricName::TrafficBytesSelfTx,
+                LabelSet::new()
+                    .with_label_type(LabelType::NetworkName(global_ctx.get_network_name())),
+            ),
+            compress_tx_bytes_before: stats_manager.get_counter(
+                MetricName::CompressionBytesTxBefore,
+                LabelSet::new()
+                    .with_label_type(LabelType::NetworkName(global_ctx.get_network_name())),
+            ),
+            compress_tx_bytes_after: stats_manager.get_counter(
+                MetricName::CompressionBytesTxAfter,
+                LabelSet::new()
+                    .with_label_type(LabelType::NetworkName(global_ctx.get_network_name())),
+            ),
+        };
 
         PeerManager {
             my_peer_id,
@@ -277,6 +314,8 @@ impl PeerManager {
             reserved_my_peer_id_map: DashMap::new(),
 
             allow_loopback_tunnel: AtomicBool::new(true),
+
+            self_tx_counters,
         }
     }
 
@@ -507,9 +546,24 @@ impl PeerManager {
         let foreign_network_my_peer_id =
             foreign_network_mgr.get_network_peer_id(&foreign_network_name);
 
+        let buf_len = packet.buf_len();
+        let stats_manager = peer_map.get_global_ctx().stats_manager().clone();
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(foreign_network_name.clone()));
+        let add_counter = move |bytes_metric, packets_metric| {
+            stats_manager
+                .get_counter(bytes_metric, label_set.clone())
+                .add(buf_len as u64);
+            stats_manager.get_counter(packets_metric, label_set).inc();
+        };
+
         // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
         if to_peer_id == my_peer_id {
             // packet sent from other peer to me, extract the inner packet and forward it
+            add_counter(
+                MetricName::TrafficBytesForeignForwardRx,
+                MetricName::TrafficPacketsForeignForwardRx,
+            );
             if let Err(e) = foreign_network_mgr
                 .send_msg_to_peer(
                     &foreign_network_name,
@@ -540,6 +594,11 @@ impl PeerManager {
                 return Err(packet);
             };
 
+            add_counter(
+                MetricName::TrafficBytesForeignForwardTx,
+                MetricName::TrafficPacketsForeignForwardTx,
+            );
+
             // modify the to_peer id from foreign network my peer id to the origin my peer id
             packet
                 .mut_peer_manager_header()
@@ -558,10 +617,13 @@ impl PeerManager {
                     "send_msg_directly failed when forward local generated foreign network packet"
                 );
             }
-
             Ok(())
         } else {
             // target is not me, forward it. try get origin peer id
+            add_counter(
+                MetricName::TrafficBytesForeignForwardForwarded,
+                MetricName::TrafficPacketsForeignForwardForwarded,
+            );
             Err(packet)
         }
     }
@@ -577,6 +639,29 @@ impl PeerManager {
         let compress_algo = self.data_compress_algo;
         let acl_filter = self.global_ctx.get_acl_filter().clone();
         let global_ctx = self.global_ctx.clone();
+        let stats_mgr = self.global_ctx.stats_manager().clone();
+
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
+
+        let self_tx_bytes = self.self_tx_counters.self_tx_bytes.clone();
+        let self_tx_packets = self.self_tx_counters.self_tx_packets.clone();
+        let self_rx_bytes =
+            stats_mgr.get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
+        let self_rx_packets =
+            stats_mgr.get_counter(MetricName::TrafficPacketsSelfRx, label_set.clone());
+        let forward_tx_bytes =
+            stats_mgr.get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
+        let forward_tx_packets =
+            stats_mgr.get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
+
+        let compress_tx_bytes_before = self.self_tx_counters.compress_tx_bytes_before.clone();
+        let compress_tx_bytes_after = self.self_tx_counters.compress_tx_bytes_after.clone();
+        let compress_rx_bytes_before =
+            stats_mgr.get_counter(MetricName::CompressionBytesRxBefore, label_set.clone());
+        let compress_rx_bytes_after =
+            stats_mgr.get_counter(MetricName::CompressionBytesRxAfter, label_set.clone());
+
         self.tasks.lock().await.spawn(async move {
             tracing::trace!("start_peer_recv");
             while let Ok(ret) = recv_packet_from_chan(&mut recv).await {
@@ -587,6 +672,7 @@ impl PeerManager {
                     continue;
                 };
 
+                let buf_len = ret.buf_len();
                 let Some(hdr) = ret.mut_peer_manager_header() else {
                     tracing::warn!(?ret, "invalid packet, skip");
                     continue;
@@ -608,13 +694,24 @@ impl PeerManager {
 
                     hdr.forward_counter += 1;
 
-                    if from_peer_id == my_peer_id
-                        && (hdr.packet_type == PacketType::Data as u8
+                    if from_peer_id == my_peer_id {
+                        compress_tx_bytes_before.add(buf_len as u64);
+
+                        if hdr.packet_type == PacketType::Data as u8
                             || hdr.packet_type == PacketType::KcpSrc as u8
-                            || hdr.packet_type == PacketType::KcpDst as u8)
-                    {
-                        let _ = Self::try_compress_and_encrypt(compress_algo, &encryptor, &mut ret)
-                            .await;
+                            || hdr.packet_type == PacketType::KcpDst as u8
+                        {
+                            let _ =
+                                Self::try_compress_and_encrypt(compress_algo, &encryptor, &mut ret)
+                                    .await;
+                        }
+
+                        compress_tx_bytes_after.add(ret.buf_len() as u64);
+                        self_tx_bytes.add(ret.buf_len() as u64);
+                        self_tx_packets.inc();
+                    } else {
+                        forward_tx_bytes.add(buf_len as u64);
+                        forward_tx_packets.inc();
                     }
 
                     tracing::trace!(?to_peer_id, ?my_peer_id, "need forward");
@@ -629,11 +726,17 @@ impl PeerManager {
                         continue;
                     }
 
+                    self_rx_bytes.add(buf_len as u64);
+                    self_rx_packets.inc();
+                    compress_rx_bytes_before.add(buf_len as u64);
+
                     let compressor = DefaultCompressor {};
                     if let Err(e) = compressor.decompress(&mut ret).await {
                         tracing::error!(?e, "decompress failed");
                         continue;
                     }
+
+                    compress_rx_bytes_after.add(ret.buf_len() as u64);
 
                     if !acl_filter.process_packet_with_acl(
                         &ret,
@@ -1053,7 +1156,15 @@ impl PeerManager {
             return Ok(());
         }
 
+        self.self_tx_counters
+            .compress_tx_bytes_before
+            .add(msg.buf_len() as u64);
+
         Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
+
+        self.self_tx_counters
+            .compress_tx_bytes_after
+            .add(msg.buf_len() as u64);
 
         let is_latency_first = self.global_ctx.get_flags().latency_first;
         msg.mut_peer_manager_header()
@@ -1076,6 +1187,11 @@ impl PeerManager {
                 .unwrap()
                 .to_peer_id
                 .set(*peer_id);
+
+            self.self_tx_counters
+                .self_tx_bytes
+                .add(msg.buf_len() as u64);
+            self.self_tx_counters.self_tx_packets.inc();
 
             if let Err(e) =
                 Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, *peer_id)

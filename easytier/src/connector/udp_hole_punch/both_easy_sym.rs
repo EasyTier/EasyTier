@@ -260,7 +260,7 @@ impl PunchBothEasySymHoleClient {
             )
             .await;
 
-        let remote_ret = handle_rpc_result(remote_ret, dst_peer_id, self.blacklist.clone())?;
+        let remote_ret = handle_rpc_result(remote_ret, dst_peer_id, &self.blacklist)?;
 
         if remote_ret.is_busy {
             *is_busy = true;

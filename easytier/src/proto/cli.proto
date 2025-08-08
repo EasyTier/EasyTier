@@ -302,3 +302,26 @@ service PortForwardManageRpc {
   rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
   rpc ListPortForward(ListPortForwardRequest) returns (ListPortForwardResponse);
 }
+
+message MetricSnapshot {
+  string name = 1;
+  uint64 value = 2;
+  map<string, string> labels = 3;
+}
+
+message GetStatsRequest {}
+
+message GetStatsResponse {
+  repeated MetricSnapshot metrics = 1;
+}
+
+message GetPrometheusStatsRequest {}
+
+message GetPrometheusStatsResponse {
+  string prometheus_text = 1;
+}
+
+service StatsRpc {
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc GetPrometheusStats(GetPrometheusStatsRequest) returns (GetPrometheusStatsResponse);
+}

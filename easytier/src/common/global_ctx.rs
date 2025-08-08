@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::common::config::ProxyNetworkConfig;
+use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
 use crate::proto::cli::PeerConnInfo;
@@ -83,6 +84,8 @@ pub struct GlobalCtx {
 
     token_bucket_manager: TokenBucketManager,
 
+    stats_manager: Arc<StatsManager>,
+
     acl_filter: Arc<AclFilter>,
 }
 
@@ -150,6 +153,8 @@ impl GlobalCtx {
             quic_proxy_port: AtomicCell::new(None),
 
             token_bucket_manager: TokenBucketManager::new(),
+
+            stats_manager: Arc::new(StatsManager::new()),
 
             acl_filter: Arc::new(AclFilter::new()),
         }
@@ -321,6 +326,10 @@ impl GlobalCtx {
 
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {
         &self.token_bucket_manager
+    }
+
+    pub fn stats_manager(&self) -> &Arc<StatsManager> {
+        &self.stats_manager
     }
 
     pub fn get_acl_filter(&self) -> &Arc<AclFilter> {

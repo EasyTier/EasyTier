@@ -4,7 +4,7 @@ use futures::{SinkExt as _, StreamExt};
 use tokio::task::JoinSet;
 
 use crate::{
-    common::{error::Error, PeerId},
+    common::{error::Error, PeerId, stats_manager::StatsManager},
     proto::rpc_impl::{self, bidirect::BidirectRpcManager},
     tunnel::packet_def::ZCPacket,
 };
@@ -42,6 +42,15 @@ impl PeerRpcManager {
         Self {
             tspt: Arc::new(Box::new(tspt)),
             bidirect_rpc: BidirectRpcManager::new(),
+
+            tasks: Mutex::new(JoinSet::new()),
+        }
+    }
+
+    pub fn new_with_stats_manager(tspt: impl PeerRpcManagerTransport, stats_manager: Arc<StatsManager>) -> Self {
+        Self {
+            tspt: Arc::new(Box::new(tspt)),
+            bidirect_rpc: BidirectRpcManager::new_with_stats_manager(stats_manager),
 
             tasks: Mutex::new(JoinSet::new()),
         }

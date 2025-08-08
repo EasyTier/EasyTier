@@ -32,11 +32,12 @@ use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
 use crate::proto::cli::VpnPortalRpc;
 use crate::proto::cli::{
-    AddPortForwardRequest, AddPortForwardResponse, ListMappedListenerRequest,
+    AddPortForwardRequest, AddPortForwardResponse, GetPrometheusStatsRequest,
+    GetPrometheusStatsResponse, GetStatsRequest, GetStatsResponse, ListMappedListenerRequest,
     ListMappedListenerResponse, ListPortForwardRequest, ListPortForwardResponse,
     ManageMappedListenerRequest, ManageMappedListenerResponse, MappedListener,
-    MappedListenerManageAction, MappedListenerManageRpc, PortForwardManageRpc,
-    RemovePortForwardRequest, RemovePortForwardResponse,
+    MappedListenerManageAction, MappedListenerManageRpc, MetricSnapshot, PortForwardManageRpc,
+    RemovePortForwardRequest, RemovePortForwardResponse, StatsRpc,
 };
 use crate::proto::cli::{GetVpnPortalInfoRequest, GetVpnPortalInfoResponse, VpnPortalInfo};
 use crate::proto::common::{PortForwardConfigPb, TunnelInfo};
@@ -908,6 +909,60 @@ impl Instance {
         }
     }
 
+    fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone {
+        #[derive(Clone)]
+        pub struct StatsRpcService {
+            global_ctx: ArcGlobalCtx,
+        }
+
+        #[async_trait::async_trait]
+        impl StatsRpc for StatsRpcService {
+            type Controller = BaseController;
+
+            async fn get_stats(
+                &self,
+                _: BaseController,
+                _request: GetStatsRequest,
+            ) -> Result<GetStatsResponse, rpc_types::error::Error> {
+                let stats_manager = self.global_ctx.stats_manager();
+                let snapshots = stats_manager.get_all_metrics();
+                
+                let metrics = snapshots
+                    .into_iter()
+                    .map(|snapshot| {
+                        let mut labels = std::collections::BTreeMap::new();
+                        for label in snapshot.labels.labels() {
+                            labels.insert(label.key.clone(), label.value.clone());
+                        }
+                        
+                        MetricSnapshot {
+                            name: snapshot.name_str(),
+                            value: snapshot.value,
+                            labels,
+                        }
+                    })
+                    .collect();
+                
+                Ok(GetStatsResponse { metrics })
+            }
+
+            async fn get_prometheus_stats(
+                &self,
+                _: BaseController,
+                _request: GetPrometheusStatsRequest,
+            ) -> Result<GetPrometheusStatsResponse, rpc_types::error::Error> {
+                let stats_manager = self.global_ctx.stats_manager();
+                let prometheus_text = stats_manager.export_prometheus();
+                
+                Ok(GetPrometheusStatsResponse { prometheus_text })
+            }
+        }
+
+        StatsRpcService {
+            global_ctx: self.global_ctx.clone(),
+        }
+    }
+
     async fn run_rpc_server(&mut self) -> Result<(), Error> {
         let Some(_) = self.global_ctx.config.get_rpc_portal() else {
             tracing::info!("rpc server not enabled, because rpc_portal is not set.");
@@ -922,6 +977,7 @@ impl Instance {
         let vpn_portal_rpc = self.get_vpn_portal_rpc_service();
         let mapped_listener_manager_rpc = self.get_mapped_listener_manager_rpc_service();
         let port_forward_manager_rpc = self.get_port_forward_manager_rpc_service();
+        let stats_rpc_service = self.get_stats_rpc_service();
 
         let s = self.rpc_server.as_mut().unwrap();
         let peer_mgr_rpc_service = PeerManagerRpcService::new(peer_mgr.clone());
@@ -944,6 +1000,10 @@ impl Instance {
         );
         s.registry().register(
             PortForwardManageRpcServer::new(port_forward_manager_rpc),
+            "",
+        );
+        s.registry().register(
+            crate::proto::cli::StatsRpcServer::new(stats_rpc_service),
             "",
         );
 
