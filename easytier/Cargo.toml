@@ -299,9 +299,7 @@ full = [
     "websocket",
     "wireguard",
     "aes-gcm",
-    "ring-chacha20",
-    # "openssl-crypto", # need openssl-dev libs
-    "xor-cipher",
+    "openssl-crypto", # need openssl-dev libs
     "smoltcp",
     "tun",
     "socks5",
@@ -310,9 +308,7 @@ wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
-ring-chacha20 = ["dep:ring"]
 openssl-crypto = ["dep:openssl"]
-xor-cipher = []
 tun = ["dep:tun"]
 websocket = [
     "dep:tokio-websockets",

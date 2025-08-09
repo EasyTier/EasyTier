@@ -1,18 +1,19 @@
 use rand::RngCore;
-use ring::aead::{self, LessSafeKey, UnboundKey, Nonce, Aad};
+use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::tunnel::packet_def::ZCPacket;
 use super::{Encryptor, Error};
+use crate::tunnel::packet_def::ZCPacket;
 
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
 pub struct ChaCha20Poly1305Tail {
-    pub tag: [u8; 16],    
-    pub nonce: [u8; 12],  
+    pub tag: [u8; 16],
+    pub nonce: [u8; 12],
 }
 
-pub const CHACHA20_POLY1305_ENCRYPTION_RESERVED: usize = std::mem::size_of::<ChaCha20Poly1305Tail>();
+pub const CHACHA20_POLY1305_ENCRYPTION_RESERVED: usize =
+    std::mem::size_of::<ChaCha20Poly1305Tail>();
 
 #[derive(Clone)]
 pub struct RingChaCha20Cipher {
@@ -76,11 +77,9 @@ impl Encryptor for RingChaCha20Cipher {
         rand::thread_rng().fill_bytes(&mut tail.nonce);
         let nonce = Nonce::assume_unique_for_key(tail.nonce.clone());
 
-        let rs = self.cipher.seal_in_place_separate_tag(
-            nonce,
-            Aad::empty(),
-            zc_packet.mut_payload(),
-        );
+        let rs =
+            self.cipher
+                .seal_in_place_separate_tag(nonce, Aad::empty(), zc_packet.mut_payload());
 
         match rs {
             Ok(tag) => {
@@ -111,7 +110,7 @@ mod tests {
         let text = b"Hello, World! This is a test message for Ring ChaCha20-Poly1305.";
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
-        
+
         cipher.encrypt(&mut packet).unwrap();
         assert_eq!(
             packet.payload().len(),

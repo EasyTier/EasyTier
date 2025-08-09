@@ -1,12 +1,10 @@
-#[cfg(feature = "openssl-crypto")]
-mod openssl_impl {
-    use openssl::symm::{Cipher, Crypter, Mode};
-    use rand::RngCore;
-    use zerocopy::{AsBytes, FromBytes, FromZeroes};
+use openssl::symm::{Cipher, Crypter, Mode};
+use rand::RngCore;
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-    use crate::tunnel::packet_def::ZCPacket;
+use crate::tunnel::packet_def::ZCPacket;
 
-    use crate::peers::encrypt::{Encryptor, Error};
+use crate::peers::encrypt::{Encryptor, Error};
 
 // OpenSSL 加密尾部结构
 #[repr(C, packed)]
@@ -25,7 +23,7 @@ pub struct OpenSslCipher {
 pub enum OpenSslEnum {
     Aes128Gcm([u8; 16]),
     Aes256Gcm([u8; 32]),
-    ChaCha20([u8; 32]),
+    Chacha20([u8; 32]),
 }
 
 impl Clone for OpenSslEnum {
@@ -33,7 +31,7 @@ impl Clone for OpenSslEnum {
         match &self {
             OpenSslEnum::Aes128Gcm(key) => OpenSslEnum::Aes128Gcm(*key),
             OpenSslEnum::Aes256Gcm(key) => OpenSslEnum::Aes256Gcm(*key),
-            OpenSslEnum::ChaCha20(key) => OpenSslEnum::ChaCha20(*key),
+            OpenSslEnum::Chacha20(key) => OpenSslEnum::Chacha20(*key),
         }
     }
 }
@@ -53,7 +51,7 @@ impl OpenSslCipher {
 
     pub fn new_chacha20(key: [u8; 32]) -> Self {
         Self {
-            cipher: OpenSslEnum::ChaCha20(key),
+            cipher: OpenSslEnum::Chacha20(key),
         }
     }
 
@@ -61,18 +59,20 @@ impl OpenSslCipher {
         match &self.cipher {
             OpenSslEnum::Aes128Gcm(key) => (Cipher::aes_128_gcm(), key.as_slice()),
             OpenSslEnum::Aes256Gcm(key) => (Cipher::aes_256_gcm(), key.as_slice()),
-            OpenSslEnum::ChaCha20(key) => (Cipher::chacha20(), key.as_slice()),
+            OpenSslEnum::Chacha20(key) => (Cipher::chacha20_poly1305(), key.as_slice()),
         }
     }
 
     fn is_aead_cipher(&self) -> bool {
-        matches!(self.cipher, OpenSslEnum::Aes128Gcm(_) | OpenSslEnum::Aes256Gcm(_))
+        matches!(
+            self.cipher,
+            OpenSslEnum::Aes128Gcm(_) | OpenSslEnum::Aes256Gcm(_) | OpenSslEnum::Chacha20(_)
+        )
     }
 
     fn get_nonce_size(&self) -> usize {
         match &self.cipher {
-            OpenSslEnum::Aes128Gcm(_) | OpenSslEnum::Aes256Gcm(_) => 12, // GCM uses 12-byte nonce
-            OpenSslEnum::ChaCha20(_) => 12, // ChaCha20 uses 12-byte nonce
+            OpenSslEnum::Aes128Gcm(_) | OpenSslEnum::Aes256Gcm(_) | OpenSslEnum::Chacha20(_) => 12, // GCM and ChaCha20-Poly1305 use 12-byte nonce
         }
     }
 }
@@ -104,14 +104,21 @@ impl Encryptor for OpenSslCipher {
             payload_len - OPENSSL_ENCRYPTION_RESERVED
         };
 
-        let mut decrypter = Crypter::new(cipher, Mode::Decrypt, key, Some(&openssl_tail.nonce[..nonce_size]))
-            .map_err(|_| Error::DecryptionFailed)?;
+        let mut decrypter = Crypter::new(
+            cipher,
+            Mode::Decrypt,
+            key,
+            Some(&openssl_tail.nonce[..nonce_size]),
+        )
+        .map_err(|_| Error::DecryptionFailed)?;
 
         if is_aead {
             // 对于 AEAD 模式，需要设置 tag
             let tag_start = text_len;
             let tag = &zc_packet.payload()[tag_start..tag_start + 16];
-            decrypter.set_tag(tag).map_err(|_| Error::DecryptionFailed)?;
+            decrypter
+                .set_tag(tag)
+                .map_err(|_| Error::DecryptionFailed)?;
         }
 
         let mut output = vec![0u8; text_len + cipher.block_size()];
@@ -148,12 +155,13 @@ impl Encryptor for OpenSslCipher {
         let mut tail = OpenSslTail::default();
         rand::thread_rng().fill_bytes(&mut tail.nonce[..nonce_size]);
 
-        let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(&tail.nonce[..nonce_size]))
-            .map_err(|_| Error::EncryptionFailed)?;
+        let mut encrypter =
+            Crypter::new(cipher, Mode::Encrypt, key, Some(&tail.nonce[..nonce_size]))
+                .map_err(|_| Error::EncryptionFailed)?;
 
         let payload_len = zc_packet.payload().len();
         let mut output = vec![0u8; payload_len + cipher.block_size()];
-        
+
         let mut count = encrypter
             .update(zc_packet.payload(), &mut output)
             .map_err(|_| Error::EncryptionFailed)?;
@@ -164,11 +172,13 @@ impl Encryptor for OpenSslCipher {
 
         // 更新数据包内容
         zc_packet.mut_payload()[..count].copy_from_slice(&output[..count]);
-        
+
         // 对于 AEAD 模式，添加 tag
         if is_aead {
             let mut tag = vec![0u8; 16]; // GCM 标签通常是 16 字节
-            encrypter.get_tag(&mut tag).map_err(|_| Error::EncryptionFailed)?;
+            encrypter
+                .get_tag(&mut tag)
+                .map_err(|_| Error::EncryptionFailed)?;
             zc_packet.mut_inner().extend_from_slice(&tag);
         }
 
@@ -192,14 +202,13 @@ mod tests {
     use super::OPENSSL_ENCRYPTION_RESERVED;
 
     #[test]
-    #[cfg(feature = "openssl-crypto")]
     fn test_openssl_aes128_gcm() {
         let key = [0u8; 16];
         let cipher = OpenSslCipher::new_aes128_gcm(key);
         let text = b"Hello, World! This is a test message for OpenSSL AES-128-GCM.";
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
-        
+
         // 加密
         cipher.encrypt(&mut packet).unwrap();
         assert!(packet.payload().len() > text.len() + OPENSSL_ENCRYPTION_RESERVED);
@@ -212,14 +221,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "openssl-crypto")]
     fn test_openssl_chacha20() {
         let key = [0u8; 32];
         let cipher = OpenSslCipher::new_chacha20(key);
         let text = b"Hello, World! This is a test message for OpenSSL ChaCha20.";
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
-        
+
         // 加密
         cipher.encrypt(&mut packet).unwrap();
         assert!(packet.payload().len() > text.len());
@@ -230,8 +238,4 @@ mod tests {
         assert_eq!(packet.payload(), text);
         assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
     }
-    }
 }
-
-#[cfg(feature = "openssl-crypto")]
-pub use openssl_impl::*;
