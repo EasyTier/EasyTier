@@ -29,7 +29,7 @@ jobs:
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
           cancel_others: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh", ".github/workflows/install_gui_dep.sh"]'
   build-gui:
     strategy:
       fail-fast: false
@@ -78,20 +78,11 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
+      - uses: actions/checkout@v3
+
       - name: Install GUI dependencies (x86 only)
         if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
-        run: |
-          sudo apt update
-          sudo apt install -qq libwebkit2gtk-4.1-dev \
-              build-essential \
-              curl \
-              wget \
-              file \
-              libgtk-3-dev \
-              librsvg2-dev \
-              libxdo-dev \
-              libssl-dev \
-              patchelf
+        run: bash ./.github/workflows/install_gui_dep.sh
 
       - name: Install GUI cross compile (aarch64 only)
         if: ${{ matrix.TARGET == 'aarch64-unknown-linux-musl' }}
@@ -127,8 +118,6 @@ jobs:
             libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v3
 
       - name: Set current ref as env variable
         run: |

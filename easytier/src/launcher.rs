@@ -1,8 +1,5 @@
-use std::{
-    collections::VecDeque,
-    sync::{atomic::AtomicBool, Arc, RwLock},
-};
-use std::net::SocketAddr;
+use crate::common::config::PortForwardConfig;
+use crate::proto::web;
 use crate::{
     common::{
         config::{
@@ -19,9 +16,12 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use std::net::SocketAddr;
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicBool, Arc, RwLock},
+};
 use tokio::{sync::broadcast, task::JoinSet};
-use crate::common::config::PortForwardConfig;
-use crate::proto::web;
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -89,7 +89,7 @@ impl EasyTierLauncher {
         let _ = data.event_subscriber.read().unwrap().send(event.clone());
         events.push_front(Event {
             time: chrono::Local::now(),
-            event: event,
+            event,
         });
         if events.len() > 20 {
             events.pop_back();
@@ -380,9 +380,7 @@ impl NetworkInstance {
     }
 
     pub fn get_running_info(&self) -> Option<NetworkInstanceRunningInfo> {
-        if self.launcher.is_none() {
-            return None;
-        }
+        self.launcher.as_ref()?;
 
         let launcher = self.launcher.as_ref().unwrap();
 
@@ -434,19 +432,15 @@ impl NetworkInstance {
     }
 
     pub fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
-        if let Some(launcher) = self.launcher.as_ref() {
-            Some(launcher.data.event_subscriber.read().unwrap().subscribe())
-        } else {
-            None
-        }
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.event_subscriber.read().unwrap().subscribe())
     }
 
     pub fn get_stop_notifier(&self) -> Option<Arc<tokio::sync::Notify>> {
-        if let Some(launcher) = self.launcher.as_ref() {
-            Some(launcher.data.instance_stop_notifier.clone())
-        } else {
-            None
-        }
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.instance_stop_notifier.clone())
     }
 
     pub fn get_latest_error_msg(&self) -> Option<String> {
@@ -511,7 +505,7 @@ impl NetworkConfig {
 
         if !cfg.get_dhcp() {
             let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
-            if virtual_ipv4.len() > 0 {
+            if !virtual_ipv4.is_empty() {
                 let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
                     .parse()
                     .with_context(|| {
@@ -596,8 +590,10 @@ impl NetworkConfig {
                     .iter()
                     .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
                     .filter_map(|pf| {
-                        let bind_addr = format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
-                        let dst_addr = format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
+                        let bind_addr =
+                            format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
+                        let dst_addr =
+                            format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
 
                         match (bind_addr, dst_addr) {
                             (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
@@ -608,7 +604,7 @@ impl NetworkConfig {
                             _ => None,
                         }
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
             );
         }
 
@@ -650,7 +646,7 @@ impl NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
-        if self.exit_nodes.len() > 0 {
+        if !self.exit_nodes.is_empty() {
             let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
             for node in self.exit_nodes.iter() {
                 exit_nodes.push(
@@ -669,7 +665,7 @@ impl NetworkConfig {
             }
         }
 
-        if self.mapped_listeners.len() > 0 {
+        if !self.mapped_listeners.is_empty() {
             cfg.set_mapped_listeners(Some(
                 self.mapped_listeners
                     .iter()
@@ -754,7 +750,7 @@ impl NetworkConfig {
         }
 
         if self.enable_relay_network_whitelist.unwrap_or_default() {
-            if self.relay_network_whitelist.len() > 0 {
+            if !self.relay_network_whitelist.is_empty() {
                 flags.relay_network_whitelist = self.relay_network_whitelist.join(" ");
             } else {
                 flags.relay_network_whitelist = "".to_string();
@@ -784,7 +780,9 @@ impl NetworkConfig {
     pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
         let default_config = TomlConfigLoader::default();
 
-        let mut result = Self::default();
+        let mut result = Self {
+            ..Default::default()
+        };
 
         result.instance_id = Some(config.get_id().to_string());
         if config.get_hostname() != default_config.get_hostname() {
@@ -819,7 +817,7 @@ impl NetworkConfig {
 
         result.listener_urls = config
             .get_listeners()
-            .unwrap_or_else(|| vec![])
+            .unwrap_or_default()
             .iter()
             .map(|l| l.to_string())
             .collect();
@@ -846,17 +844,16 @@ impl NetworkConfig {
 
         let port_forwards = config.get_port_forwards();
         if !port_forwards.is_empty() {
-            result.port_forwards = port_forwards.iter()
-                .map(|f| {
-                    web::PortForwardConfig {
-                        proto: f.proto.clone(),
-                        bind_ip: f.bind_addr.ip().to_string(),
-                        bind_port: f.bind_addr.port() as u32,
-                        dst_ip: f.dst_addr.ip().to_string(),
-                        dst_port: f.dst_addr.port() as u32,
-                    }
-                }).
-                collect();
+            result.port_forwards = port_forwards
+                .iter()
+                .map(|f| web::PortForwardConfig {
+                    proto: f.proto.clone(),
+                    bind_ip: f.bind_addr.ip().to_string(),
+                    bind_port: f.bind_addr.port() as u32,
+                    dst_ip: f.dst_addr.ip().to_string(),
+                    dst_port: f.dst_addr.port() as u32,
+                })
+                .collect();
         }
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {

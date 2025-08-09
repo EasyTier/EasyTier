@@ -36,9 +36,9 @@ async fn sink_from_zc_packet<E>(msg: ZCPacket) -> Result<Message, E> {
 async fn map_from_ws_message(
     msg: Result<Message, tokio_websockets::Error>,
 ) -> Option<Result<ZCPacket, TunnelError>> {
-    if msg.is_err() {
-        tracing::error!(?msg, "recv from websocket error");
-        return Some(Err(TunnelError::WebSocketError(msg.unwrap_err())));
+    if let Err(e) = msg {
+        tracing::error!(?e, "recv from websocket error");
+        return Some(Err(TunnelError::WebSocketError(e)));
     }
 
     let msg = msg.unwrap();
@@ -101,15 +101,15 @@ impl WSTunnelListener {
             let (write, read) = server_bulder.accept(stream).await?.split();
 
             Box::new(TunnelWrapper::new(
-                read.filter_map(move |msg| map_from_ws_message(msg)),
-                write.with(move |msg| sink_from_zc_packet(msg)),
+                read.filter_map(map_from_ws_message),
+                write.with(sink_from_zc_packet),
                 Some(info),
             ))
         } else {
             let (write, read) = server_bulder.accept(stream).await?.split();
             Box::new(TunnelWrapper::new(
-                read.filter_map(move |msg| map_from_ws_message(msg)),
-                write.with(move |msg| sink_from_zc_packet(msg)),
+                read.filter_map(map_from_ws_message),
+                write.with(sink_from_zc_packet),
                 Some(info),
             ))
         };
@@ -217,8 +217,8 @@ impl WSTunnelConnector {
 
         let (client, _) = c.connect_on(stream).await?;
         let (write, read) = client.split();
-        let read = read.filter_map(move |msg| map_from_ws_message(msg));
-        let write = write.with(move |msg| sink_from_zc_packet(msg));
+        let read = read.filter_map(map_from_ws_message);
+        let write = write.with(sink_from_zc_packet);
         Ok(Box::new(TunnelWrapper::new(read, write, Some(info))))
     }
 

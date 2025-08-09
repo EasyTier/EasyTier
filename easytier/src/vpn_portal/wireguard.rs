@@ -132,12 +132,12 @@ impl WireGuardImpl {
                 .await;
         }
 
-        if map_key.is_some() {
+        if let Some(map_key) = map_key {
             // Remove the client from the wg_peer_ip_table only when its endpoint address is unchanged,
             // or we may break clients behind NAT.
-            match wg_peer_ip_table.remove_if(&map_key.unwrap(), |_, entry| {
-                entry.endpoint_addr == endpoint_addr
-            }) {
+            match wg_peer_ip_table
+                .remove_if(&map_key, |_, entry| entry.endpoint_addr == endpoint_addr)
+            {
                 Some(_) => tracing::info!(?map_key, "Removed wg client from table"),
                 None => tracing::info!(
                     ?map_key,
@@ -286,18 +286,16 @@ impl VpnPortal for WireGuard {
         let routes = peer_mgr.list_routes().await;
         let mut allow_ips = routes
             .iter()
-            .map(|x| x.proxy_cidrs.iter().map(String::to_string))
-            .flatten()
+            .flat_map(|x| x.proxy_cidrs.iter().map(String::to_string))
             .collect::<Vec<_>>();
-        for ipv4 in routes
+        if let Some(ipv4) = routes
             .iter()
-            .filter(|x| x.ipv4_addr.is_some())
-            .map(|x| x.ipv4_addr.unwrap())
+            .filter_map(|x| x.ipv4_addr)
             .chain(global_ctx.get_ipv4().into_iter().map(Into::into))
+            .next()
         {
             let inet = Ipv4Inet::from(ipv4);
             allow_ips.push(inet.network().to_string());
-            break;
         }
 
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
@@ -341,19 +339,17 @@ PersistentKeepalive = 25
     async fn list_clients(&self) -> Vec<String> {
         self.inner
             .as_ref()
-            .and_then(|w| {
-                Some(
-                    w.wg_peer_ip_table
-                        .iter()
-                        .map(|x| {
-                            x.value()
-                                .endpoint_addr
-                                .as_ref()
-                                .map(|x| x.to_string())
-                                .unwrap_or_default()
-                        })
-                        .collect(),
-                )
+            .map(|w| {
+                w.wg_peer_ip_table
+                    .iter()
+                    .map(|x| {
+                        x.value()
+                            .endpoint_addr
+                            .as_ref()
+                            .map(|x| x.to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect()
             })
             .unwrap_or_default()
     }

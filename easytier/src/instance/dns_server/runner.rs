@@ -65,7 +65,7 @@ impl DnsRunner {
         self.client = Some(client);
         self.client.as_mut().unwrap().run_and_wait().await;
 
-        return Err(anyhow::anyhow!("Client instance exit"));
+        Err(anyhow::anyhow!("Client instance exit"))
     }
 
     pub async fn run(&mut self, canel_token: CancellationToken) {

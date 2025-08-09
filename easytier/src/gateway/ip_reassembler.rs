@@ -190,33 +190,36 @@ impl IpReassembler {
     }
 }
 
+pub struct ComposeIpv4PacketArgs<'a> {
+    pub buf: &'a mut [u8],
+    pub src_v4: &'a Ipv4Addr,
+    pub dst_v4: &'a Ipv4Addr,
+    pub next_protocol: IpNextHeaderProtocol,
+    pub payload_len: usize,
+    pub payload_mtu: usize,
+    pub ip_id: u16,
+}
+
 // ip payload should be in buf[20..]
-pub fn compose_ipv4_packet<F>(
-    buf: &mut [u8],
-    src_v4: &Ipv4Addr,
-    dst_v4: &Ipv4Addr,
-    next_protocol: IpNextHeaderProtocol,
-    payload_len: usize,
-    payload_mtu: usize,
-    ip_id: u16,
-    cb: F,
-) -> Result<(), Error>
+pub fn compose_ipv4_packet<F>(args: ComposeIpv4PacketArgs, cb: F) -> Result<(), Error>
 where
     F: Fn(&[u8]) -> Result<(), Error>,
 {
-    let total_pieces = (payload_len + payload_mtu - 1) / payload_mtu;
+    let total_pieces = args.payload_len.div_ceil(args.payload_mtu);
     let mut buf_offset = 0;
     let mut fragment_offset = 0;
     let mut cur_piece = 0;
-    while fragment_offset < payload_len {
-        let next_fragment_offset = std::cmp::min(fragment_offset + payload_mtu, payload_len);
+    while fragment_offset < args.payload_len {
+        let next_fragment_offset =
+            std::cmp::min(fragment_offset + args.payload_mtu, args.payload_len);
         let fragment_len = next_fragment_offset - fragment_offset;
         let mut ipv4_packet =
-            MutableIpv4Packet::new(&mut buf[buf_offset..buf_offset + fragment_len + 20]).unwrap();
+            MutableIpv4Packet::new(&mut args.buf[buf_offset..buf_offset + fragment_len + 20])
+                .unwrap();
         ipv4_packet.set_version(4);
         ipv4_packet.set_header_length(5);
         ipv4_packet.set_total_length((fragment_len + 20) as u16);
-        ipv4_packet.set_identification(ip_id);
+        ipv4_packet.set_identification(args.ip_id);
         if total_pieces > 1 {
             if cur_piece != total_pieces - 1 {
                 ipv4_packet.set_flags(Ipv4Flags::MoreFragments);
@@ -232,9 +235,9 @@ where
         ipv4_packet.set_ecn(0);
         ipv4_packet.set_dscp(0);
         ipv4_packet.set_ttl(32);
-        ipv4_packet.set_source(src_v4.clone());
-        ipv4_packet.set_destination(dst_v4.clone());
-        ipv4_packet.set_next_level_protocol(next_protocol);
+        ipv4_packet.set_source(*args.src_v4);
+        ipv4_packet.set_destination(*args.dst_v4);
+        ipv4_packet.set_next_level_protocol(args.next_protocol);
         ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
 
         tracing::trace!(?ipv4_packet, "udp nat packet response send");
@@ -254,7 +257,7 @@ mod tests {
 
     #[test]
     fn resembler() {
-        let raw_packets = vec![
+        let raw_packets = [
             // last packet
             vec![
                 0x45, 0x00, 0x00, 0x1c, 0x1c, 0x46, 0x20, 0x01, 0x40, 0x06, 0xb1, 0xe6, 0xc0, 0xa8,
@@ -282,7 +285,7 @@ mod tests {
         let resembler = IpReassembler::new(Duration::from_secs(1));
 
         for (idx, raw_packet) in raw_packets.iter().enumerate() {
-            if let Some(packet) = Ipv4Packet::new(&raw_packet) {
+            if let Some(packet) = Ipv4Packet::new(raw_packet) {
                 let ret = resembler.add_fragment(source, destination, &packet);
                 if idx != 2 {
                     assert!(ret.is_none());

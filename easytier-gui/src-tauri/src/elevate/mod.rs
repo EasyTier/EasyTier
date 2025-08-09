@@ -40,22 +40,6 @@ impl Command {
     /// To pass environment variables on Windows,
     /// to inherit environment variables from the parent process and
     /// to change the working directory will be supported in later versions
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///
-    ///     cmd.arg("some arg");
-    ///     cmd.env("some key", "some value");
-    ///
-    ///     let elevated_cmd = Command::new(cmd);
-    /// }
-    /// ```
     pub fn new(cmd: StdCommand) -> Self {
         Self {
             cmd,
@@ -67,73 +51,21 @@ impl Command {
     /// Consumes the `Take`, returning the wrapped std::process::Command
     ///
     /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     let cmd = elevated_cmd.into_inner();
-    /// }
-    /// ```
     pub fn into_inner(self) -> StdCommand {
         self.cmd
     }
 
     /// Gets a mutable reference to the underlying std::process::Command
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     let cmd = elevated_cmd.get_ref();
-    /// }
-    /// ```
     pub fn get_ref(&self) -> &StdCommand {
         &self.cmd
     }
 
     /// Gets a reference to the underlying std::process::Command
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     let cmd = elevated_cmd.get_mut();
-    /// }
-    /// ```
     pub fn get_mut(&mut self) -> &mut StdCommand {
         &mut self.cmd
     }
 
     /// Set the `icon` for the pop-up graphical OS dialog
-    ///
-    /// This method is only applicable on `MacOS`
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     elevated_cmd.icon(include_bytes!("path to the icon").to_vec());
-    /// }
-    /// ```
     pub fn icon(&mut self, icon: Vec<u8>) -> &mut Self {
         self.icon = Some(icon);
         self
@@ -142,19 +74,6 @@ impl Command {
     /// Set the name for the pop-up graphical OS dialog
     ///
     /// This method is only applicable on `MacOS`
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use elevated_command::Command;
-    /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     elevated_cmd.name("some name".to_string());
-    /// }
-    /// ```
     pub fn name(&mut self, name: String) -> &mut Self {
         self.name = Some(name);
         self

@@ -4,7 +4,7 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicU16, Ordering},
         Arc,
@@ -34,7 +34,7 @@ mod socket_allocator;
 /// Can be used to create a forever timestamp in neighbor.
 // The 60_000 is the same as NeighborCache::ENTRY_LIFETIME.
 pub const FOREVER: Instant =
-    Instant::from_micros_const(i64::max_value() - Duration::from_millis(60_000).micros() as i64);
+    Instant::from_micros_const(i64::MAX - Duration::from_millis(60_000).micros() as i64);
 
 pub struct Neighbor {
     pub protocol_addr: IpAddress,
@@ -173,8 +173,8 @@ impl Net {
     fn set_address(&self, mut addr: SocketAddr) -> SocketAddr {
         if addr.ip().is_unspecified() {
             addr.set_ip(match self.ip_addr.address() {
-                IpAddress::Ipv4(ip) => Ipv4Addr::from(ip).into(),
-                IpAddress::Ipv6(ip) => Ipv6Addr::from(ip).into(),
+                IpAddress::Ipv4(ip) => ip.into(),
+                IpAddress::Ipv6(ip) => ip.into(),
                 #[allow(unreachable_patterns)]
                 _ => panic!("address must not be unspecified"),
             });

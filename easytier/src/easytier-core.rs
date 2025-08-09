@@ -61,7 +61,7 @@ pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0
 fn set_prof_active(_active: bool) {
     #[cfg(feature = "jemalloc-prof")]
     {
-        const PROF_ACTIVE: &'static [u8] = b"prof.active\0";
+        const PROF_ACTIVE: &[u8] = b"prof.active\0";
         let name = PROF_ACTIVE.name();
         name.write(_active).expect("Should succeed to set prof");
     }
@@ -70,7 +70,7 @@ fn set_prof_active(_active: bool) {
 fn dump_profile(_cur_allocated: usize) {
     #[cfg(feature = "jemalloc-prof")]
     {
-        const PROF_DUMP: &'static [u8] = b"prof.dump\0";
+        const PROF_DUMP: &[u8] = b"prof.dump\0";
         static mut PROF_DUMP_FILE_NAME: [u8; 128] = [0; 128];
         let file_name_str = format!(
             "profile-{}-{}.out",
@@ -701,7 +701,7 @@ impl NetworkOptions {
                     .map(|s| s.parse().unwrap())
                     .collect(),
             );
-        } else if cfg.get_listeners() == None {
+        } else if cfg.get_listeners().is_none() {
             cfg.set_listeners(
                 Cli::parse_listeners(false, vec!["11010".to_string()])?
                     .into_iter()
@@ -740,7 +740,7 @@ impl NetworkOptions {
         }
 
         for n in self.proxy_networks.iter() {
-            add_proxy_network_to_config(n, &cfg)?;
+            add_proxy_network_to_config(n, cfg)?;
         }
 
         let rpc_portal = if let Some(r) = &self.rpc_portal {
@@ -754,9 +754,9 @@ impl NetworkOptions {
         cfg.set_rpc_portal(rpc_portal);
 
         if let Some(rpc_portal_whitelist) = &self.rpc_portal_whitelist {
-            let mut whitelist = cfg.get_rpc_portal_whitelist().unwrap_or_else(|| Vec::new());
+            let mut whitelist = cfg.get_rpc_portal_whitelist().unwrap_or_default();
             for cidr in rpc_portal_whitelist {
-                whitelist.push((*cidr).clone());
+                whitelist.push(*cidr);
             }
             cfg.set_rpc_portal_whitelist(Some(whitelist));
         }
@@ -825,18 +825,18 @@ impl NetworkOptions {
                 port_forward.port().expect("local bind port is missing")
             )
             .parse()
-            .expect(format!("failed to parse local bind addr {}", example_str).as_str());
+            .unwrap_or_else(|_| panic!("failed to parse local bind addr {}", example_str));
 
-            let dst_addr = format!(
-                "{}",
-                port_forward
-                    .path_segments()
-                    .expect(format!("remote destination addr is missing {}", example_str).as_str())
-                    .next()
-                    .expect(format!("remote destination addr is missing {}", example_str).as_str())
-            )
-            .parse()
-            .expect(format!("failed to parse remote destination addr {}", example_str).as_str());
+            let dst_addr = port_forward
+                .path_segments()
+                .unwrap_or_else(|| panic!("remote destination addr is missing {}", example_str))
+                .next()
+                .unwrap_or_else(|| panic!("remote destination addr is missing {}", example_str))
+                .to_string()
+                .parse()
+                .unwrap_or_else(|_| {
+                    panic!("failed to parse remote destination addr {}", example_str)
+                });
 
             let port_forward_item = PortForwardConfig {
                 bind_addr,
@@ -1141,7 +1141,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         let mut cfg = TomlConfigLoader::default();
         cli.network_options
             .merge_into(&mut cfg)
-            .with_context(|| format!("failed to create config from cli"))?;
+            .with_context(|| "failed to create config from cli".to_string())?;
         println!("Starting easytier from cli with config:");
         println!("############### TOML ###############\n");
         println!("{}", cfg.dump());
@@ -1156,7 +1156,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
                 .into_values()
                 .filter_map(|info| info.error_msg)
                 .collect::<Vec<_>>();
-            if errs.len() > 0 {
+            if !errs.is_empty() {
                 return Err(anyhow::anyhow!("some instances stopped with errors"));
             }
         }

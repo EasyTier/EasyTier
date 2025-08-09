@@ -27,6 +27,12 @@ pub struct AclFilter {
     acl_enabled: Arc<AtomicBool>,
 }
 
+impl Default for AclFilter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AclFilter {
     pub fn new() -> Self {
         Self {
@@ -75,8 +81,8 @@ impl AclFilter {
         let rules_stats = processor.get_rules_stats();
 
         AclStats {
-            global: global_stats.into_iter().map(|(k, v)| (k, v)).collect(),
-            conn_track: conn_track.iter().map(|x| x.value().clone()).collect(),
+            global: global_stats.into_iter().collect(),
+            conn_track: conn_track.iter().map(|x| *x.value()).collect(),
             rules: rules_stats,
         }
     }

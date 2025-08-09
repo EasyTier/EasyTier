@@ -154,7 +154,6 @@ async fn wait_proxy_route_appear(
     let now = std::time::Instant::now();
     loop {
         for r in mgr.list_routes().await.iter() {
-            let r = r;
             if r.proxy_cidrs.contains(&proxy_cidr.to_owned()) {
                 assert_eq!(r.peer_id, dst_peer_id);
                 assert_eq!(r.ipv4_addr, Some(ipv4.parse().unwrap()));

@@ -26,13 +26,19 @@ struct DNSConfigError {
     source: Option<anyhow::Error>,
 }
 
+type DbusPingFn = dyn Fn(&str, &str) -> Result<()>;
+type DbusReadStringFn = dyn Fn(&str, &str, &str, &str) -> Result<String>;
+type NmIsUsingResolvedFn = dyn Fn() -> Result<()>;
+type NmVersionBetweenFn = dyn Fn(&str, &str) -> Result<bool>;
+type ResolvconfStyleFn = dyn Fn() -> String;
+
 // 配置环境结构体
 struct OSConfigEnv {
     fs: Box<dyn FileSystem>,
-    dbus_ping: Box<dyn Fn(&str, &str) -> Result<()>>,
-    dbus_read_string: Box<dyn Fn(&str, &str, &str, &str) -> Result<String>>,
-    nm_is_using_resolved: Box<dyn Fn() -> Result<()>>,
-    nm_version_between: Box<dyn Fn(&str, &str) -> Result<bool>>,
+    dbus_ping: Box<DbusPingFn>,
+    dbus_read_string: Box<DbusReadStringFn>,
+    nm_is_using_resolved: Box<NmIsUsingResolvedFn>,
+    nm_version_between: Box<NmVersionBetweenFn>,
     resolvconf_style: Box<dyn Fn() -> String>,
 }
 
@@ -86,8 +92,7 @@ pub fn nm_is_using_resolved() -> Result<()> {
         return Err(anyhow::anyhow!(
             "NetworkManager is not using systemd-resolved, found: {:?}",
             value
-        )
-        .into());
+        ));
     }
 
     Ok(())

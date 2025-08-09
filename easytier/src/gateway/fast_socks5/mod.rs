@@ -294,7 +294,7 @@ pub fn new_udp_header<T: ToTargetAddr>(target_addr: T) -> Result<Vec<u8>> {
 }
 
 /// Parse data from UDP client on raw buffer, return (frag, target_addr, payload).
-pub async fn parse_udp_request<'a>(mut req: &'a [u8]) -> Result<(u8, TargetAddr, &'a [u8])> {
+pub async fn parse_udp_request(mut req: &[u8]) -> Result<(u8, TargetAddr, &[u8])> {
     let rsv = read_exact!(req, [0u8; 2]).context("Malformed request")?;
 
     if !rsv.eq(&[0u8; 2]) {

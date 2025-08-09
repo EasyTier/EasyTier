@@ -40,17 +40,19 @@ impl PeerManagerRpcService {
         let peer_map = peer_manager.get_peer_map();
         let mut peer_infos = Vec::new();
         for peer in peers {
-            let mut peer_info = PeerInfo::default();
-            peer_info.peer_id = peer;
-            peer_info.default_conn_id = peer_map
-                .get_peer_default_conn_id(peer)
-                .await
-                .map(Into::into);
-            peer_info.directly_connected_conns = peer_map
-                .get_directly_connections_by_peer_id(peer)
-                .into_iter()
-                .map(Into::into)
-                .collect();
+            let mut peer_info = PeerInfo {
+                peer_id: peer,
+                default_conn_id: peer_map
+                    .get_peer_default_conn_id(peer)
+                    .await
+                    .map(Into::into),
+                directly_connected_conns: peer_map
+                    .get_directly_connections_by_peer_id(peer)
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
+                ..Default::default()
+            };
 
             if let Some(conns) = peer_map.list_peer_conns(peer).await {
                 peer_info.conns = conns;
@@ -93,8 +95,9 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ListRouteRequest, // Accept request of type HelloRequest
     ) -> Result<ListRouteResponse, rpc_types::error::Error> {
-        let mut reply = ListRouteResponse::default();
-        reply.routes = self.peer_manager.list_routes().await;
+        let reply = ListRouteResponse {
+            routes: self.peer_manager.list_routes().await,
+        };
         Ok(reply)
     }
 
@@ -103,8 +106,9 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: DumpRouteRequest, // Accept request of type HelloRequest
     ) -> Result<DumpRouteResponse, rpc_types::error::Error> {
-        let mut reply = DumpRouteResponse::default();
-        reply.result = self.peer_manager.dump_route().await;
+        let reply = DumpRouteResponse {
+            result: self.peer_manager.dump_route().await,
+        };
         Ok(reply)
     }
 

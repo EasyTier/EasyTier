@@ -21,7 +21,7 @@ pub async fn compress_packet(
     let algo = accepted_compression_algo
         .try_into()
         .unwrap_or(CompressorAlgo::None);
-    let compressed = compressor.compress_raw(&content, algo).await?;
+    let compressed = compressor.compress_raw(content, algo).await?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {
@@ -35,7 +35,7 @@ pub async fn decompress_packet(
 ) -> Result<Vec<u8>, Error> {
     let compressor = DefaultCompressor::new();
     let algo = compression_algo.try_into()?;
-    let decompressed = compressor.decompress_raw(&content, algo).await?;
+    let decompressed = compressor.decompress_raw(content, algo).await?;
     Ok(decompressed)
 }
 
@@ -43,6 +43,12 @@ pub struct PacketMerger {
     first_piece: Option<RpcPacket>,
     pieces: Vec<RpcPacket>,
     last_updated: std::time::Instant,
+}
+
+impl Default for PacketMerger {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PacketMerger {
@@ -133,55 +139,57 @@ impl PacketMerger {
     }
 }
 
-pub fn build_rpc_packet(
-    from_peer: PeerId,
-    to_peer: PeerId,
-    rpc_desc: RpcDescriptor,
-    transaction_id: RpcTransactId,
-    is_req: bool,
-    content: &Vec<u8>,
-    trace_id: i32,
-    compression_info: RpcCompressionInfo,
-) -> Vec<ZCPacket> {
+pub struct BuildRpcPacketArgs<'a> {
+    pub from_peer: PeerId,
+    pub to_peer: PeerId,
+    pub rpc_desc: RpcDescriptor,
+    pub transaction_id: RpcTransactId,
+    pub is_req: bool,
+    pub content: &'a [u8],
+    pub trace_id: i32,
+    pub compression_info: RpcCompressionInfo,
+}
+
+pub fn build_rpc_packet(args: BuildRpcPacketArgs<'_>) -> Vec<ZCPacket> {
     let mut ret = Vec::new();
     let content_mtu = RPC_PACKET_CONTENT_MTU;
-    let total_pieces = (content.len() + content_mtu - 1) / content_mtu;
+    let total_pieces = args.content.len().div_ceil(content_mtu);
     let mut cur_offset = 0;
-    while cur_offset < content.len() || content.len() == 0 {
+    while cur_offset < args.content.len() || args.content.is_empty() {
         let mut cur_len = content_mtu;
-        if cur_offset + cur_len > content.len() {
-            cur_len = content.len() - cur_offset;
+        if cur_offset + cur_len > args.content.len() {
+            cur_len = args.content.len() - cur_offset;
         }
 
         let mut cur_content = Vec::new();
-        cur_content.extend_from_slice(&content[cur_offset..cur_offset + cur_len]);
+        cur_content.extend_from_slice(&args.content[cur_offset..cur_offset + cur_len]);
 
         let cur_packet = RpcPacket {
-            from_peer,
-            to_peer,
+            from_peer: args.from_peer,
+            to_peer: args.to_peer,
             descriptor: if cur_offset == 0
-                || compression_info.algo == CompressionAlgoPb::None as i32
+                || args.compression_info.algo == CompressionAlgoPb::None as i32
             {
                 // old version must have descriptor on every piece
-                Some(rpc_desc.clone())
+                Some(args.rpc_desc.clone())
             } else {
                 None
             },
-            is_request: is_req,
+            is_request: args.is_req,
             total_pieces: total_pieces as u32,
-            piece_idx: (cur_offset / content_mtu) as u32,
-            transaction_id,
+            piece_idx: (cur_offset / RPC_PACKET_CONTENT_MTU) as u32,
+            transaction_id: args.transaction_id,
             body: cur_content,
-            trace_id,
+            trace_id: args.trace_id,
             compression_info: if cur_offset == 0 {
-                Some(compression_info.clone())
+                Some(args.compression_info)
             } else {
                 None
             },
         };
         cur_offset += cur_len;
 
-        let packet_type = if is_req {
+        let packet_type = if args.is_req {
             PacketType::RpcReq
         } else {
             PacketType::RpcResp
@@ -190,10 +198,10 @@ pub fn build_rpc_packet(
         let mut buf = Vec::new();
         cur_packet.encode(&mut buf).unwrap();
         let mut zc_packet = ZCPacket::new_with_payload(&buf);
-        zc_packet.fill_peer_manager_hdr(from_peer, to_peer, packet_type as u8);
+        zc_packet.fill_peer_manager_hdr(args.from_peer, args.to_peer, packet_type as u8);
         ret.push(zc_packet);
 
-        if content.len() == 0 {
+        if args.content.is_empty() {
             break;
         }
     }

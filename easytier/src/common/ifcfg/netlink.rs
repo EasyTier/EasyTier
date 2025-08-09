@@ -85,14 +85,14 @@ fn send_netlink_req_and_wait_one_resp<T: NetlinkDeserializable + NetlinkSerializ
     match ret.payload {
         NetlinkPayload::Error(e) => {
             if e.code == NonZero::new(0) {
-                return Ok(());
+                Ok(())
             } else {
-                return Err(e.to_io().into());
+                Err(e.to_io().into())
             }
         }
         p => {
             tracing::error!("Unexpected netlink response: {:?}", p);
-            return Err(anyhow::anyhow!("Unexpected netlink response").into());
+            Err(anyhow::anyhow!("Unexpected netlink response").into())
         }
     }
 }
@@ -263,8 +263,8 @@ impl NetlinkIfConfiger {
 
             let (address, netmask) = match (address.family(), netmask.family()) {
                 (Some(Inet), Some(Inet)) => (
-                    IpAddr::V4(address.as_sockaddr_in().unwrap().ip().into()),
-                    IpAddr::V4(netmask.as_sockaddr_in().unwrap().ip().into()),
+                    IpAddr::V4(address.as_sockaddr_in().unwrap().ip()),
+                    IpAddr::V4(netmask.as_sockaddr_in().unwrap().ip()),
                 ),
                 (Some(Inet6), Some(Inet6)) => (
                     IpAddr::V6(address.as_sockaddr_in6().unwrap().ip()),
@@ -333,7 +333,7 @@ impl NetlinkIfConfiger {
 
         let mut resp = Vec::<u8>::new();
         loop {
-            if resp.len() == 0 {
+            if resp.is_empty() {
                 let (new_resp, _) = s.recv_from_full()?;
                 resp = new_resp;
             }

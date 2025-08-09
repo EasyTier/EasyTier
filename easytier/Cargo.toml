@@ -8,7 +8,7 @@ edition = "2021"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.87.0"
+rust-version = "1.89.0"
 license-file = "LICENSE"
 readme = "README.md"
 

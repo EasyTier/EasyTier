@@ -423,7 +423,7 @@ impl ZCPacket {
         let total_len = payload_off + payload.len();
         ret.inner.reserve(total_len);
         unsafe { ret.inner.set_len(total_len) };
-        ret.mut_payload()[..payload.len()].copy_from_slice(&payload);
+        ret.mut_payload()[..payload.len()].copy_from_slice(payload);
         ret
     }
 
@@ -440,7 +440,7 @@ impl ZCPacket {
         dst_peer_id: u32,
         foreign_zc_packet: &ZCPacket,
     ) -> Self {
-        let foreign_network_hdr = ForeignNetworkPacketHeader::new(dst_peer_id, &network_name);
+        let foreign_network_hdr = ForeignNetworkPacketHeader::new(dst_peer_id, network_name);
         let total_payload_len =
             foreign_network_hdr.get_header_len() + foreign_zc_packet.tunnel_payload().len();
 
@@ -639,7 +639,7 @@ impl ZCPacket {
             return Self::new_from_buf(buf, target_packet_type);
         }
 
-        return Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type);
+        Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type)
     }
 
     pub fn into_bytes(self) -> Bytes {
@@ -656,7 +656,7 @@ impl ZCPacket {
 
     pub fn is_lossy(&self) -> bool {
         self.peer_manager_header()
-            .and_then(|hdr| Some(hdr.packet_type == PacketType::Data as u8))
+            .map(|hdr| hdr.packet_type == PacketType::Data as u8)
             .unwrap_or(false)
     }
 

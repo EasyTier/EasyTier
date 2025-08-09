@@ -106,7 +106,7 @@ impl PingIntervalController {
         }
 
         self.last_send_logic_time = self.logic_time;
-        return true;
+        true
     }
 }
 
@@ -255,7 +255,7 @@ impl PeerConnPinger {
                         "pingpong controller send pingpong task, seq: {}, node_id: {}, controller: {:?}",
                         req_seq,
                         my_node_id,
-                        controller  
+                        controller,
                     );
 
                     let mut sink = sink.clone();

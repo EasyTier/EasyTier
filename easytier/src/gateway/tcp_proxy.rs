@@ -109,9 +109,9 @@ impl NatDstConnector for NatDstTcpConnector {
     ) -> bool {
         let is_exit_node = hdr.is_exit_node();
 
-        if !cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
-            && !is_exit_node
-            && !(global_ctx.no_tun()
+        if !(cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
+            || is_exit_node
+            || global_ctx.no_tun()
                 && Some(ipv4.get_destination())
                     == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
@@ -154,10 +154,10 @@ impl NatDstEntry {
         }
     }
 
-    fn into_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
+    fn parse_as_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
         TcpProxyEntry {
-            src: Some(self.src.clone().into()),
-            dst: Some(self.real_dst.clone().into()),
+            src: Some(self.src.into()),
+            dst: Some(self.real_dst.into()),
             start_time: self.start_time_local.timestamp() as u64,
             state: self.state.load().into(),
             transport_type: transport_type.into(),
@@ -332,16 +332,14 @@ pub struct TcpProxy<C: NatDstConnector> {
 #[async_trait::async_trait]
 impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
-        if let Some(_) = self.try_handle_peer_packet(&mut packet).await {
+        if self.try_handle_peer_packet(&mut packet).await.is_some() {
             if self.is_smoltcp_enabled() {
                 let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
-            } else {
-                if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
-                    tracing::error!("send to nic failed: {:?}", e);
-                }
+            } else if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
+                tracing::error!("send to nic failed: {:?}", e);
             }
             return None;
         } else {
@@ -610,7 +608,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             self.enable_smoltcp
                 .store(false, std::sync::atomic::Ordering::Relaxed);
 
-            return Ok(ProxyTcpListener::KernelTcpListener(tcp_listener));
+            Ok(ProxyTcpListener::KernelTcpListener(tcp_listener))
         }
     }
 
@@ -917,10 +915,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let mut entries: Vec<TcpProxyEntry> = Vec::new();
         let transport_type = self.connector.transport_type();
         for entry in self.syn_map.iter() {
-            entries.push(entry.value().as_ref().into_pb(transport_type));
+            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
         }
         for entry in self.conn_map.iter() {
-            entries.push(entry.value().as_ref().into_pb(transport_type));
+            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
         }
         entries
     }

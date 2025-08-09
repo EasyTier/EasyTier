@@ -65,7 +65,7 @@ impl Encryptor for AesGcmCipher {
         let text_and_tag_len = payload_len - AES_GCM_ENCRYPTION_RESERVED + 16;
 
         let aes_tail = AesGcmTail::ref_from_suffix(zc_packet.payload()).unwrap();
-        let nonce = aead::Nonce::assume_unique_for_key(aes_tail.nonce.clone());
+        let nonce = aead::Nonce::assume_unique_for_key(aes_tail.nonce);
 
         let rs = match &self.cipher {
             AesGcmEnum::AesGCM128(cipher, _) => cipher.open_in_place(
@@ -79,7 +79,7 @@ impl Encryptor for AesGcmCipher {
                 &mut zc_packet.mut_payload()[..text_and_tag_len],
             ),
         };
-        if let Err(_) = rs {
+        if rs.is_err() {
             return Err(Error::DecryptionFailed);
         }
 
@@ -89,7 +89,7 @@ impl Encryptor for AesGcmCipher {
         zc_packet
             .mut_inner()
             .truncate(old_len - AES_GCM_ENCRYPTION_RESERVED);
-        return Ok(());
+        Ok(())
     }
 
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
@@ -101,7 +101,7 @@ impl Encryptor for AesGcmCipher {
 
         let mut tail = AesGcmTail::default();
         rand::thread_rng().fill_bytes(&mut tail.nonce);
-        let nonce = aead::Nonce::assume_unique_for_key(tail.nonce.clone());
+        let nonce = aead::Nonce::assume_unique_for_key(tail.nonce);
 
         let rs = match &self.cipher {
             AesGcmEnum::AesGCM128(cipher, _) => cipher.seal_in_place_separate_tag(
@@ -115,7 +115,7 @@ impl Encryptor for AesGcmCipher {
                 zc_packet.mut_payload(),
             ),
         };
-        return match rs {
+        match rs {
             Ok(tag) => {
                 let tag = tag.as_ref();
                 if tag.len() != 16 {
@@ -129,7 +129,7 @@ impl Encryptor for AesGcmCipher {
                 Ok(())
             }
             Err(_) => Err(Error::EncryptionFailed),
-        };
+        }
     }
 }
 
@@ -152,10 +152,10 @@ mod tests {
             packet.payload().len(),
             text.len() + AES_GCM_ENCRYPTION_RESERVED
         );
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), true);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 }

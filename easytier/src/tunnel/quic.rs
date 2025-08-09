@@ -90,8 +90,8 @@ impl AsyncUdpSocket for NoGroAsyncUdpSocket {
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
     let (server_config, server_cert) = configure_server()?;
     let socket = std::net::UdpSocket::bind(bind_addr)?;
-    let runtime = quinn::default_runtime()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "no async runtime found"))?;
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
     let mut endpoint_config = EndpointConfig::default();
     endpoint_config.max_udp_payload_size(1200)?;
     let socket = NoGroAsyncUdpSocket {
@@ -110,7 +110,7 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>)
 pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let (certs, key) = get_insecure_tls_cert();
 
-    let mut server_config = ServerConfig::with_single_cert(certs.clone(), key.into())?;
+    let mut server_config = ServerConfig::with_single_cert(certs.clone(), key)?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
@@ -122,8 +122,6 @@ pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
-
-/// Runs a QUIC server bound to given address.
 
 struct ConnWrapper {
     conn: Connection,
