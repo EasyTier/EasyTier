@@ -60,14 +60,13 @@ impl<K: PartialOrd, T> Ord for MinScored<K, T> {
     }
 }
 
+pub type DijkstraResult<K, NodeId> = (HashMap<NodeId, K>, HashMap<NodeId, (NodeId, usize)>);
+
 pub fn dijkstra_with_first_hop<G, F, K>(
     graph: G,
     start: G::NodeId,
     mut edge_cost: F,
-) -> (
-    HashMap<G::NodeId, K>,
-    HashMap<G::NodeId, (G::NodeId, usize)>,
-)
+) -> DijkstraResult<K, G::NodeId>
 where
     G: IntoEdges + Visitable,
     G::NodeId: Eq + Hash + Clone,

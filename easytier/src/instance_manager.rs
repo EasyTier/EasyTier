@@ -71,7 +71,9 @@ impl NetworkInstanceManager {
                 let Some(instance_stop_notifier) = instance_stop_notifier else {
                     return;
                 };
-                let _t = instance_event_receiver.flatten().map(|event| ScopedTask::from(handle_event(instance_id, event)));
+                let _t = instance_event_receiver
+                    .flatten()
+                    .map(|event| ScopedTask::from(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
                 if let Some(instance) = instance_map.get(&instance_id) {
                     if let Some(e) = instance.get_latest_error_msg() {
@@ -133,10 +135,7 @@ impl NetworkInstanceManager {
     }
 
     pub fn list_network_instance_ids(&self) -> Vec<uuid::Uuid> {
-        self.instance_map
-            .iter()
-            .map(|item| *item.key())
-            .collect()
+        self.instance_map.iter().map(|item| *item.key()).collect()
     }
 
     pub fn get_network_instance_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
@@ -301,8 +300,8 @@ fn handle_event(
                             instance_id,
                             format!(
                                 "port forward added. local: {}, remote: {}, proto: {}",
-                                cfg.bind_addr.unwrap().to_string(),
-                                cfg.dst_addr.unwrap().to_string(),
+                                cfg.bind_addr.unwrap(),
+                                cfg.dst_addr.unwrap(),
                                 cfg.socket_type().as_str_name()
                             ),
                         );

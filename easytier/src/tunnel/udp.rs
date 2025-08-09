@@ -1015,9 +1015,9 @@ mod tests {
         let bind_dev = get_interface_name_by_ip(&IpAddr::V4(ips[0].into()));
 
         for ip in ips {
-            println!("bind to ip: {:?}, {:?}", ip, bind_dev);
+            println!("bind to ip: {}, {:?}", ip, bind_dev);
             let addr = check_scheme_and_get_socket_addr::<SocketAddr>(
-                &format!("udp://{}:11111", ip.to_string()).parse().unwrap(),
+                &format!("udp://{}:11111", ip).parse().unwrap(),
                 "udp",
                 IpVersion::Both,
             )

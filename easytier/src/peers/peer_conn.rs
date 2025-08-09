@@ -102,7 +102,7 @@ pub struct PeerConn {
 
     tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
-    recv: Arc<Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>>,
+    recv: Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>,
     tunnel_info: Option<TunnelInfo>,
 
     tasks: JoinSet<Result<(), TunnelError>>,
@@ -158,7 +158,7 @@ impl PeerConn {
                 mpsc_tunnel.close()
             })))),
             sink,
-            recv: Arc::new(Mutex::new(Some(recv))),
+            recv: Mutex::new(Some(recv)),
             tunnel_info,
 
             tasks: JoinSet::new(),

@@ -197,9 +197,9 @@ impl From<RoutePeerInfo> for crate::proto::cli::Route {
         crate::proto::cli::Route {
             peer_id: val.peer_id,
             ipv4_addr: val.ipv4_addr.map(|ipv4_addr| Ipv4Inet {
-                    address: Some(ipv4_addr),
-                    network_length,
-                }),
+                address: Some(ipv4_addr),
+                network_length,
+            }),
             next_hop_peer_id: 0, // next_hop_peer_id is calculated in RouteTable.
             cost: 0,             // cost is calculated in RouteTable.
             path_latency: 0,     // path_latency is calculated in RouteTable.
@@ -399,8 +399,8 @@ impl SyncedRouteInfo {
         my_peer_id: PeerId,
         my_peer_route_id: u64,
         dst_peer_id: PeerId,
-        peer_infos: &Vec<RoutePeerInfo>,
-        raw_peer_infos: &Vec<DynamicMessage>,
+        peer_infos: &[RoutePeerInfo],
+        raw_peer_infos: &[DynamicMessage],
     ) -> Result<(), Error> {
         let mut need_inc_version = false;
         for (idx, route_info) in peer_infos.iter().enumerate() {
@@ -1024,7 +1024,7 @@ impl SyncRouteSession {
             .unwrap_or(false)
     }
 
-    fn update_dst_saved_peer_info_version(&self, infos: &Vec<RoutePeerInfo>) {
+    fn update_dst_saved_peer_info_version(&self, infos: &[RoutePeerInfo]) {
         for info in infos.iter() {
             self.dst_saved_peer_info_versions
                 .entry(info.peer_id)
@@ -1756,11 +1756,10 @@ impl OspfRouteRpc for RouteSessionManager {
 
         Ok(match ret {
             Ok(v) => v,
-            Err(e) => {
-                let mut resp = SyncRouteInfoResponse::default();
-                resp.error = Some(e as i32);
-                resp
-            }
+            Err(e) => SyncRouteInfoResponse {
+                error: Some(e as i32),
+                ..Default::default()
+            },
         })
     }
 }
@@ -1984,6 +1983,7 @@ impl RouteSessionManager {
         tracing::debug!(?ret, ?reason, "sync_now_broadcast.send");
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn do_sync_route_info(
         &self,
         from_peer_id: PeerId,

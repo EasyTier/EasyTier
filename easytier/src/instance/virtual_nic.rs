@@ -172,7 +172,7 @@ impl TunZCPacketToBytes {
 }
 
 impl ZCPacketToBytes for TunZCPacketToBytes {
-    fn into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError> {
+    fn zcpacket_into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError> {
         let payload_offset = zc_packet.payload_offset();
         let mut inner = zc_packet.inner();
         // we have peer manager header, so payload offset must larger than 4

@@ -15,21 +15,21 @@ pub struct AesGcmCipher {
 
 #[derive(Clone)]
 pub enum AesGcmEnum {
-    AES128GCM(Aes128Gcm),
-    AES256GCM(Aes256Gcm),
+    AES128GCM(Box<Aes128Gcm>),
+    AES256GCM(Box<Aes256Gcm>),
 }
 
 impl AesGcmCipher {
     pub fn new_128(key: [u8; 16]) -> Self {
         let key: &Key<Aes128Gcm> = &key.into();
         Self {
-            cipher: AesGcmEnum::AES128GCM(Aes128Gcm::new(key)),
+            cipher: AesGcmEnum::AES128GCM(Box::new(Aes128Gcm::new(key))),
         }
     }
     pub fn new_256(key: [u8; 32]) -> Self {
         let key: &Key<Aes256Gcm> = &key.into();
         Self {
-            cipher: AesGcmEnum::AES256GCM(Aes256Gcm::new(key)),
+            cipher: AesGcmEnum::AES256GCM(Box::new(Aes256Gcm::new(key))),
         }
     }
 }

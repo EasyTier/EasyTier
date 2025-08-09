@@ -741,10 +741,8 @@ impl PeerManager {
 
                     let mut processed = false;
                     let mut zc_packet = Some(ret);
-                    let mut idx = 0;
-                    for pipeline in pipe_line.read().await.iter().rev() {
+                    for (idx, pipeline) in pipe_line.read().await.iter().rev().enumerate() {
                         tracing::trace!(?zc_packet, ?idx, "try_process_packet_from_peer");
-                        idx += 1;
                         zc_packet = pipeline
                             .try_process_packet_from_peer(zc_packet.unwrap())
                             .await;
@@ -938,13 +936,16 @@ impl PeerManager {
                 .foreign_networks
                 .entry(info.key.as_ref().unwrap().peer_id)
                 .or_insert_with(Default::default);
+            let Some(route_info) = info.value.as_ref() else {
+                continue;
+            };
 
-            let mut f = OneForeignNetwork::default();
-            f.network_name = info.key.as_ref().unwrap().network_name.clone();
-            f.peer_ids
-                .extend(info.value.as_ref().unwrap().foreign_peer_ids.iter());
-            f.last_updated = format!("{}", info.value.as_ref().unwrap().last_update.unwrap());
-            f.version = info.value.as_ref().unwrap().version;
+            let f = OneForeignNetwork {
+                network_name: info.key.as_ref().unwrap().network_name.clone(),
+                peer_ids: route_info.foreign_peer_ids.clone(),
+                last_updated: format!("{}", route_info.last_update.unwrap()),
+                version: route_info.version,
+            };
 
             entry.foreign_networks.push(f);
         }
@@ -1155,14 +1156,13 @@ impl PeerManager {
         let mut errs: Vec<Error> = vec![];
         let mut msg = Some(msg);
         let total_dst_peers = dst_peers.len();
-        for i in 0..total_dst_peers {
+        for (i, peer_id) in dst_peers.iter().enumerate() {
             let mut msg = if i == total_dst_peers - 1 {
                 msg.take().unwrap()
             } else {
                 msg.clone().unwrap()
             };
 
-            let peer_id = &dst_peers[i];
             msg.mut_peer_manager_header()
                 .unwrap()
                 .to_peer_id

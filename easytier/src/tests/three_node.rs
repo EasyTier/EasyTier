@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use core::panic;
 use std::{
     sync::{atomic::AtomicU32, Arc},
@@ -214,7 +216,7 @@ pub async fn drop_insts(insts: Vec<Instance>) {
             debug_assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
         });
     }
-    while let Some(_) = set.join_next().await {}
+    while set.join_next().await.is_some() {}
 }
 
 async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
@@ -1401,39 +1403,47 @@ pub async fn acl_rule_test_inbound(
     let mut acl = Acl::default();
     let mut acl_v1 = AclV1::default();
 
-    let mut chain = Chain::default();
-    chain.name = "test_inbound".to_string();
-    chain.chain_type = ChainType::Inbound as i32;
-    chain.enabled = true;
+    let mut chain = Chain {
+        name: "test_inbound".to_string(),
+        chain_type: ChainType::Inbound as i32,
+        enabled: true,
+        ..Default::default()
+    };
 
     // 禁止 8080
-    let mut deny_rule = Rule::default();
-    deny_rule.name = "deny_8080".to_string();
-    deny_rule.priority = 200;
-    deny_rule.enabled = true;
-    deny_rule.action = Action::Drop as i32;
-    deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.ports = vec!["8080".to_string()];
+    let deny_rule = Rule {
+        name: "deny_8080".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        ports: vec!["8080".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_rule);
 
     // 允许其他
-    let mut allow_rule = Rule::default();
-    allow_rule.name = "allow_all".to_string();
-    allow_rule.priority = 100;
-    allow_rule.enabled = true;
-    allow_rule.action = Action::Allow as i32;
-    allow_rule.protocol = Protocol::Any as i32;
-    allow_rule.stateful = true;
+    let allow_rule = Rule {
+        name: "allow_all".to_string(),
+        priority: 100,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        stateful: true,
+        ..Default::default()
+    };
     chain.rules.push(allow_rule);
 
     // 禁止 src ip 为 10.144.144.2 的流量
-    let mut deny_rule = Rule::default();
-    deny_rule.name = "deny_10.144.144.2".to_string();
-    deny_rule.priority = 200;
-    deny_rule.enabled = true;
-    deny_rule.action = Action::Drop as i32;
-    deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.source_ips = vec!["10.144.144.2/32".to_string()];
+    let deny_rule = Rule {
+        name: "deny_10.144.144.2".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        source_ips: vec!["10.144.144.2/32".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_rule);
 
     acl_v1.chains.push(chain);

@@ -434,9 +434,10 @@ impl ForeignNetworkManagerData {
             let _ = v.remove(network_name);
             v.is_empty()
         });
-        if let Some(_) = self
+        if self
             .network_peer_maps
             .remove_if(network_name, |_, v| v.peer_map.is_empty())
+            .is_some()
         {
             self.network_peer_last_update.remove(network_name);
         }
@@ -445,7 +446,8 @@ impl ForeignNetworkManagerData {
     async fn clear_no_conn_peer(&self, network_name: &String) {
         let Some(peer_map) = self
             .network_peer_maps
-            .get(network_name).map(|v| v.peer_map.clone())
+            .get(network_name)
+            .map(|v| v.peer_map.clone())
         else {
             return;
         };
@@ -551,7 +553,8 @@ impl ForeignNetworkManager {
     pub fn get_network_peer_id(&self, network_name: &str) -> Option<PeerId> {
         self.data
             .network_peer_maps
-            .get(network_name).map(|v| v.my_peer_id)
+            .get(network_name)
+            .map(|v| v.my_peer_id)
     }
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
@@ -683,9 +686,11 @@ impl ForeignNetworkManager {
                 peers: Default::default(),
             };
             for peer in item.peer_map.list_peers().await {
-                let mut peer_info = PeerInfo::default();
-                peer_info.peer_id = peer;
-                peer_info.conns = item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]);
+                let peer_info = PeerInfo {
+                    peer_id: peer,
+                    conns: item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]),
+                    ..Default::default()
+                };
                 entry.peers.push(peer_info);
             }
 

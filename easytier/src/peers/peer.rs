@@ -148,7 +148,7 @@ impl Peer {
         }
 
         // find a conn with the smallest latency
-        let mut min_latency = std::u64::MAX;
+        let mut min_latency = u64::MAX;
         for conn in self.conns.iter() {
             let latency = conn.value().get_stats().latency_us;
             if latency < min_latency {

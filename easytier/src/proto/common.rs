@@ -62,9 +62,9 @@ impl From<Ipv4Addr> for std::net::Ipv4Addr {
     }
 }
 
-impl ToString for Ipv4Addr {
-    fn to_string(&self) -> String {
-        std::net::Ipv4Addr::from(self.addr).to_string()
+impl Display for Ipv4Addr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", std::net::Ipv4Addr::from(self.addr))
     }
 }
 
@@ -93,9 +93,9 @@ impl From<Ipv6Addr> for std::net::Ipv6Addr {
     }
 }
 
-impl ToString for Ipv6Addr {
-    fn to_string(&self) -> String {
-        std::net::Ipv6Addr::from(*self).to_string()
+impl Display for Ipv6Addr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", std::net::Ipv6Addr::from(*self))
     }
 }
 
@@ -271,9 +271,9 @@ impl From<SocketAddr> for std::net::SocketAddr {
     }
 }
 
-impl ToString for SocketAddr {
-    fn to_string(&self) -> String {
-        std::net::SocketAddr::from(*self).to_string()
+impl Display for SocketAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", std::net::SocketAddr::from(*self))
     }
 }
 

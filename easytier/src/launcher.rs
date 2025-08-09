@@ -1,8 +1,5 @@
-use std::{
-    collections::VecDeque,
-    sync::{atomic::AtomicBool, Arc, RwLock},
-};
-use std::net::SocketAddr;
+use crate::common::config::PortForwardConfig;
+use crate::proto::web;
 use crate::{
     common::{
         config::{
@@ -19,9 +16,12 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use std::net::SocketAddr;
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicBool, Arc, RwLock},
+};
 use tokio::{sync::broadcast, task::JoinSet};
-use crate::common::config::PortForwardConfig;
-use crate::proto::web;
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -432,11 +432,15 @@ impl NetworkInstance {
     }
 
     pub fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
-        self.launcher.as_ref().map(|launcher| launcher.data.event_subscriber.read().unwrap().subscribe())
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.event_subscriber.read().unwrap().subscribe())
     }
 
     pub fn get_stop_notifier(&self) -> Option<Arc<tokio::sync::Notify>> {
-        self.launcher.as_ref().map(|launcher| launcher.data.instance_stop_notifier.clone())
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.instance_stop_notifier.clone())
     }
 
     pub fn get_latest_error_msg(&self) -> Option<String> {
@@ -586,8 +590,10 @@ impl NetworkConfig {
                     .iter()
                     .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
                     .filter_map(|pf| {
-                        let bind_addr = format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
-                        let dst_addr = format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
+                        let bind_addr =
+                            format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
+                        let dst_addr =
+                            format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
 
                         match (bind_addr, dst_addr) {
                             (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
@@ -598,7 +604,7 @@ impl NetworkConfig {
                             _ => None,
                         }
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>(),
             );
         }
 
@@ -774,7 +780,9 @@ impl NetworkConfig {
     pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
         let default_config = TomlConfigLoader::default();
 
-        let mut result = Self::default();
+        let mut result = Self {
+            ..Default::default()
+        };
 
         result.instance_id = Some(config.get_id().to_string());
         if config.get_hostname() != default_config.get_hostname() {
@@ -836,17 +844,16 @@ impl NetworkConfig {
 
         let port_forwards = config.get_port_forwards();
         if !port_forwards.is_empty() {
-            result.port_forwards = port_forwards.iter()
-                .map(|f| {
-                    web::PortForwardConfig {
-                        proto: f.proto.clone(),
-                        bind_ip: f.bind_addr.ip().to_string(),
-                        bind_port: f.bind_addr.port() as u32,
-                        dst_ip: f.dst_addr.ip().to_string(),
-                        dst_port: f.dst_addr.port() as u32,
-                    }
-                }).
-                collect();
+            result.port_forwards = port_forwards
+                .iter()
+                .map(|f| web::PortForwardConfig {
+                    proto: f.proto.clone(),
+                    bind_ip: f.bind_addr.ip().to_string(),
+                    bind_port: f.bind_addr.port() as u32,
+                    dst_ip: f.dst_addr.ip().to_string(),
+                    dst_port: f.dst_addr.port() as u32,
+                })
+                .collect();
         }
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {

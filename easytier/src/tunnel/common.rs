@@ -185,12 +185,12 @@ where
 }
 
 pub trait ZCPacketToBytes {
-    fn into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
+    fn zcpacket_into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
 }
 
 pub struct TcpZCPacketToBytes;
 impl ZCPacketToBytes for TcpZCPacketToBytes {
-    fn into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
+    fn zcpacket_into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
         let mut item = item.convert_type(ZCPacketType::TCP);
 
         let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
@@ -279,7 +279,9 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: ZCPacket) -> Result<(), Self::Error> {
         let pinned = self.project();
-        pinned.sending_bufs.push(pinned.converter.into_bytes(item)?);
+        pinned
+            .sending_bufs
+            .push(pinned.converter.zcpacket_into_bytes(item)?);
 
         Ok(())
     }
@@ -466,8 +468,7 @@ pub mod tests {
             }
         } else {
             let Some(ret) = recv.next().await else {
-                assert!(false, "recv error");
-                return;
+                panic!("recv error");
             };
 
             if ret.is_err() {

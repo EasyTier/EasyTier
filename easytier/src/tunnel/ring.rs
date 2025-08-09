@@ -181,9 +181,10 @@ struct Connection {
     server: Arc<RingTunnel>,
 }
 
-static CONNECTION_MAP: Lazy<
-    Arc<std::sync::Mutex<HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>>>,
-> = Lazy::new(|| Arc::new(std::sync::Mutex::new(HashMap::new())));
+type ConnectionMap = HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>;
+
+static CONNECTION_MAP: Lazy<Arc<std::sync::Mutex<ConnectionMap>>> =
+    Lazy::new(|| Arc::new(std::sync::Mutex::new(HashMap::new())));
 
 #[derive(Debug)]
 pub struct RingTunnelListener {
@@ -315,10 +316,7 @@ impl TunnelConnector for RingTunnelConnector {
         tracing::info!("connecting");
         let conn = Arc::new(Connection {
             client: Arc::new(RingTunnel::new(RING_TUNNEL_CAP)),
-            server: Arc::new(RingTunnel::new_with_id(
-                remote_addr,
-                RING_TUNNEL_CAP,
-            )),
+            server: Arc::new(RingTunnel::new_with_id(remote_addr, RING_TUNNEL_CAP)),
         });
         entry
             .send(conn.clone())
