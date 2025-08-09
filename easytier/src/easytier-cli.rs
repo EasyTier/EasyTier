@@ -925,8 +925,8 @@ impl CommandHandler<'_> {
             cfg: Some(
                 PortForwardConfig {
                     proto: protocol.to_string(),
-                    bind_addr: bind_addr.into(),
-                    dst_addr: dst_addr.into(),
+                    bind_addr,
+                    dst_addr,
                 }
                 .into(),
             ),
@@ -961,11 +961,9 @@ impl CommandHandler<'_> {
             cfg: Some(
                 PortForwardConfig {
                     proto: protocol.to_string(),
-                    bind_addr: bind_addr.into(),
+                    bind_addr,
                     dst_addr: dst_addr
-                        .map(|s| s.parse::<SocketAddr>().unwrap())
-                        .map(Into::into)
-                        .unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap().into()),
+                        .map(|s| s.parse::<SocketAddr>().unwrap()).unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap()),
                 }
                 .into(),
             ),
@@ -1718,13 +1716,13 @@ async fn main() -> Result<(), Error> {
                     ip_list.interface_ipv4s.iter().for_each(|ip| {
                         builder.push_record(vec![
                             "Interface IPv4",
-                            format!("{}", ip.to_string()).as_str(),
+                            ip.to_string().as_str(),
                         ]);
                     });
                     ip_list.interface_ipv6s.iter().for_each(|ip| {
                         builder.push_record(vec![
                             "Interface IPv6",
-                            format!("{}", ip.to_string()).as_str(),
+                            ip.to_string().as_str(),
                         ]);
                     });
                     for (idx, l) in node_info.listeners.iter().enumerate() {

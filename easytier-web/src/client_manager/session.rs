@@ -96,7 +96,6 @@ impl SessionRpcService {
 
         let machine_id: uuid::Uuid =
             req.machine_id
-                .clone()
                 .map(Into::into)
                 .ok_or(anyhow::anyhow!(
                     "Machine id is not set correctly, expect uuid but got: {:?}",
@@ -121,7 +120,7 @@ impl SessionRpcService {
         if data.req.replace(req.clone()).is_none() {
             assert!(data.storage_token.is_none());
             data.storage_token = Some(StorageToken {
-                token: req.user_token.clone().into(),
+                token: req.user_token.clone(),
                 client_url: data.client_url.clone(),
                 machine_id,
                 user_id,

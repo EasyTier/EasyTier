@@ -25,7 +25,7 @@ fn load_geoip_db(geoip_db: Option<String>) -> Option<maxminddb::Reader<Vec<u8>>>
         match maxminddb::Reader::open_readfile(&path) {
             Ok(reader) => {
                 tracing::info!("Successfully loaded GeoIP2 database from {}", path);
-                return Some(reader);
+                Some(reader)
             }
             Err(err) => {
                 tracing::debug!("Failed to load GeoIP2 database from {}: {}", path, err);
@@ -207,10 +207,8 @@ impl ClientManager {
 
                     let region = city.subdivisions.map(|r| {
                         r.iter()
-                            .map(|x| x.names.as_ref())
-                            .flatten()
-                            .map(|x| x.get("zh-CN").or_else(|| x.get("en")))
-                            .flatten()
+                            .filter_map(|x| x.names.as_ref())
+                            .filter_map(|x| x.get("zh-CN").or_else(|| x.get("en")))
                             .map(|x| x.to_string())
                             .collect::<Vec<_>>()
                             .join(",")

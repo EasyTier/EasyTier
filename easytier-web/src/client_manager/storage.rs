@@ -34,7 +34,7 @@ impl TryFrom<WeakRefStorage> for Storage {
     type Error = ();
 
     fn try_from(weak: Weak<StorageInner>) -> Result<Self, Self::Error> {
-        weak.upgrade().map(|inner| Storage(inner)).ok_or(())
+        weak.upgrade().map(Storage).ok_or(())
     }
 }
 
@@ -51,7 +51,7 @@ impl Storage {
         machine_id: &uuid::Uuid,
         client_url: &url::Url,
     ) {
-        map.remove_if(&machine_id, |_, v| {
+        map.remove_if(machine_id, |_, v| {
             v.storage_token.client_url == *client_url
         });
     }
@@ -78,7 +78,7 @@ impl Storage {
             .0
             .user_clients_map
             .entry(stoken.user_id)
-            .or_insert_with(DashMap::new);
+            .or_default();
 
         let client_info = ClientInfo {
             storage_token: stoken.clone(),
