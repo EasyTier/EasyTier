@@ -751,8 +751,16 @@ impl Socks5Server {
                     continue;
                 };
 
+                let Some(peer_mgr_arc) = peer_mgr.upgrade() else {
+                    tracing::error!("peer manager is dropped");
+                    continue;
+                };
+
+                let dst_allow_kcp =  peer_mgr_arc.check_allow_kcp_to_dst(&dst_addr.ip()).await;
+                tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
+
                 let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
-                    if kcp_endpoint.is_none() {
+                    if kcp_endpoint.is_none() || !dst_allow_kcp {
                         Box::new(SmolTcpConnector {
                             net: net.smoltcp_net.clone(),
                             entries: entries.clone(),

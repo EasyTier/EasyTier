@@ -230,15 +230,7 @@ impl TcpProxyForKcpSrcTrait for TcpProxyForKcpSrc {
     }
 
     async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        let peer_map: Arc<crate::peers::peer_map::PeerMap> =
-            self.0.get_peer_manager().get_peer_map();
-        let Some(dst_peer_id) = peer_map.get_peer_id_by_ipv4(dst_ip).await else {
-            return false;
-        };
-        let Some(peer_info) = peer_map.get_route_peer_info(dst_peer_id).await else {
-            return false;
-        };
-        peer_info.feature_flag.map(|x| x.kcp_input).unwrap_or(false)
+        self.0.get_peer_manager().check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip)).await
     }
 }
 
