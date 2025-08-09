@@ -86,6 +86,13 @@ pub trait Route {
         None
     }
 
+    async fn get_peer_id_by_ip(&self, ip: &std::net::IpAddr) -> Option<PeerId> {
+        match ip {
+            std::net::IpAddr::V4(v4) => self.get_peer_id_by_ipv4(v4).await,
+            std::net::IpAddr::V6(v6) => self.get_peer_id_by_ipv6(v6).await,
+        }
+    }
+
     async fn list_peers_own_foreign_network(
         &self,
         _network_identity: &NetworkIdentity,

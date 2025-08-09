@@ -163,6 +163,10 @@ impl ForeignNetworkEntry {
         config.set_network_identity(network.clone());
         config.set_hostname(Some(format!("PublicServer_{}", global_ctx.get_hostname())));
 
+        let mut flags = config.get_flags();
+        flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
+        config.set_flags(flags);
+
         let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
         foreign_global_ctx
             .replace_stun_info_collector(Box::new(global_ctx.get_stun_info_collector().clone()));

@@ -515,7 +515,7 @@ struct NetworkOptions {
     #[arg(
         long,
         value_delimiter = ',',
-        help = "TCP port whitelist. Supports single ports (80) and ranges (8000-9000)",
+        help = t!("core_clap.tcp_whitelist").to_string(),
         num_args = 0..
     )]
     tcp_whitelist: Vec<String>,
@@ -523,10 +523,28 @@ struct NetworkOptions {
     #[arg(
         long,
         value_delimiter = ',',
-        help = "UDP port whitelist. Supports single ports (53) and ranges (5000-6000)",
+        help = t!("core_clap.udp_whitelist").to_string(),
         num_args = 0..
     )]
     udp_whitelist: Vec<String>,
+
+    #[arg(
+        long,
+        env = "ET_DISABLE_RELAY_KCP",
+        help = t!("core_clap.disable_relay_kcp").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_relay_kcp: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_KCP",
+        help = t!("core_clap.enable_relay_foreign_network_kcp").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "false"
+    )]
+    enable_relay_foreign_network_kcp: Option<bool>,
 }
 
 #[derive(Parser, Debug)]
@@ -875,6 +893,8 @@ impl NetworkOptions {
             .foreign_relay_bps_limit
             .unwrap_or(f.foreign_relay_bps_limit);
         f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
+        f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
+        f.enable_relay_foreign_network_kcp = self.enable_relay_foreign_network_kcp.unwrap_or(f.enable_relay_foreign_network_kcp);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
