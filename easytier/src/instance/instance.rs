@@ -890,7 +890,7 @@ impl Instance {
             ) -> Result<GetStatsResponse, rpc_types::error::Error> {
                 let stats_manager = self.global_ctx.stats_manager();
                 let snapshots = stats_manager.get_all_metrics();
-                
+
                 let metrics = snapshots
                     .into_iter()
                     .map(|snapshot| {
@@ -898,7 +898,7 @@ impl Instance {
                         for label in snapshot.labels.labels() {
                             labels.insert(label.key.clone(), label.value.clone());
                         }
-                        
+
                         MetricSnapshot {
                             name: snapshot.name_str(),
                             value: snapshot.value,
@@ -906,7 +906,7 @@ impl Instance {
                         }
                     })
                     .collect();
-                
+
                 Ok(GetStatsResponse { metrics })
             }
 
@@ -917,7 +917,7 @@ impl Instance {
             ) -> Result<GetPrometheusStatsResponse, rpc_types::error::Error> {
                 let stats_manager = self.global_ctx.stats_manager();
                 let prometheus_text = stats_manager.export_prometheus();
-                
+
                 Ok(GetPrometheusStatsResponse { prometheus_text })
             }
         }

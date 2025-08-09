@@ -11,9 +11,15 @@ pub struct WebClient {
 }
 
 impl WebClient {
-    pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(connector: T, token: S, hostname: H) -> Self {
-        let controller = Arc::new(controller::Controller::new(token.to_string(),
-                                                              hostname.to_string()));
+    pub fn new<T: TunnelConnector + 'static, S: ToString, H: ToString>(
+        connector: T,
+        token: S,
+        hostname: H,
+    ) -> Self {
+        let controller = Arc::new(controller::Controller::new(
+            token.to_string(),
+            hostname.to_string(),
+        ));
 
         let controller_clone = controller.clone();
         let tasks = ScopedTask::from(tokio::spawn(async move {

@@ -727,7 +727,7 @@ impl InterfaceLuid {
         if family == (AF_INET6 as ADDRESS_FAMILY) {
             // ipv6 mtu must be at least 1280
             mtu = 1280.max(mtu);
-        }  
+        }
 
         // https://stackoverflow.com/questions/54857292/setipinterfaceentry-returns-error-invalid-parameter
         row.SitePrefixLength = 0;
