@@ -51,9 +51,7 @@ impl Storage {
         machine_id: &uuid::Uuid,
         client_url: &url::Url,
     ) {
-        map.remove_if(machine_id, |_, v| {
-            v.storage_token.client_url == *client_url
-        });
+        map.remove_if(machine_id, |_, v| v.storage_token.client_url == *client_url);
     }
 
     fn update_mid_to_client_info_map(
@@ -74,11 +72,7 @@ impl Storage {
     }
 
     pub fn update_client(&self, stoken: StorageToken, report_time: i64) {
-        let inner = self
-            .0
-            .user_clients_map
-            .entry(stoken.user_id)
-            .or_default();
+        let inner = self.0.user_clients_map.entry(stoken.user_id).or_default();
 
         let client_info = ClientInfo {
             storage_token: stoken.clone(),

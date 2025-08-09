@@ -153,8 +153,7 @@ impl DNSTunnelConnector {
         let url = weighted_choice(srv_records.as_slice()).with_context(|| {
             format!(
                 "failed to choose a srv record, domain_name: {}, srv_records: {:?}",
-                domain_name,
-                srv_records
+                domain_name, srv_records
             )
         })?;
 

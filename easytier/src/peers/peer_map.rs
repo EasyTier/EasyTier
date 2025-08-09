@@ -173,9 +173,7 @@ impl PeerMap {
     ) -> Vec<PeerId> {
         let mut ret = Vec::new();
         for route in self.routes.read().await.iter() {
-            let peers = route
-                .list_peers_own_foreign_network(network_identity)
-                .await;
+            let peers = route.list_peers_own_foreign_network(network_identity).await;
             ret.extend(peers);
         }
         ret

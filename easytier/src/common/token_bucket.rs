@@ -360,7 +360,8 @@ mod tests {
                         .get_foreign_network_manager()
                         .list_foreign_networks()
                         .await
-                        .foreign_networks.is_empty()
+                        .foreign_networks
+                        .is_empty()
                 },
                 Duration::from_secs(5),
             )
@@ -373,7 +374,8 @@ mod tests {
                 pm_center1
                     .get_global_ctx()
                     .token_bucket_manager()
-                    .buckets.is_empty()
+                    .buckets
+                    .is_empty()
             },
             Duration::from_secs(10),
         )

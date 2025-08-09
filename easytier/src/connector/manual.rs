@@ -155,12 +155,8 @@ impl ManualConnectorManager {
             );
         }
 
-        let reconnecting_urls: BTreeSet<String> = self
-            .data
-            .reconnecting
-            .iter()
-            .map(|x| x.clone())
-            .collect();
+        let reconnecting_urls: BTreeSet<String> =
+            self.data.reconnecting.iter().map(|x| x.clone()).collect();
 
         for conn_url in reconnecting_urls {
             ret.insert(
@@ -301,11 +297,7 @@ impl ManualConnectorManager {
 
     async fn collect_dead_conns(data: Arc<ConnectorManagerData>) -> BTreeSet<String> {
         Self::handle_remove_connector(data.clone());
-        let all_urls: BTreeSet<String> = data
-            .connectors
-            .iter()
-            .map(|x| x.key().clone())
-            .collect();
+        let all_urls: BTreeSet<String> = data.connectors.iter().map(|x| x.key().clone()).collect();
         let mut ret = BTreeSet::new();
         for url in all_urls.iter() {
             if !data.alive_conn_urls.contains(url) {

@@ -828,12 +828,15 @@ impl NetworkOptions {
             .unwrap_or_else(|_| panic!("failed to parse local bind addr {}", example_str));
 
             let dst_addr = port_forward
-                    .path_segments()
-                    .unwrap_or_else(|| panic!("remote destination addr is missing {}", example_str))
-                    .next()
-                    .unwrap_or_else(|| panic!("remote destination addr is missing {}", example_str)).to_string()
-            .parse()
-            .unwrap_or_else(|_| panic!("failed to parse remote destination addr {}", example_str));
+                .path_segments()
+                .unwrap_or_else(|| panic!("remote destination addr is missing {}", example_str))
+                .next()
+                .unwrap_or_else(|| panic!("remote destination addr is missing {}", example_str))
+                .to_string()
+                .parse()
+                .unwrap_or_else(|_| {
+                    panic!("failed to parse remote destination addr {}", example_str)
+                });
 
             let port_forward_item = PortForwardConfig {
                 bind_addr,

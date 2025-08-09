@@ -95,11 +95,13 @@ impl Server {
             name_servers: system_conf
                 .0
                 .name_servers()
-                .iter().filter(|&x| {
+                .iter()
+                .filter(|&x| {
                     !config
                         .excluded_forward_nameservers()
                         .contains(&x.socket_addr.ip())
-                }).cloned()
+                })
+                .cloned()
                 .collect::<Vec<_>>()
                 .into(),
             options: Some(system_conf.1),

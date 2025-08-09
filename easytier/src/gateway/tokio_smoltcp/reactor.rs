@@ -51,9 +51,7 @@ async fn run(
     loop {
         let packets = device.take_send_queue();
 
-        async_iface
-            .send_all(&mut iter(packets).map(Ok))
-            .await?;
+        async_iface.send_all(&mut iter(packets).map(Ok)).await?;
 
         if recv_buf.is_empty() && device.need_wait() {
             let start = Instant::now();
@@ -160,7 +158,9 @@ impl Reactor {
 impl Drop for Reactor {
     fn drop(&mut self) {
         for (_, socket) in self.socket_allocator.sockets().lock().iter_mut() {
-            if let Socket::Tcp(tcp) = socket { tcp.close() }
+            if let Socket::Tcp(tcp) = socket {
+                tcp.close()
+            }
         }
     }
 }

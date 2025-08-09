@@ -46,7 +46,10 @@ impl From<Color> for (u8, u8, u8, u8) {
 impl From<Color> for u32 {
     fn from(val: Color) -> Self {
         let color: (u8, u8, u8, u8) = val.into();
-        (color.0 as u32) << (24 + (color.1 as u32)) << (16 + (color.2 as u32)) << (8 + (color.3 as u32))
+        (color.0 as u32)
+            << (24 + (color.1 as u32))
+            << (16 + (color.2 as u32))
+            << (8 + (color.3 as u32))
     }
 }
 

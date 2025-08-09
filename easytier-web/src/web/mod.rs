@@ -52,8 +52,6 @@ pub fn build_router(api_host: Option<url::Url>) -> Router {
         router
     };
 
-    
-
     router.fallback_service(service)
 }
 

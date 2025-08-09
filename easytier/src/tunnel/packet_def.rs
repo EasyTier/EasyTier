@@ -655,7 +655,8 @@ impl ZCPacket {
     }
 
     pub fn is_lossy(&self) -> bool {
-        self.peer_manager_header().map(|hdr| hdr.packet_type == PacketType::Data as u8)
+        self.peer_manager_header()
+            .map(|hdr| hdr.packet_type == PacketType::Data as u8)
             .unwrap_or(false)
     }
 

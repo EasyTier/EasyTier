@@ -94,13 +94,10 @@ impl SessionRpcService {
             return Ok(HeartbeatResponse {});
         };
 
-        let machine_id: uuid::Uuid =
+        let machine_id: uuid::Uuid = req.machine_id.map(Into::into).ok_or(anyhow::anyhow!(
+            "Machine id is not set correctly, expect uuid but got: {:?}",
             req.machine_id
-                .map(Into::into)
-                .ok_or(anyhow::anyhow!(
-                    "Machine id is not set correctly, expect uuid but got: {:?}",
-                    req.machine_id
-                ))?;
+        ))?;
 
         let user_id = storage
             .db()
