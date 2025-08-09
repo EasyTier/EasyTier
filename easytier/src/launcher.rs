@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
-
+use std::net::SocketAddr;
 use crate::{
     common::{
         config::{
@@ -20,6 +20,8 @@ use crate::{
 use anyhow::Context;
 use chrono::{DateTime, Local};
 use tokio::{sync::broadcast, task::JoinSet};
+use crate::common::config::PortForwardConfig;
+use crate::proto::web;
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -588,6 +590,28 @@ impl NetworkConfig {
             ));
         }
 
+        if !self.port_forwards.is_empty() {
+            cfg.set_port_forwards(
+                self.port_forwards
+                    .iter()
+                    .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
+                    .filter_map(|pf| {
+                        let bind_addr = format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
+                        let dst_addr = format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
+
+                        match (bind_addr, dst_addr) {
+                            (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
+                                bind_addr,
+                                dst_addr,
+                                proto: pf.proto.clone(),
+                            }),
+                            _ => None,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
+
         if self.enable_vpn_portal.unwrap_or_default() {
             let cidr = format!(
                 "{}/{}",
@@ -818,6 +842,21 @@ impl NetworkConfig {
 
         if let Some(whitelist) = config.get_rpc_portal_whitelist() {
             result.rpc_portal_whitelists = whitelist.iter().map(|w| w.to_string()).collect();
+        }
+
+        let port_forwards = config.get_port_forwards();
+        if !port_forwards.is_empty() {
+            result.port_forwards = port_forwards.iter()
+                .map(|f| {
+                    web::PortForwardConfig {
+                        proto: f.proto.clone(),
+                        bind_ip: f.bind_addr.ip().to_string(),
+                        bind_port: f.bind_addr.port() as u32,
+                        dst_ip: f.dst_addr.ip().to_string(),
+                        dst_port: f.dst_addr.port() as u32,
+                    }
+                }).
+                collect();
         }
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {

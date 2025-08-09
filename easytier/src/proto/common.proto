@@ -28,7 +28,7 @@ message FlagsInConfig {
   bool enable_kcp_proxy = 18;
   // does this peer allow kcp input
   bool disable_kcp_input = 19;
-  // allow relay kcp packets (for public server, this can reduce the throughput)
+  // disable relay local network kcp packets
   bool disable_relay_kcp = 20;
   bool proxy_forward_by_system = 21;
 
@@ -47,8 +47,11 @@ message FlagsInConfig {
 
   uint32 multi_thread_count = 27;
 
-  // encryption algorithm to use, empty string means default (aes-gcm)
-  string encryption_algorithm = 28;
+  // enable relay foreign network kcp packets
+  bool enable_relay_foreign_network_kcp = 28;
+  
+    // encryption algorithm to use, empty string means default (aes-gcm)
+  string encryption_algorithm = 29;
 }
 
 message RpcDescriptor {

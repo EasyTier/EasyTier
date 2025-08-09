@@ -1150,6 +1150,8 @@ pub async fn port_forward_test(
     #[values(true, false)] no_tun: bool,
     #[values(64, 1900)] buf_size: u64,
     #[values(true, false)] enable_kcp: bool,
+    #[values(true, false)] dst_disable_kcp_input: bool,
+    #[values(true, false)] disable_relay_kcp: bool,
 ) {
     prepare_linux_namespaces();
 
@@ -1183,14 +1185,23 @@ pub async fn port_forward_test(
                         proto: "udp".to_string(),
                     },
                 ]);
+
+                let mut flags = cfg.get_flags();
+                flags.no_tun = no_tun;
+                flags.enable_kcp_proxy = enable_kcp;
+                cfg.set_flags(flags);
             } else if cfg.get_inst_name() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
+                let mut flags = cfg.get_flags();
+                flags.disable_kcp_input = dst_disable_kcp_input;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst2" {
+                let mut flags = cfg.get_flags();
+                flags.disable_relay_kcp = disable_relay_kcp;
+                cfg.set_flags(flags);
             }
-            let mut flags = cfg.get_flags();
-            flags.no_tun = no_tun;
-            flags.enable_kcp_proxy = enable_kcp;
-            cfg.set_flags(flags);
+
             cfg
         },
         false,
