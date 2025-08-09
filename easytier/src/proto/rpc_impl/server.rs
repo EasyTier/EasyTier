@@ -147,7 +147,7 @@ impl Server {
 
                 let ret = packet_merges
                     .entry(key.clone())
-                    .or_insert_with(PacketMerger::new)
+                    .or_default()
                     .feed(packet);
 
                 match ret {

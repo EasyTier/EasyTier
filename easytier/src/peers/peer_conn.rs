@@ -149,7 +149,7 @@ impl PeerConn {
         let conn_id = PeerConnId::new_v4();
 
         PeerConn {
-            conn_id: conn_id,
+            conn_id,
 
             my_peer_id,
             global_ctx,

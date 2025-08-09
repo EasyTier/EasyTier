@@ -462,7 +462,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin, A: Authentication, C: AsyncTcpConnector>
                 .await
                 .context("Can't reply with auth method not acceptable.")?;
 
-            return Err(SocksError::AuthenticationRejected("Authentication, rejected.".to_string()));
+            Err(SocksError::AuthenticationRejected("Authentication, rejected.".to_string()))
         }
     }
 

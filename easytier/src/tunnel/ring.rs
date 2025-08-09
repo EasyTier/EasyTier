@@ -47,7 +47,7 @@ impl RingTunnel {
         let ring_impl = AsyncHeapRb::new(std::cmp::max(RING_TUNNEL_RESERVERD_CAP * 2, cap));
         let (ring_prod_impl, ring_cons_impl) = ring_impl.split();
         Self {
-            id: id,
+            id,
             ring_cons_impl: AtomicCell::new(Some(ring_cons_impl)),
             ring_prod_impl: AtomicCell::new(Some(ring_prod_impl)),
         }

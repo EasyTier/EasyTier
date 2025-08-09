@@ -277,7 +277,7 @@ mod tests {
 
         // wait for remote peer conn close
         timeout(std::time::Duration::from_secs(5), async {
-            while remote_peer.list_peer_conns().await.len() != 0 {
+            while !remote_peer.list_peer_conns().await.is_empty() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         })

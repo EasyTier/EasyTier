@@ -491,7 +491,7 @@ impl ForeignNetworkManagerData {
 
         self.peer_network_map
             .entry(dst_peer_id)
-            .or_insert_with(DashSet::new)
+            .or_default()
             .insert(network_identity.network_name.clone());
 
         self.network_peer_last_update

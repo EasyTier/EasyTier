@@ -304,7 +304,7 @@ impl Client {
                         self.to_peer_id,
                         PeerInfo {
                             peer_id: self.to_peer_id,
-                            compression_info: compression_info,
+                            compression_info,
                             last_active: Some(std::time::Instant::now()),
                         },
                     );

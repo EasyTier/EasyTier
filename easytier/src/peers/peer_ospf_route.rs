@@ -186,45 +186,41 @@ impl RoutePeerInfo {
     }
 }
 
-impl Into<crate::proto::cli::Route> for RoutePeerInfo {
-    fn into(self) -> crate::proto::cli::Route {
-        let network_length = if self.network_length == 0 {
+impl From<RoutePeerInfo> for crate::proto::cli::Route {
+    fn from(val: RoutePeerInfo) -> Self {
+        let network_length = if val.network_length == 0 {
             24
         } else {
-            self.network_length
+            val.network_length
         };
 
         crate::proto::cli::Route {
-            peer_id: self.peer_id,
-            ipv4_addr: if let Some(ipv4_addr) = self.ipv4_addr {
-                Some(Ipv4Inet {
+            peer_id: val.peer_id,
+            ipv4_addr: val.ipv4_addr.map(|ipv4_addr| Ipv4Inet {
                     address: Some(ipv4_addr),
                     network_length,
-                })
-            } else {
-                None
-            },
+                }),
             next_hop_peer_id: 0, // next_hop_peer_id is calculated in RouteTable.
             cost: 0,             // cost is calculated in RouteTable.
             path_latency: 0,     // path_latency is calculated in RouteTable.
-            proxy_cidrs: self.proxy_cidrs.clone(),
-            hostname: self.hostname.unwrap_or_default(),
+            proxy_cidrs: val.proxy_cidrs.clone(),
+            hostname: val.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
-                if let Ok(udp_nat_type) = NatType::try_from(self.udp_stun_info) {
+                if let Ok(udp_nat_type) = NatType::try_from(val.udp_stun_info) {
                     stun_info.set_udp_nat_type(udp_nat_type);
                 }
                 Some(stun_info)
             },
-            inst_id: self.inst_id.map(|x| x.to_string()).unwrap_or_default(),
-            version: self.easytier_version,
-            feature_flag: self.feature_flag,
+            inst_id: val.inst_id.map(|x| x.to_string()).unwrap_or_default(),
+            version: val.easytier_version,
+            feature_flag: val.feature_flag,
 
             next_hop_peer_id_latency_first: None,
             cost_latency_first: None,
             path_latency_latency_first: None,
 
-            ipv6_addr: self.ipv6_addr,
+            ipv6_addr: val.ipv6_addr,
         }
     }
 }
@@ -1311,7 +1307,7 @@ impl PeerRouteServiceImpl {
             };
             self.foreign_network_owner_map
                 .entry(network_identity)
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(entry.my_peer_id_for_this_network);
 
             self.foreign_network_my_peer_id_map.insert(

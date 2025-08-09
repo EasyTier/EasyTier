@@ -478,7 +478,7 @@ impl Drop for IcmpProxy {
         self.socket.lock().unwrap().as_ref().map(|s| {
             tracing::info!("shutting down icmp socket");
             let _ = s.shutdown(std::net::Shutdown::Both);
-            ()
+            
         });
     }
 }

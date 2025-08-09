@@ -809,7 +809,7 @@ impl NetworkConfig {
 
         result.listener_urls = config
             .get_listeners()
-            .unwrap_or_else(std::vec::Vec::new)
+            .unwrap_or_default()
             .iter()
             .map(|l| l.to_string())
             .collect();

@@ -74,7 +74,7 @@ impl Record {
     }
 
     fn rr_type(&self) -> rr::RecordType {
-        self.rr_type.into()
+        self.rr_type
     }
 }
 

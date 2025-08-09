@@ -380,7 +380,7 @@ impl VirtualNic {
 
             let dev_name = self.global_ctx.get_flags().dev_name;
             if !dev_name.is_empty() {
-                config.tun_name(dev_name.to_string());
+                config.tun_name(&dev_name);
             }
         }
 
