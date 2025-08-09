@@ -150,6 +150,7 @@ boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true
 ring = { version = "0.17", optional = true }
 bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
 
 # for cli
 tabled = "0.16"
@@ -298,6 +299,7 @@ full = [
     "websocket",
     "wireguard",
     "aes-gcm",
+    "openssl-crypto", # need openssl-dev libs
     "smoltcp",
     "tun",
     "socks5",
@@ -306,6 +308,7 @@ wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
+openssl-crypto = ["dep:openssl"]
 tun = ["dep:tun"]
 websocket = [
     "dep:tokio-websockets",

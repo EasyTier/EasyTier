@@ -18,8 +18,9 @@ use clap_complete::Shell;
 use easytier::{
     common::{
         config::{
-            ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader,
-            NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            get_avaliable_encrypt_methods, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
+            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+            VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
         global_ctx::GlobalCtx,
@@ -282,6 +283,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     disable_encryption: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_ENCRYPTION_ALGORITHM",
+        help = t!("core_clap.encryption_algorithm").to_string(),
+        default_value = "aes-gcm",
+        value_parser = get_avaliable_encrypt_methods()
+    )]
+    encryption_algorithm: Option<String>,
 
     #[arg(
         long,
@@ -846,6 +856,9 @@ impl NetworkOptions {
         if let Some(v) = self.disable_encryption {
             f.enable_encryption = !v;
         }
+        if let Some(algorithm) = &self.encryption_algorithm {
+            f.encryption_algorithm = algorithm.clone();
+        }
         if let Some(v) = self.disable_ipv6 {
             f.enable_ipv6 = !v;
         }
@@ -894,7 +907,9 @@ impl NetworkOptions {
             .unwrap_or(f.foreign_relay_bps_limit);
         f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
         f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
-        f.enable_relay_foreign_network_kcp = self.enable_relay_foreign_network_kcp.unwrap_or(f.enable_relay_foreign_network_kcp);
+        f.enable_relay_foreign_network_kcp = self
+            .enable_relay_foreign_network_kcp
+            .unwrap_or(f.enable_relay_foreign_network_kcp);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

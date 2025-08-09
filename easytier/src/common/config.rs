@@ -48,7 +48,77 @@ pub fn gen_default_flags() -> Flags {
         disable_quic_input: false,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
+        encryption_algorithm: "".to_string(), // 空字符串表示使用默认的 AES-GCM
     }
+}
+
+pub enum EncryptionAlgorithm {
+    AesGcm,
+    Aes256Gcm,
+    Xor,
+    #[cfg(feature = "wireguard")]
+    ChaCha20,
+
+    #[cfg(feature = "openssl-crypto")]
+    OpensslAesGcm,
+    #[cfg(feature = "openssl-crypto")]
+    OpensslChacha20,
+    #[cfg(feature = "openssl-crypto")]
+    OpensslAes256Gcm,
+}
+
+impl std::fmt::Display for EncryptionAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AesGcm => write!(f, "aes-gcm"),
+            Self::Aes256Gcm => write!(f, "aes-256-gcm"),
+            Self::Xor => write!(f, "xor"),
+            #[cfg(feature = "wireguard")]
+            Self::ChaCha20 => write!(f, "chacha20"),
+            #[cfg(feature = "openssl-crypto")]
+            Self::OpensslAesGcm => write!(f, "openssl-aes-gcm"),
+            #[cfg(feature = "openssl-crypto")]
+            Self::OpensslChacha20 => write!(f, "openssl-chacha20"),
+            #[cfg(feature = "openssl-crypto")]
+            Self::OpensslAes256Gcm => write!(f, "openssl-aes-256-gcm"),
+        }
+    }
+}
+
+impl TryFrom<&str> for EncryptionAlgorithm {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "aes-gcm" => Ok(Self::AesGcm),
+            "aes-256-gcm" => Ok(Self::Aes256Gcm),
+            "xor" => Ok(Self::Xor),
+            #[cfg(feature = "wireguard")]
+            "chacha20" => Ok(Self::ChaCha20),
+            #[cfg(feature = "openssl-crypto")]
+            "openssl-aes-gcm" => Ok(Self::OpensslAesGcm),
+            #[cfg(feature = "openssl-crypto")]
+            "openssl-chacha20" => Ok(Self::OpensslChacha20),
+            #[cfg(feature = "openssl-crypto")]
+            "openssl-aes-256-gcm" => Ok(Self::OpensslAes256Gcm),
+            _ => Err(anyhow::anyhow!("invalid encryption algorithm")),
+        }
+    }
+}
+
+pub fn get_avaliable_encrypt_methods() -> Vec<&'static str> {
+    let mut r = vec!["aes-gcm", "aes-256-gcm", "xor"];
+    if cfg!(feature = "wireguard") {
+        r.push("chacha20");
+    }
+    if cfg!(feature = "openssl-crypto") {
+        r.extend(vec![
+            "openssl-aes-gcm",
+            "openssl-chacha20",
+            "openssl-aes-256-gcm",
+        ]);
+    }
+    r
 }
 
 #[auto_impl::auto_impl(Box, &)]

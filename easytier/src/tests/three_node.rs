@@ -268,8 +268,40 @@ async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usiz
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn basic_three_node_test(#[values("tcp", "udp", "wg", "ws", "wss")] proto: &str) {
-    let insts = init_three_node(proto).await;
+pub async fn basic_three_node_test(
+    #[values("tcp", "udp", "wg", "ws", "wss")] proto: &str,
+    #[values(
+        ["aes-gcm", "aes-gcm"],
+        ["aes-256-gcm", "aes-256-gcm"],
+        ["chacha20", "chacha20"],
+        ["xor", "xor"],
+        ["openssl-chacha20", "openssl-chacha20"],
+        ["openssl-aes-gcm", "openssl-aes-gcm"],
+        ["openssl-aes-256-gcm", "openssl-aes-256-gcm"],
+        ["aes-gcm", "openssl-aes-gcm"],
+        ["openssl-aes-gcm", "aes-gcm"],
+        ["aes-256-gcm", "openssl-aes-256-gcm"],
+        ["openssl-aes-256-gcm", "aes-256-gcm"],
+        ["chacha20", "openssl-chacha20"],
+        ["openssl-chacha20", "chacha20"],
+    )]
+    encrypt_algorithm_pair: [&str; 2],
+) {
+    let insts = init_three_node_ex(
+        proto,
+        |cfg| {
+            let mut flags = cfg.get_flags();
+            if cfg.get_inst_name() == "inst0" {
+                flags.encryption_algorithm = encrypt_algorithm_pair[0].to_string();
+            } else {
+                flags.encryption_algorithm = encrypt_algorithm_pair[1].to_string();
+            }
+            cfg.set_flags(flags);
+            cfg
+        },
+        false,
+    )
+    .await;
 
     check_route(
         "10.144.144.2/24",

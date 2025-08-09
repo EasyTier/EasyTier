@@ -95,6 +95,9 @@ core_clap:
   disable_encryption:
     en: "disable encryption for peers communication, default is false, must be same with peers"
     zh-CN: "禁用对等节点通信的加密，默认为false，必须与对等节点相同"
+  encryption_algorithm:
+    en: "encryption algorithm to use, supported: '', 'xor', 'chacha20', 'aes-gcm', 'aes-gcm-256', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20'. Empty string means default (aes-gcm)"
+    zh-CN: "要使用的加密算法，支持：''（默认aes-gcm）、'xor'、'chacha20'、'aes-gcm'、'aes-gcm-256'、'openssl-aes128-gcm'、'openssl-aes256-gcm'、'openssl-chacha20'"
   multi_thread:
     en: "use multi-thread runtime, default is single-thread"
     zh-CN: "使用多线程运行时，默认为单线程"
