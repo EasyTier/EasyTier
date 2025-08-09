@@ -115,6 +115,11 @@ function getRoutesForVpn(routes: Route[]): string[] {
 async function onNetworkInstanceChange() {
   console.error('vpn service watch network instance change ids', JSON.stringify(networkStore.networkInstanceIds))
   const insts = networkStore.networkInstanceIds
+  const no_tun = networkStore.isNoTunEnabled(insts[0])
+  if (no_tun) {
+    await doStopVpn()
+    return
+  }
   if (!insts) {
     await doStopVpn()
     return
@@ -128,14 +133,6 @@ async function onNetworkInstanceChange() {
 
   const virtual_ip = Utils.ipv4ToString(curNetworkInfo?.my_node_info?.virtual_ipv4.address)
   if (!virtual_ip || !virtual_ip.length) {
-    await doStopVpn()
-    return
-  }
-
-  // if use no tun mode, stop the vpn service
-  const no_tun = networkStore.isNoTunEnabled(insts[0])
-  if (no_tun) {
-    console.error('no tun mode, stop vpn service')
     await doStopVpn()
     return
   }
@@ -187,12 +184,26 @@ async function watchNetworkInstance() {
   console.error('vpn service watch network instance')
 }
 
+function isNoTunEnabled(instanceId: string | undefined) {
+  if (!instanceId) {
+    return false
+  }
+  const no_tun = networkStore.isNoTunEnabled(instanceId)
+  if (no_tun) {
+    return true
+  }
+  return false
+}
+
 export async function initMobileVpnService() {
   await registerVpnServiceListener()
   await watchNetworkInstance()
 }
 
-export async function prepareVpnService() {
+export async function prepareVpnService(instanceId: string) {
+  if (isNoTunEnabled(instanceId)) {
+    return
+  }
   console.log('prepare vpn')
   const prepare_ret = await prepare_vpn()
   console.log('prepare vpn', JSON.stringify((prepare_ret)))

@@ -102,7 +102,7 @@ networkStore.$subscribe(async () => {
 
 async function runNetworkCb(cfg: NetworkTypes.NetworkConfig, cb: () => void) {
   if (type() === 'android') {
-    await prepareVpnService()
+    await prepareVpnService(cfg.instance_id)
     networkStore.clearNetworkInstances()
   }
   else {
