@@ -117,6 +117,7 @@ async function onNetworkInstanceChange() {
   const insts = networkStore.networkInstanceIds
   const no_tun = networkStore.isNoTunEnabled(insts[0])
   if (no_tun) {
+    await doStopVpn()
     return
   }
   if (!insts) {
@@ -135,8 +136,6 @@ async function onNetworkInstanceChange() {
     await doStopVpn()
     return
   }
-
-  // if use no tun mode, stop the vpn service
 
   let network_length = curNetworkInfo?.my_node_info?.virtual_ipv4.network_length
   if (!network_length) {
