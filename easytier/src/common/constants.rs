@@ -21,6 +21,9 @@ macro_rules! set_global_var {
 
 define_global_var!(MANUAL_CONNECTOR_RECONNECT_INTERVAL_MS, u64, 1000);
 
+define_global_var!(CACHE_CONNECTOR_RECONNECT_INTERVAL_SEC, u64, 10);
+define_global_var!(CACHE_CONNECTOR_QUEUE_TIMEOUT_SEC, u64, 3600);
+
 define_global_var!(OSPF_UPDATE_MY_GLOBAL_FOREIGN_NETWORK_INTERVAL_SEC, u64, 10);
 
 define_global_var!(MACHINE_UID, Option<String>, None);
