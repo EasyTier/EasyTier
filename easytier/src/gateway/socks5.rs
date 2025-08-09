@@ -757,7 +757,7 @@ impl Socks5Server {
                 };
 
                 let dst_allow_kcp =  peer_mgr_arc.check_allow_kcp_to_dst(&dst_addr.ip()).await;
-                println!("dst_allow_kcp: {:?}", dst_allow_kcp);
+                tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
 
                 let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
                     if kcp_endpoint.is_none() || !dst_allow_kcp {
