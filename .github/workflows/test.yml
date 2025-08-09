@@ -36,6 +36,14 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Check formatting
+        if: ${{ !cancelled() }}
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --all-features --all -- -D warnings
+
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
         with:
