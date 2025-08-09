@@ -125,8 +125,7 @@ impl std::net::ToSocketAddrs for TargetAddr {
     fn to_socket_addrs(&self) -> io::Result<IntoIter<SocketAddr>> {
         match *self {
             TargetAddr::Ip(addr) => Ok(vec![addr].into_iter()),
-            TargetAddr::Domain(_, _) => Err(io::Error::new(
-                io::ErrorKind::Other,
+            TargetAddr::Domain(_, _) => Err(io::Error::other(
                 "Domain name has to be explicitly resolved, please use TargetAddr::resolve_dns().",
             )),
         }
@@ -149,7 +148,7 @@ pub trait ToTargetAddr {
     fn to_target_addr(&self) -> io::Result<TargetAddr>;
 }
 
-impl<'a> ToTargetAddr for (&'a str, u16) {
+impl ToTargetAddr for (&str, u16) {
     fn to_target_addr(&self) -> io::Result<TargetAddr> {
         // try to parse as an IP first
         if let Ok(addr) = self.0.parse::<Ipv4Addr>() {

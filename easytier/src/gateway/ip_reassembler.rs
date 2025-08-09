@@ -204,7 +204,7 @@ pub fn compose_ipv4_packet<F>(
 where
     F: Fn(&[u8]) -> Result<(), Error>,
 {
-    let total_pieces = (payload_len + payload_mtu - 1) / payload_mtu;
+    let total_pieces = payload_len.div_ceil(payload_mtu);
     let mut buf_offset = 0;
     let mut fragment_offset = 0;
     let mut cur_piece = 0;
@@ -232,8 +232,8 @@ where
         ipv4_packet.set_ecn(0);
         ipv4_packet.set_dscp(0);
         ipv4_packet.set_ttl(32);
-        ipv4_packet.set_source(src_v4.clone());
-        ipv4_packet.set_destination(dst_v4.clone());
+        ipv4_packet.set_source(*src_v4);
+        ipv4_packet.set_destination(*dst_v4);
         ipv4_packet.set_next_level_protocol(next_protocol);
         ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
 
@@ -282,7 +282,7 @@ mod tests {
         let resembler = IpReassembler::new(Duration::from_secs(1));
 
         for (idx, raw_packet) in raw_packets.iter().enumerate() {
-            if let Some(packet) = Ipv4Packet::new(&raw_packet) {
+            if let Some(packet) = Ipv4Packet::new(raw_packet) {
                 let ret = resembler.add_fragment(source, destination, &packet);
                 if idx != 2 {
                     assert!(ret.is_none());

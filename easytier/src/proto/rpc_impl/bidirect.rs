@@ -24,6 +24,12 @@ pub struct BidirectRpcManager {
     tasks: Mutex<Option<JoinSet<()>>>,
 }
 
+impl Default for BidirectRpcManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BidirectRpcManager {
     pub fn new() -> Self {
         Self {

@@ -95,13 +95,11 @@ impl Server {
             name_servers: system_conf
                 .0
                 .name_servers()
-                .iter()
-                .cloned()
-                .filter(|x| {
+                .iter().filter(|&x| {
                     !config
                         .excluded_forward_nameservers()
                         .contains(&x.socket_addr.ip())
-                })
+                }).cloned()
                 .collect::<Vec<_>>()
                 .into(),
             options: Some(system_conf.1),
@@ -148,7 +146,7 @@ impl Server {
         .with_context(|| {
             format!(
                 "DNS Server failed to create UDP socket for address {}",
-                address.to_string()
+                address
             )
         })?;
         socket2::SockRef::from(&socket)
@@ -156,7 +154,7 @@ impl Server {
             .with_context(|| {
                 format!(
                     "DNS Server failed to set reuse address on socket {}",
-                    address.to_string()
+                    address
                 )
             })?;
         socket.bind(&bind_addr.into()).with_context(|| {
@@ -164,17 +162,17 @@ impl Server {
         })?;
         socket
             .set_nonblocking(true)
-            .with_context(|| format!("DNS Server failed to set socket to non-blocking"))?;
+            .with_context(|| "DNS Server failed to set socket to non-blocking".to_string())?;
         let socket = UdpSocket::from_std(socket.into()).with_context(|| {
             format!(
                 "DNS Server failed to convert socket to UdpSocket for address {}",
-                address.to_string()
+                address
             )
         })?;
 
         let local_addr = socket
             .local_addr()
-            .with_context(|| format!("DNS Server failed to get local address"))?;
+            .with_context(|| "DNS Server failed to get local address".to_string())?;
         self.server.register_socket(socket);
 
         Ok(local_addr)

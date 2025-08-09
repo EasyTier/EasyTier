@@ -258,7 +258,7 @@ pub struct Instance {
 }
 
 impl Instance {
-    pub fn new(config: impl ConfigLoader + Send + Sync + 'static) -> Self {
+    pub fn new(config: impl ConfigLoader + 'static) -> Self {
         let global_ctx = Arc::new(GlobalCtx::new(config));
 
         tracing::info!(
@@ -304,11 +304,9 @@ impl Instance {
         #[cfg(feature = "socks5")]
         let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
-        let rpc_server = global_ctx.config.get_rpc_portal().and_then(|s| {
-            Some(StandAloneServer::new(TcpTunnelListener::new(
+        let rpc_server = global_ctx.config.get_rpc_portal().map(|s| StandAloneServer::new(TcpTunnelListener::new(
                 format!("tcp://{}", s).parse().unwrap(),
-            )))
-        });
+            )));
 
         Instance {
             inst_name: global_ctx.inst_name.clone(),
@@ -470,7 +468,7 @@ impl Instance {
                     continue;
                 }
 
-                let last_ip = current_dhcp_ip.clone();
+                let last_ip = current_dhcp_ip;
                 tracing::debug!(
                     ?current_dhcp_ip,
                     ?candidate_ipv4_addr,
@@ -512,7 +510,7 @@ impl Instance {
                             Self::create_magic_dns_runner(
                                 peer_manager_c.clone(),
                                 ifname,
-                                ip.clone(),
+                                ip,
                             ),
                         )
                         .await;

@@ -156,8 +156,8 @@ impl NatDstEntry {
 
     fn into_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
         TcpProxyEntry {
-            src: Some(self.src.clone().into()),
-            dst: Some(self.real_dst.clone().into()),
+            src: Some(self.src.into()),
+            dst: Some(self.real_dst.into()),
             start_time: self.start_time_local.timestamp() as u64,
             state: self.state.load().into(),
             transport_type: transport_type.into(),
@@ -338,10 +338,8 @@ impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
-            } else {
-                if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
-                    tracing::error!("send to nic failed: {:?}", e);
-                }
+            } else if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
+                tracing::error!("send to nic failed: {:?}", e);
             }
             return None;
         } else {
@@ -610,7 +608,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             self.enable_smoltcp
                 .store(false, std::sync::atomic::Ordering::Relaxed);
 
-            return Ok(ProxyTcpListener::KernelTcpListener(tcp_listener));
+            Ok(ProxyTcpListener::KernelTcpListener(tcp_listener))
         }
     }
 

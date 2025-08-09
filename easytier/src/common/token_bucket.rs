@@ -34,7 +34,7 @@ impl From<LimiterConfig> for BucketConfig {
             .unwrap_or(Duration::from_millis(10));
         BucketConfig {
             capacity: burst_rate * fill_rate,
-            fill_rate: fill_rate,
+            fill_rate,
             refill_interval,
         }
     }
@@ -160,6 +160,12 @@ pub struct TokenBucketManager {
     buckets: Arc<DashMap<String, Arc<TokenBucket>>>,
 
     retain_task: ScopedTask<()>,
+}
+
+impl Default for TokenBucketManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl TokenBucketManager {
@@ -318,7 +324,7 @@ mod tests {
         // Should have accumulated about 100 tokens (10,000 tokens/s * 0.001s)
         let tokens = bucket.available_tokens.load(Ordering::Relaxed);
         assert!(
-            tokens >= 100 && tokens <= 200,
+            (100..=200).contains(&tokens),
             "Unexpected token count: {}",
             tokens
         );
@@ -354,9 +360,7 @@ mod tests {
                         .get_foreign_network_manager()
                         .list_foreign_networks()
                         .await
-                        .foreign_networks
-                        .len()
-                        == 0
+                        .foreign_networks.is_empty()
                 },
                 Duration::from_secs(5),
             )
@@ -369,9 +373,7 @@ mod tests {
                 pm_center1
                     .get_global_ctx()
                     .token_bucket_manager()
-                    .buckets
-                    .len()
-                    == 0
+                    .buckets.is_empty()
             },
             Duration::from_secs(10),
         )

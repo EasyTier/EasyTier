@@ -45,7 +45,7 @@ impl Stream for ChannelDevice {
 }
 
 fn map_err(e: PollSendError<Vec<u8>>) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e)
+    io::Error::other(e)
 }
 
 impl Sink<Vec<u8>> for ChannelDevice {

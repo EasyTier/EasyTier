@@ -12,7 +12,7 @@ impl<F: FnOnce()> Defer<F> {
 
 impl<F: FnOnce()> Drop for Defer<F> {
     fn drop(&mut self) {
-        self.func.take().map(|f| f());
+        if let Some(f) = self.func.take() { f() }
     }
 }
 

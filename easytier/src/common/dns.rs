@@ -51,14 +51,14 @@ pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
     let response = r.txt_lookup(domain_name).await.with_context(|| {
         format!(
             "txt_lookup failed, domain_name: {}",
-            domain_name.to_string()
+            domain_name
         )
     })?;
 
     let txt_record = response.iter().next().with_context(|| {
         format!(
             "no txt record found, domain_name: {}",
-            domain_name.to_string()
+            domain_name
         )
     })?;
 

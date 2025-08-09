@@ -116,7 +116,7 @@ pub fn new_v6_hole_punch_packet(dst: &SocketAddrV6) -> ZCPacket {
 }
 
 fn extrace_dst_addr_from_hole_punch_packet(buf: &[u8]) -> Option<SocketAddrV6> {
-    let body = V6HolePunchPacket::ref_from_prefix(&buf[..])?;
+    let body = V6HolePunchPacket::ref_from_prefix(buf)?;
     let ip = Ipv6Addr::from(body.dst_ipv6);
     Some(SocketAddrV6::new(ip, body.dst_port.get(), 0, 0))
 }
@@ -174,7 +174,7 @@ async fn respond_stun_packet(
         u32_to_tid(tid_to_u32(&tid)),
     );
     resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(
-        addr.clone(),
+        addr,
     )));
 
     let mut encoder = MessageEncoder::new();
@@ -189,7 +189,7 @@ async fn respond_stun_packet(
 
     if !change_req {
         socket
-            .send_to(&rsp_buf, addr.clone())
+            .send_to(&rsp_buf, addr)
             .await
             .with_context(|| "send stun response error")?;
     } else {
@@ -199,7 +199,7 @@ async fn respond_stun_packet(
         } else {
             UdpSocket::bind("[::]:0").await?
         };
-        socket.send_to(&rsp_buf, addr.clone()).await?;
+        socket.send_to(&rsp_buf, addr).await?;
     }
 
     tracing::debug!(?addr, ?req_msg, ?change_req, "udp respond stun packet done");
@@ -271,7 +271,7 @@ async fn forward_from_ring_to_udp(
 
 async fn udp_recv_from_socket_forward_task<F>(socket: Arc<UdpSocket>, allow_stun: bool, mut f: F)
 where
-    F: FnMut(ZCPacket, SocketAddr) -> (),
+    F: FnMut(ZCPacket, SocketAddr),
 {
     let mut buf = BytesMut::new();
     loop {
@@ -355,10 +355,8 @@ impl UdpConnection {
             if let Err(e) = self.ring_sender.try_send(zc_packet) {
                 tracing::trace!(?e, "ring sender full, drop lossy packet");
             }
-        } else {
-            if let Err(e) = self.ring_sender.force_send(zc_packet) {
-                tracing::trace!(?e, "ring sender full, drop non-lossy packet");
-            }
+        } else if let Err(e) = self.ring_sender.force_send(zc_packet) {
+            tracing::trace!(?e, "ring sender full, drop non-lossy packet");
         }
 
         Ok(())
@@ -389,7 +387,7 @@ impl UdpTunnelListenerData {
         }
     }
 
-    async fn handle_new_connect(self: Self, remote_addr: SocketAddr, zc_packet: ZCPacket) {
+    async fn handle_new_connect(self, remote_addr: SocketAddr, zc_packet: ZCPacket) {
         let udp_payload = zc_packet.udp_payload();
         if udp_payload.len() != 8 {
             tracing::warn!(
@@ -496,7 +494,7 @@ impl UdpTunnelListenerData {
         }
     }
 
-    async fn do_forward_task(self: Self) {
+    async fn do_forward_task(self) {
         let socket = self.socket.as_ref().unwrap().clone();
         udp_recv_from_socket_forward_task(socket, true, |zc_packet, addr| {
             self.do_forward_one_packet_to_conn(zc_packet, addr);

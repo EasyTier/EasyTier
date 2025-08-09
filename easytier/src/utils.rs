@@ -126,7 +126,7 @@ pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
 }
 
 thread_local! {
-    static PANIC_COUNT : std::cell::RefCell<u32> = std::cell::RefCell::new(0);
+    static PANIC_COUNT : std::cell::RefCell<u32> = const { std::cell::RefCell::new(0) };
 }
 
 pub fn setup_panic_handler() {
@@ -158,7 +158,7 @@ pub fn setup_panic_handler() {
         let thread = thread.name().unwrap_or("<unnamed>");
 
         let tmp_path = std::env::temp_dir().join("easytier-panic.log");
-        let candidate_path = vec![
+        let candidate_path = [
             std::path::PathBuf::from_str("easytier-panic.log").ok(),
             Some(tmp_path),
         ];
@@ -188,7 +188,7 @@ pub fn setup_panic_handler() {
             }
         };
 
-        write_err(format!("panic occurred, if this is a bug, please report this issue on github (https://github.com/easytier/easytier/issues)"));
+        write_err("panic occurred, if this is a bug, please report this issue on github (https://github.com/easytier/easytier/issues)".to_string());
         write_err(format!("easytier version: {}", crate::VERSION));
         write_err(format!("os version: {}", std::env::consts::OS));
         write_err(format!("arch: {}", std::env::consts::ARCH));
@@ -217,13 +217,8 @@ pub fn check_tcp_available(port: u16) -> bool {
     TcpListener::bind(s).is_ok()
 }
 
-pub fn find_free_tcp_port(range: std::ops::Range<u16>) -> Option<u16> {
-    for port in range {
-        if check_tcp_available(port) {
-            return Some(port);
-        }
-    }
-    None
+pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
+    range.find(|&port| check_tcp_available(port))
 }
 
 #[cfg(test)]

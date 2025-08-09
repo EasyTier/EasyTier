@@ -289,9 +289,7 @@ impl UdpProxy {
             resembled_buf =
                 self.ip_resemmbler
                     .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
-            if resembled_buf.is_none() {
-                return None;
-            };
+            resembled_buf.as_ref()?;
             udp::UdpPacket::new(resembled_buf.as_ref().unwrap())?
         } else {
             udp::UdpPacket::new(ipv4.payload())?

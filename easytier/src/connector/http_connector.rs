@@ -93,7 +93,7 @@ impl HttpTunnelConnector {
                 tracing::info!("try to create connector by url: {}", query[0]);
                 self.redirect_type = HttpRedirectType::RedirectToQuery;
                 return create_connector_by_url(
-                    &query[0].to_string(),
+                    query[0].as_ref(),
                     &self.global_ctx,
                     self.ip_version,
                 )
@@ -193,7 +193,7 @@ impl HttpTunnelConnector {
                 .ok_or_else(|| Error::InvalidUrl("no redirect address found".to_string()))?;
             let new_url = url::Url::parse(redirect_url.as_str())
                 .with_context(|| format!("parsing redirect url failed. url: {}", redirect_url))?;
-            return self.handle_302_redirect(new_url, &redirect_url).await;
+            return self.handle_302_redirect(new_url, redirect_url).await;
         } else if res.status_code().is_success() {
             return self.handle_200_success(&body).await;
         } else {

@@ -108,7 +108,7 @@ impl WebClientService for Controller {
         if !include_inst_ids.is_empty() {
             let mut to_remove = Vec::new();
             for (k, _) in ret.map.iter() {
-                if !include_inst_ids.contains(&k) {
+                if !include_inst_ids.contains(k) {
                     to_remove.push(k.clone());
                 }
             }

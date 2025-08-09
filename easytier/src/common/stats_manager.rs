@@ -277,6 +277,12 @@ pub struct UnsafeCounter {
     value: UnsafeCell<u64>,
 }
 
+impl Default for UnsafeCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UnsafeCounter {
     pub fn new() -> Self {
         Self {

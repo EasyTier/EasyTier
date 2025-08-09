@@ -5,7 +5,7 @@ pub use smoltcp::socket::tcp;
 use smoltcp::socket::udp;
 use smoltcp::wire::{IpAddress, IpEndpoint};
 use std::mem::replace;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::{
     io,
     net::SocketAddr,
@@ -25,7 +25,7 @@ pub struct TcpListener {
 }
 
 fn map_err<E: std::error::Error>(e: E) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e.to_string())
 }
 
 impl TcpListener {
@@ -95,8 +95,8 @@ impl Stream for Incoming {
 
 fn ep2sa(ep: &IpEndpoint) -> SocketAddr {
     match ep.addr {
-        IpAddress::Ipv4(v4) => SocketAddr::new(IpAddr::V4(Ipv4Addr::from(v4)), ep.port),
-        IpAddress::Ipv6(v6) => SocketAddr::new(IpAddr::V6(Ipv6Addr::from(v6)), ep.port),
+        IpAddress::Ipv4(v4) => SocketAddr::new(IpAddr::V4(v4), ep.port),
+        IpAddress::Ipv6(v6) => SocketAddr::new(IpAddr::V6(v6), ep.port),
         #[allow(unreachable_patterns)]
         _ => unreachable!(),
     }

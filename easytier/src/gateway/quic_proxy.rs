@@ -172,7 +172,7 @@ impl NatDstConnector for NatDstQUICConnector {
         _ipv4: &Ipv4Packet,
         _real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
-        return hdr.from_peer_id == hdr.to_peer_id && !hdr.is_kcp_src_modified();
+        hdr.from_peer_id == hdr.to_peer_id && !hdr.is_kcp_src_modified()
     }
 
     fn transport_type(&self) -> TcpProxyEntryTransportType {
@@ -457,7 +457,7 @@ impl TcpProxyRpc for QUICProxyDstRpcService {
         let mut reply = ListTcpProxyEntryResponse::default();
         if let Some(tcp_proxy) = self.0.upgrade() {
             for item in tcp_proxy.iter() {
-                reply.entries.push(item.value().clone());
+                reply.entries.push(*item.value());
             }
         }
         Ok(reply)

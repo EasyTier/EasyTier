@@ -21,7 +21,7 @@ pub async fn compress_packet(
     let algo = accepted_compression_algo
         .try_into()
         .unwrap_or(CompressorAlgo::None);
-    let compressed = compressor.compress_raw(&content, algo).await?;
+    let compressed = compressor.compress_raw(content, algo).await?;
     if compressed.len() >= content.len() {
         Ok((content.to_vec(), CompressionAlgoPb::None))
     } else {
@@ -35,7 +35,7 @@ pub async fn decompress_packet(
 ) -> Result<Vec<u8>, Error> {
     let compressor = DefaultCompressor::new();
     let algo = compression_algo.try_into()?;
-    let decompressed = compressor.decompress_raw(&content, algo).await?;
+    let decompressed = compressor.decompress_raw(content, algo).await?;
     Ok(decompressed)
 }
 
@@ -43,6 +43,12 @@ pub struct PacketMerger {
     first_piece: Option<RpcPacket>,
     pieces: Vec<RpcPacket>,
     last_updated: std::time::Instant,
+}
+
+impl Default for PacketMerger {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PacketMerger {
@@ -145,9 +151,9 @@ pub fn build_rpc_packet(
 ) -> Vec<ZCPacket> {
     let mut ret = Vec::new();
     let content_mtu = RPC_PACKET_CONTENT_MTU;
-    let total_pieces = (content.len() + content_mtu - 1) / content_mtu;
+    let total_pieces = content.len().div_ceil(content_mtu);
     let mut cur_offset = 0;
-    while cur_offset < content.len() || content.len() == 0 {
+    while cur_offset < content.len() || content.is_empty() {
         let mut cur_len = content_mtu;
         if cur_offset + cur_len > content.len() {
             cur_len = content.len() - cur_offset;
@@ -174,7 +180,7 @@ pub fn build_rpc_packet(
             body: cur_content,
             trace_id,
             compression_info: if cur_offset == 0 {
-                Some(compression_info.clone())
+                Some(compression_info)
             } else {
                 None
             },
@@ -193,7 +199,7 @@ pub fn build_rpc_packet(
         zc_packet.fill_peer_manager_hdr(from_peer, to_peer, packet_type as u8);
         ret.push(zc_packet);
 
-        if content.len() == 0 {
+        if content.is_empty() {
             break;
         }
     }

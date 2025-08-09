@@ -621,7 +621,7 @@ impl Socks5Server {
 
         let cfgs = self.global_ctx.config.get_port_forwards();
         self.reload_port_forwards(&cfgs).await?;
-        need_start = need_start || cfgs.len() > 0;
+        need_start = need_start || !cfgs.is_empty();
 
         if need_start {
             self.peer_manager
@@ -962,10 +962,10 @@ impl Socks5Server {
                 udp_client_map.retain(|_, client_info| {
                     now.duration_since(client_info.last_active.load()).as_secs() < 600
                 });
-                udp_forward_task.retain(|k, _| udp_client_map.contains_key(&k));
+                udp_forward_task.retain(|k, _| udp_client_map.contains_key(k));
                 entries.retain(|_, data| match data {
                     Socks5EntryData::Udp((_, udp_client_key)) => {
-                        udp_client_map.contains_key(&udp_client_key)
+                        udp_client_map.contains_key(udp_client_key)
                     }
                     _ => true,
                 });

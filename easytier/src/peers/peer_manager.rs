@@ -351,7 +351,8 @@ impl PeerManager {
                 "network identity not match".to_string(),
             ));
         }
-        Ok(self.peers.add_new_peer_conn(peer_conn).await)
+        self.peers.add_new_peer_conn(peer_conn).await;
+        Ok(())
     }
 
     pub async fn add_client_tunnel(
@@ -377,10 +378,8 @@ impl PeerManager {
     pub fn has_directly_connected_conn(&self, peer_id: PeerId) -> bool {
         if let Some(peer) = self.peers.get_peer_by_id(peer_id) {
             peer.has_directly_connected_conn()
-        } else if self.foreign_network_client.get_peer_map().has_peer(peer_id) {
-            true
         } else {
-            false
+            self.foreign_network_client.get_peer_map().has_peer(peer_id)
         }
     }
 
@@ -441,14 +440,14 @@ impl PeerManager {
             match addr {
                 SocketAddr::V4(addr) => {
                     if let Some(virtual_ipv4) = virtual_ipv4 {
-                        if virtual_ipv4.contains(&addr.ip()) {
+                        if virtual_ipv4.contains(addr.ip()) {
                             anyhow::bail!("tunnel src host is from the virtual network (ignore this error please)");
                         }
                     }
                 }
                 SocketAddr::V6(addr) => {
                     if let Some(virtual_ipv6) = virtual_ipv6 {
-                        if virtual_ipv6.contains(&addr.ip()) {
+                        if virtual_ipv6.contains(addr.ip()) {
                             anyhow::bail!("tunnel src host is from the virtual network (ignore this error please)");
                         }
                     }
@@ -489,7 +488,7 @@ impl PeerManager {
                     rand::random::<PeerId>()
                 }).value());
             }
-            peer.set_peer_id(peer_id.clone().unwrap());
+            peer.set_peer_id(peer_id.unwrap());
 
             tracing::info!(
                 ?peer_id,
@@ -938,7 +937,7 @@ impl PeerManager {
             let entry = resp
                 .foreign_networks
                 .entry(info.key.as_ref().unwrap().peer_id)
-                .or_insert_with(|| Default::default());
+                .or_insert_with(Default::default);
 
             let mut f = OneForeignNetwork::default();
             f.network_name = info.key.as_ref().unwrap().network_name.clone();
@@ -1033,14 +1032,8 @@ impl PeerManager {
             || ipv4_addr.is_multicast()
             || *ipv4_addr == ipv4_inet.last_address()
         {
-            dst_peers.extend(
-                self.peers
-                    .list_routes()
-                    .await
-                    .iter()
-                    .map(|x| x.key().clone()),
-            );
-        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(&ipv4_addr).await {
+            dst_peers.extend(self.peers.list_routes().await.iter().map(|x| *x.key()));
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
             dst_peers.push(peer_id);
         } else {
             for exit_node in &self.exit_nodes {
@@ -1075,14 +1068,8 @@ impl PeerManager {
             .unwrap_or(64);
         let ipv6_inet = cidr::Ipv6Inet::new(*ipv6_addr, network_length).unwrap();
         if ipv6_addr.is_multicast() || *ipv6_addr == ipv6_inet.last_address() {
-            dst_peers.extend(
-                self.peers
-                    .list_routes()
-                    .await
-                    .iter()
-                    .map(|x| x.key().clone()),
-            );
-        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(&ipv6_addr).await {
+            dst_peers.extend(self.peers.list_routes().await.iter().map(|x| *x.key()));
+        } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv6(ipv6_addr).await {
             dst_peers.push(peer_id);
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to exit node.
@@ -1632,16 +1619,15 @@ mod tests {
                 ..Default::default()
             });
         tokio::time::sleep(Duration::from_secs(2)).await;
-        wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(3))
-            .await
-            .expect(
-                format!(
-                    "route not appear, a route table: {}, table: {:#?}",
-                    peer_mgr_a.get_route().dump().await,
-                    peer_mgr_a.get_route().list_routes().await
-                )
-                .as_str(),
-            );
+        if let Err(_) =
+            wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(3)).await
+        {
+            panic!(
+                "route not appear, a route table: {}, table: {:#?}",
+                peer_mgr_a.get_route().dump().await,
+                peer_mgr_a.get_route().list_routes().await
+            )
+        }
 
         let ret = peer_mgr_a
             .get_route()
@@ -1767,8 +1753,7 @@ mod tests {
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await
-                    .len()
-                    == 0
+                    .is_empty()
             },
             Duration::from_secs(10),
         )
@@ -1810,8 +1795,7 @@ mod tests {
                     .get_foreign_network_client()
                     .list_public_peers()
                     .await
-                    .len()
-                    == 0
+                    .is_empty()
             },
             Duration::from_secs(10),
         )

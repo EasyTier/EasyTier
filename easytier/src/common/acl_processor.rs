@@ -321,7 +321,7 @@ impl AclProcessor {
                     .rules
                     .iter()
                     .filter(|rule| rule.enabled)
-                    .map(|rule| Self::convert_to_fast_lookup_rule(rule))
+                    .map(Self::convert_to_fast_lookup_rule)
                     .collect::<Vec<_>>();
 
                 // Sort by priority (higher priority first)
@@ -422,7 +422,7 @@ impl AclProcessor {
 
         self.inc_cache_entry_stats(cache_entry, packet_info);
 
-        return cache_entry.acl_result.clone().unwrap();
+        cache_entry.acl_result.clone().unwrap()
     }
 
     fn inc_cache_entry_stats(&self, cache_entry: &AclCacheEntry, packet_info: &PacketInfo) {
@@ -539,7 +539,7 @@ impl AclProcessor {
                 cache_entry.rule_stats_vec.push(rule.rule_stats.clone());
                 cache_entry.matched_rule = RuleId::Priority(rule.priority);
                 cache_entry.acl_result = Some(AclResult {
-                    action: rule.action.clone(),
+                    action: rule.action,
                     matched_rule: Some(RuleId::Priority(rule.priority)),
                     should_log: false,
                     log_context: Some(AclLogContext::RuleMatch {
@@ -764,13 +764,13 @@ impl AclProcessor {
         let src_ip_ranges = rule
             .source_ips
             .iter()
-            .filter_map(|ip_inet| Self::convert_ip_inet_to_cidr(ip_inet))
+            .filter_map(Self::convert_ip_inet_to_cidr)
             .collect();
 
         let dst_ip_ranges = rule
             .destination_ips
             .iter()
-            .filter_map(|ip_inet| Self::convert_ip_inet_to_cidr(ip_inet))
+            .filter_map(Self::convert_ip_inet_to_cidr)
             .collect();
 
         let src_port_ranges = rule

@@ -106,7 +106,7 @@ impl PingIntervalController {
         }
 
         self.last_send_logic_time = self.logic_time;
-        return true;
+        true
     }
 }
 

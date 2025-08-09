@@ -18,6 +18,12 @@ pub struct NetworkInstanceManager {
     stop_check_notifier: Arc<tokio::sync::Notify>,
 }
 
+impl Default for NetworkInstanceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NetworkInstanceManager {
     pub fn new() -> Self {
         NetworkInstanceManager {
@@ -65,11 +71,7 @@ impl NetworkInstanceManager {
                 let Some(instance_stop_notifier) = instance_stop_notifier else {
                     return;
                 };
-                let _t = if let Some(event) = instance_event_receiver.flatten() {
-                    Some(ScopedTask::from(handle_event(instance_id, event)))
-                } else {
-                    None
-                };
+                let _t = instance_event_receiver.flatten().map(|event| ScopedTask::from(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
                 if let Some(instance) = instance_map.get(&instance_id) {
                     if let Some(e) = instance.get_latest_error_msg() {
@@ -124,7 +126,7 @@ impl NetworkInstanceManager {
         let mut ret = BTreeMap::new();
         for instance in self.instance_map.iter() {
             if let Some(info) = instance.get_running_info() {
-                ret.insert(instance.key().clone(), info);
+                ret.insert(*instance.key(), info);
             }
         }
         Ok(ret)
@@ -133,7 +135,7 @@ impl NetworkInstanceManager {
     pub fn list_network_instance_ids(&self) -> Vec<uuid::Uuid> {
         self.instance_map
             .iter()
-            .map(|item| item.key().clone())
+            .map(|item| *item.key())
             .collect()
     }
 
@@ -347,9 +349,8 @@ mod tests {
         let instance_id1 = manager
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str)
-                    .map(|c| {
+                    .inspect(|c| {
                         c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
-                        c
                     })
                     .unwrap(),
                 ConfigSource::Cli,
@@ -426,9 +427,8 @@ mod tests {
         assert!(manager
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str)
-                    .map(|c| {
+                    .inspect(|c| {
                         c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
-                        c
                     })
                     .unwrap(),
                 ConfigSource::GUI,

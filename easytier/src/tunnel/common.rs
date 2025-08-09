@@ -157,7 +157,7 @@ where
             }
 
             reserve_buf(
-                &mut self_mut.buf,
+                self_mut.buf,
                 *self_mut.max_packet_size,
                 *self_mut.max_packet_size * 2,
             );
@@ -597,7 +597,7 @@ pub mod tests {
                 let elapsed_sec = now.elapsed().as_secs();
                 if elapsed_sec > 0 {
                     bps_clone.store(
-                        count as u64 / now.elapsed().as_secs() as u64,
+                        count as u64 / now.elapsed().as_secs(),
                         std::sync::atomic::Ordering::Relaxed,
                     );
                 }
@@ -621,7 +621,7 @@ pub mod tests {
         while now.elapsed().as_secs() < 10 {
             // send.feed(item)
             let item = ZCPacket::new_with_payload(send_buf.as_ref());
-            let _ = send.feed(item).await.unwrap();
+            send.feed(item).await.unwrap();
         }
 
         send.close().await.unwrap();
@@ -649,7 +649,7 @@ pub mod tests {
             .init();
     }
 
-    pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration) -> ()
+    pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration)
     where
         F: FnMut() -> FRet + Send,
         FRet: Future<Output = bool>,

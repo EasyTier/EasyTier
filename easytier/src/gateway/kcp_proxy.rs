@@ -103,7 +103,7 @@ async fn handle_kcp_output(
             PacketType::KcpDst as u8
         };
         let mut packet = ZCPacket::new_with_payload(&packet.inner().freeze());
-        packet.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, packet_type as u8);
+        packet.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, packet_type);
 
         if let Err(e) = peer_mgr.send_msg(packet, dst_peer_id).await {
             tracing::error!("failed to send kcp packet to peer: {:?}", e);
@@ -171,7 +171,7 @@ impl NatDstConnector for NatDstKcpConnector {
 
             let kcp_endpoint = self.kcp_endpoint.clone();
             let my_peer_id = peer_mgr.my_peer_id();
-            let conn_data_clone = conn_data.clone();
+            let conn_data_clone = conn_data;
 
             connect_tasks.spawn(async move {
                 kcp_endpoint
@@ -183,7 +183,7 @@ impl NatDstConnector for NatDstKcpConnector {
                     )
                     .await
                     .with_context(|| {
-                        format!("failed to connect to nat dst: {}", nat_dst.to_string())
+                        format!("failed to connect to nat dst: {}", nat_dst)
                     })
             });
         }
@@ -203,7 +203,7 @@ impl NatDstConnector for NatDstKcpConnector {
         _ipv4: &Ipv4Packet,
         _real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
-        return hdr.from_peer_id == hdr.to_peer_id && hdr.is_kcp_src_modified();
+        hdr.from_peer_id == hdr.to_peer_id && hdr.is_kcp_src_modified()
     }
 
     fn transport_type(&self) -> TcpProxyEntryTransportType {
@@ -456,14 +456,11 @@ impl KcpProxyDst {
             .into();
         let src_socket: SocketAddr = parsed_conn_data.src.unwrap_or_default().into();
 
-        match dst_socket.ip() {
-            IpAddr::V4(dst_v4_ip) => {
-                let mut real_ip = dst_v4_ip;
-                if cidr_set.contains_v4(dst_v4_ip, &mut real_ip) {
-                    dst_socket.set_ip(real_ip.into());
-                }
+        if let IpAddr::V4(dst_v4_ip) = dst_socket.ip() {
+            let mut real_ip = dst_v4_ip;
+            if cidr_set.contains_v4(dst_v4_ip, &mut real_ip) {
+                dst_socket.set_ip(real_ip.into());
             }
-            _ => {}
         };
 
         let conn_id = kcp_stream.conn_id();
@@ -578,7 +575,7 @@ impl TcpProxyRpc for KcpProxyDstRpcService {
         let mut reply = ListTcpProxyEntryResponse::default();
         if let Some(tcp_proxy) = self.0.upgrade() {
             for item in tcp_proxy.iter() {
-                reply.entries.push(item.value().clone());
+                reply.entries.push(*item.value());
             }
         }
         Ok(reply)

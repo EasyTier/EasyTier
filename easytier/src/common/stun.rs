@@ -283,7 +283,7 @@ impl StunClient {
             tids.push(tid);
             tracing::trace!(?message, ?msg, tid, "send stun request");
             self.socket
-                .send_to(msg.as_slice().into(), &stun_host)
+                .send_to(msg.as_slice(), &stun_host)
                 .await?;
         }
 
@@ -417,7 +417,7 @@ impl UdpNatTypeDetectResult {
                 return true;
             }
         }
-        return false;
+        false
     }
 
     fn is_pat(&self) -> bool {
@@ -457,7 +457,7 @@ impl UdpNatTypeDetectResult {
         if self.is_cone() {
             if self.has_ip_changed_resp() {
                 if self.is_open_internet() {
-                    return NatType::OpenInternet;
+                    NatType::OpenInternet
                 } else if self.is_pat() {
                     return NatType::NoPat;
                 } else {
@@ -679,7 +679,7 @@ impl StunInfoCollectorTrait for StunInfoCollector {
             .unwrap()
             .clone()
             .map(|x| x.collect_available_stun_server())
-            .unwrap_or(vec![]);
+            .unwrap_or_default();
 
         if stun_servers.is_empty() {
             let mut host_resolver =
@@ -740,19 +740,17 @@ impl StunInfoCollector {
     pub fn get_default_servers() -> Vec<String> {
         // NOTICE: we may need to choose stun stun server based on geo location
         // stun server cross nation may return a external ip address with high latency and loss rate
-        vec![
-            "txt:stun.easytier.cn",
+        ["txt:stun.easytier.cn",
             "stun.miwifi.com",
             "stun.chat.bilibili.com",
-            "stun.hitv.com",
-        ]
+            "stun.hitv.com"]
         .iter()
         .map(|x| x.to_string())
         .collect()
     }
 
     pub fn get_default_servers_v6() -> Vec<String> {
-        vec!["txt:stun-v6.easytier.cn"]
+        ["txt:stun-v6.easytier.cn"]
             .iter()
             .map(|x| x.to_string())
             .collect()
@@ -761,7 +759,7 @@ impl StunInfoCollector {
     async fn get_public_ipv6(servers: &Vec<String>) -> Option<Ipv6Addr> {
         let mut ips = HostResolverIter::new(servers.to_vec(), 10, true);
         while let Some(ip) = ips.next().await {
-            let Ok(udp_socket) = UdpSocket::bind(format!("[::]:0")).await else {
+            let Ok(udp_socket) = UdpSocket::bind("[::]:0".to_string()).await else {
                 break;
             };
             let udp = Arc::new(udp_socket);
@@ -770,11 +768,8 @@ impl StunInfoCollector {
                 .bind_request(false, false)
                 .await;
             tracing::debug!(?ret, "finish ipv6 udp nat type detect");
-            match ret.map(|x| x.mapped_socket_addr.map(|x| x.ip())) {
-                Ok(Some(IpAddr::V6(v6))) => {
-                    return Some(v6);
-                }
-                _ => {}
+            if let Ok(Some(IpAddr::V6(v6))) = ret.map(|x| x.mapped_socket_addr.map(|x| x.ip())) {
+                return Some(v6);
             }
         }
         None
@@ -854,9 +849,8 @@ impl StunInfoCollector {
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = stun_servers.read().unwrap().clone();
-                Self::get_public_ipv6(&servers)
-                    .await
-                    .map(|x| stored_ipv6.store(Some(x)));
+                if let Some(x) = Self::get_public_ipv6(&servers)
+                    .await { stored_ipv6.store(Some(x)) }
 
                 let sleep_sec = if stored_ipv6.load().is_none() {
                     60

@@ -72,6 +72,12 @@ pub struct Client {
     stats_manager: Option<Arc<StatsManager>>,
 }
 
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Client {
     pub fn new() -> Self {
         let (ring_a, ring_b) = create_ring_tunnel_pair();
@@ -298,7 +304,7 @@ impl Client {
                         self.to_peer_id,
                         PeerInfo {
                             peer_id: self.to_peer_id,
-                            compression_info: compression_info.clone(),
+                            compression_info: compression_info,
                             last_active: Some(std::time::Instant::now()),
                         },
                     );

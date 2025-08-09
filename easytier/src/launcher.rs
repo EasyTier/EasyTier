@@ -89,7 +89,7 @@ impl EasyTierLauncher {
         let _ = data.event_subscriber.read().unwrap().send(event.clone());
         events.push_front(Event {
             time: chrono::Local::now(),
-            event: event,
+            event,
         });
         if events.len() > 20 {
             events.pop_back();
@@ -380,9 +380,7 @@ impl NetworkInstance {
     }
 
     pub fn get_running_info(&self) -> Option<NetworkInstanceRunningInfo> {
-        if self.launcher.is_none() {
-            return None;
-        }
+        self.launcher.as_ref()?;
 
         let launcher = self.launcher.as_ref().unwrap();
 
@@ -434,19 +432,11 @@ impl NetworkInstance {
     }
 
     pub fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
-        if let Some(launcher) = self.launcher.as_ref() {
-            Some(launcher.data.event_subscriber.read().unwrap().subscribe())
-        } else {
-            None
-        }
+        self.launcher.as_ref().map(|launcher| launcher.data.event_subscriber.read().unwrap().subscribe())
     }
 
     pub fn get_stop_notifier(&self) -> Option<Arc<tokio::sync::Notify>> {
-        if let Some(launcher) = self.launcher.as_ref() {
-            Some(launcher.data.instance_stop_notifier.clone())
-        } else {
-            None
-        }
+        self.launcher.as_ref().map(|launcher| launcher.data.instance_stop_notifier.clone())
     }
 
     pub fn get_latest_error_msg(&self) -> Option<String> {
@@ -511,7 +501,7 @@ impl NetworkConfig {
 
         if !cfg.get_dhcp() {
             let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
-            if virtual_ipv4.len() > 0 {
+            if !virtual_ipv4.is_empty() {
                 let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
                     .parse()
                     .with_context(|| {
@@ -650,7 +640,7 @@ impl NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
-        if self.exit_nodes.len() > 0 {
+        if !self.exit_nodes.is_empty() {
             let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
             for node in self.exit_nodes.iter() {
                 exit_nodes.push(
@@ -669,7 +659,7 @@ impl NetworkConfig {
             }
         }
 
-        if self.mapped_listeners.len() > 0 {
+        if !self.mapped_listeners.is_empty() {
             cfg.set_mapped_listeners(Some(
                 self.mapped_listeners
                     .iter()
@@ -754,7 +744,7 @@ impl NetworkConfig {
         }
 
         if self.enable_relay_network_whitelist.unwrap_or_default() {
-            if self.relay_network_whitelist.len() > 0 {
+            if !self.relay_network_whitelist.is_empty() {
                 flags.relay_network_whitelist = self.relay_network_whitelist.join(" ");
             } else {
                 flags.relay_network_whitelist = "".to_string();
@@ -819,7 +809,7 @@ impl NetworkConfig {
 
         result.listener_urls = config
             .get_listeners()
-            .unwrap_or_else(|| vec![])
+            .unwrap_or_else(std::vec::Vec::new)
             .iter()
             .map(|l| l.to_string())
             .collect();

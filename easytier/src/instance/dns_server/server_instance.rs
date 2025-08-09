@@ -432,7 +432,7 @@ impl MagicDnsServerInstance {
         if !self.tun_inet.contains(&self.data.fake_ip) && self.data.tun_dev.is_some() {
             let ifcfg = IfConfiger {};
             let _ = ifcfg
-                .remove_ipv4_route(&self.data.tun_dev.as_ref().unwrap(), self.data.fake_ip, 32)
+                .remove_ipv4_route(self.data.tun_dev.as_ref().unwrap(), self.data.fake_ip, 32)
                 .await;
         }
 

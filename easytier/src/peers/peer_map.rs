@@ -49,8 +49,8 @@ impl PeerMap {
     }
 
     async fn add_new_peer(&self, peer: Peer) {
-        let peer_id = peer.peer_node_id.clone();
-        self.peer_map.insert(peer_id.clone(), Arc::new(peer));
+        let peer_id = peer.peer_node_id;
+        self.peer_map.insert(peer_id, Arc::new(peer));
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerAdded(peer_id));
     }
@@ -75,7 +75,7 @@ impl PeerMap {
         let conn_id = close_notifier.get_conn_id();
         let conn_info = peer_conn.get_conn_info();
         self.alive_conns
-            .insert((conn_info.peer_id, conn_id.clone()), conn_info.clone());
+            .insert((conn_info.peer_id, conn_id), conn_info.clone());
         tokio::spawn(async move {
             if let Some(mut waiter) = close_notifier.get_waiter().await {
                 let _ = waiter.recv().await;
@@ -174,7 +174,7 @@ impl PeerMap {
         let mut ret = Vec::new();
         for route in self.routes.read().await.iter() {
             let peers = route
-                .list_peers_own_foreign_network(&network_identity)
+                .list_peers_own_foreign_network(network_identity)
                 .await;
             ret.extend(peers);
         }
@@ -195,7 +195,7 @@ impl PeerMap {
         };
 
         self.send_msg_directly(msg, gateway_peer_id).await?;
-        return Ok(());
+        Ok(())
     }
 
     pub async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
@@ -263,7 +263,7 @@ impl PeerMap {
             let Some(peer) = self.get_peer_by_id(*peer_id) else {
                 continue;
             };
-            if peer.list_peer_conns().await.len() > 0 {
+            if !peer.list_peer_conns().await.is_empty() {
                 ret.push(*peer_id);
             }
         }
@@ -274,7 +274,7 @@ impl PeerMap {
         if let Some(p) = self.get_peer_by_id(peer_id) {
             Some(p.list_peer_conns().await)
         } else {
-            return None;
+            None
         }
     }
 
@@ -291,7 +291,7 @@ impl PeerMap {
         if let Some(p) = self.get_peer_by_id(peer_id) {
             p.close_peer_conn(conn_id).await
         } else {
-            return Err(Error::NotFound);
+            Err(Error::NotFound)
         }
     }
 
@@ -339,7 +339,7 @@ impl PeerMap {
     }
 
     pub async fn list_route_infos(&self) -> Vec<cli::Route> {
-        for route in self.routes.read().await.iter() {
+        if let Some(route) = self.routes.read().await.iter().next() {
             return route.list_routes().await;
         }
         vec![]
@@ -361,7 +361,7 @@ impl PeerMap {
     pub fn get_alive_conns(&self) -> DashMap<(PeerId, PeerConnId), PeerConnInfo> {
         self.alive_conns
             .iter()
-            .map(|v| (v.key().clone(), v.value().clone()))
+            .map(|v| (*v.key(), v.value().clone()))
             .collect()
     }
 

@@ -53,6 +53,12 @@ pub struct Server {
     stats_manager: Option<Arc<StatsManager>>,
 }
 
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Server {
     pub fn new() -> Self {
         Server::new_with_registry(Arc::new(ServiceRegistry::new()))
@@ -238,7 +244,7 @@ impl Server {
         let mut resp_msg = RpcResponse::default();
         let now = std::time::Instant::now();
 
-        let compression_info = packet.compression_info.clone();
+        let compression_info = packet.compression_info;
         let resp_bytes = Self::handle_rpc_request(packet, reg, tunnel_info).await;
 
         match &resp_bytes {

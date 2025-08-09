@@ -167,11 +167,7 @@ fn socket_recv_loop(
             id,
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);
-                p.fill_peer_manager_hdr(
-                    v.my_peer_id.into(),
-                    v.src_peer_id.into(),
-                    PacketType::Data as u8,
-                );
+                p.fill_peer_manager_hdr(v.my_peer_id, v.src_peer_id, PacketType::Data as u8);
                 p.mut_peer_manager_header().unwrap().set_no_proxy(true);
 
                 if let Err(e) = sender.send(p) {
@@ -320,10 +316,7 @@ impl IcmpProxy {
             .unwrap()
             .as_ref()
             .with_context(|| "icmp socket not created")?
-            .send_to(
-                icmp_packet.packet(),
-                &SocketAddrV4::new(dst_ip.into(), 0).into(),
-            )?;
+            .send_to(icmp_packet.packet(), &SocketAddrV4::new(dst_ip, 0).into())?;
 
         Ok(())
     }
@@ -387,7 +380,7 @@ impl IcmpProxy {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(&packet.payload())?;
+        let ipv4 = Ipv4Packet::new(packet.payload())?;
 
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
         {
@@ -416,12 +409,10 @@ impl IcmpProxy {
             resembled_buf =
                 self.ip_resemmbler
                     .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
-            if resembled_buf.is_none() {
-                return None;
-            };
+            resembled_buf.as_ref()?;
             icmp::echo_request::EchoRequestPacket::new(resembled_buf.as_ref().unwrap())?
         } else {
-            icmp::echo_request::EchoRequestPacket::new(&ipv4.payload())?
+            icmp::echo_request::EchoRequestPacket::new(ipv4.payload())?
         };
 
         if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
@@ -484,10 +475,10 @@ impl Drop for IcmpProxy {
             "dropping icmp proxy, {:?}",
             self.socket.lock().unwrap().as_ref()
         );
-        self.socket.lock().unwrap().as_ref().and_then(|s| {
+        self.socket.lock().unwrap().as_ref().map(|s| {
             tracing::info!("shutting down icmp socket");
             let _ = s.shutdown(std::net::Shutdown::Both);
-            Some(())
+            ()
         });
     }
 }

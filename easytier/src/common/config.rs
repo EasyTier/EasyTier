@@ -238,7 +238,7 @@ impl PartialEq for NetworkIdentity {
             return false;
         }
 
-        return true;
+        true
     }
 }
 
@@ -328,12 +328,12 @@ impl From<PortForwardConfigPb> for PortForwardConfig {
     }
 }
 
-impl Into<PortForwardConfigPb> for PortForwardConfig {
-    fn into(self) -> PortForwardConfigPb {
+impl From<PortForwardConfig> for PortForwardConfigPb {
+    fn from(val: PortForwardConfig) -> Self {
         PortForwardConfigPb {
-            bind_addr: Some(self.bind_addr.into()),
-            dst_addr: Some(self.dst_addr.into()),
-            socket_type: match self.proto.to_lowercase().as_str() {
+            bind_addr: Some(val.bind_addr.into()),
+            dst_addr: Some(val.dst_addr.into()),
+            socket_type: match val.proto.to_lowercase().as_str() {
                 "tcp" => SocketType::Tcp as i32,
                 "udp" => SocketType::Udp as i32,
                 _ => SocketType::Tcp as i32,
@@ -493,8 +493,7 @@ impl ConfigLoader for TomlConfigLoader {
         locked_config
             .ipv4
             .as_ref()
-            .map(|s| s.parse().ok())
-            .flatten()
+            .and_then(|s| s.parse().ok())
             .map(|c: cidr::Ipv4Inet| {
                 if c.network_length() == 32 {
                     cidr::Ipv4Inet::new(c.address(), 24).unwrap()
@@ -505,11 +504,7 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
-        self.config.lock().unwrap().ipv4 = if let Some(addr) = addr {
-            Some(addr.to_string())
-        } else {
-            None
-        };
+        self.config.lock().unwrap().ipv4 = addr.map(|addr| addr.to_string());
     }
 
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
@@ -517,16 +512,11 @@ impl ConfigLoader for TomlConfigLoader {
         locked_config
             .ipv6
             .as_ref()
-            .map(|s| s.parse().ok())
-            .flatten()
+            .and_then(|s| s.parse().ok())
     }
 
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
-        self.config.lock().unwrap().ipv6 = if let Some(addr) = addr {
-            Some(addr.to_string())
-        } else {
-            None
-        };
+        self.config.lock().unwrap().ipv6 = addr.map(|addr| addr.to_string());
     }
 
     fn get_dhcp(&self) -> bool {
@@ -600,7 +590,7 @@ impl ConfigLoader for TomlConfigLoader {
             locked_config.instance_id = Some(id);
             id
         } else {
-            locked_config.instance_id.as_ref().unwrap().clone()
+            *locked_config.instance_id.as_ref().unwrap()
         }
     }
 

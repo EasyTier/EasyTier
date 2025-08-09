@@ -176,7 +176,7 @@ impl Peer {
         if !has_key {
             return Err(Error::NotFound);
         }
-        self.close_event_sender.send(conn_id.clone()).await.unwrap();
+        self.close_event_sender.send(*conn_id).await.unwrap();
         Ok(())
     }
 
@@ -277,7 +277,7 @@ mod tests {
 
         // wait for remote peer conn close
         timeout(std::time::Duration::from_secs(5), async {
-            while (&remote_peer).list_peer_conns().await.len() != 0 {
+            while remote_peer.list_peer_conns().await.len() != 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         })

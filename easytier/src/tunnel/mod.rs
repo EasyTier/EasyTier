@@ -189,7 +189,7 @@ where
         return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
     }
 
-    Ok(T::from_url(url.clone(), ip_version).await?)
+    T::from_url(url.clone(), ip_version).await
 }
 
 fn default_port(scheme: &str) -> Option<u16> {
@@ -269,7 +269,7 @@ impl TunnelUrl {
             if s.is_empty() {
                 None
             } else {
-                Some(String::from_utf8(percent_encoding::percent_decode_str(&s).collect()).unwrap())
+                Some(String::from_utf8(percent_encoding::percent_decode_str(s).collect()).unwrap())
             }
         })
     }

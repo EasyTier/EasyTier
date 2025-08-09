@@ -149,7 +149,7 @@ impl PeerConn {
         let conn_id = PeerConnId::new_v4();
 
         PeerConn {
-            conn_id: conn_id.clone(),
+            conn_id: conn_id,
 
             my_peer_id,
             global_ctx,
@@ -238,7 +238,7 @@ impl PeerConn {
             ));
         }
 
-        return Ok(rsp);
+        Ok(rsp)
     }
 
     async fn wait_handshake_loop(&mut self) -> Result<HandshakeRequest, Error> {
@@ -424,10 +424,8 @@ impl PeerConn {
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
-                    } else {
-                        if sender.send(zc_packet).await.is_err() {
-                            break;
-                        }
+                    } else if sender.send(zc_packet).await.is_err() {
+                        break;
                     }
                 }
 

@@ -286,13 +286,11 @@ impl VpnPortal for WireGuard {
         let routes = peer_mgr.list_routes().await;
         let mut allow_ips = routes
             .iter()
-            .map(|x| x.proxy_cidrs.iter().map(String::to_string))
-            .flatten()
+            .flat_map(|x| x.proxy_cidrs.iter().map(String::to_string))
             .collect::<Vec<_>>();
         for ipv4 in routes
             .iter()
-            .filter(|x| x.ipv4_addr.is_some())
-            .map(|x| x.ipv4_addr.unwrap())
+            .filter_map(|x| x.ipv4_addr)
             .chain(global_ctx.get_ipv4().into_iter().map(Into::into))
         {
             let inet = Ipv4Inet::from(ipv4);
@@ -340,10 +338,7 @@ PersistentKeepalive = 25
 
     async fn list_clients(&self) -> Vec<String> {
         self.inner
-            .as_ref()
-            .and_then(|w| {
-                Some(
-                    w.wg_peer_ip_table
+            .as_ref().map(|w| w.wg_peer_ip_table
                         .iter()
                         .map(|x| {
                             x.value()
@@ -352,9 +347,7 @@ PersistentKeepalive = 25
                                 .map(|x| x.to_string())
                                 .unwrap_or_default()
                         })
-                        .collect(),
-                )
-            })
+                        .collect())
             .unwrap_or_default()
     }
 }

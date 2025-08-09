@@ -90,7 +90,7 @@ impl PeerRoutePair {
         }
     }
 
-    pub fn get_udp_nat_type(self: &Self) -> String {
+    pub fn get_udp_nat_type(&self) -> String {
         use crate::proto::common::NatType;
         let mut ret = NatType::Unknown;
         if let Some(r) = &self.route.clone().unwrap_or_default().stun_info {

@@ -11,16 +11,13 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub enum NextHopPolicy {
+    #[default]
     LeastHop,
     LeastCost,
 }
 
-impl Default for NextHopPolicy {
-    fn default() -> Self {
-        NextHopPolicy::LeastHop
-    }
-}
 
 pub type ForeignNetworkRouteInfoMap =
     DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>;

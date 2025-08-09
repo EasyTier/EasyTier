@@ -86,8 +86,7 @@ pub fn nm_is_using_resolved() -> Result<()> {
         return Err(anyhow::anyhow!(
             "NetworkManager is not using systemd-resolved, found: {:?}",
             value
-        )
-        .into());
+        ));
     }
 
     Ok(())

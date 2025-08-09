@@ -104,7 +104,7 @@ impl std::fmt::Debug for GlobalCtx {
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
 impl GlobalCtx {
-    pub fn new(config_fs: impl ConfigLoader + 'static + Send + Sync) -> Self {
+    pub fn new(config_fs: impl ConfigLoader + 'static + Send) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
         let net_ns = NetNS::new(config_fs.get_netns());
@@ -185,7 +185,7 @@ impl GlobalCtx {
         {
             Ok(())
         } else {
-            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
+            Err(anyhow::anyhow!("network {} not in whitelist", network_name))
         }
     }
 
@@ -194,8 +194,8 @@ impl GlobalCtx {
             return Some(ret);
         }
         let addr = self.config.get_ipv4();
-        self.cached_ipv4.store(addr.clone());
-        return addr;
+        self.cached_ipv4.store(addr);
+        addr
     }
 
     pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
@@ -208,8 +208,8 @@ impl GlobalCtx {
             return Some(ret);
         }
         let addr = self.config.get_ipv6();
-        self.cached_ipv6.store(addr.clone());
-        return addr;
+        self.cached_ipv6.store(addr);
+        addr
     }
 
     pub fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
@@ -376,18 +376,18 @@ pub mod tests {
 
         let mut subscriber = global_ctx.subscribe();
         let peer_id = new_peer_id();
-        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id.clone()));
-        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id.clone()));
+        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id));
+        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnAdded(PeerConnInfo::default()));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default()));
 
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerAdded(peer_id.clone())
+            GlobalCtxEvent::PeerAdded(peer_id)
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerRemoved(peer_id.clone())
+            GlobalCtxEvent::PeerRemoved(peer_id)
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),

@@ -198,7 +198,7 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
             peer_id: self.peer_id,
             ipv4_addr: if let Some(ipv4_addr) = self.ipv4_addr {
                 Some(Ipv4Inet {
-                    address: Some(ipv4_addr.into()),
+                    address: Some(ipv4_addr),
                     network_length,
                 })
             } else {
@@ -211,7 +211,7 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
             hostname: self.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
-                if let Ok(udp_nat_type) = NatType::try_from(self.udp_stun_info as i32) {
+                if let Ok(udp_nat_type) = NatType::try_from(self.udp_stun_info) {
                     stun_info.set_udp_nat_type(udp_nat_type);
                 }
                 Some(stun_info)
@@ -224,7 +224,7 @@ impl Into<crate::proto::cli::Route> for RoutePeerInfo {
             cost_latency_first: None,
             path_latency_latency_first: None,
 
-            ipv6_addr: self.ipv6_addr.map(Into::into),
+            ipv6_addr: self.ipv6_addr,
         }
     }
 }
@@ -235,10 +235,10 @@ struct RouteConnBitmap {
     bitmap: Vec<u8>,
 }
 
-impl Into<crate::proto::peer_rpc::RouteConnBitmap> for RouteConnBitmap {
-    fn into(self) -> crate::proto::peer_rpc::RouteConnBitmap {
+impl From<RouteConnBitmap> for crate::proto::peer_rpc::RouteConnBitmap {
+    fn from(val: RouteConnBitmap) -> Self {
         crate::proto::peer_rpc::RouteConnBitmap {
-            peer_ids: self
+            peer_ids: val
                 .peer_ids
                 .into_iter()
                 .map(|x| PeerIdVersion {
@@ -246,7 +246,7 @@ impl Into<crate::proto::peer_rpc::RouteConnBitmap> for RouteConnBitmap {
                     version: x.1,
                 })
                 .collect(),
-            bitmap: self.bitmap,
+            bitmap: val.bitmap,
         }
     }
 }
@@ -318,7 +318,7 @@ impl SyncedRouteInfo {
     fn get_connected_peers<T: FromIterator<PeerId>>(&self, peer_id: PeerId) -> Option<T> {
         self.conn_map
             .get(&peer_id)
-            .map(|x| x.0.clone().iter().map(|x| *x).collect())
+            .map(|x| x.0.clone().iter().copied().collect())
     }
 
     fn remove_peer(&self, peer_id: PeerId) {
@@ -476,7 +476,7 @@ impl SyncedRouteInfo {
                 })
                 .or_insert_with(|| {
                     need_inc_version = true;
-                    (connceted_peers, version.clone().into())
+                    (connceted_peers, (*version).into())
                 });
         }
         if need_inc_version {
@@ -512,11 +512,8 @@ impl SyncedRouteInfo {
         my_peer_route_id: u64,
         global_ctx: &ArcGlobalCtx,
     ) -> bool {
-        let mut old = self
-            .peer_infos
-            .entry(my_peer_id)
-            .or_insert(RoutePeerInfo::new());
-        let new = old.update_self(my_peer_id, my_peer_route_id, &global_ctx);
+        let mut old = self.peer_infos.entry(my_peer_id).or_default();
+        let new = old.update_self(my_peer_id, my_peer_route_id, global_ctx);
         let new_version = new.version;
         let old_version = old.version;
         *old = new;
@@ -616,8 +613,8 @@ impl SyncedRouteInfo {
     }
 
     fn is_peer_directly_connected(&self, src_peer_id: PeerId, dst_peer_id: PeerId) -> bool {
-        return self.is_peer_bidirectly_connected(src_peer_id, dst_peer_id)
-            || self.is_peer_bidirectly_connected(dst_peer_id, src_peer_id);
+        self.is_peer_bidirectly_connected(src_peer_id, dst_peer_id)
+            || self.is_peer_bidirectly_connected(dst_peer_id, src_peer_id)
     }
 }
 
@@ -674,7 +671,7 @@ impl RouteTable {
     fn get_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
         self.peer_infos
             .get(&peer_id)
-            .map(|x| NatType::try_from(x.udp_stun_info as i32).unwrap_or_default())
+            .map(|x| NatType::try_from(x.udp_stun_info).unwrap_or_default())
     }
 
     // return graph and start node index (node of my peer id).
@@ -710,9 +707,9 @@ impl RouteTable {
         for item in peer_id_to_node_index.iter() {
             let src_peer_id = item.key();
             let src_node_idx = item.value();
-            let connected_peers = synced_info
+            let connected_peers: BTreeSet<_> = synced_info
                 .get_connected_peers(*src_peer_id)
-                .unwrap_or(BTreeSet::new());
+                .unwrap_or_default();
 
             // if avoid relay, just set all outgoing edges to a large value: AVOID_RELAY_COST.
             let peer_avoid_relay_data = synced_info.get_avoid_relay_data(*src_peer_id);
@@ -798,7 +795,7 @@ impl RouteTable {
         }
 
         // Step 3: 第二次 Dijkstra - 在子图上找代价最小的路径
-        self.gen_next_hop_map_with_least_cost(&subgraph, &start_node_idx.clone().unwrap(), version);
+        self.gen_next_hop_map_with_least_cost(&subgraph, &start_node_idx.unwrap(), version);
     }
 
     fn gen_next_hop_map_with_least_cost(
@@ -813,7 +810,7 @@ impl RouteTable {
             let info = NextHopInfo {
                 next_hop_peer_id: *graph.node_weight(*next_hop).unwrap(),
                 path_latency: (*costs.get(dst).unwrap() % AVOID_RELAY_COST) as i32,
-                path_len: *path_len as usize,
+                path_len: { *path_len },
                 version,
             };
             let dst_peer_id = *graph.node_weight(*dst).unwrap();
@@ -841,7 +838,7 @@ impl RouteTable {
 
         // build next hop map
         let (graph, start_node) =
-            Self::build_peer_graph_from_synced_info(my_peer_id, &synced_info, cost_calc);
+            Self::build_peer_graph_from_synced_info(my_peer_id, synced_info, cost_calc);
 
         if graph.node_count() == 0 {
             tracing::warn!("no peer in graph, cannot build next hop map");
@@ -1035,7 +1032,7 @@ impl SyncRouteSession {
         for info in infos.iter() {
             self.dst_saved_peer_info_versions
                 .entry(info.peer_id)
-                .or_insert_with(|| AtomicVersion::new())
+                .or_insert_with(AtomicVersion::new)
                 .set_if_larger(info.version);
         }
     }
@@ -1044,7 +1041,7 @@ impl SyncRouteSession {
         for (peer_id, version) in conn_bitmap.peer_ids.iter() {
             self.dst_saved_conn_bitmap_version
                 .entry(*peer_id)
-                .or_insert_with(|| AtomicVersion::new())
+                .or_insert_with(AtomicVersion::new)
                 .set_if_larger(*version);
         }
     }
@@ -1053,7 +1050,7 @@ impl SyncRouteSession {
         for item in foreign_network.infos.iter() {
             self.dst_saved_foreign_network_versions
                 .entry(item.key.clone().unwrap())
-                .or_insert_with(|| AtomicVersion::new())
+                .or_insert_with(AtomicVersion::new)
                 .set_if_larger(item.value.as_ref().unwrap().version);
         }
     }
@@ -1249,13 +1246,10 @@ impl PeerRouteServiceImpl {
             .list_foreign_networks()
             .await;
 
-        let updated = self
-            .synced_route_info
-            .update_my_foreign_network(self.my_peer_id, foreign_networks);
-
         // do not need update owner map because we always filter out my peer id.
 
-        updated
+        self.synced_route_info
+            .update_my_foreign_network(self.my_peer_id, foreign_networks)
     }
 
     fn update_route_table(&self) {
@@ -1317,7 +1311,7 @@ impl PeerRouteServiceImpl {
             };
             self.foreign_network_owner_map
                 .entry(network_identity)
-                .or_insert_with(|| Vec::new())
+                .or_insert_with(Vec::new)
                 .push(entry.my_peer_id_for_this_network);
 
             self.foreign_network_my_peer_id_map.insert(
@@ -1350,8 +1344,7 @@ impl PeerRouteServiceImpl {
             .synced_route_info
             .conn_map
             .iter()
-            .map(|x| x.value().clone().0.into_iter())
-            .flatten()
+            .flat_map(|x| x.value().clone().0.into_iter())
             .collect::<BTreeSet<_>>();
 
         let all_peer_ids = self
@@ -1364,7 +1357,7 @@ impl PeerRouteServiceImpl {
             .collect::<Vec<_>>();
 
         let mut conn_bitmap = RouteConnBitmap::new();
-        conn_bitmap.bitmap = vec![0; (all_peer_ids.len() * all_peer_ids.len() + 7) / 8];
+        conn_bitmap.bitmap = vec![0; (all_peer_ids.len() * all_peer_ids.len()).div_ceil(8)];
         conn_bitmap.peer_ids = all_peer_ids;
 
         let all_peer_ids = &conn_bitmap.peer_ids;
@@ -1419,7 +1412,7 @@ impl PeerRouteServiceImpl {
         for (peer_id, local_version) in self.cached_local_conn_map.lock().unwrap().peer_ids.iter() {
             let peer_version = session
                 .dst_saved_conn_bitmap_version
-                .get(&peer_id)
+                .get(peer_id)
                 .map(|item| item.get());
             if peer_version.is_none() || peer_version.unwrap() < *local_version {
                 need_update = true;
@@ -1442,7 +1435,7 @@ impl PeerRouteServiceImpl {
         for item in self.synced_route_info.foreign_network.iter() {
             if session
                 .dst_saved_foreign_network_versions
-                .get(&item.key())
+                .get(item.key())
                 .map(|x| x.get() >= item.value().version)
                 .unwrap_or(false)
             {
@@ -1485,9 +1478,9 @@ impl PeerRouteServiceImpl {
         Option<RouteConnBitmap>,
         Option<RouteForeignNetworkInfos>,
     ) {
-        let route_infos = self.build_route_info(&session);
-        let conn_bitmap = self.build_conn_bitmap(&session);
-        let foreign_network = self.build_foreign_network_info(&session);
+        let route_infos = self.build_route_info(session);
+        let conn_bitmap = self.build_conn_bitmap(session);
+        let foreign_network = self.build_foreign_network_info(session);
 
         (route_infos, conn_bitmap, foreign_network)
     }
@@ -1661,19 +1654,19 @@ impl PeerRouteServiceImpl {
                 session.update_dst_session_id(resp.session_id);
 
                 if let Some(peer_infos) = &peer_infos {
-                    session.update_dst_saved_peer_info_version(&peer_infos);
+                    session.update_dst_saved_peer_info_version(peer_infos);
                 }
 
                 if let Some(conn_bitmap) = &conn_bitmap {
-                    session.update_dst_saved_conn_bitmap_version(&conn_bitmap);
+                    session.update_dst_saved_conn_bitmap_version(conn_bitmap);
                 }
 
                 if let Some(foreign_network) = &foreign_network {
-                    session.update_dst_saved_foreign_network_version(&foreign_network);
+                    session.update_dst_saved_foreign_network_version(foreign_network);
                 }
             }
         }
-        return false;
+        false
     }
 
     fn update_peer_info_last_update(&self) {
@@ -1828,12 +1821,9 @@ impl RouteSessionManager {
 
             select! {
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-                ret = sync_now.recv() => match ret {
-                    Err(e) => {
-                        tracing::debug!(?e, "session_task sync_now recv failed, ospf route may exit");
-                        break;
-                    },
-                    _ => {}
+                ret = sync_now.recv() => if let Err(e) = ret {
+                    tracing::debug!(?e, "session_task sync_now recv failed, ospf route may exit");
+                    break;
                 }
             }
         }
@@ -1903,7 +1893,7 @@ impl RouteSessionManager {
                     };
                     !session.dst_is_initiator.load(Ordering::Relaxed)
                 })
-                .map(|x| *x)
+                .copied()
                 .collect::<Vec<_>>();
 
             if initiator_candidates.is_empty() {
@@ -2034,7 +2024,7 @@ impl RouteSessionManager {
         }
 
         if let Some(conn_bitmap) = &conn_bitmap {
-            service_impl.synced_route_info.update_conn_map(&conn_bitmap);
+            service_impl.synced_route_info.update_conn_map(conn_bitmap);
             session.update_dst_saved_conn_bitmap_version(conn_bitmap);
             need_update_route_table = true;
         }
@@ -2046,7 +2036,7 @@ impl RouteSessionManager {
         if let Some(foreign_network) = &foreign_network {
             service_impl
                 .synced_route_info
-                .update_foreign_network(&foreign_network);
+                .update_foreign_network(foreign_network);
             session.update_dst_saved_foreign_network_version(foreign_network);
         }
 
@@ -2267,7 +2257,7 @@ impl Route for PeerRoute {
             route.cost_latency_first = next_hop_peer_latency_first.map(|x| x.path_len as i32);
             route.path_latency_latency_first = next_hop_peer_latency_first.map(|x| x.path_latency);
 
-            route.feature_flag = item.feature_flag.clone();
+            route.feature_flag = item.feature_flag;
 
             routes.push(route);
         }
@@ -2455,7 +2445,7 @@ mod tests {
         let r_a = create_mock_route(p_a.clone()).await;
         let r_b = create_mock_route(p_b.clone()).await;
 
-        for r in vec![r_a.clone(), r_b.clone()].iter() {
+        for r in [r_a.clone(), r_b.clone()].iter() {
             wait_for_condition(
                 || async {
                     println!("route: {:?}", r.list_routes().await);
@@ -2507,7 +2497,7 @@ mod tests {
         drop(p_b);
 
         wait_for_condition(
-            || async { r_a.list_routes().await.len() == 0 },
+            || async { r_a.list_routes().await.is_empty() },
             Duration::from_secs(5),
         )
         .await;
@@ -2531,7 +2521,7 @@ mod tests {
         let r_b = create_mock_route(p_b.clone()).await;
         let r_c = create_mock_route(p_c.clone()).await;
 
-        for r in vec![r_a.clone(), r_b.clone(), r_c.clone()].iter() {
+        for r in [r_a.clone(), r_b.clone(), r_c.clone()].iter() {
             wait_for_condition(
                 || async { r.service_impl.synced_route_info.peer_infos.len() == 3 },
                 Duration::from_secs(5),
@@ -2563,10 +2553,10 @@ mod tests {
         connect_peer_manager(p_d.clone(), p_c.clone()).await;
 
         // find the smallest peer_id, which should be a center node
-        let mut all_route = vec![r_a.clone(), r_b.clone(), r_c.clone(), r_d.clone()];
+        let mut all_route = [r_a.clone(), r_b.clone(), r_c.clone(), r_d.clone()];
         all_route.sort_by(|a, b| a.my_peer_id.cmp(&b.my_peer_id));
-        let mut all_peer_mgr = vec![p_a.clone(), p_b.clone(), p_c.clone(), p_d.clone()];
-        all_peer_mgr.sort_by(|a, b| a.my_peer_id().cmp(&b.my_peer_id()));
+        let mut all_peer_mgr = [p_a.clone(), p_b.clone(), p_c.clone(), p_d.clone()];
+        all_peer_mgr.sort_by_key(|a| a.my_peer_id());
 
         wait_for_condition(
             || async { all_route[0].service_impl.sessions.len() == 3 },
@@ -2664,7 +2654,7 @@ mod tests {
         let r_b = create_mock_route(p_b.clone()).await;
         let r_c = create_mock_route(p_c.clone()).await;
 
-        for r in vec![r_a.clone(), r_b.clone(), r_c.clone()].iter() {
+        for r in [r_a.clone(), r_b.clone(), r_c.clone()].iter() {
             wait_for_condition(
                 || async { r.service_impl.synced_route_info.peer_infos.len() == 3 },
                 Duration::from_secs(5),
@@ -2684,7 +2674,7 @@ mod tests {
         drop(r_c);
         drop(p_c);
 
-        for r in vec![r_a.clone(), r_b.clone()].iter() {
+        for r in [r_a.clone(), r_b.clone()].iter() {
             wait_for_condition(
                 || async { r.list_routes().await.len() == 1 },
                 Duration::from_secs(5),
@@ -2717,7 +2707,7 @@ mod tests {
             .await
             .unwrap();
         wait_for_condition(
-            || async { r_a.list_routes().await.len() == 0 },
+            || async { r_a.list_routes().await.is_empty() },
             Duration::from_secs(5),
         )
         .await;
@@ -2756,7 +2746,7 @@ mod tests {
 
         // in normal mode, packet from p_c should directly forward to p_a
         wait_for_condition(
-            || async { r_d.get_next_hop(p_a.my_peer_id()).await != None },
+            || async { (r_d.get_next_hop(p_a.my_peer_id()).await).is_some() },
             Duration::from_secs(5),
         )
         .await;
