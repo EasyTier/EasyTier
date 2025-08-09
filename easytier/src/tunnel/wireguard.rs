@@ -579,7 +579,7 @@ impl TunnelListener for WgTunnelListener {
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        while let Some(tunnel) = self.conn_recv.recv().await {
+        if let Some(tunnel) = self.conn_recv.recv().await {
             tracing::info!(?tunnel, "Accepted tunnel");
             return Ok(tunnel);
         }

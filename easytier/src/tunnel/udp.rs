@@ -68,7 +68,7 @@ fn new_syn_packet(conn_id: u32, magic: u64) -> ZCPacket {
             header.conn_id.set(conn_id);
             header.len.set(8);
         },
-        Some(&mut magic.to_le_bytes()),
+        Some(&magic.to_le_bytes()),
     )
 }
 
@@ -79,7 +79,7 @@ fn new_sack_packet(conn_id: u32, magic: u64) -> ZCPacket {
             header.conn_id.set(conn_id);
             header.len.set(8);
         },
-        Some(&mut magic.to_le_bytes()),
+        Some(&magic.to_le_bytes()),
     )
 }
 
@@ -94,7 +94,7 @@ pub fn new_hole_punch_packet(tid: u32, buf_len: u16) -> ZCPacket {
             header.conn_id.set(tid);
             header.len.set(buf_len);
         },
-        Some(&mut buf),
+        Some(&buf),
     )
 }
 
@@ -173,9 +173,7 @@ async fn respond_stun_packet(
         // we discard the prefix, make sure our implementation is not compatible with other stun client
         u32_to_tid(tid_to_u32(&tid)),
     );
-    resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(
-        addr,
-    )));
+    resp_msg.add_attribute(Attribute::XorMappedAddress(XorMappedAddress::new(addr)));
 
     let mut encoder = MessageEncoder::new();
     let rsp_buf = encoder
@@ -241,9 +239,7 @@ async fn forward_from_ring_to_udp(
 ) -> Option<TunnelError> {
     tracing::debug!("udp forward from ring to udp");
     loop {
-        let Some(buf) = ring_recv.next().await else {
-            return None;
-        };
+        let buf = ring_recv.next().await?;
         let packet = match buf {
             Ok(v) => v,
             Err(e) => {
@@ -585,7 +581,7 @@ impl TunnelListener for UdpTunnelListener {
 
     async fn accept(&mut self) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::info!("start udp accept: {:?}", self.addr);
-        while let Some(conn) = self.conn_recv.recv().await {
+        if let Some(conn) = self.conn_recv.recv().await {
             return Ok(conn);
         }
         return Err(super::TunnelError::InternalError(
@@ -737,7 +733,6 @@ impl UdpTunnelConnector {
                 tokio::select! {
                     _ = close_event_recv.recv() => {
                         tracing::debug!("connector udp close event");
-                        return;
                     }
                     _ = udp_recv_from_socket_forward_task(socket_clone,false, |zc_packet, addr| {
                         tracing::trace!(?addr, "connector udp forward task done");
@@ -746,7 +741,6 @@ impl UdpTunnelConnector {
                         }
                     }) => {
                         tracing::debug!("connector udp forward task done");
-                        return;
                     }
                 }
             }

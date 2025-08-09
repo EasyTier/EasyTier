@@ -70,7 +70,9 @@ impl PeerPacketFilter for KcpEndpointFilter {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
         let t = packet.peer_manager_header().unwrap().packet_type;
         if t == PacketType::KcpSrc as u8 && !self.is_src {
+            // src packet, but we are dst
         } else if t == PacketType::KcpDst as u8 && self.is_src {
+            // dst packet, but we are src
         } else {
             return Some(packet);
         }
@@ -182,9 +184,7 @@ impl NatDstConnector for NatDstKcpConnector {
                         Bytes::from(conn_data_clone.encode_to_vec()),
                     )
                     .await
-                    .with_context(|| {
-                        format!("failed to connect to nat dst: {}", nat_dst)
-                    })
+                    .with_context(|| format!("failed to connect to nat dst: {}", nat_dst))
             });
         }
 
@@ -230,7 +230,10 @@ impl TcpProxyForKcpSrcTrait for TcpProxyForKcpSrc {
     }
 
     async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        self.0.get_peer_manager().check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip)).await
+        self.0
+            .get_peer_manager()
+            .check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip))
+            .await
     }
 }
 

@@ -154,7 +154,7 @@ impl NatDstEntry {
         }
     }
 
-    fn into_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
+    fn parse_as_pb(&self, transport_type: TcpProxyEntryTransportType) -> TcpProxyEntry {
         TcpProxyEntry {
             src: Some(self.src.into()),
             dst: Some(self.real_dst.into()),
@@ -332,7 +332,7 @@ pub struct TcpProxy<C: NatDstConnector> {
 #[async_trait::async_trait]
 impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
     async fn try_process_packet_from_peer(&self, mut packet: ZCPacket) -> Option<ZCPacket> {
-        if let Some(_) = self.try_handle_peer_packet(&mut packet).await {
+        if self.try_handle_peer_packet(&mut packet).await.is_some() {
             if self.is_smoltcp_enabled() {
                 let smoltcp_stack_sender = self.smoltcp_stack_sender.as_ref().unwrap();
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
@@ -915,10 +915,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
         let mut entries: Vec<TcpProxyEntry> = Vec::new();
         let transport_type = self.connector.transport_type();
         for entry in self.syn_map.iter() {
-            entries.push(entry.value().as_ref().into_pb(transport_type));
+            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
         }
         for entry in self.conn_map.iter() {
-            entries.push(entry.value().as_ref().into_pb(transport_type));
+            entries.push(entry.value().as_ref().parse_as_pb(transport_type));
         }
         entries
     }

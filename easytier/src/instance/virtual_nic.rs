@@ -384,7 +384,7 @@ impl VirtualNic {
             }
         }
 
-        #[cfg(any(target_os = "macos"))]
+        #[cfg(target_os = "macos")]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);

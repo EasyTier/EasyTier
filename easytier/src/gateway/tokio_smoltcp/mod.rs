@@ -34,7 +34,7 @@ mod socket_allocator;
 /// Can be used to create a forever timestamp in neighbor.
 // The 60_000 is the same as NeighborCache::ENTRY_LIFETIME.
 pub const FOREVER: Instant =
-    Instant::from_micros_const(i64::max_value() - Duration::from_millis(60_000).micros() as i64);
+    Instant::from_micros_const(i64::MAX - Duration::from_millis(60_000).micros() as i64);
 
 pub struct Neighbor {
     pub protocol_addr: IpAddress,

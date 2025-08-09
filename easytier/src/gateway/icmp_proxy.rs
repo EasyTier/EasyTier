@@ -118,7 +118,7 @@ fn socket_recv_loop(
             }
         };
 
-        if len <= 0 {
+        if len == 0 {
             tracing::error!("recv empty packet, len: {}", len);
             return;
         }
@@ -182,7 +182,7 @@ fn socket_recv_loop(
 #[async_trait::async_trait]
 impl PeerPacketFilter for IcmpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if let Some(_) = self.try_handle_peer_packet(&packet).await {
+        if self.try_handle_peer_packet(&packet).await.is_some() {
             return None;
         } else {
             return Some(packet);
@@ -389,17 +389,17 @@ impl IcmpProxy {
 
         let mut real_dst_ip = ipv4.get_destination();
 
-        if !self
+        if !(self
             .cidr_set
             .contains_v4(ipv4.get_destination(), &mut real_dst_ip)
-            && !is_exit_node
-            && !(self.global_ctx.no_tun()
+            || is_exit_node
+            || (self.global_ctx.no_tun()
                 && Some(ipv4.get_destination())
                     == self
                         .global_ctx
                         .get_ipv4()
                         .as_ref()
-                        .map(cidr::Ipv4Inet::address))
+                        .map(cidr::Ipv4Inet::address)))
         {
             return None;
         }
@@ -475,10 +475,9 @@ impl Drop for IcmpProxy {
             "dropping icmp proxy, {:?}",
             self.socket.lock().unwrap().as_ref()
         );
-        self.socket.lock().unwrap().as_ref().map(|s| {
+        if let Some(s) = self.socket.lock().unwrap().as_ref() {
             tracing::info!("shutting down icmp socket");
             let _ = s.shutdown(std::net::Shutdown::Both);
-            
-        });
+        }
     }
 }

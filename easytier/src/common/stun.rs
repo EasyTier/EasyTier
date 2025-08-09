@@ -282,9 +282,7 @@ impl StunClient {
                 .with_context(|| "encode stun message")?;
             tids.push(tid);
             tracing::trace!(?message, ?msg, tid, "send stun request");
-            self.socket
-                .send_to(msg.as_slice(), &stun_host)
-                .await?;
+            self.socket.send_to(msg.as_slice(), &stun_host).await?;
         }
 
         let now = Instant::now();
@@ -372,7 +370,7 @@ impl StunClientBuilder {
 
     pub async fn stop(&mut self) {
         self.task_set.abort_all();
-        while let Some(_) = self.task_set.join_next().await {}
+        while self.task_set.join_next().await.is_some() {}
     }
 }
 
@@ -740,10 +738,12 @@ impl StunInfoCollector {
     pub fn get_default_servers() -> Vec<String> {
         // NOTICE: we may need to choose stun stun server based on geo location
         // stun server cross nation may return a external ip address with high latency and loss rate
-        ["txt:stun.easytier.cn",
+        [
+            "txt:stun.easytier.cn",
             "stun.miwifi.com",
             "stun.chat.bilibili.com",
-            "stun.hitv.com"]
+            "stun.hitv.com",
+        ]
         .iter()
         .map(|x| x.to_string())
         .collect()
@@ -756,7 +756,7 @@ impl StunInfoCollector {
             .collect()
     }
 
-    async fn get_public_ipv6(servers: &Vec<String>) -> Option<Ipv6Addr> {
+    async fn get_public_ipv6(servers: &[String]) -> Option<Ipv6Addr> {
         let mut ips = HostResolverIter::new(servers.to_vec(), 10, true);
         while let Some(ip) = ips.next().await {
             let Ok(udp_socket) = UdpSocket::bind("[::]:0".to_string()).await else {
@@ -849,8 +849,9 @@ impl StunInfoCollector {
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = stun_servers.read().unwrap().clone();
-                if let Some(x) = Self::get_public_ipv6(&servers)
-                    .await { stored_ipv6.store(Some(x)) }
+                if let Some(x) = Self::get_public_ipv6(&servers).await {
+                    stored_ipv6.store(Some(x))
+                }
 
                 let sleep_sec = if stored_ipv6.load().is_none() {
                     60

@@ -72,10 +72,7 @@ impl TargetAddr {
     }
 
     pub fn is_ip(&self) -> bool {
-        match self {
-            TargetAddr::Ip(_) => true,
-            _ => false,
-        }
+        matches!(self, TargetAddr::Ip(_))
     }
 
     pub fn is_domain(&self) -> bool {
@@ -104,7 +101,7 @@ impl TargetAddr {
             }
             TargetAddr::Domain(ref domain, port) => {
                 debug!("TargetAddr::Domain");
-                if domain.len() > u8::max_value() as usize {
+                if domain.len() > u8::MAX as usize {
                     return Err(SocksError::ExceededMaxDomainLen(domain.len()).into());
                 }
                 buf.extend_from_slice(&[consts::SOCKS5_ADDR_TYPE_DOMAIN_NAME, domain.len() as u8]);

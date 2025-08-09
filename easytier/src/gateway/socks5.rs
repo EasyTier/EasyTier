@@ -72,9 +72,9 @@ impl SocksUdpSocket {
 }
 
 enum SocksTcpStream {
-    TcpStream(tokio::net::TcpStream),
-    SmolTcpStream(super::tokio_smoltcp::TcpStream),
-    KcpStream(KcpStream),
+    Tcp(tokio::net::TcpStream),
+    SmolTcp(super::tokio_smoltcp::TcpStream),
+    Kcp(KcpStream),
 }
 
 impl AsyncRead for SocksTcpStream {
@@ -84,15 +84,11 @@ impl AsyncRead for SocksTcpStream {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.get_mut() {
-            SocksTcpStream::TcpStream(ref mut stream) => {
+            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            SocksTcpStream::SmolTcp(ref mut stream) => {
                 std::pin::Pin::new(stream).poll_read(cx, buf)
             }
-            SocksTcpStream::SmolTcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_read(cx, buf)
-            }
-            SocksTcpStream::KcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_read(cx, buf)
-            }
+            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
         }
     }
 }
@@ -104,15 +100,11 @@ impl AsyncWrite for SocksTcpStream {
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
         match self.get_mut() {
-            SocksTcpStream::TcpStream(ref mut stream) => {
+            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            SocksTcpStream::SmolTcp(ref mut stream) => {
                 std::pin::Pin::new(stream).poll_write(cx, buf)
             }
-            SocksTcpStream::SmolTcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_write(cx, buf)
-            }
-            SocksTcpStream::KcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_write(cx, buf)
-            }
+            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
         }
     }
 
@@ -121,11 +113,9 @@ impl AsyncWrite for SocksTcpStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         match self.get_mut() {
-            SocksTcpStream::TcpStream(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
-            SocksTcpStream::SmolTcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_flush(cx)
-            }
-            SocksTcpStream::KcpStream(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::SmolTcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
         }
     }
 
@@ -134,15 +124,9 @@ impl AsyncWrite for SocksTcpStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         match self.get_mut() {
-            SocksTcpStream::TcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_shutdown(cx)
-            }
-            SocksTcpStream::SmolTcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_shutdown(cx)
-            }
-            SocksTcpStream::KcpStream(ref mut stream) => {
-                std::pin::Pin::new(stream).poll_shutdown(cx)
-            }
+            SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            SocksTcpStream::SmolTcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
         }
     }
 }
@@ -196,7 +180,7 @@ impl AsyncTcpConnector for SmolTcpConnector {
             let modified_addr =
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), addr.port());
 
-            Ok(SocksTcpStream::TcpStream(
+            Ok(SocksTcpStream::Tcp(
                 tcp_connect_with_timeout(modified_addr, timeout_s).await?,
             ))
         } else {
@@ -207,9 +191,9 @@ impl AsyncTcpConnector for SmolTcpConnector {
             .await
             .with_context(|| "connect to remote timeout")?;
 
-            Ok(SocksTcpStream::SmolTcpStream(remote_socket.map_err(
-                |e| super::fast_socks5::SocksError::Other(e.into()),
-            )?))
+            Ok(SocksTcpStream::SmolTcp(remote_socket.map_err(|e| {
+                super::fast_socks5::SocksError::Other(e.into())
+            })?))
         }
     }
 }
@@ -249,7 +233,7 @@ impl AsyncTcpConnector for Socks5KcpConnector {
             .connect(self.src_addr, addr)
             .await
             .map_err(|e| super::fast_socks5::SocksError::Other(e.into()))?;
-        Ok(SocksTcpStream::KcpStream(ret))
+        Ok(SocksTcpStream::Kcp(ret))
     }
 }
 
@@ -756,7 +740,7 @@ impl Socks5Server {
                     continue;
                 };
 
-                let dst_allow_kcp =  peer_mgr_arc.check_allow_kcp_to_dst(&dst_addr.ip()).await;
+                let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&dst_addr.ip()).await;
                 tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
 
                 let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =

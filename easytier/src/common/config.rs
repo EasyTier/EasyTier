@@ -1,8 +1,8 @@
 use std::{
+    hash::Hasher,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
-    u64,
 };
 
 use anyhow::Context;
@@ -210,7 +210,7 @@ pub trait LoggingConfigLoader {
 
 pub type NetworkSecretDigest = [u8; 32];
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, Eq, Hash)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
@@ -218,27 +218,53 @@ pub struct NetworkIdentity {
     pub network_secret_digest: Option<NetworkSecretDigest>,
 }
 
+#[derive(Eq, PartialEq, Hash)]
+struct NetworkIdentityWithOnlyDigest {
+    network_name: String,
+    network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
+    fn from(identity: NetworkIdentity) -> Self {
+        if identity.network_secret_digest.is_some() {
+            Self {
+                network_name: identity.network_name,
+                network_secret_digest: identity.network_secret_digest,
+            }
+        } else if identity.network_secret.is_some() {
+            let mut network_secret_digest = [0u8; 32];
+            generate_digest_from_str(
+                &identity.network_name,
+                identity.network_secret.as_ref().unwrap(),
+                &mut network_secret_digest,
+            );
+            return Self {
+                network_name: identity.network_name,
+                network_secret_digest: Some(network_secret_digest),
+            };
+        } else {
+            Self {
+                network_name: identity.network_name,
+                network_secret_digest: None,
+            }
+        }
+    }
+}
+
 impl PartialEq for NetworkIdentity {
     fn eq(&self, other: &Self) -> bool {
-        if self.network_name != other.network_name {
-            return false;
-        }
+        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
+        let other_with_digest = NetworkIdentityWithOnlyDigest::from(other.clone());
+        self_with_digest == other_with_digest
+    }
+}
 
-        if self.network_secret.is_some()
-            && other.network_secret.is_some()
-            && self.network_secret != other.network_secret
-        {
-            return false;
-        }
+impl Eq for NetworkIdentity {}
 
-        if self.network_secret_digest.is_some()
-            && other.network_secret_digest.is_some()
-            && self.network_secret_digest != other.network_secret_digest
-        {
-            return false;
-        }
-
-        true
+impl std::hash::Hash for NetworkIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
+        self_with_digest.hash(state);
     }
 }
 
@@ -253,8 +279,10 @@ impl NetworkIdentity {
             network_secret_digest: Some(network_secret_digest),
         }
     }
+}
 
-    pub fn default() -> Self {
+impl Default for NetworkIdentity {
+    fn default() -> Self {
         Self::new("default".to_string(), "".to_string())
     }
 }
@@ -509,10 +537,7 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
         let locked_config = self.config.lock().unwrap();
-        locked_config
-            .ipv6
-            .as_ref()
-            .and_then(|s| s.parse().ok())
+        locked_config.ipv6.as_ref().and_then(|s| s.parse().ok())
     }
 
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
@@ -604,7 +629,7 @@ impl ConfigLoader for TomlConfigLoader {
             .unwrap()
             .network_identity
             .clone()
-            .unwrap_or_else(NetworkIdentity::default)
+            .unwrap_or_default()
     }
 
     fn set_network_identity(&self, identity: NetworkIdentity) {

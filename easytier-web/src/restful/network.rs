@@ -8,7 +8,7 @@ use axum_login::AuthUser;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
-use easytier::proto::web::*;
+use easytier::proto::{self, web::*};
 
 use crate::client_manager::session::{Location, Session};
 use crate::client_manager::ClientManager;
@@ -261,7 +261,7 @@ impl NetworkApi {
             .await
             .map_err(convert_db_error)?
             .iter()
-            .filter_map(|x| x.network_instance_id.clone().try_into().ok())
+            .map(|x| Into::<proto::common::Uuid>::into(x.network_instance_id.clone()))
             .collect::<Vec<_>>();
 
         Ok(ListNetworkInstanceIdsJsonResp {

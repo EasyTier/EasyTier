@@ -648,7 +648,10 @@ mod tests {
         let throughput = c_peer.throughput.clone();
         let _t = ScopedTask::from(tokio::spawn(async move {
             // if not drop both, we mock some rx traffic for client peer to test pinger
-            while !drop_both {
+            if drop_both {
+                return;
+            }
+            loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 throughput.record_rx_bytes(3);
             }

@@ -90,9 +90,11 @@ impl<T> ZCPacketStream for T where T: Stream<Item = StreamItem> + Send {}
 pub trait ZCPacketSink: Sink<SinkItem, Error = SinkError> + Send {}
 impl<T> ZCPacketSink for T where T: Sink<SinkItem, Error = SinkError> + Send {}
 
+pub type SplitTunnel = (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>);
+
 #[auto_impl::auto_impl(Box, Arc)]
 pub trait Tunnel: Send {
-    fn split(&self) -> (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>);
+    fn split(&self) -> SplitTunnel;
     fn info(&self) -> Option<TunnelInfo>;
 }
 

@@ -118,9 +118,11 @@ impl GlobalCtx {
         let proxy_forward_by_system = config_fs.get_flags().proxy_forward_by_system;
         let no_tun = config_fs.get_flags().no_tun;
 
-        let mut feature_flags = PeerFeatureFlag::default();
-        feature_flags.kcp_input = !config_fs.get_flags().disable_kcp_input;
-        feature_flags.no_relay_kcp = config_fs.get_flags().disable_relay_kcp;
+        let feature_flags = PeerFeatureFlag {
+            kcp_input: !config_fs.get_flags().disable_kcp_input,
+            no_relay_kcp: config_fs.get_flags().disable_relay_kcp,
+            ..Default::default()
+        };
 
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
@@ -404,7 +406,7 @@ pub mod tests {
     ) -> ArcGlobalCtx {
         let config_fs = TomlConfigLoader::default();
         config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
-        config_fs.set_network_identity(network_identy.unwrap_or(NetworkIdentity::default()));
+        config_fs.set_network_identity(network_identy.unwrap_or_default());
 
         let ctx = Arc::new(GlobalCtx::new(config_fs));
         ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {

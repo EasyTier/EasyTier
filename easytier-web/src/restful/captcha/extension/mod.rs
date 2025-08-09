@@ -1,7 +1,7 @@
 pub mod axum_tower_sessions;
 
 use super::base::captcha::AbstractCaptcha;
-use super::captcha::spec::SpecCaptcha;
+use super::builder::spec::SpecCaptcha;
 use super::{CaptchaFont, NewCaptcha};
 
 /// 验证码工具类 - Captcha Utils

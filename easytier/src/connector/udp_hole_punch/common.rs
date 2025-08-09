@@ -556,7 +556,7 @@ impl PunchHoleServerCommon {
 
 #[tracing::instrument(err, ret(level=Level::DEBUG), skip(ports))]
 pub(crate) async fn send_symmetric_hole_punch_packet(
-    ports: &Vec<u16>,
+    ports: &[u16],
     udp: Arc<UdpSocket>,
     transaction_id: u32,
     public_ips: &Vec<Ipv4Addr>,
