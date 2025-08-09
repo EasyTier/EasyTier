@@ -212,12 +212,12 @@ mod tests {
         // 加密
         cipher.encrypt(&mut packet).unwrap();
         assert!(packet.payload().len() > text.len() + OPENSSL_ENCRYPTION_RESERVED);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), true);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         // 解密
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 
     #[test]
@@ -231,11 +231,11 @@ mod tests {
         // 加密
         cipher.encrypt(&mut packet).unwrap();
         assert!(packet.payload().len() > text.len());
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), true);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         // 解密
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 }

@@ -28,13 +28,17 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh"]'
   test:
     runs-on: ubuntu-22.04
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
       - uses: actions/checkout@v3
+
+      - name: Check formatting
+        if: ${{ !cancelled() }}
+        run: cargo fmt --all -- --check
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
@@ -88,6 +92,13 @@ jobs:
             ~/.cargo
             ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install GUI dependencies (Used by clippy)
+        run: bash ./.github/workflows/install_gui_dep.sh
+
+      - name: Check Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets --all-features --all -- -D warnings
 
       - name: Run tests
         run: |

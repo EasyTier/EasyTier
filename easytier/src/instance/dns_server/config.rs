@@ -74,7 +74,7 @@ impl Record {
     }
 
     fn rr_type(&self) -> rr::RecordType {
-        self.rr_type.clone().into()
+        self.rr_type
     }
 }
 
@@ -167,7 +167,7 @@ ttl = "61s"
         let (domain, records) = config
             .zones
             .get_key_value("et.internal")
-            .map_or(Err(anyhow!("parse error")), |x| Ok(x))?;
+            .ok_or(anyhow!("et.internal not found"))?;
         assert_eq!(domain, "et.internal");
         assert_eq!(records.len(), 1);
         let record = &records[0];
@@ -179,7 +179,7 @@ ttl = "61s"
         let (domain, records) = config
             .zones
             .get_key_value("et.top")
-            .map_or(Err(anyhow!("parse error")), |x| Ok(x))?;
+            .ok_or(anyhow!("et.top not found"))?;
         assert_eq!(domain, "et.top");
         assert_eq!(records.len(), 1);
         let record = &records[0];

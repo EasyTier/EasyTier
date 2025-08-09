@@ -23,6 +23,7 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    gateway::ip_reassembler::ComposeIpv4PacketArgs,
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
@@ -118,7 +119,7 @@ fn socket_recv_loop(
             }
         };
 
-        if len <= 0 {
+        if len == 0 {
             tracing::error!("recv empty packet, len: {}", len);
             return;
         }
@@ -158,20 +159,18 @@ fn socket_recv_loop(
         let payload_len = len - ipv4_packet.get_header_length() as usize * 4;
         let id = ipv4_packet.get_identification();
         let _ = compose_ipv4_packet(
-            &mut buf[..],
-            &v.mapped_dst_ip,
-            &dest_ip,
-            IpNextHeaderProtocols::Icmp,
-            payload_len,
-            1200,
-            id,
+            ComposeIpv4PacketArgs {
+                buf: &mut buf[..],
+                src_v4: &v.mapped_dst_ip,
+                dst_v4: &dest_ip,
+                next_protocol: IpNextHeaderProtocols::Icmp,
+                payload_len,
+                payload_mtu: 1200,
+                ip_id: id,
+            },
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);
-                p.fill_peer_manager_hdr(
-                    v.my_peer_id.into(),
-                    v.src_peer_id.into(),
-                    PacketType::Data as u8,
-                );
+                p.fill_peer_manager_hdr(v.my_peer_id, v.src_peer_id, PacketType::Data as u8);
                 p.mut_peer_manager_header().unwrap().set_no_proxy(true);
 
                 if let Err(e) = sender.send(p) {
@@ -186,7 +185,7 @@ fn socket_recv_loop(
 #[async_trait::async_trait]
 impl PeerPacketFilter for IcmpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if let Some(_) = self.try_handle_peer_packet(&packet).await {
+        if self.try_handle_peer_packet(&packet).await.is_some() {
             return None;
         } else {
             return Some(packet);
@@ -320,10 +319,7 @@ impl IcmpProxy {
             .unwrap()
             .as_ref()
             .with_context(|| "icmp socket not created")?
-            .send_to(
-                icmp_packet.packet(),
-                &SocketAddrV4::new(dst_ip.into(), 0).into(),
-            )?;
+            .send_to(icmp_packet.packet(), &SocketAddrV4::new(dst_ip, 0).into())?;
 
         Ok(())
     }
@@ -349,13 +345,15 @@ impl IcmpProxy {
 
         let len = buf.len() - 20;
         let _ = compose_ipv4_packet(
-            &mut buf[..],
-            src_ip,
-            dst_ip,
-            IpNextHeaderProtocols::Icmp,
-            len,
-            1200,
-            rand::random(),
+            ComposeIpv4PacketArgs {
+                buf: &mut buf[..],
+                src_v4: src_ip,
+                dst_v4: dst_ip,
+                next_protocol: IpNextHeaderProtocols::Icmp,
+                payload_len: len,
+                payload_mtu: 1200,
+                ip_id: rand::random(),
+            },
             |buf| {
                 let mut packet = ZCPacket::new_with_payload(buf);
                 packet.fill_peer_manager_hdr(src_peer_id, dst_peer_id, PacketType::Data as u8);
@@ -387,7 +385,7 @@ impl IcmpProxy {
             return None;
         };
 
-        let ipv4 = Ipv4Packet::new(&packet.payload())?;
+        let ipv4 = Ipv4Packet::new(packet.payload())?;
 
         if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Icmp
         {
@@ -396,17 +394,17 @@ impl IcmpProxy {
 
         let mut real_dst_ip = ipv4.get_destination();
 
-        if !self
+        if !(self
             .cidr_set
             .contains_v4(ipv4.get_destination(), &mut real_dst_ip)
-            && !is_exit_node
-            && !(self.global_ctx.no_tun()
+            || is_exit_node
+            || (self.global_ctx.no_tun()
                 && Some(ipv4.get_destination())
                     == self
                         .global_ctx
                         .get_ipv4()
                         .as_ref()
-                        .map(cidr::Ipv4Inet::address))
+                        .map(cidr::Ipv4Inet::address)))
         {
             return None;
         }
@@ -416,12 +414,10 @@ impl IcmpProxy {
             resembled_buf =
                 self.ip_resemmbler
                     .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
-            if resembled_buf.is_none() {
-                return None;
-            };
+            resembled_buf.as_ref()?;
             icmp::echo_request::EchoRequestPacket::new(resembled_buf.as_ref().unwrap())?
         } else {
-            icmp::echo_request::EchoRequestPacket::new(&ipv4.payload())?
+            icmp::echo_request::EchoRequestPacket::new(ipv4.payload())?
         };
 
         if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
@@ -484,10 +480,9 @@ impl Drop for IcmpProxy {
             "dropping icmp proxy, {:?}",
             self.socket.lock().unwrap().as_ref()
         );
-        self.socket.lock().unwrap().as_ref().and_then(|s| {
+        if let Some(s) = self.socket.lock().unwrap().as_ref() {
             tracing::info!("shutting down icmp socket");
             let _ = s.shutdown(std::net::Shutdown::Both);
-            Some(())
-        });
+        }
     }
 }

@@ -86,12 +86,9 @@ impl<T: Tunnel> MpscTunnel<T> {
         sink.feed(initial_item).await?;
 
         while let Ok(item) = rx.try_recv() {
-            match sink.feed(item).await {
-                Err(e) => {
-                    tracing::error!(?e, "feed error");
-                    return Err(e);
-                }
-                Ok(_) => {}
+            if let Err(e) = sink.feed(item).await {
+                tracing::error!(?e, "feed error");
+                return Err(e);
             }
         }
 

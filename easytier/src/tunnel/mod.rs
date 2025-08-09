@@ -90,9 +90,11 @@ impl<T> ZCPacketStream for T where T: Stream<Item = StreamItem> + Send {}
 pub trait ZCPacketSink: Sink<SinkItem, Error = SinkError> + Send {}
 impl<T> ZCPacketSink for T where T: Sink<SinkItem, Error = SinkError> + Send {}
 
+pub type SplitTunnel = (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>);
+
 #[auto_impl::auto_impl(Box, Arc)]
 pub trait Tunnel: Send {
-    fn split(&self) -> (Pin<Box<dyn ZCPacketStream>>, Pin<Box<dyn ZCPacketSink>>);
+    fn split(&self) -> SplitTunnel;
     fn info(&self) -> Option<TunnelInfo>;
 }
 
@@ -189,7 +191,7 @@ where
         return Err(TunnelError::InvalidProtocol(url.scheme().to_string()));
     }
 
-    Ok(T::from_url(url.clone(), ip_version).await?)
+    T::from_url(url.clone(), ip_version).await
 }
 
 fn default_port(scheme: &str) -> Option<u16> {
@@ -269,7 +271,7 @@ impl TunnelUrl {
             if s.is_empty() {
                 None
             } else {
-                Some(String::from_utf8(percent_encoding::percent_decode_str(&s).collect()).unwrap())
+                Some(String::from_utf8(percent_encoding::percent_decode_str(s).collect()).unwrap())
             }
         })
     }

@@ -18,7 +18,9 @@ use crate::defer;
 use crate::proto::common::{
     CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
 };
-use crate::proto::rpc_impl::packet::{build_rpc_packet, compress_packet, decompress_packet};
+use crate::proto::rpc_impl::packet::{
+    build_rpc_packet, compress_packet, decompress_packet, BuildRpcPacketArgs,
+};
 use crate::proto::rpc_types::controller::Controller;
 use crate::proto::rpc_types::descriptor::MethodDescriptor;
 use crate::proto::rpc_types::{
@@ -70,6 +72,12 @@ pub struct Client {
     peer_info: PeerInfoTable,
     tasks: Mutex<JoinSet<()>>,
     stats_manager: Option<Arc<StatsManager>>,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Client {
@@ -276,19 +284,19 @@ impl Client {
                 .await
                 .unwrap();
 
-                let packets = build_rpc_packet(
-                    self.from_peer_id,
-                    self.to_peer_id,
+                let packets = build_rpc_packet(BuildRpcPacketArgs {
+                    from_peer: self.from_peer_id,
+                    to_peer: self.to_peer_id,
                     rpc_desc,
                     transaction_id,
-                    true,
-                    &buf,
-                    ctrl.trace_id(),
-                    RpcCompressionInfo {
+                    is_req: true,
+                    content: &buf,
+                    trace_id: ctrl.trace_id(),
+                    compression_info: RpcCompressionInfo {
                         algo: c_algo.into(),
                         accepted_algo: CompressionAlgoPb::Zstd.into(),
                     },
-                );
+                });
 
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);
                 let mut rpc_packet = timeout(timeout_dur, self.do_rpc(packets, &mut rx)).await??;
@@ -298,7 +306,7 @@ impl Client {
                         self.to_peer_id,
                         PeerInfo {
                             peer_id: self.to_peer_id,
-                            compression_info: compression_info.clone(),
+                            compression_info,
                             last_active: Some(std::time::Instant::now()),
                         },
                     );

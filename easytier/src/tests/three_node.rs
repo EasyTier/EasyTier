@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use core::panic;
 use std::{
     sync::{atomic::AtomicU32, Arc},
@@ -214,13 +216,13 @@ pub async fn drop_insts(insts: Vec<Instance>) {
             debug_assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
         });
     }
-    while let Some(_) = set.join_next().await {}
+    while set.join_next().await.is_some() {}
 }
 
 async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
-        .args(&[
+        .args([
             "netns",
             "exec",
             from_netns,
@@ -244,7 +246,7 @@ async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize
 async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
-        .args(&[
+        .args([
             "netns",
             "exec",
             from_netns,
@@ -364,7 +366,7 @@ async fn subnet_proxy_test_udp(target_ip: &str) {
     let udp_connector =
         UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
 
-    let mut buf = vec![0; 1 * 1024];
+    let mut buf = vec![0; 1024];
     rand::thread_rng().fill(&mut buf[..]);
 
     _tunnel_pingpong_netns(
@@ -397,7 +399,7 @@ async fn subnet_proxy_test_udp(target_ip: &str) {
     let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:22235".parse().unwrap());
     let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:22235".parse().unwrap());
 
-    let mut buf = vec![0; 1 * 1024];
+    let mut buf = vec![0; 1024];
     rand::thread_rng().fill(&mut buf[..]);
 
     _tunnel_pingpong_netns(
@@ -690,8 +692,7 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
                         .list_routes()
                         .await
                         .iter()
-                        .find(|r| r.peer_id == inst4.peer_id())
-                        .is_some()
+                        .any(|r| r.peer_id == inst4.peer_id())
                 },
                 Duration::from_secs(8),
             )
@@ -706,14 +707,13 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
             }));
             wait_for_condition(
                 || async {
-                    let ret = insts[2]
+                    let ret = !insts[2]
                         .get_peer_manager()
                         .get_peer_map()
                         .list_peers_with_conn()
                         .await
                         .iter()
-                        .find(|r| **r == inst4.peer_id())
-                        .is_none();
+                        .any(|r| *r == inst4.peer_id());
 
                     ret
                 },
@@ -726,13 +726,12 @@ pub async fn proxy_three_node_disconnect_test(#[values("tcp", "wg")] proto: &str
 
             wait_for_condition(
                 || async {
-                    insts[0]
+                    !insts[0]
                         .get_peer_manager()
                         .list_routes()
                         .await
                         .iter()
-                        .find(|r| r.peer_id == inst4.peer_id())
-                        .is_none()
+                        .any(|r| r.peer_id == inst4.peer_id())
                 },
                 Duration::from_secs(7),
             )
@@ -788,9 +787,8 @@ pub async fn udp_broadcast_test() {
     // socket.connect(("10.144.144.255", 22111)).await.unwrap();
     let call: Vec<u8> = vec![1; 1024];
     println!("Sending call, {} bytes", call.len());
-    match socket.send_to(&call, "10.144.144.255:22111").await {
-        Err(e) => panic!("Error sending call: {:?}", e),
-        _ => {}
+    if let Err(e) = socket.send_to(&call, "10.144.144.255:22111").await {
+        panic!("Error sending call: {:?}", e)
     }
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -1163,7 +1161,7 @@ pub async fn manual_reconnector(#[values(true, false)] is_foreign: bool) {
 
     let conns = peer_map.list_peer_conns(center_inst_peer_id).await.unwrap();
 
-    assert!(conns.len() >= 1);
+    assert!(!conns.is_empty());
 
     wait_for_condition(
         || async { ping_test("net_b", "10.144.145.2", None).await },
@@ -1405,39 +1403,47 @@ pub async fn acl_rule_test_inbound(
     let mut acl = Acl::default();
     let mut acl_v1 = AclV1::default();
 
-    let mut chain = Chain::default();
-    chain.name = "test_inbound".to_string();
-    chain.chain_type = ChainType::Inbound as i32;
-    chain.enabled = true;
+    let mut chain = Chain {
+        name: "test_inbound".to_string(),
+        chain_type: ChainType::Inbound as i32,
+        enabled: true,
+        ..Default::default()
+    };
 
     // 禁止 8080
-    let mut deny_rule = Rule::default();
-    deny_rule.name = "deny_8080".to_string();
-    deny_rule.priority = 200;
-    deny_rule.enabled = true;
-    deny_rule.action = Action::Drop as i32;
-    deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.ports = vec!["8080".to_string()];
+    let deny_rule = Rule {
+        name: "deny_8080".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        ports: vec!["8080".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_rule);
 
     // 允许其他
-    let mut allow_rule = Rule::default();
-    allow_rule.name = "allow_all".to_string();
-    allow_rule.priority = 100;
-    allow_rule.enabled = true;
-    allow_rule.action = Action::Allow as i32;
-    allow_rule.protocol = Protocol::Any as i32;
-    allow_rule.stateful = true;
+    let allow_rule = Rule {
+        name: "allow_all".to_string(),
+        priority: 100,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        stateful: true,
+        ..Default::default()
+    };
     chain.rules.push(allow_rule);
 
     // 禁止 src ip 为 10.144.144.2 的流量
-    let mut deny_rule = Rule::default();
-    deny_rule.name = "deny_10.144.144.2".to_string();
-    deny_rule.priority = 200;
-    deny_rule.enabled = true;
-    deny_rule.action = Action::Drop as i32;
-    deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.source_ips = vec!["10.144.144.2/32".to_string()];
+    let deny_rule = Rule {
+        name: "deny_10.144.144.2".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        source_ips: vec!["10.144.144.2/32".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_rule);
 
     acl_v1.chains.push(chain);
@@ -1626,42 +1632,50 @@ pub async fn acl_rule_test_subnet_proxy(
     let mut acl = Acl::default();
     let mut acl_v1 = AclV1::default();
 
-    let mut chain = Chain::default();
-    chain.name = "test_subnet_proxy_inbound".to_string();
-    chain.chain_type = ChainType::Forward as i32;
-    chain.enabled = true;
+    let mut chain = Chain {
+        name: "test_subnet_proxy_inbound".to_string(),
+        chain_type: ChainType::Forward as i32,
+        enabled: true,
+        ..Default::default()
+    };
 
     // 禁止访问子网代理中的 8080 端口
-    let mut deny_rule = Rule::default();
-    deny_rule.name = "deny_subnet_8080".to_string();
-    deny_rule.priority = 200;
-    deny_rule.enabled = true;
-    deny_rule.action = Action::Drop as i32;
-    deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.ports = vec!["8080".to_string()];
-    deny_rule.destination_ips = vec!["10.1.2.0/24".to_string()];
+    let deny_rule = Rule {
+        name: "deny_subnet_8080".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        ports: vec!["8080".to_string()],
+        destination_ips: vec!["10.1.2.0/24".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_rule);
 
     // 禁止来自 inst1 (10.144.144.1) 访问子网代理中的 8081 端口
-    let mut deny_src_rule = Rule::default();
-    deny_src_rule.name = "deny_inst1_to_subnet_8081".to_string();
-    deny_src_rule.priority = 200;
-    deny_src_rule.enabled = true;
-    deny_src_rule.action = Action::Drop as i32;
-    deny_src_rule.protocol = Protocol::Any as i32;
-    deny_src_rule.ports = vec!["8081".to_string()];
-    deny_src_rule.source_ips = vec!["10.144.144.1/32".to_string()];
-    deny_src_rule.destination_ips = vec!["10.1.2.0/24".to_string()];
+    let deny_src_rule = Rule {
+        name: "deny_inst1_to_subnet_8081".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        ports: vec!["8081".to_string()],
+        source_ips: vec!["10.144.144.1/32".to_string()],
+        destination_ips: vec!["10.1.2.0/24".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_src_rule);
 
     // 允许其他流量
-    let mut allow_rule = Rule::default();
-    allow_rule.name = "allow_all".to_string();
-    allow_rule.priority = 100;
-    allow_rule.enabled = true;
-    allow_rule.action = Action::Allow as i32;
-    allow_rule.protocol = Protocol::Any as i32;
-    allow_rule.stateful = true;
+    let allow_rule = Rule {
+        name: "allow_all".to_string(),
+        priority: 100,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        stateful: true,
+        ..Default::default()
+    };
     chain.rules.push(allow_rule);
 
     acl_v1.chains.push(chain);

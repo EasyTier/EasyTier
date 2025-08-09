@@ -15,21 +15,21 @@ pub struct AesGcmCipher {
 
 #[derive(Clone)]
 pub enum AesGcmEnum {
-    AES128GCM(Aes128Gcm),
-    AES256GCM(Aes256Gcm),
+    AES128GCM(Box<Aes128Gcm>),
+    AES256GCM(Box<Aes256Gcm>),
 }
 
 impl AesGcmCipher {
     pub fn new_128(key: [u8; 16]) -> Self {
         let key: &Key<Aes128Gcm> = &key.into();
         Self {
-            cipher: AesGcmEnum::AES128GCM(Aes128Gcm::new(key)),
+            cipher: AesGcmEnum::AES128GCM(Box::new(Aes128Gcm::new(key))),
         }
     }
     pub fn new_256(key: [u8; 32]) -> Self {
         let key: &Key<Aes256Gcm> = &key.into();
         Self {
-            cipher: AesGcmEnum::AES256GCM(Aes256Gcm::new(key)),
+            cipher: AesGcmEnum::AES256GCM(Box::new(Aes256Gcm::new(key))),
         }
     }
 }
@@ -80,7 +80,7 @@ impl Encryptor for AesGcmCipher {
         zc_packet
             .mut_inner()
             .truncate(old_len - AES_GCM_ENCRYPTION_RESERVED);
-        return Ok(());
+        Ok(())
     }
 
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
@@ -104,7 +104,7 @@ impl Encryptor for AesGcmCipher {
             }
         };
 
-        return match rs {
+        match rs {
             Ok(tag) => {
                 tail.tag.copy_from_slice(tag.as_slice());
 
@@ -114,7 +114,7 @@ impl Encryptor for AesGcmCipher {
                 Ok(())
             }
             Err(_) => Err(Error::EncryptionFailed),
-        };
+        }
     }
 }
 
@@ -137,10 +137,10 @@ mod tests {
             packet.payload().len(),
             text.len() + AES_GCM_ENCRYPTION_RESERVED
         );
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), true);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 }

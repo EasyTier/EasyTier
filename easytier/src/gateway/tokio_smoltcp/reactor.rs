@@ -51,9 +51,7 @@ async fn run(
     loop {
         let packets = device.take_send_queue();
 
-        async_iface
-            .send_all(&mut iter(packets).map(|p| Ok(p)))
-            .await?;
+        async_iface.send_all(&mut iter(packets).map(Ok)).await?;
 
         if recv_buf.is_empty() && device.need_wait() {
             let start = Instant::now();
@@ -94,14 +92,10 @@ async fn run(
 
         // wake up all closed sockets (smoltcp seems have a bug that it doesn't wake up closed sockets)
         for (_, socket) in socket_allocator.sockets().lock().iter_mut() {
-            match socket {
-                Socket::Tcp(tcp) => {
-                    if tcp.state() == smoltcp::socket::tcp::State::Closed {
-                        tcp.abort();
-                    }
+            if let Socket::Tcp(tcp) = socket {
+                if tcp.state() == smoltcp::socket::tcp::State::Closed {
+                    tcp.abort();
                 }
-                #[allow(unreachable_patterns)]
-                _ => {}
             }
         }
     }
@@ -164,10 +158,8 @@ impl Reactor {
 impl Drop for Reactor {
     fn drop(&mut self) {
         for (_, socket) in self.socket_allocator.sockets().lock().iter_mut() {
-            match socket {
-                Socket::Tcp(tcp) => tcp.close(),
-                #[allow(unreachable_patterns)]
-                _ => {}
+            if let Socket::Tcp(tcp) = socket {
+                tcp.close()
             }
         }
     }

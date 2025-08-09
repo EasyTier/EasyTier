@@ -97,13 +97,13 @@ impl PeerCenterBase {
         &self,
         job_ctx: T,
         job_fn: impl Fn(
-            Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
-            Arc<PeridicJobCtx<T>>,
-        ) -> Fut
-             + Send
-             + Sync
-             + 'static,
-    ) -> () {
+                Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
+                Arc<PeridicJobCtx<T>>,
+            ) -> Fut
+            + Send
+            + Sync
+            + 'static,
+    ) {
         let my_peer_id = self.my_peer_id;
         let peer_mgr = self.peer_mgr.clone();
         let lock = self.lock.clone();
@@ -126,7 +126,7 @@ impl PeerCenterBase {
                         return;
                     };
 
-                    ctx.center_peer.store(center_peer.clone());
+                    ctx.center_peer.store(center_peer);
                     tracing::trace!(?center_peer, "run periodic job");
                     let _g = lock.lock().await;
                     let stub = rpc_mgr
@@ -310,7 +310,7 @@ impl PeerCenterInstance {
             .init_periodic_job(ctx, |client, ctx| async move {
                 let my_node_id = ctx.my_peer_id;
                 let peers = ctx.job_ctx.peer_mgr.list_peers().await;
-                let peer_list = peers.direct_peers.keys().map(|k| *k).collect();
+                let peer_list = peers.direct_peers.keys().copied().collect();
                 let job_ctx = &ctx.job_ctx;
 
                 // only report when:
@@ -370,7 +370,7 @@ impl PeerCenterInstance {
                     .map
                     .get(&src)
                     .and_then(|src_peer_info| src_peer_info.direct_peers.get(&dst))
-                    .and_then(|info| Some(info.latency_ms))
+                    .map(|info| info.latency_ms)
             }
         }
 
@@ -503,7 +503,7 @@ mod tests {
         let peer_center_b = PeerCenterInstance::new(peer_mgr_b.clone());
         let peer_center_c = PeerCenterInstance::new(peer_mgr_c.clone());
 
-        let peer_centers = vec![&peer_center_a, &peer_center_b, &peer_center_c];
+        let peer_centers = [&peer_center_a, &peer_center_b, &peer_center_c];
         for pc in peer_centers.iter() {
             pc.init().await;
         }

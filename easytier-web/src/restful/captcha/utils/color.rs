@@ -32,21 +32,24 @@ impl From<(u8, u8, u8)> for Color {
     }
 }
 
-impl Into<(u8, u8, u8, u8)> for Color {
-    fn into(self) -> (u8, u8, u8, u8) {
+impl From<Color> for (u8, u8, u8, u8) {
+    fn from(val: Color) -> Self {
         (
-            (self.0 * 255.0) as u8,
-            (self.1 * 255.0) as u8,
-            (self.2 * 255.0) as u8,
-            (self.3 * 255.0) as u8,
+            (val.0 * 255.0) as u8,
+            (val.1 * 255.0) as u8,
+            (val.2 * 255.0) as u8,
+            (val.3 * 255.0) as u8,
         )
     }
 }
 
-impl Into<u32> for Color {
-    fn into(self) -> u32 {
-        let color: (u8, u8, u8, u8) = self.into();
-        (color.0 as u32) << 24 + (color.1 as u32) << 16 + (color.2 as u32) << 8 + (color.3 as u32)
+impl From<Color> for u32 {
+    fn from(val: Color) -> Self {
+        let color: (u8, u8, u8, u8) = val.into();
+        (color.0 as u32)
+            << (24 + (color.1 as u32))
+            << (16 + (color.2 as u32))
+            << (8 + (color.3 as u32))
     }
 }
 

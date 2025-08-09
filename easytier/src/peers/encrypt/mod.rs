@@ -43,7 +43,7 @@ impl Encryptor for NullCipher {
     fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if pm_header.is_encrypted() {
-            return Err(Error::DecryptionFailed);
+            Err(Error::DecryptionFailed)
         } else {
             Ok(())
         }

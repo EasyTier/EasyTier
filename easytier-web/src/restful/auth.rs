@@ -137,7 +137,7 @@ mod post {
 mod get {
     use crate::restful::{
         captcha::{
-            captcha::spec::SpecCaptcha,
+            builder::spec::SpecCaptcha,
             extension::{axum_tower_sessions::CaptchaAxumTowerSessionExt as _, CaptchaUtil},
             NewCaptcha as _,
         },

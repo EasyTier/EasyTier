@@ -8,7 +8,7 @@ use axum_login::AuthUser;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
-use easytier::proto::web::*;
+use easytier::proto::{self, web::*};
 
 use crate::client_manager::session::{Location, Session};
 use crate::client_manager::ClientManager;
@@ -85,7 +85,7 @@ impl NetworkApi {
         let Some(user_id) = auth_session.user.as_ref().map(|x| x.id()) else {
             return Err((
                 StatusCode::UNAUTHORIZED,
-                other_error(format!("No user id found")).into(),
+                other_error("No user id found".to_string()).into(),
             ));
         };
         Ok(user_id)
@@ -108,7 +108,7 @@ impl NetworkApi {
         let Some(token) = result.get_token().await else {
             return Err((
                 StatusCode::UNAUTHORIZED,
-                other_error(format!("No token reported")).into(),
+                other_error("No token reported".to_string()).into(),
             ));
         };
 
@@ -120,7 +120,7 @@ impl NetworkApi {
         {
             return Err((
                 StatusCode::FORBIDDEN,
-                other_error(format!("Token mismatch")).into(),
+                other_error("Token mismatch".to_string()).into(),
             ));
         }
 
@@ -177,7 +177,7 @@ impl NetworkApi {
             .insert_or_update_user_network_config(
                 auth_session.user.as_ref().unwrap().id(),
                 machine_id,
-                resp.inst_id.clone().unwrap_or_default().into(),
+                resp.inst_id.unwrap_or_default().into(),
                 serde_json::to_string(&config).unwrap(),
             )
             .await
@@ -248,7 +248,7 @@ impl NetworkApi {
             .await
             .map_err(convert_rpc_error)?;
 
-        let running_inst_ids = ret.inst_ids.clone().into_iter().map(Into::into).collect();
+        let running_inst_ids = ret.inst_ids.clone().into_iter().collect();
 
         // collect networks that are disabled
         let disabled_inst_ids = client_mgr
@@ -261,7 +261,7 @@ impl NetworkApi {
             .await
             .map_err(convert_db_error)?
             .iter()
-            .filter_map(|x| x.network_instance_id.clone().try_into().ok())
+            .map(|x| Into::<proto::common::Uuid>::into(x.network_instance_id.clone()))
             .collect::<Vec<_>>();
 
         Ok(ListNetworkInstanceIdsJsonResp {
@@ -330,9 +330,8 @@ impl NetworkApi {
             // not implement disable all
             return Err((
                 StatusCode::NOT_IMPLEMENTED,
-                other_error(format!("Not implemented")).into(),
-            ))
-            .into();
+                other_error("Not implemented".to_string()).into(),
+            ));
         };
 
         let sess = Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;

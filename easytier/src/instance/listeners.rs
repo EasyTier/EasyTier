@@ -56,7 +56,7 @@ pub fn get_listener_by_url(
 }
 
 pub fn is_url_host_ipv6(l: &url::Url) -> bool {
-    l.host_str().map_or(false, |h| h.contains(':'))
+    l.host_str().is_some_and(|h| h.contains(':'))
 }
 
 pub fn is_url_host_unspecified(l: &url::Url) -> bool {

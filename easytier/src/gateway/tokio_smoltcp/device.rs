@@ -46,8 +46,8 @@ impl RxToken for BufferRxToken {
         F: FnOnce(&[u8]) -> R,
     {
         let p = &mut self.0;
-        let result = f(p);
-        result
+
+        f(p)
     }
 }
 
@@ -79,10 +79,9 @@ impl Device for BufferDevice {
         Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        match self.recv_queue.pop_front() {
-            Some(p) => Some((BufferRxToken(p), BufferTxToken(self))),
-            None => None,
-        }
+        self.recv_queue
+            .pop_front()
+            .map(|p| (BufferRxToken(p), BufferTxToken(self)))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {

@@ -47,7 +47,7 @@ impl RingTunnel {
         let ring_impl = AsyncHeapRb::new(std::cmp::max(RING_TUNNEL_RESERVERD_CAP * 2, cap));
         let (ring_prod_impl, ring_cons_impl) = ring_impl.split();
         Self {
-            id: id.clone(),
+            id,
             ring_cons_impl: AtomicCell::new(Some(ring_cons_impl)),
             ring_prod_impl: AtomicCell::new(Some(ring_prod_impl)),
         }
@@ -74,7 +74,7 @@ pub struct RingStream {
 impl RingStream {
     pub fn new(tunnel: Arc<RingTunnel>) -> Self {
         Self {
-            id: tunnel.id.clone(),
+            id: tunnel.id,
             ring_cons_impl: tunnel.ring_cons_impl.take().unwrap(),
         }
     }
@@ -113,7 +113,7 @@ pub struct RingSink {
 impl RingSink {
     pub fn new(tunnel: Arc<RingTunnel>) -> Self {
         Self {
-            id: tunnel.id.clone(),
+            id: tunnel.id,
             ring_prod_impl: tunnel.ring_prod_impl.take().unwrap(),
         }
     }
@@ -181,9 +181,10 @@ struct Connection {
     server: Arc<RingTunnel>,
 }
 
-static CONNECTION_MAP: Lazy<
-    Arc<std::sync::Mutex<HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>>>,
-> = Lazy::new(|| Arc::new(std::sync::Mutex::new(HashMap::new())));
+type ConnectionMap = HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>;
+
+static CONNECTION_MAP: Lazy<Arc<std::sync::Mutex<ConnectionMap>>> =
+    Lazy::new(|| Arc::new(std::sync::Mutex::new(HashMap::new())));
 
 #[derive(Debug)]
 pub struct RingTunnelListener {
@@ -315,10 +316,7 @@ impl TunnelConnector for RingTunnelConnector {
         tracing::info!("connecting");
         let conn = Arc::new(Connection {
             client: Arc::new(RingTunnel::new(RING_TUNNEL_CAP)),
-            server: Arc::new(RingTunnel::new_with_id(
-                remote_addr.clone(),
-                RING_TUNNEL_CAP,
-            )),
+            server: Arc::new(RingTunnel::new_with_id(remote_addr, RING_TUNNEL_CAP)),
         });
         entry
             .send(conn.clone())

@@ -1,6 +1,6 @@
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 mod darwin;
-#[cfg(any(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 mod netlink;
 #[cfg(target_os = "windows")]
 mod win;
@@ -141,7 +141,7 @@ pub struct DummyIfConfiger {}
 #[async_trait]
 impl IfConfiguerTrait for DummyIfConfiger {}
 
-#[cfg(any(target_os = "linux"))]
+#[cfg(target_os = "linux")]
 pub type IfConfiger = netlink::NetlinkIfConfiger;
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]

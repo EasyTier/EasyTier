@@ -172,7 +172,7 @@ impl PunchConeHoleClient {
             udp_array
                 .send_with_all(
                     &new_hole_punch_packet(tid, HOLE_PUNCH_PACKET_BODY_LEN).into_bytes(),
-                    remote_mapped_addr.clone().into(),
+                    remote_mapped_addr.into(),
                 )
                 .await
                 .with_context(|| "failed to send hole punch packet from local")
@@ -188,7 +188,7 @@ impl PunchConeHoleClient {
                         ..Default::default()
                     },
                     SendPunchPacketConeRequest {
-                        listener_mapped_addr: Some(remote_mapped_addr.into()),
+                        listener_mapped_addr: Some(remote_mapped_addr),
                         dest_addr: Some(local_mapped_addr.into()),
                         transaction_id: tid,
                         packet_count_per_batch: 2,
