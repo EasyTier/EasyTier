@@ -112,7 +112,12 @@ impl GlobalCtx {
 
         let (event_bus, _) = tokio::sync::broadcast::channel(8);
 
-        let stun_info_collection = Arc::new(StunInfoCollector::new_with_default_servers());
+        let stun_servers = config_fs.get_stun_servers();
+        let stun_info_collection = Arc::new(if stun_servers.is_empty() {
+            StunInfoCollector::new_with_default_servers()
+        } else {
+            StunInfoCollector::new(stun_servers)
+        });
 
         let enable_exit_node = config_fs.get_flags().enable_exit_node || cfg!(target_env = "ohos");
         let proxy_forward_by_system = config_fs.get_flags().proxy_forward_by_system;

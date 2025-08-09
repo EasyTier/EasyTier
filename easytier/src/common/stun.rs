@@ -736,8 +736,8 @@ impl StunInfoCollector {
     }
 
     pub fn get_default_servers() -> Vec<String> {
-        // NOTICE: we may need to choose stun stun server based on geo location
-        // stun server cross nation may return a external ip address with high latency and loss rate
+        // NOTICE: we may need to choose stun server based on geolocation
+        // stun server cross nation may return an external ip address with high latency and loss rate
         [
             "txt:stun.easytier.cn",
             "stun.miwifi.com",
