@@ -2,7 +2,13 @@
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password } from 'primevue'
-import { DEFAULT_NETWORK_CONFIG, NetworkConfig, NetworkingMethod } from '../types/network'
+import {
+  addRow,
+  DEFAULT_NETWORK_CONFIG,
+  NetworkConfig,
+  NetworkingMethod,
+  removeRow
+} from '../types/network'
 import { defineProps, defineEmits, ref, } from 'vue'
 import { useI18n } from 'vue-i18n'
 
@@ -162,6 +168,8 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
+
+const portForwardProtocolOptions = ref(["tcp","udp"]);
 
 </script>
 
@@ -413,6 +421,73 @@ const bool_flags: BoolFlag[] = [
                 </div>
               </div>
 
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <Panel :header="t('port_forwards')" toggleable collapsed>
+            <div class="flex flex-col gap-y-2">
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="port_forwards">{{ t('port_forwards_help') }}</label>
+                  </div>
+                  <div v-for="(row, index) in curNetwork.port_forwards" class="form-row">
+                    <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false"/>
+                      <div style="flex-grow: 4;">
+                        <InputGroup>
+                          <InputText
+                              v-model="row.bind_ip"
+                              :placeholder="t('port_forwards_bind_addr')"
+                          />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.bind_port" :format="false"
+                                       inputId="horizontal-buttons" :step="1" mode="decimal" :min="1"
+                                       :max="65535" fluid
+                                       class="max-w-20"/>
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 4;">
+                        <InputGroup>
+                          <InputText
+                              v-model="row.dst_ip"
+                              :placeholder="t('port_forwards_dst_addr')"
+                          />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.dst_port" :format="false"
+                                       inputId="horizontal-buttons" :step="1" mode="decimal" :min="1"
+                                       :max="65535" fluid
+                                       class="max-w-20"/>
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 1;">
+                        <Button
+                            v-if="curNetwork.port_forwards.length > 0"
+                            icon="pi pi-trash"
+                            severity="danger"
+                            text
+                            rounded
+                            @click="removeRow(index,curNetwork.port_forwards)"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex justify-content-end mt-4">
+                    <Button
+                        icon="pi pi-plus"
+                        :label="t('port_forwards_add_btn')"
+                        severity="success"
+                        @click="addRow(curNetwork.port_forwards)"
+                    />
+                  </div>
+                </div>
+              </div>
             </div>
           </Panel>
 
