@@ -94,7 +94,6 @@ jobs:
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install GUI dependencies (Used by clippy)
-        if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
         run: bash ./.github/workflows/install_gui_dep.sh
 
       - name: Check Clippy

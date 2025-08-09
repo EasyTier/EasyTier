@@ -78,6 +78,8 @@ jobs:
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
+      - uses: actions/checkout@v3
+
       - name: Install GUI dependencies (x86 only)
         if: ${{ matrix.TARGET == 'x86_64-unknown-linux-musl' }}
         run: bash ./.github/workflows/install_gui_dep.sh
@@ -116,8 +118,6 @@ jobs:
             libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
-
-      - uses: actions/checkout@v3
 
       - name: Set current ref as env variable
         run: |

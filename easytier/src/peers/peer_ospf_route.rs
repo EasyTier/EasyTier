@@ -170,7 +170,7 @@ impl RoutePeerInfo {
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
-            SystemTime::try_from(new.last_update.unwrap()).map(|x| x.elapsed())
+            SystemTime::try_from(new.last_update.unwrap_or_default()).map(|x| x.elapsed())
         {
             d > UPDATE_PEER_INFO_PERIOD
         } else {
