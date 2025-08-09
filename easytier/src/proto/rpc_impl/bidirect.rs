@@ -42,7 +42,10 @@ impl BidirectRpcManager {
     pub fn new_with_stats_manager(stats_manager: Arc<StatsManager>) -> Self {
         Self {
             rpc_client: Client::new_with_stats_manager(stats_manager.clone()),
-            rpc_server: Server::new_with_registry_and_stats_manager(Arc::new(ServiceRegistry::new()), stats_manager),
+            rpc_server: Server::new_with_registry_and_stats_manager(
+                Arc::new(ServiceRegistry::new()),
+                stats_manager,
+            ),
 
             rx_timeout: None,
             error: Arc::new(Mutex::new(None)),

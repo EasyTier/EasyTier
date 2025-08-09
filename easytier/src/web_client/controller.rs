@@ -1,5 +1,8 @@
 use crate::{
-    common::config::ConfigLoader, launcher::ConfigSource, instance_manager::NetworkInstanceManager, proto::{
+    common::config::ConfigLoader,
+    instance_manager::NetworkInstanceManager,
+    launcher::ConfigSource,
+    proto::{
         rpc_types::{self, controller::BaseController},
         web::{
             CollectNetworkInfoRequest, CollectNetworkInfoResponse, DeleteNetworkInstanceRequest,
@@ -8,7 +11,7 @@ use crate::{
             RetainNetworkInstanceResponse, RunNetworkInstanceRequest, RunNetworkInstanceResponse,
             ValidateConfigRequest, ValidateConfigResponse, WebClientService,
         },
-    }
+    },
 };
 
 pub struct Controller {

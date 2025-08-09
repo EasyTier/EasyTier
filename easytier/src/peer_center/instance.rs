@@ -97,12 +97,12 @@ impl PeerCenterBase {
         &self,
         job_ctx: T,
         job_fn: impl Fn(
-            Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
-            Arc<PeridicJobCtx<T>>,
-        ) -> Fut
-             + Send
-             + Sync
-             + 'static,
+                Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
+                Arc<PeridicJobCtx<T>>,
+            ) -> Fut
+            + Send
+            + Sync
+            + 'static,
     ) -> () {
         let my_peer_id = self.my_peer_id;
         let peer_mgr = self.peer_mgr.clone();

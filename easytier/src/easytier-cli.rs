@@ -30,15 +30,16 @@ use easytier::{
         cli::{
             list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
             ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
+            GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest,
+            GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
             ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
             ListRouteResponse, ManageMappedListenerRequest, MappedListenerManageAction,
             MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
-            TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
-            VpnPortalRpcClientFactory,
+            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc,
+            StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
+            TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
         },
         common::{NatType, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -1911,9 +1912,7 @@ async fn main() -> Result<(), Error> {
             Some(StatsSubCommand::Show) | None => {
                 let client = handler.get_stats_client().await?;
                 let request = GetStatsRequest {};
-                let response = client
-                    .get_stats(BaseController::default(), request)
-                    .await?;
+                let response = client.get_stats(BaseController::default(), request).await?;
 
                 if cli.output_format == OutputFormat::Json {
                     println!("{}", serde_json::to_string_pretty(&response.metrics)?);
@@ -1942,7 +1941,7 @@ async fn main() -> Result<(), Error> {
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             };
-                            
+
                             let formatted_value = if metric.name.contains("bytes") {
                                 format_size(metric.value, humansize::BINARY)
                             } else if metric.name.contains("duration") {

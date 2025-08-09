@@ -1,4 +1,7 @@
-use std::{net::{Ipv4Addr, Ipv6Addr}, sync::Arc};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 

@@ -44,12 +44,8 @@ pub extern "C" fn set_tun_fd(
         return -1;
     }
     match INSTANCE_MANAGER.set_tun_fd(&INSTANCE_NAME_ID_MAP.get(&inst_name).unwrap().value(), fd) {
-        Ok(_) => {
-            0
-        }
-        Err(_) => {
-            -1
-        }
+        Ok(_) => 0,
+        Err(_) => -1,
     }
 }
 

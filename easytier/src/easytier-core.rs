@@ -527,6 +527,15 @@ struct NetworkOptions {
         num_args = 0..
     )]
     udp_whitelist: Vec<String>,
+
+    #[arg(
+        long,
+        env = "ET_STUN_SERVERS",
+        value_delimiter = ',',
+        help = "Custom STUN servers. Supports multiple servers separated by commas",
+        num_args = 0..
+    )]
+    stun_servers: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -888,6 +897,10 @@ impl NetworkOptions {
         let mut old_udp_whitelist = cfg.get_udp_whitelist();
         old_udp_whitelist.extend(self.udp_whitelist.clone());
         cfg.set_udp_whitelist(old_udp_whitelist);
+
+        if !self.stun_servers.is_empty() {
+            cfg.set_stun_servers(self.stun_servers.clone());
+        }
 
         Ok(())
     }
