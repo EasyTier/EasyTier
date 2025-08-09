@@ -190,6 +190,18 @@ core_clap:
   foreign_relay_bps_limit:
     en: "the maximum bps limit for foreign network relay, default is no limit. unit: BPS (bytes per second)"
     zh-CN: "作为共享节点时，限制非本地网络的流量转发速率，默认无限制，单位 BPS （字节每秒）"
+  tcp_whitelist:
+    en: "tcp port whitelist. Supports single ports (80) and ranges (8000-9000)"
+    zh-CN: "TCP 端口白名单。支持单个端口（80）和范围（8000-9000）"
+  udp_whitelist:
+    en: "udp port whitelist. Supports single ports (53) and ranges (5000-6000)"
+    zh-CN: "UDP 端口白名单。支持单个端口（53）和范围（5000-6000）"
+  disable_relay_kcp:
+    en: "if true, disable relay kcp packets. avoid consuming too many bandwidth. default is false"
+    zh-CN: "如果为true，则禁止节点转发 KCP 数据包，防止过度消耗流量。默认值为false"
+  enable_relay_foreign_network_kcp:
+    en: "if true, allow relay kcp packets from foreign network. default is false (not forward foreign network kcp packets)"
+    zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 KCP 数据包。默认值为false（不转发）"
 
 core_app:
   panic_backtrace_save:
