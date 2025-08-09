@@ -23,6 +23,7 @@ use tracing::Instrument;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, PeerId},
+    gateway::ip_reassembler::ComposeIpv4PacketArgs,
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::packet_def::{PacketType, ZCPacket},
 };
@@ -158,13 +159,15 @@ fn socket_recv_loop(
         let payload_len = len - ipv4_packet.get_header_length() as usize * 4;
         let id = ipv4_packet.get_identification();
         let _ = compose_ipv4_packet(
-            &mut buf[..],
-            &v.mapped_dst_ip,
-            &dest_ip,
-            IpNextHeaderProtocols::Icmp,
-            payload_len,
-            1200,
-            id,
+            ComposeIpv4PacketArgs {
+                buf: &mut buf[..],
+                src_v4: &v.mapped_dst_ip,
+                dst_v4: &dest_ip,
+                next_protocol: IpNextHeaderProtocols::Icmp,
+                payload_len,
+                payload_mtu: 1200,
+                ip_id: id,
+            },
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);
                 p.fill_peer_manager_hdr(v.my_peer_id, v.src_peer_id, PacketType::Data as u8);
@@ -342,13 +345,15 @@ impl IcmpProxy {
 
         let len = buf.len() - 20;
         let _ = compose_ipv4_packet(
-            &mut buf[..],
-            src_ip,
-            dst_ip,
-            IpNextHeaderProtocols::Icmp,
-            len,
-            1200,
-            rand::random(),
+            ComposeIpv4PacketArgs {
+                buf: &mut buf[..],
+                src_v4: src_ip,
+                dst_v4: dst_ip,
+                next_protocol: IpNextHeaderProtocols::Icmp,
+                payload_len: len,
+                payload_mtu: 1200,
+                ip_id: rand::random(),
+            },
             |buf| {
                 let mut packet = ZCPacket::new_with_payload(buf);
                 packet.fill_peer_manager_hdr(src_peer_id, dst_peer_id, PacketType::Data as u8);

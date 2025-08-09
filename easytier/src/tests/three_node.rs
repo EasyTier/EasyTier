@@ -1622,42 +1622,50 @@ pub async fn acl_rule_test_subnet_proxy(
     let mut acl = Acl::default();
     let mut acl_v1 = AclV1::default();
 
-    let mut chain = Chain::default();
-    chain.name = "test_subnet_proxy_inbound".to_string();
-    chain.chain_type = ChainType::Forward as i32;
-    chain.enabled = true;
+    let mut chain = Chain {
+        name: "test_subnet_proxy_inbound".to_string(),
+        chain_type: ChainType::Forward as i32,
+        enabled: true,
+        ..Default::default()
+    };
 
     // 禁止访问子网代理中的 8080 端口
-    let mut deny_rule = Rule::default();
-    deny_rule.name = "deny_subnet_8080".to_string();
-    deny_rule.priority = 200;
-    deny_rule.enabled = true;
-    deny_rule.action = Action::Drop as i32;
-    deny_rule.protocol = Protocol::Any as i32;
-    deny_rule.ports = vec!["8080".to_string()];
-    deny_rule.destination_ips = vec!["10.1.2.0/24".to_string()];
+    let deny_rule = Rule {
+        name: "deny_subnet_8080".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        ports: vec!["8080".to_string()],
+        destination_ips: vec!["10.1.2.0/24".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_rule);
 
     // 禁止来自 inst1 (10.144.144.1) 访问子网代理中的 8081 端口
-    let mut deny_src_rule = Rule::default();
-    deny_src_rule.name = "deny_inst1_to_subnet_8081".to_string();
-    deny_src_rule.priority = 200;
-    deny_src_rule.enabled = true;
-    deny_src_rule.action = Action::Drop as i32;
-    deny_src_rule.protocol = Protocol::Any as i32;
-    deny_src_rule.ports = vec!["8081".to_string()];
-    deny_src_rule.source_ips = vec!["10.144.144.1/32".to_string()];
-    deny_src_rule.destination_ips = vec!["10.1.2.0/24".to_string()];
+    let deny_src_rule = Rule {
+        name: "deny_inst1_to_subnet_8081".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Drop as i32,
+        protocol: Protocol::Any as i32,
+        ports: vec!["8081".to_string()],
+        source_ips: vec!["10.144.144.1/32".to_string()],
+        destination_ips: vec!["10.1.2.0/24".to_string()],
+        ..Default::default()
+    };
     chain.rules.push(deny_src_rule);
 
     // 允许其他流量
-    let mut allow_rule = Rule::default();
-    allow_rule.name = "allow_all".to_string();
-    allow_rule.priority = 100;
-    allow_rule.enabled = true;
-    allow_rule.action = Action::Allow as i32;
-    allow_rule.protocol = Protocol::Any as i32;
-    allow_rule.stateful = true;
+    let allow_rule = Rule {
+        name: "allow_all".to_string(),
+        priority: 100,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        stateful: true,
+        ..Default::default()
+    };
     chain.rules.push(allow_rule);
 
     acl_v1.chains.push(chain);

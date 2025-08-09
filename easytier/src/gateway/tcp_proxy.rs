@@ -109,9 +109,9 @@ impl NatDstConnector for NatDstTcpConnector {
     ) -> bool {
         let is_exit_node = hdr.is_exit_node();
 
-        if !cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
-            && !is_exit_node
-            && !(global_ctx.no_tun()
+        if !(cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
+            || is_exit_node
+            || global_ctx.no_tun()
                 && Some(ipv4.get_destination())
                     == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {

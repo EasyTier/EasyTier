@@ -460,7 +460,7 @@ pub mod tests {
                     continue;
                 };
                 tracing::debug!(?msg, "recv a msg, try echo back");
-                if let Err(_) = send.send(msg).await {
+                if send.send(msg).await.is_err() {
                     break;
                 }
             }

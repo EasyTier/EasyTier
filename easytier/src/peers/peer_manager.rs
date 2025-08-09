@@ -1619,8 +1619,9 @@ mod tests {
                 ..Default::default()
             });
         tokio::time::sleep(Duration::from_secs(2)).await;
-        if let Err(_) =
-            wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(3)).await
+        if wait_route_appear_with_cost(peer_mgr_a.clone(), peer_mgr_c.my_peer_id, Some(3))
+            .await
+            .is_err()
         {
             panic!(
                 "route not appear, a route table: {}, table: {:#?}",
