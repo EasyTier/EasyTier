@@ -542,7 +542,7 @@ struct NetworkOptions {
         env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_KCP",
         help = t!("core_clap.enable_relay_foreign_network_kcp").to_string(),
         num_args = 0..=1,
-        default_missing_value = "false"
+        default_missing_value = "true"
     )]
     enable_relay_foreign_network_kcp: Option<bool>,
 }
