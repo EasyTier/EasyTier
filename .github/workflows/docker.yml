@@ -18,6 +18,11 @@ on:
         type: boolean
         default: false
         required: true
+      mark_unstable:
+        description: 'Mark this image as unstable'
+        type: boolean
+        default: false
+        required: true
 
 jobs:
   docker:
@@ -27,6 +32,13 @@ jobs:
       -
         name: Checkout
         uses: actions/checkout@v4
+      -
+        name: Validate inputs
+        run: |
+          if [[ "${{ inputs.mark_latest }}" == "true" && "${{ inputs.mark_unstable }}" == "true" ]]; then
+            echo "Error: mark_latest and mark_unstable cannot both be true"
+            exit 1
+          fi
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -56,14 +68,36 @@ jobs:
       - name: List files
         run: |
           ls -l -R .
+      - name: Prepare Docker tags
+        id: tags
+        run: |
+          # Base tags with version
+          DOCKERHUB_TAGS="easytier/easytier:${{ inputs.image_tag }}"
+          GHCR_TAGS="ghcr.io/easytier/easytier:${{ inputs.image_tag }}"
+
+          # Add latest tags if requested
+          if [[ "${{ inputs.mark_latest }}" == "true" ]]; then
+            DOCKERHUB_TAGS="${DOCKERHUB_TAGS},easytier/easytier:latest"
+            GHCR_TAGS="${GHCR_TAGS},ghcr.io/easytier/easytier:latest"
+          fi
+
+          # Add unstable tags if requested
+          if [[ "${{ inputs.mark_unstable }}" == "true" ]]; then
+            DOCKERHUB_TAGS="${DOCKERHUB_TAGS},easytier/easytier:unstable"
+            GHCR_TAGS="${GHCR_TAGS},ghcr.io/easytier/easytier:unstable"
+          fi
+
+          # Combine all tags
+          ALL_TAGS="${DOCKERHUB_TAGS},${GHCR_TAGS}"
+
+          echo "tags=${ALL_TAGS}" >> $GITHUB_OUTPUT
+          echo "Generated tags: ${ALL_TAGS}"
       -
         name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: ./docker_context
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/riscv64,linux/mips,linux/mipsel,linux/arm/v7,linux/arm/v6,linux/arm/v5,linux/arm,linux/loong64
           push: true
           file: .github/workflows/Dockerfile
-          tags: |
-            easytier/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
-            ghcr.io/easytier/easytier:${{ inputs.image_tag }}${{ inputs.mark_latest && ',easytier/easytier:latest' || '' }},
+          tags: ${{ steps.tags.outputs.tags }}
