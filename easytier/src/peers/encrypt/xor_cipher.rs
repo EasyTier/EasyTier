@@ -75,12 +75,12 @@ mod tests {
 
         // 加密
         cipher.encrypt(&mut packet).unwrap();
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), true);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
         assert_ne!(packet.payload(), text); // 加密后数据应该不同
 
         // 解密
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 }

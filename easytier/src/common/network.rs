@@ -211,7 +211,7 @@ impl IPCollector {
                         cached_ip_list.read().await.public_ipv6
                     );
 
-                    let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_none() {
+                    let sleep_sec = if cached_ip_list.read().await.public_ipv4.is_some() {
                         CACHED_IP_LIST_TIMEOUT_SEC
                     } else {
                         3
@@ -252,14 +252,11 @@ impl IPCollector {
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
-                match ip {
-                    std::net::IpAddr::V4(v4) => {
-                        if ip.is_loopback() || ip.is_multicast() {
-                            continue;
-                        }
-                        ret.interface_ipv4s.push(v4.into());
+                if let std::net::IpAddr::V4(v4) = ip {
+                    if ip.is_loopback() || ip.is_multicast() {
+                        continue;
                     }
-                    _ => {}
+                    ret.interface_ipv4s.push(v4.into());
                 }
             }
         }
@@ -269,14 +266,11 @@ impl IPCollector {
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
-                match ip {
-                    std::net::IpAddr::V6(v6) => {
-                        if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
-                            continue;
-                        }
-                        ret.interface_ipv6s.push(v6.into());
+                if let std::net::IpAddr::V6(v6) = ip {
+                    if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
+                        continue;
                     }
-                    _ => {}
+                    ret.interface_ipv6s.push(v6.into());
                 }
             }
         }

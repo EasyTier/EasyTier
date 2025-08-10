@@ -20,6 +20,7 @@ use crate::{
             self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
             TunnelInfo,
         },
+        rpc_impl::packet::BuildRpcPacketArgs,
         rpc_types::{controller::Controller, error::Result},
     },
     tunnel::{
@@ -51,6 +52,12 @@ pub struct Server {
     tasks: Arc<Mutex<JoinSet<()>>>,
     packet_mergers: Arc<DashMap<PacketMergerKey, PacketMerger>>,
     stats_manager: Option<Arc<StatsManager>>,
+}
+
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Server {
@@ -139,10 +146,7 @@ impl Server {
 
                 tracing::trace!(?key, ?packet, "Received request packet");
 
-                let ret = packet_merges
-                    .entry(key.clone())
-                    .or_insert_with(PacketMerger::new)
-                    .feed(packet);
+                let ret = packet_merges.entry(key.clone()).or_default().feed(packet);
 
                 match ret {
                     Ok(Some(packet)) => {
@@ -238,7 +242,7 @@ impl Server {
         let mut resp_msg = RpcResponse::default();
         let now = std::time::Instant::now();
 
-        let compression_info = packet.compression_info.clone();
+        let compression_info = packet.compression_info;
         let resp_bytes = Self::handle_rpc_request(packet, reg, tunnel_info).await;
 
         match &resp_bytes {
@@ -290,19 +294,19 @@ impl Server {
         .await
         .unwrap();
 
-        let packets = build_rpc_packet(
-            to_peer,
-            from_peer,
-            desc,
+        let packets = build_rpc_packet(BuildRpcPacketArgs {
+            from_peer: to_peer,
+            to_peer: from_peer,
+            rpc_desc: desc,
             transaction_id,
-            false,
-            &compressed_resp,
+            is_req: false,
+            content: &compressed_resp,
             trace_id,
-            RpcCompressionInfo {
+            compression_info: RpcCompressionInfo {
                 algo: algo.into(),
                 accepted_algo: CompressionAlgoPb::Zstd.into(),
             },
-        );
+        });
 
         for packet in packets {
             if let Err(err) = sender.send(packet).await {

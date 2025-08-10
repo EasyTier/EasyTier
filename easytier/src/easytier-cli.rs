@@ -4,7 +4,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
-    sync::Mutex,
     time::Duration,
     vec,
 };
@@ -30,15 +29,16 @@ use easytier::{
         cli::{
             list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
             ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
+            GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest,
+            GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
             ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
             ListRouteResponse, ManageMappedListenerRequest, MappedListenerManageAction,
             MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
-            TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
-            VpnPortalRpcClientFactory,
+            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc,
+            StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
+            TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
         },
         common::{NatType, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -325,7 +325,7 @@ struct InstallArgs {
 type Error = anyhow::Error;
 
 struct CommandHandler<'a> {
-    client: Mutex<RpcClient>,
+    client: tokio::sync::Mutex<RpcClient>,
     verbose: bool,
     output_format: &'a OutputFormat,
 }
@@ -339,7 +339,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<PeerManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get peer manager client")?)
@@ -351,7 +351,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<ConnectorManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get connector manager client")?)
@@ -363,7 +363,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<MappedListenerManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get mapped listener manager client")?)
@@ -375,7 +375,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<PeerCenterRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get peer center client")?)
@@ -387,7 +387,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<VpnPortalRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
@@ -399,7 +399,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<AclManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get acl manager client")?)
@@ -412,7 +412,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<TcpProxyRpcClientFactory<BaseController>>(transport_type.to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
@@ -424,7 +424,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<PortForwardManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get port forward manager client")?)
@@ -436,7 +436,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<StatsRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get stats client")?)
@@ -865,7 +865,7 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    async fn handle_mapped_listener_add(&self, url: &String) -> Result<(), Error> {
+    async fn handle_mapped_listener_add(&self, url: &str) -> Result<(), Error> {
         let url = Self::mapped_listener_validate_url(url)?;
         let client = self.get_mapped_listener_manager_client().await?;
         let request = ManageMappedListenerRequest {
@@ -878,7 +878,7 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    async fn handle_mapped_listener_remove(&self, url: &String) -> Result<(), Error> {
+    async fn handle_mapped_listener_remove(&self, url: &str) -> Result<(), Error> {
         let url = Self::mapped_listener_validate_url(url)?;
         let client = self.get_mapped_listener_manager_client().await?;
         let request = ManageMappedListenerRequest {
@@ -891,7 +891,7 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    fn mapped_listener_validate_url(url: &String) -> Result<url::Url, Error> {
+    fn mapped_listener_validate_url(url: &str) -> Result<url::Url, Error> {
         let url = url::Url::parse(url)?;
         if url.scheme() != "tcp" && url.scheme() != "udp" {
             return Err(anyhow::anyhow!(
@@ -925,8 +925,8 @@ impl CommandHandler<'_> {
             cfg: Some(
                 PortForwardConfig {
                     proto: protocol.to_string(),
-                    bind_addr: bind_addr.into(),
-                    dst_addr: dst_addr.into(),
+                    bind_addr,
+                    dst_addr,
                 }
                 .into(),
             ),
@@ -961,11 +961,10 @@ impl CommandHandler<'_> {
             cfg: Some(
                 PortForwardConfig {
                     proto: protocol.to_string(),
-                    bind_addr: bind_addr.into(),
+                    bind_addr,
                     dst_addr: dst_addr
                         .map(|s| s.parse::<SocketAddr>().unwrap())
-                        .map(Into::into)
-                        .unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap().into()),
+                        .unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap()),
                 }
                 .into(),
             ),
@@ -1458,7 +1457,7 @@ async fn main() -> Result<(), Error> {
             .unwrap(),
     ));
     let handler = CommandHandler {
-        client: Mutex::new(client),
+        client: tokio::sync::Mutex::new(client),
         verbose: cli.verbose,
         output_format: &cli.output_format,
     };
@@ -1716,16 +1715,10 @@ async fn main() -> Result<(), Error> {
                         format!("{:?}", stun_info.udp_nat_type()).as_str(),
                     ]);
                     ip_list.interface_ipv4s.iter().for_each(|ip| {
-                        builder.push_record(vec![
-                            "Interface IPv4",
-                            format!("{}", ip.to_string()).as_str(),
-                        ]);
+                        builder.push_record(vec!["Interface IPv4", ip.to_string().as_str()]);
                     });
                     ip_list.interface_ipv6s.iter().for_each(|ip| {
-                        builder.push_record(vec![
-                            "Interface IPv6",
-                            format!("{}", ip.to_string()).as_str(),
-                        ]);
+                        builder.push_record(vec!["Interface IPv6", ip.to_string().as_str()]);
                     });
                     for (idx, l) in node_info.listeners.iter().enumerate() {
                         if l.starts_with("ring") {
@@ -1911,9 +1904,7 @@ async fn main() -> Result<(), Error> {
             Some(StatsSubCommand::Show) | None => {
                 let client = handler.get_stats_client().await?;
                 let request = GetStatsRequest {};
-                let response = client
-                    .get_stats(BaseController::default(), request)
-                    .await?;
+                let response = client.get_stats(BaseController::default(), request).await?;
 
                 if cli.output_format == OutputFormat::Json {
                     println!("{}", serde_json::to_string_pretty(&response.metrics)?);
@@ -1942,7 +1933,7 @@ async fn main() -> Result<(), Error> {
                                     .collect::<Vec<_>>()
                                     .join(", ")
                             };
-                            
+
                             let formatted_value = if metric.name.contains("bytes") {
                                 format_size(metric.value, humansize::BINARY)
                             } else if metric.name.contains("duration") {

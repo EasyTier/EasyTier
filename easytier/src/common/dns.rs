@@ -48,19 +48,15 @@ pub static RESOLVER: Lazy<Arc<Resolver<GenericConnector<TokioRuntimeProvider>>>>
 
 pub async fn resolve_txt_record(domain_name: &str) -> Result<String, Error> {
     let r = RESOLVER.clone();
-    let response = r.txt_lookup(domain_name).await.with_context(|| {
-        format!(
-            "txt_lookup failed, domain_name: {}",
-            domain_name.to_string()
-        )
-    })?;
+    let response = r
+        .txt_lookup(domain_name)
+        .await
+        .with_context(|| format!("txt_lookup failed, domain_name: {}", domain_name))?;
 
-    let txt_record = response.iter().next().with_context(|| {
-        format!(
-            "no txt record found, domain_name: {}",
-            domain_name.to_string()
-        )
-    })?;
+    let txt_record = response
+        .iter()
+        .next()
+        .with_context(|| format!("no txt record found, domain_name: {}", domain_name))?;
 
     let txt_data = String::from_utf8_lossy(&txt_record.txt_data()[0]);
     tracing::info!(?txt_data, ?domain_name, "get txt record");

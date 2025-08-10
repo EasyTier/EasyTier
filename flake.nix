@@ -17,7 +17,7 @@
         pkgs = import nixpkgs {
           inherit system overlays;
         };
-        rustVersion = "1.87.0";
+        rustVersion = "1.89.0";
         rust = pkgs.rust-bin.stable.${rustVersion}.default.override{
           extensions = [ "rust-src" "rust-analyzer" ];
         };

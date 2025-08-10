@@ -67,9 +67,9 @@ impl From<NatType> for UdpNatType {
     }
 }
 
-impl Into<NatType> for UdpNatType {
-    fn into(self) -> NatType {
-        match self {
+impl From<UdpNatType> for NatType {
+    fn from(val: UdpNatType) -> Self {
+        match val {
             UdpNatType::Unknown => NatType::Unknown,
             UdpNatType::Open(nat_type) => nat_type,
             UdpNatType::Cone(nat_type) => nat_type,
@@ -249,7 +249,7 @@ impl UdpSocketArray {
                         tracing::info!(?addr, ?tid, "got hole punching packet with intreast tid");
                         tid_to_socket
                             .entry(tid)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(PunchedUdpSocket {
                                 socket: socket.clone(),
                                 tid,
@@ -556,7 +556,7 @@ impl PunchHoleServerCommon {
 
 #[tracing::instrument(err, ret(level=Level::DEBUG), skip(ports))]
 pub(crate) async fn send_symmetric_hole_punch_packet(
-    ports: &Vec<u16>,
+    ports: &[u16],
     udp: Arc<UdpSocket>,
     transaction_id: u32,
     public_ips: &Vec<Ipv4Addr>,
@@ -628,5 +628,5 @@ pub(crate) async fn try_connect_with_socket(
     connector
         .try_connect_with_socket(socket, remote_mapped_addr)
         .await
-        .map_err(|e| Error::from(e))
+        .map_err(Error::from)
 }

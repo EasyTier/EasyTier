@@ -104,7 +104,7 @@ impl std::fmt::Debug for GlobalCtx {
 pub type ArcGlobalCtx = std::sync::Arc<GlobalCtx>;
 
 impl GlobalCtx {
-    pub fn new(config_fs: impl ConfigLoader + 'static + Send + Sync) -> Self {
+    pub fn new(config_fs: impl ConfigLoader + 'static) -> Self {
         let id = config_fs.get_id();
         let network = config_fs.get_network_identity();
         let net_ns = NetNS::new(config_fs.get_netns());
@@ -118,9 +118,11 @@ impl GlobalCtx {
         let proxy_forward_by_system = config_fs.get_flags().proxy_forward_by_system;
         let no_tun = config_fs.get_flags().no_tun;
 
-        let mut feature_flags = PeerFeatureFlag::default();
-        feature_flags.kcp_input = !config_fs.get_flags().disable_kcp_input;
-        feature_flags.no_relay_kcp = config_fs.get_flags().disable_relay_kcp;
+        let feature_flags = PeerFeatureFlag {
+            kcp_input: !config_fs.get_flags().disable_kcp_input,
+            no_relay_kcp: config_fs.get_flags().disable_relay_kcp,
+            ..Default::default()
+        };
 
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
@@ -185,7 +187,7 @@ impl GlobalCtx {
         {
             Ok(())
         } else {
-            Err(anyhow::anyhow!("network {} not in whitelist", network_name).into())
+            Err(anyhow::anyhow!("network {} not in whitelist", network_name))
         }
     }
 
@@ -194,8 +196,8 @@ impl GlobalCtx {
             return Some(ret);
         }
         let addr = self.config.get_ipv4();
-        self.cached_ipv4.store(addr.clone());
-        return addr;
+        self.cached_ipv4.store(addr);
+        addr
     }
 
     pub fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
@@ -208,8 +210,8 @@ impl GlobalCtx {
             return Some(ret);
         }
         let addr = self.config.get_ipv6();
-        self.cached_ipv6.store(addr.clone());
-        return addr;
+        self.cached_ipv6.store(addr);
+        addr
     }
 
     pub fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
@@ -376,18 +378,18 @@ pub mod tests {
 
         let mut subscriber = global_ctx.subscribe();
         let peer_id = new_peer_id();
-        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id.clone()));
-        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id.clone()));
+        global_ctx.issue_event(GlobalCtxEvent::PeerAdded(peer_id));
+        global_ctx.issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnAdded(PeerConnInfo::default()));
         global_ctx.issue_event(GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default()));
 
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerAdded(peer_id.clone())
+            GlobalCtxEvent::PeerAdded(peer_id)
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),
-            GlobalCtxEvent::PeerRemoved(peer_id.clone())
+            GlobalCtxEvent::PeerRemoved(peer_id)
         );
         assert_eq!(
             subscriber.recv().await.unwrap(),
@@ -404,7 +406,7 @@ pub mod tests {
     ) -> ArcGlobalCtx {
         let config_fs = TomlConfigLoader::default();
         config_fs.set_inst_name(format!("test_{}", config_fs.get_id()));
-        config_fs.set_network_identity(network_identy.unwrap_or(NetworkIdentity::default()));
+        config_fs.set_network_identity(network_identy.unwrap_or_default());
 
         let ctx = Arc::new(GlobalCtx::new(config_fs));
         ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {

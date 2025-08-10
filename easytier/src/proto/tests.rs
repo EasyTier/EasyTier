@@ -233,8 +233,10 @@ async fn rpc_tunnel_stuck_test() {
         let out =
             client.scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
         tasks.spawn(async move {
-            let mut ctrl = RpcController::default();
-            ctrl.timeout_ms = 1000;
+            let ctrl = RpcController {
+                timeout_ms: 1000,
+                ..Default::default()
+            };
 
             let input = SayHelloRequest {
                 name: "world".to_string(),
@@ -263,8 +265,10 @@ async fn rpc_tunnel_stuck_test() {
 
     let out =
         client.scoped_client::<GreetingClientFactory<RpcController>>(1, 1, "test".to_string());
-    let mut ctrl = RpcController::default();
-    ctrl.timeout_ms = 1000;
+    let ctrl = RpcController {
+        timeout_ms: 1000,
+        ..Default::default()
+    };
     let input = SayHelloRequest {
         name: "fuck world".to_string(),
     };

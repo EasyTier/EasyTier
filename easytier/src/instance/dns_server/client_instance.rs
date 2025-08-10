@@ -59,7 +59,7 @@ impl MagicDnsClientInstance {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
-            prev_last_update = Some(last_update);
+
             let mut routes = peer_mgr.list_routes().await;
             // add self as a route
             let ctx = peer_mgr.get_global_ctx();
@@ -79,6 +79,11 @@ impl MagicDnsClientInstance {
             rpc_stub
                 .update_dns_record(BaseController::default(), req)
                 .await?;
+
+            let last_update_after_rpc = peer_mgr.get_route_peer_info_last_update_time().await;
+            if last_update_after_rpc == last_update {
+                prev_last_update = Some(last_update);
+            }
         }
     }
 

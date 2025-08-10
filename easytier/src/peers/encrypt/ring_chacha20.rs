@@ -44,7 +44,7 @@ impl Encryptor for RingChaCha20Cipher {
         let text_and_tag_len = payload_len - CHACHA20_POLY1305_ENCRYPTION_RESERVED + 16;
 
         let chacha20_tail = ChaCha20Poly1305Tail::ref_from_suffix(zc_packet.payload()).unwrap();
-        let nonce = Nonce::assume_unique_for_key(chacha20_tail.nonce.clone());
+        let nonce = Nonce::assume_unique_for_key(chacha20_tail.nonce);
 
         let rs = self.cipher.open_in_place(
             nonce,
@@ -75,7 +75,7 @@ impl Encryptor for RingChaCha20Cipher {
 
         let mut tail = ChaCha20Poly1305Tail::default();
         rand::thread_rng().fill_bytes(&mut tail.nonce);
-        let nonce = Nonce::assume_unique_for_key(tail.nonce.clone());
+        let nonce = Nonce::assume_unique_for_key(tail.nonce);
 
         let rs =
             self.cipher
@@ -116,10 +116,10 @@ mod tests {
             packet.payload().len(),
             text.len() + CHACHA20_POLY1305_ENCRYPTION_RESERVED
         );
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), true);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
-        assert_eq!(packet.peer_manager_header().unwrap().is_encrypted(), false);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 }

@@ -102,7 +102,7 @@ pub struct PeerConn {
 
     tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
-    recv: Arc<Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>>,
+    recv: Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>,
     tunnel_info: Option<TunnelInfo>,
 
     tasks: JoinSet<Result<(), TunnelError>>,
@@ -149,7 +149,7 @@ impl PeerConn {
         let conn_id = PeerConnId::new_v4();
 
         PeerConn {
-            conn_id: conn_id.clone(),
+            conn_id,
 
             my_peer_id,
             global_ctx,
@@ -158,7 +158,7 @@ impl PeerConn {
                 mpsc_tunnel.close()
             })))),
             sink,
-            recv: Arc::new(Mutex::new(Some(recv))),
+            recv: Mutex::new(Some(recv)),
             tunnel_info,
 
             tasks: JoinSet::new(),
@@ -238,7 +238,7 @@ impl PeerConn {
             ));
         }
 
-        return Ok(rsp);
+        Ok(rsp)
     }
 
     async fn wait_handshake_loop(&mut self) -> Result<HandshakeRequest, Error> {
@@ -424,10 +424,8 @@ impl PeerConn {
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
-                    } else {
-                        if sender.send(zc_packet).await.is_err() {
-                            break;
-                        }
+                    } else if sender.send(zc_packet).await.is_err() {
+                        break;
                     }
                 }
 
@@ -650,7 +648,10 @@ mod tests {
         let throughput = c_peer.throughput.clone();
         let _t = ScopedTask::from(tokio::spawn(async move {
             // if not drop both, we mock some rx traffic for client peer to test pinger
-            while !drop_both {
+            if drop_both {
+                return;
+            }
+            loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 throughput.record_rx_bytes(3);
             }

@@ -24,6 +24,12 @@ pub struct BidirectRpcManager {
     tasks: Mutex<Option<JoinSet<()>>>,
 }
 
+impl Default for BidirectRpcManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BidirectRpcManager {
     pub fn new() -> Self {
         Self {
@@ -42,7 +48,10 @@ impl BidirectRpcManager {
     pub fn new_with_stats_manager(stats_manager: Arc<StatsManager>) -> Self {
         Self {
             rpc_client: Client::new_with_stats_manager(stats_manager.clone()),
-            rpc_server: Server::new_with_registry_and_stats_manager(Arc::new(ServiceRegistry::new()), stats_manager),
+            rpc_server: Server::new_with_registry_and_stats_manager(
+                Arc::new(ServiceRegistry::new()),
+                stats_manager,
+            ),
 
             rx_timeout: None,
             error: Arc::new(Mutex::new(None)),
@@ -176,7 +185,7 @@ impl BidirectRpcManager {
             return;
         };
         tasks.abort_all();
-        while let Some(_) = tasks.join_next().await {}
+        while tasks.join_next().await.is_some() {}
     }
 
     pub fn take_error(&self) -> Option<Error> {
@@ -187,7 +196,7 @@ impl BidirectRpcManager {
         let Some(mut tasks) = self.tasks.lock().unwrap().take() else {
             return;
         };
-        while let Some(_) = tasks.join_next().await {
+        while tasks.join_next().await.is_some() {
             // when any task is done, abort all tasks
             tasks.abort_all();
         }

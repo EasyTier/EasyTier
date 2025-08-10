@@ -41,7 +41,7 @@ pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>,
 
 pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &str) {
     let stream = UdpClientStream::builder(
-        SocketAddr::new(fake_ip.clone().into(), 53),
+        SocketAddr::new((*fake_ip).into(), 53),
         TokioRuntimeProvider::default(),
     )
     .build();

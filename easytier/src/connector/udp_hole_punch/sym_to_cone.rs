@@ -80,9 +80,9 @@ impl PunchSymToConeHoleServer {
         let public_ips = request
             .public_ips
             .into_iter()
-            .map(|ip| std::net::Ipv4Addr::from(ip))
+            .map(std::net::Ipv4Addr::from)
             .collect::<Vec<_>>();
-        if public_ips.len() == 0 {
+        if public_ips.is_empty() {
             tracing::warn!("send_punch_packet_easy_sym got zero len public ip");
             return Err(
                 anyhow::anyhow!("send_punch_packet_easy_sym got zero len public ip").into(),
@@ -158,9 +158,9 @@ impl PunchSymToConeHoleServer {
         let public_ips = request
             .public_ips
             .into_iter()
-            .map(|ip| std::net::Ipv4Addr::from(ip))
+            .map(std::net::Ipv4Addr::from)
             .collect::<Vec<_>>();
-        if public_ips.len() == 0 {
+        if public_ips.is_empty() {
             tracing::warn!("try_punch_symmetric got zero len public ip");
             return Err(anyhow::anyhow!("try_punch_symmetric got zero len public ip").into());
         }
@@ -281,7 +281,7 @@ impl PunchSymToConeHoleClient {
             return;
         };
         let req = SendPunchPacketEasySymRequest {
-            listener_mapped_addr: remote_mapped_addr.clone().into(),
+            listener_mapped_addr: remote_mapped_addr.into(),
             public_ips: public_ips.clone().into_iter().map(|x| x.into()).collect(),
             transaction_id: tid,
             base_port_num: base_port_for_easy_sym.unwrap() as u32,
@@ -313,7 +313,7 @@ impl PunchSymToConeHoleClient {
         port_index: u32,
     ) -> Option<u32> {
         let req = SendPunchPacketHardSymRequest {
-            listener_mapped_addr: remote_mapped_addr.clone().into(),
+            listener_mapped_addr: remote_mapped_addr.into(),
             public_ips: public_ips.clone().into_iter().map(|x| x.into()).collect(),
             transaction_id: tid,
             round,
@@ -333,9 +333,9 @@ impl PunchSymToConeHoleClient {
         {
             Err(e) => {
                 tracing::error!(?e, "failed to send punch packet for hard sym");
-                return None;
+                None
             }
-            Ok(resp) => return Some(resp.next_port_index),
+            Ok(resp) => Some(resp.next_port_index),
         }
     }
 
@@ -366,7 +366,7 @@ impl PunchSymToConeHoleClient {
         let mut finish_time: Option<Instant> = None;
         while finish_time.is_none() || finish_time.as_ref().unwrap().elapsed().as_millis() < 1000 {
             udp_array
-                .send_with_all(&packet, remote_mapped_addr.into())
+                .send_with_all(packet, remote_mapped_addr.into())
                 .await?;
 
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -484,7 +484,7 @@ impl PunchSymToConeHoleClient {
                     rpc_stub,
                     base_port_for_easy_sym,
                     my_nat_info,
-                    remote_mapped_addr.clone(),
+                    remote_mapped_addr,
                     public_ips.clone(),
                     tid,
                 ))
@@ -494,7 +494,7 @@ impl PunchSymToConeHoleClient {
                 &udp_array,
                 &packet,
                 tid,
-                remote_mapped_addr.clone(),
+                remote_mapped_addr,
                 &scoped_punch_task,
             )
             .await?;
@@ -510,7 +510,7 @@ impl PunchSymToConeHoleClient {
         let scoped_punch_task: ScopedTask<Option<u32>> =
             tokio::spawn(Self::remote_send_hole_punch_packet_random(
                 rpc_stub,
-                remote_mapped_addr.clone(),
+                remote_mapped_addr,
                 public_ips.clone(),
                 tid,
                 round,
@@ -522,7 +522,7 @@ impl PunchSymToConeHoleClient {
             &udp_array,
             &packet,
             tid,
-            remote_mapped_addr.clone(),
+            remote_mapped_addr,
             &scoped_punch_task,
         )
         .await?;

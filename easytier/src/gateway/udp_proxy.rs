@@ -26,7 +26,7 @@ use tracing::Level;
 
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, scoped_task::ScopedTask, PeerId},
-    gateway::ip_reassembler::compose_ipv4_packet,
+    gateway::ip_reassembler::{compose_ipv4_packet, ComposeIpv4PacketArgs},
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::{
         common::{reserve_buf, setup_sokcet2},
@@ -110,13 +110,15 @@ impl UdpNatEntry {
         ));
 
         compose_ipv4_packet(
-            &mut buf[..],
-            src_v4.ip(),
-            nat_src_v4.ip(),
-            IpNextHeaderProtocols::Udp,
-            payload_len + 8, // include udp header
-            payload_mtu,
-            ip_id,
+            ComposeIpv4PacketArgs {
+                buf: &mut buf[..],
+                src_v4: src_v4.ip(),
+                dst_v4: nat_src_v4.ip(),
+                next_protocol: IpNextHeaderProtocols::Udp,
+                payload_len: payload_len + 8, // include udp header
+                payload_mtu,
+                ip_id,
+            },
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);
                 p.fill_peer_manager_hdr(self.my_peer_id, self.src_peer_id, PacketType::Data as u8);
@@ -273,11 +275,12 @@ impl UdpProxy {
         }
 
         let mut real_dst_ip = ipv4.get_destination();
-        if !self
+
+        if !(self
             .cidr_set
             .contains_v4(ipv4.get_destination(), &mut real_dst_ip)
-            && !is_exit_node
-            && !(self.global_ctx.no_tun()
+            || is_exit_node
+            || self.global_ctx.no_tun()
                 && Some(ipv4.get_destination())
                     == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
@@ -289,9 +292,7 @@ impl UdpProxy {
             resembled_buf =
                 self.ip_resemmbler
                     .add_fragment(ipv4.get_source(), ipv4.get_destination(), &ipv4);
-            if resembled_buf.is_none() {
-                return None;
-            };
+            resembled_buf.as_ref()?;
             udp::UdpPacket::new(resembled_buf.as_ref().unwrap())?
         } else {
             udp::UdpPacket::new(ipv4.payload())?
@@ -374,7 +375,7 @@ impl UdpProxy {
 #[async_trait::async_trait]
 impl PeerPacketFilter for UdpProxy {
     async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
-        if let Some(_) = self.try_handle_packet(&packet).await {
+        if self.try_handle_packet(&packet).await.is_some() {
             return None;
         } else {
             return Some(packet);
