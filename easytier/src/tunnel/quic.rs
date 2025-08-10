@@ -168,9 +168,26 @@ impl TunnelListener for QUICTunnelListener {
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         // accept a single connection
-        let incoming_conn = self.endpoint.as_ref().unwrap().accept().await.unwrap();
-        let conn = incoming_conn.await.unwrap();
-        println!(
+        let conn = loop {
+            let Some(incoming_conn) = self.endpoint.as_ref().unwrap().accept().await else {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            };
+            match incoming_conn.await {
+                Ok(conn) => {
+                    tracing::info!(
+                        "[server] connection accepted: addr={}",
+                        conn.remote_address()
+                    );
+                    break conn;
+                }
+                Err(e) => {
+                    tracing::error!("[server] accept connection failed: {:?}", e);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+        tracing::info!(
             "[server] connection accepted: addr={}",
             conn.remote_address()
         );
@@ -231,10 +248,14 @@ impl TunnelConnector for QUICTunnelConnector {
         endpoint.set_default_client_config(configure_client());
 
         // connect to server
-        let connection = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
-        println!("[client] connected: addr={}", connection.remote_address());
+        let connection = endpoint
+            .connect(addr, "localhost")
+            .unwrap()
+            .await
+            .with_context(|| "connect failed")?;
+        tracing::info!("[client] connected: addr={}", connection.remote_address());
 
-        let local_addr = endpoint.local_addr().unwrap();
+        let local_addr = endpoint.local_addr()?;
 
         self.endpoint = Some(endpoint);
 
