@@ -19,6 +19,7 @@ use crate::common::PeerId;
 use crate::connector::direct::DirectConnectorManager;
 use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManager};
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
+use crate::tunnel::TunnelConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
 use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
@@ -348,10 +349,33 @@ impl Instance {
     }
 
     async fn add_initial_peers(&mut self) -> Result<(), Error> {
+        let conn_manager = self.get_conn_manager();
+        
         for peer in self.global_ctx.config.get_peers().iter() {
-            self.get_conn_manager()
-                .add_connector_by_url(peer.uri.as_str())
-                .await?;
+            let url = peer.uri.as_str();
+            
+            // Filter out the srv and txt 
+            if url.starts_with("txt://") || url.starts_with("srv://") {
+                // Pass the manualconnector ref so that multi can use it
+                if let Ok(parsed_url) = url::Url::parse(url) {
+                    let mut multi_connector = crate::connector::multi_connector::MultiConnector::new(
+                        parsed_url,
+                        self.global_ctx.clone(),
+                        Some(conn_manager.clone())
+                    );
+
+                    // Execute resolution, and the resolved URLs will be directly added to conn_manager
+                    if let Err(e) = multi_connector.connect().await {
+                        tracing::warn!(url = %url, error = ?e, "Failed to resolve multi-connector URL");
+                        // Continue processing other peers without interruption if errored
+                    }
+                } else {
+                    tracing::error!(url = %url, "Invalid URL format for MultiConnector");
+                }
+            } else {
+                // Normal treament on basic url protocol
+                conn_manager.add_connector_by_url(url).await?;
+            }
         }
         Ok(())
     }

@@ -21,8 +21,8 @@ pub mod direct;
 pub mod manual;
 pub mod udp_hole_punch;
 
-pub mod dns_connector;
 pub mod http_connector;
+pub mod multi_connector;
 
 async fn set_bind_addr_for_peer_connector(
     connector: &mut (impl TunnelConnector + ?Sized),
@@ -144,16 +144,6 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
-            Box::new(connector)
-        }
-        "txt" | "srv" => {
-            if url.host_str().is_none() {
-                return Err(Error::InvalidUrl(format!(
-                    "host should not be empty in txt or srv url: {}",
-                    url
-                )));
-            }
-            let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
             Box::new(connector)
         }
         _ => {
