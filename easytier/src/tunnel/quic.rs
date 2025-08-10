@@ -187,10 +187,6 @@ impl TunnelListener for QUICTunnelListener {
                 }
             }
         };
-        tracing::info!(
-            "[server] connection accepted: addr={}",
-            conn.remote_address()
-        );
         let remote_addr = conn.remote_address();
         let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
 
