@@ -20,7 +20,7 @@ use super::{create_connector_by_url, http_connector::TunnelWithInfo};
 fn weighted_choice<T>(options: &[(T, u64)]) -> Option<&T> {
     let total_weight = options.iter().map(|(_, weight)| *weight).sum();
     let mut rng = rand::thread_rng();
-    let rand_value = rng.gen_range(0..total_weight);
+    let rand_value = rng.gen_range(0..=total_weight);
     let mut accumulated_weight = 0;
 
     for (item, weight) in options {
