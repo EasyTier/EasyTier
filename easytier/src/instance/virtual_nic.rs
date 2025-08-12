@@ -399,7 +399,7 @@ impl VirtualNic {
                 Err(e) => {
                     println!("Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly. error: {}", e);
                     println!("You can add firewall rules manually, or use --use-smoltcp to run with user-space TCP/IP stack.");
-                    println!("");
+                    println!();
                 }
             }
 
@@ -409,7 +409,7 @@ impl VirtualNic {
             }
 
             if !dev_name.is_empty() {
-                config.tun_name(format!("{}", dev_name));
+                config.tun_name(&dev_name);
             } else {
                 use rand::distributions::Distribution as _;
                 let c = crate::arch::windows::interface_count()?;
