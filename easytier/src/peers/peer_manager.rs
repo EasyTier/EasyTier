@@ -990,7 +990,15 @@ impl PeerManager {
             .self_tx_bytes
             .add(msg.buf_len() as u64);
         self.self_tx_counters.self_tx_packets.inc();
-        Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, dst_peer_id).await
+        let msg_len = msg.buf_len() as u64;
+        let result =
+            Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, dst_peer_id)
+                .await;
+        if result.is_ok() {
+            self.self_tx_counters.self_tx_bytes.add(msg_len);
+            self.self_tx_counters.self_tx_packets.inc();
+        }
+        result
     }
 
     async fn send_msg_internal(
