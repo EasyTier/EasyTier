@@ -20,7 +20,6 @@
     "@tauri-apps/plugin-process": "2.3.0",
     "@tauri-apps/plugin-shell": "2.3.0",
     "@vueuse/core": "^11.2.0",
-    "aura": "link:@primevue\\themes\\aura",
     "easytier-frontend-lib": "workspace:*",
     "ip-num": "1.5.1",
     "pinia": "^2.2.4",

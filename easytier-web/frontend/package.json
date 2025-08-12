@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@primevue/themes": "4.3.3",
-    "aura": "link:@primevue/themes/aura",
     "axios": "^1.7.7",
     "easytier-frontend-lib": "workspace:*",
     "primevue": "4.3.3",
