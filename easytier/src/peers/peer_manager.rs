@@ -986,6 +986,10 @@ impl PeerManager {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+        self.self_tx_counters
+            .self_tx_bytes
+            .add(msg.buf_len() as u64);
+        self.self_tx_counters.self_tx_packets.inc();
         Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, dst_peer_id).await
     }
 
