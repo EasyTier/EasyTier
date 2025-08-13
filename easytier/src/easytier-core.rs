@@ -555,6 +555,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     enable_relay_foreign_network_kcp: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_STUN_SERVERS",
+        value_delimiter = ',',
+        help = t!("core_clap.stun_servers").to_string(),
+        num_args = 0..
+    )]
+    stun_servers: Option<Vec<String>>,
 }
 
 #[derive(Parser, Debug)]
@@ -923,6 +932,10 @@ impl NetworkOptions {
         let mut old_udp_whitelist = cfg.get_udp_whitelist();
         old_udp_whitelist.extend(self.udp_whitelist.clone());
         cfg.set_udp_whitelist(old_udp_whitelist);
+
+        if let Some(stun_servers) = &self.stun_servers {
+            cfg.set_stun_servers(stun_servers.clone());
+        }
 
         Ok(())
     }

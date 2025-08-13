@@ -2060,12 +2060,12 @@ mod win_service_manager {
             let service = self
                 .service_manager
                 .create_service(&service_info, ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
             if let Some(s) = description {
                 service
                     .set_description(s.clone())
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
             }
 
             if let Some(work_dir) = ctx.working_directory {
@@ -2079,33 +2079,27 @@ mod win_service_manager {
             let service = self
                 .service_manager
                 .open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
-            service
-                .delete()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            service.delete().map_err(io::Error::other)
         }
 
         fn start(&self, ctx: ServiceStartCtx) -> io::Result<()> {
             let service = self
                 .service_manager
                 .open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
-            service
-                .start(&[] as &[&OsStr])
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            service.start(&[] as &[&OsStr]).map_err(io::Error::other)
         }
 
         fn stop(&self, ctx: ServiceStopCtx) -> io::Result<()> {
             let service = self
                 .service_manager
                 .open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
-            _ = service
-                .stop()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            _ = service.stop().map_err(io::Error::other)?;
 
             Ok(())
         }
@@ -2117,10 +2111,7 @@ mod win_service_manager {
         fn set_level(&mut self, level: ServiceLevel) -> io::Result<()> {
             match level {
                 ServiceLevel::System => Ok(()),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unsupported service level",
-                )),
+                _ => Err(io::Error::other("Unsupported service level")),
             }
         }
 
@@ -2136,13 +2127,11 @@ mod win_service_manager {
                             return Ok(ServiceStatus::NotInstalled);
                         }
                     }
-                    return Err(io::Error::new(io::ErrorKind::Other, e));
+                    return Err(io::Error::other(e));
                 }
             };
 
-            let status = service
-                .query_status()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let status = service.query_status().map_err(io::Error::other)?;
 
             match status.current_state {
                 windows_service::service::ServiceState::Stopped => Ok(ServiceStatus::Stopped(None)),

@@ -82,7 +82,7 @@ pub fn find_interface_index(iface_name: &str) -> io::Result<u32> {
     tracing::error!("Failed to find interface index for {}", iface_name);
     Err(io::Error::new(
         io::ErrorKind::NotFound,
-        format!("{}", iface_name),
+        iface_name.to_string(),
     ))
 }
 
