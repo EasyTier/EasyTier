@@ -199,6 +199,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_udp_whitelist(&self) -> Vec<String>;
     fn set_udp_whitelist(&self, whitelist: Vec<String>);
 
+    fn get_stun_servers(&self) -> Vec<String>;
+    fn set_stun_servers(&self, servers: Vec<String>);
+
     fn dump(&self) -> String;
 }
 
@@ -407,6 +410,7 @@ struct Config {
 
     tcp_whitelist: Option<Vec<String>>,
     udp_whitelist: Option<Vec<String>>,
+    stun_servers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -786,6 +790,19 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().udp_whitelist = Some(whitelist);
     }
 
+    fn get_stun_servers(&self) -> Vec<String> {
+        self.config
+            .lock()
+            .unwrap()
+            .stun_servers
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_stun_servers(&self, servers: Vec<String>) {
+        self.config.lock().unwrap().stun_servers = Some(servers);
+    }
+
     fn dump(&self) -> String {
         let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
@@ -815,6 +832,39 @@ impl ConfigLoader for TomlConfigLoader {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn test_stun_servers_config() {
+        let config = TomlConfigLoader::default();
+        let stun_servers = config.get_stun_servers();
+        assert!(stun_servers.is_empty());
+
+        // Test setting custom stun servers
+        let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
+        config.set_stun_servers(custom_servers.clone());
+
+        let retrieved_servers = config.get_stun_servers();
+        assert_eq!(retrieved_servers, custom_servers);
+    }
+
+    #[test]
+    fn test_stun_servers_toml_parsing() {
+        let config_str = r#"
+instance_name = "test"
+stun_servers = [
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+    "txt:stun.easytier.cn"
+]"#;
+
+        let config = TomlConfigLoader::new_from_str(config_str).unwrap();
+        let stun_servers = config.get_stun_servers();
+
+        assert_eq!(stun_servers.len(), 3);
+        assert_eq!(stun_servers[0], "stun.l.google.com:19302");
+        assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
+        assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+    }
 
     #[tokio::test]
     async fn full_example_test() {

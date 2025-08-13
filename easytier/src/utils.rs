@@ -117,7 +117,7 @@ pub fn utf8_or_gbk_to_string(s: &[u8]) -> String {
         utf8_str
     } else {
         // 如果解码失败，则尝试使用GBK解码
-        if let Ok(gbk_str) = GBK.decode(&s, DecoderTrap::Strict) {
+        if let Ok(gbk_str) = GBK.decode(s, DecoderTrap::Strict) {
             gbk_str
         } else {
             String::from_utf8_lossy(s).to_string()
