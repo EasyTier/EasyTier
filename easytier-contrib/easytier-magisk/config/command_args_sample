@@ -1,0 +1,1 @@
+--config-server udp://127.0.0.1:22020/admin --machine-id easytier-magisk
