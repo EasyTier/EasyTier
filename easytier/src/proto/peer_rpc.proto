@@ -60,6 +60,16 @@ message RouteForeignNetworkInfos {
   repeated Info infos = 1;
 }
 
+message RouteForeignNetworkSummary {
+  message Info {
+    uint32 peer_id = 1;
+    uint32 network_count = 2;
+    uint32 peer_count = 3;
+  }
+
+  map<uint32, Info> info_map = 1;
+}
+
 message SyncRouteInfoRequest {
   uint32 my_peer_id = 1;
   uint64 my_session_id = 2;

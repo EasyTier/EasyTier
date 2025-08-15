@@ -102,6 +102,7 @@ message NetworkInstanceRunningInfo {
   repeated cli.PeerRoutePair peer_route_pairs = 6;
   bool running = 7;
   optional string error_msg = 8;
+  peer_rpc.RouteForeignNetworkSummary foreign_network_summary = 9;
 }
 
 message NetworkInstanceRunningInfoMap {

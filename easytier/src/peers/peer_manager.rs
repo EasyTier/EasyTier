@@ -40,7 +40,9 @@ use crate::{
             self, list_global_foreign_network_response::OneForeignNetwork,
             ListGlobalForeignNetworkResponse,
         },
-        peer_rpc::{ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey},
+        peer_rpc::{
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkSummary,
+        },
     },
     tunnel::{
         self,
@@ -951,6 +953,10 @@ impl PeerManager {
         }
 
         resp
+    }
+
+    pub async fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
+        self.get_route().get_foreign_network_summary().await
     }
 
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {

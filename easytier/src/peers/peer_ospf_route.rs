@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr},
     sync::{
@@ -35,9 +35,10 @@ use crate::{
     proto::{
         common::{Ipv4Inet, NatType, StunInfo},
         peer_rpc::{
-            route_foreign_network_infos, ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey,
-            OspfRouteRpc, OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion,
-            RouteForeignNetworkInfos, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError,
+            route_foreign_network_infos, route_foreign_network_summary,
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, OspfRouteRpc,
+            OspfRouteRpcClientFactory, OspfRouteRpcServer, PeerIdVersion, RouteForeignNetworkInfos,
+            RouteForeignNetworkSummary, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoError,
             SyncRouteInfoRequest, SyncRouteInfoResponse,
         },
         rpc_types::{
@@ -2318,6 +2319,16 @@ impl Route for PeerRoute {
                 });
         }
         foreign_networks
+    }
+
+    async fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
+        let mut info_map: BTreeMap<PeerId, route_foreign_network_summary::Info> = BTreeMap::new();
+        for item in self.service_impl.synced_route_info.foreign_network.iter() {
+            let entry = info_map.entry(item.key().peer_id).or_default();
+            entry.network_count += 1;
+            entry.peer_count += item.value().foreign_peer_ids.len() as u32;
+        }
+        RouteForeignNetworkSummary { info_map }
     }
 
     async fn list_peers_own_foreign_network(

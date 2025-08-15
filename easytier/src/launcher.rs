@@ -1,4 +1,5 @@
 use crate::common::config::PortForwardConfig;
+use crate::proto::peer_rpc::RouteForeignNetworkSummary;
 use crate::proto::web;
 use crate::{
     common::{
@@ -36,6 +37,7 @@ struct EasyTierData {
     my_node_info: RwLock<MyNodeInfo>,
     routes: RwLock<Vec<Route>>,
     peers: RwLock<Vec<PeerInfo>>,
+    foreign_network_summary: RwLock<RouteForeignNetworkSummary>,
     tun_fd: Arc<RwLock<Option<i32>>>,
     tun_dev_name: RwLock<String>,
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
@@ -51,6 +53,7 @@ impl Default for EasyTierData {
             my_node_info: RwLock::new(MyNodeInfo::default()),
             routes: RwLock::new(Vec::new()),
             peers: RwLock::new(Vec::new()),
+            foreign_network_summary: RwLock::new(RouteForeignNetworkSummary::default()),
             tun_fd: Arc::new(RwLock::new(None)),
             tun_dev_name: RwLock::new(String::new()),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
@@ -195,6 +198,8 @@ impl EasyTierLauncher {
                     *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
                     *data_c.peers.write().unwrap() =
                         PeerManagerRpcService::list_peers(&peer_mgr_c).await;
+                    *data_c.foreign_network_summary.write().unwrap() =
+                        peer_mgr_c.get_foreign_network_summary().await;
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 }
             });
@@ -323,6 +328,10 @@ impl EasyTierLauncher {
     pub fn get_peers(&self) -> Vec<PeerInfo> {
         self.data.peers.read().unwrap().clone()
     }
+
+    pub fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
+        self.data.foreign_network_summary.read().unwrap().clone()
+    }
 }
 
 impl Drop for EasyTierLauncher {
@@ -401,6 +410,7 @@ impl NetworkInstance {
             peer_route_pairs,
             running: launcher.running(),
             error_msg: launcher.error_msg(),
+            foreign_network_summary: Some(launcher.get_foreign_network_summary()),
         })
     }
 
