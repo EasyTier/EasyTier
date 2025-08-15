@@ -501,7 +501,9 @@ impl StatsManager {
             loop {
                 interval.tick().await;
 
-                let cutoff_time = Instant::now() - Duration::from_secs(180); // 3 minutes
+                let Some(cutoff_time) = Instant::now().checked_sub(Duration::from_secs(180)) else {
+                    continue;
+                };
 
                 let Some(counters) = counters_clone.upgrade() else {
                     break;
