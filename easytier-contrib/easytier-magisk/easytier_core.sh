@@ -35,9 +35,16 @@ while true; do
                 continue
             fi
 
-            TZ=Asia/Shanghai ${EASYTIER} -c ${CONFIG_FILE} > ${LOG_FILE} &
-            sleep 5s # 等待easytier-core启动完成
-            update_module_description "已开启(不一定运行成功)"
+            # 如果 config 目录下存在 command_args 文件，则读取其中的内容作为启动参数
+            if [ -f "${MODDIR}/config/command_args" ]; then
+                TZ=Asia/Shanghai ${EASYTIER} $(cat ${MODDIR}/config/command_args) > ${LOG_FILE} &
+                sleep 5s # 等待easytier-core启动完成
+                update_module_description "已开启(自定义启动参数)(不一定运行成功)"
+            else
+                TZ=Asia/Shanghai ${EASYTIER} -c ${CONFIG_FILE} > ${LOG_FILE} &
+                sleep 5s # 等待easytier-core启动完成
+                update_module_description "已开启(不一定运行成功)"
+            fi
             ip rule add from all lookup main
         else
             echo "开关控制$(date "+%Y-%m-%d %H:%M:%S") 进程已存在"
