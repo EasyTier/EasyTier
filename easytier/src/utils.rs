@@ -102,12 +102,21 @@ pub fn init_logger(
         .with_writer(std::io::stderr)
         .with_filter(console_filter);
 
-    tracing_subscriber::Registry::default()
+    let registry = tracing_subscriber::Registry::default()
         .with(console_layer)
-        .with(file_layer)
-        .init();
+        .with(file_layer);
+    if is_tracing_enabled() {
+        let cl = console_subscriber::ConsoleLayer::builder().spawn();
+        registry.with(cl).init();
+    } else {
+        registry.init();
+    }
 
     Ok(ret_sender)
+}
+
+fn is_tracing_enabled() -> bool {
+    cfg!(feature = "tracing")
 }
 
 #[cfg(target_os = "windows")]
