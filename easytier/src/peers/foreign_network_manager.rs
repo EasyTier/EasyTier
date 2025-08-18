@@ -2,7 +2,7 @@
 foreign_network_manager is used to forward packets of other networks.  currently
 only forward packets of peers that directly connected to this node.
 
-in future, with the help wo peer center we can forward packets of peers that
+in the future, with the help wo peer center we can forward packets of peers that
 connected to any node in the local network.
 */
 use std::{
@@ -49,7 +49,7 @@ use super::{
     peer_rpc_service::DirectConnectorManagerRpcServer,
     recv_packet_from_chan,
     route_trait::NextHopPolicy,
-    PacketRecvChan, PacketRecvChanReceiver,
+    PacketRecvChan, PacketRecvChanReceiver, PUBLIC_SERVER_HOSTNAME_PREFIX,
 };
 
 #[async_trait::async_trait]
@@ -161,7 +161,11 @@ impl ForeignNetworkEntry {
     ) -> ArcGlobalCtx {
         let config = TomlConfigLoader::default();
         config.set_network_identity(network.clone());
-        config.set_hostname(Some(format!("PublicServer_{}", global_ctx.get_hostname())));
+        config.set_hostname(Some(format!(
+            "{}{}",
+            PUBLIC_SERVER_HOSTNAME_PREFIX,
+            global_ctx.get_hostname()
+        )));
 
         let mut flags = config.get_flags();
         flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
