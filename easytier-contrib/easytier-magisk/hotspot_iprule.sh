@@ -18,6 +18,9 @@ get_et_iface() {
         }
     ' "$CONFIG_FILE"
 }
+get_tun_iface() {
+    ip link | awk -F': ' '/ tun[[:alnum:]]+/ {print $2; exit}'
+}
 get_hot_iface() {
     ip link | awk -F': ' '/(^| )(swlan[[:alnum:]_]*|softap[[:alnum:]_]*|ap[[:alnum:]_]*)\:/ {print $2; exit}' | cut -d'@' -f1 | head -n1
 }
@@ -28,9 +31,12 @@ get_hot_cidr() {
 
 set_nat_rules() {
     ET_IFACE=$(get_et_iface)
+    [ -z "$ET_IFACE" ] && ET_IFACE="$(get_tun_iface)"
     HOT_IFACE=$(get_hot_iface)
     HOT_CIDR=$(get_hot_cidr "$HOT_IFACE")
 
+    # 如果热点关闭就删除自定义链
+    flush_rules
     [ -n "$ET_IFACE" ] && [ -n "$HOT_CIDR" ] || return 1
 
     # 创建自定义链（如不存在）
