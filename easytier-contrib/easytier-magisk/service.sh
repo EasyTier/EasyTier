@@ -18,6 +18,7 @@ sed -i 's/$(description=)$[^"]*/\1[状态]关闭中/' "$MODDIR/module.prop"
 sleep 3s
 
 "${MODDIR}/easytier_core.sh" &
+"${MODDIR}/hotspot_iprule.sh" add &
 
 # 检查是否启用模块
 while [ ! -f ${MODDIR}/disable ]; do 
@@ -25,3 +26,4 @@ while [ ! -f ${MODDIR}/disable ]; do
 done
 
 pkill easytier-core
+"${MODDIR}/hotspot_iprule.sh del
