@@ -497,8 +497,8 @@ impl KcpProxyDst {
                 dst_port: Some(dst_socket.port()),
                 protocol: Protocol::Tcp,
                 packet_size: conn_data.len(),
-                src_groups: vec![],
-                dst_groups: vec![],
+                src_groups: Arc::new(vec![]),
+                dst_groups: Arc::new(vec![]),
             },
             chain_type: if send_to_self {
                 ChainType::Inbound

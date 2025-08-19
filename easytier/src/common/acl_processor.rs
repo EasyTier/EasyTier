@@ -80,8 +80,8 @@ pub struct AclCacheKey {
     pub dst_ip: IpAddr,
     pub src_port: u16,
     pub dst_port: u16,
-    pub src_groups: Vec<String>,
-    pub dst_groups: Vec<String>,
+    pub src_groups: Arc<Vec<String>>,
+    pub dst_groups: Arc<Vec<String>>,
 }
 
 impl AclCacheKey {
@@ -122,8 +122,8 @@ pub struct PacketInfo {
     pub dst_port: Option<u16>,
     pub protocol: Protocol,
     pub packet_size: usize,
-    pub src_groups: Vec<String>,
-    pub dst_groups: Vec<String>,
+    pub src_groups: Arc<Vec<String>>,
+    pub dst_groups: Arc<Vec<String>>,
 }
 
 // ACL processing result
@@ -1243,42 +1243,42 @@ mod tests {
 
         // Case 3.1: Source group match (devs from anywhere)
         let mut packet_info = create_test_packet_info();
-        packet_info.src_groups = vec!["dev".to_string()];
+        packet_info.src_groups = Arc::new(vec!["dev".to_string()]);
         let result = processor.process_packet(&packet_info, ChainType::Inbound);
         assert_eq!(result.action, Action::Allow);
         assert_eq!(result.matched_rule, Some(RuleId::Priority(90)));
 
         // Case 3.2: Source group no match
-        packet_info.src_groups = vec!["guest".to_string()];
+        packet_info.src_groups = Arc::new(vec!["guest".to_string()]);
         let result = processor.process_packet(&packet_info, ChainType::Inbound);
         assert_eq!(result.action, Action::Drop); // Default drop
         assert_eq!(result.matched_rule, Some(RuleId::Default));
 
         // Case 3.3: Destination group match (deny guests to db)
-        packet_info.src_groups = vec!["guest".to_string()];
-        packet_info.dst_groups = vec!["db-server".to_string()];
+        packet_info.src_groups = Arc::new(vec!["guest".to_string()]);
+        packet_info.dst_groups = Arc::new(vec!["db-server".to_string()]);
         let result = processor.process_packet(&packet_info, ChainType::Inbound);
         assert_eq!(result.action, Action::Drop);
         assert_eq!(result.matched_rule, Some(RuleId::Priority(80)));
 
         // Case 3.4: Source and Destination groups match
-        packet_info.src_groups = vec!["admin".to_string()];
-        packet_info.dst_groups = vec!["db-server".to_string()];
+        packet_info.src_groups = Arc::new(vec!["admin".to_string()]);
+        packet_info.dst_groups = Arc::new(vec!["db-server".to_string()]);
         let result = processor.process_packet(&packet_info, ChainType::Inbound);
         assert_eq!(result.action, Action::Allow);
         assert_eq!(result.matched_rule, Some(RuleId::Priority(100)));
 
         // Case 3.5: Partial match (admin to web-server)
-        packet_info.src_groups = vec!["admin".to_string()];
-        packet_info.dst_groups = vec!["web-server".to_string()];
+        packet_info.src_groups = Arc::new(vec!["admin".to_string()]);
+        packet_info.dst_groups = Arc::new(vec!["web-server".to_string()]);
         let result = processor.process_packet(&packet_info, ChainType::Inbound);
         assert_eq!(result.action, Action::Drop); // Default drop
         assert_eq!(result.matched_rule, Some(RuleId::Default));
 
         // Case 3.6: Rule with no group definition
         packet_info.src_ip = "1.2.3.4".parse().unwrap();
-        packet_info.src_groups = vec!["admin".to_string()];
-        packet_info.dst_groups = vec![];
+        packet_info.src_groups = Arc::new(vec!["admin".to_string()]);
+        packet_info.dst_groups = Arc::new(vec![]);
         let result = processor.process_packet(&packet_info, ChainType::Inbound);
         assert_eq!(result.action, Action::Allow);
         assert_eq!(result.matched_rule, Some(RuleId::Priority(70)));
@@ -1322,8 +1322,8 @@ mod tests {
             dst_port: Some(80),
             protocol: Protocol::Tcp,
             packet_size: 1024,
-            src_groups: vec![],
-            dst_groups: vec![],
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
         }
     }
 
@@ -1522,8 +1522,8 @@ mod tests {
             dst_port: Some(53),      // DNS
             protocol: Protocol::Udp, // UDP
             packet_size: 512,
-            src_groups: vec![],
-            dst_groups: vec![],
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
         };
 
         // Test TCP packet (should hit stateful+rate-limited rule)
@@ -1534,8 +1534,8 @@ mod tests {
             dst_port: Some(80),      // HTTP
             protocol: Protocol::Tcp, // TCP
             packet_size: 1024,
-            src_groups: vec![],
-            dst_groups: vec![],
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
         };
 
         // Process UDP packets multiple times

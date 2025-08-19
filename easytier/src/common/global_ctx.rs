@@ -393,7 +393,7 @@ impl GlobalCtx {
             .and_then(|acl| acl.acl_v1)
             .and_then(|acl_v1| acl_v1.group)
             .map_or_else(Vec::new, |group| {
-                group.declares.iter().cloned().collect()
+                group.declares.to_vec()
             })
     }
 }

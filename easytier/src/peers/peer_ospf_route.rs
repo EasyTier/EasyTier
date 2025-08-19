@@ -624,27 +624,25 @@ impl SyncedRouteInfo {
     fn verify_and_update_group_trusts(
         &self,
         peer_infos: &[RoutePeerInfo],
-        local_group_declarations: &Vec<GroupIdentity>,
+        local_group_declarations: &[GroupIdentity],
     ) {
         let local_group_declarations = local_group_declarations
             .iter()
-            .map(|g| (g.group_name.clone(), g.group_secret.clone()))
-            .collect::<std::collections::HashMap<_, _>>();
+            .map(|g| (g.group_name.as_str(), g.group_secret.as_str()))
+            .collect::<std::collections::HashMap<&str, &str>>();
 
-        for info in peer_infos {
+        let verify_groups = |old_trusted_groups: Option<&HashSet<String>>, info: &RoutePeerInfo| -> HashSet<String> {
             let mut trusted_groups_for_peer: HashSet<String> = HashSet::new();
-            let old_trusted_groups = self
-                .group_trust_map
-                .remove(&info.peer_id)
-                .map(|(_, groups)| groups)
-                .unwrap_or_else(HashSet::new);
 
             for group_proof in &info.groups {
-                if old_trusted_groups.contains(&group_proof.group_name) {
-                    trusted_groups_for_peer.insert(group_proof.group_name.clone());
-                    continue;
+                if let Some(old_groups) = old_trusted_groups {
+                    if old_groups.contains(&group_proof.group_name) {
+                        trusted_groups_for_peer.insert(group_proof.group_name.clone());
+                        continue;
+                    }
                 }
-                if let Some(local_secret) = local_group_declarations.get(&group_proof.group_name) {
+
+                if let Some(&local_secret) = local_group_declarations.get(group_proof.group_name.as_str()) {
                     if group_proof.verify(local_secret, info.peer_id) {
                         trusted_groups_for_peer.insert(group_proof.group_name.clone());
                     } else {
@@ -657,9 +655,28 @@ impl SyncedRouteInfo {
                 }
             }
 
-            if !trusted_groups_for_peer.is_empty() {
-                self.group_trust_map
-                    .insert(info.peer_id, trusted_groups_for_peer);
+            trusted_groups_for_peer
+        };
+
+        for info in peer_infos {
+            match self.group_trust_map.entry(info.peer_id) {
+                dashmap::mapref::entry::Entry::Occupied(mut entry) => {
+                    let old_trusted_groups = entry.get().clone();
+                    let trusted_groups_for_peer = verify_groups(Some(&old_trusted_groups), info);
+
+                    if trusted_groups_for_peer.is_empty() {
+                        entry.remove();
+                    } else {
+                        *entry.get_mut() = trusted_groups_for_peer;
+                    }
+                },
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    let trusted_groups_for_peer = verify_groups(None, info);
+
+                    if !trusted_groups_for_peer.is_empty() {
+                        entry.insert(trusted_groups_for_peer);
+                    }
+                }
             }
         }
     }
