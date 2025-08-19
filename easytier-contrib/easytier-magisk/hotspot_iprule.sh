@@ -2,7 +2,7 @@
 MODDIR=${0%/*}
 CONFIG_FILE="${MODDIR}/config/config.toml"
 LOG_FILE="${MODDIR}/log.log"
-ACTION="$1"  # 参数：add 或 del
+ACTION="$1"  # 参数：add add_once del
 
 
 # 获取接口/IP
@@ -36,7 +36,6 @@ set_nat_rules() {
     HOT_CIDR=$(get_hot_cidr "$HOT_IFACE")
 
     # 如果热点关闭就删除自定义链
-    flush_rules
     [ -n "$ET_IFACE" ] && [ -n "$HOT_CIDR" ] || return 1
 
     # 创建自定义链（如不存在）
@@ -70,9 +69,16 @@ case "$ACTION" in
         set_nat_rules
         echo "[ET-NAT] Guard started." >> "$LOG_FILE"
         ip monitor link addr | while read -r _; do
-            flush_rules
-            set_nat_rules
+            if [ -f "${MODDIR}/enable_IP_rule" ]; then
+                flush_rules
+                set_nat_rules
+            fi
         done
+        ;;
+    add_once)
+        flush_rules
+        set_nat_rules
+        echo "[ET-NAT] One-time rules applied." >> "$LOG_FILE"
         ;;
     del)
         flush_rules
