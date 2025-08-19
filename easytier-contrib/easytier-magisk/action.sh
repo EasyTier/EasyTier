@@ -27,14 +27,14 @@ if [ -n "$ET_STATUS" ]; then
         rm -f "${MODDIR}/enable_IP_rule"
         ${MODDIR}/hotspot_iprule.sh del
         REDIR_STATUS="转发已禁用"
-        echo "局域网转发已禁用"
+        echo "热点子网转发已禁用"
         echo "[ET-NAT] IP rule disabled." >> "${MODDIR}/log.log"
     else
         touch "${MODDIR}/enable_IP_rule"
         ${MODDIR}/hotspot_iprule.sh del
         ${MODDIR}/hotspot_iprule.sh add_once
         REDIR_STATUS="转发已激活"
-        echo "局域网转发已激活,热点开启后将自动将热点加入转发网络（要求已配置本地网络cidr=参数）。转发规则将随着热点开关而自动开关。该状态将保持到转发被禁用为止。"
+        echo "热点子网转发已激活,热点开启后将自动将热点加入转发网络（要求已配置本地网络cidr=参数）。转发规则将随着热点开关而自动开关。该状态将保持到转发被禁用为止。"
         echo "[ET-NAT] IP rule enabled." >> "${MODDIR}/log.log"
     fi
     update_module_description "${ET_STATUS} | ${REDIR_STATUS}"
