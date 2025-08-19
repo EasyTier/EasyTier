@@ -39,5 +39,5 @@ if [ -n "$ET_STATUS" ]; then
     fi
     update_module_description "${ET_STATUS} | ${REDIR_STATUS}"
 else
-    ui_print "主程序未正常启动，请先检查配置文件"
+    echo "主程序未正常启动，请先检查配置文件"
 fi
