@@ -32,7 +32,7 @@ use crate::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
         recv_packet_from_chan,
-        route_trait::{ForeignNetworkRouteInfoMap, NextHopPolicy, RouteInterface},
+        route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         PeerPacketFilter,
     },
     proto::{
@@ -634,6 +634,7 @@ impl PeerManager {
         let acl_filter = self.global_ctx.get_acl_filter().clone();
         let global_ctx = self.global_ctx.clone();
         let stats_mgr = self.global_ctx.stats_manager().clone();
+        let route = self.get_route();
 
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
@@ -732,12 +733,16 @@ impl PeerManager {
 
                     compress_rx_bytes_after.add(ret.buf_len() as u64);
 
-                    if !acl_filter.process_packet_with_acl(
-                        &ret,
-                        true,
-                        global_ctx.get_ipv4().map(|x| x.address()),
-                        global_ctx.get_ipv6().map(|x| x.address()),
-                    ) {
+                    if !acl_filter
+                        .process_packet_with_acl(
+                            &ret,
+                            true,
+                            global_ctx.get_ipv4().map(|x| x.address()),
+                            global_ctx.get_ipv6().map(|x| x.address()),
+                            &route,
+                        )
+                        .await
+                    {
                         continue;
                     }
 
@@ -914,7 +919,7 @@ impl PeerManager {
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
         match &self.route_algo_inst {
             RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
-            RouteAlgoInst::None => panic!("no route"),
+            RouteAlgoInst::None => Box::new(MockRoute{}),
         }
     }
 
@@ -963,7 +968,8 @@ impl PeerManager {
         if !self
             .global_ctx
             .get_acl_filter()
-            .process_packet_with_acl(data, false, None, None)
+            .process_packet_with_acl(data, false, None, None, &self.get_route())
+            .await
         {
             return;
         }

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     str::FromStr as _,
     sync::Arc,
@@ -61,6 +61,8 @@ pub struct FastLookupRule {
     pub dst_ip_ranges: Vec<cidr::IpCidr>,
     pub src_port_ranges: Vec<(u16, u16)>,
     pub dst_port_ranges: Vec<(u16, u16)>,
+    pub source_groups: HashSet<String>,
+    pub destination_groups: HashSet<String>,
     pub action: Action,
     pub enabled: bool,
     pub stateful: bool,
@@ -78,6 +80,8 @@ pub struct AclCacheKey {
     pub dst_ip: IpAddr,
     pub src_port: u16,
     pub dst_port: u16,
+    pub src_groups: Vec<String>,
+    pub dst_groups: Vec<String>,
 }
 
 impl AclCacheKey {
@@ -89,6 +93,8 @@ impl AclCacheKey {
             dst_ip: packet_info.dst_ip,
             src_port: packet_info.src_port.unwrap_or(0),
             dst_port: packet_info.dst_port.unwrap_or(0),
+            src_groups: packet_info.src_groups.clone(),
+            dst_groups: packet_info.dst_groups.clone(),
         }
     }
 }
@@ -116,6 +122,8 @@ pub struct PacketInfo {
     pub dst_port: Option<u16>,
     pub protocol: Protocol,
     pub packet_size: usize,
+    pub src_groups: Vec<String>,
+    pub dst_groups: Vec<String>,
 }
 
 // ACL processing result
@@ -684,6 +692,28 @@ impl AclProcessor {
             }
         }
 
+        // Source group check
+        if !rule.source_groups.is_empty() {
+            let matches = packet_info
+                .src_groups
+                .iter()
+                .any(|group| rule.source_groups.contains(group));
+            if !matches {
+                return false;
+            }
+        }
+
+        // Destination group check
+        if !rule.destination_groups.is_empty() {
+            let matches = packet_info
+                .dst_groups
+                .iter()
+                .any(|group| rule.destination_groups.contains(group));
+            if !matches {
+                return false;
+            }
+        }
+
         true
     }
 
@@ -804,6 +834,8 @@ impl AclProcessor {
             dst_ip_ranges,
             src_port_ranges,
             dst_port_ranges,
+            source_groups: rule.source_groups.iter().cloned().collect(),
+            destination_groups: rule.destination_groups.iter().cloned().collect(),
             action: rule.action(),
             enabled: rule.enabled,
             stateful: rule.stateful,
@@ -1071,6 +1103,8 @@ impl AclRuleBuilder {
                 rate_limit: 0,
                 burst_limit: 0,
                 stateful: true,
+                source_groups: vec![],
+                destination_groups: vec![],
             };
             inbound_chain.rules.push(tcp_rule);
             rule_priority -= 1;
@@ -1093,6 +1127,8 @@ impl AclRuleBuilder {
                 rate_limit: 0,
                 burst_limit: 0,
                 stateful: false,
+                source_groups: vec![],
+                destination_groups: vec![],
             };
             inbound_chain.rules.push(udp_rule);
         }
@@ -1108,6 +1144,10 @@ impl AclRuleBuilder {
         } else {
             acl.acl_v1 = Some(AclV1 {
                 chains: vec![inbound_chain],
+                group: Some(GroupInfo {
+                    declares: vec![],
+                    members: vec![],
+                }),
             });
         }
 
@@ -1143,6 +1183,106 @@ mod tests {
     use super::*;
     use std::hash::{Hash, Hasher};
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[tokio::test]
+    async fn test_group_based_acl_rules() {
+        let mut acl_config = Acl::default();
+        let mut acl_v1 = AclV1::default();
+        let mut chain = Chain {
+            name: "group_test_chain".to_string(),
+            chain_type: ChainType::Inbound as i32,
+            enabled: true,
+            default_action: Action::Drop as i32,
+            ..Default::default()
+        };
+
+        // Rules
+        chain.rules.push(Rule {
+            name: "allow_admins_to_db".to_string(),
+            priority: 100,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_groups: vec!["admin".to_string()],
+            destination_groups: vec!["db-server".to_string()],
+            ..Default::default()
+        });
+        chain.rules.push(Rule {
+            name: "allow_devs_from_anywhere".to_string(),
+            priority: 90,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_groups: vec!["dev".to_string()],
+            ..Default::default()
+        });
+        chain.rules.push(Rule {
+            name: "deny_guests_to_db".to_string(),
+            priority: 80,
+            enabled: true,
+            action: Action::Drop as i32,
+            protocol: Protocol::Any as i32,
+            source_groups: vec!["guest".to_string()],
+            destination_groups: vec!["db-server".to_string()],
+            ..Default::default()
+        });
+        chain.rules.push(Rule {
+            name: "allow_specific_ip".to_string(),
+            priority: 70,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_ips: vec!["1.2.3.4/32".to_string()],
+            ..Default::default()
+        });
+
+        acl_v1.chains.push(chain);
+        acl_config.acl_v1 = Some(acl_v1);
+
+        let processor = AclProcessor::new(acl_config);
+
+        // Case 3.1: Source group match (devs from anywhere)
+        let mut packet_info = create_test_packet_info();
+        packet_info.src_groups = vec!["dev".to_string()];
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(90)));
+
+        // Case 3.2: Source group no match
+        packet_info.src_groups = vec!["guest".to_string()];
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Drop); // Default drop
+        assert_eq!(result.matched_rule, Some(RuleId::Default));
+
+        // Case 3.3: Destination group match (deny guests to db)
+        packet_info.src_groups = vec!["guest".to_string()];
+        packet_info.dst_groups = vec!["db-server".to_string()];
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Drop);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(80)));
+
+        // Case 3.4: Source and Destination groups match
+        packet_info.src_groups = vec!["admin".to_string()];
+        packet_info.dst_groups = vec!["db-server".to_string()];
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(100)));
+
+        // Case 3.5: Partial match (admin to web-server)
+        packet_info.src_groups = vec!["admin".to_string()];
+        packet_info.dst_groups = vec!["web-server".to_string()];
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Drop); // Default drop
+        assert_eq!(result.matched_rule, Some(RuleId::Default));
+
+        // Case 3.6: Rule with no group definition
+        packet_info.src_ip = "1.2.3.4".parse().unwrap();
+        packet_info.src_groups = vec!["admin".to_string()];
+        packet_info.dst_groups = vec![];
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(70)));
+    }
 
     fn create_test_acl_config() -> Acl {
         let mut acl_config = Acl::default();
@@ -1182,6 +1322,8 @@ mod tests {
             dst_port: Some(80),
             protocol: Protocol::Tcp,
             packet_size: 1024,
+            src_groups: vec![],
+            dst_groups: vec![],
         }
     }
 
@@ -1380,6 +1522,8 @@ mod tests {
             dst_port: Some(53),      // DNS
             protocol: Protocol::Udp, // UDP
             packet_size: 512,
+            src_groups: vec![],
+            dst_groups: vec![],
         };
 
         // Test TCP packet (should hit stateful+rate-limited rule)
@@ -1390,6 +1534,8 @@ mod tests {
             dst_port: Some(80),      // HTTP
             protocol: Protocol::Tcp, // TCP
             packet_size: 1024,
+            src_groups: vec![],
+            dst_groups: vec![],
         };
 
         // Process UDP packets multiple times

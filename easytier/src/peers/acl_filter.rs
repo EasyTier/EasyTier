@@ -162,6 +162,8 @@ impl AclFilter {
             dst_port,
             protocol: acl_protocol,
             packet_size: payload.len(),
+            src_groups: Vec::new(),
+            dst_groups: Vec::new(),
         })
     }
 
@@ -181,6 +183,8 @@ impl AclFilter {
                     dst_ip = %packet_info.dst_ip,
                     src_port = packet_info.src_port,
                     dst_port = packet_info.dst_port,
+                    src_group = packet_info.src_groups.join(","),
+                    dst_group = packet_info.dst_groups.join(","),
                     protocol = ?packet_info.protocol,
                     action = ?result.action,
                     rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
@@ -227,12 +231,13 @@ impl AclFilter {
     }
 
     /// Common ACL processing logic
-    pub fn process_packet_with_acl(
+    pub async fn process_packet_with_acl(
         &self,
         packet: &ZCPacket,
         is_in: bool,
         my_ipv4: Option<Ipv4Addr>,
         my_ipv6: Option<Ipv6Addr>,
+        route: &(dyn super::route_trait::Route + Send + Sync + 'static),
     ) -> bool {
         if !self.acl_enabled.load(Ordering::Relaxed) {
             return true;
@@ -244,7 +249,11 @@ impl AclFilter {
 
         // Extract packet information
         let packet_info = match self.extract_packet_info(packet) {
-            Some(info) => info,
+            Some(mut info) => {
+                info.src_groups = route.get_peer_groups_by_ip(&info.src_ip).await;
+                info.dst_groups = route.get_peer_groups_by_ip(&info.dst_ip).await;
+                info
+            }
             None => {
                 tracing::warn!(
                     "Failed to extract packet info from {:?} packet, header: {:?}",

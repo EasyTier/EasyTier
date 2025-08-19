@@ -404,6 +404,8 @@ impl QUICProxyDst {
                 dst_port: Some(dst_socket.port()),
                 protocol: Protocol::Tcp,
                 packet_size: len as usize,
+                src_groups: vec![],
+                dst_groups: vec![],
             },
             chain_type: if send_to_self {
                 ChainType::Inbound

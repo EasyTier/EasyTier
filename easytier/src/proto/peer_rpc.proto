@@ -25,6 +25,8 @@ message RoutePeerInfo {
 
   optional uint32 quic_port = 14;
   optional common.Ipv6Inet ipv6_addr = 15;
+
+  repeated PeerGroupInfo groups = 16;
 }
 
 message PeerIdVersion {
@@ -68,6 +70,11 @@ message RouteForeignNetworkSummary {
   }
 
   map<uint32, Info> info_map = 1;
+}
+
+message PeerGroupInfo {
+  string group_name = 1;
+  bytes group_proof = 2;
 }
 
 message SyncRouteInfoRequest {

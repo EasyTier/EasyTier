@@ -122,9 +122,51 @@ pub trait Route {
 
     async fn get_peer_info_last_update_time(&self) -> std::time::Instant;
 
+    fn get_peer_groups(&self, peer_id: PeerId) -> Vec<String>;
+
+    async fn get_peer_groups_by_ip(&self, ip: &std::net::IpAddr) -> Vec<String> {
+        match self.get_peer_id_by_ip(ip).await {
+            Some(peer_id) => self.get_peer_groups(peer_id),
+            None => Vec::new(),
+        }
+    }
+
     async fn dump(&self) -> String {
         "this route implementation does not support dump".to_string()
     }
 }
 
 pub type ArcRoute = Arc<Box<dyn Route + Send + Sync>>;
+
+pub struct MockRoute {}
+
+#[async_trait::async_trait]
+impl Route for MockRoute {
+    async fn open(&self, _interface: RouteInterfaceBox) -> Result<u8, ()> {
+        panic!("mock route")
+    }
+
+    async fn close(&self) {
+        panic!("mock route")
+    }
+
+    async fn get_next_hop(&self, _peer_id: PeerId) -> Option<PeerId> {
+        panic!("mock route")
+    }
+
+    async fn list_routes(&self) -> Vec<crate::proto::cli::Route> {
+        panic!("mock route")
+    }
+
+    async fn get_peer_info(&self, _peer_id: PeerId) -> Option<RoutePeerInfo> {
+        panic!("mock route")
+    }
+
+    async fn get_peer_info_last_update_time(&self) -> std::time::Instant {
+        panic!("mock route")
+    }
+
+    fn get_peer_groups(&self, _peer_id: PeerId) -> Vec<String> {
+        panic!("mock route")
+    }
+}

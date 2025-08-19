@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{{BTreeMap, BTreeSet}, HashSet},
     fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr},
     sync::{
@@ -33,6 +33,7 @@ use crate::{
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
+        acl::GroupIdentity,
         common::{Ipv4Inet, NatType, StunInfo},
         peer_rpc::{
             route_foreign_network_infos, route_foreign_network_summary,
@@ -127,6 +128,7 @@ impl RoutePeerInfo {
             network_length: 24,
             quic_port: None,
             ipv6_addr: None,
+            groups: Vec::new(),
         }
     }
 
@@ -168,6 +170,8 @@ impl RoutePeerInfo {
 
             quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
+
+            groups: global_ctx.get_acl_groups(my_peer_id),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -296,6 +300,7 @@ struct SyncedRouteInfo {
     raw_peer_infos: DashMap<PeerId, DynamicMessage>,
     conn_map: DashMap<PeerId, (BTreeSet<PeerId>, AtomicVersion)>,
     foreign_network: DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>,
+    group_trust_map: DashMap<PeerId, HashSet<String>>,
 
     version: AtomicVersion,
 }
@@ -306,6 +311,7 @@ impl Debug for SyncedRouteInfo {
             .field("peer_infos", &self.peer_infos)
             .field("conn_map", &self.conn_map)
             .field("foreign_network", &self.foreign_network)
+            .field("group_trust_map", &self.group_trust_map)
             .field("version", &self.version.get())
             .finish()
     }
@@ -324,6 +330,7 @@ impl SyncedRouteInfo {
         self.raw_peer_infos.remove(&peer_id);
         self.conn_map.remove(&peer_id);
         self.foreign_network.retain(|k, _| k.peer_id != peer_id);
+        self.group_trust_map.remove(&peer_id);
         self.version.inc();
     }
 
@@ -612,6 +619,49 @@ impl SyncedRouteInfo {
     fn is_peer_directly_connected(&self, src_peer_id: PeerId, dst_peer_id: PeerId) -> bool {
         self.is_peer_bidirectly_connected(src_peer_id, dst_peer_id)
             || self.is_peer_bidirectly_connected(dst_peer_id, src_peer_id)
+    }
+
+    fn verify_and_update_group_trusts(
+        &self,
+        peer_infos: &[RoutePeerInfo],
+        local_group_declarations: &Vec<GroupIdentity>,
+    ) {
+        let local_group_declarations = local_group_declarations
+            .iter()
+            .map(|g| (g.group_name.clone(), g.group_secret.clone()))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        for info in peer_infos {
+            let mut trusted_groups_for_peer: HashSet<String> = HashSet::new();
+            let old_trusted_groups = self
+                .group_trust_map
+                .remove(&info.peer_id)
+                .map(|(_, groups)| groups)
+                .unwrap_or_else(HashSet::new);
+
+            for group_proof in &info.groups {
+                if old_trusted_groups.contains(&group_proof.group_name) {
+                    trusted_groups_for_peer.insert(group_proof.group_name.clone());
+                    continue;
+                }
+                if let Some(local_secret) = local_group_declarations.get(&group_proof.group_name) {
+                    if group_proof.verify(local_secret, info.peer_id) {
+                        trusted_groups_for_peer.insert(group_proof.group_name.clone());
+                    } else {
+                        tracing::warn!(
+                            peer_id = info.peer_id,
+                            group = %group_proof.group_name,
+                            "Group proof verification failed"
+                        );
+                    }
+                }
+            }
+
+            if !trusted_groups_for_peer.is_empty() {
+                self.group_trust_map
+                    .insert(info.peer_id, trusted_groups_for_peer);
+            }
+        }
     }
 }
 
@@ -1154,6 +1204,7 @@ impl PeerRouteServiceImpl {
                 raw_peer_infos: DashMap::new(),
                 conn_map: DashMap::new(),
                 foreign_network: DashMap::new(),
+                group_trust_map: DashMap::new(),
                 version: AtomicVersion::new(),
             },
             cached_local_conn_map: std::sync::Mutex::new(RouteConnBitmap::new()),
@@ -1679,6 +1730,14 @@ impl PeerRouteServiceImpl {
     fn get_peer_info_last_update(&self) -> std::time::Instant {
         self.peer_info_last_update.load()
     }
+
+    fn get_peer_groups(&self, peer_id: PeerId) -> Vec<String> {
+        self.synced_route_info
+            .group_trust_map
+            .get(&peer_id)
+            .map(|groups| groups.value().iter().cloned().collect())
+            .unwrap_or_default()
+    }
 }
 
 impl Drop for PeerRouteServiceImpl {
@@ -2016,6 +2075,12 @@ impl RouteSessionManager {
                 peer_infos,
                 raw_peer_infos.as_ref().unwrap(),
             )?;
+            service_impl
+                .synced_route_info
+                .verify_and_update_group_trusts(
+                    peer_infos,
+                    &service_impl.global_ctx.get_acl_group_declarations(),
+                );
             session.update_dst_saved_peer_info_version(peer_infos);
             need_update_route_table = true;
         }
@@ -2363,6 +2428,10 @@ impl Route for PeerRoute {
 
     async fn get_peer_info_last_update_time(&self) -> Instant {
         self.service_impl.get_peer_info_last_update()
+    }
+
+    fn get_peer_groups(&self, peer_id: PeerId) -> Vec<String> {
+        self.service_impl.get_peer_groups(peer_id)
     }
 }
 
