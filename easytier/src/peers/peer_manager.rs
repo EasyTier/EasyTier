@@ -919,7 +919,7 @@ impl PeerManager {
     pub fn get_route(&self) -> Box<dyn Route + Send + Sync + 'static> {
         match &self.route_algo_inst {
             RouteAlgoInst::Ospf(route) => Box::new(route.clone()),
-            RouteAlgoInst::None => Box::new(MockRoute{}),
+            RouteAlgoInst::None => Box::new(MockRoute {}),
         }
     }
 

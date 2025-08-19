@@ -631,7 +631,9 @@ impl SyncedRouteInfo {
             .map(|g| (g.group_name.as_str(), g.group_secret.as_str()))
             .collect::<std::collections::HashMap<&str, &str>>();
 
-        let verify_groups = |old_trusted_groups: Option<&HashSet<String>>, info: &RoutePeerInfo| -> HashSet<String> {
+        let verify_groups = |old_trusted_groups: Option<&HashSet<String>>,
+                             info: &RoutePeerInfo|
+         -> HashSet<String> {
             let mut trusted_groups_for_peer: HashSet<String> = HashSet::new();
 
             for group_proof in &info.groups {
@@ -642,7 +644,9 @@ impl SyncedRouteInfo {
                     }
                 }
 
-                if let Some(&local_secret) = local_group_declarations.get(group_proof.group_name.as_str()) {
+                if let Some(&local_secret) =
+                    local_group_declarations.get(group_proof.group_name.as_str())
+                {
                     if group_proof.verify(local_secret, info.peer_id) {
                         trusted_groups_for_peer.insert(group_proof.group_name.clone());
                     } else {
@@ -669,7 +673,7 @@ impl SyncedRouteInfo {
                     } else {
                         *entry.get_mut() = trusted_groups_for_peer;
                     }
-                },
+                }
                 dashmap::mapref::entry::Entry::Vacant(entry) => {
                     let trusted_groups_for_peer = verify_groups(None, info);
 

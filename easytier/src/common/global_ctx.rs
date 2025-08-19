@@ -381,7 +381,11 @@ impl GlobalCtx {
                     .iter()
                     .filter(|g| memberships.contains(&g.group_name))
                     .map(|g| {
-                        PeerGroupInfo::generate_with_proof(g.group_name.clone(), g.group_secret.clone(), peer_id)
+                        PeerGroupInfo::generate_with_proof(
+                            g.group_name.clone(),
+                            g.group_secret.clone(),
+                            peer_id,
+                        )
                     })
                     .collect()
             })
@@ -392,9 +396,7 @@ impl GlobalCtx {
             .get_acl()
             .and_then(|acl| acl.acl_v1)
             .and_then(|acl_v1| acl_v1.group)
-            .map_or_else(Vec::new, |group| {
-                group.declares.to_vec()
-            })
+            .map_or_else(Vec::new, |group| group.declares.to_vec())
     }
 }
 

@@ -48,7 +48,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret, peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret, peer_id);
 
         assert_eq!(peer_group_info.group_name, group_name);
         assert!(!peer_group_info.group_proof.is_empty());
@@ -62,7 +63,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         // Verification should succeed using the same secret and peer_id
         assert!(peer_group_info.verify(&group_secret, peer_id));
@@ -86,7 +88,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         // Verification should fail with a wrong peer_id
         assert!(!peer_group_info.verify(&group_secret, 999u32));
@@ -97,8 +100,10 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let group1 = PeerGroupInfo::generate_with_proof("group1".to_string(), group_secret.clone(), peer_id);
-        let group2 = PeerGroupInfo::generate_with_proof("group2".to_string(), group_secret, peer_id);
+        let group1 =
+            PeerGroupInfo::generate_with_proof("group1".to_string(), group_secret.clone(), peer_id);
+        let group2 =
+            PeerGroupInfo::generate_with_proof("group2".to_string(), group_secret, peer_id);
 
         // Different group names should produce different proofs
         assert_ne!(group1.group_proof, group2.group_proof);
@@ -110,7 +115,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let group1 = PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
+        let group1 =
+            PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
         let group2 = PeerGroupInfo::generate_with_proof(group_name, group_secret, peer_id);
 
         // Same parameters should produce the same proof
@@ -123,7 +129,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
 
         assert_eq!(peer_group_info.group_name, group_name);
         assert!(peer_group_info.verify(&group_secret, peer_id));
@@ -135,7 +142,8 @@ mod tests {
         let group_secret = "".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         assert!(peer_group_info.verify(&group_secret, peer_id));
     }
@@ -146,7 +154,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
 
         assert_eq!(peer_group_info.group_name, group_name);
         assert!(peer_group_info.verify(&group_secret, peer_id));
@@ -158,7 +167,8 @@ mod tests {
         let group_secret = "密码123🔐".to_string();
         let peer_id = 42u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         assert!(peer_group_info.verify(&group_secret, peer_id));
     }
@@ -169,7 +179,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = 0u32;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         assert!(peer_group_info.verify(&group_secret, peer_id));
     }
@@ -180,7 +191,8 @@ mod tests {
         let group_secret = "secret123".to_string();
         let peer_id = u32::MAX;
 
-        let peer_group_info = PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
+        let peer_group_info =
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         assert!(peer_group_info.verify(&group_secret, peer_id));
     }

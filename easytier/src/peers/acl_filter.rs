@@ -603,7 +603,7 @@ mod tests {
             let _ = filter.get_groups_with_cache(&ip, &route).await;
         }
 
-        assert!(filter.group_cache.len() > 0);
+        assert!(!filter.group_cache.is_empty());
 
         // Clear cache
         filter.clear_group_cache();
@@ -657,17 +657,17 @@ mod tests {
 
         // Get groups once
         let groups1 = filter.get_groups_with_cache(&ip, &route).await;
-        
+
         // Get groups again from cache
         let groups2 = filter.get_groups_with_cache(&ip, &route).await;
-        
+
         // Verify both results are the same Arc (sharing memory)
         assert!(Arc::ptr_eq(&groups1, &groups2));
-        
+
         // Verify content is correct
         assert_eq!(*groups1, vec!["admin", "dev"]);
         assert_eq!(*groups2, vec!["admin", "dev"]);
-        
+
         // Only one route call should be made due to caching
         assert_eq!(route.get_call_count(), 1);
     }
