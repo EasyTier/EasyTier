@@ -118,10 +118,19 @@ impl TcpStream {
     ) -> io::Result<TcpStream> {
         let handle = reactor.socket_allocator().new_tcp_socket();
 
-        reactor
-            .get_socket::<tcp::Socket>(*handle)
-            .connect(&mut reactor.context(), remote_endpoint, local_endpoint)
-            .map_err(map_err)?;
+        // see https://github.com/spacemeowx2/tokio-smoltcp/pull/12
+        let connect_result = {
+            // Issue #11. We must lock the context before we call connect to
+            // avoid lock inversion deadlocks, but drop it before constructing
+            // the TcpStream to avoid a second mutable borror of the reactor.
+            let mut context = reactor.context();
+            reactor.get_socket::<tcp::Socket>(*handle).connect(
+                &mut context,
+                remote_endpoint,
+                local_endpoint,
+            )
+        };
+        connect_result.map_err(map_err)?;
 
         let local_addr = ep2sa(&local_endpoint);
         let peer_addr = ep2sa(&remote_endpoint);
