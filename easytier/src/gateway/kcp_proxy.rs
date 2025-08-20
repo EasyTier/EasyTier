@@ -482,6 +482,13 @@ impl KcpProxyDst {
             proxy_entries.remove(&conn_id);
         }
 
+        let src_ip = src_socket.ip();
+        let dst_ip = dst_socket.ip();
+        let (src_groups, dst_groups) = tokio::join!(
+            route.get_peer_groups_by_ip(&src_ip),
+            route.get_peer_groups_by_ip(&dst_ip)
+        );
+
         let send_to_self =
             Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()));
 
@@ -492,14 +499,14 @@ impl KcpProxyDst {
         let acl_handler = ProxyAclHandler {
             acl_filter: global_ctx.get_acl_filter().clone(),
             packet_info: PacketInfo {
-                src_ip: src_socket.ip(),
-                dst_ip: dst_socket.ip(),
+                src_ip,
+                dst_ip,
                 src_port: Some(src_socket.port()),
                 dst_port: Some(dst_socket.port()),
                 protocol: Protocol::Tcp,
                 packet_size: conn_data.len(),
-                src_groups: route.get_peer_groups_by_ip(&src_socket.ip()).await,
-                dst_groups: route.get_peer_groups_by_ip(&dst_socket.ip()).await,
+                src_groups,
+                dst_groups,
             },
             chain_type: if send_to_self {
                 ChainType::Inbound

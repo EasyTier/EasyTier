@@ -395,6 +395,13 @@ impl QUICProxyDst {
             dst_socket.set_ip(real_ip);
         }
 
+        let src_ip = addr.ip();
+        let dst_ip = *dst_socket.ip();
+        let (src_groups, dst_groups) = tokio::join!(
+            route.get_peer_groups_by_ip(&src_ip),
+            route.get_peer_groups_by_ipv4(&dst_ip)
+        );
+
         let send_to_self = Some(*dst_socket.ip()) == ctx.get_ipv4().map(|ip| ip.address());
         if send_to_self && ctx.no_tun() {
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
@@ -414,14 +421,14 @@ impl QUICProxyDst {
         let acl_handler = ProxyAclHandler {
             acl_filter: ctx.get_acl_filter().clone(),
             packet_info: PacketInfo {
-                src_ip: addr.ip(),
-                dst_ip: (*dst_socket.ip()).into(),
+                src_ip,
+                dst_ip: dst_ip.into(),
                 src_port: Some(addr.port()),
                 dst_port: Some(dst_socket.port()),
                 protocol: Protocol::Tcp,
                 packet_size: len as usize,
-                src_groups: route.get_peer_groups_by_ip(&addr.ip()).await,
-                dst_groups: route.get_peer_groups_by_ipv4(dst_socket.ip()).await,
+                src_groups,
+                dst_groups,
             },
             chain_type: if send_to_self {
                 ChainType::Inbound
