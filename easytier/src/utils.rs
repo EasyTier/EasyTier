@@ -2,7 +2,9 @@ use std::{fs::OpenOptions, str::FromStr};
 
 use anyhow::Context;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
+use tracing_subscriber::{
+    layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, Registry,
+};
 
 use crate::common::{config::LoggingConfigLoader, get_logger_timer_rfc3339};
 
@@ -102,21 +104,24 @@ pub fn init_logger(
         .with_writer(std::io::stderr)
         .with_filter(console_filter);
 
-    let registry = tracing_subscriber::Registry::default()
-        .with(console_layer)
-        .with(file_layer);
-    if is_tracing_enabled() {
-        let cl = console_subscriber::ConsoleLayer::builder().spawn();
-        registry.with(cl).init();
-    } else {
-        registry.init();
+    let registry = Registry::default();
+
+    #[cfg(not(feature = "tracing"))]
+    {
+        registry.with(console_layer).with(file_layer).init();
+    }
+
+    #[cfg(feature = "tracing")]
+    {
+        let console_subscriber_layer = console_subscriber::ConsoleLayer::builder().spawn();
+        registry
+            .with(console_layer)
+            .with(file_layer)
+            .with(console_subscriber_layer)
+            .init();
     }
 
     Ok(ret_sender)
-}
-
-fn is_tracing_enabled() -> bool {
-    cfg!(feature = "tracing")
 }
 
 #[cfg(target_os = "windows")]
