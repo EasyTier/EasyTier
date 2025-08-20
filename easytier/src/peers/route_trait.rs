@@ -131,6 +131,13 @@ pub trait Route {
         }
     }
 
+    async fn get_peer_groups_by_ipv4(&self, ipv4: &Ipv4Addr) -> Arc<Vec<String>> {
+        match self.get_peer_id_by_ipv4(ipv4).await {
+            Some(peer_id) => self.get_peer_groups(peer_id),
+            None => Arc::new(Vec::new()),
+        }
+    }
+
     async fn dump(&self) -> String {
         "this route implementation does not support dump".to_string()
     }

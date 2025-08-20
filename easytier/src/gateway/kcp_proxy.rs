@@ -440,12 +440,13 @@ impl KcpProxyDst {
         }
     }
 
-    #[tracing::instrument(ret)]
+    #[tracing::instrument(ret, skip(route))]
     async fn handle_one_in_stream(
         kcp_stream: KcpStream,
         global_ctx: ArcGlobalCtx,
         proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
         cidr_set: Arc<CidrSet>,
+        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
     ) -> Result<()> {
         let mut conn_data = kcp_stream.conn_data().clone();
         let parsed_conn_data = KcpConnData::decode(&mut conn_data)
@@ -497,8 +498,8 @@ impl KcpProxyDst {
                 dst_port: Some(dst_socket.port()),
                 protocol: Protocol::Tcp,
                 packet_size: conn_data.len(),
-                src_groups: Arc::new(vec![]),
-                dst_groups: Arc::new(vec![]),
+                src_groups: route.get_peer_groups_by_ip(&src_socket.ip()).await,
+                dst_groups: route.get_peer_groups_by_ip(&dst_socket.ip()).await,
             },
             chain_type: if send_to_self {
                 ChainType::Inbound
@@ -532,6 +533,7 @@ impl KcpProxyDst {
         let global_ctx = self.peer_manager.get_global_ctx().clone();
         let proxy_entries = self.proxy_entries.clone();
         let cidr_set = self.cidr_set.clone();
+        let route = Arc::new(self.peer_manager.get_route());
         self.tasks.spawn(async move {
             while let Ok(conn) = kcp_endpoint.accept().await {
                 let stream = KcpStream::new(&kcp_endpoint, conn)
@@ -541,9 +543,16 @@ impl KcpProxyDst {
                 let global_ctx = global_ctx.clone();
                 let proxy_entries = proxy_entries.clone();
                 let cidr_set = cidr_set.clone();
+                let route = route.clone();
                 tokio::spawn(async move {
-                    let _ = Self::handle_one_in_stream(stream, global_ctx, proxy_entries, cidr_set)
-                        .await;
+                    let _ = Self::handle_one_in_stream(
+                        stream,
+                        global_ctx,
+                        proxy_entries,
+                        cidr_set,
+                        route,
+                    )
+                    .await;
                 });
             }
         });

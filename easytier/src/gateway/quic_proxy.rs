@@ -247,10 +247,14 @@ pub struct QUICProxyDst {
     endpoint: Arc<quinn::Endpoint>,
     proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
+    route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
 }
 
 impl QUICProxyDst {
-    pub fn new(global_ctx: ArcGlobalCtx) -> Result<Self> {
+    pub fn new(
+        global_ctx: ArcGlobalCtx,
+        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
+    ) -> Result<Self> {
         let _g = global_ctx.net_ns.guard();
         let (endpoint, _) = make_server_endpoint("0.0.0.0:0".parse().unwrap())
             .map_err(|e| anyhow::anyhow!("failed to create QUIC endpoint: {}", e))?;
@@ -261,6 +265,7 @@ impl QUICProxyDst {
             endpoint: Arc::new(endpoint),
             proxy_entries: Arc::new(DashMap::new()),
             tasks,
+            route,
         })
     }
 
@@ -270,6 +275,7 @@ impl QUICProxyDst {
         let ctx = self.global_ctx.clone();
         let cidr_set = Arc::new(CidrSet::new(ctx.clone()));
         let proxy_entries = self.proxy_entries.clone();
+        let route = self.route.clone();
 
         let task = async move {
             loop {
@@ -289,6 +295,7 @@ impl QUICProxyDst {
                                 ctx.clone(),
                                 cidr_set.clone(),
                                 proxy_entries.clone(),
+                                route.clone(),
                             ));
                     }
                     None => {
@@ -312,6 +319,7 @@ impl QUICProxyDst {
         ctx: Arc<GlobalCtx>,
         cidr_set: Arc<CidrSet>,
         proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
+        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
     ) {
         let remote_addr = conn.remote_address();
         defer!(
@@ -319,7 +327,14 @@ impl QUICProxyDst {
         );
         let ret = timeout(
             std::time::Duration::from_secs(10),
-            Self::handle_connection(conn, ctx, cidr_set, remote_addr, proxy_entries.clone()),
+            Self::handle_connection(
+                conn,
+                ctx,
+                cidr_set,
+                remote_addr,
+                proxy_entries.clone(),
+                route,
+            ),
         )
         .await;
 
@@ -348,6 +363,7 @@ impl QUICProxyDst {
         cidr_set: Arc<CidrSet>,
         proxy_entry_key: SocketAddr,
         proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
+        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
     ) -> Result<(QUICStream, TcpStream, ProxyAclHandler)> {
         let conn = incoming.await.with_context(|| "accept failed")?;
         let addr = conn.remote_address();
@@ -404,8 +420,8 @@ impl QUICProxyDst {
                 dst_port: Some(dst_socket.port()),
                 protocol: Protocol::Tcp,
                 packet_size: len as usize,
-                src_groups: Arc::new(vec![]),
-                dst_groups: Arc::new(vec![]),
+                src_groups: route.get_peer_groups_by_ip(&addr.ip()).await,
+                dst_groups: route.get_peer_groups_by_ipv4(dst_socket.ip()).await,
             },
             chain_type: if send_to_self {
                 ChainType::Inbound
