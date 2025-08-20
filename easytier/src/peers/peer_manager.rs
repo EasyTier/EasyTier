@@ -733,16 +733,13 @@ impl PeerManager {
 
                     compress_rx_bytes_after.add(ret.buf_len() as u64);
 
-                    if !acl_filter
-                        .process_packet_with_acl(
-                            &ret,
-                            true,
-                            global_ctx.get_ipv4().map(|x| x.address()),
-                            global_ctx.get_ipv6().map(|x| x.address()),
-                            &route,
-                        )
-                        .await
-                    {
+                    if !acl_filter.process_packet_with_acl(
+                        &ret,
+                        true,
+                        global_ctx.get_ipv4().map(|x| x.address()),
+                        global_ctx.get_ipv6().map(|x| x.address()),
+                        &route,
+                    ) {
                         continue;
                     }
 
@@ -965,12 +962,13 @@ impl PeerManager {
     }
 
     async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
-        if !self
-            .global_ctx
-            .get_acl_filter()
-            .process_packet_with_acl(data, false, None, None, &self.get_route())
-            .await
-        {
+        if !self.global_ctx.get_acl_filter().process_packet_with_acl(
+            data,
+            false,
+            None,
+            None,
+            &self.get_route(),
+        ) {
             return;
         }
 

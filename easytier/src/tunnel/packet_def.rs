@@ -679,6 +679,14 @@ impl ZCPacket {
             ZCPacketType::DummyTunnel,
         )
     }
+
+    pub fn get_src_peer_id(&self) -> Option<u32> {
+        self.peer_manager_header().map(|hdr| hdr.from_peer_id.get())
+    }
+
+    pub fn get_dst_peer_id(&self) -> Option<u32> {
+        self.peer_manager_header().map(|hdr| hdr.to_peer_id.get())
+    }
 }
 
 #[cfg(test)]

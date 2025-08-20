@@ -3,11 +3,9 @@ use std::sync::atomic::Ordering;
 use std::{
     net::IpAddr,
     sync::{atomic::AtomicBool, Arc},
-    time::{Duration, Instant},
 };
 
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
     ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
@@ -21,38 +19,12 @@ use crate::{
     tunnel::packet_def::ZCPacket,
 };
 
-// Cache entry for IP to groups mapping
-#[derive(Debug, Clone)]
-struct GroupCacheEntry {
-    groups: Arc<Vec<String>>,
-    timestamp: Instant,
-}
-
-impl GroupCacheEntry {
-    fn new(groups: Vec<String>) -> Self {
-        Self {
-            groups: Arc::new(groups),
-            timestamp: Instant::now(),
-        }
-    }
-
-    fn is_expired(&self, ttl: Duration) -> bool {
-        self.timestamp.elapsed() > ttl
-    }
-}
-
-// Configuration constants for group cache
-const GROUP_CACHE_TTL: Duration = Duration::from_millis(500);
-const GROUP_CACHE_MAX_SIZE: usize = 1000;
-
 /// ACL filter that can be inserted into the packet processing pipeline
 /// Optimized with lock-free hot reloading via atomic processor replacement
 pub struct AclFilter {
     // Use ArcSwap for lock-free atomic replacement during hot reload
     acl_processor: ArcSwap<AclProcessor>,
     acl_enabled: Arc<AtomicBool>,
-    // Cache for IP to groups mapping to reduce frequent route lookups
-    group_cache: DashMap<IpAddr, GroupCacheEntry>,
 }
 
 impl Default for AclFilter {
@@ -66,7 +38,6 @@ impl AclFilter {
         Self {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
-            group_cache: DashMap::new(),
         }
     }
 
@@ -103,57 +74,6 @@ impl AclFilter {
         self.acl_processor.load_full()
     }
 
-    /// Get groups for an IP address with caching
-    async fn get_groups_with_cache(
-        &self,
-        ip: &IpAddr,
-        route: &(dyn super::route_trait::Route + Send + Sync + 'static),
-    ) -> Arc<Vec<String>> {
-        // Check cache first
-        if let Some(entry) = self.group_cache.get(ip) {
-            if !entry.is_expired(GROUP_CACHE_TTL) {
-                tracing::trace!("Group cache hit for IP: {}", ip);
-                return entry.groups.clone();
-            } else {
-                // Remove expired entry
-                drop(entry);
-                self.group_cache.remove(ip);
-                tracing::trace!("Group cache expired for IP: {}", ip);
-            }
-        }
-
-        // Cache miss, query route
-        tracing::trace!("Group cache miss for IP: {}", ip);
-        let groups = route.get_peer_groups_by_ip(ip).await;
-        let entry = GroupCacheEntry::new(groups);
-        let result = entry.groups.clone();
-
-        // Store in cache with size limit
-        if self.group_cache.len() < GROUP_CACHE_MAX_SIZE {
-            self.group_cache.insert(*ip, entry);
-        } else {
-            // Optionally clean up some expired entries
-            self.cleanup_expired_cache_entries();
-            if self.group_cache.len() < GROUP_CACHE_MAX_SIZE {
-                self.group_cache.insert(*ip, entry);
-            }
-        }
-
-        result
-    }
-
-    /// Clean up expired cache entries
-    fn cleanup_expired_cache_entries(&self) {
-        let now = Instant::now();
-        self.group_cache
-            .retain(|_, entry| now.duration_since(entry.timestamp) <= GROUP_CACHE_TTL);
-    }
-
-    /// Clear group cache (useful for testing or configuration changes)
-    pub fn clear_group_cache(&self) {
-        self.group_cache.clear();
-    }
-
     pub fn get_stats(&self) -> AclStats {
         let processor = self.get_processor();
         let global_stats = processor.get_stats();
@@ -168,7 +88,11 @@ impl AclFilter {
     }
 
     /// Extract packet information for ACL processing
-    fn extract_packet_info(&self, packet: &ZCPacket) -> Option<PacketInfo> {
+    fn extract_packet_info(
+        &self,
+        packet: &ZCPacket,
+        route: &(dyn super::route_trait::Route + Send + Sync + 'static),
+    ) -> Option<PacketInfo> {
         let payload = packet.payload();
 
         let src_ip;
@@ -235,6 +159,15 @@ impl AclFilter {
             _ => Protocol::Unspecified,
         };
 
+        let src_groups = packet
+            .get_src_peer_id()
+            .map(|peer_id| route.get_peer_groups(peer_id))
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        let dst_groups = packet
+            .get_dst_peer_id()
+            .map(|peer_id| route.get_peer_groups(peer_id))
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+
         Some(PacketInfo {
             src_ip,
             dst_ip,
@@ -242,8 +175,8 @@ impl AclFilter {
             dst_port,
             protocol: acl_protocol,
             packet_size: payload.len(),
-            src_groups: Arc::new(Vec::<String>::new()),
-            dst_groups: Arc::new(Vec::<String>::new()),
+            src_groups,
+            dst_groups,
         })
     }
 
@@ -311,7 +244,7 @@ impl AclFilter {
     }
 
     /// Common ACL processing logic
-    pub async fn process_packet_with_acl(
+    pub fn process_packet_with_acl(
         &self,
         packet: &ZCPacket,
         is_in: bool,
@@ -328,18 +261,8 @@ impl AclFilter {
         }
 
         // Extract packet information
-        let packet_info = match self.extract_packet_info(packet) {
-            Some(mut info) => {
-                // Parallel group lookup for src and dst IPs to reduce latency
-                let (src_groups, dst_groups) = tokio::join!(
-                    self.get_groups_with_cache(&info.src_ip, route),
-                    self.get_groups_with_cache(&info.dst_ip, route)
-                );
-
-                info.src_groups = src_groups;
-                info.dst_groups = dst_groups;
-                info
-            }
+        let packet_info = match self.extract_packet_info(packet, route) {
+            Some(info) => info,
             None => {
                 tracing::warn!(
                     "Failed to extract packet info from {:?} packet, header: {:?}",
@@ -386,289 +309,5 @@ impl AclFilter {
                 false
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::common::PeerId;
-    use crate::peers::route_trait::{Route, RouteInterfaceBox};
-    use crate::proto::peer_rpc::RoutePeerInfo;
-    use std::net::Ipv4Addr;
-    use std::time::Duration;
-
-    // Mock route implementation for testing
-    struct MockRouteWithGroups {
-        ip_to_groups: DashMap<IpAddr, Vec<String>>,
-        call_count: std::sync::atomic::AtomicUsize,
-    }
-
-    impl MockRouteWithGroups {
-        fn new() -> Self {
-            let route = Self {
-                ip_to_groups: DashMap::new(),
-                call_count: std::sync::atomic::AtomicUsize::new(0),
-            };
-
-            // Setup test data
-            route.ip_to_groups.insert(
-                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)),
-                vec!["admin".to_string(), "dev".to_string()],
-            );
-            route.ip_to_groups.insert(
-                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
-                vec!["db-server".to_string()],
-            );
-            route.ip_to_groups.insert(
-                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 30)),
-                vec!["guest".to_string()],
-            );
-
-            route
-        }
-
-        fn get_call_count(&self) -> usize {
-            self.call_count.load(std::sync::atomic::Ordering::Relaxed)
-        }
-
-        fn reset_call_count(&self) {
-            self.call_count
-                .store(0, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Route for MockRouteWithGroups {
-        async fn open(&self, _interface: RouteInterfaceBox) -> Result<u8, ()> {
-            Ok(0)
-        }
-
-        async fn close(&self) {}
-
-        async fn get_next_hop(&self, _peer_id: PeerId) -> Option<PeerId> {
-            None
-        }
-
-        async fn list_routes(&self) -> Vec<crate::proto::cli::Route> {
-            vec![]
-        }
-
-        async fn get_peer_info(&self, _peer_id: PeerId) -> Option<RoutePeerInfo> {
-            None
-        }
-
-        async fn get_peer_info_last_update_time(&self) -> std::time::Instant {
-            std::time::Instant::now()
-        }
-
-        fn get_peer_groups(&self, _peer_id: PeerId) -> Vec<String> {
-            vec![]
-        }
-
-        async fn get_peer_groups_by_ip(&self, ip: &IpAddr) -> Vec<String> {
-            // Increment call counter for testing
-            self.call_count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-            // Simulate some async work
-            tokio::task::yield_now().await;
-
-            self.ip_to_groups
-                .get(ip)
-                .map(|groups| groups.clone())
-                .unwrap_or_default()
-        }
-    }
-
-    #[tokio::test]
-    async fn test_group_cache_basic_functionality() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-
-        // First call should miss cache
-        let groups1 = filter.get_groups_with_cache(&ip, &route).await;
-        assert_eq!(*groups1, vec!["admin", "dev"]);
-        assert_eq!(route.get_call_count(), 1);
-
-        // Second call should hit cache
-        let groups2 = filter.get_groups_with_cache(&ip, &route).await;
-        assert_eq!(*groups2, vec!["admin", "dev"]);
-        assert_eq!(route.get_call_count(), 1); // No additional call
-
-        // Verify both results are the same Arc
-        assert!(Arc::ptr_eq(&groups1, &groups2));
-    }
-
-    #[tokio::test]
-    async fn test_group_cache_expiration() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-
-        // First call
-        let _groups1 = filter.get_groups_with_cache(&ip, &route).await;
-        assert_eq!(route.get_call_count(), 1);
-
-        // // Manually expire the cache entry by modifying its timestamp
-        if let Some(mut entry) = filter.group_cache.get_mut(&ip) {
-            // 设置为已过期并立即释放 guard，避免后续 await 导致死锁
-            entry.timestamp = Instant::now() - GROUP_CACHE_TTL - Duration::from_millis(100);
-            drop(entry);
-        }
-
-        // Second call should miss cache due to expiration
-        let _groups2 = filter.get_groups_with_cache(&ip, &route).await;
-        assert_eq!(route.get_call_count(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_parallel_group_lookup() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-
-        let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-        let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
-
-        route.reset_call_count();
-        let start = Instant::now();
-
-        // Parallel lookup
-        let (groups1, groups2) = tokio::join!(
-            filter.get_groups_with_cache(&ip1, &route),
-            filter.get_groups_with_cache(&ip2, &route)
-        );
-
-        let duration = start.elapsed();
-
-        assert_eq!(*groups1, vec!["admin", "dev"]);
-        assert_eq!(*groups2, vec!["db-server"]);
-        assert_eq!(route.get_call_count(), 2);
-
-        // Parallel execution should be faster than sequential
-        // (This is a basic check - in real scenarios the difference would be more significant)
-        assert!(duration < Duration::from_millis(100));
-    }
-
-    #[tokio::test]
-    async fn test_cache_size_limit() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-
-        // Fill cache beyond limit
-        for i in 0..GROUP_CACHE_MAX_SIZE + 10 {
-            let ip = IpAddr::V4(Ipv4Addr::new(10, 0, (i / 256) as u8, (i % 256) as u8));
-            let _ = filter.get_groups_with_cache(&ip, &route).await;
-        }
-
-        // Cache size should not exceed the limit significantly
-        assert!(filter.group_cache.len() <= GROUP_CACHE_MAX_SIZE + 5);
-    }
-
-    #[tokio::test]
-    async fn test_cache_cleanup() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-
-        // Add some entries
-        for i in 0..10 {
-            let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, i + 1));
-            let _ = filter.get_groups_with_cache(&ip, &route).await;
-        }
-
-        let initial_size = filter.group_cache.len();
-        assert!(initial_size > 0);
-
-        // Manually expire all entries
-        for mut entry in filter.group_cache.iter_mut() {
-            entry.timestamp = Instant::now() - Duration::from_secs(2);
-        }
-
-        // Trigger cleanup
-        filter.cleanup_expired_cache_entries();
-
-        // All entries should be removed
-        assert_eq!(filter.group_cache.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_clear_group_cache() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-
-        // Add some entries
-        for i in 0..5 {
-            let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, i + 1));
-            let _ = filter.get_groups_with_cache(&ip, &route).await;
-        }
-
-        assert!(!filter.group_cache.is_empty());
-
-        // Clear cache
-        filter.clear_group_cache();
-
-        assert_eq!(filter.group_cache.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_concurrent_cache_access() {
-        let filter = Arc::new(AclFilter::new());
-        let route = Arc::new(MockRouteWithGroups::new());
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-
-        // Use a smaller number of concurrent tasks to avoid overwhelming the test
-        let mut handles = vec![];
-        for _ in 0..5 {
-            let filter_clone = filter.clone();
-            let route_clone = route.clone();
-            let handle = tokio::spawn(async move {
-                filter_clone
-                    .get_groups_with_cache(&ip, route_clone.as_ref())
-                    .await
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all tasks to complete with individual timeouts
-        let mut results = vec![];
-        for handle in handles {
-            match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                Ok(Ok(groups)) => results.push(groups),
-                Ok(Err(e)) => panic!("Task failed: {:?}", e),
-                Err(_) => panic!("Task timed out"),
-            }
-        }
-
-        // All should succeed and return the same groups
-        for groups in results {
-            assert_eq!(*groups, vec!["admin", "dev"]);
-        }
-
-        // Should have made only a few calls due to caching
-        assert!(route.get_call_count() <= 5);
-    }
-
-    #[tokio::test]
-    async fn test_memory_efficiency_with_arc() {
-        let filter = AclFilter::new();
-        let route = MockRouteWithGroups::new();
-        let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-
-        // Get groups once
-        let groups1 = filter.get_groups_with_cache(&ip, &route).await;
-
-        // Get groups again from cache
-        let groups2 = filter.get_groups_with_cache(&ip, &route).await;
-
-        // Verify both results are the same Arc (sharing memory)
-        assert!(Arc::ptr_eq(&groups1, &groups2));
-
-        // Verify content is correct
-        assert_eq!(*groups1, vec!["admin", "dev"]);
-        assert_eq!(*groups2, vec!["admin", "dev"]);
-
-        // Only one route call should be made due to caching
-        assert_eq!(route.get_call_count(), 1);
     }
 }

@@ -301,6 +301,7 @@ struct SyncedRouteInfo {
     conn_map: DashMap<PeerId, (BTreeSet<PeerId>, AtomicVersion)>,
     foreign_network: DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>,
     group_trust_map: DashMap<PeerId, HashMap<String, Vec<u8>>>,
+    group_trust_map_cache: DashMap<PeerId, Arc<Vec<String>>>, // cache for group trust map, should sync with group_trust_map
 
     version: AtomicVersion,
 }
@@ -331,6 +332,7 @@ impl SyncedRouteInfo {
         self.conn_map.remove(&peer_id);
         self.foreign_network.retain(|k, _| k.peer_id != peer_id);
         self.group_trust_map.remove(&peer_id);
+        self.group_trust_map_cache.remove(&peer_id);
         self.version.inc();
     }
 
@@ -676,7 +678,12 @@ impl SyncedRouteInfo {
 
                     if trusted_groups_for_peer.is_empty() {
                         entry.remove();
+                        self.group_trust_map_cache.remove(&info.peer_id);
                     } else {
+                        self.group_trust_map_cache.insert(
+                            info.peer_id,
+                            Arc::new(trusted_groups_for_peer.keys().cloned().collect()),
+                        );
                         *entry.get_mut() = trusted_groups_for_peer;
                     }
                 }
@@ -684,6 +691,10 @@ impl SyncedRouteInfo {
                     let trusted_groups_for_peer = verify_groups(None, info);
 
                     if !trusted_groups_for_peer.is_empty() {
+                        self.group_trust_map_cache.insert(
+                            info.peer_id,
+                            Arc::new(trusted_groups_for_peer.keys().cloned().collect()),
+                        );
                         entry.insert(trusted_groups_for_peer);
                     }
                 }
@@ -1232,6 +1243,7 @@ impl PeerRouteServiceImpl {
                 conn_map: DashMap::new(),
                 foreign_network: DashMap::new(),
                 group_trust_map: DashMap::new(),
+                group_trust_map_cache: DashMap::new(),
                 version: AtomicVersion::new(),
             },
             cached_local_conn_map: std::sync::Mutex::new(RouteConnBitmap::new()),
@@ -1758,11 +1770,11 @@ impl PeerRouteServiceImpl {
         self.peer_info_last_update.load()
     }
 
-    fn get_peer_groups(&self, peer_id: PeerId) -> Vec<String> {
+    fn get_peer_groups(&self, peer_id: PeerId) -> Arc<Vec<String>> {
         self.synced_route_info
-            .group_trust_map
+            .group_trust_map_cache
             .get(&peer_id)
-            .map(|groups| groups.value().keys().cloned().collect())
+            .map(|groups| groups.value().clone())
             .unwrap_or_default()
     }
 }
@@ -2457,7 +2469,7 @@ impl Route for PeerRoute {
         self.service_impl.get_peer_info_last_update()
     }
 
-    fn get_peer_groups(&self, peer_id: PeerId) -> Vec<String> {
+    fn get_peer_groups(&self, peer_id: PeerId) -> Arc<Vec<String>> {
         self.service_impl.get_peer_groups(peer_id)
     }
 }

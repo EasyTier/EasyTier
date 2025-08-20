@@ -122,12 +122,12 @@ pub trait Route {
 
     async fn get_peer_info_last_update_time(&self) -> std::time::Instant;
 
-    fn get_peer_groups(&self, peer_id: PeerId) -> Vec<String>;
+    fn get_peer_groups(&self, peer_id: PeerId) -> Arc<Vec<String>>;
 
-    async fn get_peer_groups_by_ip(&self, ip: &std::net::IpAddr) -> Vec<String> {
+    async fn get_peer_groups_by_ip(&self, ip: &std::net::IpAddr) -> Arc<Vec<String>> {
         match self.get_peer_id_by_ip(ip).await {
             Some(peer_id) => self.get_peer_groups(peer_id),
-            None => Vec::new(),
+            None => Arc::new(Vec::new()),
         }
     }
 
@@ -166,7 +166,7 @@ impl Route for MockRoute {
         panic!("mock route")
     }
 
-    fn get_peer_groups(&self, _peer_id: PeerId) -> Vec<String> {
+    fn get_peer_groups(&self, _peer_id: PeerId) -> Arc<Vec<String>> {
         panic!("mock route")
     }
 }
