@@ -18,10 +18,7 @@ sed -i 's/$(description=)$[^"]*/\1[状态]关闭中/' "$MODDIR/module.prop"
 sleep 3s
 
 "${MODDIR}/easytier_core.sh" &
+"${MODDIR}/hotspot_iprule.sh" add &
 
-# 检查是否启用模块
-while [ ! -f ${MODDIR}/disable ]; do 
-    sleep 2
-done
-
-pkill easytier-core
+# easytier_core.sh 和 hotspot_iprule.sh 都有内部循环做守护，
+# 所以这里不需要再做守护了

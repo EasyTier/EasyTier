@@ -192,7 +192,7 @@ jobs:
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
               CORE_FEATURES="--features=mimalloc"
-            elif [[ $TARGET =~ ^riscv64.*$ ]]; then
+            elif [[ $TARGET =~ ^riscv64.*$ || $TARGET =~ ^loongarch64.*$ ]]; then
               CORE_FEATURES="--features=mimalloc"
             else
               CORE_FEATURES="--features=jemalloc"
