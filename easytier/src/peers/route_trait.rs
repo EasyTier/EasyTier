@@ -9,7 +9,7 @@ use crate::{
     common::{global_ctx::NetworkIdentity, PeerId},
     proto::peer_rpc::{
         ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
-        RoutePeerInfo,
+        RouteForeignNetworkSummary, RoutePeerInfo,
     },
 };
 
@@ -99,6 +99,10 @@ pub trait Route {
     }
 
     async fn list_foreign_network_info(&self) -> RouteForeignNetworkInfos {
+        Default::default()
+    }
+
+    async fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
         Default::default()
     }
 

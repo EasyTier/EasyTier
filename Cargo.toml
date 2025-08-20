@@ -6,6 +6,7 @@ members = [
     "easytier-rpc-build",
     "easytier-web",
     "easytier-contrib/easytier-ffi",
+    "easytier-contrib/easytier-uptime",
 ]
 default-members = ["easytier", "easytier-web"]
 exclude = [
@@ -14,6 +15,7 @@ exclude = [
 
 [profile.dev]
 panic = "unwind"
+debug = 2
 
 [profile.release]
 panic = "abort"

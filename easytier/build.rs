@@ -169,6 +169,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute("peer_rpc.DirectConnectedPeerInfo", "#[derive(Hash)]")
         .type_attribute("peer_rpc.PeerInfoForGlobalMap", "#[derive(Hash)]")
         .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")
+        .type_attribute(
+            "peer_rpc.RouteForeignNetworkSummary.Info",
+            "#[derive(Hash, Eq, serde::Serialize, serde::Deserialize)]",
+        )
+        .type_attribute(
+            "peer_rpc.RouteForeignNetworkSummary",
+            "#[derive(Hash, Eq, serde::Serialize, serde::Deserialize)]",
+        )
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .field_attribute(".web.NetworkConfig", "#[serde(default)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
