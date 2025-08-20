@@ -1,5 +1,5 @@
 use std::{
-    collections::{{BTreeMap, BTreeSet}, HashSet},
+    collections::{{BTreeMap, BTreeSet}, HashMap},
     fmt::Debug,
     net::{Ipv4Addr, Ipv6Addr},
     sync::{
@@ -300,7 +300,7 @@ struct SyncedRouteInfo {
     raw_peer_infos: DashMap<PeerId, DynamicMessage>,
     conn_map: DashMap<PeerId, (BTreeSet<PeerId>, AtomicVersion)>,
     foreign_network: DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>,
-    group_trust_map: DashMap<PeerId, HashSet<String>>,
+    group_trust_map: DashMap<PeerId, HashMap<String, Vec<u8>>>,
 
     version: AtomicVersion,
 }
@@ -631,24 +631,30 @@ impl SyncedRouteInfo {
             .map(|g| (g.group_name.as_str(), g.group_secret.as_str()))
             .collect::<std::collections::HashMap<&str, &str>>();
 
-        let verify_groups = |old_trusted_groups: Option<&HashSet<String>>,
+        let verify_groups = |old_trusted_groups: Option<&HashMap<String, Vec<u8>>>,
                              info: &RoutePeerInfo|
-         -> HashSet<String> {
-            let mut trusted_groups_for_peer: HashSet<String> = HashSet::new();
+         -> HashMap<String, Vec<u8>> {
+            let mut trusted_groups_for_peer: HashMap<String, Vec<u8>> = HashMap::new();
 
             for group_proof in &info.groups {
-                if let Some(old_groups) = old_trusted_groups {
-                    if old_groups.contains(&group_proof.group_name) {
-                        trusted_groups_for_peer.insert(group_proof.group_name.clone());
-                        continue;
-                    }
+                let name = &group_proof.group_name;
+                let proof_bytes = group_proof.group_proof.clone();
+
+                // If we already trusted this group and the proof hasn't changed, reuse it.
+                if old_trusted_groups
+                    .and_then(|g| g.get(name))
+                    .map(|old| old == &proof_bytes)
+                    .unwrap_or(false)
+                {
+                    trusted_groups_for_peer.insert(name.clone(), proof_bytes);
+                    continue;
                 }
 
                 if let Some(&local_secret) =
                     local_group_declarations.get(group_proof.group_name.as_str())
                 {
                     if group_proof.verify(local_secret, info.peer_id) {
-                        trusted_groups_for_peer.insert(group_proof.group_name.clone());
+                        trusted_groups_for_peer.insert(name.clone(), proof_bytes);
                     } else {
                         tracing::warn!(
                             peer_id = info.peer_id,
@@ -1756,7 +1762,7 @@ impl PeerRouteServiceImpl {
         self.synced_route_info
             .group_trust_map
             .get(&peer_id)
-            .map(|groups| groups.value().iter().cloned().collect())
+            .map(|groups| groups.value().keys().cloned().collect())
             .unwrap_or_default()
     }
 }
