@@ -65,7 +65,7 @@ jobs:
           repo: EasyTier/EasyTier
           path: release_assets_nozip
 
-      - name: Zip release assets
+      - name: Package release assets
         env:
           VERSION: ${{ inputs.version }}
         run: |
@@ -83,7 +83,12 @@ jobs:
               cd $x;
               zip -r ../../zipped_assets/$x-${VERSION}.zip .;
               cd ..;
+            elif [[ "$x" == *"linux"* ]]; then
+              # For Linux platforms, provide both zip and tar.gz formats
+              zip -r ../zipped_assets/$x-${VERSION}.zip $x;
+              tar -czf ../zipped_assets/$x-${VERSION}.tar.gz $x;
             else
+              # Use zip for other platforms (Windows, macOS, etc.)
               zip -r ../zipped_assets/$x-${VERSION}.zip $x;
             fi
           done
