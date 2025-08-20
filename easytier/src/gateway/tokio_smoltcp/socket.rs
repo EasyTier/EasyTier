@@ -147,11 +147,14 @@ impl TcpStream {
         }
         let (peer_addr, local_addr) = {
             let socket = reactor.get_socket::<tcp::Socket>(*listener.handle);
-            (
-                // should be Some, because the state is Established
-                ep2sa(&socket.remote_endpoint().unwrap()),
-                ep2sa(&socket.local_endpoint().unwrap()),
-            )
+            match (socket.remote_endpoint(), socket.local_endpoint()) {
+                (Some(remote_endpoint), Some(local_endpoint)) => (
+                    // should be Some, because the state is Established
+                    ep2sa(&remote_endpoint),
+                    ep2sa(&local_endpoint),
+                ),
+                _ => return Err(io::ErrorKind::NotConnected.into()),
+            }
         };
 
         Ok((
