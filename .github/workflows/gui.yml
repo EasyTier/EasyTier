@@ -151,13 +151,11 @@ jobs:
           pnpm -r install
           pnpm -r build
 
-      - name: Cargo cache
-        uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          prefix-key: ""
 
       - name: Install rust target
         run: bash ./.github/workflows/install_rust.sh
