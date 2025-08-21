@@ -37,6 +37,7 @@ tracing-subscriber = { version = "0.3", features = [
     "time",
 ] }
 tracing-appender = "0.2.3"
+console-subscriber = { version = "0.4.1", optional = true }
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"
@@ -321,3 +322,4 @@ smoltcp = ["dep:smoltcp", "dep:parking_lot"]
 socks5 = ["dep:smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]
+tracing = ["tokio/tracing", "dep:console-subscriber"]
