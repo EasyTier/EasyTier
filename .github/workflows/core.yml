@@ -154,14 +154,13 @@ jobs:
           name: easytier-web-dashboard
           path: easytier-web/frontend/dist/
 
-      - name: Cargo cache
+      - uses: Swatinem/rust-cache@v2
         if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          prefix-key: ""
+
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
