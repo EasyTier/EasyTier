@@ -1885,20 +1885,6 @@ pub async fn acl_group_based_test(
     };
     chain.rules.push(user_8080_rule);
 
-    // 规则3: 允许高位端口，以允许quic连接
-    if enable_quic_proxy {
-        let ip_allow_rule = Rule {
-            name: "allow_udp".to_string(),
-            priority: 100,
-            enabled: true,
-            action: Action::Allow as i32,
-            protocol: Protocol::Udp as i32,
-            ports: vec!["10000-65535".to_string()],
-            ..Default::default()
-        };
-        chain.rules.push(ip_allow_rule);
-    }
-
     let acl_admin = Acl {
         acl_v1: Some(AclV1 {
             group: Some(GroupInfo {

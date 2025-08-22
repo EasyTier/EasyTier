@@ -353,6 +353,7 @@ impl GlobalCtx {
     }
 
     pub fn set_quic_proxy_port(&self, port: Option<u16>) {
+        self.acl_filter.set_quic_udp_port(port.unwrap_or(0));
         self.quic_proxy_port.store(port);
     }
 
