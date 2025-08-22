@@ -286,7 +286,10 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 ### Contact Us
 
 - 💬 **[Telegram Group](https://t.me/easytier)**
-- 👥 **[QQ Group: 949700262](https://qm.qq.com/cgi-bin/qm/qr?k=kC8YJ6Jb8vWJIDbZrZJB8pB5YZgPJA5-)**
+- 👥 **[QQ Group]**
+  - No.1 [949700262](https://qm.qq.com/q/wFoTUChqZW)
+  - No.2 [837676408](https://qm.qq.com/q/4V33DrfgHe)
+  - No.3 [957189589](https://qm.qq.com/q/YNyTQjwlai)
 
 ## License
 
