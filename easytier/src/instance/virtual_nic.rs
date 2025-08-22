@@ -29,7 +29,7 @@ use pin_project_lite::pin_project;
 use pnet::packet::{ipv4::Ipv4Packet, ipv6::Ipv6Packet};
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
-    sync::Mutex,
+    sync::{Mutex, Notify},
     task::JoinSet,
 };
 use tokio_util::bytes::Bytes;
@@ -626,6 +626,8 @@ pub struct NicCtx {
     peer_mgr: Weak<PeerManager>,
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
 
+    close_notifier: Arc<Notify>,
+
     nic: Arc<Mutex<VirtualNic>>,
     tasks: JoinSet<()>,
 }
@@ -635,11 +637,15 @@ impl NicCtx {
         global_ctx: ArcGlobalCtx,
         peer_manager: &Arc<PeerManager>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
+        close_notifier: Arc<Notify>,
     ) -> Self {
         NicCtx {
             global_ctx: global_ctx.clone(),
             peer_mgr: Arc::downgrade(peer_manager),
             peer_packet_receiver,
+
+            close_notifier,
+
             nic: Arc::new(Mutex::new(VirtualNic::new(global_ctx))),
             tasks: JoinSet::new(),
         }
@@ -753,6 +759,7 @@ impl NicCtx {
         let Some(mgr) = self.peer_mgr.upgrade() else {
             return Err(anyhow::anyhow!("peer manager not available").into());
         };
+        let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
             while let Some(ret) = stream.next().await {
                 if ret.is_err() {
@@ -761,7 +768,8 @@ impl NicCtx {
                 }
                 Self::do_forward_nic_to_peers(ret.unwrap(), mgr.as_ref()).await;
             }
-            panic!("nic stream closed");
+            close_notifier.notify_one();
+            tracing::error!("nic closed when recving from it");
         });
 
         Ok(())
@@ -769,6 +777,7 @@ impl NicCtx {
 
     fn do_forward_peers_to_nic(&mut self, mut sink: Pin<Box<dyn ZCPacketSink>>) {
         let channel = self.peer_packet_receiver.clone();
+        let close_notifier = self.close_notifier.clone();
         self.tasks.spawn(async move {
             // unlock until coroutine finished
             let mut channel = channel.lock().await;
@@ -782,7 +791,8 @@ impl NicCtx {
                     tracing::error!(?ret, "do_forward_tunnel_to_nic sink error");
                 }
             }
-            panic!("peer packet receiver closed");
+            close_notifier.notify_one();
+            tracing::error!("nic closed when sending to it");
         });
     }
 

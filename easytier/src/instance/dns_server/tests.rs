@@ -8,6 +8,7 @@ use hickory_client::client::{Client, ClientHandle as _};
 use hickory_proto::rr;
 use hickory_proto::runtime::TokioRuntimeProvider;
 use hickory_proto::udp::UdpClientStream;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::common::global_ctx::tests::get_mock_global_ctx;
@@ -33,7 +34,12 @@ pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>,
     replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
 
     let r = Arc::new(tokio::sync::Mutex::new(r));
-    let mut virtual_nic = NicCtx::new(peer_mgr.get_global_ctx(), &peer_mgr, r);
+    let mut virtual_nic = NicCtx::new(
+        peer_mgr.get_global_ctx(),
+        &peer_mgr,
+        r,
+        Arc::new(Notify::new()),
+    );
     virtual_nic.run(Some(tun_ip), None).await.unwrap();
 
     (peer_mgr, virtual_nic)
