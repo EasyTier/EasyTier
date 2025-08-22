@@ -560,6 +560,45 @@ pub mod tests {
         }
     }
 
+    pub(crate) async fn _tunnel_pingpong_netns_with_timeout<L, C>(
+        listener: L,
+        connector: C,
+        l_netns: NetNS,
+        c_netns: NetNS,
+        buf: Vec<u8>,
+        timeout: std::time::Duration,
+    ) -> Result<(), anyhow::Error>
+    where
+        L: TunnelListener + Send + Sync + 'static,
+        C: TunnelConnector + Send + Sync + 'static,
+    {
+        let handle = tokio::spawn(async move {
+            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf).await;
+        });
+
+        match tokio::time::timeout(timeout, handle).await {
+            Ok(join_res) => match join_res {
+                Ok(_) => Ok(()),
+                Err(join_err) => {
+                    if join_err.is_panic() {
+                        let payload = join_err.into_panic();
+                        let msg = match payload.downcast::<String>() {
+                            Ok(s) => *s,
+                            Err(payload) => match payload.downcast::<&str>() {
+                                Ok(s) => (*s).to_string(),
+                                Err(_) => "non-string panic payload".to_string(),
+                            },
+                        };
+                        Err(anyhow::anyhow!("task panicked: {}", msg))
+                    } else {
+                        Err(anyhow::anyhow!("task cancelled"))
+                    }
+                }
+            },
+            Err(elapsed) => Err(elapsed.into()),
+        }
+    }
+
     pub(crate) async fn _tunnel_bench<L, C>(listener: L, connector: C)
     where
         L: TunnelListener + Send + Sync + 'static,

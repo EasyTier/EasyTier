@@ -8,8 +8,10 @@ use crate::common::config::ProxyNetworkConfig;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
+use crate::proto::acl::GroupIdentity;
 use crate::proto::cli::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
+use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
 
 use super::{
@@ -351,6 +353,7 @@ impl GlobalCtx {
     }
 
     pub fn set_quic_proxy_port(&self, port: Option<u16>) {
+        self.acl_filter.set_quic_udp_port(port.unwrap_or(0));
         self.quic_proxy_port.store(port);
     }
 
@@ -364,6 +367,37 @@ impl GlobalCtx {
 
     pub fn get_acl_filter(&self) -> &Arc<AclFilter> {
         &self.acl_filter
+    }
+
+    pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
+        use std::collections::HashSet;
+        self.config
+            .get_acl()
+            .and_then(|acl| acl.acl_v1)
+            .and_then(|acl_v1| acl_v1.group)
+            .map_or_else(Vec::new, |group| {
+                let memberships: HashSet<_> = group.members.iter().collect();
+                group
+                    .declares
+                    .iter()
+                    .filter(|g| memberships.contains(&g.group_name))
+                    .map(|g| {
+                        PeerGroupInfo::generate_with_proof(
+                            g.group_name.clone(),
+                            g.group_secret.clone(),
+                            peer_id,
+                        )
+                    })
+                    .collect()
+            })
+    }
+
+    pub fn get_acl_group_declarations(&self) -> Vec<GroupIdentity> {
+        self.config
+            .get_acl()
+            .and_then(|acl| acl.acl_v1)
+            .and_then(|acl_v1| acl_v1.group)
+            .map_or_else(Vec::new, |group| group.declares.to_vec())
     }
 }
 

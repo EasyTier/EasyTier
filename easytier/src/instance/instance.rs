@@ -531,7 +531,8 @@ impl Instance {
             return Ok(());
         }
 
-        let quic_dst = QUICProxyDst::new(self.global_ctx.clone())?;
+        let route = Arc::new(self.peer_manager.get_route());
+        let quic_dst = QUICProxyDst::new(self.global_ctx.clone(), route)?;
         quic_dst.start().await?;
         self.global_ctx
             .set_quic_proxy_port(Some(quic_dst.local_addr()?.port()));
