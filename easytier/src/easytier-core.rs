@@ -288,7 +288,6 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        default_value = "aes-gcm",
         value_parser = get_avaliable_encrypt_methods()
     )]
     encryption_algorithm: Option<String>,
@@ -424,6 +423,15 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     disable_udp_hole_punching: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_DISABLE_SYM_HOLE_PUNCHING",
+        help = t!("core_clap.disable_sym_hole_punching").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_sym_hole_punching: Option<bool>,
 
     #[arg(
         long,
@@ -919,6 +927,7 @@ impl NetworkOptions {
         f.enable_relay_foreign_network_kcp = self
             .enable_relay_foreign_network_kcp
             .unwrap_or(f.enable_relay_foreign_network_kcp);
+        f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

@@ -127,6 +127,9 @@ disable_encryption_help: 禁用对等节点通信的加密，默认为false，�
 disable_udp_hole_punching: 禁用UDP打洞
 disable_udp_hole_punching_help: 禁用UDP打洞功能
 
+disable_sym_hole_punching: 禁用对称NAT打洞
+disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将对称NAT视为锥形NAT处理
+
 enable_magic_dns: 启用魔法DNS
 enable_magic_dns_help: |
   启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
@@ -324,4 +327,4 @@ web:
     confirm_password: 确认新密码
     language: 语言
     theme: 主题
-    logout: 退出登录 
+    logout: 退出登录

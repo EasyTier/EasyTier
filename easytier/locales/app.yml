@@ -151,6 +151,9 @@ core_clap:
   disable_udp_hole_punching:
     en: "disable udp hole punching"
     zh-CN: "禁用UDP打洞功能"
+  disable_sym_hole_punching:
+    en: "if true, disable udp nat hole punching for symmetric nat (NAT4), which is based on birthday attack and may be blocked by ISP."
+    zh-CN: "如果为true，则禁用基于生日攻击的对称NAT (NAT4) UDP 打洞功能，该打洞方式可能会被运营商封锁"
   relay_all_peer_rpc:
     en: "relay all peer rpc packets, even if the peer is not in the relay network whitelist. this can help peers not in relay network whitelist to establish p2p connection."
     zh-CN: "转发所有对等节点的RPC数据包，即使对等节点不在转发网络白名单中。这可以帮助白名单外网络中的对等节点建立P2P连接。"

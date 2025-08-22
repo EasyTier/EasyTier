@@ -126,6 +126,9 @@ disable_encryption_help: Disable encryption for peers communication, default is 
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
 
+disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
+disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
+
 enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
@@ -324,4 +327,4 @@ web:
     confirm_password: Confirm New Password
     language: Language
     theme: Theme
-    logout: Logout 
+    logout: Logout
