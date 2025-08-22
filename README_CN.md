@@ -287,7 +287,10 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 ### 联系我们
 
 - 💬 **[Telegram 群组](https://t.me/easytier)**
-- 👥 **[QQ 群：949700262](https://qm.qq.com/cgi-bin/qm/qr?k=kC8YJ6Jb8vWJIDbZrZJB8pB5YZgPJA5-)**
+- 👥 **QQ 群**
+  - 一群 [949700262](https://qm.qq.com/q/wFoTUChqZW)
+  - 二群 [837676408](https://qm.qq.com/q/4V33DrfgHe)
+  - 三群 [957189589](https://qm.qq.com/q/YNyTQjwlai)
 
 ## 许可证
 
