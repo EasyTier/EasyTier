@@ -64,3 +64,5 @@ pub async fn recv_packet_from_chan(
         .await
         .ok_or(anyhow::anyhow!("recv_packet_from_chan failed"))
 }
+
+pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";
