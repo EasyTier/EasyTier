@@ -1818,3 +1818,258 @@ pub async fn acl_rule_test_subnet_proxy(
 
     drop_insts(insts).await;
 }
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn acl_group_based_test(
+    #[values("tcp", "udp")] protocol: &str,
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns_with_timeout,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
+        udp::{UdpTunnelConnector, UdpTunnelListener},
+        TunnelConnector, TunnelListener,
+    };
+    use rand::Rng;
+
+    // 构造 ACL 配置，包含组信息
+    use crate::proto::acl::*;
+
+    // 设置组信息
+    let group_declares = vec![
+        GroupIdentity {
+            group_name: "admin".to_string(),
+            group_secret: "admin-secret".to_string(),
+        },
+        GroupIdentity {
+            group_name: "user".to_string(),
+            group_secret: "user-secret".to_string(),
+        },
+    ];
+
+    let mut chain = Chain {
+        name: "group_acl_test".to_string(),
+        chain_type: ChainType::Inbound as i32,
+        enabled: true,
+        default_action: Action::Drop as i32,
+        ..Default::default()
+    };
+
+    // 规则1: 允许admin组访问所有端口
+    let admin_allow_rule = Rule {
+        name: "allow_admin_all".to_string(),
+        priority: 300,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        source_groups: vec!["admin".to_string()],
+        stateful: true,
+        ..Default::default()
+    };
+    chain.rules.push(admin_allow_rule);
+
+    // 规则2: 允许user组访问8080端口
+    let user_8080_rule = Rule {
+        name: "allow_user_8080".to_string(),
+        priority: 200,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        source_groups: vec!["user".to_string()],
+        ports: vec!["8080".to_string()],
+        stateful: true,
+        ..Default::default()
+    };
+    chain.rules.push(user_8080_rule);
+
+    // 规则3: 允许高位端口，以允许quic连接
+    if enable_quic_proxy {
+        let ip_allow_rule = Rule {
+            name: "allow_udp".to_string(),
+            priority: 100,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Udp as i32,
+            ports: vec!["10000-65535".to_string()],
+            ..Default::default()
+        };
+        chain.rules.push(ip_allow_rule);
+    }
+
+    let acl_admin = Acl {
+        acl_v1: Some(AclV1 {
+            group: Some(GroupInfo {
+                declares: group_declares.clone(),
+                members: vec!["admin".to_string()],
+            }),
+            ..AclV1::default()
+        }),
+    };
+
+    let acl_user = Acl {
+        acl_v1: Some(AclV1 {
+            group: Some(GroupInfo {
+                declares: group_declares.clone(),
+                members: vec!["user".to_string()],
+            }),
+            ..AclV1::default()
+        }),
+    };
+
+    let acl_target = Acl {
+        acl_v1: Some(AclV1 {
+            chains: vec![chain.clone()],
+            group: Some(GroupInfo {
+                declares: group_declares.clone(),
+                members: vec![],
+            }),
+        }),
+    };
+
+    let insts = init_three_node_ex(
+        protocol,
+        move |cfg| {
+            match cfg.get_inst_name().as_str() {
+                "inst1" => {
+                    cfg.set_acl(Some(acl_admin.clone()));
+                }
+                "inst2" => {
+                    cfg.set_acl(Some(acl_user.clone()));
+                }
+                "inst3" => {
+                    cfg.set_acl(Some(acl_target.clone()));
+                }
+                _ => {}
+            }
+
+            let mut flags = cfg.get_flags();
+            flags.enable_kcp_proxy = enable_kcp_proxy;
+            flags.enable_quic_proxy = enable_quic_proxy;
+            cfg.set_flags(flags);
+
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    println!("Testing group-based ACL rules...");
+
+    let make_listener = |port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
+        match protocol {
+            "tcp" => Box::new(TcpTunnelListener::new(
+                format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
+            )),
+            "udp" => Box::new(UdpTunnelListener::new(
+                format!("udp://0.0.0.0:{}", port).parse().unwrap(),
+            )),
+            _ => panic!("unsupported protocol: {}", protocol),
+        }
+    };
+
+    let make_connector = |port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
+        match protocol {
+            "tcp" => Box::new(TcpTunnelConnector::new(
+                format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
+            )),
+            "udp" => Box::new(UdpTunnelConnector::new(
+                format!("udp://10.144.144.3:{}", port).parse().unwrap(),
+            )),
+            _ => panic!("unsupported protocol: {}", protocol),
+        }
+    };
+
+    // 构造测试数据
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    // 测试1: inst1 (admin组) 访问8080 - 应该成功
+    let result = _tunnel_pingpong_netns_with_timeout(
+        make_listener(8080),
+        make_connector(8080),
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+        buf.clone(),
+        std::time::Duration::from_millis(30000),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Admin group access to port 8080 should be allowed (protocol={})",
+        protocol
+    );
+    println!(
+        "✓ Admin group access to port 8080 succeeded ({})\n",
+        protocol
+    );
+
+    // 测试2: inst1 (admin组) 访问8081 - 应该成功
+    let result = _tunnel_pingpong_netns_with_timeout(
+        make_listener(8081),
+        make_connector(8081),
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+        buf.clone(),
+        std::time::Duration::from_millis(30000),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Admin group access to port 8081 should be allowed (protocol={})",
+        protocol
+    );
+    println!(
+        "✓ Admin group access to port 8081 succeeded ({})\n",
+        protocol
+    );
+
+    // 测试3: inst2 (user组) 访问8080 - 应该成功
+    let result = _tunnel_pingpong_netns_with_timeout(
+        make_listener(8080),
+        make_connector(8080),
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_b".into())),
+        buf.clone(),
+        std::time::Duration::from_millis(30000),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "User group access to port 8080 should be allowed (protocol={})",
+        protocol
+    );
+    println!(
+        "✓ User group access to port 8080 succeeded ({})\n",
+        protocol
+    );
+
+    // 测试4: inst2 (user组) 访问8081 - 应该失败
+    let result = _tunnel_pingpong_netns_with_timeout(
+        make_listener(8081),
+        make_connector(8081),
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_b".into())),
+        buf.clone(),
+        std::time::Duration::from_millis(200),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "User group access to port 8081 should be blocked (protocol={})",
+        protocol
+    );
+    println!(
+        "✓ User group access to port 8081 blocked as expected ({})\n",
+        protocol
+    );
+
+    let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+    println!("ACL stats after group {} tests: {:?}", protocol, stats);
+
+    println!("✓ All group-based ACL tests completed successfully");
+
+    drop_insts(insts).await;
+}
