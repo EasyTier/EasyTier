@@ -771,6 +771,10 @@ impl NetworkConfig {
             flags.disable_udp_hole_punching = disable_udp_hole_punching;
         }
 
+        if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
+            flags.disable_sym_hole_punching = disable_sym_hole_punching;
+        }
+
         if let Some(enable_magic_dns) = self.enable_magic_dns {
             flags.accept_dns = enable_magic_dns;
         }

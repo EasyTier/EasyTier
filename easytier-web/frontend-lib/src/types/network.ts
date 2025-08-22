@@ -51,6 +51,7 @@ export interface NetworkConfig {
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
   disable_udp_hole_punching?: boolean
+  disable_sym_hole_punching?: boolean
 
   enable_relay_network_whitelist?: boolean
   relay_network_whitelist: string[]
@@ -122,6 +123,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     proxy_forward_by_system: false,
     disable_encryption: false,
     disable_udp_hole_punching: false,
+    disable_sym_hole_punching: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,

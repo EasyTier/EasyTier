@@ -52,6 +52,9 @@ message FlagsInConfig {
   
     // encryption algorithm to use, empty string means default (aes-gcm)
   string encryption_algorithm = 29;
+  
+  // disable symmetric nat hole punching, treat symmetric as cone when enabled
+  bool disable_sym_hole_punching = 30;
 }
 
 message RpcDescriptor {

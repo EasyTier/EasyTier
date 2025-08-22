@@ -111,7 +111,24 @@ impl UdpNatType {
         }
     }
 
-    pub(crate) fn get_punch_hole_method(&self, other: Self) -> UdpPunchClientMethod {
+    pub(crate) fn get_punch_hole_method(
+        &self,
+        other: Self,
+        global_ctx: ArcGlobalCtx,
+    ) -> UdpPunchClientMethod {
+        // Check if symmetric NAT hole punching is disabled
+        let disable_sym_hole_punching = global_ctx.get_flags().disable_sym_hole_punching;
+
+        // If symmetric NAT hole punching is disabled, treat symmetric as cone
+        if disable_sym_hole_punching && self.is_sym() {
+            // Convert symmetric to cone type for hole punching logic
+            if other.is_sym() {
+                return UdpPunchClientMethod::None;
+            } else {
+                return UdpPunchClientMethod::ConeToCone;
+            }
+        }
+
         if other.is_unknown() {
             if self.is_sym() {
                 return UdpPunchClientMethod::SymToCone;
@@ -163,8 +180,9 @@ impl UdpNatType {
         other: Self,
         my_peer_id: PeerId,
         dst_peer_id: PeerId,
+        global_ctx: ArcGlobalCtx,
     ) -> bool {
-        match self.get_punch_hole_method(other) {
+        match self.get_punch_hole_method(other, global_ctx) {
             UdpPunchClientMethod::None => false,
             UdpPunchClientMethod::ConeToCone | UdpPunchClientMethod::SymToCone => true,
             UdpPunchClientMethod::EasySymToEasySym => my_peer_id < dst_peer_id,

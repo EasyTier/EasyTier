@@ -466,7 +466,9 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if !my_nat_type.can_punch_hole_as_client(peer_nat_type, my_peer_id, peer_id) {
+            let global_ctx = data.peer_mgr.get_global_ctx();
+            if !my_nat_type.can_punch_hole_as_client(peer_nat_type, my_peer_id, peer_id, global_ctx)
+            {
                 continue;
             }
 
@@ -493,7 +495,10 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         item: Self::CollectPeerItem,
     ) -> JoinHandle<Result<Self::TaskRet, Error>> {
         let data = data.clone();
-        let punch_method = item.my_nat_type.get_punch_hole_method(item.dst_nat_type);
+        let global_ctx = data.peer_mgr.get_global_ctx();
+        let punch_method = item
+            .my_nat_type
+            .get_punch_hole_method(item.dst_nat_type, global_ctx);
         match punch_method {
             UdpPunchClientMethod::ConeToCone => tokio::spawn(data.cone_to_cone(item)),
             UdpPunchClientMethod::SymToCone => tokio::spawn(data.sym_to_cone(item)),

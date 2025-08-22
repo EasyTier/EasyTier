@@ -49,6 +49,7 @@ pub fn gen_default_flags() -> Flags {
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),
+        disable_sym_hole_punching: false,
     }
 }
 
