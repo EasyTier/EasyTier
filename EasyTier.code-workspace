@@ -50,5 +50,8 @@
 		"editor.formatOnSaveMode": "modifications",
 		"editor.formatOnPaste": false,
 		"editor.formatOnType": true,
+		"[nix]": {
+			"editor.formatOnSave": false,
+		},
 	}
 }

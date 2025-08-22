@@ -41,3 +41,4 @@ easytier-gui/src-tauri/*.dll
 /easytier-contrib/easytier-ohrs/dist/
 
 .direnv
+.flake-profile
