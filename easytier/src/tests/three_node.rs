@@ -15,9 +15,10 @@ use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
         netns::{NetNS, ROOT_NETNS_NAME},
+        stats_manager::{LabelType, MetricName},
     },
     instance::instance::Instance,
-    proto::common::CompressionAlgoPb,
+    proto::{cli::TcpProxyEntryTransportType, common::CompressionAlgoPb},
     tunnel::{
         common::tests::{_tunnel_bench_netns, wait_for_condition},
         ring::RingTunnelConnector,
@@ -340,11 +341,12 @@ pub async fn basic_three_node_test(
     drop_insts(insts).await;
 }
 
-async fn subnet_proxy_test_udp(target_ip: &str) {
+async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, udp::UdpTunnelListener};
     use rand::Rng;
 
-    let udp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
+    let udp_listener =
+        UdpTunnelListener::new(format!("udp://{}:22233", listen_ip).parse().unwrap());
     let udp_connector =
         UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
 
@@ -352,17 +354,24 @@ async fn subnet_proxy_test_udp(target_ip: &str) {
     let mut buf = vec![0; 7 * 1024];
     rand::thread_rng().fill(&mut buf[..]);
 
+    let ns_name = if target_ip == "10.144.144.3" {
+        "net_c"
+    } else {
+        "net_d"
+    };
+
     _tunnel_pingpong_netns(
         udp_listener,
         udp_connector,
-        NetNS::new(Some("net_d".into())),
+        NetNS::new(Some(ns_name.into())),
         NetNS::new(Some("net_a".into())),
         buf,
     )
     .await;
 
     // no fragment
-    let udp_listener = UdpTunnelListener::new("udp://10.1.2.4:22233".parse().unwrap());
+    let udp_listener =
+        UdpTunnelListener::new(format!("udp://{}:22233", listen_ip).parse().unwrap());
     let udp_connector =
         UdpTunnelConnector::new(format!("udp://{}:22233", target_ip).parse().unwrap());
 
@@ -372,77 +381,34 @@ async fn subnet_proxy_test_udp(target_ip: &str) {
     _tunnel_pingpong_netns(
         udp_listener,
         udp_connector,
-        NetNS::new(Some("net_d".into())),
-        NetNS::new(Some("net_a".into())),
-        buf,
-    )
-    .await;
-
-    // connect to virtual ip (no tun mode)
-
-    let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:22234".parse().unwrap());
-    let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:22234".parse().unwrap());
-    // NOTE: this should not excced udp tunnel max buffer size
-    let mut buf = vec![0; 7 * 1024];
-    rand::thread_rng().fill(&mut buf[..]);
-
-    _tunnel_pingpong_netns(
-        udp_listener,
-        udp_connector,
-        NetNS::new(Some("net_c".into())),
-        NetNS::new(Some("net_a".into())),
-        buf,
-    )
-    .await;
-
-    // no fragment
-    let udp_listener = UdpTunnelListener::new("udp://0.0.0.0:22235".parse().unwrap());
-    let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:22235".parse().unwrap());
-
-    let mut buf = vec![0; 1024];
-    rand::thread_rng().fill(&mut buf[..]);
-
-    _tunnel_pingpong_netns(
-        udp_listener,
-        udp_connector,
-        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some(ns_name.into())),
         NetNS::new(Some("net_a".into())),
         buf,
     )
     .await;
 }
 
-async fn subnet_proxy_test_tcp(target_ip: &str) {
+async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
     use rand::Rng;
 
-    let tcp_listener = TcpTunnelListener::new("tcp://10.1.2.4:22223".parse().unwrap());
+    let tcp_listener = TcpTunnelListener::new(format!("tcp://{listen_ip}:22223").parse().unwrap());
     let tcp_connector =
-        TcpTunnelConnector::new(format!("tcp://{}:22223", target_ip).parse().unwrap());
+        TcpTunnelConnector::new(format!("tcp://{}:22223", connect_ip).parse().unwrap());
 
     let mut buf = vec![0; 32];
     rand::thread_rng().fill(&mut buf[..]);
 
-    _tunnel_pingpong_netns(
-        tcp_listener,
-        tcp_connector,
-        NetNS::new(Some("net_d".into())),
-        NetNS::new(Some("net_a".into())),
-        buf,
-    )
-    .await;
-
-    // connect to virtual ip (no tun mode)
-    let tcp_listener = TcpTunnelListener::new("tcp://0.0.0.0:22223".parse().unwrap());
-    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.3:22223".parse().unwrap());
-
-    let mut buf = vec![0; 32];
-    rand::thread_rng().fill(&mut buf[..]);
+    let ns_name = if connect_ip == "10.144.144.3" {
+        "net_c"
+    } else {
+        "net_d"
+    };
 
     _tunnel_pingpong_netns(
         tcp_listener,
         tcp_connector,
-        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some(ns_name.into())),
         NetNS::new(Some("net_a".into())),
         buf,
     )
@@ -461,19 +427,6 @@ async fn subnet_proxy_test_icmp(target_ip: &str) {
         Duration::from_secs(5),
     )
     .await;
-
-    // connect to virtual ip (no tun mode)
-    wait_for_condition(
-        || async { ping_test("net_a", "10.144.144.3", None).await },
-        Duration::from_secs(5),
-    )
-    .await;
-
-    wait_for_condition(
-        || async { ping_test("net_a", "10.144.144.3", Some(5 * 1024)).await },
-        Duration::from_secs(5),
-    )
-    .await;
 }
 
 #[tokio::test]
@@ -484,6 +437,10 @@ pub async fn quic_proxy() {
             if cfg.get_inst_name() == "inst3" {
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
+            } else if cfg.get_inst_name() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.enable_quic_proxy = true;
+                cfg.set_flags(flags);
             }
             cfg
         },
@@ -504,7 +461,17 @@ pub async fn quic_proxy() {
     let target_ip = "10.1.2.4";
 
     subnet_proxy_test_icmp(target_ip).await;
-    subnet_proxy_test_tcp(target_ip).await;
+    subnet_proxy_test_icmp("10.144.144.3").await;
+    subnet_proxy_test_tcp(target_ip, target_ip).await;
+    subnet_proxy_test_tcp("0.0.0.0", "10.144.144.3").await;
+
+    let metrics = insts[0]
+        .get_global_ctx()
+        .stats_manager()
+        .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(1, metrics[0].value);
+    assert_eq!(1, metrics[1].value);
 
     drop_insts(insts).await;
 }
@@ -583,10 +550,64 @@ pub async fn subnet_proxy_three_node_test(
     )
     .await;
 
-    for target_ip in ["10.1.3.4", "10.1.2.4"].iter() {
+    for target_ip in ["10.1.3.4", "10.1.2.4", "10.144.144.3"] {
         subnet_proxy_test_icmp(target_ip).await;
-        subnet_proxy_test_tcp(target_ip).await;
-        subnet_proxy_test_udp(target_ip).await;
+        let listen_ip = if target_ip == "10.144.144.3" {
+            "0.0.0.0"
+        } else {
+            "10.1.2.4"
+        };
+        subnet_proxy_test_tcp(listen_ip, target_ip).await;
+        subnet_proxy_test_udp(listen_ip, target_ip).await;
+    }
+
+    if enable_kcp_proxy && !disable_kcp_input {
+        let metrics = insts[0]
+            .get_global_ctx()
+            .stats_manager()
+            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        assert_eq!(metrics.len(), 3);
+        for metric in metrics {
+            assert_eq!(1, metric.value);
+            assert!(metric.labels.labels().iter().any(|l| {
+                let t =
+                    LabelType::Protocol(TcpProxyEntryTransportType::Kcp.as_str_name().to_string());
+                t.key() == l.key && t.value() == l.value
+            }));
+        }
+    } else if enable_quic_proxy && !disable_quic_input {
+        let metrics = insts[0]
+            .get_global_ctx()
+            .stats_manager()
+            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        assert_eq!(metrics.len(), 3);
+        for metric in metrics {
+            assert_eq!(1, metric.value);
+            assert!(metric.labels.labels().iter().any(|l| {
+                let t =
+                    LabelType::Protocol(TcpProxyEntryTransportType::Quic.as_str_name().to_string());
+                t.key() == l.key && t.value() == l.value
+            }));
+        }
+    } else {
+        // tcp subnet proxy
+        let metrics = insts[2]
+            .get_global_ctx()
+            .stats_manager()
+            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        if no_tun {
+            assert_eq!(metrics.len(), 3);
+        } else {
+            assert_eq!(metrics.len(), 2);
+        }
+        for metric in metrics {
+            assert_eq!(1, metric.value);
+            assert!(metric.labels.labels().iter().any(|l| {
+                let t =
+                    LabelType::Protocol(TcpProxyEntryTransportType::Tcp.as_str_name().to_string());
+                t.key() == l.key && t.value() == l.value
+            }));
+        }
     }
 
     drop_insts(insts).await;

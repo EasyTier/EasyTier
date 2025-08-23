@@ -66,6 +66,8 @@ pub enum MetricName {
     CompressionBytesTxBefore,
     /// Compression bytes after compression
     CompressionBytesTxAfter,
+
+    TcpProxyConnect,
 }
 
 impl fmt::Display for MetricName {
@@ -112,6 +114,8 @@ impl fmt::Display for MetricName {
             MetricName::CompressionBytesRxAfter => write!(f, "compression_bytes_rx_after"),
             MetricName::CompressionBytesTxBefore => write!(f, "compression_bytes_tx_before"),
             MetricName::CompressionBytesTxAfter => write!(f, "compression_bytes_tx_after"),
+
+            MetricName::TcpProxyConnect => write!(f, "tcp_proxy_connect"),
         }
     }
 }
@@ -139,6 +143,10 @@ pub enum LabelType {
     ErrorType(String),
     /// Status
     Status(String),
+    /// Dst Ip
+    DstIp(String),
+    /// Mapped Dst Ip
+    MappedDstIp(String),
 }
 
 impl fmt::Display for LabelType {
@@ -154,6 +162,8 @@ impl fmt::Display for LabelType {
             LabelType::CompressionAlgo(algo) => write!(f, "compression_algo={}", algo),
             LabelType::ErrorType(err) => write!(f, "error_type={}", err),
             LabelType::Status(status) => write!(f, "status={}", status),
+            LabelType::DstIp(ip) => write!(f, "dst_ip={}", ip),
+            LabelType::MappedDstIp(ip) => write!(f, "mapped_dst_ip={}", ip),
         }
     }
 }
@@ -171,6 +181,8 @@ impl LabelType {
             LabelType::CompressionAlgo(_) => "compression_algo",
             LabelType::ErrorType(_) => "error_type",
             LabelType::Status(_) => "status",
+            LabelType::DstIp(_) => "dst_ip",
+            LabelType::MappedDstIp(_) => "mapped_dst_ip",
         }
     }
 
@@ -186,6 +198,8 @@ impl LabelType {
             LabelType::CompressionAlgo(algo) => algo.clone(),
             LabelType::ErrorType(err) => err.clone(),
             LabelType::Status(status) => status.clone(),
+            LabelType::DstIp(ip) => ip.clone(),
+            LabelType::MappedDstIp(ip) => ip.clone(),
         }
     }
 }
