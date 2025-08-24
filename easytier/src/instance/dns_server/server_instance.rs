@@ -70,20 +70,6 @@ pub(super) struct MagicDnsServerInstanceData {
 }
 
 impl MagicDnsServerInstanceData {
-    fn is_valid_subdomain_label(s: &str) -> bool {
-        let s = s.trim();
-
-        // 长度检查：1-63 个字符
-        if s.is_empty() || s.len() > 63 {
-            return false;
-        }
-
-        // 检查每个字符是否合法，并确保不以 '-' 开头或结尾
-        s.chars().all(|c| matches!(c, 'a'..='z' | '0'..='9' | '-'))
-            && !s.starts_with('-')
-            && !s.ends_with('-')
-    }
-
     pub async fn update_dns_records<'a, T: Iterator<Item = &'a Route>>(
         &self,
         routes: T,
@@ -92,11 +78,6 @@ impl MagicDnsServerInstanceData {
         let mut records: Vec<Record> = vec![];
         for route in routes {
             if route.hostname.is_empty() {
-                continue;
-            }
-
-            // check host name valid for dns
-            if !Self::is_valid_subdomain_label(&route.hostname) {
                 continue;
             }
 
@@ -110,6 +91,12 @@ impl MagicDnsServerInstanceData {
                 .value(ipv4_addr.to_string())
                 .ttl(Duration::from_secs(1))
                 .build()?;
+
+            // check record name valid for dns
+            if let Err(e) = record.name() {
+                tracing::error!("Invalid subdomain label: {}", e);
+                continue;
+            }
 
             records.push(record);
         }
