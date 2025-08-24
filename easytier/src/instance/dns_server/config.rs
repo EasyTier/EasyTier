@@ -68,7 +68,7 @@ pub struct Record {
 }
 
 impl Record {
-    fn name(&self) -> anyhow::Result<rr::Name> {
+    pub fn name(&self) -> anyhow::Result<rr::Name> {
         let name = rr::Name::from_str(self.name.as_str())?;
         Ok(name)
     }

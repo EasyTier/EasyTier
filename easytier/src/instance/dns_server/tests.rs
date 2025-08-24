@@ -84,11 +84,23 @@ async fn test_magic_dns_server_instance() {
             .await
             .unwrap();
 
-    let routes = vec![Route {
-        hostname: "test1".to_string(),
-        ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
-        ..Default::default()
-    }];
+    let routes = vec![
+        Route {
+            hostname: "test1".to_string(),
+            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
+            ..Default::default()
+        },
+        Route {
+            hostname: "中文".to_string(),
+            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
+            ..Default::default()
+        },
+        Route {
+            hostname: ".invalid".to_string(),
+            ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
+            ..Default::default()
+        },
+    ];
     dns_server_inst
         .data
         .update_dns_records(routes.iter(), DEFAULT_ET_DNS_ZONE)
@@ -96,6 +108,7 @@ async fn test_magic_dns_server_instance() {
         .unwrap();
 
     check_dns_record(&fake_ip, "test1.et.net", "8.8.8.8").await;
+    check_dns_record(&fake_ip, "中文.et.net", "8.8.8.8").await;
 }
 
 #[tokio::test]
