@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::tunnel::{
-    common::{FramedReader, FramedWriter, TunnelWrapper},
+    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
@@ -89,12 +89,20 @@ impl AsyncUdpSocket for NoGroAsyncUdpSocket {
 #[allow(unused)]
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
     let (server_config, server_cert) = configure_server()?;
-    let socket = std::net::UdpSocket::bind(bind_addr)?;
+
+    let socket2_socket = socket2::Socket::new(
+        socket2::Domain::for_address(bind_addr),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    setup_sokcet2(&socket2_socket, &bind_addr)?;
+    let socket = std::net::UdpSocket::from(socket2_socket);
+
     let runtime =
         quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
     let mut endpoint_config = EndpointConfig::default();
     endpoint_config.max_udp_payload_size(1200)?;
-    let socket = NoGroAsyncUdpSocket {
+    let socket: NoGroAsyncUdpSocket = NoGroAsyncUdpSocket {
         inner: runtime.wrap_udp_socket(socket)?,
     };
     let endpoint = Endpoint::new_with_abstract_socket(
