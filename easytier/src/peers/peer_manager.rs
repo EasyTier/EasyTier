@@ -1386,6 +1386,11 @@ impl PeerManager {
             return false;
         };
 
+        if next_hop_id == dst_peer_id {
+            // dst p2p, no need to relay
+            return true;
+        }
+
         let Some(next_hop_info) = route.get_peer_info(next_hop_id).await else {
             return false;
         };

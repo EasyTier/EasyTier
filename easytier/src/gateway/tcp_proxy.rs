@@ -24,6 +24,7 @@ use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
 
+use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
 use crate::proto::cli::{
@@ -721,6 +722,21 @@ impl<C: NatDstConnector> TcpProxy<C> {
         } else {
             nat_entry.real_dst
         };
+
+        global_ctx
+            .stats_manager()
+            .get_counter(
+                MetricName::TcpProxyConnect,
+                LabelSet::new()
+                    .with_label_type(LabelType::Protocol(
+                        connector.transport_type().as_str_name().to_string(),
+                    ))
+                    .with_label_type(LabelType::DstIp(nat_dst.ip().to_string()))
+                    .with_label_type(LabelType::MappedDstIp(
+                        nat_entry.mapped_dst.ip().to_string(),
+                    )),
+            )
+            .inc();
 
         let _guard = global_ctx.net_ns.guard();
         let Ok(dst_tcp_stream) = connector.connect(nat_entry.src, nat_dst).await else {

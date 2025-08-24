@@ -527,7 +527,7 @@ impl Instance {
     }
 
     async fn run_quic_dst(&mut self) -> Result<(), Error> {
-        if !self.global_ctx.get_flags().enable_quic_proxy {
+        if self.global_ctx.get_flags().disable_quic_input {
             return Ok(());
         }
 

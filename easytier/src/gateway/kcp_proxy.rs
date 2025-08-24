@@ -266,6 +266,11 @@ impl<C: NatDstConnector, T: TcpProxyForKcpSrcTrait<Connector = C>> NicPacketFilt
                 .check_dst_allow_kcp_input(&ip_packet.get_destination())
                 .await
             {
+                tracing::warn!(
+                    "{:?} proxy src: dst {} not allow kcp input",
+                    self.get_tcp_proxy().get_transport_type(),
+                    ip_packet.get_destination()
+                );
                 return false;
             }
         } else {
@@ -288,6 +293,12 @@ impl<C: NatDstConnector, T: TcpProxyForKcpSrcTrait<Connector = C>> NicPacketFilt
             if ip_packet.get_source() != my_ipv4.address()
                 && !self.get_tcp_proxy().is_smoltcp_enabled()
             {
+                tracing::warn!(
+                    "{:?} nat 2 nat packet, src: {} dst: {} not allow kcp input",
+                    self.get_tcp_proxy().get_transport_type(),
+                    ip_packet.get_source(),
+                    ip_packet.get_destination()
+                );
                 return false;
             }
         };

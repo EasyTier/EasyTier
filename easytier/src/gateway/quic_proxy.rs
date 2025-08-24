@@ -200,6 +200,11 @@ impl TcpProxyForKcpSrcTrait for TcpProxyForQUICSrc {
         let Some(peer_info) = peer_map.get_route_peer_info(dst_peer_id).await else {
             return false;
         };
+        tracing::debug!(
+            "check dst {} allow quic input, peer info: {:?}",
+            dst_ip,
+            peer_info
+        );
         let Some(quic_port) = peer_info.quic_port else {
             return false;
         };
