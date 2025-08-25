@@ -1,0 +1,16 @@
+[package]
+name = "easytier-android-jni"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+jni = "0.21"
+once_cell = "1.18.0"
+log = "0.4"
+android_logger = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+easytier = { path = "../../easytier" }
