@@ -144,8 +144,8 @@ onMounted(async () => {
 
   window.setTimeout(async () => {
     await setTrayMenu([
-      await MenuItemExit(t('tray.exit')),
       await MenuItemShow(t('tray.show')),
+      await MenuItemExit(t('tray.exit')),
     ])
   }, 1000)
 })
@@ -165,8 +165,8 @@ const setting_menu_items = ref([
     command: async () => {
       await I18nUtils.loadLanguageAsync((locale.value === 'en' ? 'cn' : 'en'))
       await setTrayMenu([
-        await MenuItemExit(t('tray.exit')),
         await MenuItemShow(t('tray.show')),
+        await MenuItemExit(t('tray.exit')),
       ])
     },
   },
