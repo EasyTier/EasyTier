@@ -71,27 +71,12 @@ impl NatDstConnector for NatDstTcpConnector {
                 return Err(e.into());
             }
         };
-        if let Err(e) = socket.set_nodelay(true) {
-            tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
-        }
-
-        const TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(5);
-        const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
-        const TCP_KEEPALIVE_RETRIES: u32 = 2;
 
         let stream = timeout(Duration::from_secs(10), socket.connect(nat_dst))
             .await?
             .with_context(|| format!("connect to nat dst failed: {:?}", nat_dst))?;
 
-        let ka = TcpKeepalive::new()
-            .with_time(TCP_KEEPALIVE_TIME)
-            .with_interval(TCP_KEEPALIVE_INTERVAL);
-
-        #[cfg(not(target_os = "windows"))]
-        let ka = ka.with_retries(TCP_KEEPALIVE_RETRIES);
-
-        let sf = SockRef::from(&stream);
-        sf.set_tcp_keepalive(&ka)?;
+        prepare_kernel_tcp_socket(&stream)?;
 
         Ok(stream)
     }
@@ -280,11 +265,33 @@ enum ProxyTcpListener {
     SmolTcpListener(SmolTcpListener),
 }
 
+fn prepare_kernel_tcp_socket(stream: &TcpStream) -> Result<()> {
+    const TCP_KEEPALIVE_TIME: Duration = Duration::from_secs(5);
+    const TCP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(2);
+    const TCP_KEEPALIVE_RETRIES: u32 = 2;
+
+    let ka = TcpKeepalive::new()
+        .with_time(TCP_KEEPALIVE_TIME)
+        .with_interval(TCP_KEEPALIVE_INTERVAL);
+
+    #[cfg(not(target_os = "windows"))]
+    let ka = ka.with_retries(TCP_KEEPALIVE_RETRIES);
+
+    let sf = SockRef::from(&stream);
+    sf.set_tcp_keepalive(&ka)?;
+    if let Err(e) = sf.set_nodelay(true) {
+        tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
+    }
+
+    Ok(())
+}
+
 impl ProxyTcpListener {
     pub async fn accept(&mut self) -> Result<(ProxyTcpStream, SocketAddr)> {
         match self {
             Self::KernelTcpListener(listener) => {
                 let (stream, addr) = listener.accept().await?;
+                prepare_kernel_tcp_socket(&stream)?;
                 Ok((ProxyTcpStream::KernelTcpStream(stream), addr))
             }
             #[cfg(feature = "smoltcp")]
