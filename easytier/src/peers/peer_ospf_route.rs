@@ -575,7 +575,7 @@ impl SyncedRouteInfo {
                     let need_renew = is_newer
                         || now
                             .duration_since(entry.last_update.unwrap().try_into().unwrap())
-                            .unwrap()
+                            .unwrap_or(Duration::from_secs(0))
                             > UPDATE_PEER_INFO_PERIOD;
                     if need_renew {
                         new_entry.version = std::cmp::max(new_entry.version + 1, now_version);
@@ -597,7 +597,11 @@ impl SyncedRouteInfo {
             assert!(!item.value().foreign_peer_ids.is_empty());
             self.foreign_network
                 .entry(item.key().clone())
-                .and_modify(|v| panic!("key should not exist, {:?}", v))
+                .and_modify(|old_entry| {
+                    if item.value().version > old_entry.version {
+                        *old_entry = item.value().clone();
+                    }
+                })
                 .or_insert_with(|| {
                     let mut v = item.value().clone();
                     v.version = now_version;
@@ -1522,6 +1526,9 @@ impl PeerRouteServiceImpl {
     ) -> Option<RouteForeignNetworkInfos> {
         let mut foreign_networks = RouteForeignNetworkInfos::default();
         for item in self.synced_route_info.foreign_network.iter() {
+            if item.key().peer_id == session.dst_peer_id {
+                continue;
+            }
             if session
                 .dst_saved_foreign_network_versions
                 .get(item.key())
