@@ -79,7 +79,7 @@ impl InterfaceFilter {
 
             if line.contains("Device:") && line.contains(interface_name) {
                 let next_line = lines[i + 1];
-                return !next_line.contains("Virtual Interface")
+                return !next_line.contains("Virtual Interface");
             }
         }
 
