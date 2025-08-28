@@ -845,14 +845,14 @@ pub mod tests {
     fn test_stun_servers_config() {
         let config = TomlConfigLoader::default();
         let stun_servers = config.get_stun_servers();
-        assert!(stun_servers.is_empty());
+        assert!(stun_servers.is_none());
 
         // Test setting custom stun servers
-        let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
+        let custom_servers = Some(vec!["txt:stun.easytier.cn".to_string()]);
         config.set_stun_servers(custom_servers.clone());
 
         let retrieved_servers = config.get_stun_servers();
-        assert_eq!(retrieved_servers, custom_servers);
+        assert_eq!(retrieved_servers.unwrap(), custom_servers.unwrap());
     }
 
     #[test]
@@ -866,7 +866,7 @@ stun_servers = [
 ]"#;
 
         let config = TomlConfigLoader::new_from_str(config_str).unwrap();
-        let stun_servers = config.get_stun_servers();
+        let stun_servers = config.get_stun_servers().unwrap();
 
         assert_eq!(stun_servers.len(), 3);
         assert_eq!(stun_servers[0], "stun.l.google.com:19302");
