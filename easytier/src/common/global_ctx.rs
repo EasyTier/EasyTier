@@ -114,12 +114,21 @@ impl GlobalCtx {
 
         let (event_bus, _) = tokio::sync::broadcast::channel(8);
 
-        let stun_servers = config_fs.get_stun_servers();
-        let stun_info_collection = Arc::new(if stun_servers.is_empty() {
-            StunInfoCollector::new_with_default_servers()
+        let stun_info_collector = StunInfoCollector::new_with_default_servers();
+
+        if let Some(stun_servers) = config_fs.get_stun_servers() {
+            stun_info_collector.set_stun_servers(stun_servers);
         } else {
-            StunInfoCollector::new(stun_servers)
-        });
+            stun_info_collector.set_stun_servers(Vec::new());
+        }
+
+        if let Some(stun_servers) = config_fs.get_stun_servers_v6() {
+            stun_info_collector.set_stun_servers_v6(stun_servers);
+        } else {
+            stun_info_collector.set_stun_servers_v6(Vec::new());
+        }
+
+        let stun_info_collector = Arc::new(stun_info_collector);
 
         let enable_exit_node = config_fs.get_flags().enable_exit_node || cfg!(target_env = "ohos");
         let proxy_forward_by_system = config_fs.get_flags().proxy_forward_by_system;
@@ -145,12 +154,12 @@ impl GlobalCtx {
 
             ip_collector: Mutex::new(Some(Arc::new(IPCollector::new(
                 net_ns,
-                stun_info_collection.clone(),
+                stun_info_collector.clone(),
             )))),
 
             hostname: Mutex::new(hostname),
 
-            stun_info_collection: Mutex::new(stun_info_collection),
+            stun_info_collection: Mutex::new(stun_info_collector),
 
             running_listeners: Mutex::new(Vec::new()),
 

@@ -252,13 +252,13 @@ pub struct QUICProxyDst {
     endpoint: Arc<quinn::Endpoint>,
     proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
-    route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
+    route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
 }
 
 impl QUICProxyDst {
     pub fn new(
         global_ctx: ArcGlobalCtx,
-        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
+        route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<Self> {
         let _g = global_ctx.net_ns.guard();
         let (endpoint, _) = make_server_endpoint("0.0.0.0:0".parse().unwrap())
@@ -324,7 +324,7 @@ impl QUICProxyDst {
         ctx: Arc<GlobalCtx>,
         cidr_set: Arc<CidrSet>,
         proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
-        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
+        route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) {
         let remote_addr = conn.remote_address();
         defer!(
@@ -368,7 +368,7 @@ impl QUICProxyDst {
         cidr_set: Arc<CidrSet>,
         proxy_entry_key: SocketAddr,
         proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
-        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
+        route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<(QUICStream, TcpStream, ProxyAclHandler)> {
         let conn = incoming.await.with_context(|| "accept failed")?;
         let addr = conn.remote_address();

@@ -457,7 +457,7 @@ impl KcpProxyDst {
         global_ctx: ArcGlobalCtx,
         proxy_entries: Arc<DashMap<ConnId, TcpProxyEntry>>,
         cidr_set: Arc<CidrSet>,
-        route: Arc<(dyn crate::peers::route_trait::Route + Send + Sync + 'static)>,
+        route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<()> {
         let mut conn_data = kcp_stream.conn_data().clone();
         let parsed_conn_data = KcpConnData::decode(&mut conn_data)

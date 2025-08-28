@@ -200,8 +200,11 @@ pub trait ConfigLoader: Send + Sync {
     fn get_udp_whitelist(&self) -> Vec<String>;
     fn set_udp_whitelist(&self, whitelist: Vec<String>);
 
-    fn get_stun_servers(&self) -> Vec<String>;
-    fn set_stun_servers(&self, servers: Vec<String>);
+    fn get_stun_servers(&self) -> Option<Vec<String>>;
+    fn set_stun_servers(&self, servers: Option<Vec<String>>);
+
+    fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
+    fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
     fn dump(&self) -> String;
 }
@@ -374,7 +377,7 @@ impl From<PortForwardConfig> for PortForwardConfigPb {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
@@ -412,6 +415,7 @@ struct Config {
     tcp_whitelist: Option<Vec<String>>,
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
+    stun_servers_v6: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -791,17 +795,20 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().udp_whitelist = Some(whitelist);
     }
 
-    fn get_stun_servers(&self) -> Vec<String> {
-        self.config
-            .lock()
-            .unwrap()
-            .stun_servers
-            .clone()
-            .unwrap_or_default()
+    fn get_stun_servers(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().stun_servers.clone()
     }
 
-    fn set_stun_servers(&self, servers: Vec<String>) {
-        self.config.lock().unwrap().stun_servers = Some(servers);
+    fn set_stun_servers(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().stun_servers = servers;
+    }
+
+    fn get_stun_servers_v6(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().stun_servers_v6.clone()
+    }
+
+    fn set_stun_servers_v6(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().stun_servers_v6 = servers;
     }
 
     fn dump(&self) -> String {
