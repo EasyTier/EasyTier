@@ -848,11 +848,11 @@ pub mod tests {
         assert!(stun_servers.is_none());
 
         // Test setting custom stun servers
-        let custom_servers = Some(vec!["txt:stun.easytier.cn".to_string()]);
-        config.set_stun_servers(custom_servers.clone());
+        let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
+        config.set_stun_servers(Some(custom_servers.clone()));
 
         let retrieved_servers = config.get_stun_servers();
-        assert_eq!(retrieved_servers.unwrap(), custom_servers.unwrap());
+        assert_eq!(retrieved_servers.unwrap(), custom_servers);
     }
 
     #[test]
