@@ -74,7 +74,7 @@ impl IfConfiguerTrait for MacIfConfiger {
                 format!(
                     "ifconfig {} inet {} delete",
                     name,
-                    ip.unwrap().address().to_string()
+                    ip.unwrap().address()
                 )
                 .as_str(),
             )

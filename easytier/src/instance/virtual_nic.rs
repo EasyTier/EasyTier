@@ -127,8 +127,7 @@ impl PacketProtocol {
         match self {
             PacketProtocol::IPv4 => Ok(libc::PF_INET as u16),
             PacketProtocol::IPv6 => Ok(libc::PF_INET6 as u16),
-            PacketProtocol::Other(_) => Err(io::Error::new(
-                io::ErrorKind::Other,
+            PacketProtocol::Other(_) => Err(io::Error::other(
                 "neither an IPv4 nor IPv6 packet",
             )),
         }
@@ -904,7 +903,7 @@ impl NicCtx {
                         // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
                         let _ = nic
                             .ifcfg
-                            .remove_ipv4_route(&nic.ifname(), "10.0.0.0".parse().unwrap(), 24)
+                            .remove_ipv4_route(nic.ifname(), "10.0.0.0".parse().unwrap(), 24)
                             .await;
                     }
 
