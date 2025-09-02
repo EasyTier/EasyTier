@@ -377,7 +377,7 @@ impl From<PortForwardConfig> for PortForwardConfigPb {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
