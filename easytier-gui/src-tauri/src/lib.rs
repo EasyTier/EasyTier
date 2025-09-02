@@ -31,6 +31,23 @@ fn easytier_version() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::ActivationPolicy;
+        app.set_activation_policy(if visible {
+            ActivationPolicy::Regular
+        } else {
+            ActivationPolicy::Accessory
+        })
+        .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, visible);
+    Ok(())
+}
+
+#[tauri::command]
 fn is_autostart() -> Result<bool, String> {
     let args: Vec<String> = std::env::args().collect();
     println!("{:?}", args);
@@ -243,7 +260,8 @@ pub fn run() {
             set_logging_level,
             set_tun_fd,
             is_autostart,
-            easytier_version
+            easytier_version,
+            set_dock_visibility
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]
