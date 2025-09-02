@@ -208,6 +208,12 @@ core_clap:
   enable_relay_foreign_network_kcp:
     en: "if true, allow relay kcp packets from foreign network. default is false (not forward foreign network kcp packets)"
     zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 KCP 数据包。默认值为false（不转发）"
+  stun_servers:
+    en: "Override default STUN servers; If configured but empty, STUN servers are not used"
+    zh-CN: "覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表"
+  stun_servers_v6:
+    en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
+    zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
 
 core_app:
   panic_backtrace_save:

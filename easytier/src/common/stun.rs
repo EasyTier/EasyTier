@@ -718,10 +718,10 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 }
 
 impl StunInfoCollector {
-    pub fn new(stun_servers: Vec<String>) -> Self {
+    pub fn new(stun_servers: Vec<String>, stun_servers_v6: Vec<String>) -> Self {
         Self {
             stun_servers: Arc::new(RwLock::new(stun_servers)),
-            stun_servers_v6: Arc::new(RwLock::new(Self::get_default_servers_v6())),
+            stun_servers_v6: Arc::new(RwLock::new(stun_servers_v6)),
             udp_nat_test_result: Arc::new(RwLock::new(None)),
             public_ipv6: Arc::new(AtomicCell::new(None)),
             nat_test_result_time: Arc::new(AtomicCell::new(Local::now())),
@@ -732,7 +732,17 @@ impl StunInfoCollector {
     }
 
     pub fn new_with_default_servers() -> Self {
-        Self::new(Self::get_default_servers())
+        Self::new(Self::get_default_servers(), Self::get_default_servers_v6())
+    }
+
+    pub fn set_stun_servers(&self, stun_servers: Vec<String>) {
+        let mut g = self.stun_servers.write().unwrap();
+        *g = stun_servers;
+    }
+
+    pub fn set_stun_servers_v6(&self, stun_servers_v6: Vec<String>) {
+        let mut g = self.stun_servers_v6.write().unwrap();
+        *g = stun_servers_v6;
     }
 
     pub fn get_default_servers() -> Vec<String> {

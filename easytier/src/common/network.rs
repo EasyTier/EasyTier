@@ -65,7 +65,7 @@ impl InterfaceFilter {
     async fn is_interface_physical(&self) -> bool {
         let interface_name = &self.iface.name;
         let output = tokio::process::Command::new("networksetup")
-            .args(&["-listallhardwareports"])
+            .args(["-listallhardwareports"])
             .output()
             .await
             .expect("Failed to execute command");
@@ -79,11 +79,7 @@ impl InterfaceFilter {
 
             if line.contains("Device:") && line.contains(interface_name) {
                 let next_line = lines[i + 1];
-                if next_line.contains("Virtual Interface") {
-                    return false;
-                } else {
-                    return true;
-                }
+                return !next_line.contains("Virtual Interface");
             }
         }
 
