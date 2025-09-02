@@ -44,6 +44,8 @@ logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
+hide_dock_icon: Hide Dock Icon
+show_dock_icon: Show Dock Icon
 exit: Exit
 use_latency_first: Latency First Mode
 chips_placeholder: 'e.g: {0}, select from the dropdown after input'
