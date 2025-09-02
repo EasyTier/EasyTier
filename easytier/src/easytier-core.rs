@@ -963,12 +963,12 @@ impl NetworkOptions {
 
         if let Some(stun_servers) = &self.stun_servers_v6 {
             if stun_servers.is_empty() {
-                cfg.set_stun_servers(None);
+                cfg.set_stun_servers_v6(None);
             } else {
-                cfg.set_stun_servers(Some(stun_servers.clone()));
+                cfg.set_stun_servers_v6(Some(stun_servers.clone()));
             }
         } else {
-            cfg.set_stun_servers(Some(StunInfoCollector::get_default_servers_v6()));
+            cfg.set_stun_servers_v6(Some(StunInfoCollector::get_default_servers_v6()));
         }
 
         Ok(())
