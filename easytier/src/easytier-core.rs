@@ -1061,6 +1061,18 @@ fn win_service_event_loop(
     });
 }
 
+fn parse_cli() -> Cli {
+    let mut cli = Cli::parse();
+    // for --stun-servers="", we want vec![], but clap will give vec![""], hack for that
+    if let Some(stun_servers) = &mut cli.network_options.stun_servers {
+        stun_servers.retain(|s| !s.trim().is_empty());
+    }
+    if let Some(stun_servers_v6) = &mut cli.network_options.stun_servers_v6 {
+        stun_servers_v6.retain(|s| !s.trim().is_empty());
+    }
+    cli
+}
+
 #[cfg(target_os = "windows")]
 fn win_service_main(arg: Vec<std::ffi::OsString>) {
     use std::sync::Arc;
@@ -1071,13 +1083,7 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 
     _ = win_service_set_work_dir(&arg[0]);
 
-    let mut cli = Cli::parse();
-    if let Some(stun_servers) = &mut cli.network_options.stun_servers {
-        stun_servers.retain(|s| !s.trim().is_empty());
-    }
-    if let Some(stun_servers_v6) = &mut cli.network_options.stun_servers_v6 {
-        stun_servers_v6.retain(|s| !s.trim().is_empty());
-    }
+    let cli = parse_cli();
 
     let stop_notify_send = Arc::new(Notify::new());
     let stop_notify_recv = Arc::clone(&stop_notify_send);
@@ -1285,15 +1291,7 @@ async fn main() -> ExitCode {
     set_prof_active(true);
     let _monitor = std::thread::spawn(memory_monitor);
 
-    let mut cli = Cli::parse();
-
-    // for --stun-servers="", we want vec![], but clap will give vec![""], hack for that
-    if let Some(stun_servers) = &mut cli.network_options.stun_servers {
-        stun_servers.retain(|s| !s.trim().is_empty());
-    }
-    if let Some(stun_servers_v6) = &mut cli.network_options.stun_servers_v6 {
-        stun_servers_v6.retain(|s| !s.trim().is_empty());
-    }
+    let cli = parse_cli();
 
     if let Some(shell) = cli.gen_autocomplete {
         let mut cmd = Cli::command();
