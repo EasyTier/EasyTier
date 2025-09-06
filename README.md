@@ -59,7 +59,7 @@ cargo install --git https://github.com/EasyTier/EasyTier.git easytier
 # See https://easytier.cn/en/guide/installation.html#installation-methods
 
 # 4. Linux Quick Install
-wget -O- https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh | sudo bash
+wget -O- https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh | sudo bash -s install
 
 # 5. MacOS via Homebrew
 brew tap brewforge/chinese
