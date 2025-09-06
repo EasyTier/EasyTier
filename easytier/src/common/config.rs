@@ -10,6 +10,7 @@ use cidr::IpCidr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    common::stun::StunInfoCollector,
     proto::{
         acl::Acl,
         common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
@@ -833,6 +834,12 @@ impl ConfigLoader for TomlConfigLoader {
 
         let mut config = self.config.lock().unwrap().clone();
         config.flags = Some(flag_map);
+        if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
+            config.stun_servers = None;
+        }
+        if config.stun_servers_v6 == Some(StunInfoCollector::get_default_servers_v6()) {
+            config.stun_servers_v6 = None;
+        }
         toml::to_string_pretty(&config).unwrap()
     }
 }
