@@ -44,8 +44,8 @@ if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
     ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
     ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
 
-    rustup toolchain install nightly-x86_64-unknown-linux-gnu
-    rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+    rustup toolchain install nightly-2025-09-01-x86_64-unknown-linux-gnu
+    rustup component add rust-src --toolchain nightly-2025-09-01-x86_64-unknown-linux-gnu
 
     # https://github.com/rust-lang/rust/issues/128808
     # remove it after Cargo or rustc fix this.

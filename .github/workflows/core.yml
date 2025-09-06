@@ -186,7 +186,7 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
+            cargo +nightly-2025-09-01 build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
           else
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
