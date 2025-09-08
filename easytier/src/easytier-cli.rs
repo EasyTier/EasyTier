@@ -47,7 +47,7 @@ use easytier::{
         rpc_types::controller::BaseController,
     },
     tunnel::tcp::TcpTunnelConnector,
-    utils::{cost_to_str, float_to_str, PeerRoutePair},
+    utils::{cost_to_str, PeerRoutePair},
 };
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -484,7 +484,7 @@ impl CommandHandler<'_> {
             ipv4: String,
             hostname: String,
             cost: String,
-            #[tabled(rename = "lat")]
+            #[tabled(rename = "lat(ms)")]
             lat_ms: String,
             #[tabled(rename = "loss")]
             loss_rate: String,
@@ -504,6 +504,11 @@ impl CommandHandler<'_> {
         impl From<PeerRoutePair> for PeerTableItem {
             fn from(p: PeerRoutePair) -> Self {
                 let route = p.route.clone().unwrap_or_default();
+                let lat_ms = if route.cost == 1 {
+                    p.get_latency_ms().unwrap_or(0.0)
+                } else {
+                    route.path_latency_latency_first() as f64
+                };
                 PeerTableItem {
                     cidr: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
                     ipv4: route
@@ -513,11 +518,7 @@ impl CommandHandler<'_> {
                         .unwrap_or_default(),
                     hostname: route.hostname.clone(),
                     cost: cost_to_str(route.cost),
-                    lat_ms: if route.cost == 1 {
-                        float_to_str(p.get_latency_ms().unwrap_or(0.0), 3)
-                    } else {
-                        route.path_latency_latency_first().to_string()
-                    },
+                    lat_ms: format!("{:>7.2}", lat_ms),
                     loss_rate: format!("{:.1}%", p.get_loss_rate().unwrap_or(0.0) * 100.0),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
