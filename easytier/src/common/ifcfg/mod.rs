@@ -69,6 +69,17 @@ pub trait IfConfiguerTrait: Send + Sync {
     ) -> Result<(), Error> {
         Ok(())
     }
+
+    // Add an NDP proxy entry on interface for a specific IPv6 address
+    // Best-effort default no-op on unsupported platforms
+    async fn add_ndp_proxy(&self, _name: &str, _address: Ipv6Addr) -> Result<(), Error> {
+        Ok(())
+    }
+
+    // Remove NDP proxy entry on interface for a specific IPv6 address
+    async fn remove_ndp_proxy(&self, _name: &str, _address: Ipv6Addr) -> Result<(), Error> {
+        Ok(())
+    }
     async fn set_link_status(&self, _name: &str, _up: bool) -> Result<(), Error> {
         Ok(())
     }

@@ -207,6 +207,10 @@ pub trait ConfigLoader: Send + Sync {
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
+    // IPv6 on-link allocator config (RA prefix based)
+    fn get_ipv6_onlink_config(&self) -> Option<Ipv6OnlinkConfig>;
+    fn set_ipv6_onlink_config(&self, c: Option<Ipv6OnlinkConfig>);
+
     fn dump(&self) -> String;
 }
 
@@ -293,6 +297,14 @@ impl Default for NetworkIdentity {
     fn default() -> Self {
         Self::new("default".to_string(), "".to_string())
     }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+pub struct Ipv6OnlinkConfig {
+    pub enable: bool,
+    pub uplink_iface: Option<String>,
+    pub prefix: Option<cidr::Ipv6Inet>,
+    pub install_source_default_on_receiver: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -417,6 +429,8 @@ struct Config {
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
+
+    ipv6_onlink: Option<Ipv6OnlinkConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -810,6 +824,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>) {
         self.config.lock().unwrap().stun_servers_v6 = servers;
+    }
+
+    fn get_ipv6_onlink_config(&self) -> Option<Ipv6OnlinkConfig> {
+        self.config.lock().unwrap().ipv6_onlink.clone()
+    }
+
+    fn set_ipv6_onlink_config(&self, c: Option<Ipv6OnlinkConfig>) {
+        self.config.lock().unwrap().ipv6_onlink = c;
     }
 
     fn dump(&self) -> String {

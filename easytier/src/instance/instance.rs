@@ -692,8 +692,35 @@ impl Instance {
 
         self.add_initial_peers().await?;
 
+        // Register peer RPC to accept IPv6 assignment from allocator
+        {
+            use crate::proto::peer_rpc::AddrAssignRpcServer;
+            let svc = super::addr_assign_rpc::AddrAssignRpcService::new(
+                self.global_ctx.clone(),
+                self.get_nic_ctx(),
+            );
+            self.peer_manager
+                .get_peer_rpc_mgr()
+                .rpc_server()
+                .registry()
+                .register(AddrAssignRpcServer::new(svc), "");
+        }
+
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;
+        }
+
+        // Start IPv6 on-link allocator if enabled
+        if let Some(cfg) = self.global_ctx.config.get_ipv6_onlink_config() {
+            if cfg.enable && cfg.prefix.is_some() && cfg.uplink_iface.is_some() {
+                let alloc = super::ipv6_onlink::Ipv6OnlinkAllocator::new(
+                    self.global_ctx.clone(),
+                    self.get_peer_manager(),
+                    self.get_nic_ctx(),
+                    cfg,
+                );
+                tokio::spawn(async move { alloc.start().await; });
+            }
         }
 
         #[cfg(feature = "socks5")]

@@ -112,6 +112,21 @@ message GetIpListResponse {
   repeated common.Url listeners = 5;
 }
 
+// Assigns a virtual IPv6 address to a remote peer.
+// The receiving peer should configure the address on its EasyTier interface
+// and optionally add source-based routing so traffic sourced from this address
+// egresses via the EasyTier tunnel.
+message AssignVirtualIpv6Request {
+  common.Ipv6Inet ipv6 = 1;
+  // If true, the receiver attempts to install a source-default route for this IPv6
+  // via the EasyTier interface (best-effort; implemented on Linux only).
+  bool install_source_default = 2;
+}
+
+service AddrAssignRpc {
+  rpc AssignVirtualIpv6(AssignVirtualIpv6Request) returns (common.Void);
+}
+
 message SendV6HolePunchPacketRequest {
   common.SocketAddr connector_addr = 1;
   uint32 listener_port = 2;

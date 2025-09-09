@@ -681,6 +681,17 @@ impl NicCtx {
         Ok(())
     }
 
+    // Add a host /128 route for a remote-assigned IPv6 to our EasyTier interface
+    pub async fn add_host_ipv6_route(&self, address: Ipv6Addr) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.add_ipv6_route(address, 128).await
+    }
+
+    pub async fn add_ndp_proxy_on(&self, uplink_iface: &str, address: Ipv6Addr) -> Result<(), Error> {
+        let nic = self.nic.lock().await;
+        nic.ifcfg.add_ndp_proxy(uplink_iface, address).await
+    }
+
     async fn do_forward_nic_to_peers_ipv4(ret: ZCPacket, mgr: &PeerManager) {
         if let Some(ipv4) = Ipv4Packet::new(ret.payload()) {
             if ipv4.get_version() != 4 {

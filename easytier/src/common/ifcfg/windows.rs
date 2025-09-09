@@ -318,6 +318,60 @@ impl IfConfiguerTrait for WindowsIfConfiger {
         .map_err(|e| anyhow::anyhow!("Failed to delete route: {}", format_win_error(e)))?;
         Ok(())
     }
+
+    async fn add_ndp_proxy(&self, name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        // Best-effort using netsh to publish the /128 on uplink so Windows answers NDP
+        let Some(if_index) = Self::get_interface_index(name) else {
+            return Err(Error::NotFound);
+        };
+
+        // Enable advertise and forwarding (best-effort)
+        let _ = std::process::Command::new("netsh")
+            .args([
+                "interface",
+                "ipv6",
+                "set",
+                "interface",
+                &format!("{}", if_index),
+                "advertise=enabled",
+                "forwarding=enabled",
+            ])
+            .status();
+
+        // Publish the host route on the uplink
+        let status = std::process::Command::new("netsh")
+            .args([
+                "interface",
+                "ipv6",
+                "add",
+                "route",
+                &format!("{}/128", address),
+                &format!("{}", if_index),
+                "publish=yes",
+                "store=active",
+            ])
+            .status();
+        match status {
+            Ok(s) if s.success() => Ok(()),
+            _ => Err(anyhow::anyhow!("Failed to add published IPv6 route via netsh").into()),
+        }
+    }
+
+    async fn remove_ndp_proxy(&self, name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        if let Some(if_index) = Self::get_interface_index(name) {
+            let _ = std::process::Command::new("netsh")
+                .args([
+                    "interface",
+                    "ipv6",
+                    "delete",
+                    "route",
+                    &format!("{}/128", address),
+                    &format!("{}", if_index),
+                ])
+                .status();
+        }
+        Ok(())
+    }
 }
 
 pub struct RegistryManager;

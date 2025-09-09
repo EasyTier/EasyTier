@@ -595,6 +595,39 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
         Ok(())
     }
+    async fn add_ndp_proxy(&self, name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        // Enable proxy_ndp on the interface and add a proxy neighbor entry
+        // Use shell commands for simplicity
+        // sysctl write may require root; ignore failure if already set
+        let _ = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("sysctl -w net.ipv6.conf.{}.proxy_ndp=1", name))
+            .output()
+            .await;
+        let status = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "ip -6 neigh add proxy {} dev {} || ip -6 neigh replace proxy {} dev {}",
+                address, name, address, name
+            ))
+            .status()
+            .await?;
+        if !status.success() {
+            return Err(Error::ShellCommandError(
+                "failed to add ndp proxy via ip -6 neigh".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn remove_ndp_proxy(&self, name: &str, address: Ipv6Addr) -> Result<(), Error> {
+        let _ = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("ip -6 neigh del proxy {} dev {}", address, name))
+            .status()
+            .await;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

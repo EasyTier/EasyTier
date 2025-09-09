@@ -136,4 +136,14 @@ impl IfConfiguerTrait for MacIfConfiger {
         )
         .await
     }
+
+    async fn add_ndp_proxy(&self, name: &str, address: std::net::Ipv6Addr) -> Result<(), Error> {
+        // macOS ndp proxy
+        run_shell_cmd(format!("ndp -proxy {} {}", address, name).as_str()).await
+    }
+
+    async fn remove_ndp_proxy(&self, name: &str, address: std::net::Ipv6Addr) -> Result<(), Error> {
+        let _ = run_shell_cmd(format!("ndp -proxy -delete {} {}", address, name).as_str()).await;
+        Ok(())
+    }
 }
