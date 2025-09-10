@@ -280,11 +280,10 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     {
         use tauri::RunEvent;
-        app.run(|app, event| match event {
-            RunEvent::Reopen { .. } => {
+        app.run(|app, event| {
+            if let RunEvent::Reopen { .. } = event {
                 toggle_window_visibility(app);
             }
-            _ => {}
         });
     }
 }
