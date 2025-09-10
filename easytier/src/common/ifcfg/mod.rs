@@ -102,7 +102,7 @@ fn cidr_to_subnet_mask(prefix_length: u8) -> Ipv4Addr {
     )
 }
 
-async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
+pub async fn run_shell_cmd(cmd: &str) -> Result<(), Error> {
     let cmd_out: std::process::Output;
     let stdout: String;
     let stderr: String;
