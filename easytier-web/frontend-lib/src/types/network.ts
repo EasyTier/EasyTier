@@ -73,6 +73,9 @@ export interface NetworkConfig {
   rpc_portal_whitelists: string[]
   
   port_forwards: PortForwardConfig[]
+
+  enable_ipv6_prefix_allocator?: boolean
+  ipv6_prefixes?: string[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -137,6 +140,9 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_private_mode: false,
     rpc_portal_whitelists: [],
     port_forwards: [],
+
+    enable_ipv6_prefix_allocator: false,
+    ipv6_prefixes: [],
   }
 }
 
@@ -158,6 +164,7 @@ export interface NetworkInstanceRunningInfo {
   peer_route_pairs: PeerRoutePair[]
   running: boolean
   error_msg?: string
+  peer_assigned_ipv6s?: { inst_id: string, addrs: Ipv6Inet[] }[]
 }
 
 export interface Ipv4Addr {
@@ -174,6 +181,11 @@ export interface Ipv6Addr {
   part2: number
   part3: number
   part4: number
+}
+
+export interface Ipv6Inet {
+  address: Ipv6Addr
+  network_length: number
 }
 
 export interface Url {
@@ -205,6 +217,7 @@ export interface NodeInfo {
   stun_info: StunInfo
   listeners: Url[]
   vpn_portal_cfg?: string
+  assigned_ipv6s?: Ipv6Inet[]
 }
 
 export interface StunInfo {

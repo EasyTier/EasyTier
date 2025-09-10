@@ -1,5 +1,5 @@
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
-import { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
+import { Ipv4Addr, Ipv4Inet, Ipv6Addr, Ipv6Inet } from '../types/network'
 
 export function ipv4ToString(ip: Ipv4Addr) {
     return IPv4.fromNumber(ip.addr).toString()
@@ -19,6 +19,95 @@ export function ipv6ToString(ip: Ipv6Addr) {
         + (BigInt(ip.part3) << BigInt(32))
         + BigInt(ip.part4),
     )
+}
+
+// Compress an expanded IPv6 string like "6:0:0:0:0:0:0:0" to "6::"
+export function compressIpv6String(s: string): string {
+    // Normalize to lowercase and split into groups
+    const parts = s.toLowerCase().split(':').map(p => p || '0')
+    // If input already contains '::', return as-is
+    if (s.includes('::')) return s.toLowerCase()
+    // Remove leading zeros per group
+    const norm = parts.map(p => p.replace(/^0+([0-9a-f]+)$/i, '$1') || '0')
+    // Find the longest run of consecutive '0'
+    let bestStart = -1, bestLen = 0
+    let curStart = -1, curLen = 0
+    for (let i = 0; i < norm.length; i++) {
+        if (norm[i] === '0') {
+            if (curStart === -1) curStart = i
+            curLen++
+        } else {
+            if (curLen > bestLen) { bestLen = curLen; bestStart = curStart }
+            curStart = -1; curLen = 0
+        }
+    }
+    if (curLen > bestLen) { bestLen = curLen; bestStart = curStart }
+    // If there is a run to compress, replace it with '' sentinel then join
+    if (bestLen > 1) {
+        const replaced: string[] = []
+        for (let i = 0; i < norm.length; i++) {
+            if (i === bestStart) {
+                replaced.push('')
+                i += bestLen - 1
+            } else {
+                replaced.push(norm[i])
+            }
+        }
+        // Fix leading/trailing empties for correct '::'
+        let out = replaced.join(':')
+        if (out.startsWith(':')) out = ':' + out
+        if (out.endsWith(':')) out = out + ':'
+        return out.replace(':::', '::')
+    }
+    return norm.join(':')
+}
+
+function ipv6AddrToGroups(addr: Ipv6Addr): number[] {
+    const hi = BigInt(addr.part1) << BigInt(96)
+    const h2 = BigInt(addr.part2) << BigInt(64)
+    const h3 = BigInt(addr.part3) << BigInt(32)
+    const val = hi + h2 + h3 + BigInt(addr.part4)
+    const groups: number[] = []
+    for (let i = 7; i >= 0; i--) {
+        const shift = BigInt(i * 16)
+        const g = Number((val >> shift) & BigInt(0xffff))
+        groups.push(g)
+    }
+    return groups
+}
+
+function groupsToCompressed(groups: number[]): string {
+    // Find longest zero run
+    let bestStart = -1, bestLen = 0
+    let curStart = -1, curLen = 0
+    for (let i = 0; i < groups.length; i++) {
+        if (groups[i] === 0) {
+            if (curStart === -1) curStart = i
+            curLen++
+        } else {
+            if (curLen > bestLen) { bestLen = curLen; bestStart = curStart }
+            curStart = -1; curLen = 0
+        }
+    }
+    if (curLen > bestLen) { bestLen = curLen; bestStart = curStart }
+    const hex = groups.map(g => g.toString(16))
+    if (bestLen > 1) {
+        const left = hex.slice(0, bestStart).join(':')
+        const right = hex.slice(bestStart + bestLen).join(':')
+        if (left && right) return `${left}::${right}`
+        if (left) return `${left}::`
+        if (right) return `::${right}`
+        return '::'
+    }
+    return hex.join(':')
+}
+
+export function ipv6AddrToCompressedString(addr: Ipv6Addr): string {
+    return groupsToCompressed(ipv6AddrToGroups(addr))
+}
+
+export function ipv6InetToCompressedString(inet: Ipv6Inet): string {
+    return `${ipv6AddrToCompressedString(inet.address)}/${inet.network_length}`
 }
 
 function toHexString(uint64: bigint, padding = 9): string {

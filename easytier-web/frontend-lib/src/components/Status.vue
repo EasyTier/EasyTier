@@ -4,7 +4,7 @@ import { IPv4 } from 'ip-num/IPNumber'
 import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
+import { ipv4InetToString, ipv4ToString, ipv6ToString, ipv6AddrToCompressedString } from '../modules/utils';
 import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 
 const props = defineProps<{
@@ -117,6 +117,27 @@ const myNodeInfo = computed(() => {
   return props.curNetworkInst.detail?.my_node_info
 })
 
+// Backend now filters IPv6s by prefix intersection; no heuristic needed here.
+
+function peerIpv6ArrayForRow(row: PeerRoutePair): string[] {
+  const detail = props.curNetworkInst?.detail
+  if (!detail) return []
+  // Self row (no inst_id) -> show my own assigned IPv6s
+  if (!row.route.inst_id) {
+    const mine = detail.my_node_info?.assigned_ipv6s || []
+    return mine.map(inet => ipv6AddrToCompressedString(inet.address))
+  }
+  // Peer row -> use back-end prepared list for that inst_id
+  const peerList = (detail.peer_assigned_ipv6s || []).find(p => p.inst_id === row.route.inst_id)?.addrs || []
+  return peerList.map(inet => ipv6AddrToCompressedString(inet.address))
+}
+
+async function copyOneIpv6(text: string) {
+  try {
+    if (navigator && navigator.clipboard) await navigator.clipboard.writeText(text)
+  } catch { /* ignore */ }
+}
+
 interface Chip {
   label: string
   icon: string
@@ -140,9 +161,9 @@ const myNodeInfoChips = computed(() => {
     } as Chip)
   }
 
-  // virtual ipv4
+  // virtual ip (v4)
   chips.push({
-    label: `Virtual IPv4: ${ipv4InetToString(my_node_info.virtual_ipv4)}`,
+    label: `Virtual IP: ${ipv4InetToString(my_node_info.virtual_ipv4)}`,
     icon: '',
   } as Chip)
 
@@ -163,6 +184,17 @@ const myNodeInfoChips = computed(() => {
       icon: '',
     } as Chip)
   }
+
+  // overlay assigned ipv6s
+  const assigned = my_node_info.assigned_ipv6s
+  for (const [idx, inet] of assigned?.entries() || []) {
+    chips.push({
+      label: `Overlay IPv6 ${idx}: ${ipv6ToString(inet.address)}/${inet.network_length}`,
+      icon: '',
+    } as Chip)
+  }
+
+  // peers overlay assigned ipv6s moved to table near Virtual IPv4
 
   // public ip
   const public_ip = my_node_info.ips?.public_ipv4
@@ -393,7 +425,24 @@ function showEventLogs() {
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
-            <Column :field="ipFormat" :header="t('virtual_ipv4')" />
+            <Column :header="t('virtual_ipv4')">
+              <template #body="slotProps">
+                <div class="flex flex-col">
+                  <div>{{ ipFormat(slotProps.data) }}</div>
+                  <template v-if="peerIpv6ArrayForRow(slotProps.data).length">
+                    <div
+                      v-for="(addr, i) in peerIpv6ArrayForRow(slotProps.data)"
+                      :key="i"
+                      class="text-xs overflow-hidden text-color-secondary cursor-pointer"
+                      v-tooltip="addr"
+                      @click="copyOneIpv6(addr)"
+                    >
+                      {{ addr }}
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </Column>
             <Column :header="t('hostname')">
               <template #body="slotProps">
                 <div v-if="!slotProps.data.route.cost || !slotProps.data.route.feature_flag.is_public_server"
