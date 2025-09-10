@@ -75,6 +75,9 @@ message NetworkConfig {
     repeated PortForwardConfig port_forwards = 48;
 
     optional bool disable_sym_hole_punching = 49;
+
+    optional bool enable_ipv6_prefix_allocator = 50;
+    repeated string ipv6_prefixes = 51; // e.g. 2001:db8:1:2::/64
 }
 
 message PortForwardConfig {
@@ -93,6 +96,8 @@ message MyNodeInfo {
   common.StunInfo stun_info = 5;
   repeated common.Url listeners = 6;
   optional string vpn_portal_cfg = 7;
+  // overlay IPv6 addresses assigned via prefix assignment
+  repeated common.Ipv6Inet assigned_ipv6s = 8;
 }
 
 message NetworkInstanceRunningInfo {
@@ -105,6 +110,12 @@ message NetworkInstanceRunningInfo {
   bool running = 7;
   optional string error_msg = 8;
   peer_rpc.RouteForeignNetworkSummary foreign_network_summary = 9;
+  repeated PeerAssignedIpv6 peer_assigned_ipv6s = 10;
+}
+
+message PeerAssignedIpv6 {
+  string inst_id = 1;
+  repeated common.Ipv6Inet addrs = 2;
 }
 
 message NetworkInstanceRunningInfoMap {
