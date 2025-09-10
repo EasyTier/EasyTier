@@ -3,7 +3,7 @@ networking_method: Networking Method
 public_server: Public Server
 manual: Manual
 standalone: Standalone
-virtual_ipv4: Virtual IPv4
+virtual_ipv4: Virtual IP
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name
 network_secret: Network Secret
@@ -330,3 +330,6 @@ web:
     language: Language
     theme: Theme
     logout: Logout
+ipv6_prefix_allocator: IPv6 Prefix Assignment
+ipv6_prefixes: IPv6 Prefixes
+requires_tun: Requires TUN interface

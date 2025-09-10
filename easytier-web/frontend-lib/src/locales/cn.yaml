@@ -3,7 +3,7 @@ networking_method: 网络方式
 public_server: 公共服务器
 manual: 手动
 standalone: 独立
-virtual_ipv4: 虚拟IPv4地址
+virtual_ipv4: 虚拟IP地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称
 network_secret: 网络密码
@@ -330,3 +330,6 @@ web:
     language: 语言
     theme: 主题
     logout: 退出登录
+ipv6_prefix_allocator: IPv6 前缀分配
+ipv6_prefixes: IPv6 前缀列表
+requires_tun: 需要启用 TUN 接口
