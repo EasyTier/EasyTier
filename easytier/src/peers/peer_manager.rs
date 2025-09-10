@@ -1096,6 +1096,7 @@ impl PeerManager {
             dst_peers.push(peer_id);
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to exit node.
+            // 1) prefer explicitly configured IPv6 exit nodes
             for exit_node in &self.exit_nodes {
                 let IpAddr::V6(exit_node) = exit_node else {
                     continue;
@@ -1106,6 +1107,23 @@ impl PeerManager {
                     break;
                 }
             }
+
+            // 1b) fallback to IPv4-configured exit nodes for IPv6 egress
+            // if no IPv6 exit nodes are configured or reachable.
+            if dst_peers.is_empty() {
+                for exit_node in &self.exit_nodes {
+                    let IpAddr::V4(exit_v4) = exit_node else {
+                        continue;
+                    };
+                    if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(exit_v4).await {
+                        dst_peers.push(peer_id);
+                        is_exit_node = true;
+                        break;
+                    }
+                }
+            }
+
+            // Removed IPv6 gateway preference logic.
         }
 
         (dst_peers, is_exit_node)

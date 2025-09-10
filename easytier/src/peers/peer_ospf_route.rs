@@ -130,6 +130,8 @@ impl RoutePeerInfo {
             network_length: 24,
             quic_port: None,
             ipv6_addr: None,
+            enable_ipv6_prefix_allocator: None,
+            ipv6_prefixes: Vec::new(),
             groups: Vec::new(),
         }
     }
@@ -172,6 +174,13 @@ impl RoutePeerInfo {
 
             quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
+            enable_ipv6_prefix_allocator: Some(
+                global_ctx.config.get_enable_ipv6_prefix_allocator(),
+            ),
+            ipv6_prefixes: {
+                let pfxs = global_ctx.config.get_ipv6_prefixes();
+                pfxs.into_iter().map(|p| p.to_string()).collect()
+            },
 
             groups: global_ctx.get_acl_groups(my_peer_id),
         };
@@ -228,6 +237,8 @@ impl From<RoutePeerInfo> for crate::proto::cli::Route {
             path_latency_latency_first: None,
 
             ipv6_addr: val.ipv6_addr,
+            enable_ipv6_prefix_allocator: val.enable_ipv6_prefix_allocator,
+            ipv6_prefixes: val.ipv6_prefixes,
         }
     }
 }
