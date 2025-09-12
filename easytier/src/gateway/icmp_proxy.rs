@@ -274,10 +274,12 @@ impl IcmpProxy {
         }
 
         let peer_manager = self.peer_manager.clone();
+        let is_latency_first = self.global_ctx.get_flags().latency_first;
         self.tasks.lock().await.spawn(
             async move {
-                while let Some(msg) = receiver.recv().await {
-                    let hdr = msg.peer_manager_header().unwrap();
+                while let Some(mut msg) = receiver.recv().await {
+                    let hdr = msg.mut_peer_manager_header().unwrap();
+                    hdr.set_latency_first(is_latency_first);
                     let to_peer_id = hdr.to_peer_id.into();
                     let Some(pm) = peer_manager.upgrade() else {
                         tracing::warn!("peer manager is gone, icmp proxy send loop exit");

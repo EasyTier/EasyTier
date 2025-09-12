@@ -436,9 +436,12 @@ impl UdpProxy {
         // forward packets to peer manager
         let mut receiver = self.receiver.lock().await.take().unwrap();
         let peer_manager = self.peer_manager.clone();
+        let is_latency_first = self.global_ctx.get_flags().latency_first;
         self.tasks.lock().await.spawn(async move {
-            while let Ok(msg) = receiver.recv().await {
-                let to_peer_id: PeerId = msg.peer_manager_header().unwrap().to_peer_id.get();
+            while let Ok(mut msg) = receiver.recv().await {
+                let hdr = msg.mut_peer_manager_header().unwrap();
+                hdr.set_latency_first(is_latency_first);
+                let to_peer_id = hdr.to_peer_id.into();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
                 let ret = peer_manager.send_msg(msg, to_peer_id).await;
                 if ret.is_err() {
