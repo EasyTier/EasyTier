@@ -436,7 +436,7 @@ impl HealthChecker {
         );
 
         self.instance_mgr
-            .run_network_instance(cfg.clone(), ConfigSource::FFI)
+            .run_network_instance(cfg.clone(), ConfigSource::Web)
             .with_context(|| "failed to run network instance")?;
         self.inst_id_map.insert(node_id, cfg.get_id());
 
@@ -650,7 +650,7 @@ impl HealthChecker {
                         node_id,
                         HealthStatus::Unhealthy,
                         None,
-                        Some(e.to_string()),
+                        Some(format!("inst id: {}, err: {}", inst_id, e)),
                     )
                     .await;
                 }
