@@ -13,7 +13,6 @@ use std::{
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
-
 use clap_complete::Shell;
 use easytier::{
     common::{
@@ -35,6 +34,7 @@ use easytier::{
     utils::{init_logger, setup_panic_handler},
     web_client,
 };
+use tokio::io::AsyncReadExt;
 
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
@@ -1175,8 +1175,15 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     if let Some(config_files) = cli.config_file {
         let config_file_count = config_files.len();
         for config_file in config_files {
-            let mut cfg = TomlConfigLoader::new(&config_file)
-                .with_context(|| format!("failed to load config file: {:?}", config_file))?;
+            let mut cfg = if config_file == PathBuf::from("-") {
+                let mut stdin = String::new();
+                _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
+                TomlConfigLoader::new_from_str(stdin.as_str())
+                    .with_context(|| "failed to load config from stdin")?
+            } else {
+                TomlConfigLoader::new(&config_file)
+                    .with_context(|| format!("failed to load config file: {:?}", config_file))?
+            };
 
             if cli.network_options.can_merge(&cfg, config_file_count) {
                 cli.network_options.merge_into(&mut cfg).with_context(|| {
