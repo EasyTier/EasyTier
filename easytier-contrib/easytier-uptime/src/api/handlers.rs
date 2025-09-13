@@ -299,7 +299,7 @@ pub async fn admin_get_nodes(
     verify_admin_token(&headers)?;
 
     let page = pagination.page.unwrap_or(1);
-    let per_page = pagination.per_page.unwrap_or(20);
+    let per_page = pagination.per_page.unwrap_or(200);
     let offset = (page - 1) * per_page;
 
     let mut query = entity::shared_nodes::Entity::find();

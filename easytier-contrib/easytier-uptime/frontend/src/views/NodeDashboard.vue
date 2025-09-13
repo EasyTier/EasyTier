@@ -151,7 +151,7 @@
           <template #default="{ row }">
             <div style="display: flex; flex-direction: column; gap: 1px; align-items: flex-start;">
               <el-tag v-if="row.version" size="small" style="font-size: 11px; padding: 1px 4px;">{{ row.version
-              }}</el-tag>
+                }}</el-tag>
               <span v-else class="text-muted" style="font-size: 11px;">未知</span>
               <el-tag :type="row.allow_relay ? 'success' : 'info'" size="small"
                 style="font-size: 9px; padding: 1px 3px;">
@@ -281,7 +281,7 @@ import {
 const loading = ref(false)
 const nodes = ref([])
 const searchText = ref('')
-const statusFilter = ref('true')
+const statusFilter = ref('')
 const protocolFilter = ref('')
 const detailDialogVisible = ref(false)
 const selectedNode = ref(null)
@@ -292,7 +292,7 @@ const apiUrl = ref(window.location.href)
 // 分页数据
 const pagination = reactive({
   page: 1,
-  per_page: 20,
+  per_page: 50,
   total: 0
 })
 
