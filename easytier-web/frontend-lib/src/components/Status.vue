@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
@@ -106,8 +106,19 @@ function ipFormat(info: PeerRoutePair) {
   return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
 }
 
+function oneTunnelProto(tunnel?: TunnelInfo): string {
+  if (!tunnel)
+    return ''
+
+  const local_addr = tunnel.local_addr
+  if (local_addr?.url.indexOf('[') >= 0)
+    return `${tunnel.tunnel_type}6`
+  else
+    return tunnel.tunnel_type
+}
+
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => c.tunnel?.tunnel_type))].join(',')
+  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {

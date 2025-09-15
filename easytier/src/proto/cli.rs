@@ -1,3 +1,5 @@
+use url::Host;
+
 include!(concat!(env!("OUT_DIR"), "/cli.rs"));
 
 impl PeerRoutePair {
@@ -70,6 +72,25 @@ impl PeerRoutePair {
         }
     }
 
+    fn is_tunnel_ipv6(tunnel_info: &super::common::TunnelInfo) -> bool {
+        let Some(local_addr) = &tunnel_info.local_addr else {
+            return false;
+        };
+
+        let u: url::Url = local_addr.clone().into();
+        u.host()
+            .map(|h| matches!(h, Host::Ipv6(_)))
+            .unwrap_or(false)
+    }
+
+    fn get_tunnel_proto_str(tunnel_info: &super::common::TunnelInfo) -> String {
+        if Self::is_tunnel_ipv6(tunnel_info) {
+            format!("{}6", tunnel_info.tunnel_type)
+        } else {
+            tunnel_info.tunnel_type.clone()
+        }
+    }
+
     pub fn get_conn_protos(&self) -> Option<Vec<String>> {
         let mut ret = vec![];
         let p = self.peer.as_ref()?;
@@ -78,8 +99,9 @@ impl PeerRoutePair {
                 continue;
             };
             // insert if not exists
-            if !ret.contains(&tunnel_info.tunnel_type) {
-                ret.push(tunnel_info.tunnel_type.clone());
+            let tunnel_type = Self::get_tunnel_proto_str(tunnel_info);
+            if !ret.contains(&tunnel_type) {
+                ret.push(tunnel_type);
             }
         }
 
