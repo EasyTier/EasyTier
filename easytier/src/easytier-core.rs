@@ -24,7 +24,7 @@ use easytier::{
         constants::EASYTIER_VERSION,
         global_ctx::GlobalCtx,
         set_default_machine_id,
-        stun::{MockStunInfoCollector, StunInfoCollector},
+        stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
     instance_manager::NetworkInstanceManager,
@@ -951,26 +951,8 @@ impl NetworkOptions {
         old_udp_whitelist.extend(self.udp_whitelist.clone());
         cfg.set_udp_whitelist(old_udp_whitelist);
 
-        if let Some(stun_servers) = &self.stun_servers {
-            if stun_servers.is_empty() {
-                cfg.set_stun_servers(None);
-            } else {
-                cfg.set_stun_servers(Some(stun_servers.clone()));
-            }
-        } else {
-            cfg.set_stun_servers(Some(StunInfoCollector::get_default_servers()));
-        }
-
-        if let Some(stun_servers) = &self.stun_servers_v6 {
-            if stun_servers.is_empty() {
-                cfg.set_stun_servers_v6(None);
-            } else {
-                cfg.set_stun_servers_v6(Some(stun_servers.clone()));
-            }
-        } else {
-            cfg.set_stun_servers_v6(Some(StunInfoCollector::get_default_servers_v6()));
-        }
-
+        cfg.set_stun_servers(self.stun_servers.clone());
+        cfg.set_stun_servers_v6(self.stun_servers_v6.clone());
         Ok(())
     }
 }

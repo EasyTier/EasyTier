@@ -119,13 +119,13 @@ impl GlobalCtx {
         if let Some(stun_servers) = config_fs.get_stun_servers() {
             stun_info_collector.set_stun_servers(stun_servers);
         } else {
-            stun_info_collector.set_stun_servers(Vec::new());
+            stun_info_collector.set_stun_servers(StunInfoCollector::get_default_servers());
         }
 
         if let Some(stun_servers) = config_fs.get_stun_servers_v6() {
             stun_info_collector.set_stun_servers_v6(stun_servers);
         } else {
-            stun_info_collector.set_stun_servers_v6(Vec::new());
+            stun_info_collector.set_stun_servers_v6(StunInfoCollector::get_default_servers_v6());
         }
 
         let stun_info_collector = Arc::new(stun_info_collector);
