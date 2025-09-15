@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
@@ -106,8 +106,30 @@ function ipFormat(info: PeerRoutePair) {
   return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
 }
 
+function oneTunnelProto(tunnel?: TunnelInfo): string {
+  if (!tunnel)
+    return ''
+
+  const local_addr = tunnel.local_addr
+  let isIPv6 = false;
+  if (local_addr?.url) {
+    try {
+      const urlObj = new URL(local_addr.url, 'http://dummy');
+      // IPv6 addresses in URLs are enclosed in brackets and contain ':'
+      isIPv6 = /^\[.*:.*\]$/.test(urlObj.hostname);
+    } catch (e) {
+      // fallback to original check if URL parsing fails
+      isIPv6 = local_addr.url.indexOf('[') >= 0;
+    }
+  }
+  if (isIPv6)
+    return `${tunnel.tunnel_type}6`
+  else
+    return tunnel.tunnel_type
+}
+
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => c.tunnel?.tunnel_type))].join(',')
+  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {
