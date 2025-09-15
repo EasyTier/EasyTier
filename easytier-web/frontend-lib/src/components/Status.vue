@@ -111,7 +111,18 @@ function oneTunnelProto(tunnel?: TunnelInfo): string {
     return ''
 
   const local_addr = tunnel.local_addr
-  if (local_addr?.url.indexOf('[') >= 0)
+  let isIPv6 = false;
+  if (local_addr?.url) {
+    try {
+      const urlObj = new URL(local_addr.url, 'http://dummy');
+      // IPv6 addresses in URLs are enclosed in brackets and contain ':'
+      isIPv6 = /^\[.*:.*\]$/.test(urlObj.hostname);
+    } catch (e) {
+      // fallback to original check if URL parsing fails
+      isIPv6 = local_addr.url.indexOf('[') >= 0;
+    }
+  }
+  if (isIPv6)
     return `${tunnel.tunnel_type}6`
   else
     return tunnel.tunnel_type
