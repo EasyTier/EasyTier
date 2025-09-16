@@ -1055,10 +1055,19 @@ impl PeerManager {
             || ipv4_addr.is_multicast()
             || *ipv4_addr == ipv4_inet.last_address()
         {
-            dst_peers.extend(self.peers.list_routes().await.iter().map(|x| *x.key()));
+            dst_peers.extend(self.peers.list_routes().await.iter().filter_map(|x| {
+                if *x.key() != self.my_peer_id {
+                    Some(*x.key())
+                } else {
+                    None
+                }
+            }));
         } else if let Some(peer_id) = self.peers.get_peer_id_by_ipv4(ipv4_addr).await {
             dst_peers.push(peer_id);
-        } else {
+        } else if !self
+            .global_ctx
+            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
             for exit_node in &self.exit_nodes {
                 let IpAddr::V4(exit_node) = exit_node else {
                     continue;
@@ -1072,8 +1081,12 @@ impl PeerManager {
         }
         #[cfg(target_env = "ohos")]
         {
-            if dst_peers.is_empty() {
-                tracing::info!("no peer id for ipv4: {}, set exit_node for ohos", ipv4_addr);
+            if dst_peers.is_empty()
+                && !self
+                    .global_ctx
+                    .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+            {
+                tracing::trace!("no peer id for ipv4: {}, set exit_node for ohos", ipv4_addr);
                 dst_peers.push(self.my_peer_id.clone());
                 is_exit_node = true;
             }
