@@ -132,6 +132,9 @@ struct Cli {
 
     #[clap(long, help = t!("core_clap.generate_completions").to_string())]
     gen_autocomplete: Option<Shell>,
+
+    #[clap(long, help = t!("core_clap.check_config").to_string())]
+    check_config: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -1287,6 +1290,17 @@ async fn main() -> ExitCode {
         easytier::print_completions(shell, &mut cmd, "easytier-core");
         return ExitCode::SUCCESS;
     }
+
+    // Verify configurations
+    if cli.check_config {
+        if let Err(e) = validate_config(&cli).await {
+            eprintln!("Config validation failed: {:?}", e);
+            return ExitCode::FAILURE;
+        } else {
+            return ExitCode::SUCCESS;
+        }
+    }
+
     let mut ret_code = 0;
 
     if let Err(e) = run_main(cli).await {
@@ -1300,4 +1314,26 @@ async fn main() -> ExitCode {
     set_prof_active(false);
 
     ExitCode::from(ret_code)
+}
+
+async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
+    // Check if config file is provided
+    let config_files = cli
+        .config_file
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("--config-file is required when using --check-config"))?;
+
+    for config_file in config_files {
+        if config_file == &PathBuf::from("-") {
+            let mut stdin = String::new();
+            _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
+            TomlConfigLoader::new_from_str(stdin.as_str())
+                .with_context(|| "config source: stdin")?;
+        } else {
+            TomlConfigLoader::new(config_file)
+                .with_context(|| format!("config source: {:?}", config_file))?;
+        };
+    }
+
+    Ok(())
 }
