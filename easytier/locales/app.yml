@@ -214,6 +214,9 @@ core_clap:
   stun_servers_v6:
     en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
     zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
+  check_config:
+    en: Check config validity without starting the network
+    zh-CN: 检查配置文件的有效性并退出
 
 core_app:
   panic_backtrace_save:
