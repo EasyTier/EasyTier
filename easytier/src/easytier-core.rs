@@ -1100,7 +1100,7 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 }
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
-    init_logger(&cli.logging_options, false)?;
+    init_logger(&cli.logging_options, true)?;
 
     if cli.config_server.is_some() {
         set_default_machine_id(cli.machine_id);

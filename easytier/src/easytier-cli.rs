@@ -30,14 +30,14 @@ use easytier::{
         cli::{
             list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
             ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest,
+            GetAclStatsRequest, GetLoggerConfigRequest, GetPrometheusStatsRequest, GetStatsRequest,
             GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
             ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
-            ListRouteResponse, ManageMappedListenerRequest, MappedListenerManageAction,
+            ListRouteResponse, LogLevel, LoggerRpc, LoggerRpcClientFactory, ManageMappedListenerRequest, MappedListenerManageAction,
             MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc,
+            RemovePortForwardRequest, SetLoggerConfigRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc,
             StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
             TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
         },
@@ -105,6 +105,8 @@ enum SubCommand {
     Whitelist(WhitelistArgs),
     #[command(about = "show statistics information")]
     Stats(StatsArgs),
+    #[command(about = "manage logger configuration")]
+    Logger(LoggerArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: Shell },
 }
@@ -270,6 +272,23 @@ enum StatsSubCommand {
     Show,
     /// Show statistics in Prometheus format
     Prometheus,
+}
+
+#[derive(Args, Debug)]
+struct LoggerArgs {
+    #[command(subcommand)]
+    sub_command: Option<LoggerSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum LoggerSubCommand {
+    /// Get current logger configuration
+    Get,
+    /// Set logger level
+    Set {
+        #[arg(help = "Log level (disabled, error, warning, info, debug, trace)")]
+        level: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -441,6 +460,18 @@ impl CommandHandler<'_> {
             .scoped_client::<StatsRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get stats client")?)
+    }
+
+    async fn get_logger_client(
+        &self,
+    ) -> Result<Box<dyn LoggerRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<LoggerRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get logger client")?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -1159,6 +1190,60 @@ impl CommandHandler<'_> {
                 response.udp_ports.join(", ")
             }
         );
+
+        Ok(())
+    }
+
+    async fn handle_logger_get(&self) -> Result<(), Error> {
+        let client = self.get_logger_client().await?;
+        let request = GetLoggerConfigRequest {};
+        let response = client.get_logger_config(BaseController::default(), request).await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                let level_str = match response.level() {
+                    LogLevel::Disabled => "disabled",
+                    LogLevel::Error => "error",
+                    LogLevel::Warning => "warning",
+                    LogLevel::Info => "info",
+                    LogLevel::Debug => "debug",
+                    LogLevel::Trace => "trace",
+                };
+                println!("Current Log Level: {}", level_str);
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_logger_set(&self, level: &str) -> Result<(), Error> {
+        let log_level = match level.to_lowercase().as_str() {
+            "disabled" => LogLevel::Disabled,
+            "error" => LogLevel::Error,
+            "warning" => LogLevel::Warning,
+            "info" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            "trace" => LogLevel::Trace,
+            _ => return Err(anyhow::anyhow!("Invalid log level: {}. Valid levels are: disabled, error, warning, info, debug, trace", level)),
+        };
+
+        let client = self.get_logger_client().await?;
+        let request = SetLoggerConfigRequest { level: log_level.into() };
+        let response = client.set_logger_config(BaseController::default(), request).await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                println!("Log level successfully set to: {}", level);
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
 
         Ok(())
     }
@@ -1994,6 +2079,14 @@ async fn main() -> Result<(), Error> {
                     .await?;
 
                 println!("{}", response.prometheus_text);
+            }
+        },
+        SubCommand::Logger(logger_args) => match &logger_args.sub_command {
+            Some(LoggerSubCommand::Get) | None => {
+                handler.handle_logger_get().await?;
+            }
+            Some(LoggerSubCommand::Set { level }) => {
+                handler.handle_logger_set(level).await?;
             }
         },
         SubCommand::GenAutocomplete { shell } => {

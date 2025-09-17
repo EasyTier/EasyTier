@@ -6,3 +6,5 @@ pub mod listeners;
 
 #[cfg(feature = "tun")]
 pub mod virtual_nic;
+
+pub mod logger_rpc_service;

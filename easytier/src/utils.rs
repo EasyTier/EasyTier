@@ -28,6 +28,8 @@ pub fn init_logger(
     config: impl LoggingConfigLoader,
     need_reload: bool,
 ) -> Result<Option<NewFilterSender>, anyhow::Error> {
+    use crate::instance::logger_rpc_service::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
+
     let file_config = config.get_file_logger_config();
     let file_level = file_config
         .level
@@ -50,7 +52,12 @@ pub fn init_logger(
 
         if need_reload {
             let (sender, recver) = std::sync::mpsc::channel();
-            ret_sender = Some(sender);
+            ret_sender = Some(sender.clone());
+
+            // 初始化全局状态
+            let _ = LOGGER_LEVEL_SENDER.set(std::sync::Mutex::new(sender));
+            let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(file_level.to_string()));
+
             std::thread::spawn(move || {
                 println!("Start log filter reloader");
                 while let Ok(lf) = recver.recv() {
