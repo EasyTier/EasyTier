@@ -306,6 +306,7 @@ export enum EventType {
   Connecting = 'Connecting', // any
   ConnectError = 'ConnectError', // string, string, string
 
+  VpnPortalStarted = 'VpnPortalStarted', // string
   VpnPortalClientConnected = 'VpnPortalClientConnected', // string, string
   VpnPortalClientDisconnected = 'VpnPortalClientDisconnected', // string, string, string
 

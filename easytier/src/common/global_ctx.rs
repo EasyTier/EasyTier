@@ -44,7 +44,8 @@ pub enum GlobalCtxEvent {
     Connecting(url::Url),
     ConnectError(String, String, String), // (dst, ip version, error message)
 
-    VpnPortalClientConnected(String, String), // (portal, client ip)
+    VpnPortalStarted(String),                    // (portal)
+    VpnPortalClientConnected(String, String),    // (portal, client ip)
     VpnPortalClientDisconnected(String, String), // (portal, client ip)
 
     DhcpIpv4Changed(Option<cidr::Ipv4Inet>, Option<cidr::Ipv4Inet>), // (old, new)

@@ -270,6 +270,13 @@ fn handle_event(
                         );
                     }
 
+                    GlobalCtxEvent::VpnPortalStarted(portal) => {
+                        print_event(
+                            instance_id,
+                            format!("vpn portal started. portal: {}", portal),
+                        );
+                    }
+
                     GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {
                         print_event(
                             instance_id,

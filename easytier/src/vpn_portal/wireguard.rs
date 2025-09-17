@@ -1,5 +1,5 @@
 use std::{
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
     sync::Arc,
 };
 
@@ -49,7 +49,7 @@ struct WireGuardImpl {
     global_ctx: ArcGlobalCtx,
     peer_mgr: Arc<PeerManager>,
     wg_config: WgConfig,
-    listenr_addr: SocketAddr,
+    listener_addr: SocketAddr,
 
     wg_peer_ip_table: WgPeerIpTable,
 
@@ -62,13 +62,13 @@ impl WireGuardImpl {
         let wg_config = get_wg_config_for_portal(&nid);
 
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
-        let listenr_addr = vpn_cfg.wireguard_listen;
+        let listener_addr = vpn_cfg.wireguard_listen;
 
         Self {
             global_ctx,
             peer_mgr,
             wg_config,
-            listenr_addr,
+            listener_addr,
             wg_peer_ip_table: Arc::new(DashMap::new()),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
         }
@@ -209,12 +209,11 @@ impl WireGuardImpl {
             .await;
     }
 
-    #[tracing::instrument(skip(self), err(level = Level::WARN))]
-    async fn start(&self) -> anyhow::Result<()> {
-        let mut l = WgTunnelListener::new(
-            format!("wg://{}", self.listenr_addr).parse().unwrap(),
-            self.wg_config.clone(),
-        );
+    async fn start_listener(&self, listener_addr: &SocketAddr) -> anyhow::Result<()> {
+        let mut listener_url = url::Url::parse("wg://0.0.0.0:0").unwrap();
+        listener_url.set_port(Some(listener_addr.port())).unwrap();
+        listener_url.set_ip_host(listener_addr.ip()).unwrap();
+        let mut l = WgTunnelListener::new(listener_url.clone(), self.wg_config.clone());
 
         tracing::info!("Wireguard VPN Portal Starting");
 
@@ -224,9 +223,6 @@ impl WireGuardImpl {
                 .await
                 .with_context(|| "Failed to start wireguard listener for vpn portal")?;
         }
-
-        join_joinset_background(self.tasks.clone(), "wireguard".to_string());
-
         let tasks = Arc::downgrade(&self.tasks.clone());
         let peer_mgr = self.peer_mgr.clone();
         let wg_peer_ip_table = self.wg_peer_ip_table.clone();
@@ -243,6 +239,32 @@ impl WireGuardImpl {
             }
         });
 
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::VpnPortalStarted(listener_url.to_string()));
+
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err(level = Level::WARN))]
+    async fn start(&self) -> anyhow::Result<()> {
+        tracing::info!("Wireguard VPN Portal Starting");
+
+        self.start_listener(&self.listener_addr).await?;
+        // if binding to v4 unspecified, also start a listener on v6 unspecified
+        if let SocketAddr::V4(v4) = &self.listener_addr {
+            if v4.ip().is_unspecified() {
+                let _ = self
+                    .start_listener(&SocketAddr::V6(SocketAddrV6::new(
+                        Ipv6Addr::UNSPECIFIED,
+                        v4.port(),
+                        0,
+                        0,
+                    )))
+                    .await;
+            }
+        };
+
+        join_joinset_background(self.tasks.clone(), "wireguard".to_string());
         self.start_pipeline_processor().await;
 
         Ok(())
@@ -324,7 +346,7 @@ PersistentKeepalive = 25
 "#,
             peer_secret_key = BASE64_STANDARD.encode(cfg.peer_secret_key()),
             my_public_key = BASE64_STANDARD.encode(cfg.my_public_key()),
-            listenr_addr = self.inner.as_ref().unwrap().listenr_addr,
+            listenr_addr = self.inner.as_ref().unwrap().listener_addr,
             allow_ips = allow_ips,
             address = client_cidr.first_address().to_string() + "/32",
         );
