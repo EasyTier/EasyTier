@@ -246,10 +246,14 @@ export interface PeerRoutePair {
   peer?: PeerInfo
 }
 
+export interface UrlPb {
+  url: string
+}
+
 export interface TunnelInfo {
   tunnel_type: string
-  local_addr: string
-  remote_addr: string
+  local_addr: UrlPb
+  remote_addr: UrlPb
 }
 
 export interface PeerConnStats {
