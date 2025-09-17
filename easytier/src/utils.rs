@@ -89,8 +89,11 @@ pub fn init_logger(
             .build()
             .unwrap();
 
+        let wrapper = FileAppenderWrapper::new(file_appender);
+
+        // Create a simple wrapper that implements MakeWriter
         file_layer = Some(
-            l.with_writer(file_appender)
+            l.with_writer(wrapper)
                 .with_timer(get_logger_timer_rfc3339())
                 .with_filter(file_filter),
         );
