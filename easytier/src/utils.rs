@@ -6,7 +6,9 @@ use tracing_subscriber::{
     layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, Registry,
 };
 
-use crate::common::{config::LoggingConfigLoader, get_logger_timer_rfc3339};
+use crate::common::{
+    config::LoggingConfigLoader, get_logger_timer_rfc3339, tracing_rolling_appender::*,
+};
 
 pub type PeerRoutePair = crate::proto::cli::PeerRoutePair;
 
@@ -79,13 +81,14 @@ pub fn init_logger(
             });
         }
 
-        let file_appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .max_log_files(5)
-            .filename_prefix(file_config.file.unwrap_or("easytier".to_string()))
-            .filename_suffix("log")
-            .build(file_config.dir.unwrap_or("./".to_string()))
-            .with_context(|| "failed to initialize rolling file appender")?;
+        let builder = RollingFileAppenderBase::builder();
+        let file_appender = builder
+            .filename(file_config.file.unwrap_or("easytier".to_string()))
+            .max_filecount(10)
+            .condition_max_file_size(100)
+            .build()
+            .unwrap();
+
         file_layer = Some(
             l.with_writer(file_appender)
                 .with_timer(get_logger_timer_rfc3339())

@@ -36,7 +36,6 @@ tracing-subscriber = { version = "0.3", features = [
     "local-time",
     "time",
 ] }
-tracing-appender = "0.2.3"
 console-subscriber = { version = "0.4.1", optional = true }
 thiserror = "1.0"
 auto_impl = "1.1.0"
@@ -296,6 +295,7 @@ serial_test = "3.0.0"
 rstest = "0.25.0"
 futures-util = "0.3.30"
 maplit = "1.0.2"
+tempfile = "3.22.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
