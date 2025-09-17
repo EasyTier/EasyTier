@@ -990,8 +990,8 @@ impl Instance {
             return Ok(());
         };
 
-        use crate::proto::cli::*;
         use crate::instance::logger_rpc_service::LoggerRpcService;
+        use crate::proto::cli::*;
 
         let peer_mgr = self.peer_manager.clone();
         let conn_manager = self.conn_manager.clone();
@@ -1029,10 +1029,8 @@ impl Instance {
             crate::proto::cli::StatsRpcServer::new(stats_rpc_service),
             "",
         );
-        s.registry().register(
-            LoggerRpcServer::new(logger_rpc_service),
-            "",
-        );
+        s.registry()
+            .register(LoggerRpcServer::new(logger_rpc_service), "");
 
         if let Some(ip_proxy) = self.ip_proxy.as_ref() {
             s.registry().register(

@@ -83,9 +83,10 @@ pub fn init_logger(
 
         let builder = RollingFileAppenderBase::builder();
         let file_appender = builder
-            .filename(file_config.file.unwrap_or("easytier".to_string()))
-            .max_filecount(10)
-            .condition_max_file_size(100)
+            .filename(file_config.file.unwrap_or("easytier.log".to_string()))
+            .condition_daily()
+            .max_filecount(file_config.count.unwrap_or(10))
+            .condition_max_file_size(file_config.size_mb.unwrap_or(100) * 1024 * 1024)
             .build()
             .unwrap();
 

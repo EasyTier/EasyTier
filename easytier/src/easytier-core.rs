@@ -608,6 +608,20 @@ struct LoggingOptions {
         help = t!("core_clap.file_log_dir").to_string()
     )]
     file_log_dir: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_FILE_LOG_SIZE",
+        help = t!("core_clap.file_log_size_mb").to_string()
+    )]
+    file_log_size: Option<u64>,
+
+    #[arg(
+        long,
+        env = "ET_FILE_LOG_COUNT",
+        help = t!("core_clap.file_log_count").to_string()
+    )]
+    file_log_count: Option<usize>,
 }
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -972,6 +986,8 @@ impl LoggingConfigLoader for &LoggingOptions {
             level: self.file_log_level.clone(),
             dir: self.file_log_dir.clone(),
             file: None,
+            size_mb: self.file_log_size,
+            count: self.file_log_count,
         }
     }
 }

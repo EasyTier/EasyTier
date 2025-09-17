@@ -34,12 +34,14 @@ use easytier::{
             GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
             ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
-            ListRouteResponse, LogLevel, LoggerRpc, LoggerRpcClientFactory, ManageMappedListenerRequest, MappedListenerManageAction,
-            MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
+            ListRouteResponse, LogLevel, LoggerRpc, LoggerRpcClientFactory,
+            ManageMappedListenerRequest, MappedListenerManageAction, MappedListenerManageRpc,
+            MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetLoggerConfigRequest, SetWhitelistRequest, ShowNodeInfoRequest, StatsRpc,
-            StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
-            TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
+            RemovePortForwardRequest, SetLoggerConfigRequest, SetWhitelistRequest,
+            ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
+            TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
+            VpnPortalRpcClientFactory,
         },
         common::{NatType, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
@@ -1197,7 +1199,9 @@ impl CommandHandler<'_> {
     async fn handle_logger_get(&self) -> Result<(), Error> {
         let client = self.get_logger_client().await?;
         let request = GetLoggerConfigRequest {};
-        let response = client.get_logger_config(BaseController::default(), request).await?;
+        let response = client
+            .get_logger_config(BaseController::default(), request)
+            .await?;
 
         match self.output_format {
             OutputFormat::Table => {
@@ -1232,8 +1236,12 @@ impl CommandHandler<'_> {
         };
 
         let client = self.get_logger_client().await?;
-        let request = SetLoggerConfigRequest { level: log_level.into() };
-        let response = client.set_logger_config(BaseController::default(), request).await?;
+        let request = SetLoggerConfigRequest {
+            level: log_level.into(),
+        };
+        let response = client
+            .set_logger_config(BaseController::default(), request)
+            .await?;
 
         match self.output_format {
             OutputFormat::Table => {
