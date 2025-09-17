@@ -212,6 +212,7 @@ event:
   ConnectionError: 连接错误
   Connecting: 正在连接
   ConnectError: 连接错误
+  VpnPortalStarted: VPN门户已启动
   VpnPortalClientConnected: VPN门户客户端已连接
   VpnPortalClientDisconnected: VPN门户客户端已断开连接
   DhcpIpv4Changed: DHCP IPv4地址更改

@@ -629,7 +629,10 @@ impl WgTunnelConnector {
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::warn!("wg connect: {:?}", addr);
-        let local_addr = udp.local_addr().unwrap().to_string();
+        let local_addr = udp
+            .local_addr()
+            .with_context(|| "Failed to get local addr")?
+            .to_string();
 
         let mut wg_peer = WgPeer::new(Arc::new(udp), config.clone(), addr);
         let udp = wg_peer.udp_socket();

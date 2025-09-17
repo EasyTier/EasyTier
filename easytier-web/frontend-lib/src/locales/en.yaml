@@ -212,6 +212,7 @@ event:
   ConnectionError: ConnectionError
   Connecting: Connecting
   ConnectError: ConnectError
+  VpnPortalStarted: VpnPortalClientStarted
   VpnPortalClientConnected: VpnPortalClientConnected
   VpnPortalClientDisconnected: VpnPortalClientDisconnected
   DhcpIpv4Changed: DhcpIpv4Changed
