@@ -62,13 +62,13 @@ impl WireGuardImpl {
         let wg_config = get_wg_config_for_portal(&nid);
 
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
-        let listenr_addr = vpn_cfg.wireguard_listen;
+        let listener_addr = vpn_cfg.wireguard_listen;
 
         Self {
             global_ctx,
             peer_mgr,
             wg_config,
-            listener_addr: listenr_addr,
+            listener_addr,
             wg_peer_ip_table: Arc::new(DashMap::new()),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
         }
