@@ -2396,6 +2396,15 @@ impl Route for PeerRoute {
             return Some(p.peer_id);
         }
 
+        // only get peer id for proxy when the dst ipv4 is not in same network with us
+        if self
+            .global_ctx
+            .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
+        {
+            tracing::trace!(?ipv4_addr, "ipv4 addr is in same network with us");
+            return None;
+        }
+
         if let Some(peer_id) = route_table.get_peer_id_for_proxy(ipv4_addr) {
             return Some(peer_id);
         }

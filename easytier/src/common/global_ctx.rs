@@ -1,4 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
+use std::net::IpAddr;
 use std::{
     hash::Hasher,
     sync::{Arc, Mutex},
@@ -237,6 +238,13 @@ impl GlobalCtx {
 
     pub fn get_id(&self) -> uuid::Uuid {
         self.config.get_id()
+    }
+
+    pub fn is_ip_in_same_network(&self, ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => self.get_ipv4().map(|x| x.contains(v4)).unwrap_or(false),
+            IpAddr::V6(v6) => self.get_ipv6().map(|x| x.contains(v6)).unwrap_or(false),
+        }
     }
 
     pub fn get_network_identity(&self) -> NetworkIdentity {
