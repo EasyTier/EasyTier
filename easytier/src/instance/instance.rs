@@ -990,6 +990,7 @@ impl Instance {
             return Ok(());
         };
 
+        use crate::instance::logger_rpc_service::LoggerRpcService;
         use crate::proto::cli::*;
 
         let peer_mgr = self.peer_manager.clone();
@@ -999,6 +1000,7 @@ impl Instance {
         let mapped_listener_manager_rpc = self.get_mapped_listener_manager_rpc_service();
         let port_forward_manager_rpc = self.get_port_forward_manager_rpc_service();
         let stats_rpc_service = self.get_stats_rpc_service();
+        let logger_rpc_service = LoggerRpcService::new();
 
         let s = self.rpc_server.as_mut().unwrap();
         let peer_mgr_rpc_service = PeerManagerRpcService::new(peer_mgr.clone());
@@ -1027,6 +1029,8 @@ impl Instance {
             crate::proto::cli::StatsRpcServer::new(stats_rpc_service),
             "",
         );
+        s.registry()
+            .register(LoggerRpcServer::new(logger_rpc_service), "");
 
         if let Some(ip_proxy) = self.ip_proxy.as_ref() {
             s.registry().register(

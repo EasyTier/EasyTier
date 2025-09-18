@@ -26,6 +26,7 @@ pub mod stats_manager;
 pub mod stun;
 pub mod stun_codec_ext;
 pub mod token_bucket;
+pub mod tracing_rolling_appender;
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,

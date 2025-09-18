@@ -119,6 +119,8 @@ impl LoggingConfigLoader for &Cli {
             dir: self.file_log_dir.clone(),
             level: self.file_log_level.clone(),
             file: None,
+            size_mb: None,
+            count: None,
         }
     }
 }

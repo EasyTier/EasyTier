@@ -312,6 +312,8 @@ pub struct FileLoggerConfig {
     pub level: Option<String>,
     pub file: Option<String>,
     pub dir: Option<String>,
+    pub size_mb: Option<u64>,
+    pub count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]

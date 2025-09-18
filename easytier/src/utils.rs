@@ -6,7 +6,9 @@ use tracing_subscriber::{
     layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, Registry,
 };
 
-use crate::common::{config::LoggingConfigLoader, get_logger_timer_rfc3339};
+use crate::common::{
+    config::LoggingConfigLoader, get_logger_timer_rfc3339, tracing_rolling_appender::*,
+};
 
 pub type PeerRoutePair = crate::proto::cli::PeerRoutePair;
 
@@ -28,6 +30,8 @@ pub fn init_logger(
     config: impl LoggingConfigLoader,
     need_reload: bool,
 ) -> Result<Option<NewFilterSender>, anyhow::Error> {
+    use crate::instance::logger_rpc_service::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
+
     let file_config = config.get_file_logger_config();
     let file_level = file_config
         .level
@@ -50,7 +54,12 @@ pub fn init_logger(
 
         if need_reload {
             let (sender, recver) = std::sync::mpsc::channel();
-            ret_sender = Some(sender);
+            ret_sender = Some(sender.clone());
+
+            // 初始化全局状态
+            let _ = LOGGER_LEVEL_SENDER.set(std::sync::Mutex::new(sender));
+            let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(file_level.to_string()));
+
             std::thread::spawn(move || {
                 println!("Start log filter reloader");
                 while let Ok(lf) = recver.recv() {
@@ -72,15 +81,20 @@ pub fn init_logger(
             });
         }
 
-        let file_appender = tracing_appender::rolling::Builder::new()
-            .rotation(tracing_appender::rolling::Rotation::DAILY)
-            .max_log_files(5)
-            .filename_prefix(file_config.file.unwrap_or("easytier".to_string()))
-            .filename_suffix("log")
-            .build(file_config.dir.unwrap_or("./".to_string()))
-            .with_context(|| "failed to initialize rolling file appender")?;
+        let builder = RollingFileAppenderBase::builder();
+        let file_appender = builder
+            .filename(file_config.file.unwrap_or("easytier.log".to_string()))
+            .condition_daily()
+            .max_filecount(file_config.count.unwrap_or(10))
+            .condition_max_file_size(file_config.size_mb.unwrap_or(100) * 1024 * 1024)
+            .build()
+            .unwrap();
+
+        let wrapper = FileAppenderWrapper::new(file_appender);
+
+        // Create a simple wrapper that implements MakeWriter
         file_layer = Some(
-            l.with_writer(file_appender)
+            l.with_writer(wrapper)
                 .with_timer(get_logger_timer_rfc3339())
                 .with_filter(file_filter),
         );

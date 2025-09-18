@@ -216,6 +216,8 @@ pub fn run() {
                     dir: Some(log_dir.to_string_lossy().to_string()),
                     level: None,
                     file: None,
+                    size_mb: None,
+                    count: None,
                 })
                 .build()
                 .map_err(|e| e.to_string())?;
