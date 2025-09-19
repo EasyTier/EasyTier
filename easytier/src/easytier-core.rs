@@ -968,8 +968,17 @@ impl NetworkOptions {
         old_udp_whitelist.extend(self.udp_whitelist.clone());
         cfg.set_udp_whitelist(old_udp_whitelist);
 
-        cfg.set_stun_servers(self.stun_servers.clone());
-        cfg.set_stun_servers_v6(self.stun_servers_v6.clone());
+        if let Some(stun_servers) = &self.stun_servers {
+            let mut old_stun_servers = cfg.get_stun_servers().unwrap_or_default();
+            old_stun_servers.extend(stun_servers.iter().cloned());
+            cfg.set_stun_servers(Some(old_stun_servers));
+        }
+
+        if let Some(stun_servers_v6) = &self.stun_servers_v6 {
+            let mut old_stun_servers_v6 = cfg.get_stun_servers_v6().unwrap_or_default();
+            old_stun_servers_v6.extend(stun_servers_v6.iter().cloned());
+            cfg.set_stun_servers_v6(Some(old_stun_servers_v6));
+        }
         Ok(())
     }
 }
