@@ -21,6 +21,7 @@ pub mod global_ctx;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;
+pub mod os_info;
 pub mod scoped_task;
 pub mod stats_manager;
 pub mod stun;
