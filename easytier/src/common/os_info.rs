@@ -177,4 +177,30 @@ UBUNTU_CODENAME=focal"#;
         assert_eq!(extract_value_from_os_release(content, "VERSION_ID"), Some("20.04".to_string()));
         assert_eq!(extract_value_from_os_release(content, "NONEXISTENT"), None);
     }
+
+    #[test]
+    fn test_os_info_integration_with_route_peer_info() {
+        use crate::proto::peer_rpc::RoutePeerInfo;
+        use std::time::SystemTime;
+        
+        // Test that RoutePeerInfo can hold OS information
+        let os_info = OsInfo::collect();
+        let mut peer_info = RoutePeerInfo::new();
+        peer_info.os_info = Some(os_info.to_string());
+        peer_info.hostname = Some("test-node".to_string());
+        peer_info.peer_id = 12345;
+        peer_info.last_update = Some(SystemTime::now().into());
+        
+        // Verify the OS info is stored correctly
+        assert!(peer_info.os_info.is_some());
+        assert!(peer_info.os_info.as_ref().unwrap().contains(&os_info.os_type));
+        assert!(peer_info.os_info.as_ref().unwrap().contains(&os_info.arch));
+        
+        // Test conversion to CLI Route
+        let cli_route: crate::proto::cli::Route = peer_info.into();
+        assert!(cli_route.os_info.is_some());
+        assert!(cli_route.os_info.as_ref().unwrap().contains(&os_info.os_type));
+        
+        println!("OS Info in Route: {:?}", cli_route.os_info);
+    }
 }
