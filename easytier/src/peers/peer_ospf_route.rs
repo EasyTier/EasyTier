@@ -31,7 +31,7 @@ use tokio::{
 use crate::{
     common::{
         config::NetworkIdentity, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx,
-        stun::StunInfoCollectorTrait, PeerId,
+        os_info::OsInfo, stun::StunInfoCollectorTrait, PeerId,
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
@@ -131,6 +131,7 @@ impl RoutePeerInfo {
             quic_port: None,
             ipv6_addr: None,
             groups: Vec::new(),
+            os_info: None,
         }
     }
 
@@ -174,6 +175,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
+            os_info: Some(OsInfo::collect().to_string()),
         };
 
         let need_update_periodically = if let Ok(Ok(d)) =
@@ -228,6 +230,7 @@ impl From<RoutePeerInfo> for crate::proto::cli::Route {
             path_latency_latency_first: None,
 
             ipv6_addr: val.ipv6_addr,
+            os_info: val.os_info,
         }
     }
 }

@@ -68,6 +68,7 @@ message Route {
   optional int32 path_latency_latency_first = 14;
 
   common.Ipv6Inet ipv6_addr = 15;
+  optional string os_info = 16;
 }
 
 message PeerRoutePair {

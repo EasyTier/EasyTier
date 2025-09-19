@@ -27,6 +27,7 @@ message RoutePeerInfo {
   optional common.Ipv6Inet ipv6_addr = 15;
 
   repeated PeerGroupInfo groups = 16;
+  optional string os_info = 17;
 }
 
 message PeerIdVersion {
