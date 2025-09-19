@@ -68,6 +68,9 @@ message Route {
   optional int32 path_latency_latency_first = 14;
 
   common.Ipv6Inet ipv6_addr = 15;
+
+  optional bool enable_ipv6_prefix_allocator = 16;
+  repeated string ipv6_prefixes = 17; // e.g. 2001:db8:1:2::/64
 }
 
 message PeerRoutePair {

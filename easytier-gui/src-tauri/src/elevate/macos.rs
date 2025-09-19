@@ -21,8 +21,8 @@ use std::process::{ExitStatus, Output};
 
 use std::ffi::{CString, OsString};
 use std::io;
-use std::mem;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::ptr;
 
@@ -112,11 +112,11 @@ unsafe fn gui_runas(prog: *const i8, argv: *const *const i8) -> i32 {
 }
 
 fn runas_root_gui(cmd: &Command) -> io::Result<ExitStatus> {
-    let exe: OsString = match get_exe_path(&cmd.cmd.get_program()) {
+    let exe: OsString = match get_exe_path(cmd.cmd.get_program()) {
         Some(exe) => exe.into(),
-        None => unsafe {
-            return Ok(mem::transmute(!0));
-        },
+        None => {
+            return Ok(ExitStatus::from_raw(-1));
+        }
     };
     let prog = make_cstring!(exe);
     let mut args = vec![];
@@ -126,7 +126,8 @@ fn runas_root_gui(cmd: &Command) -> io::Result<ExitStatus> {
     let mut argv: Vec<_> = args.iter().map(|x| x.as_ptr()).collect();
     argv.push(ptr::null());
 
-    unsafe { Ok(mem::transmute(gui_runas(prog.as_ptr(), argv.as_ptr()))) }
+    let raw_status = unsafe { gui_runas(prog.as_ptr(), argv.as_ptr()) };
+    Ok(ExitStatus::from_raw(raw_status))
 }
 
 /// The implementation of state check and elevated executing varies on each platform
@@ -139,11 +140,7 @@ impl Command {
     ///
     /// ```no_run
     /// use elevated_command::Command;
-    ///
-    /// fn main() {
-    ///     let is_elevated = Command::is_elevated();
-    ///
-    /// }
+    /// let _ = Command::is_elevated();
     /// ```
     pub fn is_elevated() -> bool {
         let uid = unsafe { libc::getuid() };
@@ -164,12 +161,9 @@ impl Command {
     /// ```no_run
     /// use elevated_command::Command;
     /// use std::process::Command as StdCommand;
-    ///
-    /// fn main() {
-    ///     let mut cmd = StdCommand::new("path to the application");
-    ///     let elevated_cmd = Command::new(cmd);
-    ///     let output = elevated_cmd.output().unwrap();
-    /// }
+    /// let cmd = StdCommand::new("/bin/echo");
+    /// let elevated_cmd = Command::new(cmd);
+    /// let _output = elevated_cmd.output().unwrap();
     /// ```
     pub fn output(&self) -> Result<Output> {
         let status = runas_root_gui(self)?;

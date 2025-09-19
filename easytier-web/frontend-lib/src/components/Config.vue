@@ -2,6 +2,8 @@
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password } from 'primevue'
+import { IPv6 } from 'ip-num/IPNumber'
+import { compressIpv6String } from '../modules/utils'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -172,6 +174,38 @@ const bool_flags: BoolFlag[] = [
 
 const portForwardProtocolOptions = ref(["tcp","udp"]);
 
+// IPv6 prefix suggestions for autocomplete
+const ipv6PrefixSuggestions = ref<string[]>([])
+function canonicalizePrefix(addr: string, len: number): string | null {
+  try {
+    const ipv6 = IPv6.fromString(addr)
+    const expanded = ipv6.toString()
+    const short = compressIpv6String(expanded)
+    return `${short}/${len}`
+  } catch {
+    return null
+  }
+}
+function searchIpv6PrefixSuggestions(event: { query: string }) {
+  const q = (event.query || '').trim()
+  const results = new Set<string>()
+  if (!q) {
+    results.add('2001:db8::/64')
+    results.add('fd00::/64')
+  } else {
+    const parts = q.split('/')
+    const addr = parts[0]
+    const lenInput = parts[1] ? parseInt(parts[1]) : undefined
+    const lens = lenInput !== undefined && !Number.isNaN(lenInput) ? [lenInput] : [56, 60, 64, 48, 52]
+    for (const l of lens) {
+      const c = canonicalizePrefix(addr, l)
+      if (c) results.add(c)
+    }
+  }
+  for (const exist of (curNetwork.value.ipv6_prefixes || [])) results.delete(exist)
+  ipv6PrefixSuggestions.value = Array.from(results).slice(0, 10)
+}
+
 </script>
 
 <template>
@@ -253,6 +287,27 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
                     </div>
 
                   </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="ipv6_prefix_toggle">{{ t('ipv6_prefix_allocator') }}</label>
+                  <ToggleButton id="ipv6_prefix_toggle" v-model="curNetwork.enable_ipv6_prefix_allocator" on-icon="pi pi-check" off-icon="pi pi-times"
+                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48"
+                    :disabled="curNetwork.no_tun" v-tooltip="curNetwork.no_tun ? t('requires_tun') : ''" />
+                  <small v-if="curNetwork.no_tun" class="text-surface-500">{{ t('requires_tun') }}</small>
+                </div>
+              </div>
+
+              <div v-if="curNetwork.enable_ipv6_prefix_allocator" class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="ipv6_prefixes">{{ t('ipv6_prefixes') }}</label>
+                  <AutoComplete id="ipv6_prefixes" v-model="curNetwork.ipv6_prefixes"
+                    :placeholder="t('chips_placeholder', ['2001:db8::/64'])" class="w-full" multiple fluid
+                    :suggestions="ipv6PrefixSuggestions" @complete="searchIpv6PrefixSuggestions"
+                    :disabled="curNetwork.no_tun"
+                  />
                 </div>
               </div>
 

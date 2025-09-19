@@ -93,11 +93,21 @@ impl IfConfiguerTrait for MacIfConfiger {
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
         if let Some(ip) = ip {
-            run_shell_cmd(format!("ifconfig {} inet6 {} delete", name, ip.address()).as_str()).await
-        } else {
-            // Remove all IPv6 addresses is more complex on macOS, just succeed
-            Ok(())
+            return run_shell_cmd(
+                format!("ifconfig {} inet6 {} delete", name, ip.address()).as_str(),
+            )
+            .await;
         }
+
+        // Remove all IPv6 addresses on this interface.
+        // Enumerate existing IPv6 addresses and delete them one by one.
+        // Note: link-local addresses usually have a scope id (e.g., %utun0), keep them intact.
+        let cmd = format!(
+            r#"addrs=$(ifconfig {} inet6 | awk '/inet6 / {{print $2}}' | grep -v '^fe80:');
+            for a in $addrs; do ifconfig {} inet6 $a delete || true; done"#,
+            name, name
+        );
+        run_shell_cmd(cmd.as_str()).await
     }
 
     async fn add_ipv6_route(
@@ -107,16 +117,18 @@ impl IfConfiguerTrait for MacIfConfiger {
         cidr_prefix: u8,
         cost: Option<i32>,
     ) -> Result<(), Error> {
+        let target = if cidr_prefix == 0 {
+            "default".to_string()
+        } else {
+            format!("{}/{}", address, cidr_prefix)
+        };
         let cmd = if let Some(cost) = cost {
             format!(
-                "route -n add -inet6 {}/{} -interface {} -hopcount {}",
-                address, cidr_prefix, name, cost
+                "route -n add -inet6 {} -interface {} -hopcount {}",
+                target, name, cost
             )
         } else {
-            format!(
-                "route -n add -inet6 {}/{} -interface {}",
-                address, cidr_prefix, name
-            )
+            format!("route -n add -inet6 {} -interface {}", target, name)
         };
         run_shell_cmd(cmd.as_str()).await
     }
@@ -127,13 +139,12 @@ impl IfConfiguerTrait for MacIfConfiger {
         address: std::net::Ipv6Addr,
         cidr_prefix: u8,
     ) -> Result<(), Error> {
-        run_shell_cmd(
-            format!(
-                "route -n delete -inet6 {}/{} -interface {}",
-                address, cidr_prefix, name
-            )
-            .as_str(),
-        )
-        .await
+        let target = if cidr_prefix == 0 {
+            "default".to_string()
+        } else {
+            format!("{}/{}", address, cidr_prefix)
+        };
+        run_shell_cmd(format!("route -n delete -inet6 {} -interface {}", target, name).as_str())
+            .await
     }
 }
