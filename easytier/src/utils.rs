@@ -81,9 +81,14 @@ pub fn init_logger(
             });
         }
 
+        let dir = file_config.dir.as_deref().unwrap_or(".");
+        let file = file_config.file.as_deref().unwrap_or("easytier.log");
+        let path = std::path::Path::new(dir).join(file);
+        let path_str = path.to_string_lossy().into_owned();
+
         let builder = RollingFileAppenderBase::builder();
         let file_appender = builder
-            .filename(file_config.file.unwrap_or("easytier.log".to_string()))
+            .filename(path_str)
             .condition_daily()
             .max_filecount(file_config.count.unwrap_or(10))
             .condition_max_file_size(file_config.size_mb.unwrap_or(100) * 1024 * 1024)
