@@ -228,14 +228,14 @@ impl RpcServerHook for InstanceRpcServerHook {
 }
 
 #[derive(Clone)]
-struct InstanceConfigPatcher {
+pub struct InstanceConfigPatcher {
     global_ctx: ArcGlobalCtx,
     socks5_server: Weak<Socks5Server>,
     peer_manager: Arc<PeerManager>,
 }
 
 impl InstanceConfigPatcher {
-    async fn apply_patch(
+    pub async fn apply_patch(
         &self,
         patch: crate::proto::config::InstanceConfigPatch,
     ) -> Result<(), anyhow::Error> {
@@ -248,14 +248,17 @@ impl InstanceConfigPatcher {
         self.patch_exit_nodes(patch.exit_nodes).await?;
         self.patch_mapped_listeners(patch.mapped_listeners).await?;
         if let Some(hostname) = patch.hostname {
+            self.global_ctx.set_hostname(hostname.clone());
             self.global_ctx.config.set_hostname(Some(hostname));
         }
         if let Some(ipv4) = patch.ipv4 {
             if !self.global_ctx.config.get_dhcp() {
+                self.global_ctx.set_ipv4(Some(ipv4.into()));
                 self.global_ctx.config.set_ipv4(Some(ipv4.into()));
             }
         }
         if let Some(ipv6) = patch.ipv6 {
+            self.global_ctx.set_ipv6(Some(ipv6.into()));
             self.global_ctx.config.set_ipv6(Some(ipv6.into()));
         }
         self.global_ctx
@@ -1142,6 +1145,14 @@ impl Instance {
         }
     }
 
+    pub fn get_config_patcher(&self) -> InstanceConfigPatcher {
+        InstanceConfigPatcher {
+            global_ctx: self.global_ctx.clone(),
+            socks5_server: Arc::downgrade(&self.socks5_server),
+            peer_manager: self.peer_manager.clone(),
+        }
+    }
+
     fn get_config_service(&self) -> impl ConfigRpc<Controller = BaseController> + Clone {
         #[derive(Clone)]
         pub struct ConfigRpcService {
@@ -1167,11 +1178,7 @@ impl Instance {
         }
 
         ConfigRpcService {
-            patcher: InstanceConfigPatcher {
-                global_ctx: self.global_ctx.clone(),
-                socks5_server: Arc::downgrade(&self.socks5_server),
-                peer_manager: self.peer_manager.clone(),
-            },
+            patcher: self.get_config_patcher(),
         }
     }
 
