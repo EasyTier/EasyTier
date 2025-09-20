@@ -9,7 +9,6 @@ declare global {
   const EffectScope: typeof import('vue')['EffectScope']
   const MenuItemExit: typeof import('./composables/tray')['MenuItemExit']
   const MenuItemShow: typeof import('./composables/tray')['MenuItemShow']
-  const ReinitTray: typeof import('./composables/tray')['ReinitTray']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
   const collectNetworkInfos: typeof import('./composables/network')['collectNetworkInfos']
   const computed: typeof import('vue')['computed']
@@ -18,10 +17,8 @@ declare global {
   const customRef: typeof import('vue')['customRef']
   const defineAsyncComponent: typeof import('vue')['defineAsyncComponent']
   const defineComponent: typeof import('vue')['defineComponent']
-  const definePage: typeof import('unplugin-vue-router/runtime')['definePage']
   const defineStore: typeof import('pinia')['defineStore']
   const effectScope: typeof import('vue')['effectScope']
-  const event2human: typeof import('./composables/utils')['event2human']
   const generateMenuItem: typeof import('./composables/tray')['generateMenuItem']
   const generateNetworkConfig: typeof import('./composables/network')['generateNetworkConfig']
   const getActivePinia: typeof import('pinia')['getActivePinia']
@@ -30,7 +27,6 @@ declare global {
   const getEasytierVersion: typeof import('./composables/network')['getEasytierVersion']
   const getOsHostname: typeof import('./composables/network')['getOsHostname']
   const h: typeof import('vue')['h']
-  const initMobileService: typeof import('./composables/mobile_vpn')['initMobileService']
   const initMobileVpnService: typeof import('./composables/mobile_vpn')['initMobileVpnService']
   const inject: typeof import('vue')['inject']
   const isAutostart: typeof import('./composables/network')['isAutostart']
@@ -38,7 +34,6 @@ declare global {
   const isReactive: typeof import('vue')['isReactive']
   const isReadonly: typeof import('vue')['isReadonly']
   const isRef: typeof import('vue')['isRef']
-  const loadRunningInstanceIdsFromLocalStorage: typeof import('./stores/network')['loadRunningInstanceIdsFromLocalStorage']
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
   const mapState: typeof import('pinia')['mapState']
@@ -46,8 +41,6 @@ declare global {
   const mapWritableState: typeof import('pinia')['mapWritableState']
   const markRaw: typeof import('vue')['markRaw']
   const nextTick: typeof import('vue')['nextTick']
-  const num2ipv4: typeof import('./composables/utils')['num2ipv4']
-  const num2ipv6: typeof import('./composables/utils')['num2ipv6']
   const onActivated: typeof import('vue')['onActivated']
   const onBeforeMount: typeof import('vue')['onBeforeMount']
   const onBeforeRouteLeave: typeof import('vue-router')['onBeforeRouteLeave']
@@ -74,7 +67,6 @@ declare global {
   const retainNetworkInstance: typeof import('./composables/network')['retainNetworkInstance']
   const runNetworkInstance: typeof import('./composables/network')['runNetworkInstance']
   const setActivePinia: typeof import('pinia')['setActivePinia']
-  const setAutoLaunchStatus: typeof import('./composables/network')['setAutoLaunchStatus']
   const setLoggingLevel: typeof import('./composables/network')['setLoggingLevel']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
   const setTrayMenu: typeof import('./composables/tray')['setTrayMenu']
@@ -85,7 +77,6 @@ declare global {
   const shallowReadonly: typeof import('vue')['shallowReadonly']
   const shallowRef: typeof import('vue')['shallowRef']
   const storeToRefs: typeof import('pinia')['storeToRefs']
-  const timeAgoCn: typeof import('./composables/utils')['timeAgoCn']
   const toRaw: typeof import('vue')['toRaw']
   const toRef: typeof import('vue')['toRef']
   const toRefs: typeof import('vue')['toRefs']
@@ -116,6 +107,7 @@ declare global {
   export type { Component, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
 }
+
 // for vue template auto import
 import { UnwrapRef } from 'vue'
 declare module 'vue' {

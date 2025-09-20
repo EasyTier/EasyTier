@@ -9,18 +9,18 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@primevue/themes": "4.3.3",
-    "aura": "link:@primevue/themes/aura",
+    "@modyfi/vite-plugin-yaml": "^1.1.0",
+    "@primeuix/themes": "^1.2.3",
     "axios": "^1.7.7",
     "easytier-frontend-lib": "workspace:*",
-    "primevue": "4.3.3",
+    "primevue": "^4.3.9",
     "tailwindcss-primeui": "^0.3.4",
     "vue": "^3.5.12",
-    "vue-router": "4",
     "vue-i18n": "^9.9.1",
-    "@modyfi/vite-plugin-yaml": "^1.1.0"
+    "vue-router": "4"
   },
   "devDependencies": {
+    "@primevue/auto-import-resolver": "4.3.9",
     "@types/node": "^22.8.6",
     "@vitejs/plugin-vue": "^5.1.4",
     "autoprefixer": "^10.4.20",

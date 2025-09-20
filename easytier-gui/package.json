@@ -13,18 +13,17 @@
     "lint:fix": "eslint . --ignore-pattern src-tauri --fix"
   },
   "dependencies": {
-    "@primevue/themes": "4.3.3",
+    "@primeuix/themes": "^1.2.3",
     "@tauri-apps/plugin-autostart": "2.0.0",
     "@tauri-apps/plugin-clipboard-manager": "2.3.0",
     "@tauri-apps/plugin-os": "2.3.0",
     "@tauri-apps/plugin-process": "2.3.0",
     "@tauri-apps/plugin-shell": "2.3.0",
     "@vueuse/core": "^11.2.0",
-    "aura": "link:@primevue\\themes\\aura",
     "easytier-frontend-lib": "workspace:*",
     "ip-num": "1.5.1",
     "pinia": "^2.2.4",
-    "primevue": "4.3.3",
+    "primevue": "^4.3.9",
     "tauri-plugin-vpnservice-api": "workspace:*",
     "vue": "^3.5.12",
     "vue-router": "^4.4.5"
@@ -32,7 +31,7 @@
   "devDependencies": {
     "@antfu/eslint-config": "^3.7.3",
     "@intlify/unplugin-vue-i18n": "^5.2.0",
-    "@primevue/auto-import-resolver": "4.3.3",
+    "@primevue/auto-import-resolver": "4.3.9",
     "@tauri-apps/api": "2.7.0",
     "@tauri-apps/cli": "2.7.1",
     "@types/default-gateway": "^7.2.2",

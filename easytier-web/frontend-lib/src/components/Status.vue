@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
 import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import NetworkChart from './NetworkChart.vue';
 
 const props = defineProps<{
   curNetworkInst: NetworkInstance | null,
@@ -285,6 +286,10 @@ let prevTxSum = 0
 let prevRxSum = 0
 const txRate = ref('0')
 const rxRate = ref('0')
+
+// 控制节点详细信息chips的显示/隐藏
+const showNodeDetails = ref(false)
+
 onMounted(() => {
   rateIntervalId = window.setInterval(() => {
     const curTxSum = txGlobalSum()
@@ -365,36 +370,23 @@ function showEventLogs() {
         </template>
         <template #content>
           <div class="flex w-full flex-col gap-y-5">
-            <div class="m-0 flex flex-row justify-center gap-x-5">
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid green">
-                <div class="font-bold">
-                  {{ t('peer_count') }}
-                </div>
-                <div class="text-5xl mt-1">
-                  {{ peerCount }}
+            <div class="gap-4">
+              <!-- 网络流量图表 -->
+                <div class="w-full">
+                <NetworkChart :upload-rate="txRate" :download-rate="rxRate" />
                 </div>
               </div>
 
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid purple">
-                <div class="font-bold">
-                  {{ t('upload') }}
-                </div>
-                <div class="text-xl mt-2">
-                  {{ txRate }}/s
-                </div>
-              </div>
-
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid fuchsia">
-                <div class="font-bold">
-                  {{ t('download') }}
-                </div>
-                <div class="text-xl mt-2">
-                  {{ rxRate }}/s
-                </div>
-              </div>
+              <!-- 展开/收起节点详细信息的divider按钮 -->
+            <div class="w-full">
+              <Button @click="showNodeDetails = !showNodeDetails"
+                :icon="showNodeDetails ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
+                :label="showNodeDetails ? t('hide_node_details') : t('show_node_details')" severity="secondary" outlined
+                class="w-full justify-center" size="small" />
             </div>
 
-            <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
+<!-- 节点详细信息chips，根据showNodeDetails状态显示/隐藏 -->
+            <div v-show="showNodeDetails" class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
               <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
                 class="mr-2 mt-2 text-sm" />
             </div>

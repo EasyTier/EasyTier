@@ -2,7 +2,7 @@ import './style.css'
 
 import type { App } from 'vue';
 import { Config, Status, ConfigEditDialog } from "./components";
-import Aura from '@primevue/themes/aura'
+import Aura from '@primeuix/themes/aura';
 import PrimeVue from 'primevue/config'
 
 import I18nUtils from './modules/i18n'

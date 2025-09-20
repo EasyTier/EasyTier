@@ -48,6 +48,8 @@ hide_dock_icon: Hide Dock Icon
 show_dock_icon: Show Dock Icon
 exit: Exit
 use_latency_first: Latency First Mode
+show_node_details: Show Node Details
+hide_node_details: Hide Node Details
 chips_placeholder: 'e.g: {0}, select from the dropdown after input'
 hostname_placeholder: 'Leave blank and default to host name: {0}'
 dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
