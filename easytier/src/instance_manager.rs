@@ -319,6 +319,10 @@ fn handle_event(
                             ),
                         );
                     }
+
+                    GlobalCtxEvent::ConfigPatched(patch) => {
+                        print_event(instance_id, format!("config patched. patch: {:?}", patch));
+                    }
                 }
             } else {
                 events = events.resubscribe();

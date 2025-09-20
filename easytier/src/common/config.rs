@@ -152,6 +152,7 @@ pub trait ConfigLoader: Send + Sync {
         mapped_cidr: Option<cidr::Ipv4Cidr>,
     ) -> Result<(), anyhow::Error>;
     fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr);
+    fn clear_proxy_cidrs(&self);
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig>;
 
     fn get_network_identity(&self) -> NetworkIdentity;
@@ -608,6 +609,11 @@ impl ConfigLoader for TomlConfigLoader {
         if let Some(proxy_cidrs) = &mut locked_config.proxy_network {
             proxy_cidrs.retain(|c| c.cidr != cidr);
         }
+    }
+
+    fn clear_proxy_cidrs(&self) {
+        let mut locked_config = self.config.lock().unwrap();
+        locked_config.proxy_network = None;
     }
 
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig> {
