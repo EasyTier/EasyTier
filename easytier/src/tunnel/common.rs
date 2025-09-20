@@ -384,7 +384,11 @@ pub(crate) fn setup_sokcet2_ext(
         unsafe {
             let dev_idx = nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
             tracing::warn!(?dev_idx, ?dev_name, "bind device");
-            socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
+            if bind_addr.is_ipv4() {
+                socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
+            } else {
+                socket2_socket.bind_device_by_index_v6(std::num::NonZeroU32::new(dev_idx))?;
+            }
             tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
         }
     }
