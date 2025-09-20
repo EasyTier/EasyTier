@@ -5,11 +5,11 @@
       <div class="flex gap-2 text-sm">
         <span class="flex items-center gap-1 w-32">
           <div class="w-2 h-2 bg-green-500 rounded-full"></div>
-          <span class="text-green-600 dark:text-green-400 truncate">上传: {{ currentUpload }}/s</span>
+          <span class="text-green-600 dark:text-green-400 truncate">{{ t('upload') }}: {{ currentUpload }}/s</span>
         </span>
         <span class="flex items-center gap-1 w-32">
           <div class="w-2 h-2 bg-blue-500 rounded-full"></div>
-          <span class="text-blue-600 dark:text-blue-400 truncate">下载: {{ currentDownload }}/s</span>
+          <span class="text-blue-600 dark:text-blue-400 truncate">{{ t('download') }}: {{ currentDownload }}/s</span>
         </span>
       </div>
     </div>
@@ -33,6 +33,9 @@ import {
   Legend,
   Filler
 } from 'chart.js'
+import { useI18n } from 'vue-i18n';
+
+const { t } = useI18n()
 
 // 注册Chart.js组件
 ChartJS.register(
@@ -154,7 +157,7 @@ function initChart() {
       labels: timeLabels,
       datasets: [
         {
-          label: '上传',
+          label: t('upload'),
           data: uploadHistory,
           borderColor: 'rgb(34, 197, 94)',
           backgroundColor: 'rgba(34, 197, 94, 0.1)',
@@ -165,7 +168,7 @@ function initChart() {
           pointHoverRadius: 4
         },
         {
-          label: '下载',
+          label: t('download'),
           data: downloadHistory,
           borderColor: 'rgb(59, 130, 246)',
           backgroundColor: 'rgba(59, 130, 246, 0.1)',
@@ -241,10 +244,10 @@ watch([() => props.uploadRate, () => props.downloadRate], () => {
 
 onMounted(async () => {
   // add initial point
-  var now = new Date();
+  const now = new Date();
   for (let i = 0; i < maxDataPoints; i++) {
     let date = new Date(now.getTime() - (maxDataPoints - i) * 2000)
-    var timeStr = date.toLocaleTimeString('zh-CN', {
+    const timeStr = date.toLocaleTimeString(navigator.language, {
       hour12: false,
       hour: '2-digit',
       minute: '2-digit',

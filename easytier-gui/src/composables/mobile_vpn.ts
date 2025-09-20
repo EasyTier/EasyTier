@@ -2,7 +2,6 @@ import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
-import { NetworkConfig } from 'node_modules/easytier-frontend-lib/dist/types/network'
 
 type Route = NetworkTypes.Route
 
@@ -94,7 +93,7 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[], node_config: NetworkConfig): string[] {
+function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfig): string[] {
   if (!routes) {
     return []
   }

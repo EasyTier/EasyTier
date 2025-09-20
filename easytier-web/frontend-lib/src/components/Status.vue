@@ -5,7 +5,7 @@ import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } f
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
 import NetworkChart from './NetworkChart.vue';
 
 const props = defineProps<{
@@ -372,12 +372,12 @@ function showEventLogs() {
           <div class="flex w-full flex-col gap-y-5">
             <div class="gap-4">
               <!-- 网络流量图表 -->
-                <div class="w-full">
+              <div class="w-full">
                 <NetworkChart :upload-rate="txRate" :download-rate="rxRate" />
-                </div>
               </div>
+            </div>
 
-              <!-- 展开/收起节点详细信息的divider按钮 -->
+            <!-- 展开/收起节点详细信息的divider按钮 -->
             <div class="w-full">
               <Button @click="showNodeDetails = !showNodeDetails"
                 :icon="showNodeDetails ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
@@ -385,7 +385,7 @@ function showEventLogs() {
                 class="w-full justify-center" size="small" />
             </div>
 
-<!-- 节点详细信息chips，根据showNodeDetails状态显示/隐藏 -->
+            <!-- 节点详细信息chips，根据showNodeDetails状态显示/隐藏 -->
             <div v-show="showNodeDetails" class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
               <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
                 class="mr-2 mt-2 text-sm" />
@@ -403,7 +403,15 @@ function showEventLogs() {
 
       <Card>
         <template #title>
-          {{ t('peer_info') }}
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2">
+              <span>{{ t('peer_info') }}</span>
+            </div>
+            <div class="flex items-center gap-1">
+              <Badge :value="peerCount" severity="info"
+                class="text-lg font-semibold px-2 py-1 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" />
+            </div>
+          </div>
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
