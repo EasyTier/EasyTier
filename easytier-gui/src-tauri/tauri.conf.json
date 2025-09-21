@@ -19,7 +19,11 @@
   "productName": "easytier-gui",
   "version": "2.4.4",
   "identifier": "com.kkrainbow.easytier",
-  "plugins": {},
+  "plugins": {
+    "shell": {
+      "open": "^.+"
+    }
+  },
   "app": {
     "windows": [
       {
