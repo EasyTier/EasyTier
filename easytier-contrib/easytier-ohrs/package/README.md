@@ -2,7 +2,7 @@
 
 ## Install
 
-use`ohpm` to install package.
+use `ohpm` to install package.
 
 ```shell
 ohpm install easytier-ohrs
