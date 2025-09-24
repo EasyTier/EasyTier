@@ -450,7 +450,9 @@ impl PeerPacketFilter for Socks5Server {
 
         let entry_key = match ipv4.get_next_level_protocol() {
             IpNextHeaderProtocols::Tcp => {
-                let tcp_packet = TcpPacket::new(ipv4.payload()).unwrap();
+                let Some(tcp_packet) = TcpPacket::new(ipv4.payload()) else {
+                    return Some(packet);
+                };
                 Socks5Entry {
                     dst: SocketAddr::new(ipv4.get_source().into(), tcp_packet.get_source()),
                     src: SocketAddr::new(
@@ -479,7 +481,9 @@ impl PeerPacketFilter for Socks5Server {
                     return Some(packet);
                 }
 
-                let udp_packet = UdpPacket::new(ipv4.payload()).unwrap();
+                let Some(udp_packet) = UdpPacket::new(ipv4.payload()) else {
+                    return Some(packet);
+                };
                 Socks5Entry {
                     dst: SocketAddr::new(ipv4.get_source().into(), udp_packet.get_source()),
                     src: SocketAddr::new(
