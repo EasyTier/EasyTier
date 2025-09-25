@@ -313,6 +313,52 @@ impl Instance {
             ))
         });
 
+        // If IPv6 on-link allocator is enabled and no static IPv6 set, compute one
+        {
+            let cfg = &global_ctx.config;
+            if global_ctx.get_ipv6().is_none() && cfg.get_enable_ipv6_prefix_allocator() {
+                let prefixes = cfg.get_ipv6_prefixes();
+                if prefixes.is_empty() {
+                } else {
+                    let prefix = prefixes[0];
+                    let inst_id = global_ctx.get_id();
+                    // derive host bits from instance UUID deterministically
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    inst_id.as_u128().hash(&mut hasher);
+                    // also include network name to avoid cross-network collision
+                    global_ctx.get_network_name().hash(&mut hasher);
+                    let h64 = hasher.finish();
+
+                    let pfx_len = prefix.network_length();
+                    let host_bits = 128 - pfx_len as u32;
+                    // construct base from prefix network
+                    let base = prefix.first_address();
+                    let oct = base.octets();
+                    // build u128 from octets
+                    let mut addr_u128 = u128::from_be_bytes(oct);
+                    // mask out host bits
+                    let mask: u128 = if host_bits == 128 {
+                        0
+                    } else {
+                        (!0u128) >> pfx_len
+                    };
+                    // map h64 to host_bits space
+                    let host_part = if host_bits >= 64 {
+                        (h64 as u128) & mask
+                    } else if host_bits == 0 {
+                        0
+                    } else {
+                        ((h64 as u128) & ((1u128 << host_bits) - 1)) & mask
+                    };
+                    addr_u128 = (addr_u128 & (!mask)) | host_part;
+                    let ipv6 = std::net::Ipv6Addr::from(addr_u128.to_be_bytes());
+                    let inet = cidr::Ipv6Inet::new(ipv6, 128).unwrap();
+                    global_ctx.set_ipv6(Some(inet));
+                }
+            }
+        }
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,

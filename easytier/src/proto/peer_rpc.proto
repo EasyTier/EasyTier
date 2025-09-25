@@ -27,6 +27,10 @@ message RoutePeerInfo {
   optional common.Ipv6Inet ipv6_addr = 15;
 
   repeated PeerGroupInfo groups = 16;
+
+  // IPv6 prefix allocator capability and configured prefixes
+  optional bool enable_ipv6_prefix_allocator = 17;
+  repeated string ipv6_prefixes = 18; // e.g. 2001:db8:1:2::/64
 }
 
 message PeerIdVersion {
