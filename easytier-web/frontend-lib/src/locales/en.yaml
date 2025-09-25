@@ -3,6 +3,7 @@ networking_method: Networking Method
 public_server: Public Server
 manual: Manual
 standalone: Standalone
+remote_server: Remote Server
 virtual_ipv4: Virtual IPv4
 virtual_ipv4_dhcp: DHCP
 network_name: Network Name

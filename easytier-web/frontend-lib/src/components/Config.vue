@@ -30,6 +30,7 @@ const networking_methods = ref([
   { value: NetworkingMethod.PublicServer, label: () => t('public_server') },
   { value: NetworkingMethod.Manual, label: () => t('manual') },
   { value: NetworkingMethod.Standalone, label: () => t('standalone') },
+  { value: NetworkingMethod.RemoteServer, label: () => t('remote_server') },
 ])
 
 const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
@@ -230,6 +231,9 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
                       v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions"
                       class="grow" dropdown :complete-on-focus="false"
                       @complete="searchPresetPublicServers" />
+                    <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.RemoteServer"
+                      v-model="curNetwork.remote_server_url" 
+                      class="grow" dropdown :complete-on-focus="false" />
                   </div>
                 </div>
               </div>

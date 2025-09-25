@@ -44,6 +44,43 @@
   background-color: #0000005d;
 }
 
+/* Fix for Debian-based Linux systems where content appears white */
+* {
+  color-scheme: light;
+}
+
+/* Fix for Ubuntu/Deepin systems where GUI styles are missing */
+:root {
+  color-scheme: light;
+}
+
+/* Ensure PrimeVue components are visible */
+.p-component {
+  color: #000000;
+  background-color: #ffffff;
+}
+
+/* Fix for toolbar and other UI components */
+.p-toolbar,
+.p-panel,
+.p-select,
+.p-button {
+  color: #000000 !important;
+  background-color: #ffffff !important;
+}
+
+/* Fix for menu items */
+.p-menuitem-text,
+.p-menuitem-icon {
+  color: #000000 !important;
+}
+
+/* Fix for input fields */
+.p-inputtext {
+  color: #000000 !important;
+  background-color: #ffffff !important;
+}
+
 .p-password {
   width: 100%;
 }

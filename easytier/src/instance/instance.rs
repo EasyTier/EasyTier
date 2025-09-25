@@ -313,7 +313,7 @@ impl Instance {
             ))
         });
 
-        Instance {
+        let instance = Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
 
@@ -343,7 +343,30 @@ impl Instance {
             rpc_server,
 
             global_ctx,
+        };
+
+        // 如果配置了远程服务器URL，注册到连接管理器中
+        if let Some(remote_server_url) = instance.global_ctx.config.get_remote_server_url() {
+            // 创建一个虚拟的dead_url作为键值
+            let dead_url = format!("remote_server:{}", remote_server_url);
+            // 注意：我们不能在这里直接await，因为new()不是异步函数
+            // 我们需要在稍后的异步上下文中处理这个注册
+            tokio::spawn({
+                let conn_manager = instance.conn_manager.clone();
+                async move {
+                    // 先添加远程服务器URL
+                    if let Err(e) = conn_manager.add_remote_server_url(remote_server_url.clone(), dead_url.clone()).await {
+                        tracing::warn!("Failed to add remote server URL: {}", e);
+                    }
+                    // 然后添加dead_url到连接器中，以便触发定期检查
+                    if let Err(e) = conn_manager.add_connector_by_url(&dead_url).await {
+                        tracing::warn!("Failed to add dead URL to connectors: {}", e);
+                    }
+                }
+            });
         }
+
+        instance
     }
 
     pub fn get_conn_manager(&self) -> Arc<ManualConnectorManager> {

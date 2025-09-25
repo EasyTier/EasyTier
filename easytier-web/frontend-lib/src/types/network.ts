@@ -4,6 +4,7 @@ export enum NetworkingMethod {
   PublicServer = 0,
   Manual = 1,
   Standalone = 2,
+  RemoteServer = 3,
 }
 
 export interface NetworkConfig {
@@ -19,6 +20,7 @@ export interface NetworkConfig {
   networking_method: NetworkingMethod
 
   public_server_url: string
+  remote_server_url: string
   peer_urls: string[]
 
   proxy_cidrs: string[]
@@ -88,6 +90,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     networking_method: NetworkingMethod.PublicServer,
 
     public_server_url: 'tcp://public.easytier.top:11010',
+    remote_server_url: '',
     peer_urls: [],
 
     proxy_cidrs: [],

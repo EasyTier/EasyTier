@@ -327,7 +327,9 @@ async function saveTomlConfig(tomlConfig: string) {
                     class="max-w-full overflow-hidden text-ellipsis">
                     {{ slotProps.option.networking_method === NetworkTypes.NetworkingMethod.Manual
                       ? slotProps.option.peer_urls.join(', ')
-                      : slotProps.option.public_server_url }}
+                      : slotProps.option.networking_method === NetworkTypes.NetworkingMethod.RemoteServer
+                        ? slotProps.option.remote_server_url
+                        : slotProps.option.public_server_url }}
                   </div>
                   <div
                     v-if="isRunning(slotProps.option.instance_id) && networkStore.instances[slotProps.option.instance_id].detail && (!!networkStore.instances[slotProps.option.instance_id].detail?.my_node_info.virtual_ipv4)">

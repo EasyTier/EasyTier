@@ -3,6 +3,7 @@ networking_method: 网络方式
 public_server: 公共服务器
 manual: 手动
 standalone: 独立
+remote_server: 远程配置服务器
 virtual_ipv4: 虚拟IPv4地址
 virtual_ipv4_dhcp: DHCP
 network_name: 网络名称

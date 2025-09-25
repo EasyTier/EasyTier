@@ -44,6 +44,11 @@ jobs:
       TARGET: ${{ matrix.TARGET }}
       OS: ${{ matrix.OS }}
       OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+      OPENSSL_DIR: /usr
+      OPENSSL_INCLUDE_DIR: /usr/include
+      OPENSSL_LIB_DIR: /usr/lib/x86_64-linux-gnu
+      OPENSSL_STATIC: 1
+      PKG_CONFIG_ALLOW_CROSS: 1
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'    
     steps:
@@ -117,6 +122,11 @@ jobs:
         with:
           # GitHub repo token to use to avoid rate limiter
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install OpenSSL for Android
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
 
       - name: Build Android
         run: |

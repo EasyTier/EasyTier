@@ -10,6 +10,7 @@ enum NetworkingMethod {
     PublicServer = 0;
     Manual = 1;
     Standalone = 2;
+    RemoteServer = 3;
 }
 
 message NetworkConfig {
@@ -24,6 +25,7 @@ message NetworkConfig {
     optional NetworkingMethod networking_method = 8;
 
     optional string public_server_url = 9;
+    optional string remote_server_url = 50;
     repeated string peer_urls = 10;
 
     repeated string proxy_cidrs = 11;

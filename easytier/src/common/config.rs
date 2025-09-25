@@ -208,6 +208,10 @@ pub trait ConfigLoader: Send + Sync {
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
     fn dump(&self) -> String;
+    // 添加获取远程服务器URL的方法
+    fn get_remote_server_url(&self) -> Option<String>;
+    // 添加设置远程服务器URL的方法
+    fn set_remote_server_url(&self, url: Option<String>);
 }
 
 pub trait LoggingConfigLoader {
@@ -419,6 +423,8 @@ struct Config {
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
+    // 添加远程服务器URL字段
+    remote_server_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -480,6 +486,16 @@ impl TomlConfigLoader {
 }
 
 impl ConfigLoader for TomlConfigLoader {
+    // 添加获取远程服务器URL的方法
+    fn get_remote_server_url(&self) -> Option<String> {
+        self.config.lock().unwrap().remote_server_url.clone()
+    }
+
+    // 添加设置远程服务器URL的方法
+    fn set_remote_server_url(&self, url: Option<String>) {
+        self.config.lock().unwrap().remote_server_url = url;
+    }
+
     fn get_inst_name(&self) -> String {
         self.config
             .lock()

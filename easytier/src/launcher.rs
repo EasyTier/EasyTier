@@ -531,6 +531,60 @@ impl NetworkConfig {
         match NetworkingMethod::try_from(self.networking_method.unwrap_or_default())
             .unwrap_or_default()
         {
+            // 如果是远程配置服务器模式，则通过 http 请求，将返回数据作为peer列表
+            NetworkingMethod::RemoteServer => {
+                //通过remote_server_url：(post:https://www.test.com/demo.json)发起请求，获取peer列表
+                let remote_server_url = self.remote_server_url.clone().unwrap_or_default();
+                // 注册远程服务器URL，以便在连接失败时可以重新获取peers
+                cfg.set_remote_server_url(Some(remote_server_url.clone()));
+
+                // 克隆method和url字符串以确保它们有足够长的生命周期
+                let (method, url) = remote_server_url.split_once(":").ok_or_else(|| {
+                    anyhow::anyhow!("Invalid remote server url format: {}, expected format: method:url", remote_server_url)
+                })?;
+
+                // 克隆method和url字符串以确保它们有足够长的生命周期
+                let method_str = method.to_string().to_uppercase(); // 转换为大写以确保方法名正确
+                let url_str = url.to_string();
+                let remote_server_url_clone = remote_server_url.clone();
+
+                // 在同步函数中使用异步运行时执行异步请求
+                let resp_result = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new().unwrap();
+                    rt.block_on(async {
+                        let client = reqwest::Client::new();
+                        let resp = client.request(method_str.parse().unwrap(), &url_str)
+                            .send()
+                            .await;
+                        match resp {
+                            Ok(response) => {
+                                let status = response.status();
+                                let text_result = response.text().await;
+                                match text_result {
+                                    Ok(text) => {
+                                        if status.is_success() {
+                                            Ok(text)
+                                        } else {
+                                            Err(anyhow::anyhow!("Remote server returned non-success status {}: {}", status, text))
+                                        }
+                                    }
+                                    Err(e) => Err(anyhow::anyhow!("Failed to read response from remote server: {}", e))
+                                }
+                            }
+                            Err(e) => Err(anyhow::anyhow!("Failed to request remote server: {}", e))
+                        }
+                    })
+                }).join().unwrap();
+
+                let resp_text = resp_result.with_context(|| format!("failed to request remote server: {}", remote_server_url_clone))?;
+                //打印返回结果
+                println!("{}", resp_text);
+
+                // 尝试解析JSON响应
+                let peers = Self::parse_peer_list(&resp_text)?;
+
+                cfg.set_peers(peers);
+            }
             NetworkingMethod::PublicServer => {
                 let public_server_url = self.public_server_url.clone().unwrap_or_default();
                 cfg.set_peers(vec![PeerConfig {
@@ -789,6 +843,33 @@ impl NetworkConfig {
 
         cfg.set_flags(flags);
         Ok(cfg)
+    }
+
+    fn parse_peer_list(resp_text: &str) -> Result<Vec<PeerConfig>, anyhow::Error> {
+        // 首先尝试解析为PeerConfig数组
+        if let Ok(peers) = serde_json::from_str::<Vec<PeerConfig>>(resp_text) {
+            return Ok(peers);
+        }
+
+        // 如果失败，尝试解析为字符串数组（URL列表）
+        if let Ok(urls) = serde_json::from_str::<Vec<String>>(resp_text) {
+            // 验证每个URL是否有效
+            let mut peers = Vec::new();
+            for url_str in urls {
+                let uri = url_str.parse().with_context(|| format!("Invalid URL in peer list: {}", url_str))?;
+                peers.push(PeerConfig { uri });
+            }
+            return Ok(peers);
+        }
+
+        // 如果还失败，尝试解析为单个字符串（单个URL）
+        if let Ok(url_str) = serde_json::from_str::<String>(resp_text) {
+            let uri = url_str.parse().with_context(|| format!("Invalid URL: {}", url_str))?;
+            return Ok(vec![PeerConfig { uri }]);
+        }
+
+        // 所有解析都失败了
+        Err(anyhow::anyhow!("Failed to parse peer list from remote server response: {}", resp_text))
     }
 
     pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
