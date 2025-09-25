@@ -170,7 +170,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
 
-const portForwardProtocolOptions = ref(["tcp","udp"]);
+const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
 </script>
 
@@ -178,7 +178,7 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
   <div class="frontend-lib">
     <div class="flex flex-col h-full">
       <div class="flex flex-col">
-        <div class="w-11/12 self-center ">
+        <div class="w-full self-center ">
           <Panel :header="t('basic_settings')">
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
@@ -227,9 +227,8 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
                       class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
 
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions"
-                      class="grow" dropdown :complete-on-focus="false"
-                      @complete="searchPresetPublicServers" />
+                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
+                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
                   </div>
                 </div>
               </div>
@@ -436,56 +435,36 @@ const portForwardProtocolOptions = ref(["tcp","udp"]);
                   </div>
                   <div v-for="(row, index) in curNetwork.port_forwards" class="form-row">
                     <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
-                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false"/>
+                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false" />
                       <div style="flex-grow: 4;">
                         <InputGroup>
-                          <InputText
-                              v-model="row.bind_ip"
-                              :placeholder="t('port_forwards_bind_addr')"
-                          />
+                          <InputText v-model="row.bind_ip" :placeholder="t('port_forwards_bind_addr')" />
                           <InputGroupAddon>
                             <span style="font-weight: bold">:</span>
                           </InputGroupAddon>
-                          <InputNumber v-model="row.bind_port" :format="false"
-                                       inputId="horizontal-buttons" :step="1" mode="decimal" :min="1"
-                                       :max="65535" fluid
-                                       class="max-w-20"/>
+                          <InputNumber v-model="row.bind_port" :format="false" inputId="horizontal-buttons" :step="1"
+                            mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
                         </InputGroup>
                       </div>
                       <div style="flex-grow: 4;">
                         <InputGroup>
-                          <InputText
-                              v-model="row.dst_ip"
-                              :placeholder="t('port_forwards_dst_addr')"
-                          />
+                          <InputText v-model="row.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
                           <InputGroupAddon>
                             <span style="font-weight: bold">:</span>
                           </InputGroupAddon>
-                          <InputNumber v-model="row.dst_port" :format="false"
-                                       inputId="horizontal-buttons" :step="1" mode="decimal" :min="1"
-                                       :max="65535" fluid
-                                       class="max-w-20"/>
+                          <InputNumber v-model="row.dst_port" :format="false" inputId="horizontal-buttons" :step="1"
+                            mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
                         </InputGroup>
                       </div>
                       <div style="flex-grow: 1;">
-                        <Button
-                            v-if="curNetwork.port_forwards.length > 0"
-                            icon="pi pi-trash"
-                            severity="danger"
-                            text
-                            rounded
-                            @click="removeRow(index,curNetwork.port_forwards)"
-                        />
+                        <Button v-if="curNetwork.port_forwards.length > 0" icon="pi pi-trash" severity="danger" text
+                          rounded @click="removeRow(index, curNetwork.port_forwards)" />
                       </div>
                     </div>
                   </div>
                   <div class="flex justify-content-end mt-4">
-                    <Button
-                        icon="pi pi-plus"
-                        :label="t('port_forwards_add_btn')"
-                        severity="success"
-                        @click="addRow(curNetwork.port_forwards)"
-                    />
+                    <Button icon="pi pi-plus" :label="t('port_forwards_add_btn')" severity="success"
+                      @click="addRow(curNetwork.port_forwards)" />
                   </div>
                 </div>
               </div>

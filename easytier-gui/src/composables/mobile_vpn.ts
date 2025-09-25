@@ -93,7 +93,7 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[]): string[] {
+function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfig): string[] {
   if (!routes) {
     return []
   }
@@ -107,6 +107,10 @@ function getRoutesForVpn(routes: Route[]): string[] {
       ret.push(cidr)
     }
   }
+
+  node_config.routes.forEach(r => {
+    ret.push(r)
+  })
 
   // sort and dedup
   return Array.from(new Set(ret)).sort()
@@ -142,7 +146,7 @@ async function onNetworkInstanceChange() {
     network_length = 24
   }
 
-  const routes = getRoutesForVpn(curNetworkInfo?.routes)
+  const routes = getRoutesForVpn(curNetworkInfo?.routes, networkStore.curNetwork)
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)

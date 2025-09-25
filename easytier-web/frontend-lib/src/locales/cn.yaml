@@ -48,6 +48,8 @@ hide_dock_icon: 隐藏 Dock 图标
 show_dock_icon: 显示 Dock 图标
 exit: 退出
 chips_placeholder: 例如： {0}, 输入后在下拉框中选择生效
+show_node_details: 显示节点详细信息
+hide_node_details: 隐藏节点详细信息
 hostname_placeholder: '留空默认为主机名: {0}'
 dev_name_placeholder: 注意：当多个网络同时使用相同的TUN接口名称时，将会在设置TUN的IP时产生冲突，留空以自动生成随机名称
 off_text: 点击关闭
