@@ -40,10 +40,10 @@ pub fn prepare_linux_namespaces() {
     del_netns("net_c");
     del_netns("net_d");
 
-    create_netns("net_a", "10.1.1.1/24");
-    create_netns("net_b", "10.1.1.2/24");
-    create_netns("net_c", "10.1.2.3/24");
-    create_netns("net_d", "10.1.2.4/24");
+    create_netns("net_a", "10.1.1.1/24", "fd11::1/64");
+    create_netns("net_b", "10.1.1.2/24", "fd11::2/64");
+    create_netns("net_c", "10.1.2.3/24", "fd12::3/64");
+    create_netns("net_d", "10.1.2.4/24", "fd12::4/64");
 
     prepare_bridge("br_a");
     prepare_bridge("br_b");
@@ -931,10 +931,18 @@ fn run_wireguard_client(
 }
 
 #[cfg(feature = "wireguard")]
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn wireguard_vpn_portal() {
+pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
     let mut insts = init_three_node("tcp").await;
+
+    if test_v6 {
+        ping6_test("net_d", "fd12::3", None).await;
+    } else {
+        ping_test("net_d", "10.1.2.3", None).await;
+    }
+
     let net_ns = NetNS::new(Some("net_d".into()));
     let _g = net_ns.guard();
     insts[2]
@@ -946,11 +954,17 @@ pub async fn wireguard_vpn_portal() {
         });
     insts[2].run_vpn_portal().await.unwrap();
 
+    let dst_socket_addr = if test_v6 {
+        "[fd12::3]:22121".parse().unwrap()
+    } else {
+        "10.1.2.3:22121".parse().unwrap()
+    };
+
     let net_ns = NetNS::new(Some("net_d".into()));
     let _g = net_ns.guard();
     let wg_cfg = get_wg_config_for_portal(&insts[2].get_global_ctx().get_network_identity());
     run_wireguard_client(
-        "10.1.2.3:22121".parse().unwrap(),
+        dst_socket_addr,
         Key::try_from(wg_cfg.my_public_key()).unwrap(),
         Key::try_from(wg_cfg.peer_secret_key()).unwrap(),
         vec!["10.14.14.0/24".to_string(), "10.144.144.0/24".to_string()],

@@ -25,7 +25,7 @@ pub fn del_netns(name: &str) {
         .output();
 }
 
-pub fn create_netns(name: &str, ipv4: &str) {
+pub fn create_netns(name: &str, ipv4: &str, ipv6: &str) {
     // create netns
     let _ = std::process::Command::new("ip")
         .args(["netns", "add", name])
@@ -76,20 +76,22 @@ pub fn create_netns(name: &str, ipv4: &str) {
         .output()
         .unwrap();
 
-    let _ = std::process::Command::new("ip")
-        .args([
-            "netns",
-            "exec",
-            name,
-            "ip",
-            "addr",
-            "add",
-            ipv4,
-            "dev",
-            get_guest_veth_name(name),
-        ])
-        .output()
-        .unwrap();
+    for ip in [ipv4, ipv6] {
+        let _ = std::process::Command::new("ip")
+            .args([
+                "netns",
+                "exec",
+                name,
+                "ip",
+                "addr",
+                "add",
+                ip,
+                "dev",
+                get_guest_veth_name(name),
+            ])
+            .output()
+            .unwrap();
+    }
 }
 
 pub fn prepare_bridge(name: &str) {
