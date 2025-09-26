@@ -12,6 +12,7 @@ use crate::peers::acl_filter::AclFilter;
 use crate::proto::acl::GroupIdentity;
 use crate::proto::cli::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
+use crate::proto::config::InstanceConfigPatch;
 use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
 
@@ -52,6 +53,8 @@ pub enum GlobalCtxEvent {
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
 
     PortForwardAdded(PortForwardConfigPb),
+
+    ConfigPatched(InstanceConfigPatch),
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;

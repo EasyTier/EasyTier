@@ -1,18 +1,14 @@
 use std::sync::Arc;
 
-use crate::{
-    common::acl_processor::AclRuleBuilder,
-    proto::{
-        cli::{
-            AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest,
-            GetAclStatsResponse, GetWhitelistRequest, GetWhitelistResponse,
-            ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
-            ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
-            ListRouteResponse, PeerInfo, PeerManageRpc, SetWhitelistRequest, SetWhitelistResponse,
-            ShowNodeInfoRequest, ShowNodeInfoResponse,
-        },
-        rpc_types::{self, controller::BaseController},
+use crate::proto::{
+    cli::{
+        AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest, GetAclStatsResponse,
+        GetWhitelistRequest, GetWhitelistResponse, ListForeignNetworkRequest,
+        ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
+        ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
+        ListRouteResponse, PeerInfo, PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
     },
+    rpc_types::{self, controller::BaseController},
 };
 
 use super::peer_manager::PeerManager;
@@ -161,28 +157,6 @@ impl AclManageRpc for PeerManagerRpcService {
         Ok(GetAclStatsResponse {
             acl_stats: Some(acl_stats),
         })
-    }
-
-    async fn set_whitelist(
-        &self,
-        _: BaseController,
-        request: SetWhitelistRequest,
-    ) -> Result<SetWhitelistResponse, rpc_types::error::Error> {
-        tracing::info!(
-            "Setting whitelist - TCP: {:?}, UDP: {:?}",
-            request.tcp_ports,
-            request.udp_ports
-        );
-
-        let global_ctx = self.peer_manager.get_global_ctx();
-
-        global_ctx.config.set_tcp_whitelist(request.tcp_ports);
-        global_ctx.config.set_udp_whitelist(request.udp_ports);
-        global_ctx
-            .get_acl_filter()
-            .reload_rules(AclRuleBuilder::build(&global_ctx)?.as_ref());
-
-        Ok(SetWhitelistResponse {})
     }
 
     async fn get_whitelist(
