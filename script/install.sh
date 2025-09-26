@@ -389,45 +389,81 @@ UNINSTALL() {
 }
 
 UPDATE() {
-  if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find EasyTier\r\n"
-    exit 1
-  else
-    echo
-    echo -e "${GREEN_COLOR}Stopping EasyTier process${RES}\r\n"
-    if [ "$INIT_SYSTEM" = "systemd" ]; then
-      systemctl stop "easytier@*"
-    else
-      rc-service easytier stop
+    if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
+        echo -e "\r\n${RED_COLOR}Error${RES}, unable to find EasyTier\r\n"
+        exit 1
     fi
-    # Backup
+    
+    echo -e "${GREEN_COLOR}Saving current service state${RES}"
+    if [ "$INIT_SYSTEM" = "systemd" ]; then
+        ACTIVE_SERVICES=$(systemctl list-units --type=service --state=active | grep "easytier@" | awk '{print $1}' || echo "easytier@default")
+        echo "Currently running services: $ACTIVE_SERVICES"
+        
+        echo -e "${GREEN_COLOR}Stopping EasyTier services${RES}"
+        for service in $ACTIVE_SERVICES; do
+            systemctl stop "$service"
+        done
+    else
+        rc-service easytier stop
+    fi
+    
+    # Backup existing configuration
+    echo -e "${GREEN_COLOR}Backing up configuration files${RES}"
     rm -rf /tmp/easytier_tmp_update
-    mkdir -p  /tmp/easytier_tmp_update
+    mkdir -p /tmp/easytier_tmp_update
     cp -a $INSTALL_PATH/* /tmp/easytier_tmp_update/
+    
+    # Update installation
     INSTALL
-    if [ -f $INSTALL_PATH/easytier-core ]; then
-      echo -e "${GREEN_COLOR} Verify successfully ${RES}"
-    else
-      echo -e "${RED_COLOR} Download failed, unable to update${RES}"
-      echo "Rollback all ..."
-      rm -rf $INSTALL_PATH/*
-      mv /tmp/easytier_tmp_update/* $INSTALL_PATH/
-      if [ "$INIT_SYSTEM" = "systemd" ]; then
-        systemctl start "easytier@*"
-      else
-        rc-service easytier start
-      fi
-      exit 1
+    
+    # Verify installation
+    if [ ! -f $INSTALL_PATH/easytier-core ]; then
+        echo -e "${RED_COLOR}Download failed, unable to update${RES}"
+        echo "Rolling back all files..."
+        rm -rf $INSTALL_PATH/*
+        mv /tmp/easytier_tmp_update/* $INSTALL_PATH/
+        
+        if [ "$INIT_SYSTEM" = "systemd" ]; then
+            for service in $ACTIVE_SERVICES; do
+                systemctl start "$service"
+            done
+        else
+            rc-service easytier start
+        fi
+        exit 1
     fi
-    echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
+    
+    # Set correct permissions
+    chmod +x $INSTALL_PATH/easytier-core $INSTALL_PATH/easytier-cli
+    chmod 644 $INSTALL_PATH/config/*.conf 2>/dev/null || true
+    
+    echo -e "${GREEN_COLOR}Restarting EasyTier services${RES}"
     if [ "$INIT_SYSTEM" = "systemd" ]; then
-      systemctl start "easytier@*"
+        systemctl daemon-reload
+        for service in $ACTIVE_SERVICES; do
+            echo "Starting service: $service"
+            systemctl start "$service"
+            sleep 2
+            if ! systemctl is-active --quiet "$service"; then
+                echo -e "${RED_COLOR}Failed to start service $service${RES}"
+                echo "Service status:"
+                systemctl status "$service" --no-pager
+                echo "Service logs:"
+                journalctl -u "$service" --no-pager -n 20
+            else
+                echo -e "${GREEN_COLOR}Service $service started successfully${RES}"
+            fi
+        done
     else
-      rc-service easytier start
+        rc-service easytier start
+        if ! rc-service easytier status >/dev/null 2>&1; then
+            echo -e "${RED_COLOR}Failed to start EasyTier service${RES}"
+        else
+            echo -e "${GREEN_COLOR}EasyTier service started successfully${RES}"
+        fi
     fi
-    echo -e "\r\n${GREEN_COLOR} EasyTier was updated successfully! ${RES}\r\n"
-    echo -e "\r\n${GREEN_COLOR} EasyTier was the latest stable version! ${RES}\r\n"
-  fi
+    
+    echo -e "\r\n${GREEN_COLOR}EasyTier updated successfully!${RES}\r\n"
 }
 
 # CURL progress
