@@ -18,23 +18,18 @@ pub struct KeyValuePair {
 }
 
 #[napi]
-pub fn set_tun_fd(
-    inst_id: String,
-    fd: i32,
-) -> bool {
+pub fn set_tun_fd(inst_id: String, fd: i32) -> bool {
     match Uuid::try_parse(&inst_id) {
-        Ok(uuid) => {
-            match INSTANCE_MANAGER.set_tun_fd(&uuid, fd) {
-                Ok(_) => {
-                    hilog_debug!("[Rust] set tun fd {} to {}.", fd, inst_id);
-                    true
-                }
-                Err(e) => {
-                    hilog_error!("[Rust] cant set tun fd {} to {}. {}", fd, inst_id, e);
-                    false
-                }
+        Ok(uuid) => match INSTANCE_MANAGER.set_tun_fd(&uuid, fd) {
+            Ok(_) => {
+                hilog_debug!("[Rust] set tun fd {} to {}.", fd, inst_id);
+                true
             }
-        }
+            Err(e) => {
+                hilog_error!("[Rust] cant set tun fd {} to {}. {}", fd, inst_id, e);
+                false
+            }
+        },
         Err(e) => {
             hilog_error!("[Rust] cant covert {} to uuid. {}", inst_id, e);
             false
@@ -45,9 +40,7 @@ pub fn set_tun_fd(
 #[napi]
 pub fn parse_config(cfg_str: String) -> bool {
     match TomlConfigLoader::new_from_str(&cfg_str) {
-        Ok(_) => {
-            true
-        }
+        Ok(_) => true,
         Err(e) => {
             hilog_error!("[Rust] parse config failed {}", e);
             false
@@ -64,8 +57,8 @@ pub fn run_network_instance(cfg_str: String) -> bool {
             return false;
         }
     };
-    
-    if INSTANCE_MANAGER.list_network_instance_ids().len() > 0 { 
+
+    if INSTANCE_MANAGER.list_network_instance_ids().len() > 0 {
         hilog_error!("[Rust] there is a running instance!");
         return false;
     }
@@ -134,15 +127,10 @@ pub fn collect_running_network() -> Vec<String> {
 #[napi]
 pub fn is_running_network(inst_id: String) -> bool {
     match Uuid::try_parse(&inst_id) {
-        Ok(uuid) => {
-            INSTANCE_MANAGER
-                    .list_network_instance_ids()
-                    .contains(&uuid)
-        }
+        Ok(uuid) => INSTANCE_MANAGER.list_network_instance_ids().contains(&uuid),
         Err(e) => {
             hilog_error!("[Rust] cant covert {} to uuid. {}", inst_id, e);
             false
         }
     }
-    
 }

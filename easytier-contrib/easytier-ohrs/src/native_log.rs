@@ -1,7 +1,9 @@
+use napi_derive_ohos::napi;
+use ohos_hilog_binding::{
+    LogOptions, hilog_debug, hilog_error, hilog_info, hilog_warn, set_global_options,
+};
 use std::collections::HashMap;
 use std::panic;
-use napi_derive_ohos::napi;
-use ohos_hilog_binding::{hilog_debug, hilog_error, hilog_info, hilog_warn, set_global_options, LogOptions};
 use tracing::{Event, Subscriber};
 use tracing_core::Level;
 use tracing_subscriber::layer::{Context, Layer};
@@ -20,12 +22,9 @@ pub fn init_panic_hook() {
 }
 
 #[napi]
-pub fn hilog_global_options(
-    domain: u32,
-    tag: String,
-) {
+pub fn hilog_global_options(domain: u32, tag: String) {
     ohos_hilog_binding::forward_stdio_to_hilog();
-    set_global_options(LogOptions{
+    set_global_options(LogOptions {
         domain,
         tag: Box::leak(tag.clone().into_boxed_str()),
     })
@@ -34,11 +33,9 @@ pub fn hilog_global_options(
 #[napi]
 pub fn init_tracing_subscriber() {
     tracing_subscriber::registry()
-        .with(
-            CallbackLayer {
-                callback: Box::new(tracing_callback),
-            }
-        )
+        .with(CallbackLayer {
+            callback: Box::new(tracing_callback),
+        })
         .init();
 }
 
@@ -93,6 +90,7 @@ impl<'a> tracing::field::Visit for FieldCollector<'a> {
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        self.0.insert(field.name().to_string(), format!("{:?}", value));
+        self.0
+            .insert(field.name().to_string(), format!("{:?}", value));
     }
 }

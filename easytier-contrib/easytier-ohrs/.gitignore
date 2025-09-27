@@ -1,0 +1,9 @@
+dist/
+target/
+.DS_Store
+.idea/
+package/libs
+
+*.har
+
+Cargo.lock
