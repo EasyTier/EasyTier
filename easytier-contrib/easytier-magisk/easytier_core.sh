@@ -44,11 +44,11 @@ while true; do
 
             # 如果 config 目录下存在 command_args 文件，则读取其中的内容作为启动参数
             if [ -f "${MODDIR}/config/command_args" ]; then
-                TZ=Asia/Shanghai ${EASYTIER} $(cat ${MODDIR}/config/command_args) > ${LOG_FILE} &
+                TZ=Asia/Shanghai ${EASYTIER} $(cat ${MODDIR}/config/command_args) --hostname "$(getprop ro.product.brand)-$(getprop ro.product.model)" > ${LOG_FILE} &
                 sleep 5s # 等待easytier-core启动完成
                 update_module_description "主程序已开启(启动参数模式) | ${REDIR_STATUS}"
             else
-                TZ=Asia/Shanghai ${EASYTIER} -c ${CONFIG_FILE} > ${LOG_FILE} &
+                TZ=Asia/Shanghai ${EASYTIER} -c ${CONFIG_FILE} --hostname "$(getprop ro.product.brand)-$(getprop ro.product.model)" > ${LOG_FILE} &
                 sleep 5s # 等待easytier-core启动完成
                 update_module_description "主程序已开启(配置文件模式) | ${REDIR_STATUS}"
             fi
