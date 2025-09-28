@@ -6,22 +6,12 @@
 // magic dns client will establish a long live tcp connection to the magic dns server, and when the server stops or crashes,
 // all the clients will exit and let the easytier instance to launch a new server instance.
 
-use std::{collections::BTreeMap, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
-
-use anyhow::Context;
-use cidr::Ipv4Inet;
-use dashmap::DashMap;
-use hickory_proto::rr::LowerName;
-use multimap::MultiMap;
-use pnet::packet::{
-    icmp::{self, IcmpTypes, MutableIcmpPacket},
-    ip::IpNextHeaderProtocols,
-    ipv4::{self, MutableIpv4Packet},
-    tcp::{self, MutableTcpPacket},
-    udp::{self, MutableUdpPacket},
-    MutablePacket,
+use super::{
+    config::{GeneralConfigBuilder, RunConfigBuilder},
+    server::Server,
+    system_config::{OSConfig, SystemConfig},
+    MAGIC_DNS_INSTANCE_ADDR,
 };
-
 use crate::{
     common::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
@@ -46,13 +36,25 @@ use crate::{
     },
     tunnel::{packet_def::ZCPacket, tcp::TcpTunnelListener},
 };
-
-use super::{
-    config::{GeneralConfigBuilder, RunConfigBuilder},
-    server::Server,
-    system_config::{OSConfig, SystemConfig},
-    MAGIC_DNS_INSTANCE_ADDR,
+use anyhow::Context;
+use cidr::Ipv4Inet;
+use dashmap::DashMap;
+use hickory_proto::rr::LowerName;
+use hickory_proto::serialize::binary::BinEncoder;
+use hickory_server::authority::MessageResponse;
+use hickory_server::server::{ResponseHandler, ResponseInfo};
+use multimap::MultiMap;
+use pnet::packet::{
+    icmp::{self, IcmpTypes, MutableIcmpPacket},
+    ip::IpNextHeaderProtocols,
+    ipv4::{self, MutableIpv4Packet},
+    tcp::{self, MutableTcpPacket},
+    udp::{self, MutableUdpPacket},
+    MutablePacket,
 };
+use std::io::ErrorKind;
+use std::sync::Mutex;
+use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
 
 static NIC_PIPELINE_NAME: &str = "magic_dns_server";
 
@@ -211,6 +213,40 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         _input: Void,
     ) -> crate::proto::rpc_types::error::Result<Void> {
         Ok(Default::default())
+    }
+}
+
+#[derive(Clone)]
+pub struct ResponseWrapper {
+    response: Arc<Mutex<Vec<u8>>>,
+}
+
+pub trait RecordIter<'a>: Iterator<Item = &'a hickory_proto::rr::Record> + Send + 'a {}
+impl<'a, T> RecordIter<'a> for T where T: Iterator<Item = &'a hickory_proto::rr::Record> + Send + 'a {}
+
+#[async_trait::async_trait]
+impl ResponseHandler for ResponseWrapper {
+    async fn send_response<'a>(
+        &mut self,
+        response: MessageResponse<
+            '_,
+            'a,
+            impl RecordIter<'a>,
+            impl RecordIter<'a>,
+            impl RecordIter<'a>,
+            impl RecordIter<'a>,
+        >,
+    ) -> io::Result<ResponseInfo> {
+        let mut buffer = self
+            .response
+            .lock()
+            .map_err(|_| io::Error::new(ErrorKind::Other, "lock poisoned"))?;
+
+        let mut encoder = BinEncoder::new(&mut *buffer);
+        encoder.set_max_size(u16::MAX);
+        response
+            .destructive_emit(&mut encoder)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
     }
 }
 
