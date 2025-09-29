@@ -1424,6 +1424,7 @@ impl Service {
             ServiceManagerKind::Systemd => Some(self.make_systemd_unit(options).unwrap()),
             ServiceManagerKind::Rcd => Some(self.make_rcd_script(options).unwrap()),
             ServiceManagerKind::OpenRc => Some(self.make_open_rc_script(options).unwrap()),
+            ServiceManagerKind::Launchd => None, // 使用 service-manager-rs 的默认 plist 生成
             _ => {
                 #[cfg(target_os = "windows")]
                 {
@@ -1553,6 +1554,31 @@ impl Service {
 
         std::result::Result::Ok(script)
     }
+
+}
+
+fn validate_core_args(args: &[OsString]) -> Result<(), Error> {
+    let args_str: Vec<String> = args.iter()
+        .map(|s| s.to_string_lossy().to_string())
+        .collect();
+
+    let has_machine_id = args_str.iter().any(|arg| arg == "--machine-id");
+    let has_config_server = args_str.iter().any(|arg| arg == "-w" || arg == "--config-server");
+    let has_config_file = args_str.iter().any(|arg| arg == "-c" || arg == "--config-file");
+
+    if has_machine_id && !has_config_server {
+        return Err(anyhow::anyhow!(
+            "--machine-id can only be used together with -w/--config-server"
+        ));
+    }
+
+    if has_config_file && has_config_server {
+        return Err(anyhow::anyhow!(
+            "-c/--config-file and -w/--config-server cannot be used together. Use either local config file or remote config server, not both."
+        ));
+    }
+
+    Ok(())
 }
 
 fn print_output<T>(items: &[T], format: &OutputFormat) -> Result<(), Error>
@@ -1881,9 +1907,16 @@ async fn main() -> Result<(), Error> {
                         anyhow::anyhow!("failed to get easytier core application: {}", e)
                     })?;
                     let bin_args = install_args.core_args.unwrap_or_default();
+
+                    // 验证参数组合：--machine-id 必须配合 -w/--config-server 使用
+                    validate_core_args(&bin_args)?;
+
                     let work_dir = install_args.service_work_dir.unwrap_or_else(|| {
                         if cfg!(target_os = "windows") {
                             bin_path.parent().unwrap().to_path_buf()
+                        } else if cfg!(target_os = "macos") {
+                            // For macOS, use /tmp as default working directory for launchd services
+                            PathBuf::from("/tmp")
                         } else {
                             std::env::temp_dir()
                         }
