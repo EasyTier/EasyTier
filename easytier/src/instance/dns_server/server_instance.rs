@@ -44,12 +44,13 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncoder};
 use hickory_server::authority::{MessageRequest, MessageResponse};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
 use multimap::MultiMap;
+use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ipv4::Ipv4Packet;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::{
+    icmp,
     ip::IpNextHeaderProtocols,
     ipv4::{self, MutableIpv4Packet},
-    tcp::{self, MutableTcpPacket},
     udp::{self, MutableUdpPacket},
     MutablePacket, Packet,
 };
@@ -263,75 +264,136 @@ impl ResponseHandler for ResponseWrapper {
 }
 
 impl MagicDnsServerInstanceData {
-    async fn process_packet(&self, zc_packet: &mut ZCPacket) -> Option<()> {
-        let ip_packet = Ipv4Packet::new(zc_packet.payload())?;
+    async fn handle_ip_packet(&self, zc_packet: &mut ZCPacket) -> Option<()> {
+        let (ip_header_length, ip_protocol, src_ip, dst_ip) = {
+            let ip_packet = Ipv4Packet::new(zc_packet.payload())?;
 
-        let src_ip = ip_packet.get_source();
-        let dst_ip = ip_packet.get_destination();
+            if ip_packet.get_version() != 4 {
+                return None;
+            }
 
-        if !(ip_packet.get_version() == 4
-            && dst_ip == self.fake_ip
-            && ip_packet.get_next_level_protocol() == IpNextHeaderProtocols::Udp)
-        {
+            (
+                ip_packet.get_header_length() as usize * 4,
+                ip_packet.get_next_level_protocol(),
+                ip_packet.get_source(),
+                ip_packet.get_destination(),
+            )
+        };
+
+        if dst_ip != self.fake_ip {
             return None;
         }
 
-        let udp_packet = UdpPacket::new(ip_packet.payload())?;
-
-        let request_payload = udp_packet.payload();
-
-        let src_port = udp_packet.get_source();
-        let dst_port = udp_packet.get_destination();
-
-        let request = Request::new(
-            MessageRequest::from_bytes(request_payload).ok()?,
-            SocketAddr::from(SocketAddrV4::new(src_ip, src_port)),
-            hickory_proto::xfer::Protocol::Udp,
-        );
-
-        let p_response_payload = Arc::new(Mutex::new(Vec::with_capacity(512)));
-        let response_handler = ResponseWrapper {
-            response: p_response_payload.clone(),
-        };
-
-        self.dns_server
-            .read_catalog()
-            .await
-            .handle_request(&request, response_handler)
-            .await;
-
-        let response_payload = p_response_payload.lock().ok()?;
-        let delta_length = response_payload.len() as isize - request_payload.len() as isize;
-
-        if delta_length != 0 {
-            let inner_length = (zc_packet.buf_len() as isize + delta_length) as usize;
-            zc_packet.mut_inner().resize(inner_length, 0);
+        match ip_protocol {
+            IpNextHeaderProtocols::Udp => {
+                self.handle_udp_packet(zc_packet, ip_header_length, src_ip, dst_ip)
+                    .await?;
+            }
+            IpNextHeaderProtocols::Icmp => {
+                self.handle_icmp_packet(zc_packet, ip_header_length)?;
+            }
+            _ => {
+                return None;
+            }
         }
 
         let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload())?;
         ip_packet.set_source(dst_ip);
         ip_packet.set_destination(src_ip);
 
-        ip_packet.set_total_length((ip_packet.get_total_length() as isize + delta_length) as u16);
-
-        {
-            let mut udp_packet = MutableUdpPacket::new(ip_packet.payload_mut())?;
-            udp_packet.set_source(dst_port);
-            udp_packet.set_destination(src_port);
-
-            udp_packet.set_length((udp_packet.get_length() as isize + delta_length) as u16);
-            udp_packet.payload_mut().copy_from_slice(&response_payload);
-
-            udp_packet.set_checksum(udp::ipv4_checksum(
-                &udp_packet.to_immutable(),
-                &dst_ip,
-                &src_ip,
-            ));
-        }
-
         ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
 
         zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.my_peer_id.into();
+
+        Some(())
+    }
+
+    async fn handle_udp_packet(
+        &self,
+        zc_packet: &mut ZCPacket,
+        ip_header_length: usize,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+    ) -> Option<()> {
+        let (src_port, dst_port, request, request_length) = {
+            let udp_packet = UdpPacket::new(&zc_packet.payload()[ip_header_length..])?;
+
+            let src_port = udp_packet.get_source();
+            let request_payload = udp_packet.payload();
+
+            (
+                src_port,
+                udp_packet.get_destination(),
+                Request::new(
+                    MessageRequest::from_bytes(request_payload).ok()?,
+                    SocketAddr::from(SocketAddrV4::new(src_ip, src_port)),
+                    hickory_proto::xfer::Protocol::Udp,
+                ),
+                request_payload.len(),
+            )
+        };
+
+        let response_payload = {
+            let response_payload_arc = Arc::new(Mutex::new(Vec::with_capacity(512)));
+
+            self.dns_server
+                .read_catalog()
+                .await
+                .handle_request(
+                    &request,
+                    ResponseWrapper {
+                        response: response_payload_arc.clone(),
+                    },
+                )
+                .await;
+
+            Arc::into_inner(response_payload_arc)?.into_inner().ok()?
+        };
+
+        let response_length = response_payload.len();
+        let delta_length = response_length as isize - request_length as isize;
+
+        let inner_length = (zc_packet.buf_len() as isize + delta_length) as usize;
+        if zc_packet.mut_inner().capacity() < inner_length {
+            let header_length = inner_length - response_length;
+            zc_packet.mut_inner().truncate(header_length);
+        }
+        zc_packet.mut_inner().resize(inner_length, 0);
+
+        let mut ip_packet = MutableIpv4Packet::new(zc_packet.mut_payload())?;
+
+        let ip_length = (ip_packet.get_total_length() as isize + delta_length) as u16;
+        ip_packet.set_total_length(ip_length);
+
+        let mut udp_packet = MutableUdpPacket::new(ip_packet.payload_mut())?;
+
+        let udp_length = (udp_packet.get_length() as isize + delta_length) as u16;
+        udp_packet.set_length(udp_length);
+
+        udp_packet.set_source(dst_port);
+        udp_packet.set_destination(src_port);
+
+        udp_packet.payload_mut().copy_from_slice(&response_payload);
+
+        udp_packet.set_checksum(udp::ipv4_checksum(
+            &udp_packet.to_immutable(),
+            &dst_ip,
+            &src_ip,
+        ));
+
+        Some(())
+    }
+
+    fn handle_icmp_packet(&self, zc_packet: &mut ZCPacket, ip_header_length: usize) -> Option<()> {
+        let mut icmp_packet =
+            MutableIcmpPacket::new(&mut zc_packet.mut_payload()[ip_header_length..])?;
+
+        if icmp_packet.get_icmp_type() != IcmpTypes::EchoRequest {
+            return None;
+        }
+
+        icmp_packet.set_icmp_type(IcmpTypes::EchoReply);
+        icmp_packet.set_checksum(icmp::checksum(&icmp_packet.to_immutable()));
 
         Some(())
     }
@@ -340,7 +402,7 @@ impl MagicDnsServerInstanceData {
 #[async_trait::async_trait]
 impl NicPacketFilter for MagicDnsServerInstanceData {
     async fn try_process_packet_from_nic(&self, zc_packet: &mut ZCPacket) -> bool {
-        self.process_packet(zc_packet).await.is_some()
+        self.handle_ip_packet(zc_packet).await.is_some()
     }
 
     fn id(&self) -> String {
