@@ -218,6 +218,8 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
     }
 }
 
+// This should only be used for UDP response.
+// For other protocols, the variable `max_size` in `send_response` should be u16::MAX.
 #[derive(Clone)]
 pub struct ResponseWrapper {
     response: Arc<Mutex<Vec<u8>>>,
@@ -246,6 +248,7 @@ impl ResponseHandler for ResponseWrapper {
 
         let mut encoder = BinEncoder::new(&mut *buffer);
 
+        // `max_size` should be u16::MAX for protocol other than UDP.
         let max_size = if let Some(edns) = response.get_edns() {
             edns.max_payload()
         } else {
