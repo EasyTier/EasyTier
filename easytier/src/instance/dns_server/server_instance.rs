@@ -471,7 +471,7 @@ impl MagicDnsServerInstance {
         tun_inet: Ipv4Inet,
         fake_ip: Ipv4Addr,
     ) -> Result<Self, anyhow::Error> {
-        let tcp_listener = TcpTunnelListener::new(MAGIC_DNS_INSTANCE_ADDR.parse().unwrap());
+        let tcp_listener = TcpTunnelListener::new(MAGIC_DNS_INSTANCE_ADDR.parse()?);
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
 
@@ -482,12 +482,10 @@ impl MagicDnsServerInstance {
                 GeneralConfigBuilder::default()
                     .listen_udp(format!("{}:0", bind_addr))
                     .listen_tcp(format!("{}:0", bind_addr))
-                    .build()
-                    .unwrap(),
+                    .build()?,
             )
             .excluded_forward_nameservers(vec![fake_ip.into()])
-            .build()
-            .unwrap();
+            .build()?;
         let mut dns_server = Server::new(dns_config);
         dns_server.run().await?;
 
