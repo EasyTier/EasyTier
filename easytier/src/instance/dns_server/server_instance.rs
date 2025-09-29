@@ -245,7 +245,14 @@ impl ResponseHandler for ResponseWrapper {
             .map_err(|_| io::Error::new(ErrorKind::Other, "lock poisoned"))?;
 
         let mut encoder = BinEncoder::new(&mut *buffer);
-        encoder.set_max_size(u16::MAX);
+
+        let max_size = if let Some(edns) = response.get_edns() {
+            edns.max_payload()
+        } else {
+            hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
+        };
+
+        encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
