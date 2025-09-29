@@ -165,6 +165,14 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         Ok(Default::default())
     }
 
+    async fn heartbeat(
+        &self,
+        _ctrl: Self::Controller,
+        _input: Void,
+    ) -> crate::proto::rpc_types::error::Result<Void> {
+        Ok(Default::default())
+    }
+
     async fn update_dns_record(
         &self,
         ctrl: Self::Controller,
@@ -209,14 +217,6 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         }
         Ok(GetDnsRecordResponse { records: ret })
     }
-
-    async fn heartbeat(
-        &self,
-        _ctrl: Self::Controller,
-        _input: Void,
-    ) -> crate::proto::rpc_types::error::Result<Void> {
-        Ok(Default::default())
-    }
 }
 
 // This should only be used for UDP response.
@@ -259,7 +259,7 @@ impl ResponseHandler for ResponseWrapper {
         encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            .map_err(|e| io::Error::new(ErrorKind::Other, e))
     }
 }
 
