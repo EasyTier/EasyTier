@@ -222,11 +222,11 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
 // This should only be used for UDP response.
 // For other protocols, the variable `max_size` in `send_response` should be u16::MAX.
 #[derive(Clone)]
-pub struct ResponseWrapper {
+struct ResponseWrapper {
     response: Arc<Mutex<Vec<u8>>>,
 }
 
-pub trait RecordIter<'a>: Iterator<Item = &'a hickory_proto::rr::Record> + Send + 'a {}
+trait RecordIter<'a>: Iterator<Item = &'a hickory_proto::rr::Record> + Send + 'a {}
 impl<'a, T> RecordIter<'a> for T where T: Iterator<Item = &'a hickory_proto::rr::Record> + Send + 'a {}
 
 #[async_trait::async_trait]
@@ -264,6 +264,8 @@ impl ResponseHandler for ResponseWrapper {
 }
 
 impl MagicDnsServerInstanceData {
+    /// Replace content of incoming UDP DNS request and ICMP echo request packet with reply data,
+    /// and swap source and destination IP addresses to send it back.
     async fn handle_ip_packet(&self, zc_packet: &mut ZCPacket) -> Option<()> {
         let (ip_header_length, ip_protocol, src_ip, dst_ip) = {
             let ip_packet = Ipv4Packet::new(zc_packet.payload())?;
@@ -308,6 +310,8 @@ impl MagicDnsServerInstanceData {
         Some(())
     }
 
+    /// Extract the DNS request message and send it to the hickory-dns server instance.
+    /// Replace the content of the UDP packet with the response message.
     async fn handle_udp_packet(
         &self,
         zc_packet: &mut ZCPacket,
