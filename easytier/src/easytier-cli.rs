@@ -1554,17 +1554,21 @@ impl Service {
 
         std::result::Result::Ok(script)
     }
-
 }
 
 fn validate_core_args(args: &[OsString]) -> Result<(), Error> {
-    let args_str: Vec<String> = args.iter()
+    let args_str: Vec<String> = args
+        .iter()
         .map(|s| s.to_string_lossy().to_string())
         .collect();
 
     let has_machine_id = args_str.iter().any(|arg| arg == "--machine-id");
-    let has_config_server = args_str.iter().any(|arg| arg == "-w" || arg == "--config-server");
-    let has_config_file = args_str.iter().any(|arg| arg == "-c" || arg == "--config-file");
+    let has_config_server = args_str
+        .iter()
+        .any(|arg| arg == "-w" || arg == "--config-server");
+    let has_config_file = args_str
+        .iter()
+        .any(|arg| arg == "-c" || arg == "--config-file");
 
     if has_machine_id && !has_config_server {
         return Err(anyhow::anyhow!(
