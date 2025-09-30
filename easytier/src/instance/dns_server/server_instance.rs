@@ -258,7 +258,7 @@ impl ResponseHandler for ResponseWrapper {
         encoder.set_max_size(max_size);
         response
             .destructive_emit(&mut encoder)
-            .map_err(|e| io::Error::other(e))
+            .map_err(io::Error::other)
     }
 }
 
