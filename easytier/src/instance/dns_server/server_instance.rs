@@ -1,4 +1,4 @@
-// single-instance server in one machine, every easytier instance that has ip address and tun device will try create a server instance.
+// single-instance server in one machine, every easytier instance that has ip address and tun device will try to create a server instance.
 
 // magic dns client will connect to this server to update the dns records.
 // magic dns server will add the dns server ip address to the tun device, and forward the dns request to the dns server
@@ -121,7 +121,7 @@ impl MagicDnsServerInstanceData {
         self.dns_server
             .upsert(
                 LowerName::from_str(zone)
-                    .with_context(|| "Invalid zone name, expect fomat like \"et.net.\"")?,
+                    .with_context(|| "Invalid zone name, expect format like \"et.net.\"")?,
                 Arc::new(authority),
             )
             .await;
