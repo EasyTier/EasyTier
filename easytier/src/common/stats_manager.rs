@@ -664,7 +664,7 @@ impl Default for StatsManager {
 mod tests {
     use super::*;
     use crate::common::stats_manager::{LabelSet, LabelType, MetricName, StatsManager};
-    use crate::proto::cli::{
+    use crate::proto::api::instance::{
         GetPrometheusStatsRequest, GetPrometheusStatsResponse, GetStatsRequest, GetStatsResponse,
     };
     use std::collections::BTreeMap;
@@ -818,16 +818,19 @@ mod tests {
     #[tokio::test]
     async fn test_stats_rpc_data_structures() {
         // Test GetStatsRequest
-        let request = GetStatsRequest {};
-        assert_eq!(request, GetStatsRequest {});
+        let request = GetStatsRequest { instance: None };
+        assert_eq!(request, GetStatsRequest { instance: None });
 
         // Test GetStatsResponse
         let response = GetStatsResponse { metrics: vec![] };
         assert!(response.metrics.is_empty());
 
         // Test GetPrometheusStatsRequest
-        let prometheus_request = GetPrometheusStatsRequest {};
-        assert_eq!(prometheus_request, GetPrometheusStatsRequest {});
+        let prometheus_request = GetPrometheusStatsRequest { instance: None };
+        assert_eq!(
+            prometheus_request,
+            GetPrometheusStatsRequest { instance: None }
+        );
 
         // Test GetPrometheusStatsResponse
         let prometheus_response = GetPrometheusStatsResponse {
@@ -867,7 +870,7 @@ mod tests {
             }
 
             // This simulates what the RPC service would do
-            let _metric_snapshot = crate::proto::cli::MetricSnapshot {
+            let _metric_snapshot = crate::proto::api::instance::MetricSnapshot {
                 name: metric.name.to_string(),
                 value: metric.value,
                 labels,

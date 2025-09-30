@@ -32,7 +32,7 @@ use crate::{
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::route_trait::{Route, RouteInterface},
     proto::{
-        cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+        api::instance::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
         common::LimiterConfig,
         peer_rpc::DirectConnectorRpcServer,
     },

@@ -1,7 +1,7 @@
 use std::sync::{mpsc::Sender, Mutex, OnceLock};
 
 use crate::proto::{
-    cli::{
+    api::logger::{
         GetLoggerConfigRequest, GetLoggerConfigResponse, LogLevel, LoggerRpc,
         SetLoggerConfigRequest, SetLoggerConfigResponse,
     },
@@ -11,14 +11,10 @@ use crate::proto::{
 pub static LOGGER_LEVEL_SENDER: std::sync::OnceLock<Mutex<Sender<String>>> = OnceLock::new();
 pub static CURRENT_LOG_LEVEL: std::sync::OnceLock<Mutex<String>> = OnceLock::new();
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct LoggerRpcService;
 
 impl LoggerRpcService {
-    pub fn new() -> Self {
-        Self
-    }
-
     fn log_level_to_string(level: LogLevel) -> String {
         match level {
             LogLevel::Disabled => "off".to_string(),

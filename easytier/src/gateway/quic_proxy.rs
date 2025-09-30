@@ -22,7 +22,7 @@ use crate::gateway::tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy};
 use crate::gateway::CidrSet;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::acl::{ChainType, Protocol};
-use crate::proto::cli::{
+use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
     TcpProxyEntryTransportType, TcpProxyRpc,
 };

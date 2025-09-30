@@ -10,9 +10,9 @@ use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
 use crate::proto::acl::GroupIdentity;
-use crate::proto::cli::PeerConnInfo;
+use crate::proto::api::config::InstanceConfigPatch;
+use crate::proto::api::instance::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
-use crate::proto::config::InstanceConfigPatch;
 use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
 

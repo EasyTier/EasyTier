@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::Context;
-use cidr::IpCidr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -168,12 +167,6 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_mapped_listeners(&self) -> Vec<url::Url>;
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
-
-    fn get_rpc_portal(&self) -> Option<SocketAddr>;
-    fn set_rpc_portal(&self, addr: SocketAddr);
-
-    fn get_rpc_portal_whitelist(&self) -> Option<Vec<IpCidr>>;
-    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<IpCidr>>);
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
@@ -397,9 +390,6 @@ struct Config {
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
-
-    rpc_portal: Option<SocketAddr>,
-    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -690,22 +680,6 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
         self.config.lock().unwrap().mapped_listeners = listeners;
-    }
-
-    fn get_rpc_portal(&self) -> Option<SocketAddr> {
-        self.config.lock().unwrap().rpc_portal
-    }
-
-    fn set_rpc_portal(&self, addr: SocketAddr) {
-        self.config.lock().unwrap().rpc_portal = Some(addr);
-    }
-
-    fn get_rpc_portal_whitelist(&self) -> Option<Vec<IpCidr>> {
-        self.config.lock().unwrap().rpc_portal_whitelist.clone()
-    }
-
-    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<IpCidr>>) {
-        self.config.lock().unwrap().rpc_portal_whitelist = whitelist;
     }
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig> {

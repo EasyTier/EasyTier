@@ -18,8 +18,9 @@ use crate::{
     common::{dns::socket_addrs, join_joinset_background, PeerId},
     peers::peer_conn::PeerConnId,
     proto::{
-        cli::{
-            ConnectorManageAction, ListConnectorResponse, ManageConnectorResponse, PeerConnInfo,
+        api::instance::{
+            Connector, ConnectorManageRpc, ConnectorStatus, ListConnectorRequest,
+            ListConnectorResponse, PeerConnInfo,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -33,10 +34,6 @@ use crate::{
         netns::NetNS,
     },
     peers::peer_manager::PeerManager,
-    proto::cli::{
-        Connector, ConnectorManageRpc, ConnectorStatus, ListConnectorRequest,
-        ManageConnectorRequest,
-    },
     use_global_var,
 };
 
@@ -124,6 +121,14 @@ impl ManualConnectorManager {
         }
         self.data.removed_conn_urls.insert(url.to_string());
         Ok(())
+    }
+
+    pub async fn clear_connectors(&self) {
+        self.list_connectors().await.iter().for_each(|x| {
+            if let Some(url) = &x.url {
+                self.data.removed_conn_urls.insert(url.to_string());
+            }
+        });
     }
 
     pub async fn list_connectors(&self) -> Vec<Connector> {
@@ -436,27 +441,6 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
         let connectors = self.0.list_connectors().await;
         ret.connectors = connectors;
         Ok(ret)
-    }
-
-    async fn manage_connector(
-        &self,
-        _: BaseController,
-        req: ManageConnectorRequest,
-    ) -> Result<ManageConnectorResponse, rpc_types::error::Error> {
-        let url: url::Url = req.url.ok_or(anyhow::anyhow!("url is empty"))?.into();
-        if req.action == ConnectorManageAction::Remove as i32 {
-            self.0
-                .remove_connector(url.clone())
-                .await
-                .with_context(|| format!("remove connector failed: {:?}", url))?;
-            return Ok(ManageConnectorResponse::default());
-        } else {
-            self.0
-                .add_connector_by_url(url.as_str())
-                .await
-                .with_context(|| format!("add connector failed: {:?}", url))?;
-        }
-        Ok(ManageConnectorResponse::default())
     }
 }
 

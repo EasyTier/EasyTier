@@ -31,7 +31,6 @@ export interface NetworkConfig {
   advanced_settings: boolean
 
   listener_urls: string[]
-  rpc_port: number
   latency_first: boolean
 
   dev_name: string
@@ -70,8 +69,6 @@ export interface NetworkConfig {
   enable_magic_dns?: boolean
   enable_private_mode?: boolean
 
-  rpc_portal_whitelists: string[]
-
   port_forwards: PortForwardConfig[]
 }
 
@@ -104,7 +101,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    rpc_port: 0,
     latency_first: false,
     dev_name: '',
 
@@ -135,7 +131,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mapped_listeners: [],
     enable_magic_dns: false,
     enable_private_mode: false,
-    rpc_portal_whitelists: [],
     port_forwards: [],
   }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::proto::{
-    cli::{
+    api::instance::{
         AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest, GetAclStatsResponse,
         GetWhitelistRequest, GetWhitelistResponse, ListForeignNetworkRequest,
         ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
