@@ -323,11 +323,18 @@ impl MagicDnsServerInstanceData {
             let udp_packet = UdpPacket::new(&zc_packet.payload()[ip_header_length..])?;
 
             let src_port = udp_packet.get_source();
+            let dst_port = udp_packet.get_destination();
+            
+            // Remove this to support any UDP port
+            if dst_port != 53 {
+                return None;
+            }
+            
             let request_payload = udp_packet.payload();
 
             (
                 src_port,
-                udp_packet.get_destination(),
+                dst_port,
                 Request::new(
                     MessageRequest::from_bytes(request_payload).ok()?,
                     SocketAddr::from(SocketAddrV4::new(src_ip, src_port)),
