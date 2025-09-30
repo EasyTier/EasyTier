@@ -995,11 +995,21 @@ impl PeerManager {
         }
     }
 
-    pub async fn send_msg(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
+    pub async fn send_msg_for_proxy(
+        &self,
+        mut msg: ZCPacket,
+        dst_peer_id: PeerId,
+    ) -> Result<(), Error> {
         self.self_tx_counters
-            .self_tx_bytes
+            .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
-        self.self_tx_counters.self_tx_packets.inc();
+
+        Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
+
+        self.self_tx_counters
+            .compress_tx_bytes_after
+            .add(msg.buf_len() as u64);
+
         let msg_len = msg.buf_len() as u64;
         let result =
             Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, dst_peer_id)

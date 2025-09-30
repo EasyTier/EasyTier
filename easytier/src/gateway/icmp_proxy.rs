@@ -285,7 +285,7 @@ impl IcmpProxy {
                         tracing::warn!("peer manager is gone, icmp proxy send loop exit");
                         return;
                     };
-                    let ret = pm.send_msg(msg, to_peer_id).await;
+                    let ret = pm.send_msg_for_proxy(msg, to_peer_id).await;
                     if ret.is_err() {
                         tracing::error!("send icmp packet to peer failed: {:?}", ret);
                     }
