@@ -152,7 +152,7 @@ pub struct PeerManager {
     encryptor: Arc<dyn Encryptor + 'static>,
     data_compress_algo: CompressorAlgo,
 
-    exit_nodes: Vec<IpAddr>,
+    exit_nodes: RwLock<Vec<IpAddr>>,
 
     reserved_my_peer_id_map: DashMap<String, PeerId>,
 
@@ -304,7 +304,7 @@ impl PeerManager {
             encryptor,
             data_compress_algo,
 
-            exit_nodes,
+            exit_nodes: RwLock::new(exit_nodes),
 
             reserved_my_peer_id_map: DashMap::new(),
 
@@ -1068,7 +1068,7 @@ impl PeerManager {
             .global_ctx
             .is_ip_in_same_network(&std::net::IpAddr::V4(*ipv4_addr))
         {
-            for exit_node in &self.exit_nodes {
+            for exit_node in self.exit_nodes.read().await.iter() {
                 let IpAddr::V4(exit_node) = exit_node else {
                     continue;
                 };
@@ -1109,7 +1109,7 @@ impl PeerManager {
             dst_peers.push(peer_id);
         } else if !ipv6_addr.is_unicast_link_local() {
             // NOTE: never route link local address to exit node.
-            for exit_node in &self.exit_nodes {
+            for exit_node in self.exit_nodes.read().await.iter() {
                 let IpAddr::V6(exit_node) = exit_node else {
                     continue;
                 };
@@ -1418,6 +1418,11 @@ impl PeerManager {
         }
 
         true
+    }
+
+    pub async fn update_exit_nodes(&self) {
+        let exit_nodes = self.global_ctx.config.get_exit_nodes();
+        *self.exit_nodes.write().await = exit_nodes;
     }
 }
 

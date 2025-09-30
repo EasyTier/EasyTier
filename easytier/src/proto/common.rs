@@ -108,9 +108,56 @@ impl From<cidr::Ipv4Inet> for Ipv4Inet {
     }
 }
 
+impl From<std::net::IpAddr> for IpAddr {
+    fn from(value: std::net::IpAddr) -> Self {
+        match value {
+            std::net::IpAddr::V4(v4) => IpAddr {
+                ip: Some(ip_addr::Ip::Ipv4(Ipv4Addr::from(v4))),
+            },
+            std::net::IpAddr::V6(v6) => IpAddr {
+                ip: Some(ip_addr::Ip::Ipv6(Ipv6Addr::from(v6))),
+            },
+        }
+    }
+}
+
+impl From<IpAddr> for std::net::IpAddr {
+    fn from(value: IpAddr) -> Self {
+        match value.ip {
+            Some(ip_addr::Ip::Ipv4(v4)) => std::net::IpAddr::V4(v4.into()),
+            Some(ip_addr::Ip::Ipv6(v6)) => std::net::IpAddr::V6(v6.into()),
+            None => panic!("IpAddr is None"),
+        }
+    }
+}
+
+impl Display for IpAddr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", std::net::IpAddr::from(*self))
+    }
+}
+
+impl FromStr for IpAddr {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(IpAddr::from(std::net::IpAddr::from_str(s)?))
+    }
+}
+
 impl From<Ipv4Inet> for cidr::Ipv4Inet {
     fn from(value: Ipv4Inet) -> Self {
         cidr::Ipv4Inet::new(
+            value.address.unwrap_or_default().into(),
+            value.network_length as u8,
+        )
+        .unwrap()
+    }
+}
+
+impl From<Ipv4Inet> for cidr::Ipv4Cidr {
+    fn from(value: Ipv4Inet) -> Self {
+        cidr::Ipv4Cidr::new(
             value.address.unwrap_or_default().into(),
             value.network_length as u8,
         )
