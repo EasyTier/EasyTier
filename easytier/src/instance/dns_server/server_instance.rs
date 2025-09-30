@@ -54,7 +54,6 @@ use pnet::packet::{
     udp::{self, MutableUdpPacket},
     MutablePacket, Packet,
 };
-use std::io::ErrorKind;
 use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::Mutex;
 use std::{collections::BTreeMap, io, net::Ipv4Addr, str::FromStr, sync::Arc, time::Duration};
@@ -324,12 +323,12 @@ impl MagicDnsServerInstanceData {
 
             let src_port = udp_packet.get_source();
             let dst_port = udp_packet.get_destination();
-            
+
             // Remove this to support any UDP port
             if dst_port != 53 {
                 return None;
             }
-            
+
             let request_payload = udp_packet.payload();
 
             (
