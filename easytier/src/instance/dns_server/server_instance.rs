@@ -246,7 +246,7 @@ impl ResponseHandler for ResponseWrapper {
             .lock()
             .map_err(|_| io::Error::other("lock poisoned"))?;
 
-        let mut encoder = BinEncoder::new(&mut  buffer);
+        let mut encoder = BinEncoder::new(&mut buffer);
 
         // `max_size` should be u16::MAX for protocol other than UDP.
         let max_size = if let Some(edns) = response.get_edns() {
