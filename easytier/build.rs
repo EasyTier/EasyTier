@@ -148,6 +148,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "src/proto/web.proto",
         "src/proto/magic_dns.proto",
         "src/proto/acl.proto",
+        "src/proto/config.proto",
     ];
 
     for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
@@ -162,6 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".cli", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".config", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             "peer_rpc.GetIpListResponse",
             "#[derive(serde::Serialize, serde::Deserialize)]",

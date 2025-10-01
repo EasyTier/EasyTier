@@ -115,7 +115,7 @@ jobs:
           sudo apt install aptitude
           sudo aptitude install -y libgstreamer1.0-0:arm64 gstreamer1.0-plugins-base:arm64 gstreamer1.0-plugins-good:arm64 \
             libgstreamer-gl1.0-0:arm64 libgstreamer-plugins-base1.0-0:arm64 libgstreamer-plugins-good1.0-0:arm64 libwebkit2gtk-4.1-0:arm64 \
-            libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu
+            libwebkit2gtk-4.1-dev:arm64 libssl-dev:arm64 gcc-aarch64-linux-gnu libsoup-3.0-dev:arm64 libjavascriptcoregtk-4.1-dev:arm64
           echo "PKG_CONFIG_SYSROOT_DIR=/usr/aarch64-linux-gnu/" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig/" >> "$GITHUB_ENV"
 

@@ -49,10 +49,10 @@ message FlagsInConfig {
 
   // enable relay foreign network kcp packets
   bool enable_relay_foreign_network_kcp = 28;
-  
-    // encryption algorithm to use, empty string means default (aes-gcm)
+
+  // encryption algorithm to use, empty string means default (aes-gcm)
   string encryption_algorithm = 29;
-  
+
   // disable symmetric nat hole punching, treat symmetric as cone when enabled
   bool disable_sym_hole_punching = 30;
 }
@@ -142,6 +142,13 @@ message Ipv6Addr {
   uint32 part2 = 2;
   uint32 part3 = 3;
   uint32 part4 = 4;
+}
+
+message IpAddr {
+  oneof ip {
+    Ipv4Addr ipv4 = 1;
+    Ipv6Addr ipv6 = 2;
+  };
 }
 
 message Ipv4Inet {

@@ -147,6 +147,21 @@ fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::cli::R
     );
 }
 
+fn check_route_ex(
+    routes: Vec<crate::proto::cli::Route>,
+    peer_id: PeerId,
+    checker: impl Fn(&crate::proto::cli::Route) -> bool,
+) {
+    let mut found = false;
+    for r in routes.iter() {
+        if r.peer_id == peer_id {
+            found = true;
+            assert!(checker(r), "{:?}", routes);
+        }
+    }
+    assert!(found, "routes: {:?}, dst_peer_id: {}", routes, peer_id);
+}
+
 async fn wait_proxy_route_appear(
     mgr: &std::sync::Arc<PeerManager>,
     ipv4: &str,

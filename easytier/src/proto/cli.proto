@@ -181,21 +181,8 @@ message ListMappedListenerRequest {}
 
 message ListMappedListenerResponse { repeated MappedListener mappedlisteners = 1; }
 
-enum MappedListenerManageAction {
-  MAPPED_LISTENER_ADD = 0;
-  MAPPED_LISTENER_REMOVE = 1;
-}
-
-message ManageMappedListenerRequest {
-  MappedListenerManageAction action = 1;
-  common.Url url = 2;
-}
-
-message ManageMappedListenerResponse {}
-
 service MappedListenerManageRpc {
   rpc ListMappedListener(ListMappedListenerRequest) returns (ListMappedListenerResponse);
-  rpc ManageMappedListener(ManageMappedListenerRequest) returns (ManageMappedListenerResponse);
 }
 
 message VpnPortalInfo {
@@ -261,16 +248,8 @@ message GetAclStatsResponse {
 
 service AclManageRpc {
   rpc GetAclStats(GetAclStatsRequest) returns (GetAclStatsResponse);
-  rpc SetWhitelist(SetWhitelistRequest) returns (SetWhitelistResponse);
   rpc GetWhitelist(GetWhitelistRequest) returns (GetWhitelistResponse);
 }
-
-message SetWhitelistRequest {
-  repeated string tcp_ports = 1;
-  repeated string udp_ports = 2;
-}
-
-message SetWhitelistResponse {}
 
 message GetWhitelistRequest {}
 
@@ -279,18 +258,6 @@ message GetWhitelistResponse {
   repeated string udp_ports = 2;
 }
 
-message AddPortForwardRequest {
-  common.PortForwardConfigPb cfg = 1;
-}
-
-message AddPortForwardResponse {}
-
-message RemovePortForwardRequest {
-  common.PortForwardConfigPb cfg = 1;
-}
-
-message RemovePortForwardResponse {}
-
 message ListPortForwardRequest {}
 
 message ListPortForwardResponse {
@@ -298,8 +265,6 @@ message ListPortForwardResponse {
 }
 
 service PortForwardManageRpc {
-  rpc AddPortForward(AddPortForwardRequest) returns (AddPortForwardResponse);
-  rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
   rpc ListPortForward(ListPortForwardRequest) returns (ListPortForwardResponse);
 }
 

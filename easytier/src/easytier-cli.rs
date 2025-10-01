@@ -21,29 +21,30 @@ use tokio::time::timeout;
 
 use easytier::{
     common::{
-        config::PortForwardConfig,
         constants::EASYTIER_VERSION,
         stun::{StunInfoCollector, StunInfoCollectorTrait},
     },
     peers,
     proto::{
         cli::{
-            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
-            ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetAclStatsRequest, GetLoggerConfigRequest, GetPrometheusStatsRequest, GetStatsRequest,
+            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
+            ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
+            GetLoggerConfigRequest, GetPrometheusStatsRequest, GetStatsRequest,
             GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
             ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
             ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
             ListRouteResponse, LogLevel, LoggerRpc, LoggerRpcClientFactory,
-            ManageMappedListenerRequest, MappedListenerManageAction, MappedListenerManageRpc,
-            MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
+            MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
             PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetLoggerConfigRequest, SetWhitelistRequest,
-            ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory, TcpProxyEntryState,
-            TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
-            VpnPortalRpcClientFactory,
+            SetLoggerConfigRequest, ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory,
+            TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory,
+            VpnPortalRpc, VpnPortalRpcClientFactory,
         },
-        common::{NatType, SocketType},
+        common::{NatType, PortForwardConfigPb, SocketType},
+        config::{
+            AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch,
+            PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+        },
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
@@ -474,6 +475,18 @@ impl CommandHandler<'_> {
             .scoped_client::<LoggerRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get logger client")?)
+    }
+
+    async fn get_config_client(
+        &self,
+    ) -> Result<Box<dyn ConfigRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<ConfigRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get config client")?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -931,28 +944,24 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    async fn handle_mapped_listener_add(&self, url: &str) -> Result<(), Error> {
+    async fn handle_mapped_listener_modify(
+        &self,
+        url: &str,
+        action: ConfigPatchAction,
+    ) -> Result<(), Error> {
         let url = Self::mapped_listener_validate_url(url)?;
-        let client = self.get_mapped_listener_manager_client().await?;
-        let request = ManageMappedListenerRequest {
-            action: MappedListenerManageAction::MappedListenerAdd as i32,
-            url: Some(url.into()),
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            patch: Some(InstanceConfigPatch {
+                mapped_listeners: vec![UrlPatch {
+                    action: action.into(),
+                    url: Some(url.into()),
+                }],
+                ..Default::default()
+            }),
         };
         let _response = client
-            .manage_mapped_listener(BaseController::default(), request)
-            .await?;
-        Ok(())
-    }
-
-    async fn handle_mapped_listener_remove(&self, url: &str) -> Result<(), Error> {
-        let url = Self::mapped_listener_validate_url(url)?;
-        let client = self.get_mapped_listener_manager_client().await?;
-        let request = ManageMappedListenerRequest {
-            action: MappedListenerManageAction::MappedListenerRemove as i32,
-            url: Some(url.into()),
-        };
-        let _response = client
-            .manage_mapped_listener(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         Ok(())
     }
@@ -969,47 +978,9 @@ impl CommandHandler<'_> {
         Ok(url)
     }
 
-    async fn handle_port_forward_add(
+    async fn handle_port_forward_modify(
         &self,
-        protocol: &str,
-        bind_addr: &str,
-        dst_addr: &str,
-    ) -> Result<(), Error> {
-        let bind_addr: std::net::SocketAddr = bind_addr
-            .parse()
-            .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
-        let dst_addr: std::net::SocketAddr = dst_addr
-            .parse()
-            .with_context(|| format!("Invalid destination address: {}", dst_addr))?;
-
-        if protocol != "tcp" && protocol != "udp" {
-            return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'"));
-        }
-
-        let client = self.get_port_forward_manager_client().await?;
-        let request = AddPortForwardRequest {
-            cfg: Some(
-                PortForwardConfig {
-                    proto: protocol.to_string(),
-                    bind_addr,
-                    dst_addr,
-                }
-                .into(),
-            ),
-        };
-
-        client
-            .add_port_forward(BaseController::default(), request)
-            .await?;
-        println!(
-            "Port forward rule added: {} {} -> {}",
-            protocol, bind_addr, dst_addr
-        );
-        Ok(())
-    }
-
-    async fn handle_port_forward_remove(
-        &self,
+        action: ConfigPatchAction,
         protocol: &str,
         bind_addr: &str,
         dst_addr: Option<&str>,
@@ -1018,28 +989,36 @@ impl CommandHandler<'_> {
             .parse()
             .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
 
-        if protocol != "tcp" && protocol != "udp" {
-            return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'"));
-        }
+        let socket_type = match protocol {
+            "tcp" => SocketType::Tcp,
+            "udp" => SocketType::Udp,
+            _ => return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'")),
+        };
 
-        let client = self.get_port_forward_manager_client().await?;
-        let request = RemovePortForwardRequest {
-            cfg: Some(
-                PortForwardConfig {
-                    proto: protocol.to_string(),
-                    bind_addr,
-                    dst_addr: dst_addr
-                        .map(|s| s.parse::<SocketAddr>().unwrap())
-                        .unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap()),
-                }
-                .into(),
-            ),
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            patch: Some(InstanceConfigPatch {
+                port_forwards: vec![PortForwardPatch {
+                    action: action.into(),
+                    cfg: Some(PortForwardConfigPb {
+                        bind_addr: Some(bind_addr.into()),
+                        dst_addr: dst_addr.map(|s| s.parse::<SocketAddr>().unwrap().into()),
+                        socket_type: socket_type.into(),
+                    }),
+                }],
+                ..Default::default()
+            }),
         };
 
         client
-            .remove_port_forward(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
-        println!("Port forward rule removed: {} {}", protocol, bind_addr);
+        println!(
+            "Port forward rule {}: {} {}",
+            action.as_str_name().to_lowercase(),
+            protocol,
+            bind_addr
+        );
         Ok(())
     }
 
@@ -1086,78 +1065,114 @@ impl CommandHandler<'_> {
     }
 
     async fn handle_whitelist_set_tcp(&self, ports: &str) -> Result<(), Error> {
-        let tcp_ports = Self::parse_port_list(ports)?;
-        let client = self.get_acl_manager_client().await?;
+        let mut whitelist = Self::parse_port_list(ports)?
+            .into_iter()
+            .map(|p| StringPatch {
+                action: ConfigPatchAction::Add.into(),
+                value: p,
+            })
+            .collect::<Vec<_>>();
+        whitelist.insert(
+            0,
+            StringPatch {
+                action: ConfigPatchAction::Clear.into(),
+                value: "".to_string(),
+            },
+        );
+        let client = self.get_config_client().await?;
 
-        // Get current UDP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports,
-            udp_ports: current.udp_ports,
+        let request = PatchConfigRequest {
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    tcp_whitelist: whitelist,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("TCP whitelist updated: {}", ports);
         Ok(())
     }
 
     async fn handle_whitelist_set_udp(&self, ports: &str) -> Result<(), Error> {
-        let udp_ports = Self::parse_port_list(ports)?;
-        let client = self.get_acl_manager_client().await?;
+        let mut whitelist = Self::parse_port_list(ports)?
+            .into_iter()
+            .map(|p| StringPatch {
+                action: ConfigPatchAction::Add.into(),
+                value: p,
+            })
+            .collect::<Vec<_>>();
+        whitelist.insert(
+            0,
+            StringPatch {
+                action: ConfigPatchAction::Clear.into(),
+                value: "".to_string(),
+            },
+        );
+        let client = self.get_config_client().await?;
 
-        // Get current TCP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports: current.tcp_ports,
-            udp_ports,
+        let request = PatchConfigRequest {
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    udp_whitelist: whitelist,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("UDP whitelist updated: {}", ports);
         Ok(())
     }
 
     async fn handle_whitelist_clear_tcp(&self) -> Result<(), Error> {
-        let client = self.get_acl_manager_client().await?;
+        let client = self.get_config_client().await?;
 
-        // Get current UDP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports: vec![],
-            udp_ports: current.udp_ports,
+        let request = PatchConfigRequest {
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    tcp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        value: "".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("TCP whitelist cleared");
         Ok(())
     }
 
     async fn handle_whitelist_clear_udp(&self) -> Result<(), Error> {
-        let client = self.get_acl_manager_client().await?;
+        let client = self.get_config_client().await?;
 
-        // Get current TCP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports: current.tcp_ports,
-            udp_ports: vec![],
+        let request = PatchConfigRequest {
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    udp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        value: "".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("UDP whitelist cleared");
         Ok(())
@@ -1656,11 +1671,15 @@ async fn main() -> Result<(), Error> {
         SubCommand::MappedListener(mapped_listener_args) => {
             match mapped_listener_args.sub_command {
                 Some(MappedListenerSubCommand::Add { url }) => {
-                    handler.handle_mapped_listener_add(&url).await?;
+                    handler
+                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Add)
+                        .await?;
                     println!("add mapped listener: {url}");
                 }
                 Some(MappedListenerSubCommand::Remove { url }) => {
-                    handler.handle_mapped_listener_remove(&url).await?;
+                    handler
+                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Remove)
+                        .await?;
                     println!("remove mapped listener: {url}");
                 }
                 Some(MappedListenerSubCommand::List) | None => {
@@ -2030,7 +2049,12 @@ async fn main() -> Result<(), Error> {
                 dst_addr,
             }) => {
                 handler
-                    .handle_port_forward_add(protocol, bind_addr, dst_addr)
+                    .handle_port_forward_modify(
+                        ConfigPatchAction::Add,
+                        protocol,
+                        bind_addr,
+                        Some(dst_addr),
+                    )
                     .await?;
             }
             Some(PortForwardSubCommand::Remove {
@@ -2039,7 +2063,12 @@ async fn main() -> Result<(), Error> {
                 dst_addr,
             }) => {
                 handler
-                    .handle_port_forward_remove(protocol, bind_addr, dst_addr.as_deref())
+                    .handle_port_forward_modify(
+                        ConfigPatchAction::Remove,
+                        protocol,
+                        bind_addr,
+                        dst_addr.as_deref(),
+                    )
                     .await?;
             }
             Some(PortForwardSubCommand::List) | None => {
