@@ -50,8 +50,9 @@ impl ApiRpcServer {
         Ok(Self { rpc_server })
     }
 
-    pub async fn serve(&mut self) -> Result<(), Error> {
-        self.rpc_server.serve().await
+    pub async fn serve(mut self) -> Result<Self, Error> {
+        self.rpc_server.serve().await?;
+        Ok(self)
     }
 }
 

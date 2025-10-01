@@ -1110,15 +1110,13 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     let manager = Arc::new(NetworkInstanceManager::new());
 
-    let _rpc_server = {
-        let mut rpc_server = ApiRpcServer::new(
-            cli.rpc_portal_options.rpc_portal,
-            cli.rpc_portal_options.rpc_portal_whitelist,
-            manager.clone(),
-        )?;
-        rpc_server.serve().await?;
-        rpc_server
-    };
+    let _rpc_server = ApiRpcServer::new(
+        cli.rpc_portal_options.rpc_portal,
+        cli.rpc_portal_options.rpc_portal_whitelist,
+        manager.clone(),
+    )?
+    .serve()
+    .await?;
 
     if cli.config_server.is_some() {
         set_default_machine_id(cli.machine_id);
