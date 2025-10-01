@@ -305,8 +305,7 @@ impl Socks5ServerNet {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
             }
-            tracing::error!("smoltcp stack sink exited");
-            panic!("smoltcp stack sink exited");
+            tracing::warn!("smoltcp stack sink exited");
         });
 
         forward_tasks.spawn(async move {
@@ -327,8 +326,7 @@ impl Socks5ServerNet {
                     tracing::error!("send to peer failed in smoltcp sender: {:?}", e);
                 }
             }
-            tracing::error!("smoltcp stack stream exited");
-            panic!("smoltcp stack stream exited");
+            tracing::warn!("smoltcp stack stream exited");
         });
 
         let interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);

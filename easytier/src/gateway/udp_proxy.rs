@@ -443,7 +443,7 @@ impl UdpProxy {
                 hdr.set_latency_first(is_latency_first);
                 let to_peer_id = hdr.to_peer_id.into();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let ret = peer_manager.send_msg(msg, to_peer_id).await;
+                let ret = peer_manager.send_msg_for_proxy(msg, to_peer_id).await;
                 if ret.is_err() {
                     tracing::error!("send icmp packet to peer failed: {:?}", ret);
                 }
