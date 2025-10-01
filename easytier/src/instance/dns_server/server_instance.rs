@@ -485,15 +485,8 @@ impl MagicDnsServerInstance {
         let mut rpc_server = StandAloneServer::new(tcp_listener);
         rpc_server.serve().await?;
 
-        let bind_addr = tun_inet.address();
-
         let dns_config = RunConfigBuilder::default()
-            .general(
-                GeneralConfigBuilder::default()
-                    .listen_udp(format!("{}:0", bind_addr))
-                    .listen_tcp(format!("{}:0", bind_addr))
-                    .build()?,
-            )
+            .general(GeneralConfigBuilder::default().build()?)
             .excluded_forward_nameservers(vec![fake_ip.into()])
             .build()?;
         let mut dns_server = Server::new(dns_config);
