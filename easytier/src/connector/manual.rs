@@ -25,6 +25,7 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     tunnel::{IpVersion, TunnelConnector},
+    utils::weak_upgrade,
 };
 
 use crate::{
@@ -426,7 +427,7 @@ impl ManualConnectorManager {
 }
 
 #[derive(Clone)]
-pub struct ConnectorManagerRpcService(pub Arc<ManualConnectorManager>);
+pub struct ConnectorManagerRpcService(pub Weak<ManualConnectorManager>);
 
 #[async_trait::async_trait]
 impl ConnectorManageRpc for ConnectorManagerRpcService {
@@ -438,7 +439,7 @@ impl ConnectorManageRpc for ConnectorManagerRpcService {
         _request: ListConnectorRequest,
     ) -> Result<ListConnectorResponse, rpc_types::error::Error> {
         let mut ret = ListConnectorResponse::default();
-        let connectors = self.0.list_connectors().await;
+        let connectors = weak_upgrade(&self.0)?.list_connectors().await;
         ret.connectors = connectors;
         Ok(ret)
     }

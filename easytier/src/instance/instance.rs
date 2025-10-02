@@ -47,6 +47,7 @@ use crate::proto::rpc_impl::standalone::RpcServerHook;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
+use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
 
 use super::dns_server::runner::DnsRunner;
@@ -227,10 +228,10 @@ impl RpcServerHook for InstanceRpcServerHook {
 
 #[derive(Clone)]
 pub struct InstanceConfigPatcher {
-    global_ctx: ArcGlobalCtx,
+    global_ctx: Weak<GlobalCtx>,
     socks5_server: Weak<Socks5Server>,
-    peer_manager: Arc<PeerManager>,
-    conn_manager: Arc<ManualConnectorManager>,
+    peer_manager: Weak<PeerManager>,
+    conn_manager: Weak<ManualConnectorManager>,
 }
 
 impl InstanceConfigPatcher {
@@ -247,22 +248,24 @@ impl InstanceConfigPatcher {
         self.patch_exit_nodes(patch.exit_nodes).await?;
         self.patch_mapped_listeners(patch.mapped_listeners).await?;
         self.patch_connector(patch.connectors).await?;
+
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
         if let Some(hostname) = patch.hostname {
-            self.global_ctx.set_hostname(hostname.clone());
-            self.global_ctx.config.set_hostname(Some(hostname));
+            global_ctx.set_hostname(hostname.clone());
+            global_ctx.config.set_hostname(Some(hostname));
         }
         if let Some(ipv4) = patch.ipv4 {
-            if !self.global_ctx.config.get_dhcp() {
-                self.global_ctx.set_ipv4(Some(ipv4.into()));
-                self.global_ctx.config.set_ipv4(Some(ipv4.into()));
+            if !global_ctx.config.get_dhcp() {
+                global_ctx.set_ipv4(Some(ipv4.into()));
+                global_ctx.config.set_ipv4(Some(ipv4.into()));
             }
         }
         if let Some(ipv6) = patch.ipv6 {
-            self.global_ctx.set_ipv6(Some(ipv6.into()));
-            self.global_ctx.config.set_ipv6(Some(ipv6.into()));
+            global_ctx.set_ipv6(Some(ipv6.into()));
+            global_ctx.config.set_ipv6(Some(ipv6.into()));
         }
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
+
+        global_ctx.issue_event(GlobalCtxEvent::ConfigPatched(patch_for_event));
 
         Ok(())
     }
@@ -306,13 +309,14 @@ impl InstanceConfigPatcher {
         let Some(socks5_server) = self.socks5_server.upgrade() else {
             return Err(anyhow::anyhow!("socks5 server not available"));
         };
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
 
-        let mut current_forwards = self.global_ctx.config.get_port_forwards();
+        let mut current_forwards = global_ctx.config.get_port_forwards();
         let patches = port_forwards.into_iter().map(Into::into).collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_forwards, patches);
 
-        self.global_ctx
+        global_ctx
             .config
             .set_port_forwards(current_forwards.clone());
         socks5_server
@@ -330,11 +334,12 @@ impl InstanceConfigPatcher {
         let Some(acl_patch) = acl_patch else {
             return Ok(());
         };
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
         if let Some(acl) = acl_patch.acl {
-            self.global_ctx.config.set_acl(Some(acl));
+            global_ctx.config.set_acl(Some(acl));
         }
         if !acl_patch.tcp_whitelist.is_empty() {
-            let mut current_whitelist = self.global_ctx.config.get_tcp_whitelist();
+            let mut current_whitelist = global_ctx.config.get_tcp_whitelist();
             let patches = acl_patch
                 .tcp_whitelist
                 .into_iter()
@@ -342,10 +347,10 @@ impl InstanceConfigPatcher {
                 .collect();
             InstanceConfigPatcher::trace_patchables(&patches);
             crate::proto::api::config::patch_vec(&mut current_whitelist, patches);
-            self.global_ctx.config.set_tcp_whitelist(current_whitelist);
+            global_ctx.config.set_tcp_whitelist(current_whitelist);
         }
         if !acl_patch.udp_whitelist.is_empty() {
-            let mut current_whitelist = self.global_ctx.config.get_udp_whitelist();
+            let mut current_whitelist = global_ctx.config.get_udp_whitelist();
             let patches = acl_patch
                 .udp_whitelist
                 .into_iter()
@@ -353,11 +358,11 @@ impl InstanceConfigPatcher {
                 .collect();
             InstanceConfigPatcher::trace_patchables(&patches);
             crate::proto::api::config::patch_vec(&mut current_whitelist, patches);
-            self.global_ctx.config.set_udp_whitelist(current_whitelist);
+            global_ctx.config.set_udp_whitelist(current_whitelist);
         }
-        self.global_ctx
+        global_ctx
             .get_acl_filter()
-            .reload_rules(AclRuleBuilder::build(&self.global_ctx)?.as_ref());
+            .reload_rules(AclRuleBuilder::build(&global_ctx)?.as_ref());
         Ok(())
     }
 
@@ -368,6 +373,7 @@ impl InstanceConfigPatcher {
         if proxy_networks.is_empty() {
             return Ok(());
         }
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
         for proxy_network_patch in proxy_networks {
             let Some(cidr) = proxy_network_patch.cidr.map(|c| c.into()) else {
                 tracing::warn!("Proxy network cidr is None, skipping.");
@@ -378,15 +384,15 @@ impl InstanceConfigPatcher {
             match ConfigPatchAction::try_from(proxy_network_patch.action) {
                 Ok(ConfigPatchAction::Add) => {
                     tracing::info!("Proxy network added: {}", cidr);
-                    self.global_ctx.config.add_proxy_cidr(cidr, mapped_cidr)?;
+                    global_ctx.config.add_proxy_cidr(cidr, mapped_cidr)?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
                     tracing::info!("Proxy network removed: {}", cidr);
-                    self.global_ctx.config.remove_proxy_cidr(cidr);
+                    global_ctx.config.remove_proxy_cidr(cidr);
                 }
                 Ok(ConfigPatchAction::Clear) => {
                     tracing::info!("Proxy networks cleared.");
-                    self.global_ctx.config.clear_proxy_cidrs();
+                    global_ctx.config.clear_proxy_cidrs();
                 }
                 Err(_) => {
                     tracing::warn!(
@@ -406,14 +412,15 @@ impl InstanceConfigPatcher {
         if routes.is_empty() {
             return Ok(());
         }
-        let mut current_routes = self.global_ctx.config.get_routes().unwrap_or_default();
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let mut current_routes = global_ctx.config.get_routes().unwrap_or_default();
         let patches = routes.into_iter().map(Into::into).collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_routes, patches);
         if current_routes.is_empty() {
-            self.global_ctx.config.set_routes(None);
+            global_ctx.config.set_routes(None);
         } else {
-            self.global_ctx.config.set_routes(Some(current_routes));
+            global_ctx.config.set_routes(Some(current_routes));
         }
         Ok(())
     }
@@ -425,12 +432,14 @@ impl InstanceConfigPatcher {
         if exit_nodes.is_empty() {
             return Ok(());
         }
-        let mut current_exit_nodes = self.global_ctx.config.get_exit_nodes();
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let peer_manager = weak_upgrade(&self.peer_manager)?;
+        let mut current_exit_nodes = global_ctx.config.get_exit_nodes();
         let patches = exit_nodes.into_iter().map(Into::into).collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_exit_nodes, patches);
-        self.global_ctx.config.set_exit_nodes(current_exit_nodes);
-        self.peer_manager.update_exit_nodes().await;
+        global_ctx.config.set_exit_nodes(current_exit_nodes);
+        peer_manager.update_exit_nodes().await;
 
         Ok(())
     }
@@ -442,14 +451,15 @@ impl InstanceConfigPatcher {
         if mapped_listeners.is_empty() {
             return Ok(());
         }
-        let mut current_mapped_listeners = self.global_ctx.config.get_mapped_listeners();
+        let global_ctx = weak_upgrade(&self.global_ctx)?;
+        let mut current_mapped_listeners = global_ctx.config.get_mapped_listeners();
         let patches = mapped_listeners.into_iter().map(Into::into).collect();
         InstanceConfigPatcher::trace_patchables(&patches);
         crate::proto::api::config::patch_vec(&mut current_mapped_listeners, patches);
         if current_mapped_listeners.is_empty() {
-            self.global_ctx.config.set_mapped_listeners(None);
+            global_ctx.config.set_mapped_listeners(None);
         } else {
-            self.global_ctx
+            global_ctx
                 .config
                 .set_mapped_listeners(Some(current_mapped_listeners));
         }
@@ -463,6 +473,7 @@ impl InstanceConfigPatcher {
         if connectors.is_empty() {
             return Ok(());
         }
+        let conn_manager = weak_upgrade(&self.conn_manager)?;
         for connector in connectors {
             let Some(url) = connector.url.map(Into::<url::Url>::into) else {
                 tracing::warn!("Connector url is None, skipping.");
@@ -471,15 +482,15 @@ impl InstanceConfigPatcher {
             match ConfigPatchAction::try_from(connector.action) {
                 Ok(ConfigPatchAction::Add) => {
                     tracing::info!("Connector added: {}", url);
-                    self.conn_manager.add_connector_by_url(url.as_str()).await?;
+                    conn_manager.add_connector_by_url(url.as_str()).await?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
                     tracing::info!("Connector removed: {}", url);
-                    self.conn_manager.remove_connector(url).await?;
+                    conn_manager.remove_connector(url).await?;
                 }
                 Ok(ConfigPatchAction::Clear) => {
                     tracing::info!("Connectors cleared.");
-                    self.conn_manager.clear_connectors().await;
+                    conn_manager.clear_connectors().await;
                 }
                 Err(_) => {
                     tracing::warn!("Invalid connector action: {}", connector.action);
@@ -1057,7 +1068,7 @@ impl Instance {
         &self,
     ) -> impl MappedListenerManageRpc<Controller = BaseController> + Clone {
         #[derive(Clone)]
-        pub struct MappedListenerManagerRpcService(Arc<GlobalCtx>);
+        pub struct MappedListenerManagerRpcService(Weak<GlobalCtx>);
 
         #[async_trait::async_trait]
         impl MappedListenerManageRpc for MappedListenerManagerRpcService {
@@ -1069,7 +1080,7 @@ impl Instance {
                 _request: ListMappedListenerRequest,
             ) -> Result<ListMappedListenerResponse, rpc_types::error::Error> {
                 let mut ret = ListMappedListenerResponse::default();
-                let urls = self.0.config.get_mapped_listeners();
+                let urls = weak_upgrade(&self.0)?.config.get_mapped_listeners();
                 let mapped_listeners: Vec<MappedListener> = urls
                     .into_iter()
                     .map(|u| MappedListener {
@@ -1081,7 +1092,7 @@ impl Instance {
             }
         }
 
-        MappedListenerManagerRpcService(self.global_ctx.clone())
+        MappedListenerManagerRpcService(Arc::downgrade(&self.global_ctx))
     }
 
     fn get_port_forward_manager_rpc_service(
@@ -1089,7 +1100,7 @@ impl Instance {
     ) -> impl PortForwardManageRpc<Controller = BaseController> + Clone {
         #[derive(Clone)]
         pub struct PortForwardManagerRpcService {
-            global_ctx: ArcGlobalCtx,
+            global_ctx: Weak<GlobalCtx>,
             socks5_server: Weak<Socks5Server>,
         }
 
@@ -1102,14 +1113,14 @@ impl Instance {
                 _: BaseController,
                 _request: ListPortForwardRequest,
             ) -> Result<ListPortForwardResponse, rpc_types::error::Error> {
-                let forwards = self.global_ctx.config.get_port_forwards();
+                let forwards = weak_upgrade(&self.global_ctx)?.config.get_port_forwards();
                 let cfgs: Vec<PortForwardConfigPb> = forwards.into_iter().map(Into::into).collect();
                 Ok(ListPortForwardResponse { cfgs })
             }
         }
 
         PortForwardManagerRpcService {
-            global_ctx: self.global_ctx.clone(),
+            global_ctx: Arc::downgrade(&self.global_ctx),
             socks5_server: Arc::downgrade(&self.socks5_server),
         }
     }
@@ -1117,7 +1128,7 @@ impl Instance {
     fn get_stats_rpc_service(&self) -> impl StatsRpc<Controller = BaseController> + Clone {
         #[derive(Clone)]
         pub struct StatsRpcService {
-            global_ctx: ArcGlobalCtx,
+            global_ctx: Weak<GlobalCtx>,
         }
 
         #[async_trait::async_trait]
@@ -1129,8 +1140,9 @@ impl Instance {
                 _: BaseController,
                 _request: GetStatsRequest,
             ) -> Result<GetStatsResponse, rpc_types::error::Error> {
-                let stats_manager = self.global_ctx.stats_manager();
-                let snapshots = stats_manager.get_all_metrics();
+                let snapshots = weak_upgrade(&self.global_ctx)?
+                    .stats_manager()
+                    .get_all_metrics();
 
                 let metrics = snapshots
                     .into_iter()
@@ -1156,24 +1168,25 @@ impl Instance {
                 _: BaseController,
                 _request: GetPrometheusStatsRequest,
             ) -> Result<GetPrometheusStatsResponse, rpc_types::error::Error> {
-                let stats_manager = self.global_ctx.stats_manager();
-                let prometheus_text = stats_manager.export_prometheus();
+                let prometheus_text = weak_upgrade(&self.global_ctx)?
+                    .stats_manager()
+                    .export_prometheus();
 
                 Ok(GetPrometheusStatsResponse { prometheus_text })
             }
         }
 
         StatsRpcService {
-            global_ctx: self.global_ctx.clone(),
+            global_ctx: Arc::downgrade(&self.global_ctx),
         }
     }
 
     pub fn get_config_patcher(&self) -> InstanceConfigPatcher {
         InstanceConfigPatcher {
-            global_ctx: self.global_ctx.clone(),
+            global_ctx: Arc::downgrade(&self.global_ctx),
             socks5_server: Arc::downgrade(&self.socks5_server),
-            peer_manager: self.peer_manager.clone(),
-            conn_manager: self.conn_manager.clone(),
+            peer_manager: Arc::downgrade(&self.peer_manager),
+            conn_manager: Arc::downgrade(&self.conn_manager),
         }
     }
 
@@ -1288,7 +1301,9 @@ impl Instance {
 
         ApiRpcServiceImpl {
             peer_mgr_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
-            connector_mgr_rpc_service: ConnectorManagerRpcService(self.conn_manager.clone()),
+            connector_mgr_rpc_service: ConnectorManagerRpcService(Arc::downgrade(
+                &self.conn_manager,
+            )),
             mapped_listener_mgr_rpc_service: self.get_mapped_listener_manager_rpc_service(),
             vpn_portal_rpc_service: self.get_vpn_portal_rpc_service(),
             tcp_proxy_rpc_services: {

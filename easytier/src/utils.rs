@@ -254,6 +254,11 @@ pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
     range.find(|&port| check_tcp_available(port))
 }
 
+pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<std::sync::Arc<T>> {
+    weak.upgrade()
+        .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::config::{self};
