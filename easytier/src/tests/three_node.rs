@@ -18,7 +18,7 @@ use crate::{
         stats_manager::{LabelType, MetricName},
     },
     instance::instance::Instance,
-    proto::{cli::TcpProxyEntryTransportType, common::CompressionAlgoPb},
+    proto::{api::instance::TcpProxyEntryTransportType, common::CompressionAlgoPb},
     tunnel::{
         common::tests::{_tunnel_bench_netns, wait_for_condition},
         ring::RingTunnelConnector,
@@ -2100,8 +2100,10 @@ pub async fn acl_group_based_test(
 #[serial_test::serial]
 pub async fn config_patch_test() {
     use crate::proto::{
+        api::config::{
+            ConfigPatchAction, InstanceConfigPatch, PortForwardPatch, ProxyNetworkPatch,
+        },
         common::{PortForwardConfigPb, SocketType},
-        config::{ConfigPatchAction, InstanceConfigPatch, PortForwardPatch, ProxyNetworkPatch},
     };
     use crate::tunnel::common::tests::_tunnel_pingpong_netns_with_timeout;
 

@@ -9,12 +9,10 @@ use tokio::{
 use crate::{
     common::{constants::EASYTIER_VERSION, get_machine_id},
     proto::{
+        api::manage::WebClientServiceServer,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
-        web::{
-            HeartbeatRequest, HeartbeatResponse, WebClientServiceServer,
-            WebServerServiceClientFactory,
-        },
+        web::{HeartbeatRequest, HeartbeatResponse, WebServerServiceClientFactory},
     },
     tunnel::Tunnel,
 };
@@ -41,10 +39,10 @@ impl Session {
         let rpc_mgr = BidirectRpcManager::new();
         rpc_mgr.run_with_tunnel(tunnel);
 
-        rpc_mgr
-            .rpc_server()
-            .registry()
-            .register(WebClientServiceServer::new(controller.clone()), "");
+        rpc_mgr.rpc_server().registry().register(
+            WebClientServiceServer::new(controller.get_rpc_service()),
+            "",
+        );
 
         let mut tasks: JoinSet<()> = JoinSet::new();
         let heartbeat_ctx =

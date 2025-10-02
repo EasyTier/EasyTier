@@ -1,6 +1,7 @@
 use crate::common::config::PortForwardConfig;
+use crate::proto::api::manage;
 use crate::proto::peer_rpc::RouteForeignNetworkSummary;
-use crate::proto::web;
+use crate::rpc_service::InstanceRpcService;
 use crate::{
     common::{
         config::{
@@ -13,7 +14,7 @@ use crate::{
     },
     instance::instance::Instance,
     peers::rpc_service::PeerManagerRpcService,
-    proto::cli::{list_peer_route_pair, PeerInfo, Route},
+    proto::api::instance::{list_peer_route_pair, PeerInfo, Route},
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
@@ -24,7 +25,9 @@ use std::{
 };
 use tokio::{sync::broadcast, task::JoinSet};
 
-pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
+pub type MyNodeInfo = crate::proto::api::manage::MyNodeInfo;
+
+type ArcMutApiService = Arc<RwLock<Option<Arc<dyn InstanceRpcService>>>>;
 
 #[derive(serde::Serialize, Clone)]
 pub struct Event {
@@ -65,6 +68,7 @@ pub struct EasyTierLauncher {
     instance_alive: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
+    api_service: ArcMutApiService,
     running_cfg: String,
     fetch_node_info: bool,
 
@@ -78,6 +82,7 @@ impl EasyTierLauncher {
         Self {
             instance_alive,
             thread_handle: None,
+            api_service: Arc::new(RwLock::new(None)),
             error_msg: Arc::new(RwLock::new(None)),
             running_cfg: String::new(),
             fetch_node_info,
@@ -136,11 +141,18 @@ impl EasyTierLauncher {
     async fn easytier_routine(
         cfg: TomlConfigLoader,
         stop_signal: Arc<tokio::sync::Notify>,
+        api_service: ArcMutApiService,
         data: Arc<EasyTierData>,
         fetch_node_info: bool,
     ) -> Result<(), anyhow::Error> {
         let mut instance = Instance::new(cfg);
         let mut tasks = JoinSet::new();
+
+        api_service
+            .write()
+            .unwrap()
+            .replace(Arc::new(instance.get_api_rpc_service()));
+        drop(api_service);
 
         // Subscribe to global context events
         let global_ctx = instance.get_global_ctx();
@@ -220,21 +232,6 @@ impl EasyTierLauncher {
         Ok(())
     }
 
-    fn select_proper_rpc_port(cfg: &TomlConfigLoader) {
-        let Some(mut f) = cfg.get_rpc_portal() else {
-            return;
-        };
-
-        if f.port() == 0 {
-            let Some(port) = crate::utils::find_free_tcp_port(15888..15900) else {
-                tracing::warn!("No free port found for RPC portal, skipping setting RPC portal");
-                return;
-            };
-            f.set_port(port);
-            cfg.set_rpc_portal(f);
-        }
-    }
-
     pub fn start<F>(&mut self, cfg_generator: F)
     where
         F: FnOnce() -> Result<TomlConfigLoader, anyhow::Error> + Send + Sync,
@@ -250,8 +247,6 @@ impl EasyTierLauncher {
 
         self.running_cfg = cfg.dump();
 
-        Self::select_proper_rpc_port(&cfg);
-
         let stop_flag = self.stop_flag.clone();
 
         let instance_alive = self.instance_alive.clone();
@@ -259,6 +254,7 @@ impl EasyTierLauncher {
 
         let data = self.data.clone();
         let fetch_node_info = self.fetch_node_info;
+        let api_service = self.api_service.clone();
 
         self.thread_handle = Some(std::thread::spawn(move || {
             let rt = if cfg.get_flags().multi_thread {
@@ -288,6 +284,7 @@ impl EasyTierLauncher {
             let ret = rt.block_on(Self::easytier_routine(
                 cfg,
                 stop_notifier.clone(),
+                api_service,
                 data,
                 fetch_node_info,
             ));
@@ -332,6 +329,16 @@ impl EasyTierLauncher {
     pub fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
         self.data.foreign_network_summary.read().unwrap().clone()
     }
+
+    pub fn get_api_service(&self) -> Option<Arc<dyn InstanceRpcService>> {
+        match self.api_service.read() {
+            Ok(guard) => guard.clone(),
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock for api_service: {:?}", e);
+                None
+            }
+        }
+    }
 }
 
 impl Drop for EasyTierLauncher {
@@ -346,7 +353,7 @@ impl Drop for EasyTierLauncher {
     }
 }
 
-pub type NetworkInstanceRunningInfo = crate::proto::web::NetworkInstanceRunningInfo;
+pub type NetworkInstanceRunningInfo = crate::proto::api::manage::NetworkInstanceRunningInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigSource {
@@ -460,6 +467,12 @@ impl NetworkInstance {
             None
         }
     }
+
+    pub fn get_api_service(&self) -> Option<Arc<dyn InstanceRpcService>> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.get_api_service())
+    }
 }
 
 pub fn add_proxy_network_to_config(
@@ -492,8 +505,8 @@ pub fn add_proxy_network_to_config(
     Ok(())
 }
 
-pub type NetworkingMethod = crate::proto::web::NetworkingMethod;
-pub type NetworkConfig = crate::proto::web::NetworkConfig;
+pub type NetworkingMethod = crate::proto::api::manage::NetworkingMethod;
+pub type NetworkConfig = crate::proto::api::manage::NetworkConfig;
 
 impl NetworkConfig {
     pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
@@ -572,26 +585,6 @@ impl NetworkConfig {
 
         for n in self.proxy_cidrs.iter() {
             add_proxy_network_to_config(n, &cfg)?;
-        }
-
-        cfg.set_rpc_portal(
-            format!("0.0.0.0:{}", self.rpc_port.unwrap_or_default())
-                .parse()
-                .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
-        );
-
-        if self.rpc_portal_whitelists.is_empty() {
-            cfg.set_rpc_portal_whitelist(None);
-        } else {
-            cfg.set_rpc_portal_whitelist(Some(
-                self.rpc_portal_whitelists
-                    .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("failed to parse rpc portal whitelist: {}", s))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            ));
         }
 
         if !self.port_forwards.is_empty() {
@@ -848,19 +841,11 @@ impl NetworkConfig {
             })
             .collect();
 
-        if let Some(rpc_portal) = config.get_rpc_portal() {
-            result.rpc_port = Some(rpc_portal.port() as i32);
-        }
-
-        if let Some(whitelist) = config.get_rpc_portal_whitelist() {
-            result.rpc_portal_whitelists = whitelist.iter().map(|w| w.to_string()).collect();
-        }
-
         let port_forwards = config.get_port_forwards();
         if !port_forwards.is_empty() {
             result.port_forwards = port_forwards
                 .iter()
-                .map(|f| web::PortForwardConfig {
+                .map(|f| manage::PortForwardConfig {
                     proto: f.proto.clone(),
                     bind_ip: f.bind_addr.ip().to_string(),
                     bind_port: f.bind_addr.port() as u32,
@@ -949,7 +934,6 @@ mod tests {
         config.set_dhcp(false);
         config.set_inst_name("default".to_string());
         config.set_listeners(vec![]);
-        config.set_rpc_portal(std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
         config
     }
 
@@ -1058,27 +1042,6 @@ mod tests {
                         None
                     };
                     config.add_proxy_cidr(network, mapped_network).unwrap();
-                }
-            }
-
-            if rng.gen_bool(0.8) {
-                let port = rng.gen_range(0..65535);
-                config.set_rpc_portal(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
-
-                if rng.gen_bool(0.6) {
-                    let whitelist_count = rng.gen_range(1..3);
-                    let mut whitelist = Vec::new();
-                    for _ in 0..whitelist_count {
-                        let ip = Ipv4Addr::new(
-                            rng.gen_range(1..254),
-                            rng.gen_range(0..255),
-                            rng.gen_range(0..255),
-                            rng.gen_range(0..255),
-                        );
-                        let cidr = format!("{}/32", ip);
-                        whitelist.push(cidr.parse().unwrap());
-                    }
-                    config.set_rpc_portal_whitelist(Some(whitelist));
                 }
             }
 

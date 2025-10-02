@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+import "common.proto";
+import "peer_rpc.proto";
+import "api_instance.proto";
+
+package api.manage;
+
+enum NetworkingMethod {
+  PublicServer = 0;
+  Manual = 1;
+  Standalone = 2;
+}
+
+message NetworkConfig {
+  optional string instance_id = 1;
+
+  optional bool dhcp = 2;
+  optional string virtual_ipv4 = 3;
+  optional int32 network_length = 4;
+  optional string hostname = 5;
+  optional string network_name = 6;
+  optional string network_secret = 7;
+  optional NetworkingMethod networking_method = 8;
+
+  optional string public_server_url = 9;
+  repeated string peer_urls = 10;
+
+  repeated string proxy_cidrs = 11;
+
+  optional bool enable_vpn_portal = 12;
+  optional int32 vpn_portal_listen_port = 13;
+  optional string vpn_portal_client_network_addr = 14;
+  optional int32 vpn_portal_client_network_len = 15;
+
+  optional bool advanced_settings = 16;
+
+  repeated string listener_urls = 17;
+  // optional int32 rpc_port = 18;
+  optional bool latency_first = 19;
+
+  optional string dev_name = 20;
+
+  optional bool use_smoltcp = 21;
+  optional bool disable_ipv6 = 47;
+  optional bool enable_kcp_proxy = 22;
+  optional bool disable_kcp_input = 23;
+  optional bool disable_p2p = 24;
+  optional bool bind_device = 25;
+  optional bool no_tun = 26;
+
+  optional bool enable_exit_node = 27;
+  optional bool relay_all_peer_rpc = 28;
+  optional bool multi_thread = 29;
+  optional bool enable_relay_network_whitelist = 30;
+  repeated string relay_network_whitelist = 31;
+  optional bool enable_manual_routes = 32;
+  repeated string routes = 33;
+  repeated string exit_nodes = 34;
+  optional bool proxy_forward_by_system = 35;
+  optional bool disable_encryption = 36;
+  optional bool enable_socks5 = 37;
+  optional int32 socks5_port = 38;
+  optional bool disable_udp_hole_punching = 39;
+  optional int32 mtu = 40;
+  repeated string mapped_listeners = 41;
+
+  optional bool enable_magic_dns = 42;
+  optional bool enable_private_mode = 43;
+
+  // repeated string rpc_portal_whitelists = 44;
+
+  optional bool enable_quic_proxy = 45;
+  optional bool disable_quic_input = 46;
+  repeated PortForwardConfig port_forwards = 48;
+
+  optional bool disable_sym_hole_punching = 49;
+}
+
+message PortForwardConfig {
+  string bind_ip = 1;
+  uint32 bind_port = 2;
+  string dst_ip = 3;
+  uint32 dst_port = 4;
+  string proto = 5;
+}
+
+message MyNodeInfo {
+  common.Ipv4Inet virtual_ipv4 = 1;
+  string hostname = 2;
+  string version = 3;
+  peer_rpc.GetIpListResponse ips = 4;
+  common.StunInfo stun_info = 5;
+  repeated common.Url listeners = 6;
+  optional string vpn_portal_cfg = 7;
+}
+
+message NetworkInstanceRunningInfo {
+  string dev_name = 1;
+  MyNodeInfo my_node_info = 2;
+  repeated string events = 3;
+  repeated api.instance.Route routes = 4;
+  repeated api.instance.PeerInfo peers = 5;
+  repeated api.instance.PeerRoutePair peer_route_pairs = 6;
+  bool running = 7;
+  optional string error_msg = 8;
+  peer_rpc.RouteForeignNetworkSummary foreign_network_summary = 9;
+}
+
+message NetworkInstanceRunningInfoMap {
+  map<string, NetworkInstanceRunningInfo> map = 1;
+}
+
+message ValidateConfigRequest { NetworkConfig config = 1; }
+
+message ValidateConfigResponse { string toml_config = 1; }
+
+message RunNetworkInstanceRequest {
+  common.UUID inst_id = 1;
+  NetworkConfig config = 2;
+}
+
+message RunNetworkInstanceResponse { common.UUID inst_id = 1; }
+
+message RetainNetworkInstanceRequest { repeated common.UUID inst_ids = 1; }
+
+message RetainNetworkInstanceResponse {
+  repeated common.UUID remain_inst_ids = 1;
+}
+
+message CollectNetworkInfoRequest { repeated common.UUID inst_ids = 1; }
+
+message CollectNetworkInfoResponse { NetworkInstanceRunningInfoMap info = 1; }
+
+message ListNetworkInstanceRequest {}
+
+message ListNetworkInstanceResponse { repeated common.UUID inst_ids = 1; }
+
+message DeleteNetworkInstanceRequest { repeated common.UUID inst_ids = 1; }
+
+message DeleteNetworkInstanceResponse {
+  repeated common.UUID remain_inst_ids = 1;
+}
+
+service WebClientService {
+  rpc ValidateConfig(ValidateConfigRequest) returns (ValidateConfigResponse) {}
+  rpc RunNetworkInstance(RunNetworkInstanceRequest)
+      returns (RunNetworkInstanceResponse) {}
+  rpc RetainNetworkInstance(RetainNetworkInstanceRequest)
+      returns (RetainNetworkInstanceResponse) {}
+  rpc CollectNetworkInfo(CollectNetworkInfoRequest)
+      returns (CollectNetworkInfoResponse) {}
+  rpc ListNetworkInstance(ListNetworkInstanceRequest)
+      returns (ListNetworkInstanceResponse) {}
+  rpc DeleteNetworkInstance(DeleteNetworkInstanceRequest)
+      returns (DeleteNetworkInstanceResponse) {}
+}

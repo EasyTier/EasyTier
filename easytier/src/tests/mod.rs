@@ -132,7 +132,7 @@ pub fn enable_log() {
         .init();
 }
 
-fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::cli::Route>) {
+fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::api::instance::Route>) {
     let mut found = false;
     for r in routes.iter() {
         if r.ipv4_addr == Some(ipv4.parse().unwrap()) {
@@ -148,9 +148,9 @@ fn check_route(ipv4: &str, dst_peer_id: PeerId, routes: Vec<crate::proto::cli::R
 }
 
 fn check_route_ex(
-    routes: Vec<crate::proto::cli::Route>,
+    routes: Vec<crate::proto::api::instance::Route>,
     peer_id: PeerId,
-    checker: impl Fn(&crate::proto::cli::Route) -> bool,
+    checker: impl Fn(&crate::proto::api::instance::Route) -> bool,
 ) {
     let mut found = false;
     for r in routes.iter() {

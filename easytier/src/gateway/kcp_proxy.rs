@@ -40,7 +40,7 @@ use crate::{
     peers::{acl_filter::AclFilter, peer_manager::PeerManager, NicPacketFilter, PeerPacketFilter},
     proto::{
         acl::{Action, ChainType, Protocol},
-        cli::{
+        api::instance::{
             ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc,
         },

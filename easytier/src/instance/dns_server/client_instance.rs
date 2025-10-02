@@ -5,7 +5,7 @@ use tokio::task::JoinSet;
 use crate::{
     peers::peer_manager::PeerManager,
     proto::{
-        cli::Route,
+        api::instance::Route,
         common::Void,
         magic_dns::{
             HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,

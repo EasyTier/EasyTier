@@ -39,7 +39,7 @@ pub trait PeerCenterPeerManagerTrait: Send + Sync + 'static {
     fn my_peer_id(&self) -> PeerId;
     fn get_global_ctx(&self) -> Arc<GlobalCtx>;
     fn get_rpc_mgr(&self) -> Weak<PeerRpcManager>;
-    async fn list_routes(&self) -> Vec<crate::proto::cli::Route>;
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route>;
 }
 
 struct PeerCenterBase {
@@ -426,7 +426,7 @@ impl PeerCenterPeerManagerTrait for PeerManager {
         Arc::downgrade(&self.get_peer_rpc_mgr())
     }
 
-    async fn list_routes(&self) -> Vec<crate::proto::cli::Route> {
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
         self.list_routes().await
     }
 }
@@ -478,7 +478,7 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
         Arc::downgrade(&self.rpc_mgr)
     }
 
-    async fn list_routes(&self) -> Vec<crate::proto::cli::Route> {
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
         self.peer_map.list_route_infos().await
     }
 }

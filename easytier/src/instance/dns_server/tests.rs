@@ -21,7 +21,7 @@ use crate::instance::virtual_nic::NicCtx;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 
 use crate::peers::create_packet_recv_chan;
-use crate::proto::cli::Route;
+use crate::proto::api::instance::Route;
 use crate::proto::common::NatType;
 
 pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {

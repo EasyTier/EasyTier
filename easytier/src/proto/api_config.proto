@@ -2,8 +2,9 @@ syntax = "proto3";
 
 import "common.proto";
 import "acl.proto";
+import "api_instance.proto";
 
-package config;
+package api.config;
 
 enum ConfigPatchAction {
   ADD = 0;
@@ -21,6 +22,7 @@ message InstanceConfigPatch {
   repeated RoutePatch routes = 7;
   repeated ExitNodePatch exit_nodes = 8;
   repeated UrlPatch mapped_listeners = 9;
+  repeated UrlPatch connectors = 10;
 }
 
 message PortForwardPatch {
@@ -60,6 +62,13 @@ message ExitNodePatch {
   common.IpAddr node = 2;
 }
 
-message PatchConfigRequest { InstanceConfigPatch patch = 1; }
+message PatchConfigRequest {
+  InstanceConfigPatch patch = 1;
+  api.instance.InstanceIdentifier instance = 2;
+}
 
-service ConfigRpc { rpc PatchConfig(PatchConfigRequest) returns (common.Void); }
+message PatchConfigResponse {}
+
+service ConfigRpc {
+  rpc PatchConfig(PatchConfigRequest) returns (PatchConfigResponse);
+}

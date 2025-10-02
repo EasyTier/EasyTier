@@ -24,7 +24,7 @@ use crate::{
     },
     peers::{peer_manager::PeerManager, NicPacketFilter},
     proto::{
-        cli::Route,
+        api::instance::Route,
         common::{TunnelInfo, Void},
         magic_dns::{
             dns_record::{self},

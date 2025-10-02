@@ -11,7 +11,7 @@ use super::{
     peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
-use crate::{common::scoped_task::ScopedTask, proto::cli::PeerConnInfo};
+use crate::{common::scoped_task::ScopedTask, proto::api::instance::PeerConnInfo};
 use crate::{
     common::{
         error::Error,
