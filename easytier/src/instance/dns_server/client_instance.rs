@@ -68,9 +68,16 @@ impl MagicDnsClientInstance {
                 ipv4_addr: ctx.get_ipv4().map(Into::into),
                 ..Default::default()
             });
+            // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
+            let flags = ctx.config.get_flags();
+            let tld_dns_zone = if flags.tld_dns_zone.is_empty() {
+                DEFAULT_ET_DNS_ZONE
+            } else {
+                &flags.tld_dns_zone
+            };
             let req = UpdateDnsRecordRequest {
                 routes,
-                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                zone: tld_dns_zone.to_string(),
             };
             tracing::debug!(
                 "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",

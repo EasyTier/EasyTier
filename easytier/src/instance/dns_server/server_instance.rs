@@ -522,9 +522,17 @@ impl MagicDnsServerInstance {
         peer_mgr
             .add_nic_packet_process_pipeline(Box::new(data.clone()))
             .await;
+        // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
+        let flags = peer_mgr.get_global_ctx().config.get_flags();
+        let tld_dns_zone = if flags.tld_dns_zone.is_empty() {
+            DEFAULT_ET_DNS_ZONE
+        } else {
+            &flags.tld_dns_zone
+        };
 
         let data_clone = data.clone();
-        tokio::task::spawn_blocking(move || data_clone.do_system_config(DEFAULT_ET_DNS_ZONE))
+        let tld_dns_zone_clone = tld_dns_zone.to_string();
+        tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
             .await
             .context("Failed to configure system")??;
 

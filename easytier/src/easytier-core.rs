@@ -27,6 +27,7 @@ use easytier::{
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
+    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     instance_manager::NetworkInstanceManager,
     launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
@@ -508,6 +509,12 @@ struct NetworkOptions {
     accept_dns: Option<bool>,
 
     #[arg(
+        long = "tld-dns-zone",
+        env = "ET_TLD_DNS_ZONE",
+        help = t!("core_clap.tld_dns_zone").to_string())]
+    tld_dns_zone: Option<String>,
+
+    #[arg(
         long,
         env = "ET_PRIVATE_MODE",
         help = t!("core_clap.private_mode").to_string(),
@@ -935,6 +942,12 @@ impl NetworkOptions {
             .enable_relay_foreign_network_kcp
             .unwrap_or(f.enable_relay_foreign_network_kcp);
         f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
+        // Configure tld_dns_zone: use provided value or default to DEFAULT_ET_DNS_ZONE
+        if let Some(tld_dns_zone) = &self.tld_dns_zone {
+            f.tld_dns_zone = tld_dns_zone.clone();
+        } else if f.accept_dns && f.tld_dns_zone.is_empty() {
+            f.tld_dns_zone = DEFAULT_ET_DNS_ZONE.to_string();
+        }
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

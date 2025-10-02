@@ -50,6 +50,7 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),
         disable_sym_hole_punching: false,
+        tld_dns_zone: "".to_string(),
     }
 }
 
