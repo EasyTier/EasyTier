@@ -4,13 +4,13 @@ use anyhow::Context;
 use easytier::{
     common::scoped_task::ScopedTask,
     proto::{
+        api::manage::{
+            NetworkConfig, RunNetworkInstanceRequest, WebClientService,
+            WebClientServiceClientFactory,
+        },
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{self, controller::BaseController},
-        web::{
-            HeartbeatRequest, HeartbeatResponse, NetworkConfig, RunNetworkInstanceRequest,
-            WebClientService, WebClientServiceClientFactory, WebServerService,
-            WebServerServiceServer,
-        },
+        web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
     },
     tunnel::Tunnel,
 };

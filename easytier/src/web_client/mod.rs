@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::{common::scoped_task::ScopedTask, tunnel::TunnelConnector};
+use crate::{
+    common::scoped_task::ScopedTask, instance_manager::NetworkInstanceManager,
+    tunnel::TunnelConnector,
+};
 
 pub mod controller;
 pub mod session;
@@ -15,10 +18,12 @@ impl WebClient {
         connector: T,
         token: S,
         hostname: H,
+        manager: Arc<NetworkInstanceManager>,
     ) -> Self {
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
             hostname.to_string(),
+            manager,
         ));
 
         let controller_clone = controller.clone();

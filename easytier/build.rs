@@ -144,11 +144,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let proto_files = [
         "src/proto/error.proto",
         "src/proto/tests.proto",
-        "src/proto/cli.proto",
+        "src/proto/api_instance.proto",
+        "src/proto/api_logger.proto",
+        "src/proto/api_config.proto",
+        "src/proto/api_manage.proto",
         "src/proto/web.proto",
         "src/proto/magic_dns.proto",
         "src/proto/acl.proto",
-        "src/proto/config.proto",
     ];
 
     for proto_file in proto_files.iter().chain(proto_files_reflect.iter()) {
@@ -161,7 +163,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".acl", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".cli", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".api", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".config", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
@@ -180,7 +182,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "#[derive(Hash, Eq, serde::Serialize, serde::Deserialize)]",
         )
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
-        .field_attribute(".web.NetworkConfig", "#[serde(default)]")
+        .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
         .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
         .btree_map(["."])
         .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);

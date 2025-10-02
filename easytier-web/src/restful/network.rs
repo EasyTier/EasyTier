@@ -8,7 +8,7 @@ use axum_login::AuthUser;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::rpc_types::controller::BaseController;
-use easytier::proto::{self, web::*};
+use easytier::proto::{self, api::manage::*, web::*};
 
 use crate::client_manager::session::{Location, Session};
 use crate::client_manager::ClientManager;

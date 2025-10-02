@@ -14,7 +14,7 @@ use crate::{
         PeerId,
     },
     proto::{
-        cli::{self, PeerConnInfo},
+        api::instance::{self, PeerConnInfo},
         peer_rpc::RoutePeerInfo,
     },
     tunnel::{packet_def::ZCPacket, TunnelError},
@@ -336,7 +336,7 @@ impl PeerMap {
         route_map
     }
 
-    pub async fn list_route_infos(&self) -> Vec<cli::Route> {
+    pub async fn list_route_infos(&self) -> Vec<instance::Route> {
         if let Some(route) = self.routes.read().await.iter().next() {
             return route.list_routes().await;
         }

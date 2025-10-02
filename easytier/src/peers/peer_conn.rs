@@ -32,7 +32,7 @@ use crate::{
         PeerId,
     },
     proto::{
-        cli::{PeerConnInfo, PeerConnStats},
+        api::instance::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
         peer_rpc::HandshakeRequest,
     },

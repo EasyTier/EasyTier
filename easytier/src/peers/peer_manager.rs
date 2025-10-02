@@ -36,7 +36,7 @@ use crate::{
         PeerPacketFilter,
     },
     proto::{
-        cli::{
+        api::instance::{
             self, list_global_foreign_network_response::OneForeignNetwork,
             ListGlobalForeignNetworkResponse,
         },
@@ -920,7 +920,7 @@ impl PeerManager {
         }
     }
 
-    pub async fn list_routes(&self) -> Vec<cli::Route> {
+    pub async fn list_routes(&self) -> Vec<instance::Route> {
         self.get_route().list_routes().await
     }
 
@@ -1305,8 +1305,8 @@ impl PeerManager {
         self.foreign_network_client.clone()
     }
 
-    pub async fn get_my_info(&self) -> cli::NodeInfo {
-        cli::NodeInfo {
+    pub async fn get_my_info(&self) -> instance::NodeInfo {
+        instance::NodeInfo {
             peer_id: self.my_peer_id,
             ipv4_addr: self
                 .global_ctx

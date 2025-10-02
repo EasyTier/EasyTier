@@ -26,25 +26,32 @@ use easytier::{
     },
     peers,
     proto::{
-        cli::{
-            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
-            ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
-            GetLoggerConfigRequest, GetPrometheusStatsRequest, GetStatsRequest,
-            GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
-            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
-            ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
-            ListRouteResponse, LogLevel, LoggerRpc, LoggerRpcClientFactory,
-            MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
-            PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            SetLoggerConfigRequest, ShowNodeInfoRequest, StatsRpc, StatsRpcClientFactory,
-            TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory,
-            VpnPortalRpc, VpnPortalRpcClientFactory,
+        api::{
+            config::{
+                AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
+                InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+            },
+            instance::{
+                instance_identifier::{InstanceSelector, Selector},
+                list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
+                ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
+                GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest,
+                GetWhitelistRequest, InstanceIdentifier, ListConnectorRequest,
+                ListForeignNetworkRequest, ListGlobalForeignNetworkRequest,
+                ListMappedListenerRequest, ListPeerRequest, ListPeerResponse,
+                ListPortForwardRequest, ListRouteRequest, ListRouteResponse,
+                MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo,
+                PeerManageRpc, PeerManageRpcClientFactory, PortForwardManageRpc,
+                PortForwardManageRpcClientFactory, ShowNodeInfoRequest, StatsRpc,
+                StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
+                TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
+            },
+            logger::{
+                GetLoggerConfigRequest, LogLevel, LoggerRpc, LoggerRpcClientFactory,
+                SetLoggerConfigRequest,
+            },
         },
         common::{NatType, PortForwardConfigPb, SocketType},
-        config::{
-            AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory, InstanceConfigPatch,
-            PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
-        },
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
@@ -58,8 +65,12 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
 struct Cli {
-    /// the instance name
-    #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]
+    #[arg(
+        short = 'p',
+        long,
+        default_value = "127.0.0.1:15888",
+        help = "easytier-core rpc portal address"
+    )]
     rpc_portal: SocketAddr,
 
     #[arg(short, long, default_value = "false", help = "verbose output")]
@@ -73,6 +84,9 @@ struct Cli {
         help = "output format"
     )]
     output_format: OutputFormat,
+
+    #[command(flatten)]
+    instance_select: InstanceSelectArgs,
 
     #[command(subcommand)]
     sub_command: SubCommand,
@@ -118,6 +132,28 @@ enum SubCommand {
 enum OutputFormat {
     Table,
     Json,
+}
+
+#[derive(Parser, Debug)]
+struct InstanceSelectArgs {
+    #[arg(short = 'i', long = "instance-id", help = "the instance id")]
+    id: Option<uuid::Uuid>,
+
+    #[arg(short = 'n', long = "instance-name", help = "the instance name")]
+    name: Option<String>,
+}
+
+impl From<&InstanceSelectArgs> for InstanceIdentifier {
+    fn from(args: &InstanceSelectArgs) -> Self {
+        InstanceIdentifier {
+            selector: match args.id {
+                Some(id) => Some(Selector::Id(id.into())),
+                None => Some(Selector::InstanceSelector(InstanceSelector {
+                    name: args.name.clone(),
+                })),
+            },
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -351,6 +387,7 @@ struct CommandHandler<'a> {
     client: tokio::sync::Mutex<RpcClient>,
     verbose: bool,
     output_format: &'a OutputFormat,
+    instance_selector: InstanceIdentifier,
 }
 
 type RpcClient = StandAloneClient<TcpTunnelConnector>;
@@ -491,14 +528,18 @@ impl CommandHandler<'_> {
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListPeerRequest::default();
+        let request = ListPeerRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client.list_peer(BaseController::default(), request).await?;
         Ok(response)
     }
 
     async fn list_routes(&self) -> Result<ListRouteResponse, Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListRouteRequest::default();
+        let request = ListRouteRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_route(BaseController::default(), request)
             .await?;
@@ -618,7 +659,12 @@ impl CommandHandler<'_> {
 
         let client = self.get_peer_manager_client().await?;
         let node_info = client
-            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+            .show_node_info(
+                BaseController::default(),
+                ShowNodeInfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -671,7 +717,9 @@ impl CommandHandler<'_> {
 
     async fn handle_route_dump(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = DumpRouteRequest::default();
+        let request = DumpRouteRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .dump_route(BaseController::default(), request)
             .await?;
@@ -681,7 +729,9 @@ impl CommandHandler<'_> {
 
     async fn handle_foreign_network_list(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListForeignNetworkRequest::default();
+        let request = ListForeignNetworkRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_foreign_network(BaseController::default(), request)
             .await?;
@@ -724,7 +774,9 @@ impl CommandHandler<'_> {
 
     async fn handle_global_foreign_network_list(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListGlobalForeignNetworkRequest::default();
+        let request = ListGlobalForeignNetworkRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_global_foreign_network(BaseController::default(), request)
             .await?;
@@ -773,7 +825,12 @@ impl CommandHandler<'_> {
         let mut items: Vec<RouteTableItem> = vec![];
         let client = self.get_peer_manager_client().await?;
         let node_info = client
-            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+            .show_node_info(
+                BaseController::default(),
+                ShowNodeInfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -895,7 +952,9 @@ impl CommandHandler<'_> {
 
     async fn handle_connector_list(&self) -> Result<(), Error> {
         let client = self.get_connector_manager_client().await?;
-        let request = ListConnectorRequest::default();
+        let request = ListConnectorRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_connector(BaseController::default(), request)
             .await?;
@@ -909,7 +968,9 @@ impl CommandHandler<'_> {
 
     async fn handle_acl_stats(&self) -> Result<(), Error> {
         let client = self.get_acl_manager_client().await?;
-        let request = GetAclStatsRequest::default();
+        let request = GetAclStatsRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .get_acl_stats(BaseController::default(), request)
             .await?;
@@ -929,7 +990,9 @@ impl CommandHandler<'_> {
 
     async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
         let client = self.get_mapped_listener_manager_client().await?;
-        let request = ListMappedListenerRequest::default();
+        let request = ListMappedListenerRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_mapped_listener(BaseController::default(), request)
             .await?;
@@ -952,6 +1015,7 @@ impl CommandHandler<'_> {
         let url = Self::mapped_listener_validate_url(url)?;
         let client = self.get_config_client().await?;
         let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 mapped_listeners: vec![UrlPatch {
                     action: action.into(),
@@ -997,6 +1061,7 @@ impl CommandHandler<'_> {
 
         let client = self.get_config_client().await?;
         let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 port_forwards: vec![PortForwardPatch {
                     action: action.into(),
@@ -1024,7 +1089,9 @@ impl CommandHandler<'_> {
 
     async fn handle_port_forward_list(&self) -> Result<(), Error> {
         let client = self.get_port_forward_manager_client().await?;
-        let request = ListPortForwardRequest::default();
+        let request = ListPortForwardRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_port_forward(BaseController::default(), request)
             .await?;
@@ -1082,6 +1149,7 @@ impl CommandHandler<'_> {
         let client = self.get_config_client().await?;
 
         let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
                     tcp_whitelist: whitelist,
@@ -1116,6 +1184,7 @@ impl CommandHandler<'_> {
         let client = self.get_config_client().await?;
 
         let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
                     udp_whitelist: whitelist,
@@ -1136,6 +1205,7 @@ impl CommandHandler<'_> {
         let client = self.get_config_client().await?;
 
         let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
                     tcp_whitelist: vec![StringPatch {
@@ -1159,6 +1229,7 @@ impl CommandHandler<'_> {
         let client = self.get_config_client().await?;
 
         let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
                     udp_whitelist: vec![StringPatch {
@@ -1180,7 +1251,9 @@ impl CommandHandler<'_> {
 
     async fn handle_whitelist_show(&self) -> Result<(), Error> {
         let client = self.get_acl_manager_client().await?;
-        let request = GetWhitelistRequest::default();
+        let request = GetWhitelistRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .get_whitelist(BaseController::default(), request)
             .await?;
@@ -1213,7 +1286,7 @@ impl CommandHandler<'_> {
 
     async fn handle_logger_get(&self) -> Result<(), Error> {
         let client = self.get_logger_client().await?;
-        let request = GetLoggerConfigRequest {};
+        let request = GetLoggerConfigRequest::default();
         let response = client
             .get_logger_config(BaseController::default(), request)
             .await?;
@@ -1602,6 +1675,7 @@ async fn main() -> Result<(), Error> {
         client: tokio::sync::Mutex::new(client),
         verbose: cli.verbose,
         output_format: &cli.output_format,
+        instance_selector: (&cli.instance_select).into(),
     };
 
     match cli.sub_command {
@@ -1701,7 +1775,12 @@ async fn main() -> Result<(), Error> {
             let node_info = handler
                 .get_peer_manager_client()
                 .await?
-                .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+                .show_node_info(
+                    BaseController::default(),
+                    ShowNodeInfoRequest {
+                        instance: Some((&cli.instance_select).into()),
+                    },
+                )
                 .await?
                 .node_info
                 .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -1805,7 +1884,9 @@ async fn main() -> Result<(), Error> {
             let resp = vpn_portal_client
                 .get_vpn_portal_info(
                     BaseController::default(),
-                    GetVpnPortalInfoRequest::default(),
+                    GetVpnPortalInfoRequest {
+                        instance: Some((&cli.instance_select).into()),
+                    },
                 )
                 .await?
                 .vpn_portal_info
@@ -1824,7 +1905,12 @@ async fn main() -> Result<(), Error> {
         SubCommand::Node(sub_cmd) => {
             let client = handler.get_peer_manager_client().await?;
             let node_info = client
-                .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+                .show_node_info(
+                    BaseController::default(),
+                    ShowNodeInfoRequest {
+                        instance: Some((&cli.instance_select).into()),
+                    },
+                )
                 .await?
                 .node_info
                 .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -2059,7 +2145,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::Stats(stats_args) => match &stats_args.sub_command {
             Some(StatsSubCommand::Show) | None => {
                 let client = handler.get_stats_client().await?;
-                let request = GetStatsRequest {};
+                let request = GetStatsRequest {
+                    instance: Some((&cli.instance_select).into()),
+                };
                 let response = client.get_stats(BaseController::default(), request).await?;
 
                 if cli.output_format == OutputFormat::Json {
@@ -2111,7 +2199,9 @@ async fn main() -> Result<(), Error> {
             }
             Some(StatsSubCommand::Prometheus) => {
                 let client = handler.get_stats_client().await?;
-                let request = GetPrometheusStatsRequest {};
+                let request = GetPrometheusStatsRequest {
+                    instance: Some((&cli.instance_select).into()),
+                };
                 let response = client
                     .get_prometheus_stats(BaseController::default(), request)
                     .await?;
