@@ -1512,6 +1512,7 @@ impl Service {
             ServiceManagerKind::Systemd => Some(self.make_systemd_unit(options).unwrap()),
             ServiceManagerKind::Rcd => Some(self.make_rcd_script(options).unwrap()),
             ServiceManagerKind::OpenRc => Some(self.make_open_rc_script(options).unwrap()),
+            ServiceManagerKind::Launchd => None, // 使用 service-manager-rs 的默认 plist 生成
             _ => {
                 #[cfg(target_os = "windows")]
                 {
