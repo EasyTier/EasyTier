@@ -1218,7 +1218,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     tokio::select! {
         _ = manager.wait() => {
-            let infos = manager.collect_network_infos()?;
+            let infos = manager.collect_network_infos().await?;
             let errs = infos
                 .into_values()
                 .filter_map(|info| info.error_msg)

@@ -123,22 +123,33 @@ impl NetworkInstanceManager {
         Ok(self.list_network_instance_ids())
     }
 
-    pub fn collect_network_infos(
+    pub async fn collect_network_infos(
         &self,
     ) -> Result<BTreeMap<uuid::Uuid, NetworkInstanceRunningInfo>, anyhow::Error> {
         let mut ret = BTreeMap::new();
         for instance in self.instance_map.iter() {
-            if let Some(info) = instance.get_running_info() {
+            if let Ok(info) = instance.get_running_info().await {
                 ret.insert(*instance.key(), info);
             }
         }
         Ok(ret)
     }
 
-    pub fn get_network_info(&self, instance_id: &uuid::Uuid) -> Option<NetworkInstanceRunningInfo> {
+    pub fn collect_network_infos_sync(
+        &self,
+    ) -> Result<BTreeMap<uuid::Uuid, NetworkInstanceRunningInfo>, anyhow::Error> {
+        tokio::runtime::Runtime::new()?.block_on(self.collect_network_infos())
+    }
+
+    pub async fn get_network_info(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<NetworkInstanceRunningInfo> {
         self.instance_map
-            .get(instance_id)
-            .and_then(|instance| instance.value().get_running_info())
+            .get(instance_id)?
+            .get_running_info()
+            .await
+            .ok()
     }
 
     pub fn list_network_instance_ids(&self) -> Vec<uuid::Uuid> {

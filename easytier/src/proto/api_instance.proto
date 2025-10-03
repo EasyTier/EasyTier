@@ -139,6 +139,12 @@ message ListGlobalForeignNetworkResponse {
   map<uint32, ForeignNetworks> foreign_networks = 1;
 }
 
+message GetForeignNetworkSummaryRequest { InstanceIdentifier instance = 1; }
+
+message GetForeignNetworkSummaryResponse {
+  peer_rpc.RouteForeignNetworkSummary summary = 1;
+}
+
 service PeerManageRpc {
   rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
@@ -148,6 +154,8 @@ service PeerManageRpc {
   rpc ListGlobalForeignNetwork(ListGlobalForeignNetworkRequest)
       returns (ListGlobalForeignNetworkResponse);
   rpc ShowNodeInfo(ShowNodeInfoRequest) returns (ShowNodeInfoResponse);
+  rpc GetForeignNetworkSummary(GetForeignNetworkSummaryRequest)
+      returns (GetForeignNetworkSummaryResponse);
 }
 
 enum ConnectorStatus {

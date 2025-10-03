@@ -76,7 +76,8 @@ impl WebClientService for InstanceManageRpcService {
         let mut ret = NetworkInstanceRunningInfoMap {
             map: self
                 .manager
-                .collect_network_infos()?
+                .collect_network_infos()
+                .await?
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
                 .collect(),

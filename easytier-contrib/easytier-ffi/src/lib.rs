@@ -202,7 +202,7 @@ pub unsafe extern "C" fn collect_network_infos(
         std::slice::from_raw_parts_mut(infos, max_length)
     };
 
-    let collected_infos = match INSTANCE_MANAGER.collect_network_infos() {
+    let collected_infos = match INSTANCE_MANAGER.collect_network_infos_sync() {
         Ok(infos) => infos,
         Err(e) => {
             set_error_msg(&format!("failed to collect network infos: {}", e));
