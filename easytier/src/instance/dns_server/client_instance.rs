@@ -17,7 +17,7 @@ use crate::{
     tunnel::tcp::TcpTunnelConnector,
 };
 
-use super::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_INSTANCE_ADDR};
+use super::MAGIC_DNS_INSTANCE_ADDR;
 
 pub struct MagicDnsClientInstance {
     rpc_client: StandAloneClient<TcpTunnelConnector>,
@@ -68,16 +68,11 @@ impl MagicDnsClientInstance {
                 ipv4_addr: ctx.get_ipv4().map(Into::into),
                 ..Default::default()
             });
-            // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
+            // Use configured tld_dns_zone (always set by default)
             let flags = ctx.config.get_flags();
-            let tld_dns_zone = if flags.tld_dns_zone.is_empty() {
-                DEFAULT_ET_DNS_ZONE
-            } else {
-                &flags.tld_dns_zone
-            };
             let req = UpdateDnsRecordRequest {
                 routes,
-                zone: tld_dns_zone.to_string(),
+                zone: flags.tld_dns_zone.clone(),
             };
             tracing::debug!(
                 "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
