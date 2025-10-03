@@ -20,7 +20,6 @@ use crate::{
     instance::dns_server::{
         config::{Record, RecordBuilder, RecordType},
         server::build_authority,
-        DEFAULT_ET_DNS_ZONE,
     },
     peers::{peer_manager::PeerManager, NicPacketFilter},
     proto::{
@@ -522,9 +521,11 @@ impl MagicDnsServerInstance {
         peer_mgr
             .add_nic_packet_process_pipeline(Box::new(data.clone()))
             .await;
-
+        // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
+        let flags = peer_mgr.get_global_ctx().config.get_flags();
+        let tld_dns_zone_clone = flags.tld_dns_zone.clone();
         let data_clone = data.clone();
-        tokio::task::spawn_blocking(move || data_clone.do_system_config(DEFAULT_ET_DNS_ZONE))
+        tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
             .await
             .context("Failed to configure system")??;
 

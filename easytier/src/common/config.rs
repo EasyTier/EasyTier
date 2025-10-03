@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common::stun::StunInfoCollector,
+    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
@@ -50,6 +51,7 @@ pub fn gen_default_flags() -> Flags {
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),
         disable_sym_hole_punching: false,
+        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
     }
 }
 

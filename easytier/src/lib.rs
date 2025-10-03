@@ -7,7 +7,7 @@ use clap_complete::Generator;
 
 mod arch;
 mod gateway;
-mod instance;
+pub mod instance;
 mod peer_center;
 mod vpn_portal;
 

@@ -55,6 +55,9 @@ message FlagsInConfig {
 
   // disable symmetric nat hole punching, treat symmetric as cone when enabled
   bool disable_sym_hole_punching = 30;
+
+   // tld dns zone for magic dns
+  string tld_dns_zone = 31;
 }
 
 message RpcDescriptor {

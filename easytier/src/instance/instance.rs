@@ -136,7 +136,7 @@ struct MagicDnsContainer {
 }
 
 // nic container will be cleared when dhcp ip changed
-pub(crate) struct NicCtxContainer {
+pub struct NicCtxContainer {
     nic_ctx: Option<Box<dyn Any + 'static + Send>>,
     magic_dns: Option<MagicDnsContainer>,
 }
