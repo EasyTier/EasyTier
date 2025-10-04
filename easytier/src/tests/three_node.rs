@@ -1857,7 +1857,7 @@ pub async fn acl_rule_test_subnet_proxy(
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn acl_group_based_test(
+pub async fn acl_group_base_test(
     #[values("tcp", "udp")] protocol: &str,
     #[values(true, false)] enable_kcp_proxy: bool,
     #[values(true, false)] enable_quic_proxy: bool,
@@ -2084,6 +2084,178 @@ pub async fn acl_group_based_test(
     );
     println!(
         "✓ User group access to port 8081 blocked as expected ({})\n",
+        protocol
+    );
+
+    let stats = insts[2].get_global_ctx().get_acl_filter().get_stats();
+    println!("ACL stats after group {} tests: {:?}", protocol, stats);
+
+    println!("✓ All group-based ACL tests completed successfully");
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn acl_group_self_test(
+    #[values("tcp", "udp")] protocol: &str,
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns_with_timeout,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
+        udp::{UdpTunnelConnector, UdpTunnelListener},
+        TunnelConnector, TunnelListener,
+    };
+    use rand::Rng;
+
+    // 构造 ACL 配置，包含组信息
+    use crate::proto::acl::*;
+
+    // 设置组信息
+    let group_declares = vec![GroupIdentity {
+        group_name: "admin".to_string(),
+        group_secret: "admin-secret".to_string(),
+    }];
+
+    let mut chain = Chain {
+        name: "group_acl_test".to_string(),
+        chain_type: ChainType::Inbound as i32,
+        enabled: true,
+        default_action: Action::Drop as i32,
+        ..Default::default()
+    };
+
+    // 规则1: 允许admin组访问admin组
+    let admin_allow_rule = Rule {
+        name: "allow_admin_admin".to_string(),
+        priority: 300,
+        enabled: true,
+        action: Action::Allow as i32,
+        protocol: Protocol::Any as i32,
+        source_groups: vec!["admin".to_string()],
+        destination_groups: vec!["admin".to_string()],
+        stateful: true,
+        ..Default::default()
+    };
+    chain.rules.push(admin_allow_rule);
+
+    let acl_admin = Acl {
+        acl_v1: Some(AclV1 {
+            chains: vec![chain.clone()],
+            group: Some(GroupInfo {
+                declares: group_declares.clone(),
+                members: vec!["admin".to_string()],
+            }),
+        }),
+    };
+
+    let acl_common = Acl {
+        acl_v1: Some(AclV1 {
+            chains: vec![chain.clone()],
+            group: Some(GroupInfo {
+                declares: group_declares.clone(),
+                members: vec![],
+            }),
+        }),
+    };
+
+    let insts = init_three_node_ex(
+        protocol,
+        move |cfg| {
+            match cfg.get_inst_name().as_str() {
+                "inst1" => {
+                    cfg.set_acl(Some(acl_admin.clone()));
+                }
+                "inst2" => {
+                    cfg.set_acl(Some(acl_common.clone()));
+                }
+                "inst3" => {
+                    cfg.set_acl(Some(acl_admin.clone()));
+                }
+                _ => {}
+            }
+
+            let mut flags = cfg.get_flags();
+            flags.enable_kcp_proxy = enable_kcp_proxy;
+            flags.enable_quic_proxy = enable_quic_proxy;
+            cfg.set_flags(flags);
+
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    println!("Testing group-based ACL rules...");
+
+    let make_listener = |port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
+        match protocol {
+            "tcp" => Box::new(TcpTunnelListener::new(
+                format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
+            )),
+            "udp" => Box::new(UdpTunnelListener::new(
+                format!("udp://0.0.0.0:{}", port).parse().unwrap(),
+            )),
+            _ => panic!("unsupported protocol: {}", protocol),
+        }
+    };
+
+    let make_connector = |port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
+        match protocol {
+            "tcp" => Box::new(TcpTunnelConnector::new(
+                format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
+            )),
+            "udp" => Box::new(UdpTunnelConnector::new(
+                format!("udp://10.144.144.3:{}", port).parse().unwrap(),
+            )),
+            _ => panic!("unsupported protocol: {}", protocol),
+        }
+    };
+
+    // 构造测试数据
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    // 测试1: inst1 (admin组) 访问inst3 (admin组) - 应该成功
+    let result = _tunnel_pingpong_netns_with_timeout(
+        make_listener(8080),
+        make_connector(8080),
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_a".into())),
+        buf.clone(),
+        std::time::Duration::from_millis(30000),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "Admin group access to Admin group should be allowed (protocol={})",
+        protocol
+    );
+    println!(
+        "✓ Admin group access to Admin group succeeded ({})\n",
+        protocol
+    );
+
+    // 测试2: inst2 (无组) 访问inst3 (admin组) - 应该失败
+    let result = _tunnel_pingpong_netns_with_timeout(
+        make_listener(8080),
+        make_connector(8080),
+        NetNS::new(Some("net_c".into())),
+        NetNS::new(Some("net_b".into())),
+        buf.clone(),
+        std::time::Duration::from_millis(200),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "None group access to inst3 (admin group) should be blocked (protocol={})",
+        protocol
+    );
+    println!(
+        "✓ None group access to inst3 (admin group) blocked as expected ({})\n",
         protocol
     );
 
