@@ -1,30 +1,34 @@
-use std::sync::Arc;
+use std::{
+    ops::Deref,
+    sync::{Arc, Weak},
+};
 
 use crate::{
-    common::acl_processor::AclRuleBuilder,
     proto::{
-        cli::{
+        api::instance::{
             AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest,
             GetAclStatsResponse, GetWhitelistRequest, GetWhitelistResponse,
             ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
             ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
-            ListRouteResponse, PeerInfo, PeerManageRpc, SetWhitelistRequest, SetWhitelistResponse,
-            ShowNodeInfoRequest, ShowNodeInfoResponse,
+            ListRouteResponse, PeerInfo, PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
+    utils::weak_upgrade,
 };
 
 use super::peer_manager::PeerManager;
 
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
 }
 
 impl PeerManagerRpcService {
     pub fn new(peer_manager: Arc<PeerManager>) -> Self {
-        PeerManagerRpcService { peer_manager }
+        PeerManagerRpcService {
+            peer_manager: Arc::downgrade(&peer_manager),
+        }
     }
 
     pub async fn list_peers(peer_manager: &PeerManager) -> Vec<PeerInfo> {
@@ -82,7 +86,8 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<ListPeerResponse, rpc_types::error::Error> {
         let mut reply = ListPeerResponse::default();
 
-        let peers = PeerManagerRpcService::list_peers(&self.peer_manager).await;
+        let peers =
+            PeerManagerRpcService::list_peers(weak_upgrade(&self.peer_manager)?.deref()).await;
         for peer in peers {
             reply.peer_infos.push(peer);
         }
@@ -96,7 +101,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _request: ListRouteRequest, // Accept request of type HelloRequest
     ) -> Result<ListRouteResponse, rpc_types::error::Error> {
         let reply = ListRouteResponse {
-            routes: self.peer_manager.list_routes().await,
+            routes: weak_upgrade(&self.peer_manager)?.list_routes().await,
         };
         Ok(reply)
     }
@@ -107,7 +112,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _request: DumpRouteRequest, // Accept request of type HelloRequest
     ) -> Result<DumpRouteResponse, rpc_types::error::Error> {
         let reply = DumpRouteResponse {
-            result: self.peer_manager.dump_route().await,
+            result: weak_upgrade(&self.peer_manager)?.dump_route().await,
         };
         Ok(reply)
     }
@@ -117,8 +122,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ListForeignNetworkRequest, // Accept request of type HelloRequest
     ) -> Result<ListForeignNetworkResponse, rpc_types::error::Error> {
-        let reply = self
-            .peer_manager
+        let reply = weak_upgrade(&self.peer_manager)?
             .get_foreign_network_manager()
             .list_foreign_networks()
             .await;
@@ -130,7 +134,9 @@ impl PeerManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: ListGlobalForeignNetworkRequest,
     ) -> Result<ListGlobalForeignNetworkResponse, rpc_types::error::Error> {
-        Ok(self.peer_manager.list_global_foreign_network().await)
+        Ok(weak_upgrade(&self.peer_manager)?
+            .list_global_foreign_network()
+            .await)
     }
 
     async fn show_node_info(
@@ -139,7 +145,7 @@ impl PeerManageRpc for PeerManagerRpcService {
         _request: ShowNodeInfoRequest, // Accept request of type HelloRequest
     ) -> Result<ShowNodeInfoResponse, rpc_types::error::Error> {
         Ok(ShowNodeInfoResponse {
-            node_info: Some(self.peer_manager.get_my_info().await),
+            node_info: Some(weak_upgrade(&self.peer_manager)?.get_my_info().await),
         })
     }
 }
@@ -153,8 +159,7 @@ impl AclManageRpc for PeerManagerRpcService {
         _: BaseController,
         _request: GetAclStatsRequest,
     ) -> Result<GetAclStatsResponse, rpc_types::error::Error> {
-        let acl_stats = self
-            .peer_manager
+        let acl_stats = weak_upgrade(&self.peer_manager)?
             .get_global_ctx()
             .get_acl_filter()
             .get_stats();
@@ -163,34 +168,12 @@ impl AclManageRpc for PeerManagerRpcService {
         })
     }
 
-    async fn set_whitelist(
-        &self,
-        _: BaseController,
-        request: SetWhitelistRequest,
-    ) -> Result<SetWhitelistResponse, rpc_types::error::Error> {
-        tracing::info!(
-            "Setting whitelist - TCP: {:?}, UDP: {:?}",
-            request.tcp_ports,
-            request.udp_ports
-        );
-
-        let global_ctx = self.peer_manager.get_global_ctx();
-
-        global_ctx.config.set_tcp_whitelist(request.tcp_ports);
-        global_ctx.config.set_udp_whitelist(request.udp_ports);
-        global_ctx
-            .get_acl_filter()
-            .reload_rules(AclRuleBuilder::build(&global_ctx)?.as_ref());
-
-        Ok(SetWhitelistResponse {})
-    }
-
     async fn get_whitelist(
         &self,
         _: BaseController,
         _request: GetWhitelistRequest,
     ) -> Result<GetWhitelistResponse, rpc_types::error::Error> {
-        let global_ctx = self.peer_manager.get_global_ctx();
+        let global_ctx = weak_upgrade(&self.peer_manager)?.get_global_ctx();
         let tcp_ports = global_ctx.config.get_tcp_whitelist();
         let udp_ports = global_ctx.config.get_udp_whitelist();
         tracing::info!(

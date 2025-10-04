@@ -30,6 +30,7 @@ use easytier::{
     instance_manager::NetworkInstanceManager,
     launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
+    rpc_service::ApiRpcServer,
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
     web_client,
@@ -130,6 +131,9 @@ struct Cli {
     #[command(flatten)]
     logging_options: LoggingOptions,
 
+    #[command(flatten)]
+    rpc_portal_options: RpcPortalOptions,
+
     #[clap(long, help = t!("core_clap.generate_completions").to_string())]
     gen_autocomplete: Option<Shell>,
 
@@ -204,22 +208,6 @@ struct NetworkOptions {
         help = t!("core_clap.proxy_networks").to_string()
     )]
     proxy_networks: Vec<String>,
-
-    #[arg(
-        short,
-        long,
-        env = "ET_RPC_PORTAL",
-        help = t!("core_clap.rpc_portal").to_string(),
-    )]
-    rpc_portal: Option<String>,
-
-    #[arg(
-        long,
-        env = "ET_RPC_PORTAL_WHITELIST",
-        value_delimiter = ',',
-        help = t!("core_clap.rpc_portal_whitelist").to_string(),
-    )]
-    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     #[arg(
         short,
@@ -520,6 +508,12 @@ struct NetworkOptions {
     accept_dns: Option<bool>,
 
     #[arg(
+        long = "tld-dns-zone",
+        env = "ET_TLD_DNS_ZONE",
+        help = t!("core_clap.tld_dns_zone").to_string())]
+    tld_dns_zone: Option<String>,
+
+    #[arg(
         long,
         env = "ET_PRIVATE_MODE",
         help = t!("core_clap.private_mode").to_string(),
@@ -624,6 +618,25 @@ struct LoggingOptions {
     file_log_count: Option<usize>,
 }
 
+#[derive(Parser, Debug)]
+struct RpcPortalOptions {
+    #[arg(
+        short,
+        long,
+        env = "ET_RPC_PORTAL",
+        help = t!("core_clap.rpc_portal").to_string(),
+    )]
+    rpc_portal: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_RPC_PORTAL_WHITELIST",
+        value_delimiter = ',',
+        help = t!("core_clap.rpc_portal_whitelist").to_string(),
+    )]
+    rpc_portal_whitelist: Option<Vec<IpCidr>>,
+}
+
 rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
@@ -670,14 +683,6 @@ impl Cli {
         }
 
         Ok(listeners)
-    }
-
-    fn parse_rpc_portal(rpc_portal: String) -> anyhow::Result<SocketAddr> {
-        if let Ok(port) = rpc_portal.parse::<u16>() {
-            return Ok(format!("0.0.0.0:{}", port).parse().unwrap());
-        }
-
-        Ok(rpc_portal.parse()?)
     }
 }
 
@@ -784,24 +789,6 @@ impl NetworkOptions {
 
         for n in self.proxy_networks.iter() {
             add_proxy_network_to_config(n, cfg)?;
-        }
-
-        let rpc_portal = if let Some(r) = &self.rpc_portal {
-            Cli::parse_rpc_portal(r.clone())
-                .with_context(|| format!("failed to parse rpc portal: {}", r))?
-        } else if let Some(r) = cfg.get_rpc_portal() {
-            r
-        } else {
-            Cli::parse_rpc_portal("0".into())?
-        };
-        cfg.set_rpc_portal(rpc_portal);
-
-        if let Some(rpc_portal_whitelist) = &self.rpc_portal_whitelist {
-            let mut whitelist = cfg.get_rpc_portal_whitelist().unwrap_or_default();
-            for cidr in rpc_portal_whitelist {
-                whitelist.push(*cidr);
-            }
-            cfg.set_rpc_portal_whitelist(Some(whitelist));
         }
 
         if let Some(external_nodes) = self.external_node.as_ref() {
@@ -954,6 +941,10 @@ impl NetworkOptions {
             .enable_relay_foreign_network_kcp
             .unwrap_or(f.enable_relay_foreign_network_kcp);
         f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
+        // Configure tld_dns_zone: use provided value if set
+        if let Some(tld_dns_zone) = &self.tld_dns_zone {
+            f.tld_dns_zone = tld_dns_zone.clone();
+        }
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
@@ -1127,6 +1118,16 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     init_logger(&cli.logging_options, true)?;
 
+    let manager = Arc::new(NetworkInstanceManager::new());
+
+    let _rpc_server = ApiRpcServer::new(
+        cli.rpc_portal_options.rpc_portal,
+        cli.rpc_portal_options.rpc_portal_whitelist,
+        manager.clone(),
+    )?
+    .serve()
+    .await?;
+
     if cli.config_server.is_some() {
         set_default_machine_id(cli.machine_id);
         let config_server_url_s = cli.config_server.clone().unwrap();
@@ -1175,11 +1176,11 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
             token.to_string(),
             hostname,
+            manager,
         );
         tokio::signal::ctrl_c().await.unwrap();
         return Ok(());
     }
-    let manager = NetworkInstanceManager::new();
     let mut crate_cli_network =
         cli.config_file.is_none() || cli.network_options.network_name.is_some();
     if let Some(config_files) = cli.config_file {

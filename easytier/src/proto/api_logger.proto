@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package api.logger;
+
+enum LogLevel {
+  DISABLED = 0;
+  ERROR = 1;
+  WARNING = 2;
+  INFO = 3;
+  DEBUG = 4;
+  TRACE = 5;
+}
+
+message SetLoggerConfigRequest { LogLevel level = 1; }
+
+message SetLoggerConfigResponse {}
+
+message GetLoggerConfigRequest {}
+
+message GetLoggerConfigResponse { LogLevel level = 1; }
+service LoggerRpc {
+  rpc SetLoggerConfig(SetLoggerConfigRequest) returns (SetLoggerConfigResponse);
+  rpc GetLoggerConfig(GetLoggerConfigRequest) returns (GetLoggerConfigResponse);
+}

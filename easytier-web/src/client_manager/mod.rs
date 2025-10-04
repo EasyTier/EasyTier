@@ -247,9 +247,10 @@ impl ClientManager {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use easytier::{
+        instance_manager::NetworkInstanceManager,
         tunnel::{
             common::tests::wait_for_condition,
             udp::{UdpTunnelConnector, UdpTunnelListener},
@@ -273,7 +274,12 @@ mod tests {
             .unwrap();
 
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());
-        let _c = WebClient::new(connector, "test", "test");
+        let _c = WebClient::new(
+            connector,
+            "test",
+            "test",
+            Arc::new(NetworkInstanceManager::new()),
+        );
 
         wait_for_condition(
             || async { mgr.client_sessions.len() == 1 },

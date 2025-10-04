@@ -10,7 +10,7 @@ use crate::common::{
     config::LoggingConfigLoader, get_logger_timer_rfc3339, tracing_rolling_appender::*,
 };
 
-pub type PeerRoutePair = crate::proto::cli::PeerRoutePair;
+pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 
 pub fn cost_to_str(cost: i32) -> String {
     if cost == 1 {
@@ -30,7 +30,7 @@ pub fn init_logger(
     config: impl LoggingConfigLoader,
     need_reload: bool,
 ) -> Result<Option<NewFilterSender>, anyhow::Error> {
-    use crate::instance::logger_rpc_service::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
+    use crate::rpc_service::logger::{CURRENT_LOG_LEVEL, LOGGER_LEVEL_SENDER};
 
     let file_config = config.get_file_logger_config();
     let file_level = file_config
@@ -252,6 +252,11 @@ pub fn check_tcp_available(port: u16) -> bool {
 
 pub fn find_free_tcp_port(mut range: std::ops::Range<u16>) -> Option<u16> {
     range.find(|&port| check_tcp_available(port))
+}
+
+pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<std::sync::Arc<T>> {
+    weak.upgrade()
+        .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
 }
 
 #[cfg(test)]

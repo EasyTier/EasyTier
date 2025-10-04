@@ -40,7 +40,7 @@ use crate::{
     peers::{acl_filter::AclFilter, peer_manager::PeerManager, NicPacketFilter, PeerPacketFilter},
     proto::{
         acl::{Action, ChainType, Protocol},
-        cli::{
+        api::instance::{
             ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
             TcpProxyEntryTransportType, TcpProxyRpc,
         },
@@ -107,7 +107,7 @@ async fn handle_kcp_output(
         let mut packet = ZCPacket::new_with_payload(&packet.inner().freeze());
         packet.fill_peer_manager_hdr(peer_mgr.my_peer_id(), dst_peer_id, packet_type);
 
-        if let Err(e) = peer_mgr.send_msg(packet, dst_peer_id).await {
+        if let Err(e) = peer_mgr.send_msg_for_proxy(packet, dst_peer_id).await {
             tracing::error!("failed to send kcp packet to peer: {:?}", e);
         }
     }

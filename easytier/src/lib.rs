@@ -7,7 +7,7 @@ use clap_complete::Generator;
 
 mod arch;
 mod gateway;
-mod instance;
+pub mod instance;
 mod peer_center;
 mod vpn_portal;
 
@@ -17,6 +17,7 @@ pub mod instance_manager;
 pub mod launcher;
 pub mod peers;
 pub mod proto;
+pub mod rpc_service;
 pub mod tunnel;
 pub mod utils;
 pub mod web_client;
