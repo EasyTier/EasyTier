@@ -441,7 +441,7 @@ UPDATE() {
   local ACTIVE_SERVICES=()
   if [ "$INIT_SYSTEM" = "systemd" ]; then
     # Get the list of active instances and store them in an array
-    ACTIVE_SERVICES=$(systemctl list-units --type=service --state=active | grep "easytier@" | awk '{print $1}')
+    mapfile -t ACTIVE_SERVICES < <(systemctl list-units --type=service --state=active | grep "easytier@" | awk '{print $1}')
     if [ ${#ACTIVE_SERVICES[@]} -gt 0 ]; then
         echo -e "\r\n${YELLOW_COLOR}Found running services: ${ACTIVE_SERVICES[*]}${RES}"
         echo -e "${YELLOW_COLOR}Stopping EasyTier services...${RES}"
