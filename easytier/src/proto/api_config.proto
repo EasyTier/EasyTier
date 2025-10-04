@@ -3,6 +3,7 @@ syntax = "proto3";
 import "common.proto";
 import "acl.proto";
 import "api_instance.proto";
+import "api_manage.proto";
 
 package api.config;
 
@@ -69,6 +70,15 @@ message PatchConfigRequest {
 
 message PatchConfigResponse {}
 
+message GetConfigRequest {
+  api.instance.InstanceIdentifier instance = 1;
+}
+
+message GetConfigResponse {
+  api.manage.NetworkConfig config = 1;
+}
+
 service ConfigRpc {
   rpc PatchConfig(PatchConfigRequest) returns (PatchConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
 }
