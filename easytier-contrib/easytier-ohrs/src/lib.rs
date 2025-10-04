@@ -92,7 +92,7 @@ pub fn stop_network_instance(inst_names: Vec<String>) {
 #[napi]
 pub fn collect_network_infos() -> Vec<KeyValuePair> {
     let mut result = Vec::new();
-    match INSTANCE_MANAGER.collect_network_infos() {
+    match INSTANCE_MANAGER.collect_network_infos_sync() {
         Ok(map) => {
             for (uuid, info) in map.iter() {
                 // convert value to json string
