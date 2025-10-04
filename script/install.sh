@@ -438,7 +438,7 @@ UPDATE() {
   # 3. Enter minimal downtime window
   
   # Record currently running service instances before stopping them
-  local ACTIVE_SERVICES=()
+  ACTIVE_SERVICES=()
   if [ "$INIT_SYSTEM" = "systemd" ]; then
     # Get the list of active instances and store them in an array
     mapfile -t ACTIVE_SERVICES < <(systemctl list-units --type=service --state=active | grep "easytier@" | awk '{print $1}')
