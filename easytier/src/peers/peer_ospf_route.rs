@@ -527,6 +527,7 @@ impl SyncedRouteInfo {
         *old = new;
 
         if new_version != old_version {
+            self.update_my_group_trusts(my_peer_id);
             self.version.inc();
             true
         } else {
@@ -708,12 +709,12 @@ impl SyncedRouteInfo {
         }
     }
 
-    fn update_my_group_trusts(&self, my_peer_id: PeerId, global_ctx: &ArcGlobalCtx) {
+    fn update_my_group_trusts(&self, my_peer_id: PeerId) {
         let mut my_group_map = HashMap::new();
         let mut my_group_names = Vec::new();
-        for group in global_ctx.get_acl_groups(my_peer_id) {
-            my_group_map.insert(group.group_name.clone(), group.group_proof);
-            my_group_names.push(group.group_name);
+        for group in self.peer_infos.entry(my_peer_id).or_default().groups.iter() {
+            my_group_map.insert(group.group_name.clone(), group.group_proof.clone());
+            my_group_names.push(group.group_name.clone());
         }
         self.group_trust_map.insert(my_peer_id, my_group_map);
         self.group_trust_map_cache
@@ -2157,9 +2158,6 @@ impl RouteSessionManager {
                     peer_infos,
                     &service_impl.global_ctx.get_acl_group_declarations(),
                 );
-            service_impl
-                .synced_route_info
-                .update_my_group_trusts(my_peer_id, &service_impl.global_ctx);
             session.update_dst_saved_peer_info_version(peer_infos);
             need_update_route_table = true;
         }
