@@ -434,7 +434,10 @@ impl PunchSymToConeHoleClient {
         let resp = rpc_stub
             .select_punch_listener(
                 BaseController::default(),
-                SelectPunchListenerRequest { force_new: false },
+                SelectPunchListenerRequest {
+                    force_new: false,
+                    prefer_port_mapping: true,
+                },
             )
             .await;
 

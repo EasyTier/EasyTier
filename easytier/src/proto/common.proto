@@ -74,6 +74,7 @@ message FlagsInConfig {
   bool lazy_p2p = 37;
   bool need_p2p = 38;
   uint64 instance_recv_bps_limit = 39;
+  bool disable_upnp = 40;
 }
 
 message RpcDescriptor {

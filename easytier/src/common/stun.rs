@@ -276,7 +276,6 @@ impl StunClient {
         let stun_host = self.stun_server;
         // repeat req in case of packet loss
         let mut tids = vec![];
-
         for _ in 0..self.req_repeat {
             let tid = rand::random::<u32>();
             // let tid = 1;
@@ -912,6 +911,10 @@ impl TcpNatTypeDetector {
 pub trait StunInfoCollectorTrait: Send + Sync {
     fn get_stun_info(&self) -> StunInfo;
     async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
+    async fn get_udp_port_mapping_with_socket(
+        &self,
+        udp: Arc<UdpSocket>,
+    ) -> Result<SocketAddr, Error>;
     async fn get_tcp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error>;
 }
 
@@ -975,6 +978,14 @@ impl StunInfoCollectorTrait for StunInfoCollector {
     }
 
     async fn get_udp_port_mapping(&self, local_port: u16) -> Result<SocketAddr, Error> {
+        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
+        self.get_udp_port_mapping_with_socket(udp).await
+    }
+
+    async fn get_udp_port_mapping_with_socket(
+        &self,
+        udp: Arc<UdpSocket>,
+    ) -> Result<SocketAddr, Error> {
         self.start_stun_routine();
 
         let mut stun_servers = self
@@ -1000,7 +1011,6 @@ impl StunInfoCollectorTrait for StunInfoCollector {
             return Err(Error::NotFound);
         }
 
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
         let mut client_builder = StunClientBuilder::new(udp.clone());
 
         for server in stun_servers.iter() {
@@ -1314,6 +1324,13 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
             port = 40144;
         }
         Ok(format!("127.0.0.1:{}", port).parse().unwrap())
+    }
+
+    async fn get_udp_port_mapping_with_socket(
+        &self,
+        udp: Arc<UdpSocket>,
+    ) -> Result<std::net::SocketAddr, Error> {
+        self.get_udp_port_mapping(udp.local_addr()?.port()).await
     }
 
     async fn get_tcp_port_mapping(&self, mut port: u16) -> Result<std::net::SocketAddr, Error> {

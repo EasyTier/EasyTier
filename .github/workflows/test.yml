@@ -128,6 +128,10 @@ jobs:
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
+      - name: Setup upnpd for test
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y miniupnpd miniupnpd-iptables iptables
 
       - name: Setup system for test
         run: |

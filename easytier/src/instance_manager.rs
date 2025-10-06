@@ -355,6 +355,21 @@ fn handle_event(
                         event!(info, category: "CONNECTION", local, remote, err, "[{}] connection error", instance_id);
                     }
 
+                    GlobalCtxEvent::ListenerPortMappingEstablished {
+                        local_listener,
+                        mapped_listener,
+                        backend,
+                    } => {
+                        event!(
+                            info,
+                            %local_listener,
+                            %mapped_listener,
+                            backend,
+                            "[{}] listener port mapping established",
+                            instance_id
+                        );
+                    }
+
                     GlobalCtxEvent::TunDeviceReady(dev) => {
                         event!(info, dev, "[{}] tun device ready", instance_id);
                     }
