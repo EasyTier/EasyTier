@@ -525,8 +525,10 @@ impl SyncedRouteInfo {
         let new_version = new.version;
         let old_version = old.version;
         *old = new;
+        drop(old);
 
         if new_version != old_version {
+            self.update_my_group_trusts(my_peer_id);
             self.version.inc();
             true
         } else {
@@ -706,6 +708,18 @@ impl SyncedRouteInfo {
                 }
             }
         }
+    }
+
+    fn update_my_group_trusts(&self, my_peer_id: PeerId) {
+        let mut my_group_map = HashMap::new();
+        let mut my_group_names = Vec::new();
+        for group in self.peer_infos.entry(my_peer_id).or_default().groups.iter() {
+            my_group_map.insert(group.group_name.clone(), group.group_proof.clone());
+            my_group_names.push(group.group_name.clone());
+        }
+        self.group_trust_map.insert(my_peer_id, my_group_map);
+        self.group_trust_map_cache
+            .insert(my_peer_id, Arc::new(my_group_names));
     }
 }
 
