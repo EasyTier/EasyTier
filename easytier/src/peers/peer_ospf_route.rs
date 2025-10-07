@@ -525,6 +525,7 @@ impl SyncedRouteInfo {
         let new_version = new.version;
         let old_version = old.version;
         *old = new;
+        drop(old);
 
         if new_version != old_version {
             self.update_my_group_trusts(my_peer_id);
