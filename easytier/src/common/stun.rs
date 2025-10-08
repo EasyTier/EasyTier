@@ -22,6 +22,7 @@ use crate::common::error::Error;
 
 use super::dns::resolve_txt_record;
 use super::stun_codec_ext::*;
+use super::upnp::try_upnp_map_udp;
 
 struct HostResolverIter {
     hostnames: Vec<String>,
@@ -263,7 +264,6 @@ impl StunClient {
         let stun_host = self.stun_server;
         // repeat req in case of packet loss
         let mut tids = vec![];
-
         for _ in 0..self.req_repeat {
             let tid = rand::random::<u32>();
             // let tid = 1;
@@ -568,6 +568,8 @@ impl UdpNatTypeDetector {
         stun_server: SocketAddr,
     ) -> Result<BindRequestResponse, Error> {
         let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        // Try upnp mapping stun port
+        let _ = try_upnp_map_udp(udp.local_addr()?.port()).await;
         let client_builder = StunClientBuilder::new(udp.clone());
         client_builder
             .new_stun_client(stun_server)
@@ -577,6 +579,8 @@ impl UdpNatTypeDetector {
 
     pub async fn detect_nat_type(&self, source_port: u16) -> Result<UdpNatTypeDetectResult, Error> {
         let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        // Try upnp mapping stun port
+        let _ = try_upnp_map_udp(udp.local_addr()?.port()).await;
         self.detect_nat_type_with_socket(udp).await
     }
 
@@ -695,6 +699,8 @@ impl StunInfoCollectorTrait for StunInfoCollector {
         }
 
         let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
+        // Try upnp mapping stun port
+        let _ = try_upnp_map_udp(udp.local_addr()?.port()).await;
         let mut client_builder = StunClientBuilder::new(udp.clone());
 
         for server in stun_servers.iter() {
