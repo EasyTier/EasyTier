@@ -3,7 +3,9 @@ use std::sync::Arc;
 use crate::{
     instance_manager::NetworkInstanceManager,
     proto::{
-        api::config::{ConfigRpc, PatchConfigRequest, PatchConfigResponse},
+        api::config::{
+            ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest, PatchConfigResponse,
+        },
         rpc_types::{self, controller::BaseController},
     },
 };
@@ -31,6 +33,17 @@ impl ConfigRpc for ConfigRpcService {
         super::get_instance_service(&self.instance_manager, &input.instance)?
             .get_config_service()
             .patch_config(ctrl, input)
+            .await
+    }
+
+    async fn get_config(
+        &self,
+        ctrl: Self::Controller,
+        input: GetConfigRequest,
+    ) -> Result<GetConfigResponse, rpc_types::error::Error> {
+        super::get_instance_service(&self.instance_manager, &input.instance)?
+            .get_config_service()
+            .get_config(ctrl, input)
             .await
     }
 }

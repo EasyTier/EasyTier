@@ -497,7 +497,7 @@ impl HealthChecker {
         instance_mgr: Arc<NetworkInstanceManager>,
         // return version, response time on healthy, conn_count
     ) -> anyhow::Result<(String, u64, u32)> {
-        let Some(instance) = instance_mgr.get_network_info(&inst_id) else {
+        let Some(instance) = instance_mgr.get_network_info(&inst_id).await else {
             anyhow::bail!("healthy check node is not started");
         };
 

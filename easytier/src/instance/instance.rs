@@ -33,7 +33,8 @@ use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
 use crate::proto::api::config::{
-    ConfigPatchAction, ConfigRpc, PatchConfigRequest, PatchConfigResponse, PortForwardPatch,
+    ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
+    PatchConfigResponse, PortForwardPatch,
 };
 use crate::proto::api::instance::{
     GetPrometheusStatsRequest, GetPrometheusStatsResponse, GetStatsRequest, GetStatsResponse,
@@ -42,6 +43,7 @@ use crate::proto::api::instance::{
     MappedListenerManageRpc, MetricSnapshot, PortForwardManageRpc, StatsRpc, VpnPortalInfo,
     VpnPortalRpc,
 };
+use crate::proto::api::manage::NetworkConfig;
 use crate::proto::common::{PortForwardConfigPb, TunnelInfo};
 use crate::proto::rpc_impl::standalone::RpcServerHook;
 use crate::proto::rpc_types;
@@ -1194,6 +1196,7 @@ impl Instance {
         #[derive(Clone)]
         pub struct ConfigRpcService {
             patcher: InstanceConfigPatcher,
+            global_ctx: Weak<GlobalCtx>,
         }
 
         #[async_trait::async_trait]
@@ -1212,10 +1215,23 @@ impl Instance {
                 self.patcher.apply_patch(patch).await?;
                 Ok(PatchConfigResponse::default())
             }
+
+            async fn get_config(
+                &self,
+                _: Self::Controller,
+                _request: GetConfigRequest,
+            ) -> crate::proto::rpc_types::error::Result<GetConfigResponse> {
+                let global_ctx = weak_upgrade(&self.global_ctx)?;
+                let config = NetworkConfig::new_from_config(&global_ctx.config)?;
+                Ok(GetConfigResponse {
+                    config: Some(config),
+                })
+            }
         }
 
         ConfigRpcService {
             patcher: self.get_config_patcher(),
+            global_ctx: Arc::downgrade(&self.global_ctx),
         }
     }
 

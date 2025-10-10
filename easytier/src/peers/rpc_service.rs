@@ -7,8 +7,9 @@ use crate::{
     proto::{
         api::instance::{
             AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest,
-            GetAclStatsResponse, GetWhitelistRequest, GetWhitelistResponse,
-            ListForeignNetworkRequest, ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
+            GetAclStatsResponse, GetForeignNetworkSummaryRequest, GetForeignNetworkSummaryResponse,
+            GetWhitelistRequest, GetWhitelistResponse, ListForeignNetworkRequest,
+            ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
             ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
             ListRouteResponse, PeerInfo, PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
         },
@@ -137,6 +138,20 @@ impl PeerManageRpc for PeerManagerRpcService {
         Ok(weak_upgrade(&self.peer_manager)?
             .list_global_foreign_network()
             .await)
+    }
+
+    async fn get_foreign_network_summary(
+        &self,
+        _: BaseController,
+        _request: GetForeignNetworkSummaryRequest,
+    ) -> Result<GetForeignNetworkSummaryResponse, rpc_types::error::Error> {
+        Ok(GetForeignNetworkSummaryResponse {
+            summary: Some(
+                weak_upgrade(&self.peer_manager)?
+                    .get_foreign_network_summary()
+                    .await,
+            ),
+        })
     }
 
     async fn show_node_info(

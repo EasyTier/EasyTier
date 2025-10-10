@@ -1,6 +1,6 @@
 use crate::common::config::PortForwardConfig;
-use crate::proto::api::manage;
-use crate::proto::peer_rpc::RouteForeignNetworkSummary;
+use crate::proto::api::{self, manage};
+use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::{
     common::{
@@ -10,11 +10,9 @@ use crate::{
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
-        stun::StunInfoCollectorTrait,
     },
     instance::instance::Instance,
-    peers::rpc_service::PeerManagerRpcService,
-    proto::api::instance::{list_peer_route_pair, PeerInfo, Route},
+    proto::api::instance::list_peer_route_pair,
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
@@ -37,12 +35,7 @@ pub struct Event {
 
 struct EasyTierData {
     events: RwLock<VecDeque<Event>>,
-    my_node_info: RwLock<MyNodeInfo>,
-    routes: RwLock<Vec<Route>>,
-    peers: RwLock<Vec<PeerInfo>>,
-    foreign_network_summary: RwLock<RouteForeignNetworkSummary>,
     tun_fd: Arc<RwLock<Option<i32>>>,
-    tun_dev_name: RwLock<String>,
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
 }
@@ -53,12 +46,7 @@ impl Default for EasyTierData {
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
-            my_node_info: RwLock::new(MyNodeInfo::default()),
-            routes: RwLock::new(Vec::new()),
-            peers: RwLock::new(Vec::new()),
-            foreign_network_summary: RwLock::new(RouteForeignNetworkSummary::default()),
             tun_fd: Arc::new(RwLock::new(None)),
-            tun_dev_name: RwLock::new(String::new()),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -70,14 +58,12 @@ pub struct EasyTierLauncher {
     thread_handle: Option<std::thread::JoinHandle<()>>,
     api_service: ArcMutApiService,
     running_cfg: String,
-    fetch_node_info: bool,
-
     error_msg: Arc<RwLock<Option<String>>>,
     data: Arc<EasyTierData>,
 }
 
 impl EasyTierLauncher {
-    pub fn new(fetch_node_info: bool) -> Self {
+    pub fn new() -> Self {
         let instance_alive = Arc::new(AtomicBool::new(false));
         Self {
             instance_alive,
@@ -85,8 +71,6 @@ impl EasyTierLauncher {
             api_service: Arc::new(RwLock::new(None)),
             error_msg: Arc::new(RwLock::new(None)),
             running_cfg: String::new(),
-            fetch_node_info,
-
             stop_flag: Arc::new(AtomicBool::new(false)),
             data: Arc::new(EasyTierData::default()),
         }
@@ -143,7 +127,6 @@ impl EasyTierLauncher {
         stop_signal: Arc<tokio::sync::Notify>,
         api_service: ArcMutApiService,
         data: Arc<EasyTierData>,
-        fetch_node_info: bool,
     ) -> Result<(), anyhow::Error> {
         let mut instance = Instance::new(cfg);
         let mut tasks = JoinSet::new();
@@ -174,48 +157,6 @@ impl EasyTierLauncher {
                 }
             }
         });
-
-        // update my node info
-        if fetch_node_info {
-            let data_c = data.clone();
-            let global_ctx_c = instance.get_global_ctx();
-            let peer_mgr_c = instance.get_peer_manager().clone();
-            let vpn_portal = instance.get_vpn_portal_inst();
-            tasks.spawn(async move {
-                loop {
-                    // Update TUN Device Name
-                    *data_c.tun_dev_name.write().unwrap() =
-                        global_ctx_c.get_flags().dev_name.clone();
-
-                    let node_info = MyNodeInfo {
-                        virtual_ipv4: global_ctx_c.get_ipv4().map(|ip| ip.into()),
-                        hostname: global_ctx_c.get_hostname(),
-                        version: EASYTIER_VERSION.to_string(),
-                        ips: Some(global_ctx_c.get_ip_collector().collect_ip_addrs().await),
-                        stun_info: Some(global_ctx_c.get_stun_info_collector().get_stun_info()),
-                        listeners: global_ctx_c
-                            .get_running_listeners()
-                            .into_iter()
-                            .map(Into::into)
-                            .collect(),
-                        vpn_portal_cfg: Some(
-                            vpn_portal
-                                .lock()
-                                .await
-                                .dump_client_config(peer_mgr_c.clone())
-                                .await,
-                        ),
-                    };
-                    *data_c.my_node_info.write().unwrap() = node_info.clone();
-                    *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
-                    *data_c.peers.write().unwrap() =
-                        PeerManagerRpcService::list_peers(&peer_mgr_c).await;
-                    *data_c.foreign_network_summary.write().unwrap() =
-                        peer_mgr_c.get_foreign_network_summary().await;
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            });
-        }
 
         #[cfg(any(target_os = "android", target_env = "ohos"))]
         Self::run_routine_for_android(&instance, &data, &mut tasks).await;
@@ -253,7 +194,6 @@ impl EasyTierLauncher {
         instance_alive.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let data = self.data.clone();
-        let fetch_node_info = self.fetch_node_info;
         let api_service = self.api_service.clone();
 
         self.thread_handle = Some(std::thread::spawn(move || {
@@ -286,7 +226,6 @@ impl EasyTierLauncher {
                 stop_notifier.clone(),
                 api_service,
                 data,
-                fetch_node_info,
             ));
             if let Err(e) = ret {
                 error_msg.write().unwrap().replace(format!("{:?}", e));
@@ -305,29 +244,9 @@ impl EasyTierLauncher {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn get_dev_name(&self) -> String {
-        self.data.tun_dev_name.read().unwrap().clone()
-    }
-
     pub fn get_events(&self) -> Vec<Event> {
         let events = self.data.events.read().unwrap();
         events.iter().cloned().collect()
-    }
-
-    pub fn get_node_info(&self) -> MyNodeInfo {
-        self.data.my_node_info.read().unwrap().clone()
-    }
-
-    pub fn get_routes(&self) -> Vec<Route> {
-        self.data.routes.read().unwrap().clone()
-    }
-
-    pub fn get_peers(&self) -> Vec<PeerInfo> {
-        self.data.peers.read().unwrap().clone()
-    }
-
-    pub fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
-        self.data.foreign_network_summary.read().unwrap().clone()
     }
 
     pub fn get_api_service(&self) -> Option<Arc<dyn InstanceRpcService>> {
@@ -338,6 +257,12 @@ impl EasyTierLauncher {
                 None
             }
         }
+    }
+}
+
+impl Default for EasyTierLauncher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -380,13 +305,6 @@ impl NetworkInstance {
         }
     }
 
-    fn get_fetch_node_info(&self) -> bool {
-        match self.config_source {
-            ConfigSource::Cli | ConfigSource::File => false,
-            ConfigSource::Web | ConfigSource::GUI | ConfigSource::FFI => true,
-        }
-    }
-
     pub fn get_config_source(&self) -> ConfigSource {
         self.config_source.clone()
     }
@@ -395,18 +313,77 @@ impl NetworkInstance {
         self.launcher.is_some() && self.launcher.as_ref().unwrap().running()
     }
 
-    pub fn get_running_info(&self) -> Option<NetworkInstanceRunningInfo> {
-        self.launcher.as_ref()?;
+    pub async fn get_running_info(&self) -> anyhow::Result<NetworkInstanceRunningInfo> {
+        let launcher = self.launcher.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("instance is not running, please start the instance first")
+        })?;
+        let api_service = self.get_api_service().ok_or_else(|| {
+            anyhow::anyhow!("failed to get api service, instance may not be running")
+        })?;
+        let ctrl = BaseController::default();
 
-        let launcher = self.launcher.as_ref().unwrap();
-
-        let peers = launcher.get_peers();
-        let routes = launcher.get_routes();
+        let peers = api_service
+            .get_peer_manage_service()
+            .list_peer(ctrl.clone(), api::instance::ListPeerRequest::default())
+            .await?
+            .peer_infos;
+        let my_info = api_service
+            .get_peer_manage_service()
+            .show_node_info(ctrl.clone(), api::instance::ShowNodeInfoRequest::default())
+            .await?
+            .node_info
+            .ok_or_else(|| anyhow::anyhow!("failed to get my node info"))?;
+        let vpn_portal_cfg = api_service
+            .get_vpn_portal_service()
+            .get_vpn_portal_info(
+                ctrl.clone(),
+                api::instance::GetVpnPortalInfoRequest::default(),
+            )
+            .await?
+            .vpn_portal_info
+            .map(|i| i.client_config);
+        let routes = api_service
+            .get_peer_manage_service()
+            .list_route(ctrl.clone(), api::instance::ListRouteRequest::default())
+            .await?
+            .routes;
         let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
+        let foreign_network_summary = api_service
+            .get_peer_manage_service()
+            .get_foreign_network_summary(
+                ctrl.clone(),
+                api::instance::GetForeignNetworkSummaryRequest::default(),
+            )
+            .await?
+            .summary;
+        let dev_name = api_service
+            .get_config_service()
+            .get_config(ctrl.clone(), api::config::GetConfigRequest::default())
+            .await?
+            .config
+            .ok_or_else(|| anyhow::anyhow!("failed to get config"))?
+            .dev_name
+            .unwrap_or_else(|| "".to_string());
 
-        Some(NetworkInstanceRunningInfo {
-            dev_name: launcher.get_dev_name(),
-            my_node_info: Some(launcher.get_node_info()),
+        Ok(NetworkInstanceRunningInfo {
+            dev_name,
+            my_node_info: Some(MyNodeInfo {
+                virtual_ipv4: my_info
+                    .ipv4_addr
+                    .parse::<cidr::Ipv4Inet>()
+                    .ok()
+                    .map(Into::into),
+                hostname: my_info.hostname,
+                version: EASYTIER_VERSION.to_string(),
+                ips: my_info.ip_list,
+                stun_info: my_info.stun_info,
+                listeners: my_info
+                    .listeners
+                    .into_iter()
+                    .map(|s| s.parse::<url::Url>().unwrap().into())
+                    .collect(),
+                vpn_portal_cfg,
+            }),
             events: launcher
                 .get_events()
                 .iter()
@@ -417,7 +394,7 @@ impl NetworkInstance {
             peer_route_pairs,
             running: launcher.running(),
             error_msg: launcher.error_msg(),
-            foreign_network_summary: Some(launcher.get_foreign_network_summary()),
+            foreign_network_summary,
         })
     }
 
@@ -436,7 +413,7 @@ impl NetworkInstance {
             return Ok(self.subscribe_event().unwrap());
         }
 
-        let launcher = EasyTierLauncher::new(self.get_fetch_node_info());
+        let launcher = EasyTierLauncher::new();
         self.launcher = Some(launcher);
         let ev = self.subscribe_event().unwrap();
 
@@ -784,7 +761,7 @@ impl NetworkConfig {
         Ok(cfg)
     }
 
-    pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
+    pub fn new_from_config(config: impl ConfigLoader) -> Result<Self, anyhow::Error> {
         let default_config = TomlConfigLoader::default();
 
         let mut result = Self {

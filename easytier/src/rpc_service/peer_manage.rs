@@ -78,6 +78,17 @@ impl PeerManageRpc for PeerManageRpcService {
             .await
     }
 
+    async fn get_foreign_network_summary(
+        &self,
+        ctrl: Self::Controller,
+        req: crate::proto::api::instance::GetForeignNetworkSummaryRequest,
+    ) -> crate::proto::rpc_types::error::Result<instance::GetForeignNetworkSummaryResponse> {
+        super::get_instance_service(&self.instance_manager, &req.instance)?
+            .get_peer_manage_service()
+            .get_foreign_network_summary(ctrl, req)
+            .await
+    }
+
     async fn show_node_info(
         &self,
         ctrl: Self::Controller,
