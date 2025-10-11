@@ -70,6 +70,18 @@ struct Cli {
     config_server_protocol: String,
 
     #[arg(
+        long = "config-server-secondary-port",
+        help = t!("cli.config_server_secondary_port").to_string(),
+    )]
+    config_server_secondary_port: Option<u16>,
+
+    #[arg(
+        long = "config-server-secondary-protocol",
+        help = t!("cli.config_server_secondary_protocol").to_string(),
+    )]
+    config_server_secondary_protocol: Option<String>,
+
+    #[arg(
         long,
         short='a',
         default_value = "11211",
@@ -173,18 +185,31 @@ async fn main() {
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
     let mut mgr = client_manager::ClientManager::new(db.clone(), cli.geoip_db);
-    let (v6_listener, v4_listener) =
+    let (prim_v6_listener, prim_v4_listener) =
         get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
             .await
             .unwrap();
-    if v4_listener.is_none() && v6_listener.is_none() {
-        panic!("Listen to both IPv4 and IPv6 failed");
+    if prim_v4_listener.is_none() && prim_v6_listener.is_none() {
+        panic!("Listen to both IPv4 and IPv6 failed (primary listeners)");
     }
-    if let Some(listener) = v6_listener {
-        mgr.add_listener(listener).await.unwrap();
-    }
-    if let Some(listener) = v4_listener {
-        mgr.add_listener(listener).await.unwrap();
+    let (sec_v6_listener, sec_v4_listener) = if let (Some(proto), Some(port)) = (
+        cli.config_server_secondary_protocol.clone(),
+        cli.config_server_secondary_port,
+    ) {
+        let (sec_v6l, sec_v4l) = get_dual_stack_listener(&proto, port).await.unwrap();
+        if sec_v6l.is_none() && sec_v4l.is_none() {
+            panic!("Listen to both IPv4 and IPv6 failed (secondary listeners)");
+        }
+        (sec_v6l, sec_v4l)
+    } else {
+        (None, None)
+    };
+
+
+    for listener in vec![prim_v6_listener, prim_v4_listener, sec_v6_listener, sec_v4_listener] {
+        if let Some(l) = listener {
+            mgr.add_listener(l).await.unwrap();
+        }
     }
 
     let mgr = Arc::new(mgr);
