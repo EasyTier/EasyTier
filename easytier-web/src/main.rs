@@ -205,7 +205,6 @@ async fn main() {
         (None, None)
     };
 
-
     for listener in vec![prim_v6_listener, prim_v4_listener, sec_v6_listener, sec_v4_listener] {
         if let Some(l) = listener {
             mgr.add_listener(l).await.unwrap();

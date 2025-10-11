@@ -1,4 +1,4 @@
-use std::{ sync::Arc};
+use std::sync::Arc;
 use crate::common::global_ctx::GlobalCtx;
 use crate::connector::{create_connector_by_url};
 use crate::tunnel::IpVersion;
@@ -13,6 +13,10 @@ pub struct ConfigServerConnector {
 
 impl ConfigServerConnector {
     pub fn new(urls: Vec<url::Url>, global_ctx: Arc<GlobalCtx>, ip_version: IpVersion) -> Self {
+        if urls.is_empty() {
+            panic!("ConfigServerConnector::new called with empty urls vector");
+        }
+
         let first = urls[0].clone();
         ConfigServerConnector {
             urls,
@@ -62,9 +66,9 @@ impl easytier::tunnel::TunnelConnector for ConfigServerConnector {
     }
 
     fn set_bind_addrs(&mut self, _addrs: Vec<std::net::SocketAddr>) {
-        panic!("not implemented");
+        unimplemented!();
     }
     fn set_ip_version(&mut self, _ip_version: IpVersion) {
-        panic!("not implemented");
+        unimplemented!();
     }
 }

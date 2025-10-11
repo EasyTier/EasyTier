@@ -1139,7 +1139,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             .collect();
 
         if trimmed_server_url_s.is_empty() {
-            panic!("empty config_server");
+            anyhow::bail!("empty config_server");
         }
 
         // derive token from the first server that contains a path segment
@@ -1178,7 +1178,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         println!("Official config website: https://easytier.cn/web");
 
         if token.is_empty() {
-            panic!("empty token");
+            anyhow::bail!("empty token");
         }
 
         let config = TomlConfigLoader::default();
