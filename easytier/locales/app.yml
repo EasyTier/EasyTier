@@ -6,10 +6,12 @@ core_clap:
       config server address, allow format:
       full url: --config-server udp://127.0.0.1:22020/admin
       only user name: --config-server admin, will use official server
+      can use comma-separated multiple candidate addresses, priority from left to right, in this case the user name is based on the first candidate address;
     zh-CN: |+
       配置服务器地址。允许格式：
       完整URL：--config-server udp://127.0.0.1:22020/admin
       仅用户名：--config-server admin，将使用官方的服务器
+      可以使用逗号分隔的多个候选地址，优先级从左到右，此时用户名以第一个候选地址为准；
   machine_id:
     en: |+
       the machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. default is from system.

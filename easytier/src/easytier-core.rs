@@ -26,7 +26,7 @@ use easytier::{
         set_default_machine_id,
         stun::MockStunInfoCollector,
     },
-    connector::create_connector_by_url,
+    connector::configserver_connector::ConfigServerConnector,
     instance_manager::NetworkInstanceManager,
     launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
@@ -1130,28 +1130,49 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
     if cli.config_server.is_some() {
         set_default_machine_id(cli.machine_id);
+        // support comma-separated list of config servers
         let config_server_url_s = cli.config_server.clone().unwrap();
-        let config_server_url = match url::Url::parse(&config_server_url_s) {
-            Ok(u) => u,
-            Err(_) => format!(
-                "udp://config-server.easytier.cn:22020/{}",
-                config_server_url_s
-            )
-            .parse()
-            .unwrap(),
-        };
+        let trimmed_server_url_s: Vec<String> = config_server_url_s
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
-        let mut c_url = config_server_url.clone();
-        c_url.set_path("");
-        let token = config_server_url
-            .path_segments()
-            .and_then(|mut x| x.next())
-            .map(|x| x.to_string())
-            .unwrap_or_default();
+        if trimmed_server_url_s.is_empty() {
+            panic!("empty config_server");
+        }
+
+        // derive token from the first server that contains a path segment
+        let mut token = String::new();
+        let mut servers: Vec<url::Url> = Vec::new();
+        for server_s in &trimmed_server_url_s {
+            let mut _parsed_urls: Vec<url::Url> = match url::Url::parse(server_s) {
+                Ok(u) => vec![u],
+                Err(_) => vec![
+                    format!("udp://config-server.easytier.cn:22020/{}", server_s).parse().unwrap(),
+                    format!("tcp://config-server.easytier.cn:22021/{}", server_s).parse().unwrap(),
+                ],
+            };
+            if token.is_empty() {
+                if let Some(seg) = _parsed_urls
+                    .last()
+                    .and_then(|u| u.path_segments())
+                    .and_then(|mut s| s.next())
+                {
+                    token = seg.to_string();
+                }
+            }
+            servers.append(&mut _parsed_urls.iter().map(|u| {
+                let mut u = u.clone();
+                u.set_path("");
+                u
+            }).collect());
+        }
 
         println!(
-            "Entering config client mode...\n  server: {}\n  token: {}",
-            c_url, token,
+            "Entering config client mode...\n  servers: {:?}\n  token: {}",
+            servers.iter().map(|u| u.as_str().to_string()).collect::<Vec<_>>(),
+            token
         );
 
         println!("Official config website: https://easytier.cn/web");
@@ -1173,7 +1194,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             Some(hostname) => hostname.to_string(),
         };
         let _wc = web_client::WebClient::new(
-            create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
+            ConfigServerConnector::new(servers, global_ctx.clone(), IpVersion::Both),
             token.to_string(),
             hostname,
             manager,
