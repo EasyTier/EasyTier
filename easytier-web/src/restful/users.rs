@@ -75,6 +75,12 @@ impl Backend {
     }
 
     pub async fn register_new_user(&self, new_user: &RegisterNewUser) -> anyhow::Result<()> {
+        if new_user.credentials.username.contains(",") {
+            return Err(anyhow::anyhow!(
+                "Username cannot contain comma (`,`) character"
+            ));
+        }
+
         let hashed_password = password_auth::generate_hash(new_user.credentials.password.as_str());
         let txn = self.db.orm_db().begin().await?;
 
