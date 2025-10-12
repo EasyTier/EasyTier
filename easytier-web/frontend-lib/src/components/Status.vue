@@ -145,6 +145,34 @@ interface Chip {
   icon: string
 }
 
+// udp nat type
+enum NatType {
+  // has NAT; but own a single public IP, port is not changed
+  Unknown = 0,
+  OpenInternet = 1,
+  NoPAT = 2,
+  FullCone = 3,
+  Restricted = 4,
+  PortRestricted = 5,
+  Symmetric = 6,
+  SymUdpFirewall = 7,
+  SymmetricEasyInc = 8,
+  SymmetricEasyDec = 9,
+};
+
+const udpNatTypeStrMap = {
+  [NatType.Unknown]: 'Unknown',
+  [NatType.OpenInternet]: 'Open Internet',
+  [NatType.NoPAT]: 'No PAT',
+  [NatType.FullCone]: 'Full Cone',
+  [NatType.Restricted]: 'Restricted',
+  [NatType.PortRestricted]: 'Port Restricted',
+  [NatType.Symmetric]: 'Symmetric',
+  [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
+  [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
+  [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
+}
+
 const myNodeInfoChips = computed(() => {
   if (!props.curNetworkInst)
     return []
@@ -213,35 +241,8 @@ const myNodeInfoChips = computed(() => {
     } as Chip)
   }
 
-  // udp nat type
-  enum NatType {
-    // has NAT; but own a single public IP, port is not changed
-    Unknown = 0,
-    OpenInternet = 1,
-    NoPAT = 2,
-    FullCone = 3,
-    Restricted = 4,
-    PortRestricted = 5,
-    Symmetric = 6,
-    SymUdpFirewall = 7,
-    SymmetricEasyInc = 8,
-    SymmetricEasyDec = 9,
-  };
   const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
   if (udpNatType !== undefined) {
-    const udpNatTypeStrMap = {
-      [NatType.Unknown]: 'Unknown',
-      [NatType.OpenInternet]: 'Open Internet',
-      [NatType.NoPAT]: 'No PAT',
-      [NatType.FullCone]: 'Full Cone',
-      [NatType.Restricted]: 'Restricted',
-      [NatType.PortRestricted]: 'Port Restricted',
-      [NatType.Symmetric]: 'Symmetric',
-      [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
-      [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
-      [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
-    }
-
     chips.push({
       label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
       icon: '',
@@ -271,6 +272,13 @@ function txGlobalSum() {
 function rxGlobalSum() {
   return globalSumCommon('stats.rx_bytes')
 }
+
+function natType(info: PeerRoutePair): string {
+  const udpNatType: NatType | undefined = info.route?.stun_info?.udp_nat_type;
+  const value = udpNatTypeStrMap[udpNatType ?? NatType.Unknown];
+  return value !== 'Unknown' ? value : '';
+}
+
 
 const peerCount = computed(() => {
   if (!peerRouteInfos.value)
@@ -439,6 +447,7 @@ function showEventLogs() {
             <Column :field="txBytes" :header="t('upload_bytes')" />
             <Column :field="rxBytes" :header="t('download_bytes')" />
             <Column :field="lossRate" :header="t('loss_rate')" />
+            <Column :field="natType" :header="t('nat_type')" />
             <Column :header="t('status.version')">
               <template #body="slotProps">
                 <span>{{ version(slotProps.data) }}</span>

@@ -77,6 +77,7 @@ latency: Latency
 upload_bytes: Upload
 download_bytes: Download
 loss_rate: Loss Rate
+nat_type: NAT Type
 
 flags_switch: Feature Switch
 
