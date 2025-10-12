@@ -18,6 +18,7 @@ pub mod defer;
 pub mod dns;
 pub mod error;
 pub mod global_ctx;
+pub mod idn;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;

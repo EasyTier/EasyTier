@@ -109,6 +109,7 @@ anyhow = "1.0"
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"
+idna = "1.0"
 
 # for tun packet
 byteorder = "1.5.0"
