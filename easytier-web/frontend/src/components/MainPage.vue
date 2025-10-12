@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Api, I18nUtils } from 'easytier-frontend-lib'
+import { I18nUtils } from 'easytier-frontend-lib'
 import { computed, onMounted, ref, onUnmounted, nextTick } from 'vue';
 import { Button, TieredMenu } from 'primevue';
 import { useRoute, useRouter } from 'vue-router';
@@ -7,13 +7,14 @@ import { useDialog } from 'primevue/usedialog';
 import ChangePassword from './ChangePassword.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
+import ApiClient from '../modules/api';
 
 const { t } = useI18n()
 const route = useRoute();
 const router = useRouter();
-const api = computed<Api.ApiClient | undefined>(() => {
+const api = computed<ApiClient | undefined>(() => {
     try {
-        return new Api.ApiClient(atob(route.params.apiHost as string), () => {
+        return new ApiClient(atob(route.params.apiHost as string), () => {
             router.push({ name: 'login' });
         })
     } catch (e) {

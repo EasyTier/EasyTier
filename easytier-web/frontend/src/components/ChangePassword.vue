@@ -1,11 +1,11 @@
 <script lang="ts" setup>
 import { computed, inject, ref } from 'vue';
 import { Card, Password, Button } from 'primevue';
-import { Api } from 'easytier-frontend-lib';
+import ApiClient from '../modules/api';
 
 const dialogRef = inject<any>('dialogRef');
 
-const api = computed<Api.ApiClient>(() => dialogRef.value.data.api);
+const api = computed<ApiClient>(() => dialogRef.value.data.api);
 
 const password = ref('');
 
