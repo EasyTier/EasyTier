@@ -3,9 +3,10 @@ import { computed, onMounted, ref } from 'vue';
 import { Card, InputText, Password, Button, AutoComplete } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
-import { Api, I18nUtils } from 'easytier-frontend-lib';
+import { I18nUtils } from 'easytier-frontend-lib';
 import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
 import { useI18n } from 'vue-i18n'
+import ApiClient, { Credential, RegisterData } from '../modules/api';
 
 const { t } = useI18n()
 
@@ -13,7 +14,7 @@ defineProps<{
     isRegistering: boolean;
 }>();
 
-const api = computed<Api.ApiClient>(() => new Api.ApiClient(apiHost.value));
+const api = computed<ApiClient>(() => new ApiClient(apiHost.value));
 const router = useRouter();
 const toast = useToast();
 
@@ -28,7 +29,7 @@ const captchaSrc = computed(() => api.value.captcha_url());
 const onSubmit = async () => {
     // Add your login logic here
     saveApiHost(apiHost.value);
-    const credential: Api.Credential = { username: username.value, password: password.value, };
+    const credential: Credential = { username: username.value, password: password.value, };
     let ret = await api.value?.login(credential);
     if (ret.success) {
         localStorage.setItem('apiHost', btoa(apiHost.value));
@@ -43,8 +44,8 @@ const onSubmit = async () => {
 
 const onRegister = async () => {
     saveApiHost(apiHost.value);
-    const credential: Api.Credential = { username: registerUsername.value, password: registerPassword.value };
-    const registerReq: Api.RegisterData = { credentials: credential, captcha: captcha.value };
+    const credential: Credential = { username: registerUsername.value, password: registerPassword.value };
+    const registerReq: RegisterData = { credentials: credential, captcha: captcha.value };
     let ret = await api.value?.register(registerReq);
     if (ret.success) {
         toast.add({ severity: 'success', summary: 'Register Success', detail: ret.message, life: 2000 });
@@ -108,12 +109,12 @@ onMounted(() => {
                 <form v-else @submit.prevent="onRegister" class="space-y-4">
                     <div class="p-field">
                         <label for="register-username" class="block text-sm font-medium">{{ t('web.login.username')
-                        }}</label>
+                            }}</label>
                         <InputText id="register-username" v-model="registerUsername" required class="w-full" />
                     </div>
                     <div class="p-field">
                         <label for="register-password" class="block text-sm font-medium">{{ t('web.login.password')
-                        }}</label>
+                            }}</label>
                         <Password id="register-password" v-model="registerPassword" required toggleMask
                             :feedback="false" class="w-full" />
                     </div>

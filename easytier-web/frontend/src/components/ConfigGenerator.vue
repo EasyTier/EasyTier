@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { NetworkTypes } from 'easytier-frontend-lib';
 import { computed, ref } from 'vue';
-import { Api } from 'easytier-frontend-lib'
 import { AutoComplete, Divider, Button, Textarea } from "primevue";
 import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
+import ApiClient from '../modules/api';
 
-const api = computed<Api.ApiClient>(() => new Api.ApiClient(apiHost.value));
+const api = computed<ApiClient>(() => new ApiClient(apiHost.value));
 
 const apiHost = ref<string>(getInitialApiHost())
 const apiHostSuggestions = ref<Array<string>>([])
@@ -27,9 +27,7 @@ const errorMessage = ref<string>("");
 const generateConfig = (config: NetworkTypes.NetworkConfig) => {
   saveApiHost(apiHost.value)
   errorMessage.value = "";
-  api.value?.generate_config({
-    config: config
-  }).then((res) => {
+  api.value?.get_remote_client("").generate_config(config).then((res) => {
     if (res.error) {
       errorMessage.value = "Generation failed: " + res.error;
     } else if (res.toml_config) {
@@ -45,9 +43,7 @@ const generateConfig = (config: NetworkTypes.NetworkConfig) => {
 const parseConfig = async () => {
   try {
     errorMessage.value = "";
-    const res = await api.value?.parse_config({
-      toml_config: toml_config.value
-    });
+    const res = await api.value?.get_remote_client("").parse_config(toml_config.value);
 
     if (res.error) {
       errorMessage.value = "Parse failed: " + res.error;

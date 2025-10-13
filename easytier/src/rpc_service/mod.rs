@@ -11,6 +11,7 @@ mod vpn_portal;
 
 pub mod instance_manage;
 pub mod logger;
+pub mod remote_client;
 
 pub type ApiRpcServer = self::api::ApiRpcServer;
 
