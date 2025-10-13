@@ -2186,6 +2186,7 @@ dependencies = [
  "rstest",
  "rust-i18n",
  "rustls",
+ "rustls-native-certs",
  "serde",
  "serde_json",
  "serial_test",

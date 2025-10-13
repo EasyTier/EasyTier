@@ -19,12 +19,12 @@ use quinn::{
 
 use super::{
     check_scheme_and_get_socket_addr,
-    insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
+    insecure_tls::{get_insecure_tls_cert, get_tls_client_config_by_url},
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
-pub fn configure_client() -> ClientConfig {
-    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
+pub fn configure_client(url: &url::Url) -> ClientConfig {
+    let client_crypto = QuicClientConfig::try_from(get_tls_client_config_by_url(url)).unwrap();
     let mut client_config = ClientConfig::new(Arc::new(client_crypto));
 
     // // Create a new TransportConfig and set BBR
@@ -251,11 +251,13 @@ impl TunnelConnector for QUICTunnelConnector {
         };
 
         let mut endpoint = Endpoint::client(local_addr.parse().unwrap())?;
-        endpoint.set_default_client_config(configure_client());
+        endpoint.set_default_client_config(configure_client(&self.addr));
+
+        let server_name = self.addr.host_str().unwrap_or("localhost");
 
         // connect to server
         let connection = endpoint
-            .connect(addr, "localhost")
+            .connect(addr, server_name)
             .unwrap()
             .await
             .with_context(|| "connect failed")?;
@@ -329,13 +331,13 @@ mod tests {
     async fn ipv6_domain_pingpong() {
         let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap());
         let mut connector =
-            QUICTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
+            QUICTunnelConnector::new("quic://test.easytier.top:31016?insecure=1".parse().unwrap());
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
         let listener = QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap());
         let mut connector =
-            QUICTunnelConnector::new("quic://test.easytier.top:31016".parse().unwrap());
+            QUICTunnelConnector::new("quic://test.easytier.top:31016?insecure=1".parse().unwrap());
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
     }
