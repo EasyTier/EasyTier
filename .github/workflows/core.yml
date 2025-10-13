@@ -194,7 +194,7 @@ jobs:
             elif [[ $TARGET =~ ^riscv64.*$ || $TARGET =~ ^loongarch64.*$ ]]; then
               CORE_FEATURES="--features=mimalloc"
             else
-              CORE_FEATURES="--features=jemalloc"
+              CORE_FEATURES="--features=mimalloc"
             fi
             cargo build --release --target $TARGET --package=easytier-web --features=embed
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
