@@ -655,8 +655,10 @@ impl NetworkConfig {
                 self.mapped_listeners
                     .iter()
                     .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
+                        let converted_s = safe_convert_idn_to_ascii(s);
+                        converted_s
+                            .parse()
+                            .with_context(|| format!("mapped listener is not a valid url: {}", converted_s))
                             .unwrap()
                     })
                     .map(|s: url::Url| {
