@@ -696,7 +696,7 @@ impl NetworkConfig {
         if let Some(disable_quic_input) = self.disable_quic_input {
             flags.disable_quic_input = disable_quic_input;
         }
-        
+
         if let Some(quic_listen_port) = self.quic_listen_port {
             flags.quic_listen_port = quic_listen_port as u32;
         }

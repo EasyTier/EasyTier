@@ -387,7 +387,7 @@ struct NetworkOptions {
 
     // if not in relay_network_whitelist:
     // for foreign virtual network, will refuse the incoming connection
-    // for local virtual network, will refuse relaying tun packet
+    // for local virtual network, will refuse to relay tun packets
     #[arg(
         long,
         env = "ET_RELAY_NETWORK_WHITELIST",
@@ -653,10 +653,10 @@ impl Cli {
             return Ok(vec![]);
         }
 
-        let origin_listners = listeners;
+        let origin_listeners = listeners;
         let mut listeners: Vec<String> = Vec::new();
-        if origin_listners.len() == 1 {
-            if let Ok(port) = origin_listners[0].parse::<u16>() {
+        if origin_listeners.len() == 1 {
+            if let Ok(port) = origin_listeners[0].parse::<u16>() {
                 for (proto, offset) in PROTO_PORT_OFFSET {
                     listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
                 }
@@ -664,7 +664,7 @@ impl Cli {
             }
         }
 
-        for l in &origin_listners {
+        for l in &origin_listeners {
             let proto_port: Vec<&str> = l.split(':').collect();
             if proto_port.len() > 2 {
                 if let Ok(url) = l.parse::<url::Url>() {
@@ -1354,7 +1354,7 @@ async fn main() -> ExitCode {
 }
 
 async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
-    // Check if config file is provided
+    // Check if a config file is provided
     let config_files = cli
         .config_file
         .as_ref()
