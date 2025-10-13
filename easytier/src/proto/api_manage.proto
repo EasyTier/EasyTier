@@ -72,6 +72,7 @@ message NetworkConfig {
 
   optional bool enable_quic_proxy = 45;
   optional bool disable_quic_input = 46;
+  optional int32 quic_listen_port = 50;
   repeated PortForwardConfig port_forwards = 48;
 
   optional bool disable_sym_hole_punching = 49;

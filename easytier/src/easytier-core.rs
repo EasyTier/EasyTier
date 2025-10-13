@@ -493,6 +493,14 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_QUIC_LISTEN_PORT",
+        help = t!("core_clap.quic_listen_port").to_string(),
+        num_args = 0..=1,
+    )]
+    quic_listen_port: Option<u16>,
+
+    #[arg(
+        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -930,6 +938,9 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
+        if let Some(quic_listen_port) = self.quic_listen_port {
+            f.quic_listen_port = quic_listen_port as u32;
+        }
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
