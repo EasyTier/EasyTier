@@ -22,6 +22,7 @@ const peerRouteInfos = computed(() => {
         ipv4_addr: my_node_info?.virtual_ipv4,
         hostname: my_node_info?.hostname,
         version: my_node_info?.version,
+        stun_info: my_node_info?.stun_info
       },
     }, ...(props.curNetworkInst.detail?.peer_route_pairs || [])]
   }
@@ -274,11 +275,12 @@ function rxGlobalSum() {
 }
 
 function natType(info: PeerRoutePair): string {
-  const udpNatType: NatType | undefined = info.route?.stun_info?.udp_nat_type;
-  const value = udpNatTypeStrMap[udpNatType ?? NatType.Unknown];
-  return value !== 'Unknown' ? value : '';
-}
+  const udpNatType = info.route?.stun_info?.udp_nat_type;
+  if (udpNatType !== undefined)
+    return udpNatTypeStrMap[udpNatType as NatType]
 
+  return ''
+}
 
 const peerCount = computed(() => {
   if (!peerRouteInfos.value)
