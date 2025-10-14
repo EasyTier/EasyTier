@@ -221,7 +221,7 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async generate_config(config: NetworkTypes.NetworkConfig): Promise<Api.GenerateConfigResponse> {
         try {
-            const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', config);
+            const response = await this.client.post<any, GenerateConfigResponse>('/generate-config', { config });
             return response;
         } catch (error) {
             if (error instanceof AxiosError) {
@@ -232,7 +232,7 @@ class WebRemoteClient implements Api.RemoteClient {
     }
     async parse_config(toml_config: string): Promise<Api.ParseConfigResponse> {
         try {
-            const response = await this.client.post<any, ParseConfigResponse>('/parse-config', toml_config);
+            const response = await this.client.post<any, ParseConfigResponse>('/parse-config', { toml_config });
             return response;
         } catch (error) {
             if (error instanceof AxiosError) {
