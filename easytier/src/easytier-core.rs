@@ -387,7 +387,7 @@ struct NetworkOptions {
 
     // if not in relay_network_whitelist:
     // for foreign virtual network, will refuse the incoming connection
-    // for local virtual network, will refuse relaying tun packet
+    // for local virtual network, will refuse to relay tun packets
     #[arg(
         long,
         env = "ET_RELAY_NETWORK_WHITELIST",
@@ -490,6 +490,14 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     disable_quic_input: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_QUIC_LISTEN_PORT",
+        help = t!("core_clap.quic_listen_port").to_string(),
+        num_args = 0..=1,
+    )]
+    quic_listen_port: Option<u16>,
 
     #[arg(
         long,
@@ -645,10 +653,10 @@ impl Cli {
             return Ok(vec![]);
         }
 
-        let origin_listners = listeners;
+        let origin_listeners = listeners;
         let mut listeners: Vec<String> = Vec::new();
-        if origin_listners.len() == 1 {
-            if let Ok(port) = origin_listners[0].parse::<u16>() {
+        if origin_listeners.len() == 1 {
+            if let Ok(port) = origin_listeners[0].parse::<u16>() {
                 for (proto, offset) in PROTO_PORT_OFFSET {
                     listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
                 }
@@ -656,7 +664,7 @@ impl Cli {
             }
         }
 
-        for l in &origin_listners {
+        for l in &origin_listeners {
             let proto_port: Vec<&str> = l.split(':').collect();
             if proto_port.len() > 2 {
                 if let Ok(url) = l.parse::<url::Url>() {
@@ -930,6 +938,9 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
+        if let Some(quic_listen_port) = self.quic_listen_port {
+            f.quic_listen_port = quic_listen_port as u32;
+        }
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
@@ -1343,7 +1354,7 @@ async fn main() -> ExitCode {
 }
 
 async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
-    // Check if config file is provided
+    // Check if a config file is provided
     let config_files = cli
         .config_file
         .as_ref()

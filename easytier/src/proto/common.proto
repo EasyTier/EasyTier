@@ -41,6 +41,8 @@ message FlagsInConfig {
   bool enable_quic_proxy = 24;
   // does this peer allow quic input
   bool disable_quic_input = 25;
+  // quic listen port
+  uint32 quic_listen_port = 33;
 
   // a global relay limit, only work for foreign network
   uint64 foreign_relay_bps_limit = 26;
