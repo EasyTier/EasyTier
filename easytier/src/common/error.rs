@@ -48,6 +48,12 @@ pub enum Error {
 
     #[error("secret key error: {0}")]
     SecretKeyError(String),
+
+    #[error("UPnP gateway not found")]
+    UpnpGatewayNotFound(#[from] igd_next::SearchError),
+
+    #[error("UPnP add port error")]
+    UpnpAddPortError(#[from] igd_next::AddPortError),
 }
 
 pub type Result<T> = result::Result<T, Error>;
