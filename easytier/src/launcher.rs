@@ -10,6 +10,7 @@ use crate::{
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
+        idn::safe_convert_idn_to_ascii,
     },
     instance::instance::Instance,
     proto::api::instance::list_peer_route_pair,
@@ -523,9 +524,13 @@ impl NetworkConfig {
         {
             NetworkingMethod::PublicServer => {
                 let public_server_url = self.public_server_url.clone().unwrap_or_default();
+                let converted_public_server_url = safe_convert_idn_to_ascii(&public_server_url);
                 cfg.set_peers(vec![PeerConfig {
-                    uri: public_server_url.parse().with_context(|| {
-                        format!("failed to parse public server uri: {}", public_server_url)
+                    uri: converted_public_server_url.parse().with_context(|| {
+                        format!(
+                            "failed to parse public server uri: {}",
+                            converted_public_server_url
+                        )
                     })?,
                 }]);
             }
@@ -535,10 +540,11 @@ impl NetworkConfig {
                     if peer_url.is_empty() {
                         continue;
                     }
+                    let converted_peer_url = safe_convert_idn_to_ascii(peer_url);
                     peers.push(PeerConfig {
-                        uri: peer_url
-                            .parse()
-                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                        uri: converted_peer_url.parse().with_context(|| {
+                            format!("failed to parse peer uri: {}", converted_peer_url)
+                        })?,
                     });
                 }
 
@@ -552,11 +558,10 @@ impl NetworkConfig {
             if listener_url.is_empty() {
                 continue;
             }
-            listener_urls.push(
-                listener_url
-                    .parse()
-                    .with_context(|| format!("failed to parse listener uri: {}", listener_url))?,
-            );
+            let converted_listener_url = safe_convert_idn_to_ascii(listener_url);
+            listener_urls.push(converted_listener_url.parse().with_context(|| {
+                format!("failed to parse listener uri: {}", converted_listener_url)
+            })?);
         }
         cfg.set_listeners(listener_urls);
 
@@ -650,8 +655,12 @@ impl NetworkConfig {
                 self.mapped_listeners
                     .iter()
                     .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("mapped listener is not a valid url: {}", s))
+                        let converted_s = safe_convert_idn_to_ascii(s);
+                        converted_s
+                            .parse()
+                            .with_context(|| {
+                                format!("mapped listener is not a valid url: {}", converted_s)
+                            })
                             .unwrap()
                     })
                     .map(|s: url::Url| {

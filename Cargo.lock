@@ -2152,6 +2152,7 @@ dependencies = [
  "http_req",
  "humansize",
  "humantime-serde",
+ "idna 1.0.3",
  "kcp-sys",
  "machine-uid",
  "maplit",
