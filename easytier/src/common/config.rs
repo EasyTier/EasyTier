@@ -47,6 +47,7 @@ pub fn gen_default_flags() -> Flags {
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
+        quic_listen_port: 0,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),

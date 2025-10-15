@@ -3,9 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { Button, Drawer, ProgressSpinner, useToast, InputSwitch, Popover, Dropdown, Toolbar } from 'primevue';
 import Tooltip from 'primevue/tooltip';
 import { useRoute, useRouter } from 'vue-router';
-import { Api, Utils } from 'easytier-frontend-lib';
+import { Utils } from 'easytier-frontend-lib';
 import DeviceDetails from './DeviceDetails.vue';
 import { useI18n } from 'vue-i18n'
+import ApiClient from '../modules/api';
 
 const { t } = useI18n()
 
@@ -15,7 +16,7 @@ declare const window: Window & typeof globalThis;
 const vTooltip = Tooltip;
 
 const props = defineProps({
-    api: Api.ApiClient,
+    api: ApiClient,
 });
 
 const detailPopover = ref();
