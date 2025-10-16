@@ -589,9 +589,14 @@ pub async fn subnet_proxy_three_node_test(
     #[values(true, false)] enable_quic_proxy: bool,
     #[values(true, false)] disable_kcp_input: bool,
     #[values(true, false)] disable_quic_input: bool,
+    #[values(0, 80)] quic_listen_port: u32,
     #[values(true, false)] dst_enable_kcp_proxy: bool,
     #[values(true, false)] dst_enable_quic_proxy: bool,
 ) {
+    if disable_quic_input && quic_listen_port != 0 {
+        return;
+    }
+
     let insts = init_three_node_ex(
         "udp",
         |cfg| {
@@ -601,6 +606,7 @@ pub async fn subnet_proxy_three_node_test(
                 flags.disable_kcp_input = disable_kcp_input;
                 flags.enable_kcp_proxy = dst_enable_kcp_proxy;
                 flags.disable_quic_input = disable_quic_input;
+                flags.quic_listen_port = quic_listen_port;
                 flags.enable_quic_proxy = dst_enable_quic_proxy;
                 cfg.set_flags(flags);
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
