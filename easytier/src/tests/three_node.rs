@@ -388,7 +388,7 @@ async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str) {
     .await;
 }
 
-async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str) {
+async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str, net_ns: Option<NetNS>) {
     use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
     use rand::Rng;
 
@@ -399,16 +399,19 @@ async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str) {
     let mut buf = vec![0; 32];
     rand::thread_rng().fill(&mut buf[..]);
 
-    let ns_name = if connect_ip == "10.144.144.3" {
-        "net_c"
-    } else {
-        "net_d"
-    };
+    let net_ns = net_ns.unwrap_or_else(|| {
+        let default = if connect_ip == "10.144.144.3" {
+            "net_c"
+        } else {
+            "net_d"
+        };
+        NetNS::new(Some(default.into()))
+    });
 
     _tunnel_pingpong_netns(
         tcp_listener,
         tcp_connector,
-        NetNS::new(Some(ns_name.into())),
+        net_ns,
         NetNS::new(Some("net_a".into())),
         buf,
     )
@@ -429,12 +432,16 @@ async fn subnet_proxy_test_icmp(target_ip: &str) {
     .await;
 }
 
+#[rstest::rstest]
+#[serial_test::serial]
 #[tokio::test]
-pub async fn quic_proxy() {
-    let insts = init_three_node_ex(
+pub async fn quic_proxy(#[values(true, false)] rebind: bool) {
+    let [inst1, inst2, inst3] = match init_three_node_ex(
         "udp",
         |cfg| {
             if cfg.get_inst_name() == "inst3" {
+                cfg.set_dhcp(true);
+                cfg.set_ipv4(None);
                 cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
                     .unwrap();
             } else if cfg.get_inst_name() == "inst1" {
@@ -446,14 +453,99 @@ pub async fn quic_proxy() {
         },
         false,
     )
+    .await
+    .try_into()
+    {
+        Ok(i) => i,
+        Err(_) => panic!("should have exactly 3 instances"),
+    };
+
+    wait_for_condition(
+        || async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            tracing::trace!("waiting for DHCP on inst3");
+            inst3
+                .get_global_ctx()
+                .get_ipv4()
+                .is_some_and(|ip| ip == "10.144.144.3/24".parse().unwrap())
+        },
+        Duration::from_secs(30),
+    )
     .await;
 
-    assert_eq!(insts[2].get_global_ctx().config.get_proxy_cidrs().len(), 1);
+    let mut inst3_inet4 = inst3.get_global_ctx().get_ipv4().unwrap();
+
+    let inst4 = if !rebind {
+        None
+    } else {
+        let mut inst4 = Instance::new(get_inst_config(
+            "inst4",
+            Some("net_d"),
+            &inst3_inet4.to_string(),
+            "fd00::4/64",
+        ));
+
+        inst4.run().await.unwrap();
+
+        inst4
+            .get_conn_manager()
+            .add_connector(UdpTunnelConnector::new(
+                "udp://10.1.2.3:11010".parse().unwrap(),
+            ));
+
+        wait_for_condition(
+            || async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::trace!("waiting for routes to appear on inst4");
+                let routes = inst4.get_peer_manager().list_routes().await;
+                routes.len() == 3
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        inst3_inet4 = timeout(Duration::from_secs(30), async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                tracing::trace!("waiting for DHCP on inst3");
+                let ctx = inst3.get_global_ctx();
+                if let Some(ip) = ctx.get_ipv4() {
+                    if ip != inst3_inet4 {
+                        break ip;
+                    }
+                    tracing::trace!("inst3 ipv4 not changed yet: {}", ip);
+                }
+            }
+        })
+        .await
+        .map_err(|_| anyhow!("timeout waiting for DHCP ip change on inst3"))
+        .unwrap();
+
+        wait_for_condition(
+            || async {
+                tracing::trace!("waiting for propagation of new ip of inst3");
+                let routes = inst4.get_peer_manager().list_routes().await;
+                routes
+                    .iter()
+                    .any(|r| r.ipv4_addr.is_some_and(|addr| addr == inst3_inet4.into()))
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        Some(inst4)
+    };
+
+    let inst3_ipv4 = inst3_inet4.address().to_string();
+
+    tracing::info!("inst3 IP changed to {}", inst3_ipv4);
+
+    assert_eq!(inst3.get_global_ctx().config.get_proxy_cidrs().len(), 1);
 
     wait_proxy_route_appear(
-        &insts[0].get_peer_manager(),
-        "10.144.144.3/24",
-        insts[2].peer_id(),
+        &inst1.get_peer_manager(),
+        &inst3_inet4.to_string(),
+        inst3.peer_id(),
         "10.1.2.0/24",
     )
     .await;
@@ -461,11 +553,16 @@ pub async fn quic_proxy() {
     let target_ip = "10.1.2.4";
 
     subnet_proxy_test_icmp(target_ip).await;
-    subnet_proxy_test_icmp("10.144.144.3").await;
-    subnet_proxy_test_tcp(target_ip, target_ip).await;
-    subnet_proxy_test_tcp("0.0.0.0", "10.144.144.3").await;
+    subnet_proxy_test_icmp(&inst3_ipv4).await;
+    subnet_proxy_test_tcp(target_ip, target_ip, None).await;
+    subnet_proxy_test_tcp(
+        "0.0.0.0",
+        &inst3_ipv4,
+        Some(inst3.get_global_ctx().net_ns.clone()),
+    )
+    .await;
 
-    let metrics = insts[0]
+    let metrics = inst1
         .get_global_ctx()
         .stats_manager()
         .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
@@ -473,7 +570,13 @@ pub async fn quic_proxy() {
     assert_eq!(1, metrics[0].value);
     assert_eq!(1, metrics[1].value);
 
-    drop_insts(insts).await;
+    drop_insts(
+        vec![inst1, inst2, inst3]
+            .into_iter()
+            .chain(inst4.into_iter())
+            .collect::<Vec<_>>(),
+    )
+    .await;
 }
 
 #[rstest::rstest]
@@ -557,7 +660,7 @@ pub async fn subnet_proxy_three_node_test(
         } else {
             "10.1.2.4"
         };
-        subnet_proxy_test_tcp(listen_ip, target_ip).await;
+        subnet_proxy_test_tcp(listen_ip, target_ip, None).await;
         subnet_proxy_test_udp(listen_ip, target_ip).await;
     }
 
@@ -878,11 +981,12 @@ pub async fn foreign_network_forward_nic_data() {
     drop_insts(vec![center_inst, inst1, inst2]).await;
 }
 
-use std::{net::SocketAddr, str::FromStr};
-
+use anyhow::anyhow;
 use defguard_wireguard_rs::{
     host::Peer, key::Key, net::IpAddrMask, InterfaceConfiguration, WGApi, WireguardInterfaceApi,
 };
+use std::{net::SocketAddr, str::FromStr};
+use tokio::time::timeout;
 
 fn run_wireguard_client(
     endpoint: SocketAddr,
