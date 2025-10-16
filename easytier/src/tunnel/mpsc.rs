@@ -9,8 +9,8 @@ use crate::{common::scoped_task::ScopedTask, proto::common::TunnelInfo};
 
 use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 
-// use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
-use tachyonix::{channel, Receiver, Sender, TrySendError};
+use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
+// use tachyonix::{channel, Receiver, Sender, TrySendError};
 
 use futures::SinkExt;
 
