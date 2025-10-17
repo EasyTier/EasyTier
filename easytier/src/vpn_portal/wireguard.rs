@@ -16,7 +16,7 @@ use crate::{
     common::{
         config::NetworkIdentity,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        join_joinset_background,
+        join_joinset_background, shrink_dashmap,
     },
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::{
@@ -144,6 +144,7 @@ impl WireGuardImpl {
                     "The wg client changed its endpoint address, not removing from table"
                 ),
             }
+            shrink_dashmap(&wg_peer_ip_table, None);
         }
 
         peer_mgr

@@ -11,7 +11,6 @@ use super::{
     peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
-use crate::{common::scoped_task::ScopedTask, proto::api::instance::PeerConnInfo};
 use crate::{
     common::{
         error::Error,
@@ -19,6 +18,10 @@ use crate::{
         PeerId,
     },
     tunnel::packet_def::ZCPacket,
+};
+use crate::{
+    common::{scoped_task::ScopedTask, shrink_dashmap},
+    proto::api::instance::PeerConnInfo,
 };
 
 type ArcPeerConn = Arc<PeerConn>;
@@ -72,6 +75,7 @@ impl Peer {
                                 global_ctx_copy.issue_event(GlobalCtxEvent::PeerConnRemoved(
                                     conn.get_conn_info(),
                                 ));
+                                shrink_dashmap(&conns_copy, Some(4));
                             }
                         }
 

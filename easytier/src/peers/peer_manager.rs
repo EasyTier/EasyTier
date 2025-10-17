@@ -24,6 +24,7 @@ use crate::{
         constants::EASYTIER_VERSION,
         error::Error,
         global_ctx::{ArcGlobalCtx, NetworkIdentity},
+        shrink_dashmap,
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         stun::StunInfoCollectorTrait,
         PeerId,
@@ -514,6 +515,7 @@ impl PeerManager {
         }
 
         self.reserved_my_peer_id_map.remove(&peer_network_name);
+        shrink_dashmap(&self.reserved_my_peer_id_map, None);
 
         tracing::info!("add tunnel as server done");
         Ok(())

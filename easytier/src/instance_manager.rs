@@ -84,6 +84,7 @@ impl NetworkInstanceManager {
                 }
                 stop_check_notifier.notify_one();
                 instance_stop_tasks.remove(&instance_id);
+                instance_stop_tasks.shrink_to_fit();
             })),
         );
         Ok(())
@@ -112,6 +113,7 @@ impl NetworkInstanceManager {
         instance_ids: Vec<uuid::Uuid>,
     ) -> Result<Vec<uuid::Uuid>, anyhow::Error> {
         self.instance_map.retain(|k, _| instance_ids.contains(k));
+        self.instance_map.shrink_to_fit();
         Ok(self.list_network_instance_ids())
     }
 
@@ -120,6 +122,7 @@ impl NetworkInstanceManager {
         instance_ids: Vec<uuid::Uuid>,
     ) -> Result<Vec<uuid::Uuid>, anyhow::Error> {
         self.instance_map.retain(|k, _| !instance_ids.contains(k));
+        self.instance_map.shrink_to_fit();
         Ok(self.list_network_instance_ids())
     }
 

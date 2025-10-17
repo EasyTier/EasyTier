@@ -442,6 +442,7 @@ impl RpcServerHook for MagicDnsServerInstanceData {
             item.value_mut().remove(&remote_addr);
         }
         self.route_infos.retain(|_, v| !v.is_empty());
+        self.route_infos.shrink_to_fit();
         self.update().await;
     }
 }

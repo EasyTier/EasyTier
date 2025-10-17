@@ -132,12 +132,6 @@ impl EasyTierLauncher {
         let mut instance = Instance::new(cfg);
         let mut tasks = JoinSet::new();
 
-        api_service
-            .write()
-            .unwrap()
-            .replace(Arc::new(instance.get_api_rpc_service()));
-        drop(api_service);
-
         // Subscribe to global context events
         let global_ctx = instance.get_global_ctx();
         let data_c = data.clone();
@@ -163,6 +157,13 @@ impl EasyTierLauncher {
         Self::run_routine_for_android(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
+
+        api_service
+            .write()
+            .unwrap()
+            .replace(Arc::new(instance.get_api_rpc_service()));
+        drop(api_service);
+
         stop_signal.notified().await;
 
         tasks.abort_all();

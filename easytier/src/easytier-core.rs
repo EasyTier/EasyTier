@@ -7,7 +7,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use anyhow::Context;
@@ -27,6 +27,7 @@ use easytier::{
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
+    defer,
     instance_manager::NetworkInstanceManager,
     launcher::{add_proxy_network_to_config, ConfigSource},
     proto::common::{CompressionAlgoPb, NatType},
@@ -57,7 +58,12 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[cfg(feature = "jemalloc-prof")]
 #[allow(non_upper_case_globals)]
 #[export_name = "malloc_conf"]
-pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19,retain:false\0";
+
+#[cfg(not(feature = "jemalloc-prof"))]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"retain:false\0";
 
 fn set_prof_active(_active: bool) {
     #[cfg(feature = "jemalloc-prof")]
@@ -68,16 +74,21 @@ fn set_prof_active(_active: bool) {
     }
 }
 
+fn get_dump_profile_path(cur_allocated: usize, suffix: &str) -> String {
+    format!(
+        "profile-{}-{}.{}",
+        cur_allocated,
+        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"),
+        suffix
+    )
+}
+
 fn dump_profile(_cur_allocated: usize) {
     #[cfg(feature = "jemalloc-prof")]
     {
         const PROF_DUMP: &[u8] = b"prof.dump\0";
         static mut PROF_DUMP_FILE_NAME: [u8; 128] = [0; 128];
-        let file_name_str = format!(
-            "profile-{}-{}.out",
-            _cur_allocated,
-            chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
-        );
+        let file_name_str = get_dump_profile_path(_cur_allocated, "out");
         // copy file name to PROF_DUMP
         let file_name = file_name_str.as_bytes();
         let len = file_name.len();
@@ -1127,6 +1138,7 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 }
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
+    defer!(dump_profile(0););
     init_logger(&cli.logging_options, true)?;
 
     let manager = Arc::new(NetworkInstanceManager::new());
@@ -1255,7 +1267,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn memory_monitor() {
+fn memory_monitor(_force_dump: Arc<AtomicBool>) {
     #[cfg(feature = "jemalloc-prof")]
     {
         let mut last_peak_size = 0;
@@ -1273,9 +1285,10 @@ fn memory_monitor() {
             );
 
             // dump every 75MB
-            if last_peak_size > 0
+            if (last_peak_size > 0
                 && new_heap_size > last_peak_size
-                && new_heap_size - last_peak_size > 75 * 1024 * 1024
+                && new_heap_size - last_peak_size > 10 * 1024 * 1024)
+                || _force_dump.load(std::sync::atomic::Ordering::Relaxed)
             {
                 println!(
                     "heap size increased: {} bytes, time: {}",
@@ -1284,6 +1297,14 @@ fn memory_monitor() {
                 );
                 dump_profile(new_heap_size);
                 last_peak_size = new_heap_size;
+                if _force_dump.load(std::sync::atomic::Ordering::Relaxed) {
+                    // also dump whole jemalloc stats
+                    use jemalloc_ctl::stats_print::stats_print;
+                    let tmp_file = get_dump_profile_path(new_heap_size, "stats");
+                    let mut file = std::fs::File::create(tmp_file).unwrap();
+                    let _ = stats_print(&mut file, Default::default());
+                    _force_dump.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             if last_peak_size == 0 {
@@ -1318,7 +1339,20 @@ async fn main() -> ExitCode {
     };
 
     set_prof_active(true);
-    let _monitor = std::thread::spawn(memory_monitor);
+    // register a signal handler to set force dump when signal usr1 is received
+    let force_dump = Arc::new(AtomicBool::new(false));
+    #[cfg(all(feature = "jemalloc-prof", not(target_os = "windows")))]
+    {
+        let force_dump_clone = force_dump.clone();
+        let mut sigusr1 =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).unwrap();
+        tokio::task::spawn(async move {
+            while sigusr1.recv().await.is_some() {
+                force_dump_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+    let _monitor = std::thread::spawn(move || memory_monitor(force_dump));
 
     let cli = parse_cli();
 
@@ -1346,8 +1380,6 @@ async fn main() -> ExitCode {
     }
 
     println!("Stopping easytier...");
-
-    dump_profile(0);
     set_prof_active(false);
 
     ExitCode::from(ret_code)

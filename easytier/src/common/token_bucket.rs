@@ -178,6 +178,7 @@ impl TokenBucketManager {
             loop {
                 // Retain only buckets that are still in use
                 buckets_clone.retain(|_, bucket| Arc::<TokenBucket>::strong_count(bucket) > 1);
+                buckets_clone.shrink_to_fit();
                 // Sleep for a while before next retention check
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
