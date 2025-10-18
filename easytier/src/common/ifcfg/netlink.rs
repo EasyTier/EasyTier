@@ -474,17 +474,16 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        if ip.is_none() {
+        if let Some(ip) = ip {
+            let prefix_len = Self::get_prefix_len(name, ip.address())?;
+            Self::remove_one_ip(name, ip.address(), prefix_len)?;
+        } else {
             let addrs = Self::list_addresses(name)?;
             for addr in addrs {
                 if let IpAddr::V4(ipv4) = addr.address() {
                     Self::remove_one_ip(name, ipv4, addr.network_length())?;
                 }
             }
-        } else {
-            let ip = ip.unwrap();
-            let prefix_len = Self::get_prefix_len(name, ip.address())?;
-            Self::remove_one_ip(name, ip.address(), prefix_len)?;
         }
 
         Ok(())
@@ -520,7 +519,10 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        if ip.is_none() {
+        if let Some(ipv6) = ip {
+            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
+            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
+        } else {
             let addrs = Self::list_addresses(name)?;
             for addr in addrs {
                 if let IpAddr::V6(ipv6) = addr.address() {
@@ -528,10 +530,6 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                     Self::remove_one_ipv6(name, ipv6, prefix_len)?;
                 }
             }
-        } else {
-            let ipv6 = ip.unwrap();
-            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
-            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
         }
 
         Ok(())

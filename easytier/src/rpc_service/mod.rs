@@ -13,7 +13,7 @@ pub mod instance_manage;
 pub mod logger;
 pub mod remote_client;
 
-pub type ApiRpcServer = self::api::ApiRpcServer;
+pub type ApiRpcServer<T> = self::api::ApiRpcServer<T>;
 
 pub trait InstanceRpcService: Sync + Send {
     fn get_peer_manage_service(

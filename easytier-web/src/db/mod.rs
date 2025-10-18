@@ -2,7 +2,10 @@
 #[allow(unused_imports)]
 pub mod entity;
 
-use easytier::rpc_service::remote_client::{ListNetworkProps, Storage};
+use easytier::{
+    launcher::NetworkConfig,
+    rpc_service::remote_client::{ListNetworkProps, Storage},
+};
 use entity::user_running_network_configs;
 use sea_orm::{
     prelude::Expr, sea_query::OnConflict, ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait,
@@ -94,7 +97,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
         &self,
         (user_id, device_id): (UserIdInDb, Uuid),
         network_inst_id: Uuid,
-        network_config: impl ToString + Send,
+        network_config: NetworkConfig,
     ) -> Result<(), DbErr> {
         let txn = self.orm_db().begin().await?;
 
@@ -111,7 +114,9 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
             user_id: sea_orm::Set(user_id),
             device_id: sea_orm::Set(device_id.to_string()),
             network_instance_id: sea_orm::Set(network_inst_id.to_string()),
-            network_config: sea_orm::Set(network_config.to_string()),
+            network_config: sea_orm::Set(
+                serde_json::to_string(&network_config).map_err(|e| DbErr::Json(e.to_string()))?,
+            ),
             disabled: sea_orm::Set(false),
             create_time: sea_orm::Set(chrono::Local::now().fixed_offset()),
             update_time: sea_orm::Set(chrono::Local::now().fixed_offset()),
@@ -126,16 +131,19 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
         txn.commit().await
     }
 
-    async fn delete_network_config(
+    async fn delete_network_configs(
         &self,
         (user_id, _): (UserIdInDb, Uuid),
-        network_inst_id: Uuid,
+        network_inst_ids: &[Uuid],
     ) -> Result<(), DbErr> {
         use entity::user_running_network_configs as urnc;
 
         urnc::Entity::delete_many()
             .filter(urnc::Column::UserId.eq(user_id))
-            .filter(urnc::Column::NetworkInstanceId.eq(network_inst_id.to_string()))
+            .filter(
+                urnc::Column::NetworkInstanceId
+                    .is_in(network_inst_ids.iter().map(|id| id.to_string())),
+            )
             .exec(self.orm_db())
             .await?;
 
@@ -220,7 +228,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
 
 #[cfg(test)]
 mod tests {
-    use easytier::rpc_service::remote_client::Storage;
+    use easytier::{proto::api::manage::NetworkConfig, rpc_service::remote_client::Storage};
     use sea_orm::{ColumnTrait, EntityTrait, QueryFilter as _};
 
     use crate::db::{entity::user_running_network_configs, Db, ListNetworkProps};
@@ -229,7 +237,11 @@ mod tests {
     async fn test_user_network_config_management() {
         let db = Db::memory_db().await;
         let user_id = 1;
-        let network_config = "test_config";
+        let network_config = NetworkConfig {
+            network_name: Some("test_config".to_string()),
+            ..Default::default()
+        };
+        let network_config_json = serde_json::to_string(&network_config).unwrap();
         let inst_id = uuid::Uuid::new_v4();
         let device_id = uuid::Uuid::new_v4();
 
@@ -244,10 +256,14 @@ mod tests {
             .unwrap()
             .unwrap();
         println!("{:?}", result);
-        assert_eq!(result.network_config, network_config);
+        assert_eq!(result.network_config, network_config_json);
 
         // overwrite the config
-        let network_config = "test_config2";
+        let network_config = NetworkConfig {
+            network_name: Some("test_config2".to_string()),
+            ..Default::default()
+        };
+        let network_config_json = serde_json::to_string(&network_config).unwrap();
         db.insert_or_update_user_network_config((user_id, device_id), inst_id, network_config)
             .await
             .unwrap();
@@ -259,7 +275,7 @@ mod tests {
             .unwrap()
             .unwrap();
         println!("device: {}, {:?}", device_id, result2);
-        assert_eq!(result2.network_config, network_config);
+        assert_eq!(result2.network_config, network_config_json);
 
         assert_eq!(result.create_time, result2.create_time);
         assert_ne!(result.update_time, result2.update_time);
@@ -272,7 +288,7 @@ mod tests {
             1
         );
 
-        db.delete_network_config((user_id, device_id), inst_id)
+        db.delete_network_configs((user_id, device_id), &[inst_id])
             .await
             .unwrap();
         let result3 = user_running_network_configs::Entity::find()

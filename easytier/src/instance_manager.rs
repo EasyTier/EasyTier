@@ -17,6 +17,7 @@ pub struct NetworkInstanceManager {
     instance_map: Arc<DashMap<uuid::Uuid, NetworkInstance>>,
     instance_stop_tasks: Arc<DashMap<uuid::Uuid, ScopedTask<()>>>,
     stop_check_notifier: Arc<tokio::sync::Notify>,
+    instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -31,6 +32,7 @@ impl NetworkInstanceManager {
             instance_map: Arc::new(DashMap::new()),
             instance_stop_tasks: Arc::new(DashMap::new()),
             stop_check_notifier: Arc::new(tokio::sync::Notify::new()),
+            instance_error_messages: Arc::new(DashMap::new()),
         }
     }
 
@@ -64,6 +66,7 @@ impl NetworkInstanceManager {
 
         let instance_map = self.instance_map.clone();
         let instance_stop_tasks = self.instance_stop_tasks.clone();
+        let instance_error_messages = self.instance_error_messages.clone();
 
         let stop_check_notifier = self.stop_check_notifier.clone();
         self.instance_stop_tasks.insert(
@@ -80,6 +83,7 @@ impl NetworkInstanceManager {
                     if let Some(e) = instance.get_latest_error_msg() {
                         tracing::error!(?e, ?instance_id, "instance stopped with error");
                         eprintln!("instance {} stopped with error: {}", instance_id, e);
+                        instance_error_messages.insert(instance_id, e);
                     }
                 }
                 stop_check_notifier.notify_one();
@@ -114,6 +118,9 @@ impl NetworkInstanceManager {
     ) -> Result<Vec<uuid::Uuid>, anyhow::Error> {
         self.instance_map.retain(|k, _| instance_ids.contains(k));
         self.instance_map.shrink_to_fit();
+        self.instance_error_messages
+            .retain(|k, _| instance_ids.contains(k));
+        self.instance_error_messages.shrink_to_fit();
         Ok(self.list_network_instance_ids())
     }
 
@@ -123,6 +130,9 @@ impl NetworkInstanceManager {
     ) -> Result<Vec<uuid::Uuid>, anyhow::Error> {
         self.instance_map.retain(|k, _| !instance_ids.contains(k));
         self.instance_map.shrink_to_fit();
+        self.instance_error_messages
+            .retain(|k, _| !instance_ids.contains(k));
+        self.instance_error_messages.shrink_to_fit();
         Ok(self.list_network_instance_ids())
     }
 
@@ -134,6 +144,15 @@ impl NetworkInstanceManager {
             if let Ok(info) = instance.get_running_info().await {
                 ret.insert(*instance.key(), info);
             }
+        }
+        for v in self.instance_error_messages.iter() {
+            ret.insert(
+                *v.key(),
+                NetworkInstanceRunningInfo {
+                    error_msg: Some(v.value().clone()),
+                    ..Default::default()
+                },
+            );
         }
         Ok(ret)
     }
@@ -148,6 +167,12 @@ impl NetworkInstanceManager {
         &self,
         instance_id: &uuid::Uuid,
     ) -> Option<NetworkInstanceRunningInfo> {
+        if let Some(err_msg) = self.instance_error_messages.get(instance_id) {
+            return Some(NetworkInstanceRunningInfo {
+                error_msg: Some(err_msg.value().clone()),
+                ..Default::default()
+            });
+        }
         self.instance_map
             .get(instance_id)?
             .get_running_info()

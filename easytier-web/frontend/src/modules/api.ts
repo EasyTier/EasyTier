@@ -1,7 +1,6 @@
 import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { Md5 } from 'ts-md5'
-import { Api, Utils } from 'easytier-frontend-lib';
-import { NetworkTypes } from 'easytier-frontend-lib';
+import { type Api, type NetworkTypes, Utils } from 'easytier-frontend-lib';
+import { Md5 } from 'ts-md5';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -188,20 +187,20 @@ class WebRemoteClient implements Api.RemoteClient {
         this.machine_id = machine_id;
         this.client = client;
     }
-    async validate_config(config: any): Promise<Api.ValidateConfigResponse> {
-        const response = await this.client.post<any, ValidateConfigResponse>(`/machines/${this.machine_id}/validate-config`, {
+    async validate_config(config: NetworkTypes.NetworkConfig): Promise<Api.ValidateConfigResponse> {
+        const response = await this.client.post<NetworkTypes.NetworkConfig, ValidateConfigResponse>(`/machines/${this.machine_id}/validate-config`, {
             config: config,
         });
         return response;
     }
-    async run_network(config: any): Promise<undefined> {
+    async run_network(config: NetworkTypes.NetworkConfig): Promise<undefined> {
         await this.client.post<string>(`/machines/${this.machine_id}/networks`, {
             config: config,
         });
     }
-    async get_network_info(inst_id: string): Promise<any> {
-        const response = await this.client.get<any, Record<string, any>>('/machines/' + this.machine_id + '/networks/info/' + inst_id);
-        return response.info.map;
+    async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
+        const response = await this.client.get<any, Api.CollectNetworkInfoResponse>('/machines/' + this.machine_id + '/networks/info/' + inst_id);
+        return response.info.map[inst_id];
     }
     async list_network_instance_ids(): Promise<Api.ListNetworkInstanceIdResponse> {
         const response = await this.client.get<any, ListNetworkInstanceIdResponse>('/machines/' + this.machine_id + '/networks');
@@ -215,8 +214,8 @@ class WebRemoteClient implements Api.RemoteClient {
             disabled: disabled,
         });
     }
-    async get_network_config(inst_id: string): Promise<any> {
-        const response = await this.client.get<any, Record<string, any>>('/machines/' + this.machine_id + '/networks/config/' + inst_id);
+    async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
+        const response = await this.client.get<any, NetworkTypes.NetworkConfig>('/machines/' + this.machine_id + '/networks/config/' + inst_id);
         return response;
     }
     async generate_config(config: NetworkTypes.NetworkConfig): Promise<Api.GenerateConfigResponse> {

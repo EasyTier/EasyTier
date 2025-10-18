@@ -1,16 +1,15 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Select, useConfirm, useToast } from 'primevue';
+import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast } from 'primevue';
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
-import { RemoteClient } from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
 
 const { t } = useI18n()
 
 const props = defineProps<{
-    api: RemoteClient;
+    api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
 }>();
 
@@ -35,6 +34,10 @@ const editingNetworkConfig = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAUL
 const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefined);
 
 const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
+
+const isRunning = (instanceId: string) => {
+    return listInstanceIdResponse.value?.running_inst_ids.map(Utils.UuidToStr).includes(instanceId);
+}
 
 const instanceIdList = computed(() => {
     let insts = new Set<string>();
@@ -194,7 +197,6 @@ const editNetwork = async () => {
 
 const loadNetworkInstanceIds = async () => {
     listInstanceIdResponse.value = await props.api.list_network_instance_ids();
-    console.debug("loadNetworkInstanceIds", listInstanceIdResponse.value);
 }
 
 const loadCurrentNetworkInfo = async () => {
@@ -202,13 +204,12 @@ const loadCurrentNetworkInfo = async () => {
         return;
     }
 
-    let ret = await props.api.get_network_info(instanceId.value);
-    let network_info = ret[instanceId.value];
+    let network_info = await props.api.get_network_info(instanceId.value);
 
     curNetworkInfo.value = {
         instance_id: instanceId.value,
-        running: network_info.running,
-        error_msg: network_info.error_msg,
+        running: network_info?.running ?? false,
+        error_msg: network_info?.error_msg ?? '',
         detail: network_info,
     } as NetworkTypes.NetworkInstance;
 }
@@ -220,9 +221,8 @@ const exportConfig = async () => {
     }
 
     try {
-        let networkConfig = await props.api.get_network_config(instanceId.value!);
-        delete networkConfig.instance_id;
-        let { toml_config: tomlConfig, error } = await props.api.generate_config(networkConfig);
+        const { instance_id, ...networkConfig } = await props.api.get_network_config(instanceId.value!);
+        let { toml_config: tomlConfig, error } = await props.api.generate_config(networkConfig as NetworkTypes.NetworkConfig);
         if (error) {
             throw { response: { data: error } };
         }
@@ -370,7 +370,31 @@ onUnmounted(() => {
                     <IftaLabel class="w-full">
                         <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid" class="w-full"
                             inputId="dd-inst-id" :placeholder="t('web.device_management.select_network')"
-                            :pt="{ root: { class: 'network-select-container' } }" />
+                            :pt="{ root: { class: 'network-select-container' } }">
+                            <template #value="slotProps">
+                                <div v-if="slotProps.value" class="flex items-center content-center min-w-0">
+                                    <div class="mr-4 flex-col min-w-0 flex-1">
+                                        <span class="truncate block"> &nbsp; {{ slotProps.value.uuid }}</span>
+                                    </div>
+                                    <Tag class="my-auto leading-3 shrink-0"
+                                        :severity="isRunning(slotProps.value.uuid) ? 'success' : 'info'"
+                                        :value="t(isRunning(slotProps.value.uuid) ? 'network_running' : 'network_stopped')" />
+                                </div>
+                                <span v-else>
+                                    {{ slotProps.placeholder }}
+                                </span>
+                            </template>
+                            <template #option="slotProps">
+                                <div class="flex items-center content-center min-w-0">
+                                    <div class="mr-4 flex-col min-w-0 flex-1">
+                                        <span class="truncate block"> &nbsp; {{ slotProps.option.uuid }}</span>
+                                    </div>
+                                    <Tag class="my-auto leading-3 shrink-0"
+                                        :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
+                                        :value="t(isRunning(slotProps.option.uuid) ? 'network_running' : 'network_stopped')" />
+                                </div>
+                            </template>
+                        </Select>
                         <label class="network-label mr-2 font-medium" for="dd-inst-id">{{
                             t('web.device_management.network') }}</label>
                     </IftaLabel>
@@ -433,7 +457,10 @@ onUnmounted(() => {
                     <h2 class="text-xl font-medium">{{ t('web.device_management.network_status') }}</h2>
                 </div>
 
-                <Status v-bind:cur-network-inst="curNetworkInfo" class="mb-4"></Status>
+                <Status v-if="(curNetworkInfo?.error_msg ?? '') === ''" v-bind:cur-network-inst="curNetworkInfo"
+                    class="mb-4">
+                </Status>
+                <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
 
                 <div class="text-center mt-4">
                     <Button @click="updateNetworkState(true)" :label="t('web.device_management.disable_network')"
@@ -593,3 +620,4 @@ onUnmounted(() => {
     }
 }
 </style>
+
