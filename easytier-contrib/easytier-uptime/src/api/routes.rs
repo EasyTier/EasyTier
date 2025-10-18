@@ -6,7 +6,7 @@ use tower_http::cors::CorsLayer;
 use super::handlers::AppState;
 use super::handlers::{
     admin_approve_node, admin_delete_node, admin_get_nodes, admin_login, admin_revoke_approval,
-    admin_update_node, admin_verify_token, create_node, get_node, get_node_health,
+    admin_update_node, admin_verify_token, create_node, get_all_tags, get_node, get_node_health,
     get_node_health_stats, get_nodes, health_check,
 };
 use crate::api::{get_node_connect_url, test_connection};
@@ -38,6 +38,7 @@ pub fn create_routes() -> Router<AppState> {
         .route("/node/{id}", get(get_node_connect_url))
         .route("/health", get(health_check))
         .route("/api/nodes", get(get_nodes).post(create_node))
+        .route("/api/tags", get(get_all_tags))
         .route("/api/test_connection", post(test_connection))
         .route("/api/nodes/{id}/health", get(get_node_health))
         .route("/api/nodes/{id}/health/stats", get(get_node_health_stats))

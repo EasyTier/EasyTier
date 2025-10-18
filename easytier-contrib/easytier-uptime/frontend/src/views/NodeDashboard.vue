@@ -56,7 +56,7 @@
 
     <!-- 搜索和筛选 -->
     <el-card class="filter-card">
-      <el-row :gutter="20">
+      <el-row :gutter="26">
         <el-col :span="8">
           <el-input v-model="searchText" placeholder="搜索节点名称、主机地址或描述" prefix-icon="Search" clearable
             @input="handleSearch" />
@@ -77,14 +77,16 @@
             <el-option label="WSS" value="wss" />
           </el-select>
         </el-col>
+        <!-- 新增：标签多选筛选 -->
         <el-col :span="4">
-          <el-button type="primary" @click="refreshData" :loading="loading">
-            <el-icon>
-              <Refresh />
-            </el-icon>
-            刷新
-          </el-button>
+          <el-select v-model="selectedTags" multiple collapse-tags collapse-tags-tooltip filterable clearable
+            placeholder="按标签筛选（可多选）" @change="handleFilter">
+            <el-option v-for="tag in allTags" :key="tag" :label="tag" :value="tag">
+              <span class="tag-option" :style="getTagStyle(tag)">{{ tag }}</span>
+            </el-option>
+          </el-select>
         </el-col>
+
         <el-col :span="4">
           <el-button type="success" @click="$router.push('/submit')">
             <el-icon>
@@ -97,17 +99,24 @@
     </el-card>
 
     <!-- 节点列表 -->
-    <el-card class="nodes-card">
+    <el-card ref="nodesCardRef" class="nodes-card">
       <template #header>
         <div class="card-header">
-          <span>节点列表</span>
+          <span>
+            节点列表
+            <el-button type="text" :loading="loading" @click="refreshData" style="margin-left: 8px;">
+              <el-icon>
+                <Refresh />
+              </el-icon>
+            </el-button>
+          </span>
           <el-tag :type="loading ? 'info' : 'success'">
             {{ loading ? '加载中...' : `共 ${pagination.total} 个节点` }}
           </el-tag>
         </div>
       </template>
 
-      <el-table :data="nodes" v-loading="loading" stripe style="width: 100%" row-key="id">
+      <el-table ref="tableRef" :data="nodes" v-loading="loading" stripe style="width: 100%" row-key="id">
         <!-- 展开列 -->
         <el-table-column type="expand" width="50">
           <template #default="{ row }">
@@ -151,7 +160,7 @@
           <template #default="{ row }">
             <div style="display: flex; flex-direction: column; gap: 1px; align-items: flex-start;">
               <el-tag v-if="row.version" size="small" style="font-size: 11px; padding: 1px 4px;">{{ row.version
-                }}</el-tag>
+              }}</el-tag>
               <span v-else class="text-muted" style="font-size: 11px;">未知</span>
               <el-tag :type="row.allow_relay ? 'success' : 'info'" size="small"
                 style="font-size: 9px; padding: 1px 3px;">
@@ -174,6 +183,18 @@
         <el-table-column prop="description" label="描述" min-width="200">
           <template #default="{ row }">
             <span class="description">{{ row.description || '暂无描述' }}</span>
+          </template>
+        </el-table-column>
+        <!-- 新增：标签展示 -->
+        <el-table-column label="标签" min-width="160">
+          <template #default="{ row }">
+            <div class="tags-list">
+              <el-tag v-for="(tag, idx) in row.tags" :key="tag + idx" size="small" class="tag-chip"
+                :style="getTagStyle(tag)" style="margin: 2px 6px 2px 0;">
+                {{ tag }}
+              </el-tag>
+              <span v-if="!row.tags || row.tags.length === 0" class="text-muted">无</span>
+            </div>
           </template>
         </el-table-column>
 
@@ -223,6 +244,16 @@
           <el-descriptions-item label="创建时间">{{ formatDate(selectedNode.created_at) }}</el-descriptions-item>
           <el-descriptions-item label="更新时间">{{ formatDate(selectedNode.updated_at) }}</el-descriptions-item>
           <el-descriptions-item label="描述" :span="2">{{ selectedNode.description || '暂无描述' }}</el-descriptions-item>
+          <!-- 新增：标签 -->
+          <el-descriptions-item label="标签" :span="2">
+            <div class="tags-list">
+              <el-tag v-for="(tag, idx) in selectedNode.tags" :key="tag + idx" size="small" class="tag-chip"
+                style="margin: 2px 6px 2px 0;">
+                {{ tag }}
+              </el-tag>
+              <span v-if="!selectedNode.tags || selectedNode.tags.length === 0" class="text-muted">无</span>
+            </div>
+          </el-descriptions-item>
         </el-descriptions>
 
         <!-- 健康状态统计 -->
@@ -261,7 +292,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { ref, reactive, onMounted, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { ElMessage } from 'element-plus'
 import { nodeApi } from '../api'
 import dayjs from 'dayjs'
@@ -276,6 +307,7 @@ import {
   Refresh,
   Plus
 } from '@element-plus/icons-vue'
+import { getTagStyle } from '../utils/tagColor'
 
 // 响应式数据
 const loading = ref(false)
@@ -283,11 +315,18 @@ const nodes = ref([])
 const searchText = ref('')
 const statusFilter = ref('')
 const protocolFilter = ref('')
+const selectedTags = ref([])
+const allTags = ref([])
 const detailDialogVisible = ref(false)
 const selectedNode = ref(null)
 const healthStats = ref(null)
 const expandedRows = ref([])
 const apiUrl = ref(window.location.href)
+const tableRef = ref(null)
+const nodesCardRef = ref(null)
+
+// 请求取消控制（避免重复请求覆盖）
+let fetchController = null
 
 // 分页数据
 const pagination = reactive({
@@ -309,6 +348,17 @@ const averageUptime = computed(() => {
 })
 
 // 方法
+const fetchTags = async () => {
+  try {
+    const resp = await nodeApi.getAllTags()
+    if (resp.success && Array.isArray(resp.data)) {
+      allTags.value = resp.data
+    }
+  } catch (error) {
+    console.error('获取标签列表失败:', error)
+  }
+}
+
 const fetchNodes = async (with_loading = true) => {
   try {
     if (with_loading) {
@@ -328,13 +378,26 @@ const fetchNodes = async (with_loading = true) => {
     if (protocolFilter.value) {
       params.protocol = protocolFilter.value
     }
+    if (selectedTags.value && selectedTags.value.length > 0) {
+      params.tags = selectedTags.value
+    }
 
-    const response = await nodeApi.getNodes(params)
+    // 取消上一请求，创建新的请求控制器
+    if (fetchController) {
+      try { fetchController.abort() } catch (_) { }
+    }
+    fetchController = new AbortController()
+
+    const response = await nodeApi.getNodes(params, { signal: fetchController.signal })
     if (response.success && response.data) {
       nodes.value = response.data.items
       pagination.total = response.data.total
     }
   } catch (error) {
+    if (error.name === 'CanceledError' || error.name === 'AbortError') {
+      // 被取消的旧请求，忽略
+      return
+    }
     console.error('获取节点列表失败:', error)
     ElMessage.error('获取节点列表失败')
   } finally {
@@ -345,6 +408,7 @@ const fetchNodes = async (with_loading = true) => {
 }
 
 const refreshData = () => {
+  pagination.page = 1
   fetchNodes()
 }
 
@@ -408,12 +472,69 @@ const copyAddress = (address) => {
 
 // 生命周期
 onMounted(() => {
+  fetchTags()
   fetchNodes()
 
   // 设置定时刷新
   setInterval(() => {
     fetchNodes(false)
-  }, 3000) // 每30秒刷新一次
+  }, 30000) // 每30秒刷新一次
+})
+
+// 智能滚动处理：纵向滚动时页面整体滚动，横向滚动时表格内部滚动
+let wheelHandler = null
+let wheelTargets = []
+
+const detachWheelHandlers = () => {
+  if (wheelTargets && wheelTargets.length) {
+    wheelTargets.forEach((el) => {
+      try { el.removeEventListener('wheel', wheelHandler, { capture: true }) } catch (_) { }
+    })
+  }
+  wheelTargets = []
+}
+
+const attachWheelHandler = () => {
+  const tableEl = tableRef.value?.$el
+  const body = tableEl ? tableEl.querySelector('.el-table__body-wrapper') : null
+  if (!body) return
+
+  detachWheelHandlers()
+  const wrap = body.querySelector('.el-scrollbar__wrap') || body
+
+  wheelHandler = (e) => {
+    const deltaX = e.deltaX
+    const deltaY = e.deltaY
+
+    // 如果是横向滚动（Shift + 滚轮 或 触摸板横向滑动）
+    if (Math.abs(deltaX) > Math.abs(deltaY) || e.shiftKey) {
+      // 允许表格内部横向滚动，不阻止默认行为
+      return
+    }
+
+    // 如果是纵向滚动，阻止表格内部滚动，让页面整体滚动
+    if (deltaY) {
+      e.preventDefault()
+      e.stopPropagation()
+      const scroller = document.scrollingElement || document.documentElement
+      scroller.scrollTop += deltaY
+    }
+  }
+
+  body.addEventListener('wheel', wheelHandler, { passive: false, capture: true })
+  wheelTargets.push(body)
+}
+
+onMounted(() => {
+  nextTick(attachWheelHandler)
+})
+
+watch(nodes, () => {
+  nextTick(attachWheelHandler)
+})
+
+onBeforeUnmount(() => {
+  detachWheelHandlers()
 })
 </script>
 
@@ -569,5 +690,29 @@ onMounted(() => {
   padding: 16px 24px;
   background-color: #fafafa;
   border-top: 1px solid #ebeef5;
+}
+
+.tag-option {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+:deep(.el-table__body-wrapper) {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  height: auto !important;
+}
+
+:deep(.el-card__body) {
+  overflow: visible !important;
+}
+
+:deep(.el-table__body-wrapper .el-scrollbar__wrap) {
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  height: auto !important;
+  max-height: none !important;
 }
 </style>

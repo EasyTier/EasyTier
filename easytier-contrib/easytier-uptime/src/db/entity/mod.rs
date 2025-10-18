@@ -3,4 +3,5 @@
 pub mod prelude;
 
 pub mod health_records;
+pub mod node_tags;
 pub mod shared_nodes;

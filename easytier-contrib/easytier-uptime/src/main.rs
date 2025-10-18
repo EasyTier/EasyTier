@@ -11,6 +11,7 @@ use api::routes::create_routes;
 use clap::Parser;
 use config::AppConfig;
 use db::{operations::NodeOperations, Db};
+use easytier::utils::init_logger;
 use health_checker::HealthChecker;
 use health_checker_manager::HealthCheckerManager;
 use std::env;
@@ -36,18 +37,7 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::default();
 
     // 初始化日志
-    tracing_subscriber::fmt()
-        .with_max_level(match config.logging.level.as_str() {
-            "debug" => tracing::Level::DEBUG,
-            "info" => tracing::Level::INFO,
-            "warn" => tracing::Level::WARN,
-            "error" => tracing::Level::ERROR,
-            _ => tracing::Level::INFO,
-        })
-        .with_target(false)
-        .with_thread_ids(true)
-        .with_env_filter(EnvFilter::new("easytier_uptime"))
-        .init();
+    let _ = init_logger(&config.logging, false);
 
     // 解析命令行参数
     let args = Args::parse();
