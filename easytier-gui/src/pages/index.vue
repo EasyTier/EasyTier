@@ -26,25 +26,12 @@ const items = ref([
   {
     label: () => activeStep.value == "2" ? t('show_config') : t('edit_config'),
     icon: 'pi pi-file-edit',
-    command: async () => {
-      try {
-        const ret = await parseNetworkConfig(networkStore.curNetwork)
-        tomlConfig.value = ret
-      }
-      catch (e: any) {
-        tomlConfig.value = e
-      }
-      visible.value = true
-    },
+    command: openConfigDialog,
   },
   {
     label: () => t('del_cur_network'),
     icon: 'pi pi-times',
-    command: async () => {
-      networkStore.removeNetworkInstance(networkStore.curNetwork.instance_id)
-      await retainNetworkInstance(networkStore.networkInstanceIds)
-      networkStore.delCurNetwork()
-    },
+    command: deleteCurrentNetwork,
     disabled: () => networkStore.networkList.length <= 1,
   },
 ])
@@ -62,6 +49,23 @@ const messageBarContent = ref('')
 const toast = useToast()
 
 const networkStore = useNetworkStore()
+
+async function openConfigDialog() {
+  try {
+    const ret = await parseNetworkConfig(networkStore.curNetwork)
+    tomlConfig.value = ret
+  }
+  catch (e: any) {
+    tomlConfig.value = e
+  }
+  visible.value = true
+}
+
+async function deleteCurrentNetwork() {
+  networkStore.removeNetworkInstance(networkStore.curNetwork.instance_id)
+  await retainNetworkInstance(networkStore.networkInstanceIds)
+  networkStore.delCurNetwork()
+}
 
 const curNetworkConfig = computed(() => {
   if (networkStore.curNetworkId) {
@@ -221,6 +225,20 @@ const setting_menu_items = ref([
       })
       return items
     })(),
+  },
+  {
+    separator: true,
+  },
+  {
+    label: () => activeStep.value == "2" ? t('show_config') : t('edit_config'),
+    icon: 'pi pi-file-edit',
+    command: openConfigDialog,
+  },
+  {
+    label: () => t('del_cur_network'),
+    icon: 'pi pi-times',
+    command: deleteCurrentNetwork,
+    disabled: () => networkStore.networkList.length <= 1,
   },
   {
     label: () => t('about.title'),
