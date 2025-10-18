@@ -164,6 +164,11 @@ port_forwards_help: "将本地端口转发到虚拟网络中的远程端口。�
 port_forwards_bind_addr: "绑定地址，如：0.0.0.0"
 port_forwards_dst_addr: "目标地址，如：10.126.126.1"
 port_forwards_add_btn: "添加"
+local_port_forwards: 本地端口转发
+local_port_forwards_help: "在本地监听端口并转发到指定目标。例如：tcp://0.0.0.0:15037/127.0.0.1:5037，可以指定多个。监听地址留空时将自动使用当前 DHCP IPv4。"
+local_port_forwards_listen_addr: "监听地址（留空自动使用 DHCP）"
+local_port_forwards_target_addr: "目标地址，如：127.0.0.1"
+local_port_forwards_add_btn: "添加"
 
 mtu: MTU
 mtu_help: |

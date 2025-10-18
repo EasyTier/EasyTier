@@ -70,6 +70,7 @@ export interface NetworkConfig {
   enable_private_mode?: boolean
 
   port_forwards: PortForwardConfig[]
+  local_port_forwards: LocalPortForwardRule[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -132,6 +133,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_magic_dns: false,
     enable_private_mode: false,
     port_forwards: [],
+    local_port_forwards: [],
   }
 }
 
@@ -267,8 +269,17 @@ export interface PortForwardConfig {
   proto: string
 }
 
+export interface LocalPortForwardRule {
+  proto: string
+  listen_ip: string
+  listen_port: number
+  target_ip: string
+  target_port: number
+  listen_from_dhcp: boolean
+}
+
 // 添加新行
-export const addRow = (rows: PortForwardConfig[]) => {
+export const addPortForwardRow = (rows: PortForwardConfig[]) => {
   rows.push({
     proto: 'tcp',
     bind_ip: '',
@@ -278,8 +289,19 @@ export const addRow = (rows: PortForwardConfig[]) => {
   });
 };
 
+export const addLocalPortForwardRow = (rows: LocalPortForwardRule[]) => {
+  rows.push({
+    proto: 'tcp',
+    listen_ip: '',
+    listen_port: 65535,
+    target_ip: '',
+    target_port: 65535,
+    listen_from_dhcp: true,
+  })
+}
+
 // 删除行
-export const removeRow = (index: number, rows: PortForwardConfig[]) => {
+export const removeRow = <T>(index: number, rows: T[]) => {
   rows.splice(index, 1);
 };
 

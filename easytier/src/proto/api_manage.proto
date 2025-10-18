@@ -76,6 +76,7 @@ message NetworkConfig {
   repeated PortForwardConfig port_forwards = 48;
 
   optional bool disable_sym_hole_punching = 49;
+  repeated LocalPortForwardRule local_port_forwards = 51;
 }
 
 message PortForwardConfig {
@@ -84,6 +85,15 @@ message PortForwardConfig {
   string dst_ip = 3;
   uint32 dst_port = 4;
   string proto = 5;
+}
+
+message LocalPortForwardRule {
+  string proto = 1;
+  string listen_ip = 2;
+  uint32 listen_port = 3;
+  string target_ip = 4;
+  uint32 target_port = 5;
+  bool listen_from_dhcp = 6;
 }
 
 message MyNodeInfo {

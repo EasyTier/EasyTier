@@ -164,6 +164,11 @@ port_forwards_help: "forward local port to remote port in virtual network. e.g.:
 port_forwards_bind_addr: "Bind address, e.g.: 0.0.0.0"
 port_forwards_dst_addr: "Destination address, e.g.: 10.126.126.1"
 port_forwards_add_btn: "Add"
+local_port_forwards: Local Port Forward
+local_port_forwards_help: "listen on a local address and forward to a target. e.g.: tcp://0.0.0.0:15037/127.0.0.1:5037. multiple rules are supported. leave the listen address empty to use the current DHCP IPv4 automatically."
+local_port_forwards_listen_addr: "Listen address (blank = DHCP)"
+local_port_forwards_target_addr: "Target address, e.g.: 127.0.0.1"
+local_port_forwards_add_btn: "Add"
 
 mtu: MTU
 mtu_help: |

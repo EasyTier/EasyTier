@@ -1,4 +1,4 @@
-# EasyTier TCP Local Port Forward
+# EasyTier Local Port Forward
 
 本文档介绍如何在 EasyTier 中启用和使用「本地端口转发」（TCP Local Port Forward）功能。该功能的目标和 `socat TCP-LISTEN:15037,bind=0.0.0.0,fork,reuseaddr TCP:localhost:5037` 等效：在本地监听一个端口，并把进入的 TCP 连接转发到指定目标。
 

@@ -1,4 +1,6 @@
-use crate::common::config::PortForwardConfig;
+use crate::common::config::{
+    LocalPortForwardRule as ConfigLocalPortForwardRule, PortForwardConfig,
+};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -593,6 +595,52 @@ impl NetworkConfig {
             );
         }
 
+        if !self.local_port_forwards.is_empty() {
+            let rules = self
+                .local_port_forwards
+                .iter()
+                .filter(|rule| !rule.target_ip.trim().is_empty() && rule.target_port != 0)
+                .filter_map(|rule| {
+                    let listen_port = rule.listen_port;
+                    if listen_port == 0 {
+                        return None;
+                    }
+
+                    let proto = rule.proto.trim();
+                    if proto.is_empty() {
+                        return None;
+                    }
+
+                    let listen_ip = rule.listen_ip.trim();
+                    let target_ip = rule.target_ip.trim();
+
+                    let listen_from_dhcp = rule.listen_from_dhcp || listen_ip.is_empty();
+                    let listen_ip = if listen_from_dhcp {
+                        "0.0.0.0"
+                    } else {
+                        listen_ip
+                    };
+
+                    let listen = format!("{}:{}", listen_ip, listen_port)
+                        .parse::<SocketAddr>()
+                        .ok()?;
+                    let target = format!("{}:{}", target_ip, rule.target_port)
+                        .parse::<SocketAddr>()
+                        .ok()?;
+
+                    Some(ConfigLocalPortForwardRule {
+                        proto: proto.to_string(),
+                        listen,
+                        target,
+                        listen_from_dhcp,
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !rules.is_empty() {
+                cfg.set_local_port_forwards(rules);
+            }
+        }
+
         if self.enable_vpn_portal.unwrap_or_default() {
             let cidr = format!(
                 "{}/{}",
@@ -841,6 +889,25 @@ impl NetworkConfig {
                     bind_port: f.bind_addr.port() as u32,
                     dst_ip: f.dst_addr.ip().to_string(),
                     dst_port: f.dst_addr.port() as u32,
+                })
+                .collect();
+        }
+
+        let local_port_forwards = config.get_local_port_forwards();
+        if !local_port_forwards.is_empty() {
+            result.local_port_forwards = local_port_forwards
+                .iter()
+                .map(|rule| manage::LocalPortForwardRule {
+                    proto: rule.proto.clone(),
+                    listen_ip: if rule.listen_from_dhcp {
+                        String::new()
+                    } else {
+                        rule.listen.ip().to_string()
+                    },
+                    listen_port: rule.listen.port() as u32,
+                    target_ip: rule.target.ip().to_string(),
+                    target_port: rule.target.port() as u32,
+                    listen_from_dhcp: rule.listen_from_dhcp,
                 })
                 .collect();
         }

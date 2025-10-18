@@ -716,7 +716,7 @@ fn parse_local_port_forward_rule(rule: &str) -> anyhow::Result<LocalPortForwardR
         (Some(host), Some(port)) => (host, port),
         (Some(host), None) => {
             let port = host.parse::<u16>().map_err(|_| {
-                anyhow::anyhow!("listen port missing in {}, please specify host:port", rule)
+                anyhow::anyhow!("invalid port number in {}, expected host:port", rule)
             })?;
             listen_from_dhcp = true;
             ("0.0.0.0", port)
