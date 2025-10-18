@@ -69,6 +69,9 @@
                   nodejs_22
                   pnpm
                 ])
+                ++ (withFeature "gui" [
+                  libayatana-appindicator
+                ])
                 ++ (withFeature "android" android.packages)
               );
 
@@ -95,7 +98,7 @@
           default = makeShell [ ];
           core = makeShell [ ];
           web = makeShell [ "web" ];
-          gui = makeShell [ "gui" ];
+          gui = makeShell [ "gui" "web" ];
           android = makeShell [
             "android"
             "web"
