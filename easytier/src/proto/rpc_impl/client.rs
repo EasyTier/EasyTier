@@ -10,6 +10,7 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
+use crate::common::shrink_dashmap;
 use crate::common::{
     stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
     PeerId,
@@ -131,6 +132,7 @@ impl Client {
                     }
                     true
                 });
+                peer_infos.shrink_to_fit();
             }
         });
 
@@ -245,7 +247,7 @@ impl Client {
                     .with_label_type(LabelType::ServiceName(desc.name().to_string()))
                     .with_label_type(LabelType::MethodName(method.name().to_string()));
 
-                defer!(self.inflight_requests.remove(&key););
+                defer!(self.inflight_requests.remove(&key); shrink_dashmap(&self.inflight_requests, Some(4)););
                 self.inflight_requests.insert(
                     key.clone(),
                     InflightRequest {

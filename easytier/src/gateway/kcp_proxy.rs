@@ -491,6 +491,9 @@ impl KcpProxyDst {
         );
         crate::defer! {
             proxy_entries.remove(&conn_id);
+            if proxy_entries.capacity() - proxy_entries.len() > 16 {
+                proxy_entries.shrink_to_fit();
+            }
         }
 
         let src_ip = src_socket.ip();

@@ -333,6 +333,9 @@ impl QUICProxyDst {
         let remote_addr = conn.remote_address();
         defer!(
             proxy_entries.remove(&remote_addr);
+            if proxy_entries.capacity() - proxy_entries.len() > 16 {
+                proxy_entries.shrink_to_fit();
+            }
         );
         let ret = timeout(
             std::time::Duration::from_secs(10),

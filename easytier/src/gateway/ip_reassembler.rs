@@ -187,6 +187,7 @@ impl IpReassembler {
     pub fn remove_expired_packets(&self) {
         let timeout = self.timeout;
         self.packets.retain(|_, v| v.timestamp.elapsed() <= timeout);
+        self.packets.shrink_to_fit();
     }
 }
 

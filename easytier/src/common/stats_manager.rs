@@ -527,6 +527,7 @@ impl StatsManager {
                 counters.retain(|_, metric_data: &mut Arc<MetricData>| unsafe {
                     metric_data.get_last_updated() > cutoff_time
                 });
+                counters.shrink_to_fit();
             }
         });
 

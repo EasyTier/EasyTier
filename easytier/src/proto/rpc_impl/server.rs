@@ -82,16 +82,9 @@ impl Server {
         registry: Arc<ServiceRegistry>,
         stats_manager: Arc<StatsManager>,
     ) -> Self {
-        let (ring_a, ring_b) = create_ring_tunnel_pair();
-
-        Self {
-            registry,
-            mpsc: Mutex::new(Some(MpscTunnel::new(ring_a, None))),
-            transport: Mutex::new(MpscTunnel::new(ring_b, None)),
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
-            packet_mergers: Arc::new(DashMap::new()),
-            stats_manager: Some(stats_manager),
-        }
+        let mut ret = Self::new_with_registry(registry);
+        ret.stats_manager = Some(stats_manager);
+        ret
     }
 
     pub fn registry(&self) -> &ServiceRegistry {
@@ -176,6 +169,7 @@ impl Server {
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                 packet_mergers.retain(|_, v| v.last_updated().elapsed().as_secs() < 10);
+                packet_mergers.shrink_to_fit();
             }
         });
     }

@@ -31,7 +31,7 @@ use tokio::{
 use crate::{
     common::{
         config::NetworkIdentity, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx,
-        stun::StunInfoCollectorTrait, PeerId,
+        shrink_dashmap, stun::StunInfoCollectorTrait, PeerId,
     },
     peers::route_trait::{Route, RouteInterfaceBox},
     proto::{
@@ -335,6 +335,14 @@ impl SyncedRouteInfo {
         self.foreign_network.retain(|k, _| k.peer_id != peer_id);
         self.group_trust_map.remove(&peer_id);
         self.group_trust_map_cache.remove(&peer_id);
+
+        shrink_dashmap(&self.peer_infos, None);
+        shrink_dashmap(&self.raw_peer_infos, None);
+        shrink_dashmap(&self.conn_map, None);
+        shrink_dashmap(&self.foreign_network, None);
+        shrink_dashmap(&self.group_trust_map, None);
+        shrink_dashmap(&self.group_trust_map_cache, None);
+
         self.version.inc();
     }
 
@@ -863,6 +871,12 @@ impl RouteTable {
             // remove cidr map for peers we cannot reach.
             self.next_hop_map.contains_key(&v.peer_id)
         });
+
+        shrink_dashmap(&self.peer_infos, None);
+        shrink_dashmap(&self.next_hop_map, None);
+        shrink_dashmap(&self.ipv4_peer_id_map, None);
+        shrink_dashmap(&self.ipv6_peer_id_map, None);
+        shrink_dashmap(&self.cidr_peer_id_map, None);
     }
 
     fn gen_next_hop_map_with_least_hop(
@@ -1090,14 +1104,47 @@ impl Debug for SessionTask {
     }
 }
 
+#[derive(Debug)]
+struct VersionAndTouchTime {
+    version: AtomicVersion,
+    touch_time: AtomicCell<Instant>,
+}
+
+impl Default for VersionAndTouchTime {
+    fn default() -> Self {
+        VersionAndTouchTime {
+            version: AtomicVersion::new(),
+            touch_time: AtomicCell::new(Instant::now()),
+        }
+    }
+}
+
+impl VersionAndTouchTime {
+    fn touch(&self) {
+        self.touch_time.store(Instant::now());
+    }
+
+    fn get(&self) -> Version {
+        self.version.get()
+    }
+
+    fn set_if_larger(&self, version: Version) {
+        self.version.set_if_larger(version);
+    }
+
+    fn is_expired(&self) -> bool {
+        self.touch_time.load().elapsed() > Duration::from_secs(60)
+    }
+}
+
 // if we need to sync route info with one peer, we create a SyncRouteSession with that peer.
 #[derive(Debug)]
 struct SyncRouteSession {
     my_peer_id: PeerId,
     dst_peer_id: PeerId,
-    dst_saved_peer_info_versions: DashMap<PeerId, AtomicVersion>,
-    dst_saved_conn_bitmap_version: DashMap<PeerId, AtomicVersion>,
-    dst_saved_foreign_network_versions: DashMap<ForeignNetworkRouteInfoKey, AtomicVersion>,
+    dst_saved_peer_info_versions: DashMap<PeerId, VersionAndTouchTime>,
+    dst_saved_conn_bitmap_version: DashMap<PeerId, VersionAndTouchTime>,
+    dst_saved_foreign_network_versions: DashMap<ForeignNetworkRouteInfoKey, VersionAndTouchTime>,
 
     my_session_id: AtomicSessionId,
     dst_session_id: AtomicSessionId,
@@ -1145,33 +1192,89 @@ impl SyncRouteSession {
         }
         self.dst_saved_peer_info_versions
             .get(&peer_id)
-            .map(|v| v.get() >= version)
+            .map(|v| {
+                v.touch();
+                v.get() >= version
+            })
             .unwrap_or(false)
     }
 
-    fn update_dst_saved_peer_info_version(&self, infos: &[RoutePeerInfo]) {
+    fn check_saved_conn_version_update_to_date(&self, peer_id: PeerId, version: Version) -> bool {
+        if version == 0 || peer_id == self.dst_peer_id {
+            // never send version 0 conn bitmap to dst peer.
+            return true;
+        }
+        self.dst_saved_conn_bitmap_version
+            .get(&peer_id)
+            .map(|v| {
+                v.touch();
+                v.get() >= version
+            })
+            .unwrap_or(false)
+    }
+
+    fn check_saved_foreign_network_version_update_to_date(
+        &self,
+        foreign_network_key: &ForeignNetworkRouteInfoKey,
+        version: Version,
+    ) -> bool {
+        if version == 0 || foreign_network_key.peer_id == self.dst_peer_id {
+            // never send version 0 foreign network to dst peer.
+            return true;
+        }
+
+        self.dst_saved_foreign_network_versions
+            .get(foreign_network_key)
+            .map(|x| {
+                x.touch();
+                x.get() >= version
+            })
+            .unwrap_or(false)
+    }
+
+    fn update_dst_saved_peer_info_version(&self, infos: &[RoutePeerInfo], dst_peer_id: PeerId) {
         for info in infos.iter() {
+            if info.peer_id == dst_peer_id {
+                // we never send dst peer info to dst peer, so no need to store it.
+                continue;
+            }
+
             self.dst_saved_peer_info_versions
                 .entry(info.peer_id)
-                .or_insert_with(AtomicVersion::new)
+                .or_default()
                 .set_if_larger(info.version);
         }
     }
 
-    fn update_dst_saved_conn_bitmap_version(&self, conn_bitmap: &RouteConnBitmap) {
+    fn update_dst_saved_conn_bitmap_version(
+        &self,
+        conn_bitmap: &RouteConnBitmap,
+        dst_peer_id: PeerId,
+    ) {
         for (peer_id, version) in conn_bitmap.peer_ids.iter() {
+            if *peer_id == dst_peer_id {
+                continue;
+            }
+
             self.dst_saved_conn_bitmap_version
                 .entry(*peer_id)
-                .or_insert_with(AtomicVersion::new)
+                .or_default()
                 .set_if_larger(*version);
         }
     }
 
-    fn update_dst_saved_foreign_network_version(&self, foreign_network: &RouteForeignNetworkInfos) {
+    fn update_dst_saved_foreign_network_version(
+        &self,
+        foreign_network: &RouteForeignNetworkInfos,
+        dst_peer_id: PeerId,
+    ) {
         for item in foreign_network.infos.iter() {
+            if item.key.as_ref().unwrap().peer_id == dst_peer_id {
+                continue;
+            }
             self.dst_saved_foreign_network_versions
                 .entry(item.key.clone().unwrap())
-                .or_insert_with(AtomicVersion::new)
+                .or_default()
                 .set_if_larger(item.value.as_ref().unwrap().version);
         }
     }
@@ -1188,6 +1291,20 @@ impl SyncRouteSession {
             self.dst_saved_conn_bitmap_version.clear();
             self.dst_saved_peer_info_versions.clear();
         }
+    }
+
+    fn clean_dst_saved_map(&self) {
+        self.dst_saved_peer_info_versions
+            .retain(|_, v| !v.is_expired());
+        self.dst_saved_peer_info_versions.shrink_to_fit();
+
+        self.dst_saved_conn_bitmap_version
+            .retain(|_, v| !v.is_expired());
+        self.dst_saved_conn_bitmap_version.shrink_to_fit();
+
+        self.dst_saved_foreign_network_versions
+            .retain(|_, v| !v.is_expired());
+        self.dst_saved_foreign_network_versions.shrink_to_fit();
     }
 
     fn short_debug_string(&self) -> String {
@@ -1305,6 +1422,7 @@ impl PeerRouteServiceImpl {
 
     fn remove_session(&self, dst_peer_id: PeerId) {
         self.sessions.remove(&dst_peer_id);
+        shrink_dashmap(&self.sessions, None);
     }
 
     fn list_session_peers(&self) -> Vec<PeerId> {
@@ -1509,14 +1627,14 @@ impl PeerRouteServiceImpl {
     fn build_route_info(&self, session: &SyncRouteSession) -> Option<Vec<RoutePeerInfo>> {
         let mut route_infos = Vec::new();
         for item in self.synced_route_info.peer_infos.iter() {
-            if session
-                .check_saved_peer_info_update_to_date(item.value().peer_id, item.value().version)
-            {
+            // do not send unreachable peer info to dst peer.
+            if !self.route_table.peer_reachable(*item.key()) {
                 continue;
             }
 
-            // do not send unreachable peer info to dst peer.
-            if !self.route_table.peer_reachable(*item.key()) {
+            if session
+                .check_saved_peer_info_update_to_date(item.value().peer_id, item.value().version)
+            {
                 continue;
             }
 
@@ -1533,14 +1651,10 @@ impl PeerRouteServiceImpl {
     fn build_conn_bitmap(&self, session: &SyncRouteSession) -> Option<RouteConnBitmap> {
         let mut need_update = false;
         for (peer_id, local_version) in self.cached_local_conn_map.lock().unwrap().peer_ids.iter() {
-            let peer_version = session
-                .dst_saved_conn_bitmap_version
-                .get(peer_id)
-                .map(|item| item.get());
-            if peer_version.is_none() || peer_version.unwrap() < *local_version {
-                need_update = true;
-                break;
+            if session.check_saved_conn_version_update_to_date(*peer_id, *local_version) {
+                continue;
             }
+            need_update = true;
         }
 
         if !need_update {
@@ -1556,15 +1670,10 @@ impl PeerRouteServiceImpl {
     ) -> Option<RouteForeignNetworkInfos> {
         let mut foreign_networks = RouteForeignNetworkInfos::default();
         for item in self.synced_route_info.foreign_network.iter() {
-            if item.key().peer_id == session.dst_peer_id {
-                continue;
-            }
-            if session
-                .dst_saved_foreign_network_versions
-                .get(item.key())
-                .map(|x| x.get() >= item.value().version)
-                .unwrap_or(false)
-            {
+            if session.check_saved_foreign_network_version_update_to_date(
+                item.key(),
+                item.value().version,
+            ) {
                 continue;
             }
 
@@ -1780,15 +1889,15 @@ impl PeerRouteServiceImpl {
                 session.update_dst_session_id(resp.session_id);
 
                 if let Some(peer_infos) = &peer_infos {
-                    session.update_dst_saved_peer_info_version(peer_infos);
+                    session.update_dst_saved_peer_info_version(peer_infos, dst_peer_id);
                 }
 
                 if let Some(conn_bitmap) = &conn_bitmap {
-                    session.update_dst_saved_conn_bitmap_version(conn_bitmap);
+                    session.update_dst_saved_conn_bitmap_version(conn_bitmap, dst_peer_id);
                 }
 
                 if let Some(foreign_network) = &foreign_network {
-                    session.update_dst_saved_foreign_network_version(foreign_network);
+                    session.update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
                 }
             }
         }
@@ -1815,6 +1924,14 @@ impl PeerRouteServiceImpl {
             .get(&peer_id)
             .map(|groups| groups.value().clone())
             .unwrap_or_default()
+    }
+
+    fn clean_dst_saved_map(&self, dst_peer_id: PeerId) {
+        let Some(session) = self.get_session(dst_peer_id) else {
+            return;
+        };
+
+        session.clean_dst_saved_map();
     }
 }
 
@@ -1919,6 +2036,7 @@ impl RouteSessionManager {
         mut sync_now: tokio::sync::broadcast::Receiver<()>,
     ) {
         let mut last_sync = Instant::now();
+        let mut last_clean_dst_saved_map = Instant::now();
         loop {
             loop {
                 let Some(service_impl) = service_impl.clone().upgrade() else {
@@ -1941,6 +2059,10 @@ impl RouteSessionManager {
                     .sync_route_with_peer(dst_peer_id, peer_rpc.clone(), sync_as_initiator)
                     .await
                 {
+                    if last_clean_dst_saved_map.elapsed().as_secs() > 60 {
+                        last_clean_dst_saved_map = Instant::now();
+                        service_impl.clean_dst_saved_map(dst_peer_id);
+                    }
                     break;
                 }
 
@@ -2159,13 +2281,13 @@ impl RouteSessionManager {
                     peer_infos,
                     &service_impl.global_ctx.get_acl_group_declarations(),
                 );
-            session.update_dst_saved_peer_info_version(peer_infos);
+            session.update_dst_saved_peer_info_version(peer_infos, from_peer_id);
             need_update_route_table = true;
         }
 
         if let Some(conn_bitmap) = &conn_bitmap {
             service_impl.synced_route_info.update_conn_map(conn_bitmap);
-            session.update_dst_saved_conn_bitmap_version(conn_bitmap);
+            session.update_dst_saved_conn_bitmap_version(conn_bitmap, from_peer_id);
             need_update_route_table = true;
         }
 
@@ -2177,7 +2299,7 @@ impl RouteSessionManager {
             service_impl
                 .synced_route_info
                 .update_foreign_network(foreign_network);
-            session.update_dst_saved_foreign_network_version(foreign_network);
+            session.update_dst_saved_foreign_network_version(foreign_network, from_peer_id);
         }
 
         if need_update_route_table || foreign_network.is_some() {
@@ -2643,8 +2765,7 @@ mod tests {
                 .get(&p_a.my_peer_id())
                 .unwrap()
                 .value()
-                .0
-                .load(Ordering::Relaxed)
+                .get()
         );
 
         assert_eq!((1, 1), get_rpc_counter(&r_a, p_b.my_peer_id()));

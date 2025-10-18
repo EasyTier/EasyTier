@@ -513,6 +513,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         true
                     }
                 });
+                syn_map.shrink_to_fit();
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         };
@@ -706,6 +707,12 @@ impl<C: NatDstConnector> TcpProxy<C> {
     ) {
         conn_map.remove(&nat_entry.id);
         addr_conn_map.remove_if(&nat_entry.src, |_, entry| entry.id == nat_entry.id);
+        if conn_map.capacity() - conn_map.len() > 16 {
+            conn_map.shrink_to_fit();
+        }
+        if addr_conn_map.capacity() - addr_conn_map.len() > 16 {
+            addr_conn_map.shrink_to_fit();
+        }
     }
 
     async fn connect_to_nat_dst(

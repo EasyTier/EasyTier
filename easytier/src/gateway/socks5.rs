@@ -958,6 +958,7 @@ impl Socks5Server {
         let udp_client_map = self.udp_client_map.clone();
         let udp_forward_task = self.udp_forward_task.clone();
         let entries = self.entries.clone();
+        let cancel_tokens = self.cancel_tokens.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -972,6 +973,11 @@ impl Socks5Server {
                     }
                     _ => true,
                 });
+
+                udp_client_map.shrink_to_fit();
+                udp_forward_task.shrink_to_fit();
+                entries.shrink_to_fit();
+                cancel_tokens.shrink_to_fit();
             }
         });
 

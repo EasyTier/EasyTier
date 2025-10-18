@@ -313,16 +313,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-event"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1222afd3d2bce3995035054046a279ae7aa154d70d0766cea050073f3fd7ddf"
-dependencies = [
- "loom 0.5.6",
- "pin-project-lite",
-]
-
-[[package]]
 name = "async-executor"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1940,16 +1930,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diatomic-waker"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28025fb55a9d815acf7b0877555f437254f373036eec6ed265116c7a5c0825e9"
-dependencies = [
- "loom 0.5.6",
- "waker-fn",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2197,7 +2177,6 @@ dependencies = [
  "stun_codec",
  "sys-locale",
  "tabled",
- "tachyonix",
  "tempfile",
  "thiserror 1.0.63",
  "thunk-rs",
@@ -3010,19 +2989,6 @@ dependencies = [
  "libc",
  "system-deps",
  "x11",
-]
-
-[[package]]
-name = "generator"
-version = "0.7.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cc16584ff22b460a382b7feec54b23d2908d858152e5739a120b949293bd74e"
-dependencies = [
- "cc",
- "libc",
- "log",
- "rustversion",
- "windows 0.48.0",
 ]
 
 [[package]]
@@ -4266,7 +4232,7 @@ dependencies = [
 [[package]]
 name = "kcp-sys"
 version = "0.1.0"
-source = "git+https://github.com/EasyTier/kcp-sys?rev=0f0a0558391ba391c089806c23f369651f6c9eeb#0f0a0558391ba391c089806c23f369651f6c9eeb"
+source = "git+https://github.com/EasyTier/kcp-sys?rev=71eff18c573a4a71bf99c7fabc6a8b9f211c84c1#71eff18c573a4a71bf99c7fabc6a8b9f211c84c1"
 dependencies = [
  "anyhow",
  "auto_impl",
@@ -4486,25 +4452,12 @@ checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
 
 [[package]]
 name = "loom"
-version = "0.5.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff50ecb28bb86013e935fb6683ab1f6d3a20016f123c76fd4c27470076ac30f5"
-dependencies = [
- "cfg-if",
- "generator 0.7.5",
- "scoped-tls",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "loom"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "419e0dc8046cb947daa77eb95ae174acfbddb7673b4151f56d1eed8e93fbfaca"
 dependencies = [
  "cfg-if",
- "generator 0.8.4",
+ "generator",
  "scoped-tls",
  "tracing",
  "tracing-subscriber",
@@ -4747,7 +4700,7 @@ dependencies = [
  "crossbeam-channel",
  "crossbeam-epoch",
  "crossbeam-utils",
- "loom 0.7.2",
+ "loom",
  "parking_lot",
  "portable-atomic",
  "rustc_version",
@@ -8414,20 +8367,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tachyonix"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1924ef47bc3b427ea2a0b55ba97d0e9116e9103483ecd75a43f47a66443527c5"
-dependencies = [
- "async-event",
- "crossbeam-utils",
- "diatomic-waker",
- "futures-core",
- "loom 0.5.6",
- "pin-project-lite",
-]
-
-[[package]]
 name = "tagptr"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9936,12 +9875,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "waker-fn"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "317211a0dc0ceedd78fb2ca9a44aed3d7b9b26f81870d485c07122b4350673b7"
-
-[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10384,15 +10317,6 @@ dependencies = [
  "raw-window-handle",
  "windows-sys 0.59.0",
  "windows-version",
-]
-
-[[package]]
-name = "windows"
-version = "0.48.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e686886bc078bc1b0b600cac0147aadb815089b6e4da64016cbd754b6342700f"
-dependencies = [
- "windows-targets 0.48.5",
 ]
 
 [[package]]

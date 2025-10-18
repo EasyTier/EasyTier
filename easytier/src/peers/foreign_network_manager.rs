@@ -24,7 +24,7 @@ use crate::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
-        join_joinset_background,
+        join_joinset_background, shrink_dashmap,
         stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         token_bucket::TokenBucket,
         PeerId,
@@ -448,6 +448,9 @@ impl ForeignNetworkManagerData {
         {
             self.network_peer_last_update.remove(network_name);
         }
+        shrink_dashmap(&self.peer_network_map, None);
+        shrink_dashmap(&self.network_peer_maps, None);
+        shrink_dashmap(&self.network_peer_last_update, None);
     }
 
     async fn clear_no_conn_peer(&self, network_name: &String) {
