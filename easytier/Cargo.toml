@@ -216,6 +216,7 @@ multimap = "0.10.0"
 version-compare = "0.2.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
+rustls-native-certs = "0.8.1"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
