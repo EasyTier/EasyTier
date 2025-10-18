@@ -221,6 +221,7 @@ event:
   DhcpIpv4Changed: DHCP IPv4地址更改
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
   PortForwardAdded: 端口转发添加
+  LocalPortForwardAdded: 本地端口转发添加
 
 web:
   login:

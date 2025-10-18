@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
 use clap_complete::Shell;
@@ -18,8 +18,8 @@ use easytier::{
     common::{
         config::{
             get_avaliable_encrypt_methods, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
-            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
-            VpnPortalConfig,
+            LocalPortForwardRule, LoggingConfigLoader, NetworkIdentity, PeerConfig,
+            PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
         global_ctx::GlobalCtx,
@@ -509,6 +509,15 @@ struct NetworkOptions {
     port_forward: Vec<url::Url>,
 
     #[arg(
+        long = "local-port-forward",
+        env = "ET_LOCAL_PORT_FORWARD",
+        value_delimiter = ',',
+        help = t!("core_clap.local_port_forward").to_string(),
+        num_args = 0..
+    )]
+    local_port_forward: Vec<String>,
+
+    #[arg(
         long,
         env = "ET_ACCEPT_DNS",
         help = t!("core_clap.accept_dns").to_string(),
@@ -691,6 +700,57 @@ impl Cli {
         }
 
         Ok(listeners)
+    }
+}
+
+fn parse_local_port_forward_rule(rule: &str) -> anyhow::Result<LocalPortForwardRule> {
+    let url = url::Url::parse(rule)
+        .with_context(|| format!("invalid local port forward rule url: {}", rule))?;
+    let proto = url.scheme().to_lowercase();
+    if proto != "tcp" && proto != "udp" {
+        bail!("local port forward only supports tcp or udp, got {}", proto);
+    }
+
+    let mut listen_from_dhcp = false;
+    let (listen_host, listen_port) = match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => (host, port),
+        (Some(host), None) => {
+            let port = host.parse::<u16>().map_err(|_| {
+                anyhow::anyhow!("listen port missing in {}, please specify host:port", rule)
+            })?;
+            listen_from_dhcp = true;
+            ("0.0.0.0", port)
+        }
+        _ => {
+            anyhow::bail!("listen host missing in {}", rule);
+        }
+    };
+
+    let listen: SocketAddr = format_host_and_port(listen_host, listen_port)
+        .parse()
+        .with_context(|| format!("invalid listen address in rule '{}'", rule))?;
+
+    let target_str = url.path().trim_start_matches('/');
+    if target_str.is_empty() {
+        bail!("target address missing in {}", rule);
+    }
+    let target: SocketAddr = target_str
+        .parse()
+        .with_context(|| format!("invalid target address in rule '{}'", rule))?;
+
+    Ok(LocalPortForwardRule {
+        proto,
+        listen,
+        target,
+        listen_from_dhcp,
+    })
+}
+
+fn format_host_and_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
     }
 }
 
@@ -885,6 +945,17 @@ impl NetworkOptions {
             let mut old = cfg.get_port_forwards();
             old.push(port_forward_item);
             cfg.set_port_forwards(old);
+        }
+
+        if !self.local_port_forward.is_empty() {
+            let mut bridges = cfg.get_local_port_forwards();
+            for rule in &self.local_port_forward {
+                let parsed = parse_local_port_forward_rule(rule).with_context(|| {
+                    format!("failed to parse local port forward rule: {}", rule)
+                })?;
+                bridges.push(parsed);
+            }
+            cfg.set_local_port_forwards(bridges);
         }
 
         let mut f = cfg.get_flags();
