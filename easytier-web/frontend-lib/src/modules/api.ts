@@ -1,5 +1,5 @@
 import { UUID } from './utils';
-import { NetworkConfig } from '../types/network';
+import { NetworkConfig, NetworkInstanceRunningInfo } from '../types/network';
 
 export interface ValidateConfigResponse {
     toml_config: string;
@@ -20,14 +20,20 @@ export interface ParseConfigResponse {
     error?: string;
 }
 
+export interface CollectNetworkInfoResponse {
+    info: {
+        map: Record<string, NetworkInstanceRunningInfo | undefined>;
+    }
+}
+
 export interface RemoteClient {
-    validate_config(config: any): Promise<ValidateConfigResponse>;
-    run_network(config: any): Promise<undefined>;
-    get_network_info(inst_id: string): Promise<any>;
+    validate_config(config: NetworkConfig): Promise<ValidateConfigResponse>;
+    run_network(config: NetworkConfig): Promise<undefined>;
+    get_network_info(inst_id: string): Promise<NetworkInstanceRunningInfo | undefined>;
     list_network_instance_ids(): Promise<ListNetworkInstanceIdResponse>;
     delete_network(inst_id: string): Promise<undefined>;
     update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined>;
-    get_network_config(inst_id: string): Promise<any>;
+    get_network_config(inst_id: string): Promise<NetworkConfig>;
     generate_config(config: NetworkConfig): Promise<GenerateConfigResponse>;
     parse_config(toml_config: string): Promise<ParseConfigResponse>;
 }

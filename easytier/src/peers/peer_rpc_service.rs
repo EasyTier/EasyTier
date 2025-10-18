@@ -33,7 +33,7 @@ impl DirectConnectorRpc for DirectConnectorManagerRpcServer {
             .config
             .get_mapped_listeners()
             .into_iter()
-            .chain(self.global_ctx.get_running_listeners().into_iter())
+            .chain(self.global_ctx.get_running_listeners())
             .map(Into::into)
             .collect();
         // remove et ipv6 from the interface ipv6 list

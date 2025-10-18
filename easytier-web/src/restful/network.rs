@@ -177,9 +177,9 @@ impl NetworkApi {
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
         client_mgr
-            .handle_remove_network_instance(
+            .handle_remove_network_instances(
                 (Self::get_user_id(&auth_session)?, machine_id),
-                inst_id,
+                vec![inst_id],
             )
             .await
             .map_err(convert_error)

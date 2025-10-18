@@ -27,36 +27,52 @@ use crate::{
         peer_manage::PeerManageRpcService, port_forward_manage::PortForwardManageRpcService,
         proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
-    tunnel::tcp::TcpTunnelListener,
+    tunnel::{tcp::TcpTunnelListener, TunnelListener},
 };
 
-pub struct ApiRpcServer {
-    rpc_server: StandAloneServer<TcpTunnelListener>,
+pub struct ApiRpcServer<T: TunnelListener + 'static> {
+    rpc_server: StandAloneServer<T>,
 }
 
-impl ApiRpcServer {
+impl ApiRpcServer<TcpTunnelListener> {
     pub fn new(
         rpc_portal: Option<String>,
         rpc_portal_whitelist: Option<Vec<IpCidr>>,
         instance_manager: Arc<NetworkInstanceManager>,
     ) -> anyhow::Result<Self> {
-        let mut rpc_server = StandAloneServer::new(TcpTunnelListener::new(
-            format!("tcp://{}", parse_rpc_portal(rpc_portal)?)
-                .parse()
-                .context("failed to parse rpc portal address")?,
-        ));
-        rpc_server.set_hook(Arc::new(InstanceRpcServerHook::new(rpc_portal_whitelist)));
-        register_api_rpc_service(&instance_manager, rpc_server.registry());
-        Ok(Self { rpc_server })
-    }
+        let mut server = Self::from_tunnel(
+            TcpTunnelListener::new(
+                format!("tcp://{}", parse_rpc_portal(rpc_portal)?)
+                    .parse()
+                    .context("failed to parse rpc portal address")?,
+            ),
+            instance_manager,
+        );
 
+        server
+            .rpc_server
+            .set_hook(Arc::new(InstanceRpcServerHook::new(rpc_portal_whitelist)));
+
+        Ok(server)
+    }
+}
+
+impl<T: TunnelListener + 'static> ApiRpcServer<T> {
+    pub fn from_tunnel(tunnel: T, instance_manager: Arc<NetworkInstanceManager>) -> Self {
+        let rpc_server = StandAloneServer::new(tunnel);
+        register_api_rpc_service(&instance_manager, rpc_server.registry());
+        Self { rpc_server }
+    }
+}
+
+impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     pub async fn serve(mut self) -> Result<Self, Error> {
         self.rpc_server.serve().await?;
         Ok(self)
     }
 }
 
-impl Drop for ApiRpcServer {
+impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {
     fn drop(&mut self) {
         self.rpc_server.registry().unregister_all();
     }
