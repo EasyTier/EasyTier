@@ -27,6 +27,7 @@ use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc}
 use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
+use crate::local_port_forward::LocalPortForwarder;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
@@ -532,6 +533,8 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
+    local_port_forward: Arc<LocalPortForwarder>,
+
     global_ctx: ArcGlobalCtx,
 }
 
@@ -608,6 +611,8 @@ impl Instance {
 
             #[cfg(feature = "socks5")]
             socks5_server,
+
+            local_port_forward: Arc::new(LocalPortForwarder::new(global_ctx.clone())),
 
             global_ctx,
         }
@@ -962,6 +967,14 @@ impl Instance {
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;
         }
+
+        self.local_port_forward.start_dhcp_watch().await;
+
+        let bridge_rules = self.global_ctx.config.get_local_port_forwards();
+        self.local_port_forward
+            .apply_rules(&bridge_rules)
+            .await
+            .with_context(|| "failed to activate local port forward rules")?;
 
         #[cfg(feature = "socks5")]
         self.socks5_server
@@ -1422,6 +1435,7 @@ impl Instance {
     }
 
     pub async fn clear_resources(&mut self) {
+        self.local_port_forward.shutdown().await;
         self.peer_manager.clear_resources().await;
         let _ = self.nic_ctx.lock().await.take();
     }

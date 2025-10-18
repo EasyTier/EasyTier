@@ -351,6 +351,15 @@ fn handle_event(
                             ),
                         );
                     }
+                    GlobalCtxEvent::LocalPortForwardAdded(rule) => {
+                        print_event(
+                            instance_id,
+                            format!(
+                                "local port forward added. listen: {}, target: {}, proto: {}",
+                                rule.listen, rule.target, rule.proto
+                            ),
+                        );
+                    }
 
                     GlobalCtxEvent::ConfigPatched(patch) => {
                         print_event(instance_id, format!("config patched. patch: {:?}", patch));

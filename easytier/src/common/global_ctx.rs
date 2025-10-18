@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::common::config::ProxyNetworkConfig;
+use crate::common::config::{LocalPortForwardRule, ProxyNetworkConfig};
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
@@ -53,6 +53,7 @@ pub enum GlobalCtxEvent {
     DhcpIpv4Conflicted(Option<cidr::Ipv4Inet>),
 
     PortForwardAdded(PortForwardConfigPb),
+    LocalPortForwardAdded(LocalPortForwardRule),
 
     ConfigPatched(InstanceConfigPatch),
 }
