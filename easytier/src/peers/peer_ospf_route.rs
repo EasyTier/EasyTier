@@ -1,9 +1,7 @@
 use std::{
-    collections::{
-        HashMap, {BTreeMap, BTreeSet},
-    },
+    collections::{BTreeMap, BTreeSet, HashMap},
     fmt::Debug,
-    net::{Ipv4Addr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         Arc, Weak,
@@ -11,6 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+use arc_swap::ArcSwap;
+use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
 use petgraph::{
@@ -19,6 +19,7 @@ use petgraph::{
     visit::{EdgeRef, IntoNodeReferences},
     Directed,
 };
+use prefix_trie::PrefixMap;
 use prost::Message;
 use prost_reflect::{DynamicMessage, ReflectMessage};
 use serde::{Deserialize, Serialize};
@@ -755,7 +756,8 @@ struct RouteTable {
     next_hop_map: NextHopMap,
     ipv4_peer_id_map: DashMap<Ipv4Addr, PeerIdAndVersion>,
     ipv6_peer_id_map: DashMap<Ipv6Addr, PeerIdAndVersion>,
-    cidr_peer_id_map: DashMap<cidr::IpCidr, PeerIdAndVersion>,
+    cidr_peer_id_map: ArcSwap<PrefixMap<Ipv4Cidr, PeerIdAndVersion>>,
+    cidr_v6_peer_id_map: ArcSwap<PrefixMap<Ipv6Cidr, PeerIdAndVersion>>,
     next_hop_map_version: AtomicVersion,
 }
 
@@ -766,7 +768,8 @@ impl RouteTable {
             next_hop_map: DashMap::new(),
             ipv4_peer_id_map: DashMap::new(),
             ipv6_peer_id_map: DashMap::new(),
-            cidr_peer_id_map: DashMap::new(),
+            cidr_peer_id_map: ArcSwap::new(Arc::new(PrefixMap::new())),
+            cidr_v6_peer_id_map: ArcSwap::new(Arc::new(PrefixMap::new())),
             next_hop_map_version: AtomicVersion::new(),
         }
     }
@@ -867,16 +870,11 @@ impl RouteTable {
             // remove ipv6 map for peers we cannot reach.
             self.next_hop_map.contains_key(&v.peer_id)
         });
-        self.cidr_peer_id_map.retain(|_, v| {
-            // remove cidr map for peers we cannot reach.
-            self.next_hop_map.contains_key(&v.peer_id)
-        });
 
         shrink_dashmap(&self.peer_infos, None);
         shrink_dashmap(&self.next_hop_map, None);
         shrink_dashmap(&self.ipv4_peer_id_map, None);
         shrink_dashmap(&self.ipv6_peer_id_map, None);
-        shrink_dashmap(&self.cidr_peer_id_map, None);
     }
 
     fn gen_next_hop_map_with_least_hop(
@@ -975,6 +973,9 @@ impl RouteTable {
             self.gen_next_hop_map_with_least_cost(&graph, &start_node, version);
         };
 
+        let mut new_cidr_prefix_trie = PrefixMap::new();
+        let mut new_cidr_v6_prefix_trie = PrefixMap::new();
+
         // build peer_infos, ipv4_peer_id_map, cidr_peer_id_map
         // only set map for peers we can reach.
         for item in self.next_hop_map.iter() {
@@ -1030,28 +1031,69 @@ impl RouteTable {
             }
 
             for cidr in info.proxy_cidrs.iter() {
-                self.cidr_peer_id_map
-                    .entry(cidr.parse().unwrap())
-                    .and_modify(|v| {
-                        if is_new_peer_better(v) {
-                            // if the next hop is not set or the new next hop is better, update it.
-                            *v = peer_id_and_version;
-                        }
-                    })
-                    .or_insert(peer_id_and_version);
+                let cidr = cidr.parse::<IpCidr>();
+                match cidr {
+                    Ok(IpCidr::V4(cidr)) => {
+                        new_cidr_prefix_trie
+                            .entry(cidr)
+                            .and_modify(|e| {
+                                // if ourself has same cidr, ensure here put my peer id, so we can know deadloop may happen.
+                                if *peer_id == my_peer_id || is_new_peer_better(e) {
+                                    *e = peer_id_and_version;
+                                }
+                            })
+                            .or_insert(peer_id_and_version);
+                    }
+
+                    Ok(IpCidr::V6(cidr)) => {
+                        new_cidr_v6_prefix_trie
+                            .entry(cidr)
+                            .and_modify(|e| {
+                                // if ourself has same cidr, ensure here put my peer id, so we can know deadloop may happen.
+                                if *peer_id == my_peer_id || is_new_peer_better(e) {
+                                    *e = peer_id_and_version;
+                                }
+                            })
+                            .or_insert(peer_id_and_version);
+                    }
+
+                    _ => {
+                        tracing::warn!("invalid proxy cidr: {:?}, from peer: {:?}", cidr, peer_id);
+                    }
+                }
+                tracing::debug!(
+                    "add cidr: {:?} to peer: {:?}, my peer id: {:?}",
+                    cidr,
+                    peer_id,
+                    my_peer_id
+                );
             }
         }
+
+        self.cidr_peer_id_map.store(Arc::new(new_cidr_prefix_trie));
+        self.cidr_v6_peer_id_map
+            .store(Arc::new(new_cidr_v6_prefix_trie));
+        tracing::trace!(
+            my_peer_id = my_peer_id,
+            cidrs = ?self.cidr_peer_id_map.load(),
+            cidrs_v6 = ?self.cidr_v6_peer_id_map.load(),
+            "update peer cidr map"
+        );
     }
 
-    fn get_peer_id_for_proxy(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
-        let ipv4 = std::net::IpAddr::V4(*ipv4);
-        for item in self.cidr_peer_id_map.iter() {
-            let (k, v) = item.pair();
-            if k.contains(&ipv4) {
-                return Some(v.peer_id);
-            }
+    fn get_peer_id_for_proxy(&self, ip: &IpAddr) -> Option<PeerId> {
+        match ip {
+            IpAddr::V4(ipv4) => self
+                .cidr_peer_id_map
+                .load()
+                .get_lpm(&Ipv4Cidr::new(*ipv4, 32).unwrap())
+                .map(|x| x.1.peer_id),
+            IpAddr::V6(ipv6) => self
+                .cidr_v6_peer_id_map
+                .load()
+                .get_lpm(&Ipv6Cidr::new(*ipv6, 128).unwrap())
+                .map(|x| x.1.peer_id),
         }
-        None
     }
 }
 
@@ -2541,8 +2583,10 @@ impl Route for PeerRoute {
             return None;
         }
 
-        if let Some(peer_id) = route_table.get_peer_id_for_proxy(ipv4_addr) {
-            return Some(peer_id);
+        if let Some(peer_id) = route_table.get_peer_id_for_proxy(&IpAddr::V4(*ipv4_addr)) {
+            if peer_id != self.my_peer_id {
+                return Some(peer_id);
+            }
         }
 
         tracing::debug!(?ipv4_addr, "no peer id for ipv4");
@@ -2555,10 +2599,11 @@ impl Route for PeerRoute {
             return Some(p.peer_id);
         }
 
-        // TODO: Add proxy support for IPv6 similar to IPv4
-        // if let Some(peer_id) = route_table.get_peer_id_for_proxy_ipv6(ipv6_addr) {
-        //     return Some(peer_id);
-        // }
+        if let Some(peer_id) = route_table.get_peer_id_for_proxy(&IpAddr::V6(*ipv6_addr)) {
+            if peer_id != self.my_peer_id {
+                return Some(peer_id);
+            }
+        }
 
         tracing::debug!(?ipv6_addr, "no peer id for ipv6");
         None
@@ -2654,8 +2699,9 @@ mod tests {
         time::Duration,
     };
 
-    use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Inet};
+    use cidr::{IpCidr, Ipv4Cidr, Ipv4Inet, Ipv6Inet};
     use dashmap::DashMap;
+    use prefix_trie::PrefixMap;
     use prost_reflect::{DynamicMessage, ReflectMessage};
 
     use crate::{
@@ -2664,7 +2710,7 @@ mod tests {
         peers::{
             create_packet_recv_chan,
             peer_manager::{PeerManager, RouteAlgoType},
-            peer_ospf_route::PeerRouteServiceImpl,
+            peer_ospf_route::{PeerIdAndVersion, PeerRouteServiceImpl},
             route_trait::{NextHopPolicy, Route, RouteCostCalculatorInterface},
             tests::{connect_peer_manager, create_mock_peer_manager},
         },
@@ -2672,6 +2718,7 @@ mod tests {
             common::NatType,
             peer_rpc::{RoutePeerInfo, RoutePeerInfos, SyncRouteInfoRequest},
         },
+        tests::enable_log,
         tunnel::common::tests::wait_for_condition,
     };
     use prost::Message;
@@ -3178,5 +3225,98 @@ mod tests {
             .set_ipv6(Some("2001:db8::2/64".parse().unwrap()));
         p_b.get_global_ctx().config.remove_proxy_cidr(proxy);
         check_route_peer_id(p_c.clone()).await;
+    }
+
+    #[tokio::test]
+    async fn test_subnet_proxy_conflict() {
+        // Create three peer managers: A, B, C
+        let p_a = create_mock_peer_manager().await;
+        let p_b = create_mock_peer_manager().await;
+        let p_c = create_mock_peer_manager().await;
+
+        // Connect A-B-C in a line topology
+        connect_peer_manager(p_a.clone(), p_b.clone()).await;
+        connect_peer_manager(p_b.clone(), p_c.clone()).await;
+
+        // Create routes for testing
+        let route_a = p_a.get_route();
+        let route_b = p_b.get_route();
+
+        // Define the proxy CIDR that will be used by both A and B
+        let proxy_cidr: Ipv4Cidr = "192.168.100.0/24".parse().unwrap();
+        let test_ip = proxy_cidr.first_address();
+
+        let mut cidr_peer_id_map: PrefixMap<Ipv4Cidr, PeerIdAndVersion> = PrefixMap::new();
+        cidr_peer_id_map.insert(
+            proxy_cidr,
+            PeerIdAndVersion {
+                peer_id: p_c.my_peer_id(),
+                version: 0,
+            },
+        );
+        assert_eq!(
+            cidr_peer_id_map
+                .get_lpm(&Ipv4Cidr::new(test_ip, 32).unwrap())
+                .map(|v| v.1.peer_id)
+                .unwrap_or(0),
+            p_c.my_peer_id(),
+        );
+
+        // First, add proxy CIDR to node C to establish a baseline route
+        p_c.get_global_ctx()
+            .config
+            .add_proxy_cidr(proxy_cidr, None)
+            .unwrap();
+
+        // Wait for route convergence - A should route to C for the proxy CIDR
+        wait_for_condition(
+            || async {
+                let peer_id_for_proxy = route_a.get_peer_id_by_ipv4(&test_ip).await;
+                peer_id_for_proxy == Some(p_c.my_peer_id())
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        // Now add the same proxy CIDR to node A (creating a conflict)
+        enable_log();
+        p_a.get_global_ctx()
+            .config
+            .add_proxy_cidr(proxy_cidr, None)
+            .unwrap();
+
+        // Wait for route convergence - A should now route to itself for the proxy CIDR and be filtered out
+        wait_for_condition(
+            || async { route_a.get_peer_id_by_ipv4(&test_ip).await.is_none() },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        // Also add the same proxy CIDR to node B (creating another conflict)
+        p_b.get_global_ctx()
+            .config
+            .add_proxy_cidr(proxy_cidr, None)
+            .unwrap();
+
+        // Wait for route convergence - B should route to itself for the proxy CIDR
+        wait_for_condition(
+            || async { route_b.get_peer_id_by_ipv4(&test_ip).await.is_none() },
+            Duration::from_secs(5),
+        )
+        .await;
+
+        // Final verification: A should still route to itself even with multiple conflicts
+        assert!(route_a.get_peer_id_by_ipv4(&test_ip).await.is_none());
+
+        // remove proxy on A, a should route to B
+        p_a.get_global_ctx().config.remove_proxy_cidr(proxy_cidr);
+        wait_for_condition(
+            || async {
+                let peer_id_for_proxy = route_a.get_peer_id_by_ipv4(&test_ip).await;
+                peer_id_for_proxy == Some(p_b.my_peer_id())
+            },
+            Duration::from_secs(10),
+        )
+        .await;
     }
 }
