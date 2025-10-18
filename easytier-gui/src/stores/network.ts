@@ -97,13 +97,23 @@ export const useNetworkStore = defineStore('networkStore', {
         networkList = [NetworkTypes.DEFAULT_NETWORK_CONFIG()]
 
       this.networkList = networkList
-      this.curNetwork = this.networkList[0]
+
+      const savedCurNetworkId = localStorage.getItem('curNetworkId')
+      if (savedCurNetworkId) {
+        const savedCurNetwork = this.networkList.find(cfg => cfg.instance_id === savedCurNetworkId)
+        this.curNetwork = savedCurNetwork || this.networkList[0]
+      }
+      else {
+        this.curNetwork = this.networkList[0]
+      }
 
       this.loadAutoStartInstIdsFromLocalStorage()
     },
 
     saveToLocalStorage() {
       localStorage.setItem('networkList', JSON.stringify(this.networkList))
+      if (this.curNetwork?.instance_id)
+        localStorage.setItem('curNetworkId', this.curNetwork.instance_id)
     },
 
     saveAutoStartInstIdsToLocalStorage() {
