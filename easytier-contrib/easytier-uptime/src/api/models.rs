@@ -162,6 +162,9 @@ pub struct UpdateNodeRequest {
 
     #[validate(email)]
     pub mail: Option<String>,
+
+    // 标签字段（仅管理员可用）
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -198,6 +201,7 @@ pub struct NodeResponse {
     pub qq_number: Option<String>,
     pub wechat: Option<String>,
     pub mail: Option<String>,
+    pub tags: Vec<String>,
 }
 
 impl From<entity::shared_nodes::Model> for NodeResponse {
@@ -247,6 +251,7 @@ impl From<entity::shared_nodes::Model> for NodeResponse {
             } else {
                 Some(node.mail)
             },
+            tags: Vec::new(),
         }
     }
 }
@@ -281,6 +286,8 @@ pub struct NodeFilterParams {
     pub is_active: Option<bool>,
     pub protocol: Option<String>,
     pub search: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -313,4 +320,6 @@ pub struct AdminNodeFilterParams {
     pub is_approved: Option<bool>,
     pub protocol: Option<String>,
     pub search: Option<String>,
+    pub tag: Option<String>,
+    pub tags: Option<Vec<String>>,
 }

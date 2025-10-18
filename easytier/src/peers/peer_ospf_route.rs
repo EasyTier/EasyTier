@@ -2306,7 +2306,7 @@ impl RouteSessionManager {
             service_impl.update_foreign_network_owner_map();
         }
 
-        tracing::info!(
+        tracing::debug!(
             "handling sync_route_info rpc: from_peer_id: {:?}, is_initiator: {:?}, peer_infos: {:?}, conn_bitmap: {:?}, synced_route_info: {:?} session: {:?}, new_route_table: {:?}",
             from_peer_id, is_initiator, peer_infos, conn_bitmap, service_impl.synced_route_info, session, service_impl.route_table);
 

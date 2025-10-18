@@ -85,6 +85,15 @@
         <div class="form-tip">详细描述有助于用户选择合适的节点</div>
       </el-form-item>
 
+      <!-- 新增：标签管理（仅在管理员编辑时显示） -->
+      <el-form-item v-if="props.showTags" label="标签" prop="tags">
+        <el-select v-model="form.tags" multiple filterable allow-create default-first-option :multiple-limit="10"
+          placeholder="输入后按回车添加，如：北京、联通、IPv6、高带宽">
+          <el-option v-for="opt in (form.tags || [])" :key="opt" :label="opt" :value="opt" />
+        </el-select>
+        <div class="form-tip">用于分类与检索，建议 1-6 个标签，每个不超过 32 字符</div>
+      </el-form-item>
+
       <!-- 联系方式 -->
       <el-form-item label="联系方式" prop="contact_info">
         <div class="contact-section">
@@ -238,6 +247,7 @@ const props = defineProps({
       wechat: '',
       qq_number: '',
       mail: '',
+      tags: [],
       agreed: false
     })
   },
@@ -262,6 +272,11 @@ const props = defineProps({
     default: true
   },
   showCancel: {
+    type: Boolean,
+    default: false
+  },
+  // 新增：是否显示标签管理
+  showTags: {
     type: Boolean,
     default: false
   }
@@ -353,6 +368,38 @@ const rules = {
       },
       trigger: 'change'
     }
+  ],
+  // 新增：标签规则（仅在显示标签管理时生效）
+  tags: [
+    {
+      validator: (rule, value, callback) => {
+        if (!props.showTags) {
+          callback()
+          return
+        }
+        if (!Array.isArray(form.tags)) {
+          callback(new Error('标签格式错误'))
+          return
+        }
+        if (form.tags.length > 10) {
+          callback(new Error('最多添加 10 个标签'))
+          return
+        }
+        for (const t of form.tags) {
+          const s = (t || '').trim()
+          if (s.length === 0) {
+            callback(new Error('标签不能为空'))
+            return
+          }
+          if (s.length > 32) {
+            callback(new Error('每个标签不超过 32 字符'))
+            return
+          }
+        }
+        callback()
+      },
+      trigger: 'change'
+    }
   ]
 }
 
@@ -362,7 +409,7 @@ const canTest = computed(() => {
 })
 
 const buildDataFromForm = () => {
-  return {
+  const data = {
     name: form.name || 'Test Node',
     host: form.host,
     port: form.port,
@@ -376,6 +423,11 @@ const buildDataFromForm = () => {
     qq_number: form.qq_number || null,
     mail: form.mail || null
   }
+  // 仅在管理员编辑时附带标签
+  if (props.showTags) {
+    data.tags = Array.isArray(form.tags) ? form.tags : []
+  }
+  return data
 }
 
 // 测试连接
@@ -440,6 +492,10 @@ const handleSubmit = async () => {
 const resetFields = () => {
   if (formRef.value) {
     formRef.value.resetFields()
+  }
+  // 重置标签
+  if (props.showTags) {
+    form.tags = []
   }
   testResult.value = null
   emit('reset')

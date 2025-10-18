@@ -1,6 +1,6 @@
 use std::ops::{Div, Mul};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::Json;
 use sea_orm::{
     ColumnTrait, Condition, EntityTrait, IntoActiveModel, ModelTrait, Order, PaginatorTrait,
@@ -16,6 +16,7 @@ use crate::api::{
 use crate::db::entity::{self, health_records, shared_nodes};
 use crate::db::{operations::*, Db};
 use crate::health_checker_manager::HealthCheckerManager;
+use axum_extra::extract::Query;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -60,6 +61,35 @@ pub async fn get_nodes(
         );
     }
 
+    // 标签过滤（支持单标签与多标签 OR）
+    let mut filtered_ids: Option<Vec<i32>> = None;
+    if !filters.tags.is_empty() {
+        let ids_any =
+            NodeOperations::filter_node_ids_by_tags_any(&app_state.db, &filters.tags).await?;
+        filtered_ids = match filtered_ids {
+            Some(mut existing) => {
+                // 合并去重
+                existing.extend(ids_any);
+                existing.sort();
+                existing.dedup();
+                Some(existing)
+            }
+            None => Some(ids_any),
+        };
+    }
+    if let Some(ids) = filtered_ids {
+        if ids.is_empty() {
+            return Ok(Json(ApiResponse::success(PaginatedResponse {
+                items: vec![],
+                total: 0,
+                page,
+                per_page,
+                total_pages: 0,
+            })));
+        }
+        query = query.filter(entity::shared_nodes::Column::Id.is_in(ids));
+    }
+
     let total = query.clone().count(app_state.db.orm_db()).await?;
     let nodes = query
         .order_by_asc(entity::shared_nodes::Column::Id)
@@ -70,6 +100,13 @@ pub async fn get_nodes(
 
     let mut node_responses: Vec<NodeResponse> = nodes.into_iter().map(NodeResponse::from).collect();
     let total_pages = total.div_ceil(per_page as u64);
+
+    // 补充标签
+    let ids: Vec<i32> = node_responses.iter().map(|n| n.id).collect();
+    let tags_map = NodeOperations::get_nodes_tags_map(&app_state.db, &ids).await?;
+    for n in &mut node_responses {
+        n.tags = tags_map.get(&n.id).cloned().unwrap_or_default();
+    }
 
     // 为每个节点添加健康状态信息
     for node_response in &mut node_responses {
@@ -99,7 +136,6 @@ pub async fn get_nodes(
 
     // remove sensitive information
     node_responses.iter_mut().for_each(|node| {
-        tracing::info!("node: {:?}", node);
         node.network_name = None;
         node.network_secret = None;
 
@@ -161,7 +197,10 @@ pub async fn get_node(
         .await?
         .ok_or_else(|| ApiError::NotFound(format!("Node with id {} not found", id)))?;
 
-    Ok(Json(ApiResponse::success(NodeResponse::from(node))))
+    let mut resp = NodeResponse::from(node);
+    resp.tags = NodeOperations::get_node_tags(&app_state.db, resp.id).await?;
+
+    Ok(Json(ApiResponse::success(resp)))
 }
 
 pub async fn get_node_health(
@@ -325,6 +364,39 @@ pub async fn admin_get_nodes(
         );
     }
 
+    // 标签过滤（支持单标签与多标签 OR）
+    let mut filtered_ids: Option<Vec<i32>> = None;
+    if let Some(tag) = filters.tag {
+        let ids = NodeOperations::filter_node_ids_by_tag(&app_state.db, &tag).await?;
+        filtered_ids = Some(ids);
+    }
+    if let Some(tags) = filters.tags {
+        if !tags.is_empty() {
+            let ids_any = NodeOperations::filter_node_ids_by_tags_any(&app_state.db, &tags).await?;
+            filtered_ids = match filtered_ids {
+                Some(mut existing) => {
+                    existing.extend(ids_any);
+                    existing.sort();
+                    existing.dedup();
+                    Some(existing)
+                }
+                None => Some(ids_any),
+            };
+        }
+    }
+    if let Some(ids) = filtered_ids {
+        if ids.is_empty() {
+            return Ok(Json(ApiResponse::success(PaginatedResponse {
+                items: vec![],
+                total: 0,
+                page,
+                per_page,
+                total_pages: 0,
+            })));
+        }
+        query = query.filter(entity::shared_nodes::Column::Id.is_in(ids));
+    }
+
     let total = query.clone().count(app_state.db.orm_db()).await?;
 
     let nodes = query
@@ -334,7 +406,14 @@ pub async fn admin_get_nodes(
         .all(app_state.db.orm_db())
         .await?;
 
-    let node_responses: Vec<NodeResponse> = nodes.into_iter().map(NodeResponse::from).collect();
+    let mut node_responses: Vec<NodeResponse> = nodes.into_iter().map(NodeResponse::from).collect();
+
+    // 补充标签
+    let ids: Vec<i32> = node_responses.iter().map(|n| n.id).collect();
+    let tags_map = NodeOperations::get_nodes_tags_map(&app_state.db, &ids).await?;
+    for n in &mut node_responses {
+        n.tags = tags_map.get(&n.id).cloned().unwrap_or_default();
+    }
 
     let total_pages = (total as f64 / per_page as f64).ceil() as u32;
 
@@ -366,7 +445,10 @@ pub async fn admin_approve_node(
         .exec(app_state.db.orm_db())
         .await?;
 
-    Ok(Json(ApiResponse::success(NodeResponse::from(updated_node))))
+    let mut resp = NodeResponse::from(updated_node);
+    resp.tags = NodeOperations::get_node_tags(&app_state.db, resp.id).await?;
+
+    Ok(Json(ApiResponse::success(resp)))
 }
 
 pub async fn admin_update_node(
@@ -432,7 +514,15 @@ pub async fn admin_update_node(
         .exec(app_state.db.orm_db())
         .await?;
 
-    Ok(Json(ApiResponse::success(NodeResponse::from(updated_node))))
+    // 更新标签
+    if let Some(tags) = request.tags {
+        NodeOperations::set_node_tags(&app_state.db, updated_node.id, tags).await?;
+    }
+
+    let mut resp = NodeResponse::from(updated_node);
+    resp.tags = NodeOperations::get_node_tags(&app_state.db, resp.id).await?;
+
+    Ok(Json(ApiResponse::success(resp)))
 }
 
 pub async fn admin_revoke_approval(
@@ -454,7 +544,10 @@ pub async fn admin_revoke_approval(
         .exec(app_state.db.orm_db())
         .await?;
 
-    Ok(Json(ApiResponse::success(NodeResponse::from(updated_node))))
+    let mut resp = NodeResponse::from(updated_node);
+    resp.tags = NodeOperations::get_node_tags(&app_state.db, resp.id).await?;
+
+    Ok(Json(ApiResponse::success(resp)))
 }
 
 pub async fn admin_delete_node(
@@ -504,4 +597,11 @@ fn verify_admin_token(headers: &HeaderMap) -> ApiResult<()> {
     .map_err(|_| ApiError::Unauthorized("Invalid token".to_string()))?;
 
     Ok(())
+}
+
+pub async fn get_all_tags(
+    State(app_state): State<AppState>,
+) -> ApiResult<Json<ApiResponse<Vec<String>>>> {
+    let tags = NodeOperations::get_all_tags(&app_state.db).await?;
+    Ok(Json(ApiResponse::success(tags)))
 }

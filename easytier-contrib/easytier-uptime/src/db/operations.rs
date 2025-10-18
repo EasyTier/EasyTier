@@ -4,6 +4,7 @@ use crate::db::Db;
 use crate::db::HealthStats;
 use crate::db::HealthStatus;
 use sea_orm::*;
+use std::collections::{HashMap, HashSet};
 
 /// 节点管理操作
 pub struct NodeOperations;
@@ -227,6 +228,128 @@ impl HealthOperations {
             .await?;
 
         Ok(result.rows_affected)
+    }
+}
+impl NodeOperations {
+    /// 获取节点的全部标签
+    pub async fn get_node_tags(db: &Db, node_id: i32) -> Result<Vec<String>, DbErr> {
+        let tags = node_tags::Entity::find()
+            .filter(node_tags::Column::NodeId.eq(node_id))
+            .all(db.orm_db())
+            .await?;
+        Ok(tags.into_iter().map(|m| m.tag).collect())
+    }
+
+    /// 批量获取节点的标签映射
+    pub async fn get_nodes_tags_map(
+        db: &Db,
+        node_ids: &[i32],
+    ) -> Result<HashMap<i32, Vec<String>>, DbErr> {
+        if node_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let tags = node_tags::Entity::find()
+            .filter(node_tags::Column::NodeId.is_in(node_ids.to_vec()))
+            .order_by_asc(node_tags::Column::NodeId)
+            .all(db.orm_db())
+            .await?;
+        let mut map: HashMap<i32, Vec<String>> = HashMap::new();
+        for t in tags {
+            map.entry(t.node_id).or_default().push(t.tag);
+        }
+        Ok(map)
+    }
+
+    /// 使用标签过滤节点（返回节点ID）
+    pub async fn filter_node_ids_by_tag(db: &Db, tag: &str) -> Result<Vec<i32>, DbErr> {
+        let tagged = node_tags::Entity::find()
+            .filter(node_tags::Column::Tag.eq(tag))
+            .all(db.orm_db())
+            .await?;
+        Ok(tagged.into_iter().map(|m| m.node_id).collect())
+    }
+
+    /// 设置节点标签（替换为给定集合）
+    pub async fn set_node_tags(db: &Db, node_id: i32, tags: Vec<String>) -> Result<(), DbErr> {
+        // 去重与清理空白
+        let mut set: HashSet<String> = HashSet::new();
+        for tag in tags.into_iter() {
+            let trimmed = tag.trim();
+            if !trimmed.is_empty() {
+                set.insert(trimmed.to_string());
+            }
+        }
+
+        // 取出当前标签
+        let existing = node_tags::Entity::find()
+            .filter(node_tags::Column::NodeId.eq(node_id))
+            .all(db.orm_db())
+            .await?;
+
+        let existing_set: HashSet<String> = existing.iter().map(|m| m.tag.clone()).collect();
+
+        // 需要删除的
+        let to_delete: Vec<i32> = existing
+            .iter()
+            .filter(|m| !set.contains(&m.tag))
+            .map(|m| m.id)
+            .collect();
+
+        // 需要新增的
+        let to_insert: Vec<String> = set
+            .into_iter()
+            .filter(|t| !existing_set.contains(t))
+            .collect();
+
+        // 执行删除
+        if !to_delete.is_empty() {
+            node_tags::Entity::delete_many()
+                .filter(node_tags::Column::Id.is_in(to_delete))
+                .exec(db.orm_db())
+                .await?;
+        }
+
+        // 执行新增
+        for t in to_insert {
+            let now = chrono::Utc::now().fixed_offset();
+            let am = node_tags::ActiveModel {
+                id: NotSet,
+                node_id: Set(node_id),
+                tag: Set(t),
+                created_at: Set(now),
+            };
+            node_tags::Entity::insert(am).exec(db.orm_db()).await?;
+        }
+
+        Ok(())
+    }
+
+    // 新增：获取所有唯一标签（按字母排序）
+    pub async fn get_all_tags(db: &Db) -> Result<Vec<String>, DbErr> {
+        let rows = node_tags::Entity::find().all(db.orm_db()).await?;
+        let mut set: HashSet<String> = HashSet::new();
+        for r in rows {
+            set.insert(r.tag);
+        }
+        let mut list: Vec<String> = set.into_iter().collect();
+        list.sort();
+        Ok(list)
+    }
+
+    // 新增：使用多标签（OR 语义）过滤节点，返回匹配的节点ID
+    pub async fn filter_node_ids_by_tags_any(db: &Db, tags: &[String]) -> Result<Vec<i32>, DbErr> {
+        if tags.is_empty() {
+            return Ok(vec![]);
+        }
+        let tagged = node_tags::Entity::find()
+            .filter(node_tags::Column::Tag.is_in(tags.to_vec()))
+            .all(db.orm_db())
+            .await?;
+        let mut set: HashSet<i32> = HashSet::new();
+        for m in tagged {
+            set.insert(m.node_id);
+        }
+        Ok(set.into_iter().collect())
     }
 }
 

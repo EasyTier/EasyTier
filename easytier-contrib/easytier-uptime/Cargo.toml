@@ -15,6 +15,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 
 # Axum web framework
 axum = { version = "0.8.4", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["query"] }
 tower-http = { version = "0.6", features = ["cors", "compression-full"] }
 tower = "0.5"
 

@@ -2,6 +2,8 @@ use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
+use easytier::common::config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfig};
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub server: ServerConfig,
@@ -30,12 +32,6 @@ pub struct HealthCheckConfig {
     pub interval_seconds: u64,
     pub timeout_seconds: u64,
     pub max_retries: u32,
-}
-
-#[derive(Debug, Clone)]
-pub struct LoggingConfig {
-    pub level: String,
-    pub rust_log: String,
 }
 
 #[derive(Debug, Clone)]
@@ -100,8 +96,14 @@ impl AppConfig {
         };
 
         let logging_config = LoggingConfig {
-            level: env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-            rust_log: env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()),
+            file_logger: Some(FileLoggerConfig {
+                level: Some(env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string())),
+                file: Some("easytier-uptime.log".to_string()),
+                ..Default::default()
+            }),
+            console_logger: Some(ConsoleLoggerConfig {
+                level: Some(env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string())),
+            }),
         };
 
         let cors_config = CorsConfig {
@@ -161,8 +163,14 @@ impl AppConfig {
                 max_retries: 3,
             },
             logging: LoggingConfig {
-                level: "info".to_string(),
-                rust_log: "info".to_string(),
+                file_logger: Some(FileLoggerConfig {
+                    level: Some("info".to_string()),
+                    file: Some("easytier-uptime.log".to_string()),
+                    ..Default::default()
+                }),
+                console_logger: Some(ConsoleLoggerConfig {
+                    level: Some("info".to_string()),
+                }),
             },
             cors: CorsConfig {
                 allowed_origins: vec![

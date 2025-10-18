@@ -321,9 +321,9 @@ pub struct ConsoleLoggerConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
 pub struct LoggingConfig {
     #[builder(setter(into, strip_option), default = None)]
-    file_logger: Option<FileLoggerConfig>,
+    pub file_logger: Option<FileLoggerConfig>,
     #[builder(setter(into, strip_option), default = None)]
-    console_logger: Option<ConsoleLoggerConfig>,
+    pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
 impl LoggingConfigLoader for &LoggingConfig {

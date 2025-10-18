@@ -196,6 +196,17 @@
 
             <el-table-column prop="description" label="描述" min-width="150" show-overflow-tooltip />
 
+            <el-table-column prop="tags" label="标签" min-width="160">
+              <template #default="{ row }">
+                <div class="tags-list">
+                  <el-tag v-for="(tag, idx) in row.tags" :key="tag + idx" size="small" class="tag-chip" :style="getTagStyle(tag)">
+                    {{ tag }}
+                  </el-tag>
+                  <span v-if="!row.tags || row.tags.length === 0" class="text-muted">无</span>
+                </div>
+              </template>
+            </el-table-column>
+
             <el-table-column prop="created_at" label="创建时间" width="160">
               <template #default="{ row }">
                 {{ formatDate(row.created_at) }}
@@ -228,8 +239,8 @@
     <!-- 编辑节点对话框 -->
     <el-dialog v-model="editDialogVisible" title="编辑节点" width="800px" destroy-on-close>
       <NodeForm v-if="editDialogVisible" v-model="editForm" :submitting="updating" submit-text="更新节点" submit-icon="Edit"
-        :show-connection-test="false" :show-agreement="false" :show-cancel="true" @submit="handleUpdateNode"
-        @cancel="editDialogVisible = false" @reset="resetEditForm" />
+        :show-connection-test="false" :show-agreement="false" :show-cancel="true" :show-tags="true"
+        @submit="handleUpdateNode" @cancel="editDialogVisible = false" @reset="resetEditForm" />
     </el-dialog>
   </div>
 </template>
@@ -240,6 +251,7 @@ import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, Clock, DataAnalysis, CircleCheck, Loading } from '@element-plus/icons-vue'
 import NodeForm from '../components/NodeForm.vue'
+import { getTagStyle } from '../utils/tagColor'
 
 export default {
   name: 'AdminDashboard',
@@ -270,7 +282,8 @@ export default {
         protocol: 'tcp',
         version: '',
         max_connections: 100,
-        description: ''
+        description: '',
+        tags: []
       },
       editingNodeId: null,
       updating: false
@@ -302,6 +315,7 @@ export default {
     }
   },
   methods: {
+    getTagStyle,
     async loadNodes() {
       try {
         this.loading = true
@@ -379,13 +393,47 @@ export default {
     },
     editNode(node) {
       this.editingNodeId = node.id
-      this.editForm = node
+      // 只取需要的字段，并复制 tags 数组以避免引用问题
+      this.editForm = {
+        id: node.id,
+        name: node.name,
+        host: node.host,
+        port: node.port,
+        protocol: node.protocol,
+        version: node.version,
+        max_connections: node.max_connections,
+        description: node.description || '',
+        allow_relay: node.allow_relay,
+        network_name: node.network_name,
+        network_secret: node.network_secret,
+        wechat: node.wechat,
+        qq_number: node.qq_number,
+        mail: node.mail,
+        tags: Array.isArray(node.tags) ? [...node.tags] : []
+      }
       this.editDialogVisible = true
     },
     async handleUpdateNode(formData) {
       try {
         this.updating = true
-        await adminApi.updateNode(this.editingNodeId, formData)
+        // 确保提交包含 tags 字段（为空数组也传）
+        const payload = {
+          name: formData.name,
+          host: formData.host,
+          port: formData.port,
+          protocol: formData.protocol,
+          version: formData.version,
+          max_connections: formData.max_connections,
+          description: formData.description,
+          allow_relay: formData.allow_relay,
+          network_name: formData.network_name,
+          network_secret: formData.network_secret,
+          wechat: formData.wechat,
+          qq_number: formData.qq_number,
+          mail: formData.mail,
+          tags: Array.isArray(formData.tags) ? formData.tags : []
+        }
+        await adminApi.updateNode(this.editingNodeId, payload)
         ElMessage.success('节点更新成功')
         this.editDialogVisible = false
         await this.loadNodes()
@@ -575,5 +623,9 @@ export default {
 
 .text-secondary {
   color: #909399;
+}
+
+.tag-chip {
+  margin-right: 4px;
 }
 </style>
