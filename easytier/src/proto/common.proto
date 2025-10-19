@@ -203,6 +203,7 @@ message PeerFeatureFlag {
   bool avoid_relay_data = 2;
   bool kcp_input = 3;
   bool no_relay_kcp = 4;
+  bool support_conn_list_sync = 5;
 }
 
 enum SocketType {
