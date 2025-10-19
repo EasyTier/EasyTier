@@ -25,6 +25,8 @@ error_msg: Error Message
 detail: Detail
 add_new_network: New Network
 del_cur_network: Delete Current Network
+confirm_delete_network_title: Confirm Deletion
+confirm_delete_network_message: Are you sure you want to delete the current network?
 select_network: Select Network
 network_instances: Network Instances
 instance_id: Instance ID
