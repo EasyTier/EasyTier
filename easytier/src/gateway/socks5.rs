@@ -322,7 +322,10 @@ impl Socks5ServerNet {
 
                 let dst = ipv4.get_destination();
                 let packet = ZCPacket::new_with_payload(&data);
-                if let Err(e) = peer_manager.send_msg_by_ip(packet, IpAddr::V4(dst)).await {
+                if let Err(e) = peer_manager
+                    .send_msg_by_ip(packet, IpAddr::V4(dst), false)
+                    .await
+                {
                     tracing::error!("send to peer failed in smoltcp sender: {:?}", e);
                 }
             }

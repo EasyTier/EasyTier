@@ -688,13 +688,42 @@ impl NicCtx {
                 return;
             }
             let dst_ipv4 = ipv4.get_destination();
+            let src_ipv4 = ipv4.get_source();
+            let my_ipv4 = mgr.get_global_ctx().get_ipv4().map(|x| x.address());
             tracing::trace!(
                 ?ret,
+                ?src_ipv4,
+                ?dst_ipv4,
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
 
-            // TODO: use zero-copy
-            let send_ret = mgr.send_msg_by_ip(ret, IpAddr::V4(dst_ipv4)).await;
+            // Subnet A is proxied as 10.0.0.0/24, and Subnet B is also proxied as 10.0.0.0/24.
+            //
+            // Subnet A has received a route advertised by Subnet B. As a result, A can reach
+            // the physical subnet 10.0.0.0/24 directly and has also added a virtual route for
+            // the same subnet 10.0.0.0/24. However, the physical route has a higher priority
+            // (lower metric) than the virtual one.
+            //
+            // When A sends a UDP packet to a non-existent IP within this subnet, the packet
+            // cannot be delivered on the physical network and is instead routed to the virtual
+            // network interface.
+            //
+            // The virtual interface receives the packet and forwards it to itself, which triggers
+            // the subnet proxy logic. The subnet proxy then attempts to send another packet to
+            // the same destination address, causing the same process to repeat and creating an
+            // infinite loop. Therefore, we must avoid re-sending packets back to ourselves
+            // when the subnet proxy itself is the originator of the packet.
+            //
+            // However, there is a special scenario to consider: when A acts as a gateway,
+            // packets from devices behind A may be forwarded by the OS to the ET (e.g., an
+            // eBPF or tunneling component), which happens to proxy the subnet. In this case,
+            // the packet’s source IP is not A’s own IP, and we must allow such packets to be
+            // sent to the virtual interface (i.e., "sent to ourselves") to maintain correct
+            // forwarding behavior. Thus, loop prevention should only apply when the source IP
+            // belongs to the local host.
+            let send_ret = mgr
+                .send_msg_by_ip(ret, IpAddr::V4(dst_ipv4), Some(src_ipv4) == my_ipv4)
+                .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
             }
@@ -711,20 +740,23 @@ impl NicCtx {
             }
             let src_ipv6 = ipv6.get_source();
             let dst_ipv6 = ipv6.get_destination();
+            let my_ipv6 = mgr.get_global_ctx().get_ipv6().map(|x| x.address());
             tracing::trace!(
                 ?ret,
+                ?src_ipv6,
+                ?dst_ipv6,
                 "[USER_PACKET] recv new packet from tun device and forward to peers."
             );
 
-            if src_ipv6.is_unicast_link_local()
-                && Some(src_ipv6) != mgr.get_global_ctx().get_ipv6().map(|x| x.address())
-            {
+            if src_ipv6.is_unicast_link_local() && Some(src_ipv6) != my_ipv6 {
                 // do not route link local packet to other nodes unless the address is assigned by user
                 return;
             }
 
             // TODO: use zero-copy
-            let send_ret = mgr.send_msg_by_ip(ret, IpAddr::V6(dst_ipv6)).await;
+            let send_ret = mgr
+                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), Some(src_ipv6) == my_ipv6)
+                .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
             }

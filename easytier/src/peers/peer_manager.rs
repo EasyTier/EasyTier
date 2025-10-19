@@ -791,7 +791,7 @@ impl PeerManager {
         impl PeerPacketFilter for NicPacketProcessor {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
                 let hdr = packet.peer_manager_header().unwrap();
-                if hdr.packet_type == PacketType::Data as u8 {
+                if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
                     tracing::trace!(?packet, "send packet to nic channel");
                     // TODO: use a function to get the body ref directly for zero copy
                     let _ = self.nic_channel.send(packet).await;
@@ -1150,7 +1150,12 @@ impl PeerManager {
         Ok(())
     }
 
-    pub async fn send_msg_by_ip(&self, mut msg: ZCPacket, ip_addr: IpAddr) -> Result<(), Error> {
+    pub async fn send_msg_by_ip(
+        &self,
+        mut msg: ZCPacket,
+        ip_addr: IpAddr,
+        not_send_to_self: bool,
+    ) -> Result<(), Error> {
         tracing::trace!(
             "do send_msg in peer manager, msg: {:?}, ip_addr: {}",
             msg,
@@ -1210,10 +1215,14 @@ impl PeerManager {
                 msg.clone().unwrap()
             };
 
-            msg.mut_peer_manager_header()
-                .unwrap()
-                .to_peer_id
-                .set(*peer_id);
+            let hdr = msg.mut_peer_manager_header().unwrap();
+            hdr.to_peer_id.set(*peer_id);
+
+            if not_send_to_self && *peer_id == self.my_peer_id {
+                // the packet may be sent to vpn portal, so we just set flags instead of drop it
+                hdr.set_not_send_to_tun(true);
+                hdr.set_no_proxy(true);
+            }
 
             self.self_tx_counters
                 .self_tx_bytes
@@ -1293,6 +1302,10 @@ impl PeerManager {
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
         self.global_ctx.clone()
+    }
+
+    pub fn get_global_ctx_ref(&self) -> &ArcGlobalCtx {
+        &self.global_ctx
     }
 
     pub fn get_nic_channel(&self) -> PacketRecvChan {

@@ -2584,9 +2584,7 @@ impl Route for PeerRoute {
         }
 
         if let Some(peer_id) = route_table.get_peer_id_for_proxy(&IpAddr::V4(*ipv4_addr)) {
-            if peer_id != self.my_peer_id {
-                return Some(peer_id);
-            }
+            return Some(peer_id);
         }
 
         tracing::debug!(?ipv4_addr, "no peer id for ipv4");
@@ -2599,10 +2597,17 @@ impl Route for PeerRoute {
             return Some(p.peer_id);
         }
 
+        // only get peer id for proxy when the dst ipv4 is not in same network with us
+        if self
+            .global_ctx
+            .is_ip_in_same_network(&std::net::IpAddr::V6(*ipv6_addr))
+        {
+            tracing::trace!(?ipv6_addr, "ipv6 addr is in same network with us");
+            return None;
+        }
+
         if let Some(peer_id) = route_table.get_peer_id_for_proxy(&IpAddr::V6(*ipv6_addr)) {
-            if peer_id != self.my_peer_id {
-                return Some(peer_id);
-            }
+            return Some(peer_id);
         }
 
         tracing::debug!(?ipv6_addr, "no peer id for ipv6");
@@ -2699,7 +2704,7 @@ mod tests {
         time::Duration,
     };
 
-    use cidr::{IpCidr, Ipv4Cidr, Ipv4Inet, Ipv6Inet};
+    use cidr::{Ipv4Cidr, Ipv4Inet, Ipv6Inet};
     use dashmap::DashMap;
     use prefix_trie::PrefixMap;
     use prost_reflect::{DynamicMessage, ReflectMessage};
@@ -2718,7 +2723,6 @@ mod tests {
             common::NatType,
             peer_rpc::{RoutePeerInfo, RoutePeerInfos, SyncRouteInfoRequest},
         },
-        tests::enable_log,
         tunnel::common::tests::wait_for_condition,
     };
     use prost::Message;
@@ -3279,15 +3283,14 @@ mod tests {
         .await;
 
         // Now add the same proxy CIDR to node A (creating a conflict)
-        enable_log();
         p_a.get_global_ctx()
             .config
             .add_proxy_cidr(proxy_cidr, None)
             .unwrap();
 
-        // Wait for route convergence - A should now route to itself for the proxy CIDR and be filtered out
+        // Wait for route convergence - A should now route to itself for the proxy CIDR
         wait_for_condition(
-            || async { route_a.get_peer_id_by_ipv4(&test_ip).await.is_none() },
+            || async { route_a.get_peer_id_by_ipv4(&test_ip).await == Some(p_a.my_peer_id()) },
             Duration::from_secs(10),
         )
         .await;
@@ -3300,13 +3303,16 @@ mod tests {
 
         // Wait for route convergence - B should route to itself for the proxy CIDR
         wait_for_condition(
-            || async { route_b.get_peer_id_by_ipv4(&test_ip).await.is_none() },
+            || async { route_b.get_peer_id_by_ipv4(&test_ip).await == Some(p_b.my_peer_id()) },
             Duration::from_secs(5),
         )
         .await;
 
         // Final verification: A should still route to itself even with multiple conflicts
-        assert!(route_a.get_peer_id_by_ipv4(&test_ip).await.is_none());
+        assert_eq!(
+            route_a.get_peer_id_by_ipv4(&test_ip).await,
+            Some(p_a.my_peer_id())
+        );
 
         // remove proxy on A, a should route to B
         p_a.get_global_ctx().config.remove_proxy_cidr(proxy_cidr);
