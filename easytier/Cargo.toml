@@ -114,8 +114,9 @@ idna = "1.0"
 byteorder = "1.5.0"
 
 # for proxy
-cidr = { version = "0.2.2", features = ["serde"] }
+cidr = { version = "0.3.1", features = ["serde"] }
 socket2 = { version = "0.5.10", features = ["all"] }
+prefix-trie = { version = "0.7.0", features = ["cidr"] }
 
 # for hole punching
 stun_codec = "0.3.4"

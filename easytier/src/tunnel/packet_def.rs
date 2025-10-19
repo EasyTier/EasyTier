@@ -82,6 +82,7 @@ bitflags::bitflags! {
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
         const KCP_SRC_MODIFIED = 0b0010_0000;
+        const NOT_SEND_TO_TUN = 0b0100_0000;
 
         const _ = !0;
     }
@@ -200,6 +201,23 @@ impl PeerManagerHeader {
         PeerManagerHeaderFlags::from_bits(self.flags)
             .unwrap()
             .contains(PeerManagerHeaderFlags::KCP_SRC_MODIFIED)
+    }
+
+    pub fn set_not_send_to_tun(&mut self, not_send_to_tun: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if not_send_to_tun {
+            flags.insert(PeerManagerHeaderFlags::NOT_SEND_TO_TUN);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::NOT_SEND_TO_TUN);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn is_not_send_to_tun(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::NOT_SEND_TO_TUN)
     }
 }
 

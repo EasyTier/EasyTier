@@ -11,6 +11,8 @@ use tokio::{net::UdpSocket, task::JoinSet};
 
 use super::*;
 
+// TODO: 需要加一个单测，确保 socks5 + exit node == self || proxy_cidr == 0.0.0.0/0 时，可以实现出口节点的能力。
+
 use crate::{
     common::{
         config::{ConfigLoader, NetworkIdentity, PortForwardConfig, TomlConfigLoader},
@@ -337,6 +339,77 @@ pub async fn basic_three_node_test(
         Duration::from_secs(5),
     )
     .await;
+
+    drop_insts(insts).await;
+}
+
+#[tokio::test]
+#[serial_test::serial]
+pub async fn subnet_proxy_loop_prevention_test() {
+    // 测试场景：inst1 和 inst2 都代理了 10.1.2.0/24 网段，
+    // inst1 发起对 10.1.2.5 的 ping，不应该出现环路
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                // inst1 代理 10.1.2.0/24 网段
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            } else if cfg.get_inst_name() == "inst2" {
+                // inst2 也代理相同的 10.1.2.0/24 网段
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    // 等待代理路由出现 - inst1 应该看到 inst2 的代理路由
+    wait_proxy_route_appear(
+        &insts[0].get_peer_manager(),
+        "10.144.144.2/24",
+        insts[1].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    // 等待代理路由出现 - inst2 应该看到 inst1 的代理路由
+    wait_proxy_route_appear(
+        &insts[1].get_peer_manager(),
+        "10.144.144.1/24",
+        insts[0].peer_id(),
+        "10.1.2.0/24",
+    )
+    .await;
+
+    // 从 inst1 (net_a) 发起对 10.1.2.5 的 ping 测试
+    // 这应该失败，并且不会产生环路
+    let now = std::time::Instant::now();
+    while now.elapsed().as_secs() < 10 {
+        ping_test("net_a", "10.1.2.5", None).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    println!(
+        "inst0 metrics: {:?}",
+        insts[0]
+            .get_global_ctx()
+            .stats_manager()
+            .export_prometheus()
+    );
+
+    let all_metrics = insts[0].get_global_ctx().stats_manager().get_all_metrics();
+    for metric in all_metrics {
+        if metric.name == MetricName::TrafficPacketsSelfTx {
+            let counter = insts[0]
+                .get_global_ctx()
+                .stats_manager()
+                .get_counter(metric.name, metric.labels.clone());
+            assert!(counter.get() < 40);
+        }
+    }
 
     drop_insts(insts).await;
 }
@@ -998,7 +1071,9 @@ pub async fn wireguard_vpn_portal(#[values(true, false)] test_v6: bool) {
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_addr: &str) {
+pub async fn socks5_vpn_portal(
+    #[values("10.144.144.1", "10.144.144.3", "10.1.2.4")] dst_addr: &str,
+) {
     use rand::Rng as _;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -1006,7 +1081,19 @@ pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_add
     };
     use tokio_socks::tcp::socks5::Socks5Stream;
 
-    let _insts = init_three_node("tcp").await;
+    let _insts = init_three_node_ex(
+        "tcp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst3" {
+                // 添加子网代理配置
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
 
     let mut buf = vec![0u8; 1024];
     rand::thread_rng().fill(&mut buf[..]);
@@ -1016,18 +1103,23 @@ pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_add
     let task = tokio::spawn(async move {
         let net_ns = if dst_addr_clone == "10.144.144.1" {
             NetNS::new(Some("net_a".into()))
-        } else {
+        } else if dst_addr_clone == "10.144.144.3" {
             NetNS::new(Some("net_c".into()))
+        } else {
+            NetNS::new(Some("net_d".into()))
         };
+
         let _g = net_ns.guard();
 
         let socket = TcpListener::bind("0.0.0.0:22222").await.unwrap();
         let (mut st, addr) = socket.accept().await.unwrap();
 
-        if dst_addr_clone == "10.144.144.3" {
+        if dst_addr_clone == "10.144.144.1" {
+            assert_eq!(addr.ip().to_string(), "127.0.0.1".to_string());
+        } else if dst_addr_clone == "10.144.144.3" {
             assert_eq!(addr.ip().to_string(), "10.144.144.1".to_string());
         } else {
-            assert_eq!(addr.ip().to_string(), "127.0.0.1".to_string());
+            assert_eq!(addr.ip().to_string(), "10.1.2.3".to_string());
         }
 
         let rbuf = &mut [0u8; 1024];
@@ -1035,7 +1127,11 @@ pub async fn socks5_vpn_portal(#[values("10.144.144.1", "10.144.144.3")] dst_add
         assert_eq!(rbuf, buf_clone.as_slice());
     });
 
-    let net_ns = NetNS::new(Some("net_a".into()));
+    let net_ns = if dst_addr == "10.1.2.4" {
+        NetNS::new(Some("net_c".into()))
+    } else {
+        NetNS::new(Some("net_a".into()))
+    };
     let _g = net_ns.guard();
 
     println!("connect to socks5 portal");

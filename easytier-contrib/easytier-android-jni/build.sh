@@ -85,6 +85,7 @@ build_for_target() {
     rust_target="${TARGET_MAP[$android_target]}"
     mkdir -p "$OUTPUT_DIR/$android_target"
     cp "$REPO_ROOT/target/$rust_target/release/libeasytier_android_jni.so" "$OUTPUT_DIR/$android_target/"
+    cp "$REPO_ROOT/target/$rust_target/release/libeasytier_ffi.so" "$OUTPUT_DIR/$android_target/"
     echo -e "${GREEN}库文件已复制到: $OUTPUT_DIR/$android_target/${NC}"
 }
 
