@@ -466,4 +466,8 @@ function showEventLogs() {
 .p-timeline :deep(.p-timeline-event-opposite) {
   @apply flex-none;
 }
+
+:deep(.p-datatable .p-datatable-column-title) {
+  white-space: nowrap;
+}
 </style>
