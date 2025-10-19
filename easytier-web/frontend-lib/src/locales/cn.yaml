@@ -25,6 +25,8 @@ error_msg: 错误信息
 detail: 详情
 add_new_network: 添加新网络
 del_cur_network: 删除当前网络
+confirm_delete_network_title: 确认删除
+confirm_delete_network_message: 确定要删除当前网络吗？
 select_network: 选择网络
 network_instances: 网络实例
 instance_id: 实例ID

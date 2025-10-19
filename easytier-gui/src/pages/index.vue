@@ -19,6 +19,7 @@ const { t, locale } = useI18n()
 const visible = ref(false)
 const aboutVisible = ref(false)
 const tomlConfig = ref('')
+const deleteDialogVisible = ref(false)
 
 useTray(true)
 
@@ -31,7 +32,7 @@ const items = ref([
   {
     label: () => t('del_cur_network'),
     icon: 'pi pi-times',
-    command: deleteCurrentNetwork,
+    command: promptDeleteCurrentNetwork,
     disabled: () => networkStore.networkList.length <= 1,
   },
 ])
@@ -61,7 +62,16 @@ async function openConfigDialog() {
   visible.value = true
 }
 
+function promptDeleteCurrentNetwork() {
+  deleteDialogVisible.value = true
+}
+
+function cancelDeleteCurrentNetwork() {
+  deleteDialogVisible.value = false
+}
+
 async function deleteCurrentNetwork() {
+  deleteDialogVisible.value = false
   networkStore.removeNetworkInstance(networkStore.curNetwork.instance_id)
   await retainNetworkInstance(networkStore.networkInstanceIds)
   networkStore.delCurNetwork()
@@ -237,7 +247,7 @@ const setting_menu_items = ref([
   {
     label: () => t('del_cur_network'),
     icon: 'pi pi-times',
-    command: deleteCurrentNetwork,
+    command: promptDeleteCurrentNetwork,
     disabled: () => networkStore.networkList.length <= 1,
   },
   {
@@ -308,6 +318,17 @@ async function saveTomlConfig(tomlConfig: string) {
 
     <Dialog v-model:visible="aboutVisible" modal :header="t('about.title')" :style="{ width: '70%' }">
       <About />
+    </Dialog>
+
+    <Dialog v-model:visible="deleteDialogVisible" modal :header="t('confirm_delete_network_title')"
+      :style="{ width: '24rem' }">
+      <p class="mb-4">
+        {{ t('confirm_delete_network_message') }}
+      </p>
+      <template #footer>
+        <Button :label="t('web.common.cancel')" severity="secondary" text @click="cancelDeleteCurrentNetwork" />
+        <Button :label="t('web.common.confirm')" severity="danger" @click="deleteCurrentNetwork" />
+      </template>
     </Dialog>
 
     <div class="w-full">
