@@ -189,6 +189,23 @@ where
         Ok(())
     }
 
+    async fn handle_save_network_config(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+        config: NetworkConfig,
+    ) -> Result<(), RemoteClientError<E>> {
+        self.get_storage()
+            .insert_or_update_user_network_config(identify.clone(), inst_id, config)
+            .await
+            .map_err(RemoteClientError::PersistentError)?;
+        self.get_storage()
+            .update_network_config_state(identify, inst_id, true)
+            .await
+            .map_err(RemoteClientError::PersistentError)?;
+        Ok(())
+    }
+
     async fn handle_get_network_config(
         &self,
         identify: T,

@@ -199,6 +199,20 @@ async fn update_network_config_state(
 }
 
 #[tauri::command]
+async fn save_network_config(app: AppHandle, cfg: NetworkConfig) -> Result<(), String> {
+    let instance_id = cfg
+        .instance_id()
+        .parse()
+        .map_err(|e: uuid::Error| e.to_string())?;
+    CLIENT_MANAGER
+        .get()
+        .unwrap()
+        .handle_save_network_config(app, instance_id, cfg)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn validate_config(
     app: AppHandle,
     config: NetworkConfig,
@@ -649,6 +663,7 @@ pub fn run() {
             list_network_instance_ids,
             remove_network_instance,
             update_network_config_state,
+            save_network_config,
             validate_config,
             get_config,
             load_configs,

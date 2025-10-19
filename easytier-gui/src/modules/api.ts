@@ -20,6 +20,9 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined> {
         await backend.updateNetworkConfigState(inst_id, disabled);
     }
+    async save_config(config: NetworkTypes.NetworkConfig): Promise<undefined> {
+        await backend.saveNetworkConfig(config);
+    }
     async get_network_config(inst_id: string): Promise<NetworkTypes.NetworkConfig> {
         return backend.getConfig(inst_id);
     }

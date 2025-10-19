@@ -33,6 +33,7 @@ export interface RemoteClient {
     list_network_instance_ids(): Promise<ListNetworkInstanceIdResponse>;
     delete_network(inst_id: string): Promise<undefined>;
     update_network_instance_state(inst_id: string, disabled: boolean): Promise<undefined>;
+    save_config(config: NetworkConfig): Promise<undefined>;
     get_network_config(inst_id: string): Promise<NetworkConfig>;
     generate_config(config: NetworkConfig): Promise<GenerateConfigResponse>;
     parse_config(toml_config: string): Promise<ParseConfigResponse>;

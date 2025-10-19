@@ -46,6 +46,10 @@ export async function updateNetworkConfigState(instanceId: string, disabled: boo
   return await invoke('update_network_config_state', { instanceId, disabled })
 }
 
+export async function saveNetworkConfig(cfg: NetworkConfig) {
+  return await invoke('save_network_config', { cfg })
+}
+
 export async function validateConfig(cfg: NetworkConfig) {
   return await invoke<ValidateConfigResponse>('validate_config', { cfg })
 }
