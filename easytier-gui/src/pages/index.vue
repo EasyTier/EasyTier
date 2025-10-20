@@ -139,6 +139,8 @@ async function updateNetworkInfos() {
 
 let intervalId = 0
 onMounted(async () => {
+  await loadDockVisibilityAsync(getDockVisibilityStatus())
+
   intervalId = window.setInterval(async () => {
     await updateNetworkInfos()
   }, 500)

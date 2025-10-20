@@ -3,7 +3,10 @@
 
 mod elevate;
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use easytier::{
     common::config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
@@ -25,6 +28,9 @@ static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
 static mut LOGGER_LEVEL_SENDER: once_cell::sync::Lazy<Option<NewFilterSender>> =
     once_cell::sync::Lazy::new(Default::default);
 
+static WINDOW_HAS_FOCUS: AtomicBool = AtomicBool::new(false);
+static DOCK_ICON_VISIBLE: AtomicBool = AtomicBool::new(true);
+
 #[tauri::command]
 fn easytier_version() -> Result<String, String> {
     Ok(easytier::VERSION.to_string())
@@ -41,6 +47,14 @@ fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), Strin
             ActivationPolicy::Accessory
         })
         .map_err(|e| e.to_string())?;
+
+        DOCK_ICON_VISIBLE.store(visible, Ordering::Relaxed);
+
+        if let Some(window) = app.get_webview_window("main") {
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.set_focus();
+            }
+        }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, visible);
@@ -132,16 +146,22 @@ fn set_tun_fd(instance_id: String, fd: i32) -> Result<(), String> {
 #[cfg(not(target_os = "android"))]
 fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or_default() {
-            if window.is_minimized().unwrap_or_default() {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            } else {
-                let _ = window.hide();
-            }
-        } else {
+        let is_visible = window.is_visible().unwrap_or(false);
+        let is_minimized = window.is_minimized().unwrap_or(false);
+        let has_focus = WINDOW_HAS_FOCUS.load(Ordering::Relaxed);
+
+        if !is_visible || is_minimized {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            WINDOW_HAS_FOCUS.store(true, Ordering::Relaxed);
+        } else if !has_focus {
             let _ = window.show();
             let _ = window.set_focus();
+            WINDOW_HAS_FOCUS.store(true, Ordering::Relaxed);
+        } else {
+            let _ = window.hide();
+            WINDOW_HAS_FOCUS.store(false, Ordering::Relaxed);
         }
     }
 }
@@ -270,7 +290,11 @@ pub fn run() {
             #[cfg(not(target_os = "android"))]
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 let _ = _win.hide();
+                WINDOW_HAS_FOCUS.store(false, Ordering::Relaxed);
                 api.prevent_close();
+            }
+            tauri::WindowEvent::Focused(focused) => {
+                WINDOW_HAS_FOCUS.store(*focused, Ordering::Relaxed);
             }
             _ => {}
         })
@@ -285,6 +309,10 @@ pub fn run() {
         use tauri::RunEvent;
         app.run(|app, event| match event {
             RunEvent::Reopen { .. } => {
+                use tauri::ActivationPolicy;
+                if !DOCK_ICON_VISIBLE.load(Ordering::Relaxed) {
+                    let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+                }
                 toggle_window_visibility(app);
             }
             _ => {}
