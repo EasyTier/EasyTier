@@ -289,9 +289,11 @@ web:
     network: 网络
     select_network: 选择网络
     create_network: 创建网络
-    cancel_creation: 取消创建
+    cancel_edit: 取消编辑
     more_actions: 更多操作
     edit_as_file: 编辑为文件
+    save_config: 保存配置
+    config_saved: 配置已保存
     import_config: 导入配置
     create_new: 创建新网络
     network_status: 网络状态

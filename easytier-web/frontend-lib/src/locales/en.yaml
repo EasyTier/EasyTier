@@ -289,9 +289,11 @@ web:
     network: Network
     select_network: Select Network
     create_network: Create Network
-    cancel_creation: Cancel Creation
+    cancel_edit: Cancel Edit
     more_actions: More Actions
     edit_as_file: Edit as File
+    save_config: Save Config
+    config_saved: Config Saved
     import_config: Import Config
     create_new: Create New Network
     network_status: Network Status

@@ -6,8 +6,8 @@ use crate::proto::{api::manage::*, rpc_types::controller::BaseController};
 #[async_trait]
 pub trait RemoteClientManager<T, C, E>
 where
-    T: Copy + Send + 'static,
-    C: PersistentConfig + Send + 'static,
+    T: Clone + Send + 'static,
+    C: PersistentConfig<E> + Send + 'static,
     E: Send + 'static,
 {
     fn get_rpc_client(
@@ -42,17 +42,14 @@ where
         config: NetworkConfig,
     ) -> Result<(), RemoteClientError<E>> {
         let client = self
-            .get_rpc_client(identify)
+            .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
-        let network_config_json = serde_json::to_string(&config).map_err(|e| {
-            RemoteClientError::Other(format!("Failed to serialize config: {:?}", e))
-        })?;
         let resp = client
             .run_network_instance(
                 BaseController::default(),
                 RunNetworkInstanceRequest {
                     inst_id: None,
-                    config: Some(config),
+                    config: Some(config.clone()),
                 },
             )
             .await?;
@@ -61,7 +58,7 @@ where
             .insert_or_update_user_network_config(
                 identify,
                 resp.inst_id.unwrap_or_default().into(),
-                network_config_json,
+                config,
             )
             .await
             .map_err(RemoteClientError::PersistentError)?;
@@ -98,7 +95,7 @@ where
         identify: T,
     ) -> Result<ListNetworkInstanceIdsJsonResp, RemoteClientError<E>> {
         let client = self
-            .get_rpc_client(identify)
+            .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
         let ret = client
             .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
@@ -122,16 +119,19 @@ where
         })
     }
 
-    async fn handle_remove_network_instance(
+    async fn handle_remove_network_instances(
         &self,
         identify: T,
-        inst_id: uuid::Uuid,
+        inst_ids: Vec<uuid::Uuid>,
     ) -> Result<(), RemoteClientError<E>> {
+        if inst_ids.is_empty() {
+            return Ok(());
+        }
         let client = self
-            .get_rpc_client(identify)
+            .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
         self.get_storage()
-            .delete_network_config(identify, inst_id)
+            .delete_network_configs(identify, &inst_ids)
             .await
             .map_err(RemoteClientError::PersistentError)?;
 
@@ -139,7 +139,7 @@ where
             .delete_network_instance(
                 BaseController::default(),
                 DeleteNetworkInstanceRequest {
-                    inst_ids: vec![inst_id.into()],
+                    inst_ids: inst_ids.into_iter().map(|id| id.into()).collect(),
                 },
             )
             .await?;
@@ -154,7 +154,7 @@ where
         disabled: bool,
     ) -> Result<(), RemoteClientError<E>> {
         let client = self
-            .get_rpc_client(identify)
+            .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
         let cfg = self
             .get_storage()
@@ -177,19 +177,32 @@ where
                     BaseController::default(),
                     RunNetworkInstanceRequest {
                         inst_id: Some(inst_id.into()),
-                        config: Some(serde_json::from_str(cfg.get_network_config()).map_err(
-                            |e| {
-                                RemoteClientError::Other(format!(
-                                    "Failed to parse network config: {:?}",
-                                    e
-                                ))
-                            },
-                        )?),
+                        config: Some(
+                            cfg.get_network_config()
+                                .map_err(RemoteClientError::PersistentError)?,
+                        ),
                     },
                 )
                 .await?;
         }
 
+        Ok(())
+    }
+
+    async fn handle_save_network_config(
+        &self,
+        identify: T,
+        inst_id: uuid::Uuid,
+        config: NetworkConfig,
+    ) -> Result<(), RemoteClientError<E>> {
+        self.get_storage()
+            .insert_or_update_user_network_config(identify.clone(), inst_id, config)
+            .await
+            .map_err(RemoteClientError::PersistentError)?;
+        self.get_storage()
+            .update_network_config_state(identify, inst_id, true)
+            .await
+            .map_err(RemoteClientError::PersistentError)?;
         Ok(())
     }
 
@@ -210,21 +223,23 @@ where
                 inst_id
             )))?;
 
-        Ok(
-            serde_json::from_str::<NetworkConfig>(db_row.get_network_config()).map_err(|e| {
-                RemoteClientError::Other(format!("Failed to parse network config: {:?}", e))
-            })?,
-        )
+        Ok(db_row
+            .get_network_config()
+            .map_err(RemoteClientError::PersistentError)?)
     }
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RemoteClientError<E> {
+    #[error("Client not found")]
     ClientNotFound,
+    #[error("Not found: {0}")]
     NotFound(String),
     #[error(transparent)]
     RpcError(#[from] crate::proto::rpc_types::error::Error),
+    #[error(transparent)]
     PersistentError(E),
+    #[error("Other error: {0}")]
     Other(String),
 }
 
@@ -240,24 +255,25 @@ pub struct ListNetworkInstanceIdsJsonResp {
     disabled_inst_ids: Vec<crate::proto::common::Uuid>,
 }
 
-pub trait PersistentConfig {
+pub trait PersistentConfig<E> {
     fn get_network_inst_id(&self) -> &str;
-    fn get_network_config(&self) -> &str;
+    fn get_network_config(&self) -> Result<NetworkConfig, E>;
 }
 
 #[async_trait]
 pub trait Storage<T, C, E>: Send + Sync
 where
-    C: PersistentConfig,
+    C: PersistentConfig<E>,
 {
     async fn insert_or_update_user_network_config(
         &self,
         identify: T,
         network_inst_id: Uuid,
-        network_config: impl ToString + Send,
+        network_config: NetworkConfig,
     ) -> Result<(), E>;
 
-    async fn delete_network_config(&self, identify: T, network_inst_id: Uuid) -> Result<(), E>;
+    async fn delete_network_configs(&self, identify: T, network_inst_ids: &[Uuid])
+        -> Result<(), E>;
 
     async fn update_network_config_state(
         &self,

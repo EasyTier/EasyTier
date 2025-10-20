@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Select, useConfirm, useToast } from 'primevue';
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast } from 'primevue';
+import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
-import { RemoteClient } from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
+import { type MenuItem } from 'primevue/menuitem';
 
 const { t } = useI18n()
 
 const props = defineProps<{
-    api: RemoteClient;
+    api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
 }>();
 
@@ -27,14 +27,15 @@ const configFile = ref();
 
 const curNetworkInfo = ref<NetworkTypes.NetworkInstance | null>(null);
 
-const isEditing = ref(false);
-// const showCreateNetworkDialog = ref(false);
 const showConfigEditDialog = ref(false);
-const isCreatingNetwork = ref(false); // Flag to indicate if we're in network creation mode
-const editingNetworkConfig = ref<NetworkTypes.NetworkConfig>(NetworkTypes.DEFAULT_NETWORK_CONFIG());
+const isEditingNetwork = ref(false); // Flag to indicate if we're in network editing mode
 const currentNetworkConfig = ref<NetworkTypes.NetworkConfig | undefined>(undefined);
 
 const listInstanceIdResponse = ref<Api.ListNetworkInstanceIdResponse | undefined>(undefined);
+
+const isRunning = (instanceId: string) => {
+    return listInstanceIdResponse.value?.running_inst_ids.map(Utils.UuidToStr).includes(instanceId);
+}
 
 const instanceIdList = computed(() => {
     let insts = new Set<string>();
@@ -59,7 +60,7 @@ const selectedInstanceId = computed({
     }
 });
 watch(selectedInstanceId, async (newVal, oldVal) => {
-    if (newVal?.uuid !== oldVal?.uuid && networkIsDisabled.value) {
+    if (newVal?.uuid !== oldVal?.uuid && (networkIsDisabled.value || isEditingNetwork.value)) {
         await loadCurrentNetworkConfig();
     }
 });
@@ -144,12 +145,10 @@ const confirmDeleteNetwork = (event: any) => {
 
 const saveAndRunNewNetwork = async () => {
     try {
-        if (isEditing.value) {
-            await props.api.delete_network(instanceId.value!);
-        }
-        let ret = await props.api.run_network(editingNetworkConfig.value);
+        await props.api.delete_network(instanceId.value!);
+        let ret = await props.api.run_network(currentNetworkConfig.value!!);
         console.debug("saveAndRunNewNetwork", ret);
-        selectedInstanceId.value = { uuid: editingNetworkConfig.value.instance_id };
+        selectedInstanceId.value = { uuid: currentNetworkConfig.value!.instance_id };
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to create network, error: ' + JSON.stringify(e.response.data), life: 2000 });
@@ -157,18 +156,26 @@ const saveAndRunNewNetwork = async () => {
     }
     emits('update');
     // showCreateNetworkDialog.value = false;
-    isCreatingNetwork.value = false; // Exit creation mode after successful network creation
+    isEditingNetwork.value = false; // Exit creation mode after successful network creation
 }
 
-const newNetwork = () => {
-    editingNetworkConfig.value = props.newConfigGenerator?.() ?? NetworkTypes.DEFAULT_NETWORK_CONFIG();
-    isEditing.value = false;
-    // showCreateNetworkDialog.value = true; // Old dialog approach
-    isCreatingNetwork.value = true; // Switch to creation mode instead
+const saveNetworkConfig = async () => {
+    if (!currentNetworkConfig.value) {
+        return;
+    }
+    await props.api.save_config(currentNetworkConfig.value);
+    toast.add({ severity: 'success', summary: t("web.common.success"), detail: t("web.device_management.config_saved"), life: 2000 });
+}
+const newNetwork = async () => {
+    const newNetworkConfig = props.newConfigGenerator?.() ?? NetworkTypes.DEFAULT_NETWORK_CONFIG();
+    await props.api.save_config(newNetworkConfig);
+    selectedInstanceId.value = { uuid: newNetworkConfig.instance_id };
+    currentNetworkConfig.value = newNetworkConfig;
+    await loadNetworkInstanceIds();
 }
 
-const cancelNetworkCreation = () => {
-    isCreatingNetwork.value = false;
+const cancelEditNetwork = () => {
+    isEditingNetwork.value = false;
 }
 
 const editNetwork = async () => {
@@ -177,14 +184,11 @@ const editNetwork = async () => {
         return;
     }
 
-    isEditing.value = true;
-
     try {
         let ret = await props.api.get_network_config(instanceId.value!);
         console.debug("editNetwork", ret);
-        editingNetworkConfig.value = ret;
-        // showCreateNetworkDialog.value = true; // Old dialog approach
-        isCreatingNetwork.value = true; // Switch to creation mode instead
+        currentNetworkConfig.value = ret;
+        isEditingNetwork.value = true; // Switch to editing mode instead
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to edit network, error: ' + JSON.stringify(e.response.data), life: 2000 });
@@ -194,7 +198,6 @@ const editNetwork = async () => {
 
 const loadNetworkInstanceIds = async () => {
     listInstanceIdResponse.value = await props.api.list_network_instance_ids();
-    console.debug("loadNetworkInstanceIds", listInstanceIdResponse.value);
 }
 
 const loadCurrentNetworkInfo = async () => {
@@ -202,13 +205,12 @@ const loadCurrentNetworkInfo = async () => {
         return;
     }
 
-    let ret = await props.api.get_network_info(instanceId.value);
-    let network_info = ret[instanceId.value];
+    let network_info = await props.api.get_network_info(instanceId.value);
 
     curNetworkInfo.value = {
         instance_id: instanceId.value,
-        running: network_info.running,
-        error_msg: network_info.error_msg,
+        running: network_info?.running ?? false,
+        error_msg: network_info?.error_msg ?? '',
         detail: network_info,
     } as NetworkTypes.NetworkInstance;
 }
@@ -220,9 +222,8 @@ const exportConfig = async () => {
     }
 
     try {
-        let networkConfig = await props.api.get_network_config(instanceId.value!);
-        delete networkConfig.instance_id;
-        let { toml_config: tomlConfig, error } = await props.api.generate_config(networkConfig);
+        const { instance_id, ...networkConfig } = await props.api.get_network_config(instanceId.value!);
+        let { toml_config: tomlConfig, error } = await props.api.generate_config(networkConfig as NetworkTypes.NetworkConfig);
         if (error) {
             throw { response: { data: error } };
         }
@@ -255,9 +256,8 @@ const handleFileUpload = (event: Event) => {
             const config = resp.config;
             if (!config) return;
 
-            config.instance_id = editingNetworkConfig.value?.instance_id ?? config?.instance_id;
-
-            Object.assign(editingNetworkConfig.value, resp.config);
+            config.instance_id = currentNetworkConfig.value?.instance_id ?? config?.instance_id;
+            currentNetworkConfig.value = config;
             toast.add({ severity: 'success', summary: 'Import Success', detail: "Config file import success", life: 2000 });
         } catch (error) {
             toast.add({ severity: 'error', summary: 'Error', detail: 'Config file parse error: ' + error, life: 2000 });
@@ -288,7 +288,7 @@ const generateConfig = async (config: NetworkTypes.NetworkConfig): Promise<strin
     return tomlConfig ?? '';
 }
 
-const saveConfig = async (tomlConfig: string): Promise<void> => {
+const syncTomlConfig = async (tomlConfig: string): Promise<void> => {
     let resp = await props.api.parse_config(tomlConfig);
     if (resp.error) {
         throw resp.error;
@@ -298,11 +298,7 @@ const saveConfig = async (tomlConfig: string): Promise<void> => {
         throw new Error("Parsed config is empty");
     }
     config.instance_id = currentNetworkConfig.value?.instance_id ?? config?.instance_id;
-    if (networkIsDisabled.value) {
-        currentNetworkConfig.value = config;
-    } else {
-        editingNetworkConfig.value = config;
-    }
+    currentNetworkConfig.value = config;
 }
 
 // 响应式屏幕宽度
@@ -313,10 +309,11 @@ const updateScreenWidth = () => {
 
 // 菜单引用和菜单项
 const menuRef = ref();
-const actionMenu = ref([
+const actionMenu: Ref<MenuItem[]> = ref([
     {
         label: t('web.device_management.edit_network'),
         icon: 'pi pi-pencil',
+        visible: () => !(networkIsDisabled.value ?? true),
         command: () => editNetwork()
     },
     {
@@ -370,7 +367,31 @@ onUnmounted(() => {
                     <IftaLabel class="w-full">
                         <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid" class="w-full"
                             inputId="dd-inst-id" :placeholder="t('web.device_management.select_network')"
-                            :pt="{ root: { class: 'network-select-container' } }" />
+                            :pt="{ root: { class: 'network-select-container' } }">
+                            <template #value="slotProps">
+                                <div v-if="slotProps.value" class="flex items-center content-center min-w-0">
+                                    <div class="mr-4 flex-col min-w-0 flex-1">
+                                        <span class="truncate block"> &nbsp; {{ slotProps.value.uuid }}</span>
+                                    </div>
+                                    <Tag class="my-auto leading-3 shrink-0"
+                                        :severity="isRunning(slotProps.value.uuid) ? 'success' : 'info'"
+                                        :value="t(isRunning(slotProps.value.uuid) ? 'network_running' : 'network_stopped')" />
+                                </div>
+                                <span v-else>
+                                    {{ slotProps.placeholder }}
+                                </span>
+                            </template>
+                            <template #option="slotProps">
+                                <div class="flex items-center content-center min-w-0">
+                                    <div class="mr-4 flex-col min-w-0 flex-1">
+                                        <span class="truncate block"> &nbsp; {{ slotProps.option.uuid }}</span>
+                                    </div>
+                                    <Tag class="my-auto leading-3 shrink-0"
+                                        :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
+                                        :value="t(isRunning(slotProps.option.uuid) ? 'network_running' : 'network_stopped')" />
+                                </div>
+                            </template>
+                        </Select>
                         <label class="network-label mr-2 font-medium" for="dd-inst-id">{{
                             t('web.device_management.network') }}</label>
                     </IftaLabel>
@@ -379,23 +400,23 @@ onUnmounted(() => {
                 <!-- 简化的按钮区域 - 无论屏幕大小都显示 -->
                 <div class="flex gap-2 shrink-0 button-container items-center">
                     <!-- Create/Cancel button based on state -->
-                    <Button v-if="!isCreatingNetwork" @click="newNetwork" icon="pi pi-plus"
+                    <Button v-if="!isEditingNetwork" @click="newNetwork" icon="pi pi-plus"
                         :label="screenWidth > 640 ? t('web.device_management.create_new') : undefined"
                         :class="['create-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
                         :tooltip="screenWidth <= 640 ? t('web.device_management.create_network') : undefined"
                         tooltipOptions="{ position: 'bottom' }" severity="primary" />
 
-                    <Button v-else @click="cancelNetworkCreation" icon="pi pi-times"
-                        :label="screenWidth > 640 ? t('web.device_management.cancel_creation') : undefined"
+                    <Button v-else @click="cancelEditNetwork" icon="pi pi-times"
+                        :label="screenWidth > 640 ? t('web.device_management.cancel_edit') : undefined"
                         :class="['cancel-button', screenWidth <= 640 ? 'p-button-icon-only' : '']"
                         :style="screenWidth <= 640 ? 'width: 3rem !important; height: 3rem !important; font-size: 1.2rem' : ''"
-                        :tooltip="screenWidth <= 640 ? t('web.device_management.cancel_creation') : undefined"
+                        :tooltip="screenWidth <= 640 ? t('web.device_management.cancel_edit') : undefined"
                         tooltipOptions="{ position: 'bottom' }" severity="secondary" />
 
                     <!-- More actions menu -->
                     <Menu ref="menuRef" :model="actionMenu" :popup="true" />
-                    <Button v-if="!isCreatingNetwork && selectedInstanceId" icon="pi pi-ellipsis-v"
+                    <Button v-if="!isEditingNetwork && selectedInstanceId" icon="pi pi-ellipsis-v"
                         class="p-button-rounded flex items-center justify-center" severity="help"
                         style="width: 3rem !important; height: 3rem !important; font-size: 1.2rem"
                         @click="menuRef.toggle($event)" :aria-label="t('web.device_management.more_actions')"
@@ -407,11 +428,10 @@ onUnmounted(() => {
         <!-- Main Content Area -->
         <div class="network-content bg-surface-0 p-4 rounded-lg shadow-sm">
             <!-- Network Creation Form -->
-            <div v-if="isCreatingNetwork" class="network-creation-container">
+            <div v-if="isEditingNetwork || networkIsDisabled" class="network-creation-container">
                 <div class="network-creation-header flex items-center gap-2 mb-3">
                     <i class="pi pi-plus-circle text-primary text-xl"></i>
-                    <h2 class="text-xl font-medium">{{ isEditing ? t('web.device_management.edit_network') :
-                        t('web.device_management.create_network') }}</h2>
+                    <h2 class="text-xl font-medium">{{ t('web.device_management.edit_network') }}</h2>
                 </div>
 
                 <div class="w-full flex gap-2 flex-wrap justify-start mb-3">
@@ -419,11 +439,13 @@ onUnmounted(() => {
                         :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" />
+                    <Button v-if="networkIsDisabled" @click="saveNetworkConfig" icon="pi pi-save"
+                        :label="t('web.device_management.save_config')" iconPos="left" severity="success" />
                 </div>
 
                 <Divider />
 
-                <Config :cur-network="editingNetworkConfig" @run-network="saveAndRunNewNetwork"></Config>
+                <Config :cur-network="currentNetworkConfig" @run-network="saveAndRunNewNetwork"></Config>
             </div>
 
             <!-- Network Status (for running networks) -->
@@ -433,28 +455,14 @@ onUnmounted(() => {
                     <h2 class="text-xl font-medium">{{ t('web.device_management.network_status') }}</h2>
                 </div>
 
-                <Status v-bind:cur-network-inst="curNetworkInfo" class="mb-4"></Status>
+                <Status v-if="(curNetworkInfo?.error_msg ?? '') === ''" v-bind:cur-network-inst="curNetworkInfo"
+                    class="mb-4">
+                </Status>
+                <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
 
                 <div class="text-center mt-4">
                     <Button @click="updateNetworkState(true)" :label="t('web.device_management.disable_network')"
                         severity="warning" icon="pi pi-power-off" iconPos="left" />
-                </div>
-            </div>
-
-            <!-- Network Configuration (for disabled networks) -->
-            <div v-else-if="networkIsDisabled" class="network-config-container">
-                <div class="network-config-header flex items-center gap-2 mb-3">
-                    <i class="pi pi-cog text-secondary text-xl"></i>
-                    <h2 class="text-xl font-medium">{{ t('web.device_management.network_configuration') }}</h2>
-                </div>
-
-                <div v-if="currentNetworkConfig" class="mb-4">
-                    <Config :cur-network="currentNetworkConfig" @run-network="updateNetworkState(false)" />
-                </div>
-                <div v-else class="network-loading-placeholder text-center py-8">
-                    <i class="pi pi-spin pi-spinner text-3xl text-primary mb-3"></i>
-                    <div class="text-xl text-secondary">{{ t('web.device_management.loading_network_configuration') }}
-                    </div>
                 </div>
             </div>
 
@@ -475,8 +483,8 @@ onUnmounted(() => {
         <!-- <ConfigEditDialog v-if="networkIsDisabled" v-model:visible="showCreateNetworkDialog"
             :cur-network="currentNetworkConfig" :generate-config="generateConfig" :save-config="saveConfig" /> -->
 
-        <ConfigEditDialog v-model:visible="showConfigEditDialog" :cur-network="editingNetworkConfig"
-            :generate-config="generateConfig" :save-config="saveConfig" />
+        <ConfigEditDialog v-model:visible="showConfigEditDialog" :cur-network="currentNetworkConfig"
+            :generate-config="generateConfig" :save-config="syncTomlConfig" />
     </div>
 </template>
 
@@ -593,3 +601,4 @@ onUnmounted(() => {
     }
 }
 </style>
+

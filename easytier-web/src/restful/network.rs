@@ -52,6 +52,11 @@ struct ValidateConfigJsonReq {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct SaveNetworkJsonReq {
+    config: NetworkConfig,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RunNetworkJsonReq {
     config: NetworkConfig,
 }
@@ -177,9 +182,9 @@ impl NetworkApi {
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
         client_mgr
-            .handle_remove_network_instance(
+            .handle_remove_network_instances(
                 (Self::get_user_id(&auth_session)?, machine_id),
-                inst_id,
+                vec![inst_id],
             )
             .await
             .map_err(convert_error)
@@ -232,6 +237,28 @@ impl NetworkApi {
             .map_err(convert_error)
     }
 
+    async fn handle_save_network_config(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Json(payload): Json<SaveNetworkJsonReq>,
+    ) -> Result<(), HttpHandleError> {
+        if payload.config.instance_id() != inst_id.to_string() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                other_error("Instance ID mismatch".to_string()).into(),
+            ));
+        }
+        client_mgr
+            .handle_save_network_config(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                inst_id,
+                payload.config,
+            )
+            .await
+            .map_err(convert_error)
+    }
+
     async fn handle_get_network_config(
         auth_session: AuthSession,
         State(client_mgr): AppState,
@@ -269,7 +296,7 @@ impl NetworkApi {
             )
             .route(
                 "/api/v1/machines/:machine-id/networks/config/:inst-id",
-                get(Self::handle_get_network_config),
+                get(Self::handle_get_network_config).put(Self::handle_save_network_config),
             )
     }
 }
