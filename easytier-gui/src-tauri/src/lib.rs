@@ -29,6 +29,7 @@ static mut LOGGER_LEVEL_SENDER: once_cell::sync::Lazy<Option<NewFilterSender>> =
     once_cell::sync::Lazy::new(Default::default);
 
 static WINDOW_HAS_FOCUS: AtomicBool = AtomicBool::new(false);
+static DOCK_ICON_VISIBLE: AtomicBool = AtomicBool::new(true);
 
 #[tauri::command]
 fn easytier_version() -> Result<String, String> {
@@ -46,6 +47,14 @@ fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), Strin
             ActivationPolicy::Accessory
         })
         .map_err(|e| e.to_string())?;
+
+        DOCK_ICON_VISIBLE.store(visible, Ordering::Relaxed);
+
+        if let Some(window) = app.get_webview_window("main") {
+            if window.is_visible().unwrap_or(false) {
+                let _ = window.set_focus();
+            }
+        }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = (app, visible);
@@ -300,6 +309,10 @@ pub fn run() {
         use tauri::RunEvent;
         app.run(|app, event| match event {
             RunEvent::Reopen { .. } => {
+                use tauri::ActivationPolicy;
+                if !DOCK_ICON_VISIBLE.load(Ordering::Relaxed) {
+                    let _ = app.set_activation_policy(ActivationPolicy::Accessory);
+                }
                 toggle_window_visibility(app);
             }
             _ => {}
