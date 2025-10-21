@@ -8,7 +8,8 @@ use easytier::proto::api::manage::{
     WebClientServiceClientFactory,
 };
 use easytier::rpc_service::remote_client::{
-    ListNetworkInstanceIdsJsonResp, ListNetworkProps, RemoteClientManager, Storage,
+    GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, ListNetworkProps, RemoteClientManager,
+    Storage,
 };
 use easytier::{
     common::config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
@@ -247,6 +248,19 @@ fn load_configs(configs: Vec<NetworkConfig>, enabled_networks: Vec<String>) -> R
         .load_configs(configs, enabled_networks)
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+async fn get_network_metas(
+    app: AppHandle,
+    instance_ids: Vec<uuid::Uuid>,
+) -> Result<GetNetworkMetasResponse, String> {
+    CLIENT_MANAGER
+        .get()
+        .unwrap()
+        .handle_get_network_metas(app, instance_ids)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(not(target_os = "android"))]
@@ -667,6 +681,7 @@ pub fn run() {
             validate_config,
             get_config,
             load_configs,
+            get_network_metas,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]

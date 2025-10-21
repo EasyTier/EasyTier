@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast } from 'primevue';
+import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
 import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
@@ -37,22 +37,62 @@ const isRunning = (instanceId: string) => {
     return listInstanceIdResponse.value?.running_inst_ids.map(Utils.UuidToStr).includes(instanceId);
 }
 
-const instanceIdList = computed(() => {
+const networkMetaCache = ref<Record<string, Api.NetworkMeta>>({});
+const loadNetworkMetas = async (instanceIds: string[]) => {
+    const missingIds = instanceIds.filter(id => !networkMetaCache.value[id]);
+
+    if (missingIds.length === 0) return;
+
+    try {
+        const response = await props.api.get_network_metas(missingIds);
+        Object.assign(networkMetaCache.value, response.metas);
+    } catch (e) {
+        console.error("Failed to load network metas", e);
+    }
+};
+const onLazyLoadNetworkMetas = async (event: VirtualScrollerLazyEvent) => {
+    const instanceIds = instanceList.value
+        .slice(event.first, event.last + 1)
+        .map(item => item.uuid);
+    await loadNetworkMetas(instanceIds);
+};
+
+const instanceList = ref<Array<{ uuid: string; meta?: Api.NetworkMeta }>>([]);
+const updateInstanceList = () => {
     let insts = new Set<string>();
     let t = listInstanceIdResponse.value;
     if (t) {
         t.running_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
         t.disabled_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
     }
-    let options = Array.from(insts).map((instance: string) => {
-        return { uuid: instance };
+
+    const newList = Array.from(insts).map((instance: string) => {
+        return {
+            uuid: instance,
+            meta: networkMetaCache.value[instance]
+        };
     });
-    return options;
+
+    if (JSON.stringify(newList) !== JSON.stringify(instanceList.value)) {
+        instanceList.value = newList;
+    }
+}
+watch(listInstanceIdResponse, updateInstanceList, { deep: false });
+watch(networkMetaCache, updateInstanceList, { deep: true });
+watch(instanceList, async (newVal) => {
+    if (newVal) {
+        const instanceIds = new Set(newVal.map(item => item.uuid));
+        Object.keys(networkMetaCache.value).forEach(id => {
+            if (!instanceIds.has(id)) {
+                delete networkMetaCache.value[id];
+            }
+        });
+    }
 });
 
 const selectedInstanceId = computed({
     get() {
-        return instanceIdList.value.find((instance) => instance.uuid === instanceId.value);
+        return instanceList.value.find((instance) => instance.uuid === instanceId.value);
     },
     set(value: any) {
         console.log("set instanceId", value);
@@ -62,6 +102,12 @@ const selectedInstanceId = computed({
 watch(selectedInstanceId, async (newVal, oldVal) => {
     if (newVal?.uuid !== oldVal?.uuid && (networkIsDisabled.value || isEditingNetwork.value)) {
         await loadCurrentNetworkConfig();
+    } else {
+        await loadCurrentNetworkInfo();
+    }
+
+    if (newVal?.uuid && !networkMetaCache.value[newVal.uuid]) {
+        await loadNetworkMetas([newVal.uuid]);
     }
 });
 
@@ -72,6 +118,10 @@ const needShowNetworkStatus = computed(() => {
     }
     if (networkIsDisabled.value) {
         // network is disabled
+        return false;
+    }
+    if (isEditingNetwork.value) {
+        // editing network
         return false;
     }
     return true;
@@ -96,7 +146,7 @@ const loadCurrentNetworkConfig = async () => {
         return;
     }
 
-    let ret = await props.api.get_network_config(selectedInstanceId.value.uuid);
+    let ret = await props.api.get_network_config(selectedInstanceId.value!.uuid);
     currentNetworkConfig.value = ret;
 }
 
@@ -144,11 +194,18 @@ const confirmDeleteNetwork = (event: any) => {
 };
 
 const saveAndRunNewNetwork = async () => {
+    if (!currentNetworkConfig.value) {
+        return;
+    }
     try {
         await props.api.delete_network(instanceId.value!);
-        let ret = await props.api.run_network(currentNetworkConfig.value!!);
+        let ret = await props.api.run_network(currentNetworkConfig.value);
         console.debug("saveAndRunNewNetwork", ret);
-        selectedInstanceId.value = { uuid: currentNetworkConfig.value!.instance_id };
+
+        delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
+        await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
+
+        selectedInstanceId.value = { uuid: currentNetworkConfig.value.instance_id };
     } catch (e: any) {
         console.error(e);
         toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to create network, error: ' + JSON.stringify(e.response.data), life: 2000 });
@@ -164,6 +221,10 @@ const saveNetworkConfig = async () => {
         return;
     }
     await props.api.save_config(currentNetworkConfig.value);
+
+    delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
+    await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
+
     toast.add({ severity: 'success', summary: t("web.common.success"), detail: t("web.device_management.config_saved"), life: 2000 });
 }
 const newNetwork = async () => {
@@ -201,14 +262,17 @@ const loadNetworkInstanceIds = async () => {
 }
 
 const loadCurrentNetworkInfo = async () => {
-    if (!instanceId.value) {
+    if (!selectedInstanceId.value) {
+        return;
+    }
+    if (!needShowNetworkStatus.value) {
         return;
     }
 
-    let network_info = await props.api.get_network_info(instanceId.value);
+    let network_info = await props.api.get_network_info(selectedInstanceId.value.uuid);
 
     curNetworkInfo.value = {
-        instance_id: instanceId.value,
+        instance_id: selectedInstanceId.value.uuid,
         running: network_info?.running ?? false,
         error_msg: network_info?.error_msg ?? '',
         detail: network_info,
@@ -365,13 +429,26 @@ onUnmounted(() => {
                 <!-- 网络选择 -->
                 <div class="flex-1 min-w-0">
                     <IftaLabel class="w-full">
-                        <Select v-model="selectedInstanceId" :options="instanceIdList" optionLabel="uuid" class="w-full"
+                        <Select v-model="selectedInstanceId" :options="instanceList" optionLabel="uuid" class="w-full"
                             inputId="dd-inst-id" :placeholder="t('web.device_management.select_network')"
-                            :pt="{ root: { class: 'network-select-container' } }">
+                            :pt="{ root: { class: 'network-select-container' } }" :virtualScrollerOptions="{
+                                lazy: true,
+                                onLazyLoad: onLazyLoadNetworkMetas,
+                                itemSize: 60,
+                                delay: 50
+                            }">
                             <template #value="slotProps">
                                 <div v-if="slotProps.value" class="flex items-center content-center min-w-0">
                                     <div class="mr-4 flex-col min-w-0 flex-1">
-                                        <span class="truncate block"> &nbsp; {{ slotProps.value.uuid }}</span>
+                                        <span class="truncate block">
+                                            &nbsp;
+                                            <span v-if="slotProps.value.meta">
+                                                {{ slotProps.value.meta.instance_name }} ({{ slotProps.value.uuid }})
+                                            </span>
+                                            <span v-else>
+                                                {{ slotProps.value.uuid }}
+                                            </span>
+                                        </span>
                                     </div>
                                     <Tag class="my-auto leading-3 shrink-0"
                                         :severity="isRunning(slotProps.value.uuid) ? 'success' : 'info'"
@@ -382,13 +459,19 @@ onUnmounted(() => {
                                 </span>
                             </template>
                             <template #option="slotProps">
-                                <div class="flex items-center content-center min-w-0">
-                                    <div class="mr-4 flex-col min-w-0 flex-1">
-                                        <span class="truncate block"> &nbsp; {{ slotProps.option.uuid }}</span>
+                                <div class="flex flex-col items-start content-center max-w-full">
+                                    <div class="flex items-center min-w-0">
+                                        <div class="mr-4 min-w-0 flex-1">
+                                            <span class="truncate block">{{ t('network_name') }}: {{
+                                                slotProps.option.meta.instance_name }}</span>
+                                        </div>
+                                        <Tag class="my-auto leading-3 shrink-0"
+                                            :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
+                                            :value="t(isRunning(slotProps.option.uuid) ? 'network_running' : 'network_stopped')" />
                                     </div>
-                                    <Tag class="my-auto leading-3 shrink-0"
-                                        :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
-                                        :value="t(isRunning(slotProps.option.uuid) ? 'network_running' : 'network_stopped')" />
+                                    <div class="max-w-full overflow-hidden text-ellipsis text-gray-500">
+                                        {{ slotProps.option.uuid }}
+                                    </div>
                                 </div>
                             </template>
                         </Select>
@@ -601,4 +684,3 @@ onUnmounted(() => {
     }
 }
 </style>
-

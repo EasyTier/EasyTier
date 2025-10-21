@@ -40,5 +40,8 @@ export class GUIRemoteClient implements Api.RemoteClient {
             return { error: e + "" };
         }
     }
+    async get_network_metas(instance_ids: string[]): Promise<Api.GetNetworkMetasResponse> {
+        return await backend.getNetworkMetas(instance_ids);
+    }
 
 }
