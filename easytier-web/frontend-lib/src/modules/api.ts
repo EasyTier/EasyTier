@@ -26,6 +26,14 @@ export interface CollectNetworkInfoResponse {
     }
 }
 
+export interface NetworkMeta {
+    instance_name: string;
+}
+
+export interface GetNetworkMetasResponse {
+    metas: Record<string, NetworkMeta>;
+}
+
 export interface RemoteClient {
     validate_config(config: NetworkConfig): Promise<ValidateConfigResponse>;
     run_network(config: NetworkConfig): Promise<undefined>;
@@ -37,4 +45,5 @@ export interface RemoteClient {
     get_network_config(inst_id: string): Promise<NetworkConfig>;
     generate_config(config: NetworkConfig): Promise<GenerateConfigResponse>;
     parse_config(toml_config: string): Promise<ParseConfigResponse>;
+    get_network_metas(instance_ids: string[]): Promise<GetNetworkMetasResponse>;
 }

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { Api, type NetworkTypes } from 'easytier-frontend-lib'
+import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
 import { getAutoLaunchStatusAsync } from '~/modules/auto_launch'
 
 type NetworkConfig = NetworkTypes.NetworkConfig
@@ -62,4 +63,8 @@ export async function sendConfigs() {
   let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
   let autoStartInstIds = getAutoLaunchStatusAsync() ? JSON.parse(localStorage.getItem('autoStartInstIds') || '[]') : []
   return await invoke('load_configs', { configs: networkList, enabledNetworks: autoStartInstIds })
+}
+
+export async function getNetworkMetas(instanceIds: string[]) {
+  return await invoke<GetNetworkMetasResponse>('get_network_metas', { instanceIds })
 }

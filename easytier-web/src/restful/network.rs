@@ -7,7 +7,7 @@ use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
 use easytier::proto::{api::manage::*, web::*};
 use easytier::rpc_service::remote_client::{
-    ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
+    GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
 };
 use sea_orm::DbErr;
 
@@ -69,6 +69,11 @@ struct CollectNetworkInfoJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct UpdateNetworkStateJsonReq {
     disabled: bool,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct GetNetworkMetasJsonReq {
+    instance_ids: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -237,6 +242,23 @@ impl NetworkApi {
             .map_err(convert_error)
     }
 
+    async fn handle_get_network_metas(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path(machine_id): Path<uuid::Uuid>,
+        Json(payload): Json<GetNetworkMetasJsonReq>,
+    ) -> Result<Json<GetNetworkMetasResponse>, HttpHandleError> {
+        Ok(Json(
+            client_mgr
+                .handle_get_network_metas(
+                    (Self::get_user_id(&auth_session)?, machine_id),
+                    payload.instance_ids,
+                )
+                .await
+                .map_err(convert_error)?,
+        ))
+    }
+
     async fn handle_save_network_config(
         auth_session: AuthSession,
         State(client_mgr): AppState,
@@ -297,6 +319,10 @@ impl NetworkApi {
             .route(
                 "/api/v1/machines/:machine-id/networks/config/:inst-id",
                 get(Self::handle_get_network_config).put(Self::handle_save_network_config),
+            )
+            .route(
+                "/api/v1/machines/:machine-id/networks/metas",
+                post(Self::handle_get_network_metas),
             )
     }
 }

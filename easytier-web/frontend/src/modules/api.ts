@@ -243,6 +243,12 @@ class WebRemoteClient implements Api.RemoteClient {
             return { error: 'Unknown error: ' + error };
         }
     }
+    async get_network_metas(instance_ids: string[]): Promise<Api.GetNetworkMetasResponse> {
+        const response = await this.client.post<any, Api.GetNetworkMetasResponse>(`/machines/${this.machine_id}/networks/metas`, {
+            instance_ids: instance_ids
+        });
+        return response;
+    }
 }
 
 export default ApiClient;

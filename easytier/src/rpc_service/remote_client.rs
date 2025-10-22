@@ -189,6 +189,28 @@ where
         Ok(())
     }
 
+    async fn handle_get_network_metas(
+        &self,
+        identify: T,
+        inst_ids: Vec<uuid::Uuid>,
+    ) -> Result<GetNetworkMetasResponse, RemoteClientError<E>> {
+        let mut metas = std::collections::HashMap::new();
+
+        for instance_id in inst_ids {
+            let config = self
+                .handle_get_network_config(identify.clone(), instance_id)
+                .await?;
+            metas.insert(
+                instance_id,
+                NetworkMeta {
+                    instance_name: config.network_name.unwrap_or_default(),
+                },
+            );
+        }
+
+        Ok(GetNetworkMetasResponse { metas })
+    }
+
     async fn handle_save_network_config(
         &self,
         identify: T,
@@ -253,6 +275,16 @@ pub enum ListNetworkProps {
 pub struct ListNetworkInstanceIdsJsonResp {
     running_inst_ids: Vec<crate::proto::common::Uuid>,
     disabled_inst_ids: Vec<crate::proto::common::Uuid>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct NetworkMeta {
+    instance_name: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct GetNetworkMetasResponse {
+    metas: std::collections::HashMap<uuid::Uuid, NetworkMeta>,
 }
 
 pub trait PersistentConfig<E> {
