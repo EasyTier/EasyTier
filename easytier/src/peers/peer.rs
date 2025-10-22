@@ -226,6 +226,11 @@ impl Peer {
 // pritn on drop
 impl Drop for Peer {
     fn drop(&mut self) {
+        self.conns.retain(|_, conn| {
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::PeerConnRemoved(conn.get_conn_info()));
+            false
+        });
         self.shutdown_notifier.notify_one();
         tracing::info!("peer {} drop", self.peer_node_id);
     }
