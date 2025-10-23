@@ -142,6 +142,7 @@ impl GlobalCtx {
         let feature_flags = PeerFeatureFlag {
             kcp_input: !config_fs.get_flags().disable_kcp_input,
             no_relay_kcp: config_fs.get_flags().disable_relay_kcp,
+            support_conn_list_sync: true, // Enable selective peer list sync by default
             ..Default::default()
         };
 

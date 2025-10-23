@@ -39,6 +39,14 @@ message RouteConnBitmap {
   bytes bitmap = 2;
 }
 
+message RouteConnPeerList {
+  message PeerConnInfo {
+    PeerIdVersion peer_id = 1;
+    repeated uint32 connected_peer_ids = 2;
+  }
+  repeated PeerConnInfo peer_conn_infos = 1;
+}
+
 message RoutePeerInfos { repeated RoutePeerInfo items = 1; }
 
 message ForeignNetworkRouteInfoKey {
@@ -82,7 +90,10 @@ message SyncRouteInfoRequest {
   uint64 my_session_id = 2;
   bool is_initiator = 3;
   RoutePeerInfos peer_infos = 4;
-  RouteConnBitmap conn_bitmap = 5;
+  oneof conn_info {
+    RouteConnBitmap conn_bitmap = 5;
+    RouteConnPeerList conn_peer_list = 7;
+  }
   RouteForeignNetworkInfos foreign_network_infos = 6;
 }
 
