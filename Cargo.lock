@@ -2136,6 +2136,7 @@ dependencies = [
  "nix 0.29.0",
  "once_cell",
  "openssl",
+ "ordered_hash_map",
  "parking_lot",
  "percent-encoding",
  "petgraph 0.8.1",
@@ -5496,6 +5497,15 @@ checksum = "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
 dependencies = [
  "futures-core",
  "pin-project-lite",
+]
+
+[[package]]
+name = "ordered_hash_map"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6c699f8a30f345785be969deed7eee4c73a5de58c7faf61d6a3251ef798ff61"
+dependencies = [
+ "hashbrown 0.15.3",
 ]
 
 [[package]]
