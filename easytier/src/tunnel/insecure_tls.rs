@@ -84,3 +84,62 @@ pub fn get_insecure_tls_cert<'a>() -> (Vec<CertificateDer<'a>>, PrivateKeyDer<'a
 
     (cert_chain, priv_key.into())
 }
+
+fn get_secure_tls_client_config() -> rustls::ClientConfig {
+    init_crypto_provider();
+    let mut root_store = rustls::RootCertStore::empty();
+    let certs = rustls_native_certs::load_native_certs().expect("could not load system certs");
+    root_store.add_parsable_certificates(certs);
+
+    rustls::ClientConfig::builder()
+        .with_root_certificates(root_store)
+        .with_no_client_auth()
+}
+
+pub fn get_tls_client_config_by_url(url: &url::Url) -> rustls::ClientConfig {
+    let is_insecure = url.query_pairs().any(|(k, v)| k == "insecure" && v == "1");
+    let host_is_ip = match url.host() {
+        Some(url::Host::Ipv4(_)) => true,
+        Some(url::Host::Ipv6(_)) => true,
+        Some(url::Host::Domain(host)) => host.parse::<std::net::IpAddr>().is_ok(),
+        None => false,
+    };
+
+    if is_insecure || host_is_ip {
+        get_insecure_tls_client_config()
+    } else {
+        get_secure_tls_client_config()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+    use url::Url;
+
+    #[rstest]
+    #[case("wss://127.0.0.1", true, "localhost")] // host is ipv4, should be insecure
+    #[case("wss://[::1]", true, "localhost")] // host is ipv6, should be insecure
+    #[case("quic://127.0.0.1", true, "127.0.0.1")] // host is ipv4, should be insecure
+    #[case("quic://[::1]", true, "localhost")] // host is ipv6, should be insecure
+    #[case("wss://example.com", false, "example.com")] // host is domain, no insecure=1, should be secure
+    #[case("wss://example.com?insecure=1", true, "example.com")] // insecure=1, should be insecure
+    fn test_get_tls_client_config_by_url(
+        #[case] url: Url,
+        #[case] expect_insecure: bool,
+        #[case] expect_domain: &str,
+    ) {
+        let expect_config = if expect_insecure {
+            get_insecure_tls_client_config()
+        } else {
+            get_secure_tls_client_config()
+        };
+        // let url = Url::parse(url_str).unwrap();
+        let config = get_tls_client_config_by_url(&url);
+        assert_eq!(format!("{:?}", config), format!("{:?}", expect_config));
+
+        let domain = ServerName::try_from(url.domain().unwrap_or("localhost")).unwrap();
+        assert_eq!(domain.to_str(), expect_domain);
+    }
+}
