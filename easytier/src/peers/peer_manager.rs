@@ -1218,10 +1218,13 @@ impl PeerManager {
             let hdr = msg.mut_peer_manager_header().unwrap();
             hdr.to_peer_id.set(*peer_id);
 
-            if not_send_to_self && *peer_id == self.my_peer_id {
-                // the packet may be sent to vpn portal, so we just set flags instead of drop it
-                hdr.set_not_send_to_tun(true);
-                hdr.set_no_proxy(true);
+            #[cfg(not(target_env = "ohos"))]
+            {
+                if not_send_to_self && *peer_id == self.my_peer_id {
+                    // the packet may be sent to vpn portal, so we just set flags instead of drop it
+                    hdr.set_not_send_to_tun(true);
+                    hdr.set_no_proxy(true);
+                }
             }
 
             self.self_tx_counters

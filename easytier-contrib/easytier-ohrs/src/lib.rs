@@ -1,6 +1,7 @@
 mod native_log;
 
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
+use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::launcher::ConfigSource;
 use napi_derive_ohos::napi;
@@ -15,6 +16,11 @@ static INSTANCE_MANAGER: once_cell::sync::Lazy<NetworkInstanceManager> =
 pub struct KeyValuePair {
     pub key: String,
     pub value: String,
+}
+
+#[napi]
+pub fn easytier_version() -> String {
+    EASYTIER_VERSION.to_string()
 }
 
 #[napi]
