@@ -122,6 +122,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: easytier-ohos
-          path: ./easytier-contrib/easytier-ohrs/easytier-ohrs.har
+          path: |
+            ./easytier-contrib/easytier-ohrs/easytier-ohrs.har
+            ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
           retention-days: 5
           if-no-files-found: error
