@@ -3,13 +3,15 @@ import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password } from 'primevue'
 import {
-  addRow,
+  addPortForwardRow,
+  addLocalPortForwardRow,
   DEFAULT_NETWORK_CONFIG,
+  LocalPortForwardRule,
   NetworkConfig,
   NetworkingMethod,
   removeRow
 } from '../types/network'
-import { defineProps, defineEmits, ref, } from 'vue'
+import { defineProps, defineEmits, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -171,6 +173,42 @@ const bool_flags: BoolFlag[] = [
 ]
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
+
+const isBlank = (value?: string) => !value || value.trim().length === 0;
+
+watch(curNetwork, (value) => {
+  if (!value.port_forwards) {
+    value.port_forwards = []
+  }
+  if (!value.local_port_forwards) {
+    value.local_port_forwards = []
+  }
+
+  value.local_port_forwards.forEach((row: LocalPortForwardRule) => {
+    const trimmedListenIp = row.listen_ip.trim()
+    if (trimmedListenIp !== row.listen_ip) {
+      row.listen_ip = trimmedListenIp
+    }
+    const trimmedTargetIp = row.target_ip.trim()
+    if (trimmedTargetIp !== row.target_ip) {
+      row.target_ip = trimmedTargetIp
+    }
+
+    if (row.listen_from_dhcp === undefined) {
+      row.listen_from_dhcp = isBlank(row.listen_ip)
+    }
+    if (row.listen_from_dhcp && !isBlank(row.listen_ip)) {
+      row.listen_ip = ''
+    }
+    if (!row.listen_from_dhcp && isBlank(row.listen_ip)) {
+      row.listen_from_dhcp = true
+    }
+  })
+}, { immediate: true })
+
+const updateLocalPortForwardListen = (row: LocalPortForwardRule, value: string | null | undefined) => {
+  row.listen_from_dhcp = isBlank(value ?? '')
+}
 
 </script>
 
@@ -409,6 +447,7 @@ const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
           <Divider />
 
+          <!-- Port Forward -->
           <Panel :header="t('port_forwards')" toggleable collapsed>
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap w-full">
@@ -447,7 +486,56 @@ const portForwardProtocolOptions = ref(["tcp", "udp"]);
                   </div>
                   <div class="flex justify-content-end mt-4">
                     <Button icon="pi pi-plus" :label="t('port_forwards_add_btn')" severity="success"
-                      @click="addRow(curNetwork.port_forwards)" />
+                      @click="addPortForwardRow(curNetwork.port_forwards)" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <Divider />
+          <!-- Local Port Forward -->
+          <Panel :header="t('local_port_forwards')" toggleable collapsed>
+            <div class="flex flex-col gap-y-2">
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="local_port_forwards">{{ t('local_port_forwards_help') }}</label>
+                  </div>
+                  <div v-for="(row, index) in curNetwork.local_port_forwards" class="form-row">
+                    <div style="display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap;">
+                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false" />
+                      <div style="flex-grow: 4; min-width: 14rem;">
+                        <InputGroup>
+                          <InputText v-model="row.listen_ip" :placeholder="t('local_port_forwards_listen_addr')"
+                            @update:modelValue="updateLocalPortForwardListen(row, $event)" />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.listen_port" :format="false" inputId="local-port-forward-listen"
+                            :step="1" mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 4; min-width: 14rem;">
+                        <InputGroup>
+                          <InputText v-model="row.target_ip" :placeholder="t('local_port_forwards_target_addr')" />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.target_port" :format="false" inputId="local-port-forward-target"
+                            :step="1" mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 1;">
+                        <Button v-if="curNetwork.local_port_forwards.length > 0" icon="pi pi-trash"
+                          severity="danger" text rounded
+                          @click="removeRow(index, curNetwork.local_port_forwards)" />
+                      </div>
+                    </div>
+                  </div>
+                  <div class="flex justify-content-end mt-4">
+                    <Button icon="pi pi-plus" :label="t('local_port_forwards_add_btn')" severity="success"
+                      @click="addLocalPortForwardRow(curNetwork.local_port_forwards)" />
                   </div>
                 </div>
               </div>

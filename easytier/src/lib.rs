@@ -15,6 +15,7 @@ pub mod common;
 pub mod connector;
 pub mod instance_manager;
 pub mod launcher;
+pub mod local_port_forward;
 pub mod peers;
 pub mod proto;
 pub mod rpc_service;

@@ -186,6 +186,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_socks5_portal(&self) -> Option<url::Url>;
     fn set_socks5_portal(&self, addr: Option<url::Url>);
 
+    fn get_local_port_forwards(&self) -> Vec<LocalPortForwardRule>;
+    fn set_local_port_forwards(&self, bridges: Vec<LocalPortForwardRule>);
+
     fn get_port_forwards(&self) -> Vec<PortForwardConfig>;
     fn set_port_forwards(&self, forwards: Vec<PortForwardConfig>);
 
@@ -349,6 +352,15 @@ pub struct PortForwardConfig {
     pub proto: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Hash)]
+pub struct LocalPortForwardRule {
+    pub proto: String,
+    pub listen: SocketAddr,
+    pub target: SocketAddr,
+    #[serde(default)]
+    pub listen_from_dhcp: bool,
+}
+
 impl From<PortForwardConfigPb> for PortForwardConfig {
     fn from(config: PortForwardConfigPb) -> Self {
         PortForwardConfig {
@@ -400,6 +412,7 @@ struct Config {
 
     socks5_proxy: Option<url::Url>,
 
+    local_port_forward: Option<Vec<LocalPortForwardRule>>,
     port_forward: Option<Vec<PortForwardConfig>>,
 
     flags: Option<serde_json::Map<String, serde_json::Value>>,
@@ -732,6 +745,19 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_socks5_portal(&self, addr: Option<url::Url>) {
         self.config.lock().unwrap().socks5_proxy = addr;
+    }
+
+    fn get_local_port_forwards(&self) -> Vec<LocalPortForwardRule> {
+        self.config
+            .lock()
+            .unwrap()
+            .local_port_forward
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn set_local_port_forwards(&self, bridges: Vec<LocalPortForwardRule>) {
+        self.config.lock().unwrap().local_port_forward = Some(bridges);
     }
 
     fn get_port_forwards(&self) -> Vec<PortForwardConfig> {
