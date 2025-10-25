@@ -13,7 +13,6 @@ use easytier::{
     },
     defer,
     instance_manager::NetworkInstanceManager,
-    launcher::ConfigSource,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::any;
@@ -392,7 +391,7 @@ impl HealthChecker {
                 .delete_network_instance(vec![cfg.get_id()]);
         });
         self.instance_mgr
-            .run_network_instance(cfg.clone(), ConfigSource::FFI)
+            .run_network_instance(cfg.clone(), false)
             .with_context(|| "failed to run network instance")?;
 
         let now = Instant::now();
@@ -436,7 +435,7 @@ impl HealthChecker {
         );
 
         self.instance_mgr
-            .run_network_instance(cfg.clone(), ConfigSource::Web)
+            .run_network_instance(cfg.clone(), true)
             .with_context(|| "failed to run network instance")?;
         self.inst_id_map.insert(node_id, cfg.get_id());
 

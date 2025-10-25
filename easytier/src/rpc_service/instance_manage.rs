@@ -3,7 +3,6 @@ use std::sync::Arc;
 use crate::{
     common::config::ConfigLoader,
     instance_manager::NetworkInstanceManager,
-    launcher::ConfigSource,
     proto::{
         api::manage::*,
         rpc_types::{self, controller::BaseController},
@@ -47,7 +46,7 @@ impl WebClientService for InstanceManageRpcService {
         if let Some(inst_id) = req.inst_id {
             cfg.set_id(inst_id.into());
         }
-        self.manager.run_network_instance(cfg, ConfigSource::Web)?;
+        self.manager.run_network_instance(cfg, true)?;
         println!("instance {} started", id);
         Ok(RunNetworkInstanceResponse {
             inst_id: Some(id.into()),
