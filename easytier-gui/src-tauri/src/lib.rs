@@ -240,12 +240,16 @@ async fn get_config(app: AppHandle, instance_id: String) -> Result<NetworkConfig
 }
 
 #[tauri::command]
-fn load_configs(configs: Vec<NetworkConfig>, enabled_networks: Vec<String>) -> Result<(), String> {
+async fn load_configs(
+    configs: Vec<NetworkConfig>,
+    enabled_networks: Vec<String>,
+) -> Result<(), String> {
     CLIENT_MANAGER
         .get()
         .unwrap()
         .storage
         .load_configs(configs, enabled_networks)
+        .await
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -304,7 +308,7 @@ mod manager {
     use super::*;
     use async_trait::async_trait;
     use dashmap::{DashMap, DashSet};
-    use easytier::launcher::{ConfigSource, NetworkConfig};
+    use easytier::launcher::NetworkConfig;
     use easytier::proto::rpc_impl::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::rpc_service::remote_client::PersistentConfig;
@@ -334,7 +338,7 @@ mod manager {
             }
         }
 
-        pub(super) fn load_configs(
+        pub(super) async fn load_configs(
             &self,
             configs: Vec<NetworkConfig>,
             enabled_networks: Vec<String>,
@@ -363,7 +367,7 @@ mod manager {
                             .get(&uuid)
                             .map(|i| i.value().1.gen_config())
                             .ok_or_else(|| anyhow::anyhow!("Config not found"))??;
-                        INSTANCE_MANAGER.run_network_instance(config, ConfigSource::GUI)?;
+                        INSTANCE_MANAGER.run_network_instance(config, true)?;
                         self.enabled_networks.insert(uuid);
                     }
                 }
