@@ -281,33 +281,17 @@ impl Drop for EasyTierLauncher {
 
 pub type NetworkInstanceRunningInfo = crate::proto::api::manage::NetworkInstanceRunningInfo;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigSource {
-    Cli,
-    File,
-    Web,
-    GUI,
-    FFI,
-}
-
 pub struct NetworkInstance {
     config: TomlConfigLoader,
     launcher: Option<EasyTierLauncher>,
-
-    config_source: ConfigSource,
 }
 
 impl NetworkInstance {
-    pub fn new(config: TomlConfigLoader, source: ConfigSource) -> Self {
+    pub fn new(config: TomlConfigLoader) -> Self {
         Self {
             config,
             launcher: None,
-            config_source: source,
         }
-    }
-
-    pub fn get_config_source(&self) -> ConfigSource {
-        self.config_source.clone()
     }
 
     pub fn is_easytier_running(&self) -> bool {
