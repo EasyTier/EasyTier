@@ -164,6 +164,7 @@ port_forwards_help: "forward local port to remote port in virtual network. e.g.:
 port_forwards_bind_addr: "Bind address, e.g.: 0.0.0.0"
 port_forwards_dst_addr: "Destination address, e.g.: 10.126.126.1"
 port_forwards_add_btn: "Add"
+edit_port_forward: "Edit Port Forward"
 
 mtu: MTU
 mtu_help: |
