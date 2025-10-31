@@ -3,7 +3,6 @@ mod native_log;
 use easytier::common::config::{ConfigLoader, TomlConfigLoader};
 use easytier::common::constants::EASYTIER_VERSION;
 use easytier::instance_manager::NetworkInstanceManager;
-use easytier::launcher::ConfigSource;
 use napi_derive_ohos::napi;
 use ohos_hilog_binding::{hilog_debug, hilog_error};
 use std::format;
@@ -76,9 +75,7 @@ pub fn run_network_instance(cfg_str: String) -> bool {
     {
         return false;
     }
-    INSTANCE_MANAGER
-        .run_network_instance(cfg, ConfigSource::FFI)
-        .unwrap();
+    INSTANCE_MANAGER.run_network_instance(cfg, false).unwrap();
     true
 }
 
