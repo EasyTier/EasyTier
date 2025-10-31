@@ -35,4 +35,8 @@ impl Controller {
     pub fn get_rpc_service(&self) -> InstanceManageRpcService {
         InstanceManageRpcService::new(self.manager.clone())
     }
+
+    pub(super) fn notify_manager_stopping(&self) {
+        self.manager.notify_stop_check();
+    }
 }

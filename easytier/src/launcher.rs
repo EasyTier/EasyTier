@@ -1,4 +1,4 @@
-use crate::common::config::PortForwardConfig;
+use crate::common::config::{ConfigFileControl, PortForwardConfig};
 use crate::proto::api::{self, manage};
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
@@ -284,13 +284,15 @@ pub type NetworkInstanceRunningInfo = crate::proto::api::manage::NetworkInstance
 pub struct NetworkInstance {
     config: TomlConfigLoader,
     launcher: Option<EasyTierLauncher>,
+    config_file_control: ConfigFileControl,
 }
 
 impl NetworkInstance {
-    pub fn new(config: TomlConfigLoader) -> Self {
+    pub fn new(config: TomlConfigLoader, config_file_control: ConfigFileControl) -> Self {
         Self {
             config,
             launcher: None,
+            config_file_control,
         }
     }
 
@@ -387,6 +389,10 @@ impl NetworkInstance {
         self.config.get_inst_name()
     }
 
+    pub fn get_network_name(&self) -> String {
+        self.config.get_network_identity().network_name
+    }
+
     pub fn set_tun_fd(&mut self, tun_fd: i32) {
         if let Some(launcher) = self.launcher.as_ref() {
             launcher.data.tun_fd.write().unwrap().replace(tun_fd);
@@ -420,6 +426,10 @@ impl NetworkInstance {
         self.launcher
             .as_ref()
             .map(|launcher| launcher.data.instance_stop_notifier.clone())
+    }
+
+    pub fn get_config_file_control(&self) -> &ConfigFileControl {
+        &self.config_file_control
     }
 
     pub fn get_latest_error_msg(&self) -> Option<String> {

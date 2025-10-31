@@ -15,8 +15,8 @@ export async function generateNetworkConfig(tomlConfig: string) {
   return invoke<NetworkConfig>('generate_network_config', { tomlConfig })
 }
 
-export async function runNetworkInstance(cfg: NetworkConfig) {
-  return invoke('run_network_instance', { cfg })
+export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
+  return invoke('run_network_instance', { cfg, save })
 }
 
 export async function collectNetworkInfo(instanceId: string) {

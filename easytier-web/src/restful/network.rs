@@ -59,6 +59,7 @@ struct SaveNetworkJsonReq {
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct RunNetworkJsonReq {
     config: NetworkConfig,
+    save: bool,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -132,6 +133,7 @@ impl NetworkApi {
             .handle_run_network_instance(
                 (Self::get_user_id(&auth_session)?, machine_id),
                 payload.config,
+                payload.save,
             )
             .await
             .map_err(convert_error)?;

@@ -5,8 +5,8 @@ export class GUIRemoteClient implements Api.RemoteClient {
     async validate_config(config: NetworkTypes.NetworkConfig): Promise<Api.ValidateConfigResponse> {
         return backend.validateConfig(config);
     }
-    async run_network(config: NetworkTypes.NetworkConfig): Promise<undefined> {
-        await backend.runNetworkInstance(config);
+    async run_network(config: NetworkTypes.NetworkConfig, save: boolean): Promise<undefined> {
+        await backend.runNetworkInstance(config, save);
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
         return backend.collectNetworkInfo(inst_id).then(infos => infos.info.map[inst_id]);

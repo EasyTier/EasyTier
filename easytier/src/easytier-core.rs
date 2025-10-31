@@ -17,22 +17,18 @@ use clap_complete::Shell;
 use easytier::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
-            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
-            VpnPortalConfig,
+            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
+            ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
+            PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
-        global_ctx::GlobalCtx,
-        set_default_machine_id,
-        stun::MockStunInfoCollector,
     },
-    connector::create_connector_by_url,
     defer,
     instance_manager::NetworkInstanceManager,
     launcher::add_proxy_network_to_config,
-    proto::common::{CompressionAlgoPb, NatType},
+    proto::common::CompressionAlgoPb,
     rpc_service::ApiRpcServer,
-    tunnel::{IpVersion, PROTO_PORT_OFFSET},
+    tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
     web_client,
 };
@@ -136,6 +132,13 @@ struct Cli {
     )]
     config_file: Option<Vec<PathBuf>>,
 
+    #[arg(
+        long,
+        env = "ET_CONFIG_DIR",
+        help = t!("core_clap.config_dir").to_string()
+    )]
+    config_dir: Option<PathBuf>,
+
     #[command(flatten)]
     network_options: NetworkOptions,
 
@@ -152,7 +155,7 @@ struct Cli {
     check_config: bool,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default, PartialEq, Eq)]
 struct NetworkOptions {
     #[arg(
         long,
@@ -707,6 +710,9 @@ impl Cli {
 
 impl NetworkOptions {
     fn can_merge(&self, cfg: &TomlConfigLoader, config_file_count: usize) -> bool {
+        if (*self) == NetworkOptions::default() {
+            return false;
+        }
         if config_file_count == 1 {
             return true;
         }
@@ -1141,7 +1147,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
     init_logger(&cli.logging_options, true)?;
 
-    let manager = Arc::new(NetworkInstanceManager::new());
+    let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
 
     let _rpc_server = ApiRpcServer::new(
         cli.rpc_portal_options.rpc_portal,
@@ -1151,93 +1157,77 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     .serve()
     .await?;
 
-    if cli.config_server.is_some() {
-        set_default_machine_id(cli.machine_id);
-        let config_server_url_s = cli.config_server.clone().unwrap();
-        let config_server_url = match url::Url::parse(&config_server_url_s) {
-            Ok(u) => u,
-            Err(_) => format!(
-                "udp://config-server.easytier.cn:22020/{}",
-                config_server_url_s
-            )
-            .parse()
-            .unwrap(),
-        };
+    let _web_client = if let Some(config_server_url_s) = cli.config_server.as_ref() {
+        let wc = web_client::run_web_client(
+            config_server_url_s,
+            cli.machine_id.clone(),
+            cli.network_options.hostname.clone(),
+            manager.clone(),
+        )
+        .await
+        .inspect(|_| {
+            println!(
+                "Web client started successfully...\nserver: {}",
+                config_server_url_s,
+            );
 
-        let mut c_url = config_server_url.clone();
-        c_url.set_path("");
-        let token = config_server_url
-            .path_segments()
-            .and_then(|mut x| x.next())
-            .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
-            .transpose()
-            .with_context(|| "failed to decode config server token")?
-            .map(|x| x.to_string())
-            .unwrap_or_default();
+            println!("Official config website: https://easytier.cn/web");
+        })?;
+
+        Some(wc)
+    } else {
+        None
+    };
+
+    let mut config_files = if let Some(v) = cli.config_file {
+        v.clone()
+    } else {
+        vec![]
+    };
+    if let Some(config_dir) = cli.config_dir.as_ref() {
+        if !config_dir.is_dir() {
+            anyhow::bail!("config_dir {} is not a directory", config_dir.display());
+        }
+
+        for entry in std::fs::read_dir(config_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(ext) = path.extension() else {
+                continue;
+            };
+            if ext != "toml" {
+                continue;
+            }
+            config_files.push(path);
+        }
+    }
+    let config_file_count = config_files.len();
+    let mut crate_cli_network = (config_file_count == 0 && cli.config_server.is_none())
+        || cli.network_options.network_name.is_some();
+    for config_file in config_files {
+        let (mut cfg, mut control) =
+            load_config_from_file(&config_file, cli.config_dir.as_ref()).await?;
+
+        if cli.network_options.can_merge(&cfg, config_file_count) {
+            cli.network_options
+                .merge_into(&mut cfg)
+                .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
+            crate_cli_network = false;
+            control.set_read_only(true);
+            control.set_no_delete(true);
+        }
 
         println!(
-            "Entering config client mode...\n  server: {}\n  token: {}",
-            c_url, token,
+            "Starting easytier from config file {:?}({:?}) with config:",
+            config_file, control.permission
         );
-
-        println!("Official config website: https://easytier.cn/web");
-
-        if token.is_empty() {
-            panic!("empty token");
-        }
-
-        let config = TomlConfigLoader::default();
-        let global_ctx = Arc::new(GlobalCtx::new(config));
-        global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
-            udp_nat_type: NatType::Unknown,
-        }));
-        let mut flags = global_ctx.get_flags();
-        flags.bind_device = false;
-        global_ctx.set_flags(flags);
-        let hostname = match cli.network_options.hostname {
-            None => gethostname::gethostname().to_string_lossy().to_string(),
-            Some(hostname) => hostname.to_string(),
-        };
-        let _wc = web_client::WebClient::new(
-            create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
-            token.to_string(),
-            hostname,
-            manager,
-        );
-        tokio::signal::ctrl_c().await.unwrap();
-        return Ok(());
-    }
-    let mut crate_cli_network =
-        cli.config_file.is_none() || cli.network_options.network_name.is_some();
-    if let Some(config_files) = cli.config_file {
-        let config_file_count = config_files.len();
-        for config_file in config_files {
-            let mut cfg = if config_file.as_os_str() == "-" {
-                let mut stdin = String::new();
-                _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
-                TomlConfigLoader::new_from_str(stdin.as_str())
-                    .with_context(|| "failed to load config from stdin")?
-            } else {
-                TomlConfigLoader::new(&config_file)
-                    .with_context(|| format!("failed to load config file: {:?}", config_file))?
-            };
-
-            if cli.network_options.can_merge(&cfg, config_file_count) {
-                cli.network_options.merge_into(&mut cfg).with_context(|| {
-                    format!("failed to merge config from cli: {:?}", config_file)
-                })?;
-                crate_cli_network = false;
-            }
-
-            println!(
-                "Starting easytier from config file {:?} with config:",
-                config_file
-            );
-            println!("############### TOML ###############\n");
-            println!("{}", cfg.dump());
-            println!("-----------------------------------");
-            manager.run_network_instance(cfg, true)?;
-        }
+        println!("############### TOML ###############\n");
+        println!("{}", cfg.dump());
+        println!("-----------------------------------");
+        manager.run_network_instance(cfg, true, control)?;
     }
 
     if crate_cli_network {
@@ -1249,7 +1239,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         println!("############### TOML ###############\n");
         println!("{}", cfg.dump());
         println!("-----------------------------------");
-        manager.run_network_instance(cfg, true)?;
+        manager.run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)?;
     }
 
     tokio::select! {

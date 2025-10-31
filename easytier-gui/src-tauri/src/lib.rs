@@ -78,7 +78,11 @@ fn generate_network_config(toml_config: String) -> Result<NetworkConfig, String>
 }
 
 #[tauri::command]
-async fn run_network_instance(app: AppHandle, cfg: NetworkConfig) -> Result<(), String> {
+async fn run_network_instance(
+    app: AppHandle,
+    cfg: NetworkConfig,
+    save: bool,
+) -> Result<(), String> {
     let instance_id = cfg.instance_id().to_string();
 
     app.emit("pre_run_network_instance", cfg.instance_id())
@@ -97,7 +101,7 @@ async fn run_network_instance(app: AppHandle, cfg: NetworkConfig) -> Result<(), 
     CLIENT_MANAGER
         .get()
         .unwrap()
-        .handle_run_network_instance(app.clone(), cfg)
+        .handle_run_network_instance(app.clone(), cfg, save)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -241,6 +245,7 @@ async fn get_config(app: AppHandle, instance_id: String) -> Result<NetworkConfig
 
 #[tauri::command]
 async fn load_configs(
+    app: AppHandle,
     configs: Vec<NetworkConfig>,
     enabled_networks: Vec<String>,
 ) -> Result<(), String> {
@@ -248,7 +253,7 @@ async fn load_configs(
         .get()
         .unwrap()
         .storage
-        .load_configs(configs, enabled_networks)
+        .load_configs(app, configs, enabled_networks)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -309,6 +314,7 @@ mod manager {
     use async_trait::async_trait;
     use dashmap::{DashMap, DashSet};
     use easytier::launcher::NetworkConfig;
+    use easytier::proto::api::manage::RunNetworkInstanceRequest;
     use easytier::proto::rpc_impl::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
     use easytier::rpc_service::remote_client::PersistentConfig;
@@ -340,6 +346,7 @@ mod manager {
 
         pub(super) async fn load_configs(
             &self,
+            app: AppHandle,
             configs: Vec<NetworkConfig>,
             enabled_networks: Vec<String>,
         ) -> anyhow::Result<()> {
@@ -353,21 +360,31 @@ mod manager {
             }
 
             self.enabled_networks.clear();
-            INSTANCE_MANAGER
-                .filter_network_instance(|_, _| true)
-                .into_iter()
-                .for_each(|id| {
-                    self.enabled_networks.insert(id);
-                });
+            INSTANCE_MANAGER.iter().for_each(|v| {
+                self.enabled_networks.insert(*v.key());
+            });
             for id in enabled_networks {
                 if let Ok(uuid) = id.parse() {
                     if !self.enabled_networks.contains(&uuid) {
                         let config = self
                             .network_configs
                             .get(&uuid)
-                            .map(|i| i.value().1.gen_config())
-                            .ok_or_else(|| anyhow::anyhow!("Config not found"))??;
-                        INSTANCE_MANAGER.run_network_instance(config, true)?;
+                            .map(|i| i.value().1.clone())
+                            .ok_or_else(|| anyhow::anyhow!("Config not found"))?;
+                        CLIENT_MANAGER
+                            .get()
+                            .unwrap()
+                            .get_rpc_client(app.clone())
+                            .ok_or_else(|| anyhow::anyhow!("RPC client not found"))?
+                            .run_network_instance(
+                                BaseController::default(),
+                                RunNetworkInstanceRequest {
+                                    inst_id: None,
+                                    config: Some(config),
+                                    overwrite: false,
+                                },
+                            )
+                            .await?;
                         self.enabled_networks.insert(uuid);
                     }
                 }
@@ -438,18 +455,14 @@ mod manager {
             app: AppHandle,
             network_inst_id: Uuid,
             disabled: bool,
-        ) -> Result<GUIConfig, anyhow::Error> {
+        ) -> Result<(), anyhow::Error> {
             if disabled {
                 self.enabled_networks.remove(&network_inst_id);
             } else {
                 self.enabled_networks.insert(network_inst_id);
             }
             self.save_enabled_networks(&app)?;
-            let cfg = self
-                .network_configs
-                .get(&network_inst_id)
-                .ok_or_else(|| anyhow::anyhow!("Config not found"))?;
-            Ok(cfg.value().clone())
+            Ok(())
         }
 
         async fn list_network_configs(

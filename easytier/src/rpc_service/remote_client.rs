@@ -40,6 +40,7 @@ where
         &self,
         identify: T,
         config: NetworkConfig,
+        save: bool,
     ) -> Result<(), RemoteClientError<E>> {
         let client = self
             .get_rpc_client(identify.clone())
@@ -50,18 +51,21 @@ where
                 RunNetworkInstanceRequest {
                     inst_id: None,
                     config: Some(config.clone()),
+                    overwrite: true,
                 },
             )
             .await?;
 
-        self.get_storage()
-            .insert_or_update_user_network_config(
-                identify,
-                resp.inst_id.unwrap_or_default().into(),
-                config,
-            )
-            .await
-            .map_err(RemoteClientError::PersistentError)?;
+        if save {
+            self.get_storage()
+                .insert_or_update_user_network_config(
+                    identify,
+                    resp.inst_id.unwrap_or_default().into(),
+                    config,
+                )
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+        }
 
         Ok(())
     }
@@ -156,13 +160,17 @@ where
         let client = self
             .get_rpc_client(identify.clone())
             .ok_or(RemoteClientError::ClientNotFound)?;
+
         let cfg = self
-            .get_storage()
-            .update_network_config_state(identify, inst_id, disabled)
-            .await
-            .map_err(RemoteClientError::PersistentError)?;
+            .handle_get_network_config(identify.clone(), inst_id)
+            .await?;
 
         if disabled {
+            self.get_storage()
+                .insert_or_update_user_network_config(identify.clone(), inst_id, cfg.clone())
+                .await
+                .map_err(RemoteClientError::PersistentError)?;
+
             client
                 .delete_network_instance(
                     BaseController::default(),
@@ -177,14 +185,17 @@ where
                     BaseController::default(),
                     RunNetworkInstanceRequest {
                         inst_id: Some(inst_id.into()),
-                        config: Some(
-                            cfg.get_network_config()
-                                .map_err(RemoteClientError::PersistentError)?,
-                        ),
+                        config: Some(cfg),
+                        overwrite: true,
                     },
                 )
                 .await?;
         }
+
+        self.get_storage()
+            .update_network_config_state(identify, inst_id, disabled)
+            .await
+            .map_err(RemoteClientError::PersistentError)?;
 
         Ok(())
     }
@@ -196,14 +207,38 @@ where
     ) -> Result<GetNetworkMetasResponse, RemoteClientError<E>> {
         let mut metas = std::collections::HashMap::new();
 
+        if let Some(client) = self.get_rpc_client(identify.clone()) {
+            if let Ok(resp) = client
+                .list_network_instance_meta(
+                    BaseController::default(),
+                    ListNetworkInstanceMetaRequest {
+                        inst_ids: inst_ids.iter().cloned().map(|id| id.into()).collect(),
+                    },
+                )
+                .await
+            {
+                for meta in resp.metas {
+                    if let Some(inst_id) = meta.inst_id.as_ref() {
+                        let inst_id: uuid::Uuid = (*inst_id).into();
+                        metas.insert(inst_id, meta);
+                    }
+                }
+            }
+        }
+
         for instance_id in inst_ids {
+            if metas.contains_key(&instance_id) {
+                continue;
+            }
             let config = self
                 .handle_get_network_config(identify.clone(), instance_id)
                 .await?;
             metas.insert(
                 instance_id,
                 NetworkMeta {
-                    instance_name: config.network_name.unwrap_or_default(),
+                    inst_id: Some(instance_id.into()),
+                    network_name: config.network_name.unwrap_or_default(),
+                    config_permission: 0,
                 },
             );
         }
@@ -233,6 +268,22 @@ where
         identify: T,
         inst_id: uuid::Uuid,
     ) -> Result<NetworkConfig, RemoteClientError<E>> {
+        if let Some(client) = self.get_rpc_client(identify.clone()) {
+            if let Ok(resp) = client
+                .get_network_instance_config(
+                    BaseController::default(),
+                    GetNetworkInstanceConfigRequest {
+                        inst_id: Some(inst_id.into()),
+                    },
+                )
+                .await
+            {
+                if let Some(config) = resp.config {
+                    return Ok(config);
+                }
+            }
+        }
+
         let inst_id = inst_id.to_string();
 
         let db_row = self
@@ -278,11 +329,6 @@ pub struct ListNetworkInstanceIdsJsonResp {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-pub struct NetworkMeta {
-    instance_name: String,
-}
-
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct GetNetworkMetasResponse {
     metas: std::collections::HashMap<uuid::Uuid, NetworkMeta>,
 }
@@ -312,7 +358,7 @@ where
         identify: T,
         network_inst_id: Uuid,
         disabled: bool,
-    ) -> Result<C, E>;
+    ) -> Result<(), E>;
 
     async fn list_network_configs(&self, identify: T, props: ListNetworkProps)
         -> Result<Vec<C>, E>;

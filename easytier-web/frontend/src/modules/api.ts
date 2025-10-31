@@ -193,9 +193,10 @@ class WebRemoteClient implements Api.RemoteClient {
         });
         return response;
     }
-    async run_network(config: NetworkTypes.NetworkConfig): Promise<undefined> {
+    async run_network(config: NetworkTypes.NetworkConfig, save: boolean): Promise<undefined> {
         await this.client.post<string>(`/machines/${this.machine_id}/networks`, {
             config: config,
+            save: save
         });
     }
     async get_network_info(inst_id: string): Promise<NetworkTypes.NetworkInstanceRunningInfo | undefined> {
