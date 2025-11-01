@@ -113,9 +113,12 @@ impl NatDstConnector for NatDstQUICConnector {
             return Err(anyhow::anyhow!("no quic port found for dst peer: {}", dst_peer).into());
         };
 
+        let quic_url = format!("quic://{}:{}", dst_ipv4, quic_port);
+        let url = url::Url::parse(&quic_url).unwrap();
+
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
             .with_context(|| format!("failed to create QUIC endpoint for src: {}", src))?;
-        endpoint.set_default_client_config(configure_client());
+        endpoint.set_default_client_config(configure_client(&url));
 
         // connect to server
         let connection = {
@@ -123,7 +126,7 @@ impl NatDstConnector for NatDstQUICConnector {
             endpoint
                 .connect(
                     SocketAddr::new(dst_ipv4.into(), quic_port as u16),
-                    "localhost",
+                    url.domain().unwrap_or("localhost"),
                 )
                 .unwrap()
                 .await
