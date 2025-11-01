@@ -10,7 +10,7 @@ use crate::tunnel::quic::QUICTunnelConnector;
 #[cfg(feature = "wireguard")]
 use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
-    common::{error::Error, global_ctx::ArcGlobalCtx, network::IPCollector},
+    common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
     tunnel::{
         check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
         udp::UdpTunnelConnector, IpVersion, TunnelConnector,
@@ -58,6 +58,7 @@ pub async fn create_connector_by_url(
     ip_version: IpVersion,
 ) -> Result<Box<dyn TunnelConnector + 'static>, Error> {
     let url = url::Url::parse(url).map_err(|_| Error::InvalidUrl(url.to_owned()))?;
+    let url = idn::convert_idn_to_ascii(url)?;
     let mut connector: Box<dyn TunnelConnector + 'static> = match url.scheme() {
         "tcp" => {
             let dst_addr =
