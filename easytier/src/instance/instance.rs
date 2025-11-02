@@ -530,7 +530,7 @@ pub struct Instance {
     vpn_portal: Arc<Mutex<Box<dyn VpnPortal>>>,
 
     #[cfg(feature = "socks5")]
-    socks5_server: Arc<Socks5Server>,
+    pub socks5_server: Arc<Socks5Server>,
 
     global_ctx: ArcGlobalCtx,
 }
