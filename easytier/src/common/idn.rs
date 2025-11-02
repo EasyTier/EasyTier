@@ -47,8 +47,15 @@ mod tests {
         #[case] host_part: &str,
         #[case] expected_host_part: &str,
         #[values("tcp", "udp", "ws", "wss", "wg", "quic", "http", "https")] protocol: &str,
+        #[values(false, true)] dual_convert: bool,
     ) {
         let input = url::Url::parse(&format!("{}://{}", protocol, host_part)).unwrap();
+        let input = if dual_convert {
+            // in case url is serialized/deserialized as string somewhere else
+            input.to_string().parse().unwrap()
+        } else {
+            input
+        };
         let actual = convert_idn_to_ascii(input.clone()).unwrap().to_string();
 
         let mut expected = format!("{}://{}", protocol, expected_host_part);
