@@ -1169,6 +1169,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         let token = config_server_url
             .path_segments()
             .and_then(|mut x| x.next())
+            .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
+            .transpose()
+            .with_context(|| "failed to decode config server token")?
             .map(|x| x.to_string())
             .unwrap_or_default();
 
