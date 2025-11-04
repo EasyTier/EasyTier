@@ -29,7 +29,7 @@ use easytier::{
     connector::create_connector_by_url,
     defer,
     instance_manager::NetworkInstanceManager,
-    launcher::{add_proxy_network_to_config, ConfigSource},
+    launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, NatType},
     rpc_service::ApiRpcServer,
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
@@ -1236,7 +1236,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             println!("############### TOML ###############\n");
             println!("{}", cfg.dump());
             println!("-----------------------------------");
-            manager.run_network_instance(cfg, ConfigSource::File)?;
+            manager.run_network_instance(cfg, true)?;
         }
     }
 
@@ -1249,7 +1249,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         println!("############### TOML ###############\n");
         println!("{}", cfg.dump());
         println!("-----------------------------------");
-        manager.run_network_instance(cfg, ConfigSource::Cli)?;
+        manager.run_network_instance(cfg, true)?;
     }
 
     tokio::select! {
