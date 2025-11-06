@@ -119,6 +119,8 @@ impl LoggingConfigLoader for &Cli {
             dir: self.file_log_dir.clone(),
             level: self.file_log_level.clone(),
             file: None,
+            size_mb: None,
+            count: None,
         }
     }
 }
@@ -151,7 +153,7 @@ async fn get_dual_stack_listener(
     } else {
         None
     };
-    let v4_listener = if let Ok(_) = local_ipv4().await {
+    let v4_listener = if local_ipv4().await.is_ok() {
         get_listener_by_url(&format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap()).ok()
     } else {
         None

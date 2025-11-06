@@ -52,9 +52,7 @@ pub fn build_router(api_host: Option<url::Url>) -> Router {
         router
     };
 
-    let router = router.fallback_service(service);
-
-    router
+    router.fallback_service(service)
 }
 
 pub struct WebServer {

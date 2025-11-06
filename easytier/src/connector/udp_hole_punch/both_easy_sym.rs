@@ -260,7 +260,7 @@ impl PunchBothEasySymHoleClient {
             )
             .await;
 
-        let remote_ret = handle_rpc_result(remote_ret, dst_peer_id, self.blacklist.clone())?;
+        let remote_ret = handle_rpc_result(remote_ret, dst_peer_id, &self.blacklist)?;
 
         if remote_ret.is_busy {
             *is_busy = true;
@@ -389,7 +389,7 @@ pub mod tests {
         let udp1 = Arc::new(UdpSocket::bind("0.0.0.0:40164").await.unwrap());
         // 144 - DST_PORT_OFFSET = 124
         let udp2 = Arc::new(UdpSocket::bind("0.0.0.0:40124").await.unwrap());
-        let udps = vec![udp1, udp2];
+        let udps = [udp1, udp2];
 
         let counter = Arc::new(AtomicU32::new(0));
 

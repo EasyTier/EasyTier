@@ -11,7 +11,6 @@ use super::{
     peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
-use crate::{common::scoped_task::ScopedTask, proto::cli::PeerConnInfo};
 use crate::{
     common::{
         error::Error,
@@ -19,6 +18,10 @@ use crate::{
         PeerId,
     },
     tunnel::packet_def::ZCPacket,
+};
+use crate::{
+    common::{scoped_task::ScopedTask, shrink_dashmap},
+    proto::api::instance::PeerConnInfo,
 };
 
 type ArcPeerConn = Arc<PeerConn>;
@@ -72,6 +75,7 @@ impl Peer {
                                 global_ctx_copy.issue_event(GlobalCtxEvent::PeerConnRemoved(
                                     conn.get_conn_info(),
                                 ));
+                                shrink_dashmap(&conns_copy, Some(4));
                             }
                         }
 
@@ -148,7 +152,7 @@ impl Peer {
         }
 
         // find a conn with the smallest latency
-        let mut min_latency = std::u64::MAX;
+        let mut min_latency = u64::MAX;
         for conn in self.conns.iter() {
             let latency = conn.value().get_stats().latency_us;
             if latency < min_latency {
@@ -176,7 +180,7 @@ impl Peer {
         if !has_key {
             return Err(Error::NotFound);
         }
-        self.close_event_sender.send(conn_id.clone()).await.unwrap();
+        self.close_event_sender.send(*conn_id).await.unwrap();
         Ok(())
     }
 
@@ -222,6 +226,11 @@ impl Peer {
 // pritn on drop
 impl Drop for Peer {
     fn drop(&mut self) {
+        self.conns.retain(|_, conn| {
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::PeerConnRemoved(conn.get_conn_info()));
+            false
+        });
         self.shutdown_notifier.notify_one();
         tracing::info!("peer {} drop", self.peer_node_id);
     }
@@ -277,7 +286,7 @@ mod tests {
 
         // wait for remote peer conn close
         timeout(std::time::Duration::from_secs(5), async {
-            while (&remote_peer).list_peer_conns().await.len() != 0 {
+            while !remote_peer.list_peer_conns().await.is_empty() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         })

@@ -1,5 +1,5 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::{
     net::IpAddr,
     sync::{atomic::AtomicBool, Arc},
@@ -25,6 +25,13 @@ pub struct AclFilter {
     // Use ArcSwap for lock-free atomic replacement during hot reload
     acl_processor: ArcSwap<AclProcessor>,
     acl_enabled: Arc<AtomicBool>,
+    quic_udp_port: AtomicU16,
+}
+
+impl Default for AclFilter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AclFilter {
@@ -32,6 +39,7 @@ impl AclFilter {
         Self {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
+            quic_udp_port: AtomicU16::new(0),
         }
     }
 
@@ -75,14 +83,18 @@ impl AclFilter {
         let rules_stats = processor.get_rules_stats();
 
         AclStats {
-            global: global_stats.into_iter().map(|(k, v)| (k, v)).collect(),
-            conn_track: conn_track.iter().map(|x| x.value().clone()).collect(),
+            global: global_stats.into_iter().collect(),
+            conn_track: conn_track.iter().map(|x| *x.value()).collect(),
             rules: rules_stats,
         }
     }
 
     /// Extract packet information for ACL processing
-    fn extract_packet_info(&self, packet: &ZCPacket) -> Option<PacketInfo> {
+    fn extract_packet_info(
+        &self,
+        packet: &ZCPacket,
+        route: &(dyn super::route_trait::Route + Send + Sync + 'static),
+    ) -> Option<PacketInfo> {
         let payload = packet.payload();
 
         let src_ip;
@@ -149,6 +161,15 @@ impl AclFilter {
             _ => Protocol::Unspecified,
         };
 
+        let src_groups = packet
+            .get_src_peer_id()
+            .map(|peer_id| route.get_peer_groups(peer_id))
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+        let dst_groups = packet
+            .get_dst_peer_id()
+            .map(|peer_id| route.get_peer_groups(peer_id))
+            .unwrap_or_else(|| Arc::new(Vec::new()));
+
         Some(PacketInfo {
             src_ip,
             dst_ip,
@@ -156,6 +177,8 @@ impl AclFilter {
             dst_port,
             protocol: acl_protocol,
             packet_size: payload.len(),
+            src_groups,
+            dst_groups,
         })
     }
 
@@ -175,6 +198,8 @@ impl AclFilter {
                     dst_ip = %packet_info.dst_ip,
                     src_port = packet_info.src_port,
                     dst_port = packet_info.dst_port,
+                    src_group = packet_info.src_groups.join(","),
+                    dst_group = packet_info.dst_groups.join(","),
                     protocol = ?packet_info.protocol,
                     action = ?result.action,
                     rule = result.matched_rule_str().as_deref().unwrap_or("unknown"),
@@ -220,6 +245,40 @@ impl AclFilter {
         processor.increment_stat(AclStatKey::PacketsTotal);
     }
 
+    fn check_is_quic_packet(
+        &self,
+        packet_info: &PacketInfo,
+        my_ipv4: &Option<Ipv4Addr>,
+        my_ipv6: &Option<Ipv6Addr>,
+    ) -> bool {
+        if packet_info.protocol != Protocol::Udp {
+            return false;
+        }
+
+        let quic_port = self.get_quic_udp_port();
+        if quic_port == 0 {
+            return false;
+        }
+
+        // quic input
+        if packet_info.dst_port == Some(quic_port)
+            && (packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
+                || packet_info.dst_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED))
+        {
+            return true;
+        }
+
+        // quic output
+        if packet_info.src_port == Some(quic_port)
+            && (packet_info.src_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
+                || packet_info.src_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED))
+        {
+            return true;
+        }
+
+        false
+    }
+
     /// Common ACL processing logic
     pub fn process_packet_with_acl(
         &self,
@@ -227,6 +286,7 @@ impl AclFilter {
         is_in: bool,
         my_ipv4: Option<Ipv4Addr>,
         my_ipv6: Option<Ipv6Addr>,
+        route: &(dyn super::route_trait::Route + Send + Sync + 'static),
     ) -> bool {
         if !self.acl_enabled.load(Ordering::Relaxed) {
             return true;
@@ -237,7 +297,7 @@ impl AclFilter {
         }
 
         // Extract packet information
-        let packet_info = match self.extract_packet_info(packet) {
+        let packet_info = match self.extract_packet_info(packet, route) {
             Some(info) => info,
             None => {
                 tracing::warn!(
@@ -249,6 +309,10 @@ impl AclFilter {
                 return true;
             }
         };
+
+        if self.check_is_quic_packet(&packet_info, &my_ipv4, &my_ipv6) {
+            return true;
+        }
 
         let chain_type = if is_in {
             if packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
@@ -285,5 +349,13 @@ impl AclFilter {
                 false
             }
         }
+    }
+
+    pub fn get_quic_udp_port(&self) -> u16 {
+        self.quic_udp_port.load(Ordering::Relaxed)
+    }
+
+    pub fn set_quic_udp_port(&self, port: u16) {
+        self.quic_udp_port.store(port, Ordering::Relaxed);
     }
 }

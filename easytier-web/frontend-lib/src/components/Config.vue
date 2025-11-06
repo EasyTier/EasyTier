@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password } from 'primevue'
-import { DEFAULT_NETWORK_CONFIG, NetworkConfig, NetworkingMethod } from '../types/network'
-import { defineProps, defineEmits, ref, } from 'vue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import {
+  addRow,
+  DEFAULT_NETWORK_CONFIG,
+  NetworkConfig,
+  NetworkingMethod,
+  removeRow
+} from '../types/network'
+import { defineProps, defineEmits, ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -159,17 +165,63 @@ const bool_flags: BoolFlag[] = [
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
   { field: 'disable_encryption', help: 'disable_encryption_help' },
   { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
+  { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
 
+const portForwardProtocolOptions = ref(["tcp", "udp"]);
+
+const editingPortForward = ref(false);
+const editingPortForwardIndex = ref(-1);
+const editingPortForwardData = ref();
+
+function openPortForwardEditor(index: number) {
+  editingPortForwardIndex.value = index;
+  // deep copy
+  editingPortForwardData.value = JSON.parse(JSON.stringify(curNetwork.value.port_forwards[index]));
+  editingPortForward.value = true;
+}
+
+function addPortForward() {
+  addRow(curNetwork.value.port_forwards)
+  if (isCompact.value) {
+    openPortForwardEditor(curNetwork.value.port_forwards.length - 1)
+  }
+}
+
+function savePortForward() {
+  curNetwork.value.port_forwards[editingPortForwardIndex.value] = editingPortForwardData.value;
+  editingPortForward.value = false;
+}
+
+const portForwardContainer = ref<HTMLElement | null>(null);
+const isCompact = ref(false);
+
+
+onMounted(() => {
+  if (portForwardContainer.value) {
+    let resizeObserver = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        isCompact.value = entry.contentRect.width < 540;
+      }
+    });
+    resizeObserver.observe(portForwardContainer.value);
+
+    return () => {
+      if (resizeObserver && portForwardContainer.value) {
+        resizeObserver.unobserve(portForwardContainer.value);
+      }
+    }
+  }
+});
 </script>
 
 <template>
   <div class="frontend-lib">
     <div class="flex flex-col h-full">
       <div class="flex flex-col">
-        <div class="w-11/12 self-center ">
+        <div class="w-full self-center ">
           <Panel :header="t('basic_settings')">
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
@@ -218,9 +270,8 @@ const bool_flags: BoolFlag[] = [
                       class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
 
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions"
-                      class="grow" dropdown :complete-on-focus="false"
-                      @complete="searchPresetPublicServers" />
+                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
+                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
                   </div>
                 </div>
               </div>
@@ -296,23 +347,6 @@ const bool_flags: BoolFlag[] = [
                     class="w-full" dropdown :complete-on-focus="true"
                     :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" multiple
                     @complete="searchListenerSuggestions" />
-                </div>
-              </div>
-
-              <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <label for="rpc_port">{{ t('rpc_port') }}</label>
-                  <InputNumber id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="rpc_port-help"
-                    :format="false" :min="0" :max="65535" />
-                </div>
-              </div>
-
-              <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
-                  <label for="">{{ t('rpc_portal_whitelists') }}</label>
-                  <AutoComplete id="rpc_portal_whitelists" v-model="curNetwork.rpc_portal_whitelists"
-                    :placeholder="t('chips_placeholder', ['127.0.0.0/8'])" class="w-full" multiple fluid
-                    :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
                 </div>
               </div>
 
@@ -413,6 +447,95 @@ const bool_flags: BoolFlag[] = [
                 </div>
               </div>
 
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <Panel :header="t('port_forwards')" toggleable collapsed>
+            <div ref="portForwardContainer" class="flex flex-col gap-y-2">
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="port_forwards">{{ t('port_forwards_help') }}</label>
+                  </div>
+                  <div v-for="(row, index) in curNetwork.port_forwards" :key="index" class="form-row">
+                    <!-- Wide screen view -->
+                    <div v-if="!isCompact" class="flex gap-2 items-end">
+                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false" />
+                      <div style="flex-grow: 4;">
+                        <InputGroup>
+                          <InputText v-model="row.bind_ip" :placeholder="t('port_forwards_bind_addr')" />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.bind_port" :format="false" inputId="horizontal-buttons" :step="1"
+                            mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 4;">
+                        <InputGroup>
+                          <InputText v-model="row.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.dst_port" :format="false" inputId="horizontal-buttons" :step="1"
+                            mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 1;">
+                        <Button v-if="curNetwork.port_forwards.length > 0" icon="pi pi-trash" severity="danger" text
+                          rounded @click="removeRow(index, curNetwork.port_forwards)" />
+                      </div>
+                    </div>
+                    <!-- Small screen view -->
+                    <div v-else class="flex justify-between items-center p-2 border-b">
+                      <span>{{ row.proto }}://{{ row.bind_ip }}:{{ row.bind_port }}/{{ row.dst_ip }}:{{
+                        row.dst_port }}</span>
+                      <div class="flex gap-2">
+                        <Button icon="pi pi-pencil" class="p-button-sm" @click="openPortForwardEditor(index)" />
+                        <Button icon="pi pi-trash" class="p-button-sm p-button-danger"
+                          @click="removeRow(index, curNetwork.port_forwards)" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex justify-content-end mt-4">
+                    <Button icon="pi pi-plus" :label="t('port_forwards_add_btn')" severity="success"
+                      @click="addPortForward" />
+                  </div>
+
+                  <Dialog v-model:visible="editingPortForward" modal :header="t('edit_port_forward')"
+                    :style="{ width: '90vw', maxWidth: '600px' }">
+                    <div v-if="editingPortForwardData" class="flex flex-col gap-4">
+                      <SelectButton v-model="editingPortForwardData.proto" :options="portForwardProtocolOptions"
+                        :allow-empty="false" />
+                      <InputGroup>
+                        <InputText v-model="editingPortForwardData.bind_ip"
+                          :placeholder="t('port_forwards_bind_addr')" />
+                        <InputGroupAddon>
+                          <span style="font-weight: bold">:</span>
+                        </InputGroupAddon>
+                        <InputNumber v-model="editingPortForwardData.bind_port" :format="false" :step="1" mode="decimal"
+                          :min="1" :max="65535" class="max-w-20" />
+                      </InputGroup>
+                      <InputGroup>
+                        <InputText v-model="editingPortForwardData.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
+                        <InputGroupAddon>
+                          <span style="font-weight: bold">:</span>
+                        </InputGroupAddon>
+                        <InputNumber v-model="editingPortForwardData.dst_port" :format="false" :step="1" mode="decimal"
+                          :min="1" :max="65535" class="max-w-20" />
+                      </InputGroup>
+                    </div>
+                    <template #footer>
+                      <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="editingPortForward = false"
+                        text />
+                      <Button :label="t('web.common.save')" icon="pi pi-save" @click="savePortForward" />
+                    </template>
+                  </Dialog>
+                </div>
+              </div>
             </div>
           </Panel>
 

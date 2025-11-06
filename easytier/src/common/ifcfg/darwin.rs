@@ -71,12 +71,7 @@ impl IfConfiguerTrait for MacIfConfiger {
             run_shell_cmd(format!("ifconfig {} inet delete", name).as_str()).await
         } else {
             run_shell_cmd(
-                format!(
-                    "ifconfig {} inet {} delete",
-                    name,
-                    ip.unwrap().address().to_string()
-                )
-                .as_str(),
+                format!("ifconfig {} inet {} delete", name, ip.unwrap().address()).as_str(),
             )
             .await
         }

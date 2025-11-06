@@ -18,13 +18,16 @@ pub mod defer;
 pub mod dns;
 pub mod error;
 pub mod global_ctx;
+pub mod idn;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;
 pub mod scoped_task;
+pub mod stats_manager;
 pub mod stun;
 pub mod stun_codec_ext;
 pub mod token_bucket;
+pub mod tracing_rolling_appender;
 
 pub fn get_logger_timer<F: time::formatting::Formattable>(
     format: F,
@@ -139,8 +142,8 @@ pub fn get_machine_id() -> uuid::Uuid {
     )))]
     let gen_mid = None;
 
-    if gen_mid.is_some() {
-        return gen_mid.unwrap();
+    if let Some(mid) = gen_mid {
+        return mid;
     }
 
     let gen_mid = uuid::Uuid::new_v4();
@@ -151,6 +154,16 @@ pub fn get_machine_id() -> uuid::Uuid {
     }
 
     gen_mid
+}
+
+pub fn shrink_dashmap<K: Eq + std::hash::Hash, V>(
+    map: &dashmap::DashMap<K, V>,
+    threshold: Option<usize>,
+) {
+    let threshold = threshold.unwrap_or(16);
+    if map.capacity() - map.len() > threshold {
+        map.shrink_to_fit();
+    }
 }
 
 #[cfg(test)]

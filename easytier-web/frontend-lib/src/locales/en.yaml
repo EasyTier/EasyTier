@@ -44,8 +44,12 @@ logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
+hide_dock_icon: Hide Dock Icon
+show_dock_icon: Show Dock Icon
 exit: Exit
 use_latency_first: Latency First Mode
+show_node_details: Show Node Details
+hide_node_details: Hide Node Details
 chips_placeholder: 'e.g: {0}, select from the dropdown after input'
 hostname_placeholder: 'Leave blank and default to host name: {0}'
 dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
@@ -73,6 +77,7 @@ latency: Latency
 upload_bytes: Upload
 download_bytes: Download
 loss_rate: Loss Rate
+nat_type: NAT Type
 
 flags_switch: Feature Switch
 
@@ -126,6 +131,9 @@ disable_encryption_help: Disable encryption for peers communication, default is 
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
 
+disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
+disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
+
 enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
@@ -150,6 +158,13 @@ socks5_help: |
 
 exit_nodes: Exit Nodes
 exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
+
+port_forwards: Port Forward
+port_forwards_help: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
+port_forwards_bind_addr: "Bind address, e.g.: 0.0.0.0"
+port_forwards_dst_addr: "Destination address, e.g.: 10.126.126.1"
+port_forwards_add_btn: "Add"
+edit_port_forward: "Edit Port Forward"
 
 mtu: MTU
 mtu_help: |
@@ -201,6 +216,7 @@ event:
   ConnectionError: ConnectionError
   Connecting: Connecting
   ConnectError: ConnectError
+  VpnPortalStarted: VpnPortalStarted
   VpnPortalClientConnected: VpnPortalClientConnected
   VpnPortalClientDisconnected: VpnPortalClientDisconnected
   DhcpIpv4Changed: DhcpIpv4Changed
@@ -274,9 +290,11 @@ web:
     network: Network
     select_network: Select Network
     create_network: Create Network
-    cancel_creation: Cancel Creation
+    cancel_edit: Cancel Edit
     more_actions: More Actions
     edit_as_file: Edit as File
+    save_config: Save Config
+    config_saved: Config Saved
     import_config: Import Config
     create_new: Create New Network
     network_status: Network Status
@@ -318,4 +336,4 @@ web:
     confirm_password: Confirm New Password
     language: Language
     theme: Theme
-    logout: Logout 
+    logout: Logout

@@ -56,11 +56,11 @@ impl CidrSet {
                     cidr_set.lock().unwrap().clear();
                     for cidr in cidrs.iter() {
                         let real_cidr = cidr.cidr;
-                        let mapped = cidr.mapped_cidr.unwrap_or(real_cidr.clone());
-                        cidr_set.lock().unwrap().push(mapped.clone());
+                        let mapped = cidr.mapped_cidr.unwrap_or(real_cidr);
+                        cidr_set.lock().unwrap().push(mapped);
 
                         if mapped != real_cidr {
-                            mapped_to_real.insert(mapped.clone(), real_cidr.clone());
+                            mapped_to_real.insert(mapped, real_cidr);
                         }
                     }
                 }
@@ -70,11 +70,11 @@ impl CidrSet {
     }
 
     pub fn contains_v4(&self, ipv4: std::net::Ipv4Addr, real_ip: &mut std::net::Ipv4Addr) -> bool {
-        let ip = ipv4.into();
+        let ip = ipv4;
         let s = self.cidr_set.lock().unwrap();
         for cidr in s.iter() {
             if cidr.contains(&ip) {
-                if let Some(real_cidr) = self.mapped_to_real.get(&cidr).map(|v| v.value().clone()) {
+                if let Some(real_cidr) = self.mapped_to_real.get(cidr).map(|v| *v.value()) {
                     let origin_network_bits = real_cidr.first().address().to_bits();
                     let network_mask = cidr.mask().to_bits();
 

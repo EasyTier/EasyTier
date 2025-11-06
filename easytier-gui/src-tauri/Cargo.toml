@@ -1,6 +1,6 @@
 [package]
 name = "easytier-gui"
-version = "2.4.0"
+version = "2.4.5"
 description = "EasyTier GUI"
 authors = ["you"]
 edition = "2021"
@@ -52,6 +52,7 @@ tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
 tauri-plugin-os = "2.3.0"
 tauri-plugin-autostart = "2.5.0"
 uuid = "1.17.0"
+async-trait = "0.1.89"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

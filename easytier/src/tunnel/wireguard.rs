@@ -21,10 +21,13 @@ use rand::RngCore;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
 
 use super::TunnelInfo;
-use crate::tunnel::{
-    build_url_from_socket_addr,
-    common::TunnelWrapper,
-    packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
+use crate::{
+    common::shrink_dashmap,
+    tunnel::{
+        build_url_from_socket_addr,
+        common::TunnelWrapper,
+        packet_def::{ZCPacket, WG_TUNNEL_HEADER_SIZE},
+    },
 };
 
 use super::{
@@ -65,7 +68,7 @@ impl WgConfig {
         let my_secret_key = StaticSecret::from(my_sec);
         let my_public_key = PublicKey::from(&my_secret_key);
         let peer_secret_key = StaticSecret::from(my_sec);
-        let peer_public_key = my_public_key.clone();
+        let peer_public_key = my_public_key;
 
         WgConfig {
             my_secret_key,
@@ -186,7 +189,7 @@ impl WgPeerData {
         recv_buf: &[u8],
     ) {
         let mut send_buf = vec![0u8; MAX_PACKET];
-        let data = &recv_buf[..];
+        let data = recv_buf;
         let decapsulate_result = {
             let mut peer = self.tunn.lock().await;
             peer.decapsulate(None, data, &mut send_buf)
@@ -325,9 +328,9 @@ impl WgPeerData {
 
     fn remove_ip_header<'a>(&self, packet: &'a [u8], is_v4: bool) -> &'a [u8] {
         if is_v4 {
-            return &packet[20..];
+            &packet[20..]
         } else {
-            return &packet[40..];
+            &packet[40..]
         }
     }
 }
@@ -351,7 +354,7 @@ impl WgPeer {
         WgPeer {
             tunn: Some(Mutex::new(Tunn::new(
                 config.my_secret_key.clone(),
-                config.peer_public_key.clone(),
+                config.peer_public_key,
                 None,
                 None,
                 rand::thread_rng().next_u32(),
@@ -491,12 +494,13 @@ impl WgTunnelListener {
     ) {
         let mut tasks = JoinSet::new();
 
-        let peer_map_clone = peer_map.clone();
+        let peer_map_clone: Arc<DashMap<SocketAddr, Arc<WgPeer>>> = peer_map.clone();
         tasks.spawn(async move {
             loop {
                 peer_map_clone.retain(|_, peer| {
                     peer.access_time.load().elapsed().as_secs() < 61 && !peer.stopped()
                 });
+                shrink_dashmap(&peer_map_clone, None);
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         });
@@ -513,7 +517,7 @@ impl WgTunnelListener {
 
             if !peer_map.contains_key(&addr) {
                 tracing::info!("New peer: {}", addr);
-                let mut wg = WgPeer::new(socket.clone(), config.clone(), addr.clone());
+                let mut wg = WgPeer::new(socket.clone(), config.clone(), addr);
                 let (stream, sink) = wg.start_and_get_tunnel().split();
                 let tunnel = Box::new(TunnelWrapper::new(
                     stream,
@@ -579,7 +583,7 @@ impl TunnelListener for WgTunnelListener {
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        while let Some(tunnel) = self.conn_recv.recv().await {
+        if let Some(tunnel) = self.conn_recv.recv().await {
             tracing::info!(?tunnel, "Accepted tunnel");
             return Ok(tunnel);
         }
@@ -629,7 +633,10 @@ impl WgTunnelConnector {
         addr: SocketAddr,
     ) -> Result<Box<dyn super::Tunnel>, super::TunnelError> {
         tracing::warn!("wg connect: {:?}", addr);
-        let local_addr = udp.local_addr().unwrap().to_string();
+        let local_addr = udp
+            .local_addr()
+            .with_context(|| "Failed to get local addr")?
+            .to_string();
 
         let mut wg_peer = WgPeer::new(Arc::new(udp), config.clone(), addr);
         let udp = wg_peer.udp_socket();
@@ -781,7 +788,7 @@ pub mod tests {
             my_secret_key: my_secret_key.clone(),
             my_public_key,
             peer_secret_key: their_secret_key.clone(),
-            peer_public_key: their_public_key.clone(),
+            peer_public_key: their_public_key,
             wg_type: WgType::InternalUse,
         };
 

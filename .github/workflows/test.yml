@@ -28,7 +28,7 @@ jobs:
           # All of these options are optional, so you can remove them if you are happy with the defaults
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
   test:
     runs-on: ubuntu-22.04
     needs: pre_job
@@ -88,6 +88,24 @@ jobs:
             ~/.cargo
             ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install GUI dependencies (Used by clippy)
+        run: |
+          bash ./.github/workflows/install_gui_dep.sh
+          bash ./.github/workflows/install_rust.sh
+          rustup component add rustfmt
+          rustup component add clippy
+
+      - name: Check formatting
+        if: ${{ !cancelled() }}
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        if: ${{ !cancelled() }}
+        # NOTE: tauri need `dist` dir in build.rs
+        run: |
+          mkdir -p easytier-gui/dist
+          cargo clippy --all-targets --all-features --all -- -D warnings
 
       - name: Run tests
         run: |

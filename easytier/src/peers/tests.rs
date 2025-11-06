@@ -65,7 +65,7 @@ pub async fn wait_route_appear_with_cost(
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    return Err(Error::NotFound);
+    Err(Error::NotFound)
 }
 
 pub async fn wait_route_appear(

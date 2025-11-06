@@ -9,8 +9,8 @@ use crate::{common::scoped_task::ScopedTask, proto::common::TunnelInfo};
 
 use super::{packet_def::ZCPacket, Tunnel, TunnelError, ZCPacketSink, ZCPacketStream};
 
-// use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
-use tachyonix::{channel, Receiver, Sender, TrySendError};
+use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
+// use tachyonix::{channel, Receiver, Sender, TrySendError};
 
 use futures::SinkExt;
 
@@ -86,12 +86,9 @@ impl<T: Tunnel> MpscTunnel<T> {
         sink.feed(initial_item).await?;
 
         while let Ok(item) = rx.try_recv() {
-            match sink.feed(item).await {
-                Err(e) => {
-                    tracing::error!(?e, "feed error");
-                    return Err(e);
-                }
-                Ok(_) => {}
+            if let Err(e) = sink.feed(item).await {
+                tracing::error!(?e, "feed error");
+                return Err(e);
             }
         }
 

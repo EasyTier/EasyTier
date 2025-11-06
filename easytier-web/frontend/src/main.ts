@@ -4,7 +4,7 @@ import './style.css'
 import App from './App.vue'
 import EasytierFrontendLib from 'easytier-frontend-lib'
 import PrimeVue from 'primevue/config'
-import Aura from '@primevue/themes/aura'
+import Aura from '@primeuix/themes/aura';
 import ConfirmationService from 'primevue/confirmationservice';
 import { I18nUtils } from 'easytier-frontend-lib'
 

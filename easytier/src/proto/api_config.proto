@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+import "common.proto";
+import "acl.proto";
+import "api_instance.proto";
+import "api_manage.proto";
+
+package api.config;
+
+enum ConfigPatchAction {
+  ADD = 0;
+  REMOVE = 1;
+  CLEAR = 2;
+}
+
+message InstanceConfigPatch {
+  optional string hostname = 1;
+  optional common.Ipv4Inet ipv4 = 2;
+  optional common.Ipv6Inet ipv6 = 3;
+  repeated PortForwardPatch port_forwards = 4;
+  optional AclPatch acl = 5;
+  repeated ProxyNetworkPatch proxy_networks = 6;
+  repeated RoutePatch routes = 7;
+  repeated ExitNodePatch exit_nodes = 8;
+  repeated UrlPatch mapped_listeners = 9;
+  repeated UrlPatch connectors = 10;
+}
+
+message PortForwardPatch {
+  ConfigPatchAction action = 1;
+  common.PortForwardConfigPb cfg = 2;
+}
+
+message StringPatch {
+  ConfigPatchAction action = 1;
+  string value = 2;
+}
+
+message UrlPatch {
+  ConfigPatchAction action = 1;
+  common.Url url = 2;
+}
+
+message AclPatch {
+  optional acl.Acl acl = 1;
+  repeated StringPatch tcp_whitelist = 2;
+  repeated StringPatch udp_whitelist = 3;
+}
+
+message ProxyNetworkPatch {
+  ConfigPatchAction action = 1;
+  common.Ipv4Inet cidr = 2;
+  optional common.Ipv4Inet mapped_cidr = 3;
+}
+
+message RoutePatch {
+  ConfigPatchAction action = 1;
+  common.Ipv4Inet cidr = 2;
+}
+
+message ExitNodePatch {
+  ConfigPatchAction action = 1;
+  common.IpAddr node = 2;
+}
+
+message PatchConfigRequest {
+  InstanceConfigPatch patch = 1;
+  api.instance.InstanceIdentifier instance = 2;
+}
+
+message PatchConfigResponse {}
+
+message GetConfigRequest {
+  api.instance.InstanceIdentifier instance = 1;
+}
+
+message GetConfigResponse {
+  api.manage.NetworkConfig config = 1;
+}
+
+service ConfigRpc {
+  rpc PatchConfig(PatchConfigRequest) returns (PatchConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+}

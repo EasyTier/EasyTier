@@ -16,6 +16,7 @@ use crate::{
         dns::socket_addrs, error::Error, global_ctx::ArcGlobalCtx, stun::StunInfoCollectorTrait,
         PeerId,
     },
+    connector::udp_hole_punch::handle_rpc_result,
     peers::{
         peer_conn::PeerConnId,
         peer_manager::PeerManager,
@@ -34,7 +35,7 @@ use crate::{
     use_global_var,
 };
 
-use crate::proto::cli::PeerConnInfo;
+use crate::proto::api::instance::PeerConnInfo;
 use anyhow::Context;
 use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
@@ -91,6 +92,7 @@ struct DirectConnectorManagerData {
     global_ctx: ArcGlobalCtx,
     peer_manager: Arc<PeerManager>,
     dst_listener_blacklist: timedmap::TimedMap<DstListenerUrlBlackListItem, ()>,
+    peer_black_list: timedmap::TimedMap<PeerId, ()>,
 }
 
 impl DirectConnectorManagerData {
@@ -99,6 +101,7 @@ impl DirectConnectorManagerData {
             global_ctx,
             peer_manager,
             dst_listener_blacklist: timedmap::TimedMap::new(),
+            peer_black_list: timedmap::TimedMap::new(),
         }
     }
 
@@ -177,16 +180,13 @@ impl DirectConnectorManagerData {
         // ask remote to send v6 hole punch packet
         // and no matter what the result is, continue to connect
         let _ = self
-            .remote_send_v6_hole_punch_packet(dst_peer_id, &local_socket, &remote_url)
+            .remote_send_v6_hole_punch_packet(dst_peer_id, &local_socket, remote_url)
             .await;
 
         let udp_connector = UdpTunnelConnector::new(remote_url.clone());
-        let remote_addr = super::check_scheme_and_get_socket_addr::<SocketAddr>(
-            &remote_url,
-            "udp",
-            IpVersion::V6,
-        )
-        .await?;
+        let remote_addr =
+            super::check_scheme_and_get_socket_addr::<SocketAddr>(remote_url, "udp", IpVersion::V6)
+                .await?;
         let ret = udp_connector
             .try_connect_with_socket(local_socket, remote_addr)
             .await?;
@@ -230,8 +230,8 @@ impl DirectConnectorManagerData {
         dst_peer_id: PeerId,
         addr: String,
     ) -> Result<(), Error> {
-        let mut rand_gen = rand::rngs::OsRng::default();
-        let backoff_ms = vec![1000, 2000, 4000];
+        let mut rand_gen = rand::rngs::OsRng;
+        let backoff_ms = [1000, 2000, 4000];
         let mut backoff_idx = 0;
 
         tracing::debug!(?dst_peer_id, ?addr, "try_connect_to_ip start");
@@ -240,10 +240,7 @@ impl DirectConnectorManagerData {
 
         if self
             .dst_listener_blacklist
-            .contains(&DstListenerUrlBlackListItem(
-                dst_peer_id.clone(),
-                addr.clone(),
-            ))
+            .contains(&DstListenerUrlBlackListItem(dst_peer_id, addr.clone()))
         {
             return Err(Error::UrlInBlacklist);
         }
@@ -278,7 +275,7 @@ impl DirectConnectorManagerData {
                 continue;
             } else {
                 self.dst_listener_blacklist.insert(
-                    DstListenerUrlBlackListItem(dst_peer_id.clone(), addr),
+                    DstListenerUrlBlackListItem(dst_peer_id, addr),
                     (),
                     std::time::Duration::from_secs(DIRECT_CONNECTOR_BLACKLIST_TIMEOUT_SEC),
                 );
@@ -312,7 +309,7 @@ impl DirectConnectorManagerData {
                             if addr.set_host(Some(ip.to_string().as_str())).is_ok() {
                                 tasks.spawn(Self::try_connect_to_ip(
                                     self.clone(),
-                                    dst_peer_id.clone(),
+                                    dst_peer_id,
                                     addr.to_string(),
                                 ));
                             } else {
@@ -327,7 +324,7 @@ impl DirectConnectorManagerData {
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
                     tasks.spawn(Self::try_connect_to_ip(
                         self.clone(),
-                        dst_peer_id.clone(),
+                        dst_peer_id,
                         listener.to_string(),
                     ));
                 }
@@ -352,13 +349,10 @@ impl DirectConnectorManagerData {
                         .iter()
                         .for_each(|ip| {
                             let mut addr = (*listener).clone();
-                            if addr
-                                .set_host(Some(format!("[{}]", ip.to_string()).as_str()))
-                                .is_ok()
-                            {
+                            if addr.set_host(Some(format!("[{}]", ip).as_str())).is_ok() {
                                 tasks.spawn(Self::try_connect_to_ip(
                                     self.clone(),
-                                    dst_peer_id.clone(),
+                                    dst_peer_id,
                                     addr.to_string(),
                                 ));
                             } else {
@@ -373,7 +367,7 @@ impl DirectConnectorManagerData {
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
                     tasks.spawn(Self::try_connect_to_ip(
                         self.clone(),
-                        dst_peer_id.clone(),
+                        dst_peer_id,
                         listener.to_string(),
                     ));
                 }
@@ -433,13 +427,8 @@ impl DirectConnectorManagerData {
                 }
 
                 tracing::debug!("try direct connect to peer with listener: {}", listener);
-                self.spawn_direct_connect_task(
-                    dst_peer_id.clone(),
-                    &ip_list,
-                    &listener,
-                    &mut tasks,
-                )
-                .await;
+                self.spawn_direct_connect_task(dst_peer_id, &ip_list, listener, &mut tasks)
+                    .await;
 
                 listener_list.push(listener.clone().to_string());
                 available_listeners.pop();
@@ -473,7 +462,17 @@ impl DirectConnectorManagerData {
     ) -> Result<(), Error> {
         let mut backoff =
             udp_hole_punch::BackOff::new(vec![1000, 2000, 2000, 5000, 5000, 10000, 30000, 60000]);
+        let mut attempt = 0;
         loop {
+            if self.peer_black_list.contains(&dst_peer_id) {
+                return Err(anyhow::anyhow!("peer {} is blacklisted", dst_peer_id).into());
+            }
+
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(backoff.next_backoff())).await;
+            }
+            attempt += 1;
+
             let peer_manager = self.peer_manager.clone();
             tracing::debug!("try direct connect to peer: {}", dst_peer_id);
 
@@ -486,17 +485,11 @@ impl DirectConnectorManagerData {
                 self.global_ctx.get_network_name(),
             );
 
-            let ip_list = match rpc_stub
+            let ip_list = rpc_stub
                 .get_ip_list(BaseController::default(), GetIpListRequest {})
-                .await
-                .with_context(|| format!("get ip list from peer {}", dst_peer_id))
-            {
-                Ok(ip_list) => ip_list,
-                Err(e) => {
-                    tracing::error!(?e, "failed to get ip list from peer");
-                    continue;
-                }
-            };
+                .await;
+            let ip_list = handle_rpc_result(ip_list, dst_peer_id, &self.peer_black_list)
+                .with_context(|| format!("get ip list from peer {}", dst_peer_id))?;
 
             tracing::info!(ip_list = ?ip_list, dst_peer_id = ?dst_peer_id, "got ip list");
 
@@ -512,8 +505,6 @@ impl DirectConnectorManagerData {
                 );
                 return Ok(());
             }
-
-            tokio::time::sleep(Duration::from_millis(backoff.next_backoff())).await;
         }
     }
 }
@@ -547,13 +538,16 @@ impl PeerTaskLauncher for DirectConnectorLauncher {
     }
 
     async fn collect_peers_need_task(&self, data: &Self::Data) -> Vec<Self::CollectPeerItem> {
+        data.peer_black_list.cleanup();
         let my_peer_id = data.peer_manager.my_peer_id();
         data.peer_manager
             .list_peers()
             .await
             .into_iter()
             .filter(|peer_id| {
-                *peer_id != my_peer_id && !data.peer_manager.has_directly_connected_conn(*peer_id)
+                *peer_id != my_peer_id
+                    && !data.peer_manager.has_directly_connected_conn(*peer_id)
+                    && !data.peer_black_list.contains(peer_id)
             })
             .collect()
     }

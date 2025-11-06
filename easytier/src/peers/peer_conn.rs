@@ -8,6 +8,7 @@ use std::{
     },
 };
 
+use arc_swap::ArcSwapOption;
 use futures::{StreamExt, TryFutureExt};
 
 use prost::Message;
@@ -27,10 +28,11 @@ use crate::{
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
+        stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
     proto::{
-        cli::{PeerConnInfo, PeerConnStats},
+        api::instance::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
         peer_rpc::HandshakeRequest,
     },
@@ -85,6 +87,13 @@ impl PeerConnCloseNotify {
     }
 }
 
+struct PeerConnCounter {
+    traffic_tx_bytes: CounterHandle,
+    traffic_rx_bytes: CounterHandle,
+    traffic_tx_packets: CounterHandle,
+    traffic_rx_packets: CounterHandle,
+}
+
 pub struct PeerConn {
     conn_id: PeerConnId,
 
@@ -93,7 +102,7 @@ pub struct PeerConn {
 
     tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
-    recv: Arc<Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>>,
+    recv: Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>,
     tunnel_info: Option<TunnelInfo>,
 
     tasks: JoinSet<Result<(), TunnelError>>,
@@ -111,6 +120,8 @@ pub struct PeerConn {
     latency_stats: Arc<WindowLatency>,
     throughput: Arc<Throughput>,
     loss_rate_stats: Arc<AtomicU32>,
+
+    counters: ArcSwapOption<PeerConnCounter>,
 }
 
 impl Debug for PeerConn {
@@ -138,7 +149,7 @@ impl PeerConn {
         let conn_id = PeerConnId::new_v4();
 
         PeerConn {
-            conn_id: conn_id.clone(),
+            conn_id,
 
             my_peer_id,
             global_ctx,
@@ -147,7 +158,7 @@ impl PeerConn {
                 mpsc_tunnel.close()
             })))),
             sink,
-            recv: Arc::new(Mutex::new(Some(recv))),
+            recv: Mutex::new(Some(recv)),
             tunnel_info,
 
             tasks: JoinSet::new(),
@@ -164,6 +175,8 @@ impl PeerConn {
             latency_stats: Arc::new(WindowLatency::new(15)),
             throughput,
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
+
+            counters: ArcSwapOption::new(None),
         }
     }
 
@@ -225,7 +238,7 @@ impl PeerConn {
             ));
         }
 
-        return Ok(rsp);
+        Ok(rsp)
     }
 
     async fn wait_handshake_loop(&mut self) -> Result<HandshakeRequest, Error> {
@@ -362,6 +375,22 @@ impl PeerConn {
         let ctrl_sender = self.ctrl_resp_sender.clone();
         let conn_info_for_instrument = self.get_conn_info();
 
+        let stats_mgr = self.global_ctx.stats_manager();
+        let label_set = LabelSet::new().with_label_type(LabelType::NetworkName(
+            conn_info_for_instrument.network_name.clone(),
+        ));
+        let counters = PeerConnCounter {
+            traffic_tx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesTx, label_set.clone()),
+            traffic_rx_bytes: stats_mgr.get_counter(MetricName::TrafficBytesRx, label_set.clone()),
+            traffic_tx_packets: stats_mgr
+                .get_counter(MetricName::TrafficPacketsTx, label_set.clone()),
+            traffic_rx_packets: stats_mgr
+                .get_counter(MetricName::TrafficPacketsRx, label_set.clone()),
+        };
+        self.counters.store(Some(Arc::new(counters)));
+
+        let counters = self.counters.load_full().unwrap();
+
         self.tasks.spawn(
             async move {
                 tracing::info!("start recving peer conn packet");
@@ -374,6 +403,10 @@ impl PeerConn {
                     }
 
                     let mut zc_packet = ret.unwrap();
+
+                    counters.traffic_rx_bytes.add(zc_packet.buf_len() as u64);
+                    counters.traffic_rx_packets.inc();
+
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
                         tracing::error!(
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
@@ -391,10 +424,8 @@ impl PeerConn {
                         if let Err(e) = ctrl_sender.send(zc_packet) {
                             tracing::error!(?e, "peer conn send ctrl resp error");
                         }
-                    } else {
-                        if sender.send(zc_packet).await.is_err() {
-                            break;
-                        }
+                    } else if sender.send(zc_packet).await.is_err() {
+                        break;
                     }
                 }
 
@@ -436,6 +467,11 @@ impl PeerConn {
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
+        let counters = self.counters.load();
+        if let Some(ref counters) = *counters {
+            counters.traffic_tx_bytes.add(msg.buf_len() as u64);
+            counters.traffic_tx_packets.inc();
+        }
         Ok(self.sink.send(msg).await?)
     }
 
@@ -612,7 +648,10 @@ mod tests {
         let throughput = c_peer.throughput.clone();
         let _t = ScopedTask::from(tokio::spawn(async move {
             // if not drop both, we mock some rx traffic for client peer to test pinger
-            while !drop_both {
+            if drop_both {
+                return;
+            }
+            loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
                 throughput.record_rx_bytes(3);
             }

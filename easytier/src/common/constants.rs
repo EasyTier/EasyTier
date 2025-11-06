@@ -8,14 +8,14 @@ macro_rules! define_global_var {
 #[macro_export]
 macro_rules! use_global_var {
     ($name:ident) => {
-        crate::common::constants::$name.lock().unwrap().to_owned()
+        $crate::common::constants::$name.lock().unwrap().to_owned()
     };
 }
 
 #[macro_export]
 macro_rules! set_global_var {
     ($name:ident, $val:expr) => {
-        *crate::common::constants::$name.lock().unwrap() = $val
+        *$crate::common::constants::$name.lock().unwrap() = $val
     };
 }
 

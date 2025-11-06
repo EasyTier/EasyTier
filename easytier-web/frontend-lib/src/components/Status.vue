@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type NodeInfo, type PeerRoutePair } from '../types/network'
+import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';
-import { DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import { Badge, DataTable, Column, Tag, Chip, Button, Dialog, ScrollPanel, Timeline, Divider, Card, } from 'primevue';
+import NetworkChart from './NetworkChart.vue';
 
 const props = defineProps<{
   curNetworkInst: NetworkInstance | null,
@@ -21,6 +22,7 @@ const peerRouteInfos = computed(() => {
         ipv4_addr: my_node_info?.virtual_ipv4,
         hostname: my_node_info?.hostname,
         version: my_node_info?.version,
+        stun_info: my_node_info?.stun_info
       },
     }, ...(props.curNetworkInst.detail?.peer_route_pairs || [])]
   }
@@ -106,8 +108,30 @@ function ipFormat(info: PeerRoutePair) {
   return ip ? `${IPv4.fromNumber(ip.address.addr)}/${ip.network_length}` : ''
 }
 
+function oneTunnelProto(tunnel?: TunnelInfo): string {
+  if (!tunnel)
+    return ''
+
+  const local_addr = tunnel.local_addr
+  let isIPv6 = false;
+  if (local_addr?.url) {
+    try {
+      const urlObj = new URL(local_addr.url, 'http://dummy');
+      // IPv6 addresses in URLs are enclosed in brackets and contain ':'
+      isIPv6 = /^\[.*:.*\]$/.test(urlObj.hostname);
+    } catch (e) {
+      // fallback to original check if URL parsing fails
+      isIPv6 = local_addr.url.indexOf('[') >= 0;
+    }
+  }
+  if (isIPv6)
+    return `${tunnel.tunnel_type}6`
+  else
+    return tunnel.tunnel_type
+}
+
 function tunnelProto(info: PeerRoutePair) {
-  return [...new Set(info.peer?.conns.map(c => c.tunnel?.tunnel_type))].join(',')
+  return [...new Set(info.peer?.conns.map(c => oneTunnelProto(c.tunnel)))].join(',')
 }
 
 const myNodeInfo = computed(() => {
@@ -120,6 +144,34 @@ const myNodeInfo = computed(() => {
 interface Chip {
   label: string
   icon: string
+}
+
+// udp nat type
+enum NatType {
+  // has NAT; but own a single public IP, port is not changed
+  Unknown = 0,
+  OpenInternet = 1,
+  NoPAT = 2,
+  FullCone = 3,
+  Restricted = 4,
+  PortRestricted = 5,
+  Symmetric = 6,
+  SymUdpFirewall = 7,
+  SymmetricEasyInc = 8,
+  SymmetricEasyDec = 9,
+};
+
+const udpNatTypeStrMap = {
+  [NatType.Unknown]: 'Unknown',
+  [NatType.OpenInternet]: 'Open Internet',
+  [NatType.NoPAT]: 'No PAT',
+  [NatType.FullCone]: 'Full Cone',
+  [NatType.Restricted]: 'Restricted',
+  [NatType.PortRestricted]: 'Port Restricted',
+  [NatType.Symmetric]: 'Symmetric',
+  [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
+  [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
+  [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
 }
 
 const myNodeInfoChips = computed(() => {
@@ -190,35 +242,8 @@ const myNodeInfoChips = computed(() => {
     } as Chip)
   }
 
-  // udp nat type
-  enum NatType {
-    // has NAT; but own a single public IP, port is not changed
-    Unknown = 0,
-    OpenInternet = 1,
-    NoPAT = 2,
-    FullCone = 3,
-    Restricted = 4,
-    PortRestricted = 5,
-    Symmetric = 6,
-    SymUdpFirewall = 7,
-    SymmetricEasyInc = 8,
-    SymmetricEasyDec = 9,
-  };
   const udpNatType: NatType = my_node_info.stun_info?.udp_nat_type
   if (udpNatType !== undefined) {
-    const udpNatTypeStrMap = {
-      [NatType.Unknown]: 'Unknown',
-      [NatType.OpenInternet]: 'Open Internet',
-      [NatType.NoPAT]: 'No PAT',
-      [NatType.FullCone]: 'Full Cone',
-      [NatType.Restricted]: 'Restricted',
-      [NatType.PortRestricted]: 'Port Restricted',
-      [NatType.Symmetric]: 'Symmetric',
-      [NatType.SymUdpFirewall]: 'Symmetric UDP Firewall',
-      [NatType.SymmetricEasyInc]: 'Symmetric Easy Inc',
-      [NatType.SymmetricEasyDec]: 'Symmetric Easy Dec',
-    }
-
     chips.push({
       label: `UDP NAT Type: ${udpNatTypeStrMap[udpNatType]}`,
       icon: '',
@@ -249,6 +274,14 @@ function rxGlobalSum() {
   return globalSumCommon('stats.rx_bytes')
 }
 
+function natType(info: PeerRoutePair): string {
+  const udpNatType = info.route?.stun_info?.udp_nat_type;
+  if (udpNatType !== undefined)
+    return udpNatTypeStrMap[udpNatType as NatType]
+
+  return ''
+}
+
 const peerCount = computed(() => {
   if (!peerRouteInfos.value)
     return 0
@@ -263,6 +296,10 @@ let prevTxSum = 0
 let prevRxSum = 0
 const txRate = ref('0')
 const rxRate = ref('0')
+
+// 控制节点详细信息chips的显示/隐藏
+const showNodeDetails = ref(false)
+
 onMounted(() => {
   rateIntervalId = window.setInterval(() => {
     const curTxSum = txGlobalSum()
@@ -343,36 +380,23 @@ function showEventLogs() {
         </template>
         <template #content>
           <div class="flex w-full flex-col gap-y-5">
-            <div class="m-0 flex flex-row justify-center gap-x-5">
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid green">
-                <div class="font-bold">
-                  {{ t('peer_count') }}
-                </div>
-                <div class="text-5xl mt-1">
-                  {{ peerCount }}
-                </div>
-              </div>
-
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid purple">
-                <div class="font-bold">
-                  {{ t('upload') }}
-                </div>
-                <div class="text-xl mt-2">
-                  {{ txRate }}/s
-                </div>
-              </div>
-
-              <div class="rounded-full w-32 h-32 flex flex-col items-center pt-6" style="border: 1px solid fuchsia">
-                <div class="font-bold">
-                  {{ t('download') }}
-                </div>
-                <div class="text-xl mt-2">
-                  {{ rxRate }}/s
-                </div>
+            <div class="gap-4">
+              <!-- 网络流量图表 -->
+              <div class="w-full">
+                <NetworkChart :upload-rate="txRate" :download-rate="rxRate" />
               </div>
             </div>
 
-            <div class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
+            <!-- 展开/收起节点详细信息的divider按钮 -->
+            <div class="w-full">
+              <Button @click="showNodeDetails = !showNodeDetails"
+                :icon="showNodeDetails ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"
+                :label="showNodeDetails ? t('hide_node_details') : t('show_node_details')" severity="secondary" outlined
+                class="w-full justify-center" size="small" />
+            </div>
+
+            <!-- 节点详细信息chips，根据showNodeDetails状态显示/隐藏 -->
+            <div v-show="showNodeDetails" class="flex flex-row items-center flex-wrap w-full max-h-40 overflow-scroll">
               <Chip v-for="(chip, i) in myNodeInfoChips" :key="i" :label="chip.label" :icon="chip.icon"
                 class="mr-2 mt-2 text-sm" />
             </div>
@@ -389,7 +413,15 @@ function showEventLogs() {
 
       <Card>
         <template #title>
-          {{ t('peer_info') }}
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2">
+              <span>{{ t('peer_info') }}</span>
+            </div>
+            <div class="flex items-center gap-1">
+              <Badge :value="peerCount" severity="info"
+                class="text-lg font-semibold px-2 py-1 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" />
+            </div>
+          </div>
         </template>
         <template #content>
           <DataTable :value="peerRouteInfos" column-resize-mode="fit" table-class="w-full">
@@ -417,6 +449,7 @@ function showEventLogs() {
             <Column :field="txBytes" :header="t('upload_bytes')" />
             <Column :field="rxBytes" :header="t('download_bytes')" />
             <Column :field="lossRate" :header="t('loss_rate')" />
+            <Column :field="natType" :header="t('nat_type')" />
             <Column :header="t('status.version')">
               <template #body="slotProps">
                 <span>{{ version(slotProps.data) }}</span>
@@ -432,5 +465,9 @@ function showEventLogs() {
 <style lang="postcss" scoped>
 .p-timeline :deep(.p-timeline-event-opposite) {
   @apply flex-none;
+}
+
+:deep(.p-datatable .p-datatable-column-title) {
+  white-space: nowrap;
 }
 </style>

@@ -25,6 +25,8 @@ message RoutePeerInfo {
 
   optional uint32 quic_port = 14;
   optional common.Ipv6Inet ipv6_addr = 15;
+
+  repeated PeerGroupInfo groups = 16;
 }
 
 message PeerIdVersion {
@@ -35,6 +37,14 @@ message PeerIdVersion {
 message RouteConnBitmap {
   repeated PeerIdVersion peer_ids = 1;
   bytes bitmap = 2;
+}
+
+message RouteConnPeerList {
+  message PeerConnInfo {
+    PeerIdVersion peer_id = 1;
+    repeated uint32 connected_peer_ids = 2;
+  }
+  repeated PeerConnInfo peer_conn_infos = 1;
 }
 
 message RoutePeerInfos { repeated RoutePeerInfo items = 1; }
@@ -60,12 +70,30 @@ message RouteForeignNetworkInfos {
   repeated Info infos = 1;
 }
 
+message RouteForeignNetworkSummary {
+  message Info {
+    uint32 peer_id = 1;
+    uint32 network_count = 2;
+    uint32 peer_count = 3;
+  }
+
+  map<uint32, Info> info_map = 1;
+}
+
+message PeerGroupInfo {
+  string group_name = 1;
+  bytes group_proof = 2;
+}
+
 message SyncRouteInfoRequest {
   uint32 my_peer_id = 1;
   uint64 my_session_id = 2;
   bool is_initiator = 3;
   RoutePeerInfos peer_infos = 4;
-  RouteConnBitmap conn_bitmap = 5;
+  oneof conn_info {
+    RouteConnBitmap conn_bitmap = 5;
+    RouteConnPeerList conn_peer_list = 7;
+  }
   RouteForeignNetworkInfos foreign_network_infos = 6;
 }
 

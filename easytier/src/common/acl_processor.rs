@@ -1,9 +1,9 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     str::FromStr as _,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::common::{config::ConfigLoader, global_ctx::ArcGlobalCtx, token_bucket::TokenBucket};
@@ -26,6 +26,12 @@ impl RateLimitKey {
             rule_priority,
         }
     }
+}
+
+/// Value wrapper for rate limiters with last update timestamp
+pub struct RateLimitValue {
+    pub token_bucket: Arc<TokenBucket>,
+    pub last_update: Instant,
 }
 
 // Performance-optimized rule identifier to avoid string allocations
@@ -61,6 +67,8 @@ pub struct FastLookupRule {
     pub dst_ip_ranges: Vec<cidr::IpCidr>,
     pub src_port_ranges: Vec<(u16, u16)>,
     pub dst_port_ranges: Vec<(u16, u16)>,
+    pub source_groups: HashSet<String>,
+    pub destination_groups: HashSet<String>,
     pub action: Action,
     pub enabled: bool,
     pub stateful: bool,
@@ -78,6 +86,8 @@ pub struct AclCacheKey {
     pub dst_ip: IpAddr,
     pub src_port: u16,
     pub dst_port: u16,
+    pub src_groups: Arc<Vec<String>>,
+    pub dst_groups: Arc<Vec<String>>,
 }
 
 impl AclCacheKey {
@@ -89,6 +99,8 @@ impl AclCacheKey {
             dst_ip: packet_info.dst_ip,
             src_port: packet_info.src_port.unwrap_or(0),
             dst_port: packet_info.dst_port.unwrap_or(0),
+            src_groups: packet_info.src_groups.clone(),
+            dst_groups: packet_info.dst_groups.clone(),
         }
     }
 }
@@ -98,7 +110,7 @@ impl AclCacheKey {
 pub struct AclCacheEntry {
     pub action: Action,
     pub matched_rule: RuleId,
-    pub last_access: u64,
+    pub last_access: std::time::Instant,
     // New fields to track rule characteristics for proper cache behavior
     pub conn_track_key: Option<String>,
     pub rate_limit_keys: Vec<RateLimitKey>,
@@ -116,6 +128,8 @@ pub struct PacketInfo {
     pub dst_port: Option<u16>,
     pub protocol: Protocol,
     pub packet_size: usize,
+    pub src_groups: Arc<Vec<String>>,
+    pub dst_groups: Arc<Vec<String>>,
 }
 
 // ACL processing result
@@ -178,6 +192,12 @@ impl AclLogContext {
     }
 }
 
+pub type SharedState = (
+    Arc<DashMap<String, ConnTrackEntry>>,
+    Arc<DashMap<RateLimitKey, RateLimitValue>>,
+    Arc<DashMap<AclStatKey, u64>>,
+);
+
 // High-performance ACL processor - No more internal locks!
 pub struct AclProcessor {
     // Immutable rule vectors - no locks needed since they're never modified after creation
@@ -195,7 +215,7 @@ pub struct AclProcessor {
     conn_track: Arc<DashMap<String, ConnTrackEntry>>,
 
     // Rate limiting buckets per rule using TokenBucket with optimized keys
-    rate_limiters: Arc<DashMap<RateLimitKey, Arc<TokenBucket>>>,
+    rate_limiters: Arc<DashMap<RateLimitKey, RateLimitValue>>,
 
     // Rule lookup cache with LRU cleanup
     rule_cache: Arc<DashMap<AclCacheKey, AclCacheEntry>>,
@@ -220,7 +240,7 @@ impl AclProcessor {
     pub fn new_with_shared_state(
         acl_config: Acl,
         conn_track: Option<Arc<DashMap<String, ConnTrackEntry>>>,
-        rate_limiters: Option<Arc<DashMap<RateLimitKey, Arc<TokenBucket>>>>,
+        rate_limiters: Option<Arc<DashMap<RateLimitKey, RateLimitValue>>>,
         stats: Option<Arc<DashMap<AclStatKey, u64>>>,
     ) -> Self {
         let (inbound_rules, outbound_rules, forward_rules) = Self::build_rules(&acl_config);
@@ -247,7 +267,7 @@ impl AclProcessor {
             conn_track: conn_track.unwrap_or_else(|| Arc::new(DashMap::new())),
             rate_limiters: rate_limiters.unwrap_or_else(|| Arc::new(DashMap::new())),
             rule_cache: Arc::new(DashMap::new()), // Always start with fresh cache
-            cache_max_size: 10000,                // Limit cache to 10k entries
+            cache_max_size: 1024,                 // Limit cache to 1k entries
             cache_cleanup_interval: Duration::from_secs(20), // Cleanup every 5 minutes
             stats: stats.unwrap_or_else(|| Arc::new(DashMap::new())),
             tasks,
@@ -321,7 +341,7 @@ impl AclProcessor {
                     .rules
                     .iter()
                     .filter(|rule| rule.enabled)
-                    .map(|rule| Self::convert_to_fast_lookup_rule(rule))
+                    .map(Self::convert_to_fast_lookup_rule)
                     .collect::<Vec<_>>();
 
                 // Sort by priority (higher priority first)
@@ -348,6 +368,7 @@ impl AclProcessor {
 
     /// Start periodic cache cleanup task
     fn start_cache_cleanup_task(&mut self) {
+        let rate_limiters = self.rate_limiters.clone();
         let rule_cache = self.rule_cache.clone();
         let cache_max_size = self.cache_max_size;
         let cleanup_interval = self.cache_cleanup_interval;
@@ -357,6 +378,10 @@ impl AclProcessor {
             loop {
                 interval.tick().await;
                 Self::cleanup_cache(&rule_cache, cache_max_size);
+                rule_cache.shrink_to_fit();
+
+                rate_limiters.retain(|_, v| v.last_update.elapsed() < cleanup_interval);
+                rate_limiters.shrink_to_fit();
             }
         });
 
@@ -366,19 +391,26 @@ impl AclProcessor {
             loop {
                 interval.tick().await;
                 Self::cleanup_expired_connections(conn_track.clone(), 60);
+                conn_track.shrink_to_fit();
             }
         });
     }
 
     /// Clean up cache using LRU strategy
     fn cleanup_cache(cache: &DashMap<AclCacheKey, AclCacheEntry>, max_size: usize) {
+        // remove cache not be used in last 15 second
+        let expired_timepoint = Instant::now()
+            .checked_sub(Duration::from_secs(15))
+            .unwrap_or(Instant::now());
+        cache.retain(|_, entry| entry.last_access > expired_timepoint);
+
         let current_size = cache.len();
         if current_size <= max_size {
             return;
         }
 
         // Remove oldest entries (LRU cleanup)
-        let mut entries: Vec<(AclCacheKey, u64)> = cache
+        let mut entries: Vec<(AclCacheKey, std::time::Instant)> = cache
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().last_access))
             .collect();
@@ -422,7 +454,7 @@ impl AclProcessor {
 
         self.inc_cache_entry_stats(cache_entry, packet_info);
 
-        return cache_entry.acl_result.clone().unwrap();
+        cache_entry.acl_result.clone().unwrap()
     }
 
     fn inc_cache_entry_stats(&self, cache_entry: &AclCacheEntry, packet_info: &PacketInfo) {
@@ -458,10 +490,7 @@ impl AclProcessor {
         // If cache hit and can skip checks, return cached result
         if let Some(mut cached) = self.rule_cache.get_mut(&cache_key) {
             // Update last access time for LRU
-            cached.last_access = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            cached.last_access = Instant::now();
 
             self.increment_stat(AclStatKey::CacheHits);
             return self.process_packet_with_cache_entry(packet_info, &cached);
@@ -485,10 +514,7 @@ impl AclProcessor {
         let mut cache_entry = AclCacheEntry {
             action: Action::Allow,
             matched_rule: RuleId::Default,
-            last_access: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            last_access: Instant::now(),
             conn_track_key: None,
             rate_limit_keys: vec![],
             chain_type,
@@ -539,7 +565,7 @@ impl AclProcessor {
                 cache_entry.rule_stats_vec.push(rule.rule_stats.clone());
                 cache_entry.matched_rule = RuleId::Priority(rule.priority);
                 cache_entry.acl_result = Some(AclResult {
-                    action: rule.action.clone(),
+                    action: rule.action,
                     matched_rule: Some(RuleId::Priority(rule.priority)),
                     should_log: false,
                     log_context: Some(AclLogContext::RuleMatch {
@@ -595,13 +621,7 @@ impl AclProcessor {
     }
 
     /// Get shared state for preserving across hot reloads
-    pub fn get_shared_state(
-        &self,
-    ) -> (
-        Arc<DashMap<String, ConnTrackEntry>>,
-        Arc<DashMap<RateLimitKey, Arc<TokenBucket>>>,
-        Arc<DashMap<AclStatKey, u64>>,
-    ) {
+    pub fn get_shared_state(&self) -> SharedState {
         (
             self.conn_track.clone(),
             self.rate_limiters.clone(),
@@ -684,6 +704,28 @@ impl AclProcessor {
             }
         }
 
+        // Source group check
+        if !rule.source_groups.is_empty() {
+            let matches = packet_info
+                .src_groups
+                .iter()
+                .any(|group| rule.source_groups.contains(group));
+            if !matches {
+                return false;
+            }
+        }
+
+        // Destination group check
+        if !rule.destination_groups.is_empty() {
+            let matches = packet_info
+                .dst_groups
+                .iter()
+                .any(|group| rule.destination_groups.contains(group));
+            if !matches {
+                return false;
+            }
+        }
+
         true
     }
 
@@ -698,9 +740,9 @@ impl AclProcessor {
     }
 
     /// Check connection state for stateful rules
-    fn check_connection_state(&self, conn_track_key: &String, packet_info: &PacketInfo) {
+    fn check_connection_state(&self, conn_track_key: &str, packet_info: &PacketInfo) {
         self.conn_track
-            .entry(conn_track_key.clone())
+            .entry(conn_track_key.to_string())
             .and_modify(|x| {
                 x.last_seen = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -744,19 +786,26 @@ impl AclProcessor {
             return true; // No rate limiting
         }
 
-        let bucket = self
+        let mut rate_limiter = self
             .rate_limiters
             .entry(rule_key.clone())
             .or_insert_with(|| {
                 if !allow_create {
                     panic!("Rate limit bucket not found");
                 }
-                TokenBucket::new(burst as u64, rate as u64, Duration::from_millis(10))
-            })
-            .clone();
+                RateLimitValue {
+                    token_bucket: TokenBucket::new(
+                        burst as u64,
+                        rate as u64,
+                        Duration::from_millis(10),
+                    ),
+                    last_update: Instant::now(),
+                }
+            });
 
         // Try to consume 1 token (1 packet)
-        bucket.try_consume(1)
+        rate_limiter.last_update = Instant::now();
+        rate_limiter.token_bucket.try_consume(1)
     }
 
     /// Convert proto Rule to FastLookupRule
@@ -764,13 +813,13 @@ impl AclProcessor {
         let src_ip_ranges = rule
             .source_ips
             .iter()
-            .filter_map(|ip_inet| Self::convert_ip_inet_to_cidr(ip_inet))
+            .filter_map(|x| Self::convert_ip_inet_to_cidr(x.as_str()))
             .collect();
 
         let dst_ip_ranges = rule
             .destination_ips
             .iter()
-            .filter_map(|ip_inet| Self::convert_ip_inet_to_cidr(ip_inet))
+            .filter_map(|x| Self::convert_ip_inet_to_cidr(x.as_str()))
             .collect();
 
         let src_port_ranges = rule
@@ -804,6 +853,8 @@ impl AclProcessor {
             dst_ip_ranges,
             src_port_ranges,
             dst_port_ranges,
+            source_groups: rule.source_groups.iter().cloned().collect(),
+            destination_groups: rule.destination_groups.iter().cloned().collect(),
             action: rule.action(),
             enabled: rule.enabled,
             stateful: rule.stateful,
@@ -820,8 +871,8 @@ impl AclProcessor {
     }
 
     /// Convert IpInet to CIDR for fast lookup
-    fn convert_ip_inet_to_cidr(input: &String) -> Option<cidr::IpCidr> {
-        cidr::IpCidr::from_str(input.as_str()).ok()
+    fn convert_ip_inet_to_cidr(input: &str) -> Option<cidr::IpCidr> {
+        cidr::IpCidr::from_str(input).ok()
     }
 
     /// Increment statistics counter
@@ -898,17 +949,13 @@ impl AclProcessor {
 }
 
 // 新增辅助函数
-fn parse_port_start(
-    port_strs: &::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-) -> Option<u16> {
+fn parse_port_start(port_strs: &[String]) -> Option<u16> {
     port_strs
         .iter()
         .filter_map(|s| parse_port_range(s).map(|(start, _)| start))
         .min()
 }
-fn parse_port_end(
-    port_strs: &::prost::alloc::vec::Vec<::prost::alloc::string::String>,
-) -> Option<u16> {
+fn parse_port_end(port_strs: &[String]) -> Option<u16> {
     port_strs
         .iter()
         .filter_map(|s| parse_port_range(s).map(|(_, end)| end))
@@ -1075,6 +1122,8 @@ impl AclRuleBuilder {
                 rate_limit: 0,
                 burst_limit: 0,
                 stateful: true,
+                source_groups: vec![],
+                destination_groups: vec![],
             };
             inbound_chain.rules.push(tcp_rule);
             rule_priority -= 1;
@@ -1097,6 +1146,8 @@ impl AclRuleBuilder {
                 rate_limit: 0,
                 burst_limit: 0,
                 stateful: false,
+                source_groups: vec![],
+                destination_groups: vec![],
             };
             inbound_chain.rules.push(udp_rule);
         }
@@ -1112,6 +1163,10 @@ impl AclRuleBuilder {
         } else {
             acl.acl_v1 = Some(AclV1 {
                 chains: vec![inbound_chain],
+                group: Some(GroupInfo {
+                    declares: vec![],
+                    members: vec![],
+                }),
             });
         }
 
@@ -1148,24 +1203,128 @@ mod tests {
     use std::hash::{Hash, Hasher};
     use std::net::{IpAddr, Ipv4Addr};
 
+    #[tokio::test]
+    async fn test_group_based_acl_rules() {
+        let mut acl_config = Acl::default();
+        let mut acl_v1 = AclV1::default();
+        let mut chain = Chain {
+            name: "group_test_chain".to_string(),
+            chain_type: ChainType::Inbound as i32,
+            enabled: true,
+            default_action: Action::Drop as i32,
+            ..Default::default()
+        };
+
+        // Rules
+        chain.rules.push(Rule {
+            name: "allow_admins_to_db".to_string(),
+            priority: 100,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_groups: vec!["admin".to_string()],
+            destination_groups: vec!["db-server".to_string()],
+            ..Default::default()
+        });
+        chain.rules.push(Rule {
+            name: "allow_devs_from_anywhere".to_string(),
+            priority: 90,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_groups: vec!["dev".to_string()],
+            ..Default::default()
+        });
+        chain.rules.push(Rule {
+            name: "deny_guests_to_db".to_string(),
+            priority: 80,
+            enabled: true,
+            action: Action::Drop as i32,
+            protocol: Protocol::Any as i32,
+            source_groups: vec!["guest".to_string()],
+            destination_groups: vec!["db-server".to_string()],
+            ..Default::default()
+        });
+        chain.rules.push(Rule {
+            name: "allow_specific_ip".to_string(),
+            priority: 70,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            source_ips: vec!["1.2.3.4/32".to_string()],
+            ..Default::default()
+        });
+
+        acl_v1.chains.push(chain);
+        acl_config.acl_v1 = Some(acl_v1);
+
+        let processor = AclProcessor::new(acl_config);
+
+        // Case 3.1: Source group match (devs from anywhere)
+        let mut packet_info = create_test_packet_info();
+        packet_info.src_groups = Arc::new(vec!["dev".to_string()]);
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(90)));
+
+        // Case 3.2: Source group no match
+        packet_info.src_groups = Arc::new(vec!["guest".to_string()]);
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Drop); // Default drop
+        assert_eq!(result.matched_rule, Some(RuleId::Default));
+
+        // Case 3.3: Destination group match (deny guests to db)
+        packet_info.src_groups = Arc::new(vec!["guest".to_string()]);
+        packet_info.dst_groups = Arc::new(vec!["db-server".to_string()]);
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Drop);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(80)));
+
+        // Case 3.4: Source and Destination groups match
+        packet_info.src_groups = Arc::new(vec!["admin".to_string()]);
+        packet_info.dst_groups = Arc::new(vec!["db-server".to_string()]);
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(100)));
+
+        // Case 3.5: Partial match (admin to web-server)
+        packet_info.src_groups = Arc::new(vec!["admin".to_string()]);
+        packet_info.dst_groups = Arc::new(vec!["web-server".to_string()]);
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Drop); // Default drop
+        assert_eq!(result.matched_rule, Some(RuleId::Default));
+
+        // Case 3.6: Rule with no group definition
+        packet_info.src_ip = "1.2.3.4".parse().unwrap();
+        packet_info.src_groups = Arc::new(vec!["admin".to_string()]);
+        packet_info.dst_groups = Arc::new(vec![]);
+        let result = processor.process_packet(&packet_info, ChainType::Inbound);
+        assert_eq!(result.action, Action::Allow);
+        assert_eq!(result.matched_rule, Some(RuleId::Priority(70)));
+    }
+
     fn create_test_acl_config() -> Acl {
         let mut acl_config = Acl::default();
 
         let mut acl_v1 = AclV1::default();
 
         // Create inbound chain
-        let mut chain = Chain::default();
-        chain.name = "test_inbound".to_string();
-        chain.chain_type = ChainType::Inbound as i32;
-        chain.enabled = true;
+        let mut chain = Chain {
+            name: "test_inbound".to_string(),
+            chain_type: ChainType::Inbound as i32,
+            enabled: true,
+            ..Default::default()
+        };
 
         // Allow all rule
-        let mut rule = Rule::default();
-        rule.name = "allow_all".to_string();
-        rule.priority = 100;
-        rule.enabled = true;
-        rule.action = Action::Allow as i32;
-        rule.protocol = Protocol::Any as i32;
+        let rule = Rule {
+            name: "allow_all".to_string(),
+            priority: 100,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            ..Default::default()
+        };
 
         chain.rules.push(rule);
         acl_v1.chains.push(chain);
@@ -1182,6 +1341,8 @@ mod tests {
             dst_port: Some(80),
             protocol: Protocol::Tcp,
             packet_size: 1024,
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
         }
     }
 
@@ -1278,12 +1439,14 @@ mod tests {
         // 创建新配置（模拟热加载）
         let mut new_config = create_test_acl_config();
         if let Some(ref mut acl_v1) = new_config.acl_v1 {
-            let mut drop_rule = Rule::default();
-            drop_rule.name = "drop_all".to_string();
-            drop_rule.priority = 200;
-            drop_rule.enabled = true;
-            drop_rule.action = Action::Drop as i32;
-            drop_rule.protocol = Protocol::Any as i32;
+            let drop_rule = Rule {
+                name: "drop_all".to_string(),
+                priority: 200,
+                enabled: true,
+                action: Action::Drop as i32,
+                protocol: Protocol::Any as i32,
+                ..Default::default()
+            };
             acl_v1.chains[0].rules.push(drop_rule);
         }
 
@@ -1321,40 +1484,48 @@ mod tests {
         let mut acl_config = Acl::default();
 
         let mut acl_v1 = AclV1::default();
-        let mut chain = Chain::default();
-        chain.name = "performance_test".to_string();
-        chain.chain_type = ChainType::Inbound as i32;
-        chain.enabled = true;
+        let mut chain = Chain {
+            name: "performance_test".to_string(),
+            chain_type: ChainType::Inbound as i32,
+            enabled: true,
+            ..Default::default()
+        };
 
         // 1. High-priority simple rule for UDP (can be cached efficiently)
-        let mut simple_rule = Rule::default();
-        simple_rule.name = "simple_udp".to_string();
-        simple_rule.priority = 300;
-        simple_rule.enabled = true;
-        simple_rule.action = Action::Allow as i32;
-        simple_rule.protocol = Protocol::Udp as i32;
+        let simple_rule = Rule {
+            name: "simple_udp".to_string(),
+            priority: 300,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Udp as i32,
+            ..Default::default()
+        };
         // No stateful or rate limit - can benefit from full cache optimization
         chain.rules.push(simple_rule);
 
         // 2. Medium-priority stateful + rate-limited rule for TCP (security critical)
-        let mut security_rule = Rule::default();
-        security_rule.name = "security_tcp".to_string();
-        security_rule.priority = 200;
-        security_rule.enabled = true;
-        security_rule.action = Action::Allow as i32;
-        security_rule.protocol = Protocol::Tcp as i32;
-        security_rule.stateful = true;
-        security_rule.rate_limit = 100; // 100 packets/sec
-        security_rule.burst_limit = 200;
+        let security_rule = Rule {
+            name: "security_tcp".to_string(),
+            priority: 200,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Tcp as i32,
+            stateful: true,
+            rate_limit: 100,
+            burst_limit: 200,
+            ..Default::default()
+        };
         chain.rules.push(security_rule);
 
         // 3. Low-priority default allow rule for Any
-        let mut default_rule = Rule::default();
-        default_rule.name = "default_allow".to_string();
-        default_rule.priority = 100;
-        default_rule.enabled = true;
-        default_rule.action = Action::Allow as i32;
-        default_rule.protocol = Protocol::Any as i32;
+        let default_rule = Rule {
+            name: "default_allow".to_string(),
+            priority: 100,
+            enabled: true,
+            action: Action::Allow as i32,
+            protocol: Protocol::Any as i32,
+            ..Default::default()
+        };
         chain.rules.push(default_rule);
 
         acl_v1.chains.push(chain);
@@ -1370,6 +1541,8 @@ mod tests {
             dst_port: Some(53),      // DNS
             protocol: Protocol::Udp, // UDP
             packet_size: 512,
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
         };
 
         // Test TCP packet (should hit stateful+rate-limited rule)
@@ -1380,6 +1553,8 @@ mod tests {
             dst_port: Some(80),      // HTTP
             protocol: Protocol::Tcp, // TCP
             packet_size: 1024,
+            src_groups: Arc::new(vec![]),
+            dst_groups: Arc::new(vec![]),
         };
 
         // Process UDP packets multiple times
@@ -1441,15 +1616,16 @@ mod tests {
 
         // Create a very restrictive rate-limited rule
         if let Some(ref mut acl_v1) = acl_config.acl_v1 {
-            let mut rule = Rule::default();
-            rule.name = "strict_rate_limit".to_string();
-            rule.priority = 200;
-            rule.enabled = true;
-            rule.action = Action::Allow as i32;
-            rule.protocol = Protocol::Any as i32;
-            rule.rate_limit = 1; // Allow only 1 packet per second
-            rule.burst_limit = 1; // Burst of 1 packet
-
+            let rule = Rule {
+                name: "strict_rate_limit".to_string(),
+                priority: 200,
+                enabled: true,
+                action: Action::Allow as i32,
+                protocol: Protocol::Any as i32,
+                rate_limit: 1,  // Allow only 1 packet per second
+                burst_limit: 1, // Burst of 1 packet
+                ..Default::default()
+            };
             acl_v1.chains[0].rules.push(rule);
         }
 

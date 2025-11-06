@@ -701,8 +701,12 @@ impl InterfaceLuid {
         // SAFETY: Both NET_LUID_LH unions should be the same. We're just copying out
         // the u64 value and re-wrapping it, since wintun doesn't refer to the windows
         // crate's version of NET_LUID_LH.
-        self.try_set_mtu(AF_INET as ADDRESS_FAMILY, mtu)?;
-        self.try_set_mtu(AF_INET6 as ADDRESS_FAMILY, mtu)?;
+        if let Err(e) = self.try_set_mtu(AF_INET as ADDRESS_FAMILY, mtu) {
+            tracing::warn!("Failed to set IPv4 MTU: {:?}", e);
+        }
+        if let Err(e) = self.try_set_mtu(AF_INET6 as ADDRESS_FAMILY, mtu) {
+            tracing::warn!("Failed to set IPv6 MTU: {:?}", e);
+        }
         Ok(())
     }
 
@@ -727,7 +731,7 @@ impl InterfaceLuid {
         if family == (AF_INET6 as ADDRESS_FAMILY) {
             // ipv6 mtu must be at least 1280
             mtu = 1280.max(mtu);
-        }  
+        }
 
         // https://stackoverflow.com/questions/54857292/setipinterfaceentry-returns-error-invalid-parameter
         row.SitePrefixLength = 0;

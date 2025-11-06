@@ -31,7 +31,6 @@ export interface NetworkConfig {
   advanced_settings: boolean
 
   listener_urls: string[]
-  rpc_port: number
   latency_first: boolean
 
   dev_name: string
@@ -51,6 +50,7 @@ export interface NetworkConfig {
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
   disable_udp_hole_punching?: boolean
+  disable_sym_hole_punching?: boolean
 
   enable_relay_network_whitelist?: boolean
   relay_network_whitelist: string[]
@@ -69,7 +69,7 @@ export interface NetworkConfig {
   enable_magic_dns?: boolean
   enable_private_mode?: boolean
 
-  rpc_portal_whitelists: string[]
+  port_forwards: PortForwardConfig[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -101,7 +101,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    rpc_port: 0,
     latency_first: false,
     dev_name: '',
 
@@ -120,6 +119,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     proxy_forward_by_system: false,
     disable_encryption: false,
     disable_udp_hole_punching: false,
+    disable_sym_hole_punching: false,
     enable_relay_network_whitelist: false,
     relay_network_whitelist: [],
     enable_manual_routes: false,
@@ -131,7 +131,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mapped_listeners: [],
     enable_magic_dns: false,
     enable_private_mode: false,
-    rpc_portal_whitelists: [],
+    port_forwards: [],
   }
 }
 
@@ -241,10 +241,14 @@ export interface PeerRoutePair {
   peer?: PeerInfo
 }
 
+export interface UrlPb {
+  url: string
+}
+
 export interface TunnelInfo {
   tunnel_type: string
-  local_addr: string
-  remote_addr: string
+  local_addr: UrlPb
+  remote_addr: UrlPb
 }
 
 export interface PeerConnStats {
@@ -254,6 +258,30 @@ export interface PeerConnStats {
   tx_packets: number
   latency_us: number
 }
+
+export interface PortForwardConfig {
+  bind_ip: string,
+  bind_port: number,
+  dst_ip: string,
+  dst_port: number,
+  proto: string
+}
+
+// 添加新行
+export const addRow = (rows: PortForwardConfig[]) => {
+  rows.push({
+    proto: 'tcp',
+    bind_ip: '',
+    bind_port: 65535,
+    dst_ip: '',
+    dst_port: 65535,
+  });
+};
+
+// 删除行
+export const removeRow = (index: number, rows: PortForwardConfig[]) => {
+  rows.splice(index, 1);
+};
 
 export enum EventType {
   TunDeviceReady = 'TunDeviceReady', // string
@@ -273,6 +301,7 @@ export enum EventType {
   Connecting = 'Connecting', // any
   ConnectError = 'ConnectError', // string, string, string
 
+  VpnPortalStarted = 'VpnPortalStarted', // string
   VpnPortalClientConnected = 'VpnPortalClientConnected', // string, string
   VpnPortalClientDisconnected = 'VpnPortalClientDisconnected', // string, string, string
 

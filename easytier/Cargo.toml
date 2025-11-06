@@ -3,12 +3,12 @@ name = "easytier"
 description = "A full meshed p2p VPN, connecting all your devices in one network with one command."
 homepage = "https://github.com/EasyTier/EasyTier"
 repository = "https://github.com/EasyTier/EasyTier"
-version = "2.4.0"
+version = "2.4.5"
 edition = "2021"
 authors = ["kkrainbow"]
 keywords = ["vpn", "p2p", "network", "easytier"]
 categories = ["network-programming", "command-line-utilities"]
-rust-version = "1.87.0"
+rust-version = "1.89.0"
 license-file = "LICENSE"
 readme = "README.md"
 
@@ -36,7 +36,7 @@ tracing-subscriber = { version = "0.3", features = [
     "local-time",
     "time",
 ] }
-tracing-appender = "0.2.3"
+console-subscriber = { version = "0.4.1", optional = true }
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"
@@ -63,7 +63,6 @@ timedmap = "=1.0.1"
 zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 bytes = "1.5.0"
 pin-project-lite = "0.2.13"
-tachyonix = "0.3.0"
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 
@@ -109,13 +108,15 @@ anyhow = "1.0"
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"
+idna = "1.0"
 
 # for tun packet
 byteorder = "1.5.0"
 
 # for proxy
-cidr = { version = "0.2.2", features = ["serde"] }
+cidr = { version = "0.3.1", features = ["serde"] }
 socket2 = { version = "0.5.10", features = ["all"] }
+prefix-trie = { version = "0.7.0", features = ["cidr"] }
 
 # for hole punching
 stun_codec = "0.3.4"
@@ -150,6 +151,7 @@ boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true
 ring = { version = "0.17", optional = true }
 bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
+openssl = { version = "0.10", optional = true, features = ["vendored"] }
 
 # for cli
 tabled = "0.16"
@@ -162,7 +164,7 @@ mimalloc = { version = "*", optional = true }
 # mips
 atomic-shim = "0.2.0"
 
-smoltcp = { version = "0.12.0", optional = true, default-features = false, features = [
+smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a68bc88d5512afefa7529c5ecdade4ea", optional = true, default-features = false, features = [
     "std",
     "medium-ip",
     "proto-ipv4",
@@ -191,7 +193,7 @@ service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.gi
 
 zstd = { version = "0.13" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "0f0a0558391ba391c089806c23f369651f6c9eeb" }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "71eff18c573a4a71bf99c7fabc6a8b9f211c84c1" }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
@@ -213,6 +215,8 @@ derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.0"
 version-compare = "0.2.0"
+hmac = "0.12.1"
+sha2 = "0.10.8"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
@@ -234,6 +238,7 @@ windows = { version = "0.52.0", features = [
     "Win32_System_Com",
     "Win32_Networking",
     "Win32_System_Ole",
+    "Win32_System_Variant",
     "Win32_Networking_WinSock",
     "Win32_System_IO",
 ] }
@@ -249,12 +254,21 @@ windows-sys = { version = "0.52", features = [
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]
-jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true }
-jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
+jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true, features = [
+    "unprefixed_malloc_on_supported_platforms"
 ] }
+jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
+    "use_std"
+] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
 jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
     "background_threads_runtime_support",
     "background_threads",
+], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+jemalloc-sys = { package = "tikv-jemalloc-sys", version = "0.6.0", features = [
 ], optional = true }
 
 [build-dependencies]
@@ -284,6 +298,7 @@ serial_test = "3.0.0"
 rstest = "0.25.0"
 futures-util = "0.3.30"
 maplit = "1.0.2"
+tempfile = "3.22.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 defguard_wireguard_rs = "0.4.2"
@@ -296,6 +311,7 @@ full = [
     "websocket",
     "wireguard",
     "aes-gcm",
+    "openssl-crypto", # need openssl-dev libs
     "smoltcp",
     "tun",
     "socks5",
@@ -304,6 +320,7 @@ wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
+openssl-crypto = ["dep:openssl"]
 tun = ["dep:tun"]
 websocket = [
     "dep:tokio-websockets",
@@ -316,3 +333,4 @@ smoltcp = ["dep:smoltcp", "dep:parking_lot"]
 socks5 = ["dep:smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]
+tracing = ["tokio/tracing", "dep:console-subscriber"]

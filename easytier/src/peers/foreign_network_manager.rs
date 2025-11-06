@@ -2,7 +2,7 @@
 foreign_network_manager is used to forward packets of other networks.  currently
 only forward packets of peers that directly connected to this node.
 
-in future, with the help wo peer center we can forward packets of peers that
+in the future, with the help wo peer center we can forward packets of peers that
 connected to any node in the local network.
 */
 use std::{
@@ -24,14 +24,15 @@ use crate::{
         config::{ConfigLoader, TomlConfigLoader},
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent, NetworkIdentity},
-        join_joinset_background,
+        join_joinset_background, shrink_dashmap,
+        stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
         token_bucket::TokenBucket,
         PeerId,
     },
     peer_center::instance::{PeerCenterInstance, PeerMapWithPeerRpcManager},
     peers::route_trait::{Route, RouteInterface},
     proto::{
-        cli::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
+        api::instance::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
         common::LimiterConfig,
         peer_rpc::DirectConnectorRpcServer,
     },
@@ -48,7 +49,7 @@ use super::{
     peer_rpc_service::DirectConnectorManagerRpcServer,
     recv_packet_from_chan,
     route_trait::NextHopPolicy,
-    PacketRecvChan, PacketRecvChanReceiver,
+    PacketRecvChan, PacketRecvChanReceiver, PUBLIC_SERVER_HOSTNAME_PREFIX,
 };
 
 #[async_trait::async_trait]
@@ -75,6 +76,8 @@ struct ForeignNetworkEntry {
 
     peer_center: Arc<PeerCenterInstance>,
 
+    stats_mgr: Arc<StatsManager>,
+
     tasks: Mutex<JoinSet<()>>,
 
     pub lock: Mutex<()>,
@@ -89,6 +92,7 @@ impl ForeignNetworkEntry {
         relay_data: bool,
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
+        let stats_mgr = global_ctx.stats_manager().clone();
         let foreign_global_ctx = Self::build_foreign_global_ctx(&network, global_ctx.clone());
 
         let (packet_sender, packet_recv) = create_packet_recv_chan();
@@ -141,6 +145,8 @@ impl ForeignNetworkEntry {
 
             bps_limiter,
 
+            stats_mgr,
+
             tasks: Mutex::new(JoinSet::new()),
 
             peer_center,
@@ -155,7 +161,17 @@ impl ForeignNetworkEntry {
     ) -> ArcGlobalCtx {
         let config = TomlConfigLoader::default();
         config.set_network_identity(network.clone());
-        config.set_hostname(Some(format!("PublicServer_{}", global_ctx.get_hostname())));
+        config.set_hostname(Some(format!(
+            "{}{}",
+            PUBLIC_SERVER_HOSTNAME_PREFIX,
+            global_ctx.get_hostname()
+        )));
+
+        let mut flags = config.get_flags();
+        flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
+        config.set_flags(flags);
+
+        config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));
 
         let foreign_global_ctx = Arc::new(GlobalCtx::new(config));
         foreign_global_ctx
@@ -297,8 +313,24 @@ impl ForeignNetworkEntry {
         let network_name = self.network.network_name.clone();
         let bps_limiter = self.bps_limiter.clone();
 
+        let label_set =
+            LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
+        let forward_bytes = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficBytesForwarded, label_set.clone());
+        let forward_packets = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficPacketsForwarded, label_set.clone());
+        let rx_bytes = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficBytesSelfRx, label_set.clone());
+        let rx_packets = self
+            .stats_mgr
+            .get_counter(MetricName::TrafficPacketsRx, label_set.clone());
+
         self.tasks.lock().await.spawn(async move {
             while let Ok(zc_packet) = recv_packet_from_chan(&mut recv).await {
+                let buf_len = zc_packet.buf_len();
                 let Some(hdr) = zc_packet.peer_manager_header() else {
                     tracing::warn!("invalid packet, skip");
                     continue;
@@ -310,6 +342,8 @@ impl ForeignNetworkEntry {
                         || hdr.packet_type == PacketType::RpcReq as u8
                         || hdr.packet_type == PacketType::RpcResp as u8
                     {
+                        rx_bytes.add(buf_len as u64);
+                        rx_packets.inc();
                         rpc_sender.send(zc_packet).unwrap();
                         continue;
                     }
@@ -327,35 +361,39 @@ impl ForeignNetworkEntry {
                         }
                     }
 
+                    forward_bytes.add(buf_len as u64);
+                    forward_packets.inc();
+
                     let gateway_peer_id = peer_map
                         .get_gateway_peer_id(to_peer_id, NextHopPolicy::LeastHop)
                         .await;
 
-                    if gateway_peer_id.is_some() && peer_map.has_peer(gateway_peer_id.unwrap()) {
-                        if let Err(e) = peer_map
-                            .send_msg_directly(zc_packet, gateway_peer_id.unwrap())
-                            .await
-                        {
-                            tracing::error!(
-                                ?e,
-                                "send packet to foreign peer inside peer map failed"
+                    match gateway_peer_id {
+                        Some(peer_id) if peer_map.has_peer(peer_id) => {
+                            if let Err(e) = peer_map.send_msg_directly(zc_packet, peer_id).await {
+                                tracing::error!(
+                                    ?e,
+                                    "send packet to foreign peer inside peer map failed"
+                                );
+                            }
+                        }
+                        _ => {
+                            let mut foreign_packet = ZCPacket::new_for_foreign_network(
+                                &network_name,
+                                to_peer_id,
+                                &zc_packet,
                             );
+                            let via_peer = gateway_peer_id.unwrap_or(to_peer_id);
+                            foreign_packet.fill_peer_manager_hdr(
+                                my_node_id,
+                                via_peer,
+                                PacketType::ForeignNetworkPacket as u8,
+                            );
+                            if let Err(e) = pm_sender.send(foreign_packet).await {
+                                tracing::error!("send packet to peer with pm failed: {:?}", e);
+                            }
                         }
-                    } else {
-                        let mut foreign_packet = ZCPacket::new_for_foreign_network(
-                            &network_name,
-                            to_peer_id,
-                            &zc_packet,
-                        );
-                        foreign_packet.fill_peer_manager_hdr(
-                            my_node_id,
-                            gateway_peer_id.unwrap_or(to_peer_id),
-                            PacketType::ForeignNetworkPacket as u8,
-                        );
-                        if let Err(e) = pm_sender.send(foreign_packet).await {
-                            tracing::error!("send packet to peer with pm failed: {:?}", e);
-                        }
-                    }
+                    };
                 }
             }
         });
@@ -403,19 +441,23 @@ impl ForeignNetworkManagerData {
             let _ = v.remove(network_name);
             v.is_empty()
         });
-        if let Some(_) = self
+        if self
             .network_peer_maps
             .remove_if(network_name, |_, v| v.peer_map.is_empty())
+            .is_some()
         {
             self.network_peer_last_update.remove(network_name);
         }
+        shrink_dashmap(&self.peer_network_map, None);
+        shrink_dashmap(&self.network_peer_maps, None);
+        shrink_dashmap(&self.network_peer_last_update, None);
     }
 
     async fn clear_no_conn_peer(&self, network_name: &String) {
         let Some(peer_map) = self
             .network_peer_maps
             .get(network_name)
-            .and_then(|v| Some(v.peer_map.clone()))
+            .map(|v| v.peer_map.clone())
         else {
             return;
         };
@@ -461,7 +503,7 @@ impl ForeignNetworkManagerData {
 
         self.peer_network_map
             .entry(dst_peer_id)
-            .or_insert_with(|| DashSet::new())
+            .or_default()
             .insert(network_identity.network_name.clone());
 
         self.network_peer_last_update
@@ -522,7 +564,7 @@ impl ForeignNetworkManager {
         self.data
             .network_peer_maps
             .get(network_name)
-            .and_then(|v| Some(v.my_peer_id))
+            .map(|v| v.my_peer_id)
     }
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
@@ -543,7 +585,7 @@ impl ForeignNetworkManager {
                 &peer_conn.get_network_identity(),
                 peer_conn.get_my_peer_id(),
                 peer_conn.get_peer_id(),
-                !ret.is_err(),
+                ret.is_ok(),
                 &self.global_ctx,
                 &self.packet_sender_to_mgr,
             )
@@ -577,22 +619,21 @@ impl ForeignNetworkManager {
 
         if new_added {
             self.start_event_handler(&entry).await;
-        } else {
-            if let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
-                let direct_conns_len = peer.get_directly_connections().len();
-                let max_count = use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK);
-                if direct_conns_len >= max_count as usize {
-                    return Err(anyhow::anyhow!(
-                        "too many direct conns, cur: {}, max: {}",
-                        direct_conns_len,
-                        max_count
-                    )
-                    .into());
-                }
+        } else if let Some(peer) = entry.peer_map.get_peer_by_id(peer_conn.get_peer_id()) {
+            let direct_conns_len = peer.get_directly_connections().len();
+            let max_count = use_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK);
+            if direct_conns_len >= max_count as usize {
+                return Err(anyhow::anyhow!(
+                    "too many direct conns, cur: {}, max: {}",
+                    direct_conns_len,
+                    max_count
+                )
+                .into());
             }
         }
 
-        Ok(entry.peer_map.add_new_peer_conn(peer_conn).await)
+        entry.peer_map.add_new_peer_conn(peer_conn).await;
+        Ok(())
     }
 
     async fn start_event_handler(&self, entry: &ForeignNetworkEntry) {
@@ -655,9 +696,11 @@ impl ForeignNetworkManager {
                 peers: Default::default(),
             };
             for peer in item.peer_map.list_peers().await {
-                let mut peer_info = PeerInfo::default();
-                peer_info.peer_id = peer;
-                peer_info.conns = item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]);
+                let peer_info = PeerInfo {
+                    peer_id: peer,
+                    conns: item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]),
+                    ..Default::default()
+                };
                 entry.peers.push(peer_info);
             }
 
@@ -670,7 +713,7 @@ impl ForeignNetworkManager {
         self.data
             .network_peer_last_update
             .get(network_name)
-            .map(|v| v.clone())
+            .map(|v| *v)
     }
 
     pub async fn send_msg_to_peer(
@@ -789,7 +832,7 @@ pub mod tests {
         let pm_center = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
         tracing::debug!("pm_center: {:?}", pm_center.my_peer_id());
         let mut flag = pm_center.get_global_ctx().get_flags();
-        flag.relay_network_whitelist = vec!["net1".to_string(), "net2*".to_string()].join(" ");
+        flag.relay_network_whitelist = ["net1".to_string(), "net2*".to_string()].join(" ");
         pm_center.get_global_ctx().config.set_flags(flag);
 
         let pma_net1 = create_mock_peer_manager_for_foreign_network(name.as_str()).await;
@@ -995,7 +1038,7 @@ pub mod tests {
 
         drop(pm_center);
         wait_for_condition(
-            || async { pma_net1.list_routes().await.len() == 0 },
+            || async { pma_net1.list_routes().await.is_empty() },
             Duration::from_secs(5),
         )
         .await;
@@ -1137,7 +1180,7 @@ pub mod tests {
         println!("drop pm_center1, id: {:?}", pm_center1.my_peer_id());
         drop(pm_center1);
         wait_for_condition(
-            || async { pma_net1.list_routes().await.len() == 0 },
+            || async { pma_net1.list_routes().await.is_empty() },
             Duration::from_secs(5),
         )
         .await;

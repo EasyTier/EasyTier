@@ -5,8 +5,6 @@ import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
 
 type Route = NetworkTypes.Route
 
-const networkStore = useNetworkStore()
-
 interface vpnStatus {
   running: boolean
   ipv4Addr: string | null | undefined
@@ -69,7 +67,7 @@ async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
   if (payload.fd) {
-    setTunFd(networkStore.networkInstanceIds[0], payload.fd)
+    setTunFd(payload.fd)
   }
 }
 
@@ -93,7 +91,7 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[]): string[] {
+function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfig): string[] {
   if (!routes) {
     return []
   }
@@ -108,19 +106,25 @@ function getRoutesForVpn(routes: Route[]): string[] {
     }
   }
 
+  node_config.routes.forEach(r => {
+    ret.push(r)
+  })
+
   // sort and dedup
   return Array.from(new Set(ret)).sort()
 }
 
-async function onNetworkInstanceChange() {
-  console.error('vpn service watch network instance change ids', JSON.stringify(networkStore.networkInstanceIds))
-  const insts = networkStore.networkInstanceIds
-  if (!insts) {
+export async function onNetworkInstanceChange(instanceId: string) {
+  console.error('vpn service network instance change id', instanceId)
+  if (!instanceId) {
     await doStopVpn()
     return
   }
-
-  const curNetworkInfo = networkStore.networkInfos[insts[0]]
+  const config = await getConfig(instanceId)
+  if (config.no_tun) {
+    return
+  }
+  const curNetworkInfo = (await collectNetworkInfo(instanceId)).info.map[instanceId]
   if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
     await doStopVpn()
     return
@@ -132,20 +136,12 @@ async function onNetworkInstanceChange() {
     return
   }
 
-  // if use no tun mode, stop the vpn service
-  const no_tun = networkStore.isNoTunEnabled(insts[0])
-  if (no_tun) {
-    console.error('no tun mode, stop vpn service')
-    await doStopVpn()
-    return
-  }
-
   let network_length = curNetworkInfo?.my_node_info?.virtual_ipv4.network_length
   if (!network_length) {
     network_length = 24
   }
 
-  const routes = getRoutesForVpn(curNetworkInfo?.routes)
+  const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
@@ -163,36 +159,27 @@ async function onNetworkInstanceChange() {
       await doStartVpn(virtual_ip, 24, routes)
     }
     catch (e) {
-      console.error('start vpn service failed, clear all network insts.', e)
-      networkStore.clearNetworkInstances()
-      await retainNetworkInstance(networkStore.networkInstanceIds)
+      console.error('start vpn service failed, stop all other network insts.', e)
+      await runNetworkInstance(config);
     }
   }
 }
 
-async function watchNetworkInstance() {
-  let subscribe_running = false
-  networkStore.$subscribe(async () => {
-    if (subscribe_running) {
-      return
-    }
-    subscribe_running = true
-    try {
-      await onNetworkInstanceChange()
-    }
-    catch (_) {
-    }
-    subscribe_running = false
-  })
-  console.error('vpn service watch network instance')
+async function isNoTunEnabled(instanceId: string | undefined) {
+  if (!instanceId) {
+    return false
+  }
+  return (await getConfig(instanceId)).no_tun ?? false
 }
 
 export async function initMobileVpnService() {
   await registerVpnServiceListener()
-  await watchNetworkInstance()
 }
 
-export async function prepareVpnService() {
+export async function prepareVpnService(instanceId: string) {
+  if (await isNoTunEnabled(instanceId)) {
+    return
+  }
   console.log('prepare vpn')
   const prepare_ret = await prepare_vpn()
   console.log('prepare vpn', JSON.stringify((prepare_ret)))

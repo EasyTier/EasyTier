@@ -124,11 +124,11 @@ impl DNSTunnelConnector {
                 let responses = responses.clone();
                 async move {
                     let response = resolver.srv_lookup(srv_domain).await.with_context(|| {
-                        format!("srv_lookup failed, srv_domain: {}", srv_domain.to_string())
+                        format!("srv_lookup failed, srv_domain: {}", srv_domain)
                     })?;
                     tracing::info!(?response, ?srv_domain, "srv_lookup response");
                     for record in response.iter() {
-                        let parsed_record = Self::handle_one_srv_record(record, &protocol);
+                        let parsed_record = Self::handle_one_srv_record(record, protocol);
                         tracing::info!(?parsed_record, ?srv_domain, "parsed_record");
                         if parsed_record.is_err() {
                             eprintln!(
@@ -153,8 +153,7 @@ impl DNSTunnelConnector {
         let url = weighted_choice(srv_records.as_slice()).with_context(|| {
             format!(
                 "failed to choose a srv record, domain_name: {}, srv_records: {:?}",
-                domain_name.to_string(),
-                srv_records
+                domain_name, srv_records
             )
         })?;
 

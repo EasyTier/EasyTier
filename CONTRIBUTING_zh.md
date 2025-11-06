@@ -34,7 +34,7 @@
 #### 必需工具
 - Node.js v21 或更高版本
 - pnpm v9 或更高版本
-- Rust 工具链（版本 1.87）
+- Rust 工具链（版本 1.89）
 - LLVM 和 Clang
 - Protoc（Protocol Buffers 编译器）
 
@@ -87,8 +87,8 @@ sudo apt install -y bridge-utils
 2. 安装依赖：
    ```bash
    # 安装 Rust 工具链
-   rustup install 1.87
-   rustup default 1.87
+   rustup install 1.89
+   rustup default 1.89
 
    # 安装项目依赖
    pnpm -r install

@@ -10,12 +10,18 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 use tokio_stream::StreamExt;
 
-use crate::common::PeerId;
+use crate::common::shrink_dashmap;
+use crate::common::{
+    stats_manager::{LabelSet, LabelType, MetricName, StatsManager},
+    PeerId,
+};
 use crate::defer;
 use crate::proto::common::{
     CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
 };
-use crate::proto::rpc_impl::packet::{build_rpc_packet, compress_packet, decompress_packet};
+use crate::proto::rpc_impl::packet::{
+    build_rpc_packet, compress_packet, decompress_packet, BuildRpcPacketArgs,
+};
 use crate::proto::rpc_types::controller::Controller;
 use crate::proto::rpc_types::descriptor::MethodDescriptor;
 use crate::proto::rpc_types::{
@@ -50,6 +56,15 @@ struct InflightRequest {
     start_time: std::time::Instant,
 }
 
+impl std::fmt::Debug for InflightRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InflightRequest")
+            .field("sender", &self.sender)
+            .field("start_time", &self.start_time)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PeerInfo {
     pub peer_id: PeerId,
@@ -66,6 +81,13 @@ pub struct Client {
     inflight_requests: InflightRequestTable,
     peer_info: PeerInfoTable,
     tasks: Mutex<JoinSet<()>>,
+    stats_manager: Option<Arc<StatsManager>>,
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Client {
@@ -77,7 +99,14 @@ impl Client {
             inflight_requests: Arc::new(DashMap::new()),
             peer_info: Arc::new(DashMap::new()),
             tasks: Mutex::new(JoinSet::new()),
+            stats_manager: None,
         }
+    }
+
+    pub fn new_with_stats_manager(stats_manager: Arc<StatsManager>) -> Self {
+        let mut ret = Self::new();
+        ret.stats_manager = Some(stats_manager);
+        ret
     }
 
     pub fn get_transport_sink(&self) -> MpscTunnelSender {
@@ -103,6 +132,7 @@ impl Client {
                     }
                     true
                 });
+                peer_infos.shrink_to_fit();
             }
         });
 
@@ -134,7 +164,11 @@ impl Client {
                 };
 
                 let Some(mut inflight_request) = inflight_requests.get_mut(&key) else {
-                    tracing::warn!(?key, "No inflight request found for key");
+                    tracing::warn!(
+                        ?key,
+                        ?inflight_requests,
+                        "No inflight request found for key"
+                    );
                     continue;
                 };
 
@@ -168,6 +202,7 @@ impl Client {
             zc_packet_sender: MpscTunnelSender,
             inflight_requests: InflightRequestTable,
             peer_info: PeerInfoTable,
+            stats_manager: Option<Arc<StatsManager>>,
             _phan: PhantomData<F>,
         }
 
@@ -196,6 +231,7 @@ impl Client {
                 method: <Self::Descriptor as ServiceDescriptor>::Method,
                 input: bytes::Bytes,
             ) -> Result<bytes::Bytes> {
+                let start_time = std::time::Instant::now();
                 let transaction_id = CUR_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let (tx, mut rx) = mpsc::unbounded_channel();
                 let key = InflightRequestKey {
@@ -203,18 +239,30 @@ impl Client {
                     to_peer_id: self.to_peer_id,
                     transaction_id,
                 };
+                let desc = self.service_descriptor();
+                let labels = LabelSet::new()
+                    .with_label_type(LabelType::NetworkName(self.domain_name.to_string()))
+                    .with_label_type(LabelType::SrcPeerId(self.from_peer_id))
+                    .with_label_type(LabelType::DstPeerId(self.to_peer_id))
+                    .with_label_type(LabelType::ServiceName(desc.name().to_string()))
+                    .with_label_type(LabelType::MethodName(method.name().to_string()));
 
-                defer!(self.inflight_requests.remove(&key););
+                defer!(self.inflight_requests.remove(&key); shrink_dashmap(&self.inflight_requests, Some(4)););
                 self.inflight_requests.insert(
                     key.clone(),
                     InflightRequest {
                         sender: tx,
                         merger: PacketMerger::new(),
-                        start_time: std::time::Instant::now(),
+                        start_time,
                     },
                 );
 
-                let desc = self.service_descriptor();
+                // Record RPC client TX stats
+                if let Some(ref stats_manager) = self.stats_manager {
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcClientTx, labels.clone())
+                        .inc();
+                }
 
                 let rpc_desc = RpcDescriptor {
                     domain_name: self.domain_name.clone(),
@@ -245,19 +293,19 @@ impl Client {
                 .await
                 .unwrap();
 
-                let packets = build_rpc_packet(
-                    self.from_peer_id,
-                    self.to_peer_id,
+                let packets = build_rpc_packet(BuildRpcPacketArgs {
+                    from_peer: self.from_peer_id,
+                    to_peer: self.to_peer_id,
                     rpc_desc,
                     transaction_id,
-                    true,
-                    &buf,
-                    ctrl.trace_id(),
-                    RpcCompressionInfo {
+                    is_req: true,
+                    content: &buf,
+                    trace_id: ctrl.trace_id(),
+                    compression_info: RpcCompressionInfo {
                         algo: c_algo.into(),
                         accepted_algo: CompressionAlgoPb::Zstd.into(),
                     },
-                );
+                });
 
                 let timeout_dur = std::time::Duration::from_millis(ctrl.timeout_ms() as u64);
                 let mut rpc_packet = timeout(timeout_dur, self.do_rpc(packets, &mut rx)).await??;
@@ -267,7 +315,7 @@ impl Client {
                         self.to_peer_id,
                         PeerInfo {
                             peer_id: self.to_peer_id,
-                            compression_info: compression_info.clone(),
+                            compression_info,
                             last_active: Some(std::time::Instant::now()),
                         },
                     );
@@ -281,11 +329,43 @@ impl Client {
                 let rpc_resp = RpcResponse::decode(Bytes::from(rpc_packet.body))?;
 
                 if let Some(err) = &rpc_resp.error {
+                    // Record RPC error stats
+                    if let Some(ref stats_manager) = self.stats_manager {
+                        let labels = labels
+                            .clone()
+                            .with_label_type(LabelType::ErrorType(format!("{:?}", err.error_kind)))
+                            .with_label_type(LabelType::Status("error".to_string()));
+
+                        stats_manager
+                            .get_counter(MetricName::PeerRpcErrors, labels.clone())
+                            .inc();
+
+                        let duration_ms = start_time.elapsed().as_millis() as u64;
+                        stats_manager
+                            .get_counter(MetricName::PeerRpcDuration, labels)
+                            .add(duration_ms);
+                    }
                     return Err(err.into());
                 }
 
                 let raw_output = Bytes::from(rpc_resp.response.clone());
                 ctrl.set_raw_output(raw_output.clone());
+
+                // Record RPC client RX and duration stats
+                if let Some(ref stats_manager) = self.stats_manager {
+                    let labels = labels
+                        .clone()
+                        .with_label_type(LabelType::Status("success".to_string()));
+
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcClientRx, labels.clone())
+                        .inc();
+
+                    let duration_ms = start_time.elapsed().as_millis() as u64;
+                    stats_manager
+                        .get_counter(MetricName::PeerRpcDuration, labels)
+                        .add(duration_ms);
+                }
 
                 Ok(raw_output)
             }
@@ -298,6 +378,7 @@ impl Client {
             zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),
             inflight_requests: self.inflight_requests.clone(),
             peer_info: self.peer_info.clone(),
+            stats_manager: self.stats_manager.clone(),
             _phan: PhantomData,
         })
     }

@@ -5,7 +5,7 @@ use tokio::task::JoinSet;
 use crate::{
     peers::peer_manager::PeerManager,
     proto::{
-        cli::Route,
+        api::instance::Route,
         common::Void,
         magic_dns::{
             HandshakeRequest, MagicDnsServerRpc, MagicDnsServerRpcClientFactory,
@@ -17,7 +17,7 @@ use crate::{
     tunnel::tcp::TcpTunnelConnector,
 };
 
-use super::{DEFAULT_ET_DNS_ZONE, MAGIC_DNS_INSTANCE_ADDR};
+use super::MAGIC_DNS_INSTANCE_ADDR;
 
 pub struct MagicDnsClientInstance {
     rpc_client: StandAloneClient<TcpTunnelConnector>,
@@ -59,7 +59,7 @@ impl MagicDnsClientInstance {
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 continue;
             }
-            prev_last_update = Some(last_update);
+
             let mut routes = peer_mgr.list_routes().await;
             // add self as a route
             let ctx = peer_mgr.get_global_ctx();
@@ -68,9 +68,11 @@ impl MagicDnsClientInstance {
                 ipv4_addr: ctx.get_ipv4().map(Into::into),
                 ..Default::default()
             });
+            // Use configured tld_dns_zone (always set by default)
+            let flags = ctx.config.get_flags();
             let req = UpdateDnsRecordRequest {
                 routes,
-                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                zone: flags.tld_dns_zone.clone(),
             };
             tracing::debug!(
                 "MagicDnsClientInstance::update_dns_task: update dns records: {:?}",
@@ -79,6 +81,11 @@ impl MagicDnsClientInstance {
             rpc_stub
                 .update_dns_record(BaseController::default(), req)
                 .await?;
+
+            let last_update_after_rpc = peer_mgr.get_route_peer_info_last_update_time().await;
+            if last_update_after_rpc == last_update {
+                prev_last_update = Some(last_update);
+            }
         }
     }
 

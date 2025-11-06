@@ -59,18 +59,52 @@ impl InterfaceFilter {
     }
 }
 
+// Cache for networksetup command output
+#[cfg(target_os = "macos")]
+static NETWORKSETUP_CACHE: std::sync::OnceLock<Mutex<(String, std::time::Instant)>> =
+    std::sync::OnceLock::new();
+
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 impl InterfaceFilter {
     #[cfg(target_os = "macos")]
-    async fn is_interface_physical(&self) -> bool {
-        let interface_name = &self.iface.name;
-        let output = tokio::process::Command::new("networksetup")
-            .args(&["-listallhardwareports"])
+    async fn get_networksetup_output() -> String {
+        use anyhow::Context;
+        use std::time::{Duration, Instant};
+        let cache = NETWORKSETUP_CACHE.get_or_init(|| Mutex::new((String::new(), Instant::now())));
+        let mut cache_guard = cache.lock().await;
+
+        // Check if cache is still valid (less than 1 minute old)
+        if cache_guard.1.elapsed() < Duration::from_secs(60) && !cache_guard.0.is_empty() {
+            return cache_guard.0.clone();
+        }
+
+        // Cache is expired or empty, fetch new data
+        let stdout = tokio::process::Command::new("networksetup")
+            .args(["-listallhardwareports"])
             .output()
             .await
-            .expect("Failed to execute command");
+            .with_context(|| "Failed to execute networksetup command")
+            .and_then(|output| {
+                std::str::from_utf8(&output.stdout)
+                    .map(|s| s.to_string())
+                    .with_context(|| "Failed to convert networksetup output to string")
+            })
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to execute networksetup command: {:?}", e);
+                String::new()
+            });
 
-        let stdout = std::str::from_utf8(&output.stdout).expect("Invalid UTF-8");
+        // Update cache
+        cache_guard.0 = stdout.clone();
+        cache_guard.1 = Instant::now();
+
+        stdout
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn is_interface_physical(&self) -> bool {
+        let interface_name = &self.iface.name;
+        let stdout = Self::get_networksetup_output().await;
 
         let lines: Vec<&str> = stdout.lines().collect();
 
@@ -79,11 +113,7 @@ impl InterfaceFilter {
 
             if line.contains("Device:") && line.contains(interface_name) {
                 let next_line = lines[i + 1];
-                if next_line.contains("Virtual Interface") {
-                    return false;
-                } else {
-                    return true;
-                }
+                return !next_line.contains("Virtual Interface");
             }
         }
 
@@ -211,7 +241,7 @@ impl IPCollector {
                         cached_ip_list.read().await.public_ipv6
                     );
 
-                    let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_none() {
+                    let sleep_sec = if cached_ip_list.read().await.public_ipv4.is_some() {
                         CACHED_IP_LIST_TIMEOUT_SEC
                     } else {
                         3
@@ -252,14 +282,11 @@ impl IPCollector {
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
-                match ip {
-                    std::net::IpAddr::V4(v4) => {
-                        if ip.is_loopback() || ip.is_multicast() {
-                            continue;
-                        }
-                        ret.interface_ipv4s.push(v4.into());
+                if let std::net::IpAddr::V4(v4) = ip {
+                    if ip.is_loopback() || ip.is_multicast() {
+                        continue;
                     }
-                    _ => {}
+                    ret.interface_ipv4s.push(v4.into());
                 }
             }
         }
@@ -269,14 +296,11 @@ impl IPCollector {
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
-                match ip {
-                    std::net::IpAddr::V6(v6) => {
-                        if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
-                            continue;
-                        }
-                        ret.interface_ipv6s.push(v6.into());
+                if let std::net::IpAddr::V6(v6) = ip {
+                    if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
+                        continue;
                     }
-                    _ => {}
+                    ret.interface_ipv6s.push(v6.into());
                 }
             }
         }

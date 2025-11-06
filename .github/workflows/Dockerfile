@@ -8,10 +8,16 @@ WORKDIR /tmp/output
 RUN ARTIFACT_ARCH=""; \
     if [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
         ARTIFACT_ARCH="x86_64"; \
+    elif [ "$TARGETPLATFORM" = "linux/arm/v6" ]; then \
+        ARTIFACT_ARCH="armhf"; \
+    elif [ "$TARGETPLATFORM" = "linux/arm/v7" ]; then \
+        ARTIFACT_ARCH="armv7hf"; \
     elif [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
         ARTIFACT_ARCH="aarch64"; \
+    elif [ "$TARGETPLATFORM" = "linux/riscv64" ]; then \
+        ARTIFACT_ARCH="riscv64"; \
     else \
-        echo "Unsupported architecture: $TARGETARCH"; \
+        echo "Unsupported architecture: $TARGETPLATFORM"; \
         exit 1; \
     fi; \
     cp /tmp/artifacts/easytier-linux-${ARTIFACT_ARCH}/* /tmp/output;

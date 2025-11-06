@@ -67,6 +67,10 @@ message Rule {
 
   // Connection tracking
   bool stateful = 13; // Enable connection tracking
+
+  // Group matching criteria
+  repeated string source_groups = 14;
+  repeated string destination_groups = 15;
 }
 
 // Rule chain with metadata and optimization hints
@@ -84,7 +88,20 @@ message Chain {
   Action default_action = 6;
 }
 
-message AclV1 { repeated Chain chains = 1; }
+message GroupInfo {
+  repeated GroupIdentity declares = 1;
+  repeated string members = 2;
+}
+
+message GroupIdentity {
+  string group_name = 1;
+  string group_secret = 2;
+}
+
+message AclV1 { 
+  repeated Chain chains = 1;
+  GroupInfo group = 2;
+}
 
 enum ConnState {
   New = 0;

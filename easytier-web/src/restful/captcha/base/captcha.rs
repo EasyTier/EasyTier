@@ -46,22 +46,22 @@ pub(crate) struct Captcha {
 /// 验证码文本类型 The character type of the captcha
 pub enum CaptchaType {
     /// 字母数字混合
-    TypeDefault = 1,
+    Default = 1,
 
     /// 纯数字
-    TypeOnlyNumber,
+    OnlyNumber,
 
     /// 纯字母
-    TypeOnlyChar,
+    OnlyChar,
 
     /// 纯大写字母
-    TypeOnlyUpper,
+    OnlyUpper,
 
     /// 纯小写字母
-    TypeOnlyLower,
+    OnlyLower,
 
     /// 数字大写字母
-    TypeNumAndUpper,
+    NumAndUpper,
 }
 
 /// 内置字体 Fonts shipped with the library
@@ -92,29 +92,29 @@ impl Captcha {
     /// 生成随机验证码
     pub fn alphas(&mut self) -> Vec<char> {
         let mut cs = vec!['\0'; self.len];
-        for i in 0..self.len {
+        for cs_i in cs.iter_mut() {
             match self.char_type {
-                CaptchaType::TypeDefault => cs[i] = self.randoms.alpha(),
-                CaptchaType::TypeOnlyNumber => {
-                    cs[i] = self.randoms.alpha_under(self.randoms.num_max_index)
+                CaptchaType::Default => *cs_i = self.randoms.alpha(),
+                CaptchaType::OnlyNumber => {
+                    *cs_i = self.randoms.alpha_under(self.randoms.num_max_index)
                 }
-                CaptchaType::TypeOnlyChar => {
-                    cs[i] = self
+                CaptchaType::OnlyChar => {
+                    *cs_i = self
                         .randoms
                         .alpha_between(self.randoms.char_min_index, self.randoms.char_max_index)
                 }
-                CaptchaType::TypeOnlyUpper => {
-                    cs[i] = self
+                CaptchaType::OnlyUpper => {
+                    *cs_i = self
                         .randoms
                         .alpha_between(self.randoms.upper_min_index, self.randoms.upper_max_index)
                 }
-                CaptchaType::TypeOnlyLower => {
-                    cs[i] = self
+                CaptchaType::OnlyLower => {
+                    *cs_i = self
                         .randoms
                         .alpha_between(self.randoms.lower_min_index, self.randoms.lower_max_index)
                 }
-                CaptchaType::TypeNumAndUpper => {
-                    cs[i] = self.randoms.alpha_under(self.randoms.upper_max_index)
+                CaptchaType::NumAndUpper => {
+                    *cs_i = self.randoms.alpha_under(self.randoms.upper_max_index)
                 }
             }
         }
@@ -142,7 +142,7 @@ impl Captcha {
         }
     }
 
-    pub fn get_font(&mut self) -> Arc<Font> {
+    pub fn get_font(&'_ mut self) -> Arc<Font<'_>> {
         if let Some(font) = font::get_font(&self.font_name) {
             font
         } else {
@@ -185,6 +185,7 @@ where
     /// 特别地/In particular:
     ///
     /// - 对算术验证码[ArithmeticCaptcha](crate::captcha::arithmetic::ArithmeticCaptcha)而言，这里的`len`是验证码中数字的数量。
+    ///
     /// For [ArithmeticCaptcha](crate::captcha::arithmetic::ArithmeticCaptcha), the `len` presents the count of the digits
     /// in the Captcha.
     fn with_size_and_len(width: i32, height: i32, len: usize) -> Self;
@@ -226,7 +227,7 @@ impl NewCaptcha for Captcha {
         let len = 5;
         let width = 130;
         let height = 48;
-        let char_type = CaptchaType::TypeDefault;
+        let char_type = CaptchaType::Default;
         let chars = None;
 
         Self {

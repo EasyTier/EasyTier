@@ -5,6 +5,7 @@ on:
     branches: ["develop", "main", "releases/**"]
   pull_request:
     branches: ["develop", "main"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,6 +16,16 @@ defaults:
     shell: bash
 
 jobs:
+  cargo_fmt_check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: fmt check
+        working-directory: ./easytier-contrib/easytier-ohrs
+        run: |
+          bash ../../.github/workflows/install_rust.sh
+          rustup component add rustfmt
+          cargo fmt --all -- --check
   pre_job:
     # continue-on-error: true # Uncomment once integration is finished
     runs-on: ubuntu-latest
@@ -27,9 +38,9 @@ jobs:
         uses: fkirc/skip-duplicate-actions@v5
         with:
           # All of these options are optional, so you can remove them if you are happy with the defaults
-          concurrent_skipping: 'same_content_newer'
-          skip_after_successful_duplicate: 'true'
-          cancel_others: 'true'
+          concurrent_skipping: "same_content_newer"
+          skip_after_successful_duplicate: "true"
+          cancel_others: "true"
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/workflows/install_rust.sh"]'
   build-ohos:
     runs-on: ubuntu-latest
@@ -104,11 +115,15 @@ jobs:
           cargo update easytier
           ohrs doctor
           ohrs build --release --arch aarch
-          
+          ohrs artifact
+          mv package.har easytier-ohrs.har
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: easytier-ohos
-          path: ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
+          path: |
+            ./easytier-contrib/easytier-ohrs/easytier-ohrs.har
+            ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
           retention-days: 5
           if-no-files-found: error

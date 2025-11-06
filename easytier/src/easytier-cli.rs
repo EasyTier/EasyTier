@@ -4,7 +4,6 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
-    sync::Mutex,
     time::Duration,
     vec,
 };
@@ -22,31 +21,43 @@ use tokio::time::timeout;
 
 use easytier::{
     common::{
-        config::PortForwardConfig,
         constants::EASYTIER_VERSION,
         stun::{StunInfoCollector, StunInfoCollectorTrait},
     },
+    peers,
     proto::{
-        cli::{
-            list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, AddPortForwardRequest,
-            ConnectorManageRpc, ConnectorManageRpcClientFactory, DumpRouteRequest,
-            GetAclStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest, ListConnectorRequest,
-            ListForeignNetworkRequest, ListGlobalForeignNetworkRequest, ListMappedListenerRequest,
-            ListPeerRequest, ListPeerResponse, ListPortForwardRequest, ListRouteRequest,
-            ListRouteResponse, ManageMappedListenerRequest, MappedListenerManageAction,
-            MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo, PeerManageRpc,
-            PeerManageRpcClientFactory, PortForwardManageRpc, PortForwardManageRpcClientFactory,
-            RemovePortForwardRequest, SetWhitelistRequest, ShowNodeInfoRequest, TcpProxyEntryState,
-            TcpProxyEntryTransportType, TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc,
-            VpnPortalRpcClientFactory,
+        api::{
+            config::{
+                AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
+                InstanceConfigPatch, PatchConfigRequest, PortForwardPatch, StringPatch, UrlPatch,
+            },
+            instance::{
+                instance_identifier::{InstanceSelector, Selector},
+                list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
+                ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
+                GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest,
+                GetWhitelistRequest, InstanceIdentifier, ListConnectorRequest,
+                ListForeignNetworkRequest, ListGlobalForeignNetworkRequest,
+                ListMappedListenerRequest, ListPeerRequest, ListPeerResponse,
+                ListPortForwardRequest, ListRouteRequest, ListRouteResponse,
+                MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo,
+                PeerManageRpc, PeerManageRpcClientFactory, PortForwardManageRpc,
+                PortForwardManageRpcClientFactory, ShowNodeInfoRequest, StatsRpc,
+                StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
+                TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
+            },
+            logger::{
+                GetLoggerConfigRequest, LogLevel, LoggerRpc, LoggerRpcClientFactory,
+                SetLoggerConfigRequest,
+            },
         },
-        common::{NatType, SocketType},
+        common::{NatType, PortForwardConfigPb, SocketType},
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
     },
     tunnel::tcp::TcpTunnelConnector,
-    utils::{cost_to_str, float_to_str, PeerRoutePair},
+    utils::{cost_to_str, PeerRoutePair},
 };
 
 rust_i18n::i18n!("locales", fallback = "en");
@@ -54,8 +65,12 @@ rust_i18n::i18n!("locales", fallback = "en");
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
 struct Cli {
-    /// the instance name
-    #[arg(short = 'p', long, default_value = "127.0.0.1:15888")]
+    #[arg(
+        short = 'p',
+        long,
+        default_value = "127.0.0.1:15888",
+        help = "easytier-core rpc portal address"
+    )]
     rpc_portal: SocketAddr,
 
     #[arg(short, long, default_value = "false", help = "verbose output")]
@@ -69,6 +84,9 @@ struct Cli {
         help = "output format"
     )]
     output_format: OutputFormat,
+
+    #[command(flatten)]
+    instance_select: InstanceSelectArgs,
 
     #[command(subcommand)]
     sub_command: SubCommand,
@@ -102,6 +120,10 @@ enum SubCommand {
     PortForward(PortForwardArgs),
     #[command(about = "manage TCP/UDP whitelist")]
     Whitelist(WhitelistArgs),
+    #[command(about = "show statistics information")]
+    Stats(StatsArgs),
+    #[command(about = "manage logger configuration")]
+    Logger(LoggerArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: Shell },
 }
@@ -110,6 +132,28 @@ enum SubCommand {
 enum OutputFormat {
     Table,
     Json,
+}
+
+#[derive(Parser, Debug)]
+struct InstanceSelectArgs {
+    #[arg(short = 'i', long = "instance-id", help = "the instance id")]
+    id: Option<uuid::Uuid>,
+
+    #[arg(short = 'n', long = "instance-name", help = "the instance name")]
+    name: Option<String>,
+}
+
+impl From<&InstanceSelectArgs> for InstanceIdentifier {
+    fn from(args: &InstanceSelectArgs) -> Self {
+        InstanceIdentifier {
+            selector: match args.id {
+                Some(id) => Some(Selector::Id(id.into())),
+                None => Some(Selector::InstanceSelector(InstanceSelector {
+                    name: args.name.clone(),
+                })),
+            },
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -256,6 +300,37 @@ enum WhitelistSubCommand {
 }
 
 #[derive(Args, Debug)]
+struct StatsArgs {
+    #[command(subcommand)]
+    sub_command: Option<StatsSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum StatsSubCommand {
+    /// Show general statistics
+    Show,
+    /// Show statistics in Prometheus format
+    Prometheus,
+}
+
+#[derive(Args, Debug)]
+struct LoggerArgs {
+    #[command(subcommand)]
+    sub_command: Option<LoggerSubCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum LoggerSubCommand {
+    /// Get current logger configuration
+    Get,
+    /// Set logger level
+    Set {
+        #[arg(help = "Log level (disabled, error, warning, info, debug, trace)")]
+        level: String,
+    },
+}
+
+#[derive(Args, Debug)]
 struct ServiceArgs {
     #[arg(short, long, default_value = env!("CARGO_PKG_NAME"), help = "service name")]
     name: String,
@@ -309,9 +384,10 @@ struct InstallArgs {
 type Error = anyhow::Error;
 
 struct CommandHandler<'a> {
-    client: Mutex<RpcClient>,
+    client: tokio::sync::Mutex<RpcClient>,
     verbose: bool,
     output_format: &'a OutputFormat,
+    instance_selector: InstanceIdentifier,
 }
 
 type RpcClient = StandAloneClient<TcpTunnelConnector>;
@@ -323,7 +399,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<PeerManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get peer manager client")?)
@@ -335,7 +411,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<ConnectorManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get connector manager client")?)
@@ -347,7 +423,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<MappedListenerManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get mapped listener manager client")?)
@@ -359,7 +435,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<PeerCenterRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get peer center client")?)
@@ -371,7 +447,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<VpnPortalRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
@@ -383,7 +459,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<AclManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get acl manager client")?)
@@ -396,7 +472,7 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<TcpProxyRpcClientFactory<BaseController>>(transport_type.to_string())
             .await
             .with_context(|| "failed to get vpn portal client")?)
@@ -408,22 +484,62 @@ impl CommandHandler<'_> {
         Ok(self
             .client
             .lock()
-            .unwrap()
+            .await
             .scoped_client::<PortForwardManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get port forward manager client")?)
     }
 
+    async fn get_stats_client(
+        &self,
+    ) -> Result<Box<dyn StatsRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<StatsRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get stats client")?)
+    }
+
+    async fn get_logger_client(
+        &self,
+    ) -> Result<Box<dyn LoggerRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<LoggerRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get logger client")?)
+    }
+
+    async fn get_config_client(
+        &self,
+    ) -> Result<Box<dyn ConfigRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<ConfigRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get config client")?)
+    }
+
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListPeerRequest::default();
+        let request = ListPeerRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client.list_peer(BaseController::default(), request).await?;
         Ok(response)
     }
 
     async fn list_routes(&self) -> Result<ListRouteResponse, Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListRouteRequest::default();
+        let request = ListRouteRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_route(BaseController::default(), request)
             .await?;
@@ -455,12 +571,19 @@ impl CommandHandler<'_> {
             ipv4: String,
             hostname: String,
             cost: String,
+            #[tabled(rename = "lat(ms)")]
             lat_ms: String,
+            #[tabled(rename = "loss")]
             loss_rate: String,
+            #[tabled(rename = "rx")]
             rx_bytes: String,
+            #[tabled(rename = "tx")]
             tx_bytes: String,
+            #[tabled(rename = "tunnel")]
             tunnel_proto: String,
+            #[tabled(rename = "NAT")]
             nat_type: String,
+            #[tabled(skip)]
             id: String,
             version: String,
         }
@@ -468,6 +591,11 @@ impl CommandHandler<'_> {
         impl From<PeerRoutePair> for PeerTableItem {
             fn from(p: PeerRoutePair) -> Self {
                 let route = p.route.clone().unwrap_or_default();
+                let lat_ms = if route.cost == 1 {
+                    p.get_latency_ms().unwrap_or(0.0)
+                } else {
+                    route.path_latency_latency_first() as f64
+                };
                 PeerTableItem {
                     cidr: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
                     ipv4: route
@@ -477,12 +605,8 @@ impl CommandHandler<'_> {
                         .unwrap_or_default(),
                     hostname: route.hostname.clone(),
                     cost: cost_to_str(route.cost),
-                    lat_ms: if route.cost == 1 {
-                        float_to_str(p.get_latency_ms().unwrap_or(0.0), 3)
-                    } else {
-                        route.path_latency_latency_first().to_string()
-                    },
-                    loss_rate: float_to_str(p.get_loss_rate().unwrap_or(0.0), 3),
+                    lat_ms: format!("{:.2}", lat_ms),
+                    loss_rate: format!("{:.1}%", p.get_loss_rate().unwrap_or(0.0) * 100.0),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p
@@ -535,7 +659,12 @@ impl CommandHandler<'_> {
 
         let client = self.get_peer_manager_client().await?;
         let node_info = client
-            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+            .show_node_info(
+                BaseController::default(),
+                ShowNodeInfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -545,6 +674,42 @@ impl CommandHandler<'_> {
             items.push(p.into());
         }
 
+        // Sort items: local IP first, then public servers, then other servers by IP
+        items.sort_by(|a, b| {
+            use std::net::{IpAddr, Ipv4Addr};
+            use std::str::FromStr;
+
+            // Priority 1: Local IP (cost is "Local")
+            let a_is_local = a.cost == "Local";
+            let b_is_local = b.cost == "Local";
+            if a_is_local != b_is_local {
+                return if a_is_local {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+
+            // Priority 2: Public servers
+            let a_is_public = a.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
+            let b_is_public = b.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
+            if a_is_public != b_is_public {
+                return if a_is_public {
+                    std::cmp::Ordering::Less
+                } else {
+                    std::cmp::Ordering::Greater
+                };
+            }
+
+            // Priority 3: Sort by IP address
+            let a_ip = IpAddr::from_str(&a.ipv4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            let b_ip = IpAddr::from_str(&b.ipv4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+            match a_ip.cmp(&b_ip) {
+                std::cmp::Ordering::Equal => a.hostname.cmp(&b.hostname),
+                other => other,
+            }
+        });
+
         print_output(&items, self.output_format)?;
 
         Ok(())
@@ -552,7 +717,9 @@ impl CommandHandler<'_> {
 
     async fn handle_route_dump(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = DumpRouteRequest::default();
+        let request = DumpRouteRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .dump_route(BaseController::default(), request)
             .await?;
@@ -562,7 +729,9 @@ impl CommandHandler<'_> {
 
     async fn handle_foreign_network_list(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListForeignNetworkRequest::default();
+        let request = ListForeignNetworkRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_foreign_network(BaseController::default(), request)
             .await?;
@@ -605,7 +774,9 @@ impl CommandHandler<'_> {
 
     async fn handle_global_foreign_network_list(&self) -> Result<(), Error> {
         let client = self.get_peer_manager_client().await?;
-        let request = ListGlobalForeignNetworkRequest::default();
+        let request = ListGlobalForeignNetworkRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_global_foreign_network(BaseController::default(), request)
             .await?;
@@ -654,7 +825,12 @@ impl CommandHandler<'_> {
         let mut items: Vec<RouteTableItem> = vec![];
         let client = self.get_peer_manager_client().await?;
         let node_info = client
-            .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+            .show_node_info(
+                BaseController::default(),
+                ShowNodeInfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
             .await?
             .node_info
             .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -776,7 +952,9 @@ impl CommandHandler<'_> {
 
     async fn handle_connector_list(&self) -> Result<(), Error> {
         let client = self.get_connector_manager_client().await?;
-        let request = ListConnectorRequest::default();
+        let request = ListConnectorRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_connector(BaseController::default(), request)
             .await?;
@@ -790,7 +968,9 @@ impl CommandHandler<'_> {
 
     async fn handle_acl_stats(&self) -> Result<(), Error> {
         let client = self.get_acl_manager_client().await?;
-        let request = GetAclStatsRequest::default();
+        let request = GetAclStatsRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .get_acl_stats(BaseController::default(), request)
             .await?;
@@ -810,7 +990,9 @@ impl CommandHandler<'_> {
 
     async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
         let client = self.get_mapped_listener_manager_client().await?;
-        let request = ListMappedListenerRequest::default();
+        let request = ListMappedListenerRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_mapped_listener(BaseController::default(), request)
             .await?;
@@ -825,33 +1007,30 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    async fn handle_mapped_listener_add(&self, url: &String) -> Result<(), Error> {
+    async fn handle_mapped_listener_modify(
+        &self,
+        url: &str,
+        action: ConfigPatchAction,
+    ) -> Result<(), Error> {
         let url = Self::mapped_listener_validate_url(url)?;
-        let client = self.get_mapped_listener_manager_client().await?;
-        let request = ManageMappedListenerRequest {
-            action: MappedListenerManageAction::MappedListenerAdd as i32,
-            url: Some(url.into()),
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                mapped_listeners: vec![UrlPatch {
+                    action: action.into(),
+                    url: Some(url.into()),
+                }],
+                ..Default::default()
+            }),
         };
         let _response = client
-            .manage_mapped_listener(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         Ok(())
     }
 
-    async fn handle_mapped_listener_remove(&self, url: &String) -> Result<(), Error> {
-        let url = Self::mapped_listener_validate_url(url)?;
-        let client = self.get_mapped_listener_manager_client().await?;
-        let request = ManageMappedListenerRequest {
-            action: MappedListenerManageAction::MappedListenerRemove as i32,
-            url: Some(url.into()),
-        };
-        let _response = client
-            .manage_mapped_listener(BaseController::default(), request)
-            .await?;
-        Ok(())
-    }
-
-    fn mapped_listener_validate_url(url: &String) -> Result<url::Url, Error> {
+    fn mapped_listener_validate_url(url: &str) -> Result<url::Url, Error> {
         let url = url::Url::parse(url)?;
         if url.scheme() != "tcp" && url.scheme() != "udp" {
             return Err(anyhow::anyhow!(
@@ -863,47 +1042,9 @@ impl CommandHandler<'_> {
         Ok(url)
     }
 
-    async fn handle_port_forward_add(
+    async fn handle_port_forward_modify(
         &self,
-        protocol: &str,
-        bind_addr: &str,
-        dst_addr: &str,
-    ) -> Result<(), Error> {
-        let bind_addr: std::net::SocketAddr = bind_addr
-            .parse()
-            .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
-        let dst_addr: std::net::SocketAddr = dst_addr
-            .parse()
-            .with_context(|| format!("Invalid destination address: {}", dst_addr))?;
-
-        if protocol != "tcp" && protocol != "udp" {
-            return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'"));
-        }
-
-        let client = self.get_port_forward_manager_client().await?;
-        let request = AddPortForwardRequest {
-            cfg: Some(
-                PortForwardConfig {
-                    proto: protocol.to_string(),
-                    bind_addr: bind_addr.into(),
-                    dst_addr: dst_addr.into(),
-                }
-                .into(),
-            ),
-        };
-
-        client
-            .add_port_forward(BaseController::default(), request)
-            .await?;
-        println!(
-            "Port forward rule added: {} {} -> {}",
-            protocol, bind_addr, dst_addr
-        );
-        Ok(())
-    }
-
-    async fn handle_port_forward_remove(
-        &self,
+        action: ConfigPatchAction,
         protocol: &str,
         bind_addr: &str,
         dst_addr: Option<&str>,
@@ -912,35 +1053,45 @@ impl CommandHandler<'_> {
             .parse()
             .with_context(|| format!("Invalid bind address: {}", bind_addr))?;
 
-        if protocol != "tcp" && protocol != "udp" {
-            return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'"));
-        }
+        let socket_type = match protocol {
+            "tcp" => SocketType::Tcp,
+            "udp" => SocketType::Udp,
+            _ => return Err(anyhow::anyhow!("Protocol must be 'tcp' or 'udp'")),
+        };
 
-        let client = self.get_port_forward_manager_client().await?;
-        let request = RemovePortForwardRequest {
-            cfg: Some(
-                PortForwardConfig {
-                    proto: protocol.to_string(),
-                    bind_addr: bind_addr.into(),
-                    dst_addr: dst_addr
-                        .map(|s| s.parse::<SocketAddr>().unwrap())
-                        .map(Into::into)
-                        .unwrap_or("0.0.0.0:0".parse::<SocketAddr>().unwrap().into()),
-                }
-                .into(),
-            ),
+        let client = self.get_config_client().await?;
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                port_forwards: vec![PortForwardPatch {
+                    action: action.into(),
+                    cfg: Some(PortForwardConfigPb {
+                        bind_addr: Some(bind_addr.into()),
+                        dst_addr: dst_addr.map(|s| s.parse::<SocketAddr>().unwrap().into()),
+                        socket_type: socket_type.into(),
+                    }),
+                }],
+                ..Default::default()
+            }),
         };
 
         client
-            .remove_port_forward(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
-        println!("Port forward rule removed: {} {}", protocol, bind_addr);
+        println!(
+            "Port forward rule {}: {} {}",
+            action.as_str_name().to_lowercase(),
+            protocol,
+            bind_addr
+        );
         Ok(())
     }
 
     async fn handle_port_forward_list(&self) -> Result<(), Error> {
         let client = self.get_port_forward_manager_client().await?;
-        let request = ListPortForwardRequest::default();
+        let request = ListPortForwardRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .list_port_forward(BaseController::default(), request)
             .await?;
@@ -981,78 +1132,118 @@ impl CommandHandler<'_> {
     }
 
     async fn handle_whitelist_set_tcp(&self, ports: &str) -> Result<(), Error> {
-        let tcp_ports = Self::parse_port_list(ports)?;
-        let client = self.get_acl_manager_client().await?;
+        let mut whitelist = Self::parse_port_list(ports)?
+            .into_iter()
+            .map(|p| StringPatch {
+                action: ConfigPatchAction::Add.into(),
+                value: p,
+            })
+            .collect::<Vec<_>>();
+        whitelist.insert(
+            0,
+            StringPatch {
+                action: ConfigPatchAction::Clear.into(),
+                value: "".to_string(),
+            },
+        );
+        let client = self.get_config_client().await?;
 
-        // Get current UDP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports,
-            udp_ports: current.udp_ports,
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    tcp_whitelist: whitelist,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("TCP whitelist updated: {}", ports);
         Ok(())
     }
 
     async fn handle_whitelist_set_udp(&self, ports: &str) -> Result<(), Error> {
-        let udp_ports = Self::parse_port_list(ports)?;
-        let client = self.get_acl_manager_client().await?;
+        let mut whitelist = Self::parse_port_list(ports)?
+            .into_iter()
+            .map(|p| StringPatch {
+                action: ConfigPatchAction::Add.into(),
+                value: p,
+            })
+            .collect::<Vec<_>>();
+        whitelist.insert(
+            0,
+            StringPatch {
+                action: ConfigPatchAction::Clear.into(),
+                value: "".to_string(),
+            },
+        );
+        let client = self.get_config_client().await?;
 
-        // Get current TCP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports: current.tcp_ports,
-            udp_ports,
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    udp_whitelist: whitelist,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("UDP whitelist updated: {}", ports);
         Ok(())
     }
 
     async fn handle_whitelist_clear_tcp(&self) -> Result<(), Error> {
-        let client = self.get_acl_manager_client().await?;
+        let client = self.get_config_client().await?;
 
-        // Get current UDP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports: vec![],
-            udp_ports: current.udp_ports,
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    tcp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        value: "".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("TCP whitelist cleared");
         Ok(())
     }
 
     async fn handle_whitelist_clear_udp(&self) -> Result<(), Error> {
-        let client = self.get_acl_manager_client().await?;
+        let client = self.get_config_client().await?;
 
-        // Get current TCP ports to preserve them
-        let current = client
-            .get_whitelist(BaseController::default(), GetWhitelistRequest::default())
-            .await?;
-        let request = SetWhitelistRequest {
-            tcp_ports: current.tcp_ports,
-            udp_ports: vec![],
+        let request = PatchConfigRequest {
+            instance: Some(self.instance_selector.clone()),
+            patch: Some(InstanceConfigPatch {
+                acl: Some(AclPatch {
+                    udp_whitelist: vec![StringPatch {
+                        action: ConfigPatchAction::Clear.into(),
+                        value: "".to_string(),
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
         };
 
         client
-            .set_whitelist(BaseController::default(), request)
+            .patch_config(BaseController::default(), request)
             .await?;
         println!("UDP whitelist cleared");
         Ok(())
@@ -1060,7 +1251,9 @@ impl CommandHandler<'_> {
 
     async fn handle_whitelist_show(&self) -> Result<(), Error> {
         let client = self.get_acl_manager_client().await?;
-        let request = GetWhitelistRequest::default();
+        let request = GetWhitelistRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
         let response = client
             .get_whitelist(BaseController::default(), request)
             .await?;
@@ -1087,6 +1280,66 @@ impl CommandHandler<'_> {
                 response.udp_ports.join(", ")
             }
         );
+
+        Ok(())
+    }
+
+    async fn handle_logger_get(&self) -> Result<(), Error> {
+        let client = self.get_logger_client().await?;
+        let request = GetLoggerConfigRequest::default();
+        let response = client
+            .get_logger_config(BaseController::default(), request)
+            .await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                let level_str = match response.level() {
+                    LogLevel::Disabled => "disabled",
+                    LogLevel::Error => "error",
+                    LogLevel::Warning => "warning",
+                    LogLevel::Info => "info",
+                    LogLevel::Debug => "debug",
+                    LogLevel::Trace => "trace",
+                };
+                println!("Current Log Level: {}", level_str);
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_logger_set(&self, level: &str) -> Result<(), Error> {
+        let log_level = match level.to_lowercase().as_str() {
+            "disabled" => LogLevel::Disabled,
+            "error" => LogLevel::Error,
+            "warning" => LogLevel::Warning,
+            "info" => LogLevel::Info,
+            "debug" => LogLevel::Debug,
+            "trace" => LogLevel::Trace,
+            _ => return Err(anyhow::anyhow!("Invalid log level: {}. Valid levels are: disabled, error, warning, info, debug, trace", level)),
+        };
+
+        let client = self.get_logger_client().await?;
+        let request = SetLoggerConfigRequest {
+            level: log_level.into(),
+        };
+        let response = client
+            .set_logger_config(BaseController::default(), request)
+            .await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                println!("Log level successfully set to: {}", level);
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
 
         Ok(())
     }
@@ -1259,6 +1512,7 @@ impl Service {
             ServiceManagerKind::Systemd => Some(self.make_systemd_unit(options).unwrap()),
             ServiceManagerKind::Rcd => Some(self.make_rcd_script(options).unwrap()),
             ServiceManagerKind::OpenRc => Some(self.make_open_rc_script(options).unwrap()),
+            ServiceManagerKind::Launchd => None, // 使用 service-manager-rs 的默认 plist 生成
             _ => {
                 #[cfg(target_os = "windows")]
                 {
@@ -1396,7 +1650,7 @@ where
 {
     match format {
         OutputFormat::Table => {
-            println!("{}", tabled::Table::new(items).with(Style::modern()));
+            println!("{}", tabled::Table::new(items).with(Style::markdown()));
         }
         OutputFormat::Json => {
             println!("{}", serde_json::to_string_pretty(items)?);
@@ -1418,9 +1672,10 @@ async fn main() -> Result<(), Error> {
             .unwrap(),
     ));
     let handler = CommandHandler {
-        client: Mutex::new(client),
+        client: tokio::sync::Mutex::new(client),
         verbose: cli.verbose,
         output_format: &cli.output_format,
+        instance_selector: (&cli.instance_select).into(),
     };
 
     match cli.sub_command {
@@ -1461,11 +1716,15 @@ async fn main() -> Result<(), Error> {
         SubCommand::MappedListener(mapped_listener_args) => {
             match mapped_listener_args.sub_command {
                 Some(MappedListenerSubCommand::Add { url }) => {
-                    handler.handle_mapped_listener_add(&url).await?;
+                    handler
+                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Add)
+                        .await?;
                     println!("add mapped listener: {url}");
                 }
                 Some(MappedListenerSubCommand::Remove { url }) => {
-                    handler.handle_mapped_listener_remove(&url).await?;
+                    handler
+                        .handle_mapped_listener_modify(&url, ConfigPatchAction::Remove)
+                        .await?;
                     println!("remove mapped listener: {url}");
                 }
                 Some(MappedListenerSubCommand::List) | None => {
@@ -1516,7 +1775,12 @@ async fn main() -> Result<(), Error> {
             let node_info = handler
                 .get_peer_manager_client()
                 .await?
-                .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+                .show_node_info(
+                    BaseController::default(),
+                    ShowNodeInfoRequest {
+                        instance: Some((&cli.instance_select).into()),
+                    },
+                )
                 .await?
                 .node_info
                 .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -1620,7 +1884,9 @@ async fn main() -> Result<(), Error> {
             let resp = vpn_portal_client
                 .get_vpn_portal_info(
                     BaseController::default(),
-                    GetVpnPortalInfoRequest::default(),
+                    GetVpnPortalInfoRequest {
+                        instance: Some((&cli.instance_select).into()),
+                    },
                 )
                 .await?
                 .vpn_portal_info
@@ -1639,7 +1905,12 @@ async fn main() -> Result<(), Error> {
         SubCommand::Node(sub_cmd) => {
             let client = handler.get_peer_manager_client().await?;
             let node_info = client
-                .show_node_info(BaseController::default(), ShowNodeInfoRequest::default())
+                .show_node_info(
+                    BaseController::default(),
+                    ShowNodeInfoRequest {
+                        instance: Some((&cli.instance_select).into()),
+                    },
+                )
                 .await?
                 .node_info
                 .ok_or(anyhow::anyhow!("node info not found"))?;
@@ -1676,16 +1947,10 @@ async fn main() -> Result<(), Error> {
                         format!("{:?}", stun_info.udp_nat_type()).as_str(),
                     ]);
                     ip_list.interface_ipv4s.iter().for_each(|ip| {
-                        builder.push_record(vec![
-                            "Interface IPv4",
-                            format!("{}", ip.to_string()).as_str(),
-                        ]);
+                        builder.push_record(vec!["Interface IPv4", ip.to_string().as_str()]);
                     });
                     ip_list.interface_ipv6s.iter().for_each(|ip| {
-                        builder.push_record(vec![
-                            "Interface IPv6",
-                            format!("{}", ip.to_string()).as_str(),
-                        ]);
+                        builder.push_record(vec!["Interface IPv6", ip.to_string().as_str()]);
                     });
                     for (idx, l) in node_info.listeners.iter().enumerate() {
                         if l.starts_with("ring") {
@@ -1694,7 +1959,7 @@ async fn main() -> Result<(), Error> {
                         builder.push_record(vec![format!("Listener {}", idx).as_str(), l]);
                     }
 
-                    println!("{}", builder.build().with(Style::modern()));
+                    println!("{}", builder.build().with(Style::markdown()));
                 }
                 Some(NodeSubCommand::Config) => {
                     println!("{}", node_info.config);
@@ -1834,7 +2099,12 @@ async fn main() -> Result<(), Error> {
                 dst_addr,
             }) => {
                 handler
-                    .handle_port_forward_add(protocol, bind_addr, dst_addr)
+                    .handle_port_forward_modify(
+                        ConfigPatchAction::Add,
+                        protocol,
+                        bind_addr,
+                        Some(dst_addr),
+                    )
                     .await?;
             }
             Some(PortForwardSubCommand::Remove {
@@ -1843,7 +2113,12 @@ async fn main() -> Result<(), Error> {
                 dst_addr,
             }) => {
                 handler
-                    .handle_port_forward_remove(protocol, bind_addr, dst_addr.as_deref())
+                    .handle_port_forward_modify(
+                        ConfigPatchAction::Remove,
+                        protocol,
+                        bind_addr,
+                        dst_addr.as_deref(),
+                    )
                     .await?;
             }
             Some(PortForwardSubCommand::List) | None => {
@@ -1865,6 +2140,81 @@ async fn main() -> Result<(), Error> {
             }
             Some(WhitelistSubCommand::Show) | None => {
                 handler.handle_whitelist_show().await?;
+            }
+        },
+        SubCommand::Stats(stats_args) => match &stats_args.sub_command {
+            Some(StatsSubCommand::Show) | None => {
+                let client = handler.get_stats_client().await?;
+                let request = GetStatsRequest {
+                    instance: Some((&cli.instance_select).into()),
+                };
+                let response = client.get_stats(BaseController::default(), request).await?;
+
+                if cli.output_format == OutputFormat::Json {
+                    println!("{}", serde_json::to_string_pretty(&response.metrics)?);
+                } else {
+                    #[derive(tabled::Tabled, serde::Serialize)]
+                    struct StatsTableRow {
+                        #[tabled(rename = "Metric Name")]
+                        name: String,
+                        #[tabled(rename = "Value")]
+                        value: String,
+                        #[tabled(rename = "Labels")]
+                        labels: String,
+                    }
+
+                    let table_rows: Vec<StatsTableRow> = response
+                        .metrics
+                        .iter()
+                        .map(|metric| {
+                            let labels_str = if metric.labels.is_empty() {
+                                "-".to_string()
+                            } else {
+                                metric
+                                    .labels
+                                    .iter()
+                                    .map(|(k, v)| format!("{}={}", k, v))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            };
+
+                            let formatted_value = if metric.name.contains("bytes") {
+                                format_size(metric.value, humansize::BINARY)
+                            } else if metric.name.contains("duration") {
+                                format!("{} ms", metric.value)
+                            } else {
+                                metric.value.to_string()
+                            };
+
+                            StatsTableRow {
+                                name: metric.name.clone(),
+                                value: formatted_value,
+                                labels: labels_str,
+                            }
+                        })
+                        .collect();
+
+                    print_output(&table_rows, &cli.output_format)?
+                }
+            }
+            Some(StatsSubCommand::Prometheus) => {
+                let client = handler.get_stats_client().await?;
+                let request = GetPrometheusStatsRequest {
+                    instance: Some((&cli.instance_select).into()),
+                };
+                let response = client
+                    .get_prometheus_stats(BaseController::default(), request)
+                    .await?;
+
+                println!("{}", response.prometheus_text);
+            }
+        },
+        SubCommand::Logger(logger_args) => match &logger_args.sub_command {
+            Some(LoggerSubCommand::Get) | None => {
+                handler.handle_logger_get().await?;
+            }
+            Some(LoggerSubCommand::Set { level }) => {
+                handler.handle_logger_set(level).await?;
             }
         },
         SubCommand::GenAutocomplete { shell } => {
@@ -1964,12 +2314,12 @@ mod win_service_manager {
             let service = self
                 .service_manager
                 .create_service(&service_info, ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
             if let Some(s) = description {
                 service
                     .set_description(s.clone())
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                    .map_err(io::Error::other)?;
             }
 
             if let Some(work_dir) = ctx.working_directory {
@@ -1983,33 +2333,27 @@ mod win_service_manager {
             let service = self
                 .service_manager
                 .open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
-            service
-                .delete()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            service.delete().map_err(io::Error::other)
         }
 
         fn start(&self, ctx: ServiceStartCtx) -> io::Result<()> {
             let service = self
                 .service_manager
                 .open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
-            service
-                .start(&[] as &[&OsStr])
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+            service.start(&[] as &[&OsStr]).map_err(io::Error::other)
         }
 
         fn stop(&self, ctx: ServiceStopCtx) -> io::Result<()> {
             let service = self
                 .service_manager
                 .open_service(ctx.label.to_qualified_name(), ServiceAccess::ALL_ACCESS)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
 
-            _ = service
-                .stop()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            _ = service.stop().map_err(io::Error::other)?;
 
             Ok(())
         }
@@ -2021,10 +2365,7 @@ mod win_service_manager {
         fn set_level(&mut self, level: ServiceLevel) -> io::Result<()> {
             match level {
                 ServiceLevel::System => Ok(()),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unsupported service level",
-                )),
+                _ => Err(io::Error::other("Unsupported service level")),
             }
         }
 
@@ -2040,13 +2381,11 @@ mod win_service_manager {
                             return Ok(ServiceStatus::NotInstalled);
                         }
                     }
-                    return Err(io::Error::new(io::ErrorKind::Other, e));
+                    return Err(io::Error::other(e));
                 }
             };
 
-            let status = service
-                .query_status()
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            let status = service.query_status().map_err(io::Error::other)?;
 
             match status.current_state {
                 windows_service::service::ServiceState::Stopped => Ok(ServiceStatus::Stopped(None)),

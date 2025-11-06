@@ -85,14 +85,14 @@ fn send_netlink_req_and_wait_one_resp<T: NetlinkDeserializable + NetlinkSerializ
     match ret.payload {
         NetlinkPayload::Error(e) => {
             if e.code == NonZero::new(0) {
-                return Ok(());
+                Ok(())
             } else {
-                return Err(e.to_io().into());
+                Err(e.to_io().into())
             }
         }
         p => {
             tracing::error!("Unexpected netlink response: {:?}", p);
-            return Err(anyhow::anyhow!("Unexpected netlink response").into());
+            Err(anyhow::anyhow!("Unexpected netlink response").into())
         }
     }
 }
@@ -263,8 +263,8 @@ impl NetlinkIfConfiger {
 
             let (address, netmask) = match (address.family(), netmask.family()) {
                 (Some(Inet), Some(Inet)) => (
-                    IpAddr::V4(address.as_sockaddr_in().unwrap().ip().into()),
-                    IpAddr::V4(netmask.as_sockaddr_in().unwrap().ip().into()),
+                    IpAddr::V4(address.as_sockaddr_in().unwrap().ip()),
+                    IpAddr::V4(netmask.as_sockaddr_in().unwrap().ip()),
                 ),
                 (Some(Inet6), Some(Inet6)) => (
                     IpAddr::V6(address.as_sockaddr_in6().unwrap().ip()),
@@ -333,7 +333,7 @@ impl NetlinkIfConfiger {
 
         let mut resp = Vec::<u8>::new();
         loop {
-            if resp.len() == 0 {
+            if resp.is_empty() {
                 let (new_resp, _) = s.recv_from_full()?;
                 resp = new_resp;
             }
@@ -474,17 +474,16 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        if ip.is_none() {
+        if let Some(ip) = ip {
+            let prefix_len = Self::get_prefix_len(name, ip.address())?;
+            Self::remove_one_ip(name, ip.address(), prefix_len)?;
+        } else {
             let addrs = Self::list_addresses(name)?;
             for addr in addrs {
                 if let IpAddr::V4(ipv4) = addr.address() {
                     Self::remove_one_ip(name, ipv4, addr.network_length())?;
                 }
             }
-        } else {
-            let ip = ip.unwrap();
-            let prefix_len = Self::get_prefix_len(name, ip.address())?;
-            Self::remove_one_ip(name, ip.address(), prefix_len)?;
         }
 
         Ok(())
@@ -520,7 +519,10 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     }
 
     async fn remove_ipv6(&self, name: &str, ip: Option<Ipv6Inet>) -> Result<(), Error> {
-        if ip.is_none() {
+        if let Some(ipv6) = ip {
+            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
+            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
+        } else {
             let addrs = Self::list_addresses(name)?;
             for addr in addrs {
                 if let IpAddr::V6(ipv6) = addr.address() {
@@ -528,10 +530,6 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
                     Self::remove_one_ipv6(name, ipv6, prefix_len)?;
                 }
             }
-        } else {
-            let ipv6 = ip.unwrap();
-            let prefix_len = Self::get_prefix_len_ipv6(name, ipv6.address())?;
-            Self::remove_one_ipv6(name, ipv6.address(), prefix_len)?;
         }
 
         Ok(())

@@ -282,9 +282,7 @@ impl StunClient {
                 .with_context(|| "encode stun message")?;
             tids.push(tid);
             tracing::trace!(?message, ?msg, tid, "send stun request");
-            self.socket
-                .send_to(msg.as_slice().into(), &stun_host)
-                .await?;
+            self.socket.send_to(msg.as_slice(), &stun_host).await?;
         }
 
         let now = Instant::now();
@@ -372,7 +370,7 @@ impl StunClientBuilder {
 
     pub async fn stop(&mut self) {
         self.task_set.abort_all();
-        while let Some(_) = self.task_set.join_next().await {}
+        while self.task_set.join_next().await.is_some() {}
     }
 }
 
@@ -417,7 +415,7 @@ impl UdpNatTypeDetectResult {
                 return true;
             }
         }
-        return false;
+        false
     }
 
     fn is_pat(&self) -> bool {
@@ -457,16 +455,16 @@ impl UdpNatTypeDetectResult {
         if self.is_cone() {
             if self.has_ip_changed_resp() {
                 if self.is_open_internet() {
-                    return NatType::OpenInternet;
+                    NatType::OpenInternet
                 } else if self.is_pat() {
-                    return NatType::NoPat;
+                    NatType::NoPat
                 } else {
-                    return NatType::FullCone;
+                    NatType::FullCone
                 }
             } else if self.has_port_changed_resp() {
-                return NatType::Restricted;
+                NatType::Restricted
             } else {
-                return NatType::PortRestricted;
+                NatType::PortRestricted
             }
         } else if !self.stun_resps.is_empty() {
             if self.public_ips().len() != 1
@@ -480,7 +478,7 @@ impl UdpNatTypeDetectResult {
                     .mapped_socket_addr
                     .is_none()
             {
-                return NatType::Symmetric;
+                NatType::Symmetric
             } else {
                 let extra_bind_test = self.extra_bind_test.as_ref().unwrap();
                 let extra_port = extra_bind_test.mapped_socket_addr.unwrap().port();
@@ -488,15 +486,15 @@ impl UdpNatTypeDetectResult {
                 let max_port_diff = extra_port.saturating_sub(self.max_port());
                 let min_port_diff = self.min_port().saturating_sub(extra_port);
                 if max_port_diff != 0 && max_port_diff < 100 {
-                    return NatType::SymmetricEasyInc;
+                    NatType::SymmetricEasyInc
                 } else if min_port_diff != 0 && min_port_diff < 100 {
-                    return NatType::SymmetricEasyDec;
+                    NatType::SymmetricEasyDec
                 } else {
-                    return NatType::Symmetric;
+                    NatType::Symmetric
                 }
             }
         } else {
-            return NatType::Unknown;
+            NatType::Unknown
         }
     }
 
@@ -679,7 +677,7 @@ impl StunInfoCollectorTrait for StunInfoCollector {
             .unwrap()
             .clone()
             .map(|x| x.collect_available_stun_server())
-            .unwrap_or(vec![]);
+            .unwrap_or_default();
 
         if stun_servers.is_empty() {
             let mut host_resolver =
@@ -720,10 +718,10 @@ impl StunInfoCollectorTrait for StunInfoCollector {
 }
 
 impl StunInfoCollector {
-    pub fn new(stun_servers: Vec<String>) -> Self {
+    pub fn new(stun_servers: Vec<String>, stun_servers_v6: Vec<String>) -> Self {
         Self {
             stun_servers: Arc::new(RwLock::new(stun_servers)),
-            stun_servers_v6: Arc::new(RwLock::new(Self::get_default_servers_v6())),
+            stun_servers_v6: Arc::new(RwLock::new(stun_servers_v6)),
             udp_nat_test_result: Arc::new(RwLock::new(None)),
             public_ipv6: Arc::new(AtomicCell::new(None)),
             nat_test_result_time: Arc::new(AtomicCell::new(Local::now())),
@@ -734,13 +732,23 @@ impl StunInfoCollector {
     }
 
     pub fn new_with_default_servers() -> Self {
-        Self::new(Self::get_default_servers())
+        Self::new(Self::get_default_servers(), Self::get_default_servers_v6())
+    }
+
+    pub fn set_stun_servers(&self, stun_servers: Vec<String>) {
+        let mut g = self.stun_servers.write().unwrap();
+        *g = stun_servers;
+    }
+
+    pub fn set_stun_servers_v6(&self, stun_servers_v6: Vec<String>) {
+        let mut g = self.stun_servers_v6.write().unwrap();
+        *g = stun_servers_v6;
     }
 
     pub fn get_default_servers() -> Vec<String> {
-        // NOTICE: we may need to choose stun stun server based on geo location
-        // stun server cross nation may return a external ip address with high latency and loss rate
-        vec![
+        // NOTICE: we may need to choose stun server based on geolocation
+        // stun server cross nation may return an external ip address with high latency and loss rate
+        [
             "txt:stun.easytier.cn",
             "stun.miwifi.com",
             "stun.chat.bilibili.com",
@@ -752,16 +760,16 @@ impl StunInfoCollector {
     }
 
     pub fn get_default_servers_v6() -> Vec<String> {
-        vec!["txt:stun-v6.easytier.cn"]
+        ["txt:stun-v6.easytier.cn"]
             .iter()
             .map(|x| x.to_string())
             .collect()
     }
 
-    async fn get_public_ipv6(servers: &Vec<String>) -> Option<Ipv6Addr> {
+    async fn get_public_ipv6(servers: &[String]) -> Option<Ipv6Addr> {
         let mut ips = HostResolverIter::new(servers.to_vec(), 10, true);
         while let Some(ip) = ips.next().await {
-            let Ok(udp_socket) = UdpSocket::bind(format!("[::]:0")).await else {
+            let Ok(udp_socket) = UdpSocket::bind("[::]:0".to_string()).await else {
                 break;
             };
             let udp = Arc::new(udp_socket);
@@ -770,11 +778,8 @@ impl StunInfoCollector {
                 .bind_request(false, false)
                 .await;
             tracing::debug!(?ret, "finish ipv6 udp nat type detect");
-            match ret.map(|x| x.mapped_socket_addr.map(|x| x.ip())) {
-                Ok(Some(IpAddr::V6(v6))) => {
-                    return Some(v6);
-                }
-                _ => {}
+            if let Ok(Some(IpAddr::V6(v6))) = ret.map(|x| x.mapped_socket_addr.map(|x| x.ip())) {
+                return Some(v6);
             }
         }
         None
@@ -854,9 +859,9 @@ impl StunInfoCollector {
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 let servers = stun_servers.read().unwrap().clone();
-                Self::get_public_ipv6(&servers)
-                    .await
-                    .map(|x| stored_ipv6.store(Some(x)));
+                if let Some(x) = Self::get_public_ipv6(&servers).await {
+                    stored_ipv6.store(Some(x))
+                }
 
                 let sleep_sec = if stored_ipv6.load().is_none() {
                     60

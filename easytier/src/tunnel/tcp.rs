@@ -155,7 +155,7 @@ impl TcpTunnelConnector {
         tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
         let stream = TcpStream::connect(addr).await?;
         tracing::info!(url = ?self.addr, ?addr, "connect tcp succ");
-        return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
+        get_tunnel_with_tcp_stream(stream, self.addr.clone())
     }
 
     async fn connect_with_custom_bind(
@@ -179,11 +179,11 @@ impl TcpTunnelConnector {
             }
 
             let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            futures.push(socket.connect(addr.clone()));
+            futures.push(socket.connect(addr));
         }
 
         let ret = wait_for_connect_futures(futures).await;
-        return get_tunnel_with_tcp_stream(ret?, self.addr.clone().into());
+        get_tunnel_with_tcp_stream(ret?, self.addr.clone())
     }
 }
 

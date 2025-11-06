@@ -53,9 +53,9 @@ export async function useTray(init: boolean = false) {
 
 export async function generateMenuItem() {
   return [
-    await MenuItemExit('Exit'),
-    await PredefinedMenuItem.new({ item: 'Separator' }),
     await MenuItemShow('Show / Hide'),
+    await PredefinedMenuItem.new({ item: 'Separator' }),
+    await MenuItemExit('Exit'),
   ]
 }
 

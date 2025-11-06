@@ -5,7 +5,7 @@ pub use smoltcp::socket::tcp;
 use smoltcp::socket::udp;
 use smoltcp::wire::{IpAddress, IpEndpoint};
 use std::mem::replace;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::{
     io,
     net::SocketAddr,
@@ -25,7 +25,7 @@ pub struct TcpListener {
 }
 
 fn map_err<E: std::error::Error>(e: E) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e.to_string())
 }
 
 impl TcpListener {
@@ -95,8 +95,8 @@ impl Stream for Incoming {
 
 fn ep2sa(ep: &IpEndpoint) -> SocketAddr {
     match ep.addr {
-        IpAddress::Ipv4(v4) => SocketAddr::new(IpAddr::V4(Ipv4Addr::from(v4)), ep.port),
-        IpAddress::Ipv6(v6) => SocketAddr::new(IpAddr::V6(Ipv6Addr::from(v6)), ep.port),
+        IpAddress::Ipv4(v4) => SocketAddr::new(IpAddr::V4(v4), ep.port),
+        IpAddress::Ipv6(v6) => SocketAddr::new(IpAddr::V6(v6), ep.port),
         #[allow(unreachable_patterns)]
         _ => unreachable!(),
     }
@@ -118,10 +118,19 @@ impl TcpStream {
     ) -> io::Result<TcpStream> {
         let handle = reactor.socket_allocator().new_tcp_socket();
 
-        reactor
-            .get_socket::<tcp::Socket>(*handle)
-            .connect(&mut reactor.context(), remote_endpoint, local_endpoint)
-            .map_err(map_err)?;
+        // see https://github.com/spacemeowx2/tokio-smoltcp/pull/12
+        let connect_result = {
+            // Issue #11. We must lock the context before we call connect to
+            // avoid lock inversion deadlocks, but drop it before constructing
+            // the TcpStream to avoid a second mutable borror of the reactor.
+            let mut context = reactor.context();
+            reactor.get_socket::<tcp::Socket>(*handle).connect(
+                &mut context,
+                remote_endpoint,
+                local_endpoint,
+            )
+        };
+        connect_result.map_err(map_err)?;
 
         let local_addr = ep2sa(&local_endpoint);
         let peer_addr = ep2sa(&remote_endpoint);
@@ -147,11 +156,14 @@ impl TcpStream {
         }
         let (peer_addr, local_addr) = {
             let socket = reactor.get_socket::<tcp::Socket>(*listener.handle);
-            (
-                // should be Some, because the state is Established
-                ep2sa(&socket.remote_endpoint().unwrap()),
-                ep2sa(&socket.local_endpoint().unwrap()),
-            )
+            match (socket.remote_endpoint(), socket.local_endpoint()) {
+                (Some(remote_endpoint), Some(local_endpoint)) => (
+                    // should be Some, because the state is Established
+                    ep2sa(&remote_endpoint),
+                    ep2sa(&local_endpoint),
+                ),
+                _ => return Err(io::ErrorKind::NotConnected.into()),
+            }
         };
 
         Ok((

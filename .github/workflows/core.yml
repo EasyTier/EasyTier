@@ -154,14 +154,13 @@ jobs:
           name: easytier-web-dashboard
           path: easytier-web/frontend/dist/
 
-      - name: Cargo cache
+      - uses: Swatinem/rust-cache@v2
         if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
-        uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          prefix-key: ""
+
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
@@ -187,12 +186,12 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
+            cargo +nightly-2025-09-01 build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
           else
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
               CORE_FEATURES="--features=mimalloc"
-            elif [[ $TARGET =~ ^riscv64.*$ ]]; then
+            elif [[ $TARGET =~ ^riscv64.*$ || $TARGET =~ ^loongarch64.*$ || $TARGET =~ ^aarch64.*$ ]]; then
               CORE_FEATURES="--features=mimalloc"
             else
               CORE_FEATURES="--features=jemalloc"
@@ -229,8 +228,8 @@ jobs:
 
             rustup set auto-self-update disable
 
-            rustup install 1.87
-            rustup default 1.87
+            rustup install 1.89
+            rustup default 1.89
 
             export CC=clang
             export CXX=clang++

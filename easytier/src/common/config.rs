@@ -1,15 +1,16 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    hash::Hasher,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
     sync::{Arc, Mutex},
-    u64,
 };
 
 use anyhow::Context;
-use cidr::IpCidr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    common::stun::StunInfoCollector,
+    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
@@ -40,14 +41,88 @@ pub fn gen_default_flags() -> Flags {
         bind_device: true,
         enable_kcp_proxy: false,
         disable_kcp_input: false,
-        disable_relay_kcp: true,
+        disable_relay_kcp: false,
+        enable_relay_foreign_network_kcp: false,
         accept_dns: false,
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
+        quic_listen_port: 0,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
+        encryption_algorithm: "aes-gcm".to_string(),
+        disable_sym_hole_punching: false,
+        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
     }
+}
+
+pub enum EncryptionAlgorithm {
+    AesGcm,
+    Aes256Gcm,
+    Xor,
+    #[cfg(feature = "wireguard")]
+    ChaCha20,
+
+    #[cfg(feature = "openssl-crypto")]
+    OpensslAesGcm,
+    #[cfg(feature = "openssl-crypto")]
+    OpensslChacha20,
+    #[cfg(feature = "openssl-crypto")]
+    OpensslAes256Gcm,
+}
+
+impl std::fmt::Display for EncryptionAlgorithm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AesGcm => write!(f, "aes-gcm"),
+            Self::Aes256Gcm => write!(f, "aes-256-gcm"),
+            Self::Xor => write!(f, "xor"),
+            #[cfg(feature = "wireguard")]
+            Self::ChaCha20 => write!(f, "chacha20"),
+            #[cfg(feature = "openssl-crypto")]
+            Self::OpensslAesGcm => write!(f, "openssl-aes-gcm"),
+            #[cfg(feature = "openssl-crypto")]
+            Self::OpensslChacha20 => write!(f, "openssl-chacha20"),
+            #[cfg(feature = "openssl-crypto")]
+            Self::OpensslAes256Gcm => write!(f, "openssl-aes-256-gcm"),
+        }
+    }
+}
+
+impl TryFrom<&str> for EncryptionAlgorithm {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "aes-gcm" => Ok(Self::AesGcm),
+            "aes-256-gcm" => Ok(Self::Aes256Gcm),
+            "xor" => Ok(Self::Xor),
+            #[cfg(feature = "wireguard")]
+            "chacha20" => Ok(Self::ChaCha20),
+            #[cfg(feature = "openssl-crypto")]
+            "openssl-aes-gcm" => Ok(Self::OpensslAesGcm),
+            #[cfg(feature = "openssl-crypto")]
+            "openssl-chacha20" => Ok(Self::OpensslChacha20),
+            #[cfg(feature = "openssl-crypto")]
+            "openssl-aes-256-gcm" => Ok(Self::OpensslAes256Gcm),
+            _ => Err(anyhow::anyhow!("invalid encryption algorithm")),
+        }
+    }
+}
+
+pub fn get_avaliable_encrypt_methods() -> Vec<&'static str> {
+    let mut r = vec!["aes-gcm", "aes-256-gcm", "xor"];
+    if cfg!(feature = "wireguard") {
+        r.push("chacha20");
+    }
+    if cfg!(feature = "openssl-crypto") {
+        r.extend(vec![
+            "openssl-aes-gcm",
+            "openssl-chacha20",
+            "openssl-aes-256-gcm",
+        ]);
+    }
+    r
 }
 
 #[auto_impl::auto_impl(Box, &)]
@@ -79,6 +154,7 @@ pub trait ConfigLoader: Send + Sync {
         mapped_cidr: Option<cidr::Ipv4Cidr>,
     ) -> Result<(), anyhow::Error>;
     fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr);
+    fn clear_proxy_cidrs(&self);
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig>;
 
     fn get_network_identity(&self) -> NetworkIdentity;
@@ -95,20 +171,14 @@ pub trait ConfigLoader: Send + Sync {
     fn get_mapped_listeners(&self) -> Vec<url::Url>;
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
 
-    fn get_rpc_portal(&self) -> Option<SocketAddr>;
-    fn set_rpc_portal(&self, addr: SocketAddr);
-
-    fn get_rpc_portal_whitelist(&self) -> Option<Vec<IpCidr>>;
-    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<IpCidr>>);
-
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
 
     fn get_flags(&self) -> Flags;
     fn set_flags(&self, flags: Flags);
 
-    fn get_exit_nodes(&self) -> Vec<Ipv4Addr>;
-    fn set_exit_nodes(&self, nodes: Vec<Ipv4Addr>);
+    fn get_exit_nodes(&self) -> Vec<IpAddr>;
+    fn set_exit_nodes(&self, nodes: Vec<IpAddr>);
 
     fn get_routes(&self) -> Option<Vec<cidr::Ipv4Cidr>>;
     fn set_routes(&self, routes: Option<Vec<cidr::Ipv4Cidr>>);
@@ -128,6 +198,12 @@ pub trait ConfigLoader: Send + Sync {
     fn get_udp_whitelist(&self) -> Vec<String>;
     fn set_udp_whitelist(&self, whitelist: Vec<String>);
 
+    fn get_stun_servers(&self) -> Option<Vec<String>>;
+    fn set_stun_servers(&self, servers: Option<Vec<String>>);
+
+    fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
+    fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
+
     fn dump(&self) -> String;
 }
 
@@ -139,7 +215,7 @@ pub trait LoggingConfigLoader {
 
 pub type NetworkSecretDigest = [u8; 32];
 
-#[derive(Debug, Clone, Deserialize, Serialize, Default, Eq, Hash)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct NetworkIdentity {
     pub network_name: String,
     pub network_secret: Option<String>,
@@ -147,27 +223,53 @@ pub struct NetworkIdentity {
     pub network_secret_digest: Option<NetworkSecretDigest>,
 }
 
+#[derive(Eq, PartialEq, Hash)]
+struct NetworkIdentityWithOnlyDigest {
+    network_name: String,
+    network_secret_digest: Option<NetworkSecretDigest>,
+}
+
+impl From<NetworkIdentity> for NetworkIdentityWithOnlyDigest {
+    fn from(identity: NetworkIdentity) -> Self {
+        if identity.network_secret_digest.is_some() {
+            Self {
+                network_name: identity.network_name,
+                network_secret_digest: identity.network_secret_digest,
+            }
+        } else if identity.network_secret.is_some() {
+            let mut network_secret_digest = [0u8; 32];
+            generate_digest_from_str(
+                &identity.network_name,
+                identity.network_secret.as_ref().unwrap(),
+                &mut network_secret_digest,
+            );
+            Self {
+                network_name: identity.network_name,
+                network_secret_digest: Some(network_secret_digest),
+            }
+        } else {
+            Self {
+                network_name: identity.network_name,
+                network_secret_digest: None,
+            }
+        }
+    }
+}
+
 impl PartialEq for NetworkIdentity {
     fn eq(&self, other: &Self) -> bool {
-        if self.network_name != other.network_name {
-            return false;
-        }
+        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
+        let other_with_digest = NetworkIdentityWithOnlyDigest::from(other.clone());
+        self_with_digest == other_with_digest
+    }
+}
 
-        if self.network_secret.is_some()
-            && other.network_secret.is_some()
-            && self.network_secret != other.network_secret
-        {
-            return false;
-        }
+impl Eq for NetworkIdentity {}
 
-        if self.network_secret_digest.is_some()
-            && other.network_secret_digest.is_some()
-            && self.network_secret_digest != other.network_secret_digest
-        {
-            return false;
-        }
-
-        return true;
+impl std::hash::Hash for NetworkIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let self_with_digest = NetworkIdentityWithOnlyDigest::from(self.clone());
+        self_with_digest.hash(state);
     }
 }
 
@@ -182,8 +284,10 @@ impl NetworkIdentity {
             network_secret_digest: Some(network_secret_digest),
         }
     }
+}
 
-    pub fn default() -> Self {
+impl Default for NetworkIdentity {
+    fn default() -> Self {
         Self::new("default".to_string(), "".to_string())
     }
 }
@@ -205,6 +309,8 @@ pub struct FileLoggerConfig {
     pub level: Option<String>,
     pub file: Option<String>,
     pub dir: Option<String>,
+    pub size_mb: Option<u64>,
+    pub count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
@@ -215,9 +321,9 @@ pub struct ConsoleLoggerConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
 pub struct LoggingConfig {
     #[builder(setter(into, strip_option), default = None)]
-    file_logger: Option<FileLoggerConfig>,
+    pub file_logger: Option<FileLoggerConfig>,
     #[builder(setter(into, strip_option), default = None)]
-    console_logger: Option<ConsoleLoggerConfig>,
+    pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
 impl LoggingConfigLoader for &LoggingConfig {
@@ -257,12 +363,12 @@ impl From<PortForwardConfigPb> for PortForwardConfig {
     }
 }
 
-impl Into<PortForwardConfigPb> for PortForwardConfig {
-    fn into(self) -> PortForwardConfigPb {
+impl From<PortForwardConfig> for PortForwardConfigPb {
+    fn from(val: PortForwardConfig) -> Self {
         PortForwardConfigPb {
-            bind_addr: Some(self.bind_addr.into()),
-            dst_addr: Some(self.dst_addr.into()),
-            socket_type: match self.proto.to_lowercase().as_str() {
+            bind_addr: Some(val.bind_addr.into()),
+            dst_addr: Some(val.dst_addr.into()),
+            socket_type: match val.proto.to_lowercase().as_str() {
                 "tcp" => SocketType::Tcp as i32,
                 "udp" => SocketType::Udp as i32,
                 _ => SocketType::Tcp as i32,
@@ -271,7 +377,7 @@ impl Into<PortForwardConfigPb> for PortForwardConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct Config {
     netns: Option<String>,
     hostname: Option<String>,
@@ -283,13 +389,10 @@ struct Config {
     network_identity: Option<NetworkIdentity>,
     listeners: Option<Vec<url::Url>>,
     mapped_listeners: Option<Vec<url::Url>>,
-    exit_nodes: Option<Vec<Ipv4Addr>>,
+    exit_nodes: Option<Vec<IpAddr>>,
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
-
-    rpc_portal: Option<SocketAddr>,
-    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -308,6 +411,8 @@ struct Config {
 
     tcp_whitelist: Option<Vec<String>>,
     udp_whitelist: Option<Vec<String>>,
+    stun_servers: Option<Vec<String>>,
+    stun_servers_v6: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -422,8 +527,7 @@ impl ConfigLoader for TomlConfigLoader {
         locked_config
             .ipv4
             .as_ref()
-            .map(|s| s.parse().ok())
-            .flatten()
+            .and_then(|s| s.parse().ok())
             .map(|c: cidr::Ipv4Inet| {
                 if c.network_length() == 32 {
                     cidr::Ipv4Inet::new(c.address(), 24).unwrap()
@@ -434,28 +538,16 @@ impl ConfigLoader for TomlConfigLoader {
     }
 
     fn set_ipv4(&self, addr: Option<cidr::Ipv4Inet>) {
-        self.config.lock().unwrap().ipv4 = if let Some(addr) = addr {
-            Some(addr.to_string())
-        } else {
-            None
-        };
+        self.config.lock().unwrap().ipv4 = addr.map(|addr| addr.to_string());
     }
 
     fn get_ipv6(&self) -> Option<cidr::Ipv6Inet> {
         let locked_config = self.config.lock().unwrap();
-        locked_config
-            .ipv6
-            .as_ref()
-            .map(|s| s.parse().ok())
-            .flatten()
+        locked_config.ipv6.as_ref().and_then(|s| s.parse().ok())
     }
 
     fn set_ipv6(&self, addr: Option<cidr::Ipv6Inet>) {
-        self.config.lock().unwrap().ipv6 = if let Some(addr) = addr {
-            Some(addr.to_string())
-        } else {
-            None
-        };
+        self.config.lock().unwrap().ipv6 = addr.map(|addr| addr.to_string());
     }
 
     fn get_dhcp(&self) -> bool {
@@ -512,6 +604,11 @@ impl ConfigLoader for TomlConfigLoader {
         }
     }
 
+    fn clear_proxy_cidrs(&self) {
+        let mut locked_config = self.config.lock().unwrap();
+        locked_config.proxy_network = None;
+    }
+
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig> {
         self.config
             .lock()
@@ -529,7 +626,7 @@ impl ConfigLoader for TomlConfigLoader {
             locked_config.instance_id = Some(id);
             id
         } else {
-            locked_config.instance_id.as_ref().unwrap().clone()
+            *locked_config.instance_id.as_ref().unwrap()
         }
     }
 
@@ -543,7 +640,7 @@ impl ConfigLoader for TomlConfigLoader {
             .unwrap()
             .network_identity
             .clone()
-            .unwrap_or_else(NetworkIdentity::default)
+            .unwrap_or_default()
     }
 
     fn set_network_identity(&self, identity: NetworkIdentity) {
@@ -588,22 +685,6 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().mapped_listeners = listeners;
     }
 
-    fn get_rpc_portal(&self) -> Option<SocketAddr> {
-        self.config.lock().unwrap().rpc_portal
-    }
-
-    fn set_rpc_portal(&self, addr: SocketAddr) {
-        self.config.lock().unwrap().rpc_portal = Some(addr);
-    }
-
-    fn get_rpc_portal_whitelist(&self) -> Option<Vec<IpCidr>> {
-        self.config.lock().unwrap().rpc_portal_whitelist.clone()
-    }
-
-    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<IpCidr>>) {
-        self.config.lock().unwrap().rpc_portal_whitelist = whitelist;
-    }
-
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig> {
         self.config.lock().unwrap().vpn_portal_config.clone()
     }
@@ -624,7 +705,7 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().flags_struct = Some(flags);
     }
 
-    fn get_exit_nodes(&self) -> Vec<Ipv4Addr> {
+    fn get_exit_nodes(&self) -> Vec<IpAddr> {
         self.config
             .lock()
             .unwrap()
@@ -633,7 +714,7 @@ impl ConfigLoader for TomlConfigLoader {
             .unwrap_or_default()
     }
 
-    fn set_exit_nodes(&self, nodes: Vec<Ipv4Addr>) {
+    fn set_exit_nodes(&self, nodes: Vec<IpAddr>) {
         self.config.lock().unwrap().exit_nodes = Some(nodes);
     }
 
@@ -700,6 +781,22 @@ impl ConfigLoader for TomlConfigLoader {
         self.config.lock().unwrap().udp_whitelist = Some(whitelist);
     }
 
+    fn get_stun_servers(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().stun_servers.clone()
+    }
+
+    fn set_stun_servers(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().stun_servers = servers;
+    }
+
+    fn get_stun_servers_v6(&self) -> Option<Vec<String>> {
+        self.config.lock().unwrap().stun_servers_v6.clone()
+    }
+
+    fn set_stun_servers_v6(&self, servers: Option<Vec<String>>) {
+        self.config.lock().unwrap().stun_servers_v6 = servers;
+    }
+
     fn dump(&self) -> String {
         let default_flags_json = serde_json::to_string(&gen_default_flags()).unwrap();
         let default_flags_hashmap =
@@ -722,6 +819,12 @@ impl ConfigLoader for TomlConfigLoader {
 
         let mut config = self.config.lock().unwrap().clone();
         config.flags = Some(flag_map);
+        if config.stun_servers == Some(StunInfoCollector::get_default_servers()) {
+            config.stun_servers = None;
+        }
+        if config.stun_servers_v6 == Some(StunInfoCollector::get_default_servers_v6()) {
+            config.stun_servers_v6 = None;
+        }
         toml::to_string_pretty(&config).unwrap()
     }
 }
@@ -729,6 +832,39 @@ impl ConfigLoader for TomlConfigLoader {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn test_stun_servers_config() {
+        let config = TomlConfigLoader::default();
+        let stun_servers = config.get_stun_servers();
+        assert!(stun_servers.is_none());
+
+        // Test setting custom stun servers
+        let custom_servers = vec!["txt:stun.easytier.cn".to_string()];
+        config.set_stun_servers(Some(custom_servers.clone()));
+
+        let retrieved_servers = config.get_stun_servers();
+        assert_eq!(retrieved_servers.unwrap(), custom_servers);
+    }
+
+    #[test]
+    fn test_stun_servers_toml_parsing() {
+        let config_str = r#"
+instance_name = "test"
+stun_servers = [
+    "stun.l.google.com:19302",
+    "stun1.l.google.com:19302",
+    "txt:stun.easytier.cn"
+]"#;
+
+        let config = TomlConfigLoader::new_from_str(config_str).unwrap();
+        let stun_servers = config.get_stun_servers().unwrap();
+
+        assert_eq!(stun_servers.len(), 3);
+        assert_eq!(stun_servers[0], "stun.l.google.com:19302");
+        assert_eq!(stun_servers[1], "stun1.l.google.com:19302");
+        assert_eq!(stun_servers[2], "txt:stun.easytier.cn");
+    }
 
     #[tokio::test]
     async fn full_example_test() {

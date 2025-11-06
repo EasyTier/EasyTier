@@ -1,8 +1,7 @@
-use std::{
-    collections::VecDeque,
-    sync::{atomic::AtomicBool, Arc, RwLock},
-};
-
+use crate::common::config::PortForwardConfig;
+use crate::proto::api::{self, manage};
+use crate::proto::rpc_types::controller::BaseController;
+use crate::rpc_service::InstanceRpcService;
 use crate::{
     common::{
         config::{
@@ -11,17 +10,22 @@ use crate::{
         },
         constants::EASYTIER_VERSION,
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
-        stun::StunInfoCollectorTrait,
     },
     instance::instance::Instance,
-    peers::rpc_service::PeerManagerRpcService,
-    proto::cli::{list_peer_route_pair, PeerInfo, Route},
+    proto::api::instance::list_peer_route_pair,
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
+use std::net::SocketAddr;
+use std::{
+    collections::VecDeque,
+    sync::{atomic::AtomicBool, Arc, RwLock},
+};
 use tokio::{sync::broadcast, task::JoinSet};
 
-pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
+pub type MyNodeInfo = crate::proto::api::manage::MyNodeInfo;
+
+type ArcMutApiService = Arc<RwLock<Option<Arc<dyn InstanceRpcService>>>>;
 
 #[derive(serde::Serialize, Clone)]
 pub struct Event {
@@ -31,11 +35,7 @@ pub struct Event {
 
 struct EasyTierData {
     events: RwLock<VecDeque<Event>>,
-    my_node_info: RwLock<MyNodeInfo>,
-    routes: RwLock<Vec<Route>>,
-    peers: RwLock<Vec<PeerInfo>>,
     tun_fd: Arc<RwLock<Option<i32>>>,
-    tun_dev_name: RwLock<String>,
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
 }
@@ -46,11 +46,7 @@ impl Default for EasyTierData {
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
-            my_node_info: RwLock::new(MyNodeInfo::default()),
-            routes: RwLock::new(Vec::new()),
-            peers: RwLock::new(Vec::new()),
             tun_fd: Arc::new(RwLock::new(None)),
-            tun_dev_name: RwLock::new(String::new()),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -60,23 +56,21 @@ pub struct EasyTierLauncher {
     instance_alive: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
+    api_service: ArcMutApiService,
     running_cfg: String,
-    fetch_node_info: bool,
-
     error_msg: Arc<RwLock<Option<String>>>,
     data: Arc<EasyTierData>,
 }
 
 impl EasyTierLauncher {
-    pub fn new(fetch_node_info: bool) -> Self {
+    pub fn new() -> Self {
         let instance_alive = Arc::new(AtomicBool::new(false));
         Self {
             instance_alive,
             thread_handle: None,
+            api_service: Arc::new(RwLock::new(None)),
             error_msg: Arc::new(RwLock::new(None)),
             running_cfg: String::new(),
-            fetch_node_info,
-
             stop_flag: Arc::new(AtomicBool::new(false)),
             data: Arc::new(EasyTierData::default()),
         }
@@ -87,7 +81,7 @@ impl EasyTierLauncher {
         let _ = data.event_subscriber.read().unwrap().send(event.clone());
         events.push_front(Event {
             time: chrono::Local::now(),
-            event: event,
+            event,
         });
         if events.len() > 20 {
             events.pop_back();
@@ -131,8 +125,8 @@ impl EasyTierLauncher {
     async fn easytier_routine(
         cfg: TomlConfigLoader,
         stop_signal: Arc<tokio::sync::Notify>,
+        api_service: ArcMutApiService,
         data: Arc<EasyTierData>,
-        fetch_node_info: bool,
     ) -> Result<(), anyhow::Error> {
         let mut instance = Instance::new(cfg);
         let mut tasks = JoinSet::new();
@@ -158,50 +152,17 @@ impl EasyTierLauncher {
             }
         });
 
-        // update my node info
-        if fetch_node_info {
-            let data_c = data.clone();
-            let global_ctx_c = instance.get_global_ctx();
-            let peer_mgr_c = instance.get_peer_manager().clone();
-            let vpn_portal = instance.get_vpn_portal_inst();
-            tasks.spawn(async move {
-                loop {
-                    // Update TUN Device Name
-                    *data_c.tun_dev_name.write().unwrap() =
-                        global_ctx_c.get_flags().dev_name.clone();
-
-                    let node_info = MyNodeInfo {
-                        virtual_ipv4: global_ctx_c.get_ipv4().map(|ip| ip.into()),
-                        hostname: global_ctx_c.get_hostname(),
-                        version: EASYTIER_VERSION.to_string(),
-                        ips: Some(global_ctx_c.get_ip_collector().collect_ip_addrs().await),
-                        stun_info: Some(global_ctx_c.get_stun_info_collector().get_stun_info()),
-                        listeners: global_ctx_c
-                            .get_running_listeners()
-                            .into_iter()
-                            .map(Into::into)
-                            .collect(),
-                        vpn_portal_cfg: Some(
-                            vpn_portal
-                                .lock()
-                                .await
-                                .dump_client_config(peer_mgr_c.clone())
-                                .await,
-                        ),
-                    };
-                    *data_c.my_node_info.write().unwrap() = node_info.clone();
-                    *data_c.routes.write().unwrap() = peer_mgr_c.list_routes().await;
-                    *data_c.peers.write().unwrap() =
-                        PeerManagerRpcService::list_peers(&peer_mgr_c).await;
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            });
-        }
-
         #[cfg(any(target_os = "android", target_env = "ohos"))]
         Self::run_routine_for_android(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
+
+        api_service
+            .write()
+            .unwrap()
+            .replace(Arc::new(instance.get_api_rpc_service()));
+        drop(api_service);
+
         stop_signal.notified().await;
 
         tasks.abort_all();
@@ -211,21 +172,6 @@ impl EasyTierLauncher {
         drop(instance);
 
         Ok(())
-    }
-
-    fn select_proper_rpc_port(cfg: &TomlConfigLoader) {
-        let Some(mut f) = cfg.get_rpc_portal() else {
-            return;
-        };
-
-        if f.port() == 0 {
-            let Some(port) = crate::utils::find_free_tcp_port(15888..15900) else {
-                tracing::warn!("No free port found for RPC portal, skipping setting RPC portal");
-                return;
-            };
-            f.set_port(port);
-            cfg.set_rpc_portal(f);
-        }
     }
 
     pub fn start<F>(&mut self, cfg_generator: F)
@@ -243,15 +189,13 @@ impl EasyTierLauncher {
 
         self.running_cfg = cfg.dump();
 
-        Self::select_proper_rpc_port(&cfg);
-
         let stop_flag = self.stop_flag.clone();
 
         let instance_alive = self.instance_alive.clone();
         instance_alive.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let data = self.data.clone();
-        let fetch_node_info = self.fetch_node_info;
+        let api_service = self.api_service.clone();
 
         self.thread_handle = Some(std::thread::spawn(move || {
             let rt = if cfg.get_flags().multi_thread {
@@ -281,8 +225,8 @@ impl EasyTierLauncher {
             let ret = rt.block_on(Self::easytier_routine(
                 cfg,
                 stop_notifier.clone(),
+                api_service,
                 data,
-                fetch_node_info,
             ));
             if let Err(e) = ret {
                 error_msg.write().unwrap().replace(format!("{:?}", e));
@@ -301,25 +245,25 @@ impl EasyTierLauncher {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn get_dev_name(&self) -> String {
-        self.data.tun_dev_name.read().unwrap().clone()
-    }
-
     pub fn get_events(&self) -> Vec<Event> {
         let events = self.data.events.read().unwrap();
         events.iter().cloned().collect()
     }
 
-    pub fn get_node_info(&self) -> MyNodeInfo {
-        self.data.my_node_info.read().unwrap().clone()
+    pub fn get_api_service(&self) -> Option<Arc<dyn InstanceRpcService>> {
+        match self.api_service.read() {
+            Ok(guard) => guard.clone(),
+            Err(e) => {
+                tracing::error!("Failed to acquire read lock for api_service: {:?}", e);
+                None
+            }
+        }
     }
+}
 
-    pub fn get_routes(&self) -> Vec<Route> {
-        self.data.routes.read().unwrap().clone()
-    }
-
-    pub fn get_peers(&self) -> Vec<PeerInfo> {
-        self.data.peers.read().unwrap().clone()
+impl Default for EasyTierLauncher {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -335,62 +279,96 @@ impl Drop for EasyTierLauncher {
     }
 }
 
-pub type NetworkInstanceRunningInfo = crate::proto::web::NetworkInstanceRunningInfo;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigSource {
-    Cli,
-    File,
-    Web,
-    GUI,
-    FFI,
-}
+pub type NetworkInstanceRunningInfo = crate::proto::api::manage::NetworkInstanceRunningInfo;
 
 pub struct NetworkInstance {
     config: TomlConfigLoader,
     launcher: Option<EasyTierLauncher>,
-
-    config_source: ConfigSource,
 }
 
 impl NetworkInstance {
-    pub fn new(config: TomlConfigLoader, source: ConfigSource) -> Self {
+    pub fn new(config: TomlConfigLoader) -> Self {
         Self {
             config,
             launcher: None,
-            config_source: source,
         }
-    }
-
-    fn get_fetch_node_info(&self) -> bool {
-        match self.config_source {
-            ConfigSource::Cli | ConfigSource::File => false,
-            ConfigSource::Web | ConfigSource::GUI | ConfigSource::FFI => true,
-        }
-    }
-
-    pub fn get_config_source(&self) -> ConfigSource {
-        self.config_source.clone()
     }
 
     pub fn is_easytier_running(&self) -> bool {
         self.launcher.is_some() && self.launcher.as_ref().unwrap().running()
     }
 
-    pub fn get_running_info(&self) -> Option<NetworkInstanceRunningInfo> {
-        if self.launcher.is_none() {
-            return None;
-        }
+    pub async fn get_running_info(&self) -> anyhow::Result<NetworkInstanceRunningInfo> {
+        let launcher = self.launcher.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("instance is not running, please start the instance first")
+        })?;
+        let api_service = self.get_api_service().ok_or_else(|| {
+            anyhow::anyhow!("failed to get api service, instance may not be running")
+        })?;
+        let ctrl = BaseController::default();
 
-        let launcher = self.launcher.as_ref().unwrap();
-
-        let peers = launcher.get_peers();
-        let routes = launcher.get_routes();
+        let peers = api_service
+            .get_peer_manage_service()
+            .list_peer(ctrl.clone(), api::instance::ListPeerRequest::default())
+            .await?
+            .peer_infos;
+        let my_info = api_service
+            .get_peer_manage_service()
+            .show_node_info(ctrl.clone(), api::instance::ShowNodeInfoRequest::default())
+            .await?
+            .node_info
+            .ok_or_else(|| anyhow::anyhow!("failed to get my node info"))?;
+        let vpn_portal_cfg = api_service
+            .get_vpn_portal_service()
+            .get_vpn_portal_info(
+                ctrl.clone(),
+                api::instance::GetVpnPortalInfoRequest::default(),
+            )
+            .await?
+            .vpn_portal_info
+            .map(|i| i.client_config);
+        let routes = api_service
+            .get_peer_manage_service()
+            .list_route(ctrl.clone(), api::instance::ListRouteRequest::default())
+            .await?
+            .routes;
         let peer_route_pairs = list_peer_route_pair(peers.clone(), routes.clone());
+        let foreign_network_summary = api_service
+            .get_peer_manage_service()
+            .get_foreign_network_summary(
+                ctrl.clone(),
+                api::instance::GetForeignNetworkSummaryRequest::default(),
+            )
+            .await?
+            .summary;
+        let dev_name = api_service
+            .get_config_service()
+            .get_config(ctrl.clone(), api::config::GetConfigRequest::default())
+            .await?
+            .config
+            .ok_or_else(|| anyhow::anyhow!("failed to get config"))?
+            .dev_name
+            .unwrap_or_else(|| "".to_string());
 
-        Some(NetworkInstanceRunningInfo {
-            dev_name: launcher.get_dev_name(),
-            my_node_info: Some(launcher.get_node_info()),
+        Ok(NetworkInstanceRunningInfo {
+            dev_name,
+            my_node_info: Some(MyNodeInfo {
+                virtual_ipv4: my_info
+                    .ipv4_addr
+                    .parse::<cidr::Ipv4Inet>()
+                    .ok()
+                    .map(Into::into),
+                hostname: my_info.hostname,
+                version: EASYTIER_VERSION.to_string(),
+                ips: my_info.ip_list,
+                stun_info: my_info.stun_info,
+                listeners: my_info
+                    .listeners
+                    .into_iter()
+                    .map(|s| s.parse::<url::Url>().unwrap().into())
+                    .collect(),
+                vpn_portal_cfg,
+            }),
             events: launcher
                 .get_events()
                 .iter()
@@ -401,6 +379,7 @@ impl NetworkInstance {
             peer_route_pairs,
             running: launcher.running(),
             error_msg: launcher.error_msg(),
+            foreign_network_summary,
         })
     }
 
@@ -419,7 +398,7 @@ impl NetworkInstance {
             return Ok(self.subscribe_event().unwrap());
         }
 
-        let launcher = EasyTierLauncher::new(self.get_fetch_node_info());
+        let launcher = EasyTierLauncher::new();
         self.launcher = Some(launcher);
         let ev = self.subscribe_event().unwrap();
 
@@ -432,19 +411,15 @@ impl NetworkInstance {
     }
 
     pub fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
-        if let Some(launcher) = self.launcher.as_ref() {
-            Some(launcher.data.event_subscriber.read().unwrap().subscribe())
-        } else {
-            None
-        }
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.event_subscriber.read().unwrap().subscribe())
     }
 
     pub fn get_stop_notifier(&self) -> Option<Arc<tokio::sync::Notify>> {
-        if let Some(launcher) = self.launcher.as_ref() {
-            Some(launcher.data.instance_stop_notifier.clone())
-        } else {
-            None
-        }
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.instance_stop_notifier.clone())
     }
 
     pub fn get_latest_error_msg(&self) -> Option<String> {
@@ -453,6 +428,12 @@ impl NetworkInstance {
         } else {
             None
         }
+    }
+
+    pub fn get_api_service(&self) -> Option<Arc<dyn InstanceRpcService>> {
+        self.launcher
+            .as_ref()
+            .and_then(|launcher| launcher.get_api_service())
     }
 }
 
@@ -486,8 +467,8 @@ pub fn add_proxy_network_to_config(
     Ok(())
 }
 
-pub type NetworkingMethod = crate::proto::web::NetworkingMethod;
-pub type NetworkConfig = crate::proto::web::NetworkConfig;
+pub type NetworkingMethod = crate::proto::api::manage::NetworkingMethod;
+pub type NetworkConfig = crate::proto::api::manage::NetworkConfig;
 
 impl NetworkConfig {
     pub fn gen_config(&self) -> Result<TomlConfigLoader, anyhow::Error> {
@@ -509,7 +490,7 @@ impl NetworkConfig {
 
         if !cfg.get_dhcp() {
             let virtual_ipv4 = self.virtual_ipv4.clone().unwrap_or_default();
-            if virtual_ipv4.len() > 0 {
+            if !virtual_ipv4.is_empty() {
                 let ip = format!("{}/{}", virtual_ipv4, self.network_length.unwrap_or(24))
                     .parse()
                     .with_context(|| {
@@ -568,24 +549,28 @@ impl NetworkConfig {
             add_proxy_network_to_config(n, &cfg)?;
         }
 
-        cfg.set_rpc_portal(
-            format!("0.0.0.0:{}", self.rpc_port.unwrap_or_default())
-                .parse()
-                .with_context(|| format!("failed to parse rpc portal port: {:?}", self.rpc_port))?,
-        );
-
-        if self.rpc_portal_whitelists.is_empty() {
-            cfg.set_rpc_portal_whitelist(None);
-        } else {
-            cfg.set_rpc_portal_whitelist(Some(
-                self.rpc_portal_whitelists
+        if !self.port_forwards.is_empty() {
+            cfg.set_port_forwards(
+                self.port_forwards
                     .iter()
-                    .map(|s| {
-                        s.parse()
-                            .with_context(|| format!("failed to parse rpc portal whitelist: {}", s))
+                    .filter(|pf| !pf.bind_ip.is_empty() && !pf.dst_ip.is_empty())
+                    .filter_map(|pf| {
+                        let bind_addr =
+                            format!("{}:{}", pf.bind_ip, pf.bind_port).parse::<SocketAddr>();
+                        let dst_addr =
+                            format!("{}:{}", pf.dst_ip, pf.dst_port).parse::<SocketAddr>();
+
+                        match (bind_addr, dst_addr) {
+                            (Ok(bind_addr), Ok(dst_addr)) => Some(PortForwardConfig {
+                                bind_addr,
+                                dst_addr,
+                                proto: pf.proto.clone(),
+                            }),
+                            _ => None,
+                        }
                     })
-                    .collect::<Result<Vec<_>, _>>()?,
-            ));
+                    .collect::<Vec<_>>(),
+            );
         }
 
         if self.enable_vpn_portal.unwrap_or_default() {
@@ -626,8 +611,8 @@ impl NetworkConfig {
             cfg.set_routes(Some(routes));
         }
 
-        if self.exit_nodes.len() > 0 {
-            let mut exit_nodes = Vec::<std::net::Ipv4Addr>::with_capacity(self.exit_nodes.len());
+        if !self.exit_nodes.is_empty() {
+            let mut exit_nodes = Vec::<std::net::IpAddr>::with_capacity(self.exit_nodes.len());
             for node in self.exit_nodes.iter() {
                 exit_nodes.push(
                     node.parse()
@@ -645,7 +630,7 @@ impl NetworkConfig {
             }
         }
 
-        if self.mapped_listeners.len() > 0 {
+        if !self.mapped_listeners.is_empty() {
             cfg.set_mapped_listeners(Some(
                 self.mapped_listeners
                     .iter()
@@ -697,6 +682,10 @@ impl NetworkConfig {
             flags.disable_quic_input = disable_quic_input;
         }
 
+        if let Some(quic_listen_port) = self.quic_listen_port {
+            flags.quic_listen_port = quic_listen_port as u32;
+        }
+
         if let Some(disable_p2p) = self.disable_p2p {
             flags.disable_p2p = disable_p2p;
         }
@@ -730,7 +719,7 @@ impl NetworkConfig {
         }
 
         if self.enable_relay_network_whitelist.unwrap_or_default() {
-            if self.relay_network_whitelist.len() > 0 {
+            if !self.relay_network_whitelist.is_empty() {
                 flags.relay_network_whitelist = self.relay_network_whitelist.join(" ");
             } else {
                 flags.relay_network_whitelist = "".to_string();
@@ -739,6 +728,10 @@ impl NetworkConfig {
 
         if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
             flags.disable_udp_hole_punching = disable_udp_hole_punching;
+        }
+
+        if let Some(disable_sym_hole_punching) = self.disable_sym_hole_punching {
+            flags.disable_sym_hole_punching = disable_sym_hole_punching;
         }
 
         if let Some(enable_magic_dns) = self.enable_magic_dns {
@@ -757,10 +750,12 @@ impl NetworkConfig {
         Ok(cfg)
     }
 
-    pub fn new_from_config(config: &TomlConfigLoader) -> Result<Self, anyhow::Error> {
+    pub fn new_from_config(config: impl ConfigLoader) -> Result<Self, anyhow::Error> {
         let default_config = TomlConfigLoader::default();
 
-        let mut result = Self::default();
+        let mut result = Self {
+            ..Default::default()
+        };
 
         result.instance_id = Some(config.get_id().to_string());
         if config.get_hostname() != default_config.get_hostname() {
@@ -795,7 +790,7 @@ impl NetworkConfig {
 
         result.listener_urls = config
             .get_listeners()
-            .unwrap_or_else(|| vec![])
+            .unwrap_or_default()
             .iter()
             .map(|l| l.to_string())
             .collect();
@@ -812,12 +807,18 @@ impl NetworkConfig {
             })
             .collect();
 
-        if let Some(rpc_portal) = config.get_rpc_portal() {
-            result.rpc_port = Some(rpc_portal.port() as i32);
-        }
-
-        if let Some(whitelist) = config.get_rpc_portal_whitelist() {
-            result.rpc_portal_whitelists = whitelist.iter().map(|w| w.to_string()).collect();
+        let port_forwards = config.get_port_forwards();
+        if !port_forwards.is_empty() {
+            result.port_forwards = port_forwards
+                .iter()
+                .map(|f| manage::PortForwardConfig {
+                    proto: f.proto.clone(),
+                    bind_ip: f.bind_addr.ip().to_string(),
+                    bind_port: f.bind_addr.port() as u32,
+                    dst_ip: f.dst_addr.ip().to_string(),
+                    dst_port: f.dst_addr.port() as u32,
+                })
+                .collect();
         }
 
         if let Some(vpn_config) = config.get_vpn_portal_config() {
@@ -861,6 +862,7 @@ impl NetworkConfig {
         result.disable_kcp_input = Some(flags.disable_kcp_input);
         result.enable_quic_proxy = Some(flags.enable_quic_proxy);
         result.disable_quic_input = Some(flags.disable_quic_input);
+        result.quic_listen_port = Some(flags.quic_listen_port as i32);
         result.disable_p2p = Some(flags.disable_p2p);
         result.bind_device = Some(flags.bind_device);
         result.no_tun = Some(flags.no_tun);
@@ -891,7 +893,7 @@ impl NetworkConfig {
 mod tests {
     use crate::common::config::ConfigLoader;
     use rand::Rng;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     fn gen_default_config() -> crate::common::config::TomlConfigLoader {
         let config = crate::common::config::TomlConfigLoader::default();
@@ -899,7 +901,6 @@ mod tests {
         config.set_dhcp(false);
         config.set_inst_name("default".to_string());
         config.set_listeners(vec![]);
-        config.set_rpc_portal(std::net::SocketAddr::from(([0, 0, 0, 0], 0)));
         config
     }
 
@@ -1011,27 +1012,6 @@ mod tests {
                 }
             }
 
-            if rng.gen_bool(0.8) {
-                let port = rng.gen_range(0..65535);
-                config.set_rpc_portal(std::net::SocketAddr::from(([0, 0, 0, 0], port)));
-
-                if rng.gen_bool(0.6) {
-                    let whitelist_count = rng.gen_range(1..3);
-                    let mut whitelist = Vec::new();
-                    for _ in 0..whitelist_count {
-                        let ip = Ipv4Addr::new(
-                            rng.gen_range(1..254),
-                            rng.gen_range(0..255),
-                            rng.gen_range(0..255),
-                            rng.gen_range(0..255),
-                        );
-                        let cidr = format!("{}/32", ip);
-                        whitelist.push(cidr.parse().unwrap());
-                    }
-                    config.set_rpc_portal_whitelist(Some(whitelist));
-                }
-            }
-
             if rng.gen_bool(0.5) {
                 let vpn_network = format!(
                     "{}.{}.{}.0/{}",
@@ -1073,7 +1053,19 @@ mod tests {
                         rng.gen_range(0..255),
                         rng.gen_range(1..254),
                     );
-                    nodes.push(ip);
+                    nodes.push(IpAddr::V4(ip));
+                    // gen ipv6
+                    let ip = Ipv6Addr::new(
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                        rng.gen_range(0..65535),
+                    );
+                    nodes.push(IpAddr::V6(ip));
                 }
                 config.set_exit_nodes(nodes);
             }

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::extract::Path;
 use axum::http::StatusCode;
 use axum::routing::{delete, post};
@@ -7,12 +5,14 @@ use axum::{extract::State, routing::get, Json, Router};
 use axum_login::AuthUser;
 use easytier::launcher::NetworkConfig;
 use easytier::proto::common::Void;
-use easytier::proto::rpc_types::controller::BaseController;
-use easytier::proto::web::*;
+use easytier::proto::{api::manage::*, web::*};
+use easytier::rpc_service::remote_client::{
+    GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, RemoteClientError, RemoteClientManager,
+};
+use sea_orm::DbErr;
 
-use crate::client_manager::session::{Location, Session};
-use crate::client_manager::ClientManager;
-use crate::db::{ListNetworkProps, UserIdInDb};
+use crate::client_manager::session::Location;
+use crate::db::UserIdInDb;
 
 use super::users::AuthSession;
 use super::{
@@ -31,8 +31,28 @@ fn convert_rpc_error(e: RpcError) -> (StatusCode, Json<Error>) {
     (status_code, Json(error))
 }
 
+fn convert_error(e: RemoteClientError<DbErr>) -> (StatusCode, Json<Error>) {
+    match e {
+        RemoteClientError::PersistentError(e) => convert_db_error(e),
+        RemoteClientError::RpcError(e) => convert_rpc_error(e),
+        RemoteClientError::ClientNotFound => (
+            StatusCode::NOT_FOUND,
+            other_error("Client not found").into(),
+        ),
+        RemoteClientError::NotFound(msg) => (StatusCode::NOT_FOUND, other_error(msg).into()),
+        RemoteClientError::Other(msg) => {
+            (StatusCode::INTERNAL_SERVER_ERROR, other_error(msg).into())
+        }
+    }
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct ValidateConfigJsonReq {
+    config: NetworkConfig,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct SaveNetworkJsonReq {
     config: NetworkConfig,
 }
 
@@ -42,7 +62,7 @@ struct RunNetworkJsonReq {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct ColletNetworkInfoJsonReq {
+struct CollectNetworkInfoJsonReq {
     inst_ids: Option<Vec<uuid::Uuid>>,
 }
 
@@ -52,14 +72,13 @@ struct UpdateNetworkStateJsonReq {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct RemoveNetworkJsonReq {
-    inst_ids: Vec<uuid::Uuid>,
+struct GetNetworkMetasJsonReq {
+    instance_ids: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
-struct ListNetworkInstanceIdsJsonResp {
-    running_inst_ids: Vec<easytier::proto::common::Uuid>,
-    disabled_inst_ids: Vec<easytier::proto::common::Uuid>,
+struct RemoveNetworkJsonReq {
+    inst_ids: Vec<uuid::Uuid>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -74,57 +93,17 @@ struct ListMachineJsonResp {
     machines: Vec<ListMachineItem>,
 }
 
-pub struct NetworkApi {}
+pub struct NetworkApi;
 
 impl NetworkApi {
-    pub fn new() -> Self {
-        Self {}
-    }
-
     fn get_user_id(auth_session: &AuthSession) -> Result<UserIdInDb, (StatusCode, Json<Error>)> {
         let Some(user_id) = auth_session.user.as_ref().map(|x| x.id()) else {
             return Err((
                 StatusCode::UNAUTHORIZED,
-                other_error(format!("No user id found")).into(),
+                other_error("No user id found".to_string()).into(),
             ));
         };
         Ok(user_id)
-    }
-
-    async fn get_session_by_machine_id(
-        auth_session: &AuthSession,
-        client_mgr: &ClientManager,
-        machine_id: &uuid::Uuid,
-    ) -> Result<Arc<Session>, HttpHandleError> {
-        let user_id = Self::get_user_id(auth_session)?;
-
-        let Some(result) = client_mgr.get_session_by_machine_id(user_id, machine_id) else {
-            return Err((
-                StatusCode::NOT_FOUND,
-                other_error(format!("No such session: {}", machine_id)).into(),
-            ));
-        };
-
-        let Some(token) = result.get_token().await else {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                other_error(format!("No token reported")).into(),
-            ));
-        };
-
-        if !auth_session
-            .user
-            .as_ref()
-            .map(|x| x.tokens.contains(&token.token))
-            .unwrap_or(false)
-        {
-            return Err((
-                StatusCode::FORBIDDEN,
-                other_error(format!("Token mismatch")).into(),
-            ));
-        }
-
-        Ok(result)
     }
 
     async fn handle_validate_config(
@@ -133,21 +112,14 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<ValidateConfigJsonReq>,
     ) -> Result<Json<ValidateConfigResponse>, HttpHandleError> {
-        let config = payload.config;
-        let result =
-            Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-
-        let c = result.scoped_rpc_client();
-        let ret = c
-            .validate_config(
-                BaseController::default(),
-                ValidateConfigRequest {
-                    config: Some(config),
-                },
+        Ok(client_mgr
+            .handle_validate_config(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                payload.config,
             )
             .await
-            .map_err(convert_rpc_error)?;
-        Ok(ret.into())
+            .map_err(convert_error)?
+            .into())
     }
 
     async fn handle_run_network_instance(
@@ -156,33 +128,13 @@ impl NetworkApi {
         Path(machine_id): Path<uuid::Uuid>,
         Json(payload): Json<RunNetworkJsonReq>,
     ) -> Result<Json<Void>, HttpHandleError> {
-        let config = payload.config;
-        let result =
-            Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-
-        let c = result.scoped_rpc_client();
-        let resp = c
-            .run_network_instance(
-                BaseController::default(),
-                RunNetworkInstanceRequest {
-                    inst_id: None,
-                    config: Some(config.clone()),
-                },
-            )
-            .await
-            .map_err(convert_rpc_error)?;
-
         client_mgr
-            .db()
-            .insert_or_update_user_network_config(
-                auth_session.user.as_ref().unwrap().id(),
-                machine_id,
-                resp.inst_id.clone().unwrap_or_default().into(),
-                serde_json::to_string(&config).unwrap(),
+            .handle_run_network_instance(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                payload.config,
             )
             .await
-            .map_err(convert_db_error)?;
-
+            .map_err(convert_error)?;
         Ok(Void::default().into())
     }
 
@@ -191,47 +143,30 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
-        let result =
-            Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-
-        let c = result.scoped_rpc_client();
-        let ret = c
-            .collect_network_info(
-                BaseController::default(),
-                CollectNetworkInfoRequest {
-                    inst_ids: vec![inst_id.into()],
-                },
+        Ok(client_mgr
+            .handle_collect_network_info(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                Some(vec![inst_id]),
             )
             .await
-            .map_err(convert_rpc_error)?;
-        Ok(ret.into())
+            .map_err(convert_error)?
+            .into())
     }
 
     async fn handle_collect_network_info(
         auth_session: AuthSession,
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
-        Json(payload): Json<ColletNetworkInfoJsonReq>,
+        Json(payload): Json<CollectNetworkInfoJsonReq>,
     ) -> Result<Json<CollectNetworkInfoResponse>, HttpHandleError> {
-        let result =
-            Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-
-        let c = result.scoped_rpc_client();
-        let ret = c
-            .collect_network_info(
-                BaseController::default(),
-                CollectNetworkInfoRequest {
-                    inst_ids: payload
-                        .inst_ids
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(Into::into)
-                        .collect(),
-                },
+        Ok(client_mgr
+            .handle_collect_network_info(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                payload.inst_ids,
             )
             .await
-            .map_err(convert_rpc_error)?;
-        Ok(ret.into())
+            .map_err(convert_error)?
+            .into())
     }
 
     async fn handle_list_network_instance_ids(
@@ -239,36 +174,11 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path(machine_id): Path<uuid::Uuid>,
     ) -> Result<Json<ListNetworkInstanceIdsJsonResp>, HttpHandleError> {
-        let result =
-            Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-
-        let c = result.scoped_rpc_client();
-        let ret = c
-            .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+        Ok(client_mgr
+            .handle_list_network_instance_ids((Self::get_user_id(&auth_session)?, machine_id))
             .await
-            .map_err(convert_rpc_error)?;
-
-        let running_inst_ids = ret.inst_ids.clone().into_iter().map(Into::into).collect();
-
-        // collect networks that are disabled
-        let disabled_inst_ids = client_mgr
-            .db()
-            .list_network_configs(
-                auth_session.user.unwrap().id(),
-                Some(machine_id),
-                ListNetworkProps::DisabledOnly,
-            )
-            .await
-            .map_err(convert_db_error)?
-            .iter()
-            .filter_map(|x| x.network_instance_id.clone().try_into().ok())
-            .collect::<Vec<_>>();
-
-        Ok(ListNetworkInstanceIdsJsonResp {
-            running_inst_ids,
-            disabled_inst_ids,
-        }
-        .into())
+            .map_err(convert_error)?
+            .into())
     }
 
     async fn handle_remove_network_instance(
@@ -276,25 +186,13 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<(), HttpHandleError> {
-        let result =
-            Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-
         client_mgr
-            .db()
-            .delete_network_config(auth_session.user.as_ref().unwrap().id(), inst_id)
+            .handle_remove_network_instances(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                vec![inst_id],
+            )
             .await
-            .map_err(convert_db_error)?;
-
-        let c = result.scoped_rpc_client();
-        c.delete_network_instance(
-            BaseController::default(),
-            DeleteNetworkInstanceRequest {
-                inst_ids: vec![inst_id.into()],
-            },
-        )
-        .await
-        .map_err(convert_rpc_error)?;
-        Ok(())
+            .map_err(convert_error)
     }
 
     async fn handle_list_machines(
@@ -330,42 +228,57 @@ impl NetworkApi {
             // not implement disable all
             return Err((
                 StatusCode::NOT_IMPLEMENTED,
-                other_error(format!("Not implemented")).into(),
-            ))
-            .into();
+                other_error("Not implemented".to_string()).into(),
+            ));
         };
 
-        let sess = Self::get_session_by_machine_id(&auth_session, &client_mgr, &machine_id).await?;
-        let cfg = client_mgr
-            .db()
-            .update_network_config_state(auth_session.user.unwrap().id(), inst_id, payload.disabled)
-            .await
-            .map_err(convert_db_error)?;
-
-        let c = sess.scoped_rpc_client();
-
-        if payload.disabled {
-            c.delete_network_instance(
-                BaseController::default(),
-                DeleteNetworkInstanceRequest {
-                    inst_ids: vec![inst_id.into()],
-                },
+        client_mgr
+            .handle_update_network_state(
+                (auth_session.user.unwrap().id(), machine_id),
+                inst_id,
+                payload.disabled,
             )
             .await
-            .map_err(convert_rpc_error)?;
-        } else {
-            c.run_network_instance(
-                BaseController::default(),
-                RunNetworkInstanceRequest {
-                    inst_id: Some(inst_id.into()),
-                    config: Some(serde_json::from_str(&cfg.network_config).unwrap()),
-                },
-            )
-            .await
-            .map_err(convert_rpc_error)?;
+            .map_err(convert_error)
+    }
+
+    async fn handle_get_network_metas(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path(machine_id): Path<uuid::Uuid>,
+        Json(payload): Json<GetNetworkMetasJsonReq>,
+    ) -> Result<Json<GetNetworkMetasResponse>, HttpHandleError> {
+        Ok(Json(
+            client_mgr
+                .handle_get_network_metas(
+                    (Self::get_user_id(&auth_session)?, machine_id),
+                    payload.instance_ids,
+                )
+                .await
+                .map_err(convert_error)?,
+        ))
+    }
+
+    async fn handle_save_network_config(
+        auth_session: AuthSession,
+        State(client_mgr): AppState,
+        Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
+        Json(payload): Json<SaveNetworkJsonReq>,
+    ) -> Result<(), HttpHandleError> {
+        if payload.config.instance_id() != inst_id.to_string() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                other_error("Instance ID mismatch".to_string()).into(),
+            ));
         }
-
-        Ok(())
+        client_mgr
+            .handle_save_network_config(
+                (Self::get_user_id(&auth_session)?, machine_id),
+                inst_id,
+                payload.config,
+            )
+            .await
+            .map_err(convert_error)
     }
 
     async fn handle_get_network_config(
@@ -373,31 +286,14 @@ impl NetworkApi {
         State(client_mgr): AppState,
         Path((machine_id, inst_id)): Path<(uuid::Uuid, uuid::Uuid)>,
     ) -> Result<Json<NetworkConfig>, HttpHandleError> {
-        let inst_id = inst_id.to_string();
-
-        let db_row = client_mgr
-            .db()
-            .get_network_config(auth_session.user.unwrap().id(), &machine_id, &inst_id)
+        Ok(client_mgr
+            .handle_get_network_config((auth_session.user.unwrap().id(), machine_id), inst_id)
             .await
-            .map_err(convert_db_error)?
-            .ok_or((
-                StatusCode::NOT_FOUND,
-                other_error(format!("No such network instance: {}", inst_id)).into(),
-            ))?;
-
-        Ok(
-            serde_json::from_str::<NetworkConfig>(&db_row.network_config)
-                .map_err(|e| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        other_error(format!("Failed to parse network config: {:?}", e)).into(),
-                    )
-                })?
-                .into(),
-        )
+            .map_err(convert_error)?
+            .into())
     }
 
-    pub fn build_route(&mut self) -> Router<AppStateInner> {
+    pub fn build_route() -> Router<AppStateInner> {
         Router::new()
             .route("/api/v1/machines", get(Self::handle_list_machines))
             .route(
@@ -422,7 +318,11 @@ impl NetworkApi {
             )
             .route(
                 "/api/v1/machines/:machine-id/networks/config/:inst-id",
-                get(Self::handle_get_network_config),
+                get(Self::handle_get_network_config).put(Self::handle_save_network_config),
+            )
+            .route(
+                "/api/v1/machines/:machine-id/networks/metas",
+                post(Self::handle_get_network_metas),
             )
     }
 }

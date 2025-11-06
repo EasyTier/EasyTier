@@ -8,14 +8,22 @@ use crate::{
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         scoped_task::ScopedTask,
     },
-    launcher::{ConfigSource, NetworkInstance, NetworkInstanceRunningInfo},
-    proto,
+    launcher::{NetworkInstance, NetworkInstanceRunningInfo},
+    proto::{self},
+    rpc_service::InstanceRpcService,
 };
 
 pub struct NetworkInstanceManager {
     instance_map: Arc<DashMap<uuid::Uuid, NetworkInstance>>,
     instance_stop_tasks: Arc<DashMap<uuid::Uuid, ScopedTask<()>>>,
     stop_check_notifier: Arc<tokio::sync::Notify>,
+    instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
+}
+
+impl Default for NetworkInstanceManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NetworkInstanceManager {
@@ -24,39 +32,27 @@ impl NetworkInstanceManager {
             instance_map: Arc::new(DashMap::new()),
             instance_stop_tasks: Arc::new(DashMap::new()),
             stop_check_notifier: Arc::new(tokio::sync::Notify::new()),
+            instance_error_messages: Arc::new(DashMap::new()),
         }
     }
 
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(anyhow::anyhow!(
+                "tokio runtime not found, cannot start instance task"
+            ));
+        }
+
         let instance = self
             .instance_map
             .get(&instance_id)
             .ok_or_else(|| anyhow::anyhow!("instance {} not found", instance_id))?;
-
-        match instance.get_config_source() {
-            ConfigSource::FFI | ConfigSource::GUI => {
-                // FFI and GUI have no tokio runtime, so we don't need to spawn a task
-                return Ok(());
-            }
-            _ => {
-                if tokio::runtime::Handle::try_current().is_err() {
-                    return Err(anyhow::anyhow!(
-                        "tokio runtime not found, cannot start instance task"
-                    ));
-                }
-            }
-        }
-
         let instance_stop_notifier = instance.get_stop_notifier();
-        let instance_event_receiver = match instance.get_config_source() {
-            ConfigSource::Cli | ConfigSource::File | ConfigSource::Web => {
-                Some(instance.subscribe_event())
-            }
-            ConfigSource::GUI | ConfigSource::FFI => None,
-        };
+        let instance_event_receiver = instance.subscribe_event();
 
         let instance_map = self.instance_map.clone();
         let instance_stop_tasks = self.instance_stop_tasks.clone();
+        let instance_error_messages = self.instance_error_messages.clone();
 
         let stop_check_notifier = self.stop_check_notifier.clone();
         self.instance_stop_tasks.insert(
@@ -65,20 +61,19 @@ impl NetworkInstanceManager {
                 let Some(instance_stop_notifier) = instance_stop_notifier else {
                     return;
                 };
-                let _t = if let Some(event) = instance_event_receiver.flatten() {
-                    Some(ScopedTask::from(handle_event(instance_id, event)))
-                } else {
-                    None
-                };
+                let _t = instance_event_receiver
+                    .map(|event| ScopedTask::from(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
                 if let Some(instance) = instance_map.get(&instance_id) {
                     if let Some(e) = instance.get_latest_error_msg() {
                         tracing::error!(?e, ?instance_id, "instance stopped with error");
                         eprintln!("instance {} stopped with error: {}", instance_id, e);
+                        instance_error_messages.insert(instance_id, e);
                     }
                 }
                 stop_check_notifier.notify_one();
                 instance_stop_tasks.remove(&instance_id);
+                instance_stop_tasks.shrink_to_fit();
             })),
         );
         Ok(())
@@ -87,18 +82,20 @@ impl NetworkInstanceManager {
     pub fn run_network_instance(
         &self,
         cfg: TomlConfigLoader,
-        source: ConfigSource,
+        watch_event: bool,
     ) -> Result<uuid::Uuid, anyhow::Error> {
         let instance_id = cfg.get_id();
         if self.instance_map.contains_key(&instance_id) {
             anyhow::bail!("instance {} already exists", instance_id);
         }
 
-        let mut instance = NetworkInstance::new(cfg, source);
+        let mut instance = NetworkInstance::new(cfg);
         instance.start()?;
 
         self.instance_map.insert(instance_id, instance);
-        self.start_instance_task(instance_id)?;
+        if watch_event {
+            self.start_instance_task(instance_id)?;
+        }
         Ok(instance_id)
     }
 
@@ -107,6 +104,10 @@ impl NetworkInstanceManager {
         instance_ids: Vec<uuid::Uuid>,
     ) -> Result<Vec<uuid::Uuid>, anyhow::Error> {
         self.instance_map.retain(|k, _| instance_ids.contains(k));
+        self.instance_map.shrink_to_fit();
+        self.instance_error_messages
+            .retain(|k, _| instance_ids.contains(k));
+        self.instance_error_messages.shrink_to_fit();
         Ok(self.list_network_instance_ids())
     }
 
@@ -115,32 +116,85 @@ impl NetworkInstanceManager {
         instance_ids: Vec<uuid::Uuid>,
     ) -> Result<Vec<uuid::Uuid>, anyhow::Error> {
         self.instance_map.retain(|k, _| !instance_ids.contains(k));
+        self.instance_map.shrink_to_fit();
+        self.instance_error_messages
+            .retain(|k, _| !instance_ids.contains(k));
+        self.instance_error_messages.shrink_to_fit();
         Ok(self.list_network_instance_ids())
     }
 
-    pub fn collect_network_infos(
+    pub async fn collect_network_infos(
         &self,
     ) -> Result<BTreeMap<uuid::Uuid, NetworkInstanceRunningInfo>, anyhow::Error> {
         let mut ret = BTreeMap::new();
         for instance in self.instance_map.iter() {
-            if let Some(info) = instance.get_running_info() {
-                ret.insert(instance.key().clone(), info);
+            if let Ok(info) = instance.get_running_info().await {
+                ret.insert(*instance.key(), info);
             }
+        }
+        for v in self.instance_error_messages.iter() {
+            ret.insert(
+                *v.key(),
+                NetworkInstanceRunningInfo {
+                    error_msg: Some(v.value().clone()),
+                    ..Default::default()
+                },
+            );
         }
         Ok(ret)
     }
 
-    pub fn list_network_instance_ids(&self) -> Vec<uuid::Uuid> {
+    pub fn collect_network_infos_sync(
+        &self,
+    ) -> Result<BTreeMap<uuid::Uuid, NetworkInstanceRunningInfo>, anyhow::Error> {
+        tokio::runtime::Runtime::new()?.block_on(self.collect_network_infos())
+    }
+
+    pub async fn get_network_info(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<NetworkInstanceRunningInfo> {
+        if let Some(err_msg) = self.instance_error_messages.get(instance_id) {
+            return Some(NetworkInstanceRunningInfo {
+                error_msg: Some(err_msg.value().clone()),
+                ..Default::default()
+            });
+        }
         self.instance_map
-            .iter()
-            .map(|item| item.key().clone())
-            .collect()
+            .get(instance_id)?
+            .get_running_info()
+            .await
+            .ok()
+    }
+
+    pub fn list_network_instance_ids(&self) -> Vec<uuid::Uuid> {
+        self.instance_map.iter().map(|item| *item.key()).collect()
     }
 
     pub fn get_network_instance_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_inst_name())
+    }
+
+    pub fn filter_network_instance(
+        &self,
+        filter: impl Fn(&uuid::Uuid, &NetworkInstance) -> bool,
+    ) -> Vec<uuid::Uuid> {
+        self.instance_map
+            .iter()
+            .filter(|item| filter(item.key(), item.value()))
+            .map(|item| *item.key())
+            .collect()
+    }
+
+    pub fn get_instance_service(
+        &self,
+        instance_id: &uuid::Uuid,
+    ) -> Option<Arc<dyn InstanceRpcService>> {
+        self.instance_map
+            .get(instance_id)
+            .and_then(|instance| instance.value().get_api_service())
     }
 
     pub fn set_tun_fd(&self, instance_id: &uuid::Uuid, fd: i32) -> Result<(), anyhow::Error> {
@@ -263,6 +317,13 @@ fn handle_event(
                         );
                     }
 
+                    GlobalCtxEvent::VpnPortalStarted(portal) => {
+                        print_event(
+                            instance_id,
+                            format!("vpn portal started. portal: {}", portal),
+                        );
+                    }
+
                     GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {
                         print_event(
                             instance_id,
@@ -299,11 +360,15 @@ fn handle_event(
                             instance_id,
                             format!(
                                 "port forward added. local: {}, remote: {}, proto: {}",
-                                cfg.bind_addr.unwrap().to_string(),
-                                cfg.dst_addr.unwrap().to_string(),
+                                cfg.bind_addr.unwrap(),
+                                cfg.dst_addr.unwrap(),
                                 cfg.socket_type().as_str_name()
                             ),
                         );
+                    }
+
+                    GlobalCtxEvent::ConfigPatched(patch) => {
+                        print_event(instance_id, format!("config patched. patch: {:?}", patch));
                     }
                 }
             } else {
@@ -322,7 +387,7 @@ fn print_event(instance_id: uuid::Uuid, msg: String) {
     );
 }
 
-fn peer_conn_info_to_string(p: proto::cli::PeerConnInfo) -> String {
+fn peer_conn_info_to_string(p: proto::api::instance::PeerConnInfo) -> String {
     format!(
         "my_peer_id: {}, dst_peer_id: {}, tunnel_info: {:?}",
         p.my_peer_id, p.peer_id, p.tunnel
@@ -347,37 +412,24 @@ mod tests {
         let instance_id1 = manager
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str)
-                    .map(|c| {
+                    .inspect(|c| {
                         c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
-                        c
                     })
                     .unwrap(),
-                ConfigSource::Cli,
+                true,
             )
             .unwrap();
         let instance_id2 = manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::File,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true)
             .unwrap();
         let instance_id3 = manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::GUI,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), false)
             .unwrap();
         let instance_id4 = manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::Web,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true)
             .unwrap();
         let instance_id5 = manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::FFI,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), false)
             .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await; // to make instance actually started
@@ -412,39 +464,26 @@ mod tests {
         let port = crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
 
         assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::Cli,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true,)
             .is_err());
         assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::File,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true,)
             .is_err());
         assert!(manager
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str)
-                    .map(|c| {
+                    .inspect(|c| {
                         c.set_listeners(vec![format!("tcp://0.0.0.0:{}", port).parse().unwrap()]);
-                        c
                     })
                     .unwrap(),
-                ConfigSource::GUI,
+                false,
             )
             .is_ok());
         assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::Web,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true,)
             .is_err());
         assert!(manager
-            .run_network_instance(
-                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
-                ConfigSource::FFI,
-            )
+            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), false,)
             .is_ok());
 
         std::thread::sleep(std::time::Duration::from_secs(1)); // wait instance actually started
@@ -470,7 +509,8 @@ mod tests {
         let free_tcp_port =
             crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
 
-        for config_source in [ConfigSource::Cli, ConfigSource::File] {
+        // Test with event watching enabled (for CLI/File/RPC usage) - instance should auto-stop on error
+        for watch_event in [true] {
             let _port_holder =
                 std::net::TcpListener::bind(format!("0.0.0.0:{}", free_tcp_port)).unwrap();
 
@@ -485,7 +525,7 @@ mod tests {
             manager
                 .run_network_instance(
                     TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
-                    config_source.clone(),
+                    watch_event,
                 )
                 .unwrap();
 
@@ -494,11 +534,14 @@ mod tests {
                     assert_eq!(manager.list_network_instance_ids().len(), 1);
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                    panic!("instance manager with single failed instance({:?}) should not running", config_source);
+                    panic!("instance manager with single failed instance({:?}) should not running", watch_event);
                 }
             }
         }
-        for config_source in [ConfigSource::Web, ConfigSource::GUI, ConfigSource::FFI] {
+
+        // Test without event watching (for FFI usage) - instance should remain even if failed
+        {
+            let watch_event = false;
             let _port_holder =
                 std::net::TcpListener::bind(format!("0.0.0.0:{}", free_tcp_port)).unwrap();
 
@@ -513,7 +556,7 @@ mod tests {
             manager
                 .run_network_instance(
                     TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
-                    config_source.clone(),
+                    watch_event,
                 )
                 .unwrap();
 
@@ -540,7 +583,7 @@ mod tests {
         manager
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
-                ConfigSource::Cli,
+                true,
             )
             .unwrap();
 
@@ -549,7 +592,7 @@ mod tests {
         manager
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
-                ConfigSource::Cli,
+                true,
             )
             .unwrap();
 

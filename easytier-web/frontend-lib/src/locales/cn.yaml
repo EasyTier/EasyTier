@@ -44,8 +44,12 @@ logging_open_dir: 打开日志目录
 logging_copy_dir: 复制日志路径
 disable_auto_launch: 关闭开机自启
 enable_auto_launch: 开启开机自启
+hide_dock_icon: 隐藏 Dock 图标
+show_dock_icon: 显示 Dock 图标
 exit: 退出
 chips_placeholder: 例如： {0}, 输入后在下拉框中选择生效
+show_node_details: 显示节点详细信息
+hide_node_details: 隐藏节点详细信息
 hostname_placeholder: '留空默认为主机名: {0}'
 dev_name_placeholder: 注意：当多个网络同时使用相同的TUN接口名称时，将会在设置TUN的IP时产生冲突，留空以自动生成随机名称
 off_text: 点击关闭
@@ -74,6 +78,7 @@ latency: 延迟
 upload_bytes: 上传
 download_bytes: 下载
 loss_rate: 丢包率
+nat_type: NAT 类型
 
 flags_switch: 功能开关
 
@@ -127,6 +132,9 @@ disable_encryption_help: 禁用对等节点通信的加密，默认为false，�
 disable_udp_hole_punching: 禁用UDP打洞
 disable_udp_hole_punching_help: 禁用UDP打洞功能
 
+disable_sym_hole_punching: 禁用对称NAT打洞
+disable_sym_hole_punching_help: 禁用对称NAT的打洞（生日攻击），将对称NAT视为锥形NAT处理
+
 enable_magic_dns: 启用魔法DNS
 enable_magic_dns_help: |
   启用魔法DNS，允许通过EasyTier的DNS服务器访问其他节点的虚拟IPv4地址， 如 node1.et.net。
@@ -150,6 +158,13 @@ socks5_help: |
 
 exit_nodes: 出口节点列表
 exit_nodes_help: 转发所有流量的出口节点，虚拟IPv4地址，优先级由列表顺序决定
+  
+port_forwards: 端口转发
+port_forwards_help: "将本地端口转发到虚拟网络中的远程端口。例如：udp://0.0.0.0:12345/10.126.126.1:23456，表示将本地UDP端口12345转发到虚拟网络中的10.126.126.1:23456。可以指定多个。"
+port_forwards_bind_addr: "绑定地址，如：0.0.0.0"
+port_forwards_dst_addr: "目标地址，如：10.126.126.1"
+port_forwards_add_btn: "添加"
+edit_port_forward: "编辑端口转发"
 
 mtu: MTU
 mtu_help: |
@@ -201,6 +216,7 @@ event:
   ConnectionError: 连接错误
   Connecting: 正在连接
   ConnectError: 连接错误
+  VpnPortalStarted: VPN门户已启动
   VpnPortalClientConnected: VPN门户客户端已连接
   VpnPortalClientDisconnected: VPN门户客户端已断开连接
   DhcpIpv4Changed: DHCP IPv4地址更改
@@ -274,9 +290,11 @@ web:
     network: 网络
     select_network: 选择网络
     create_network: 创建网络
-    cancel_creation: 取消创建
+    cancel_edit: 取消编辑
     more_actions: 更多操作
     edit_as_file: 编辑为文件
+    save_config: 保存配置
+    config_saved: 配置已保存
     import_config: 导入配置
     create_new: 创建新网络
     network_status: 网络状态
@@ -318,4 +336,4 @@ web:
     confirm_password: 确认新密码
     language: 语言
     theme: 主题
-    logout: 退出登录 
+    logout: 退出登录
