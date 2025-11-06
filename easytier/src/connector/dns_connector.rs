@@ -130,11 +130,8 @@ impl DNSTunnelConnector {
                     for record in response.iter() {
                         let parsed_record = Self::handle_one_srv_record(record, protocol);
                         tracing::info!(?parsed_record, ?srv_domain, "parsed_record");
-                        if parsed_record.is_err() {
-                            eprintln!(
-                                "got invalid srv record {:?}",
-                                parsed_record.as_ref().unwrap_err()
-                            );
+                        if let Err(e) = &parsed_record {
+                            eprintln!("got invalid srv record {:?}", e);
                             continue;
                         }
                         responses.insert(parsed_record.unwrap());

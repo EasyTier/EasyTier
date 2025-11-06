@@ -67,13 +67,10 @@ impl IfConfiguerTrait for MacIfConfiger {
     }
 
     async fn remove_ip(&self, name: &str, ip: Option<Ipv4Inet>) -> Result<(), Error> {
-        if ip.is_none() {
-            run_shell_cmd(format!("ifconfig {} inet delete", name).as_str()).await
+        if let Some(ip) = ip {
+            run_shell_cmd(format!("ifconfig {} inet {} delete", name, ip.address()).as_str()).await
         } else {
-            run_shell_cmd(
-                format!("ifconfig {} inet {} delete", name, ip.unwrap().address()).as_str(),
-            )
-            .await
+            run_shell_cmd(format!("ifconfig {} inet delete", name).as_str()).await
         }
     }
 

@@ -14,6 +14,12 @@ const ETC_RESOLV_CONF: &str = "/etc/resolv.conf";
 
 pub struct DarwinConfigurator {}
 
+impl Default for DarwinConfigurator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DarwinConfigurator {
     pub fn new() -> Self {
         DarwinConfigurator {}

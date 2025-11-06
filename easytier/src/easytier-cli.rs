@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::Context;
 use cidr::Ipv4Inet;
-use clap::{command, Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use dashmap::DashMap;
 use humansize::format_size;

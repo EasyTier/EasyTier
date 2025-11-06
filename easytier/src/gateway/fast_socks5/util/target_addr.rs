@@ -12,7 +12,7 @@ use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::net::lookup_host;
 
-use tracing::{debug, error};
+use tracing::debug;
 
 /// SOCKS5 reply code
 #[derive(Error, Debug)]
