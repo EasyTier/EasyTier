@@ -1212,7 +1212,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     if let Some(config_files) = cli.config_file {
         let config_file_count = config_files.len();
         for config_file in config_files {
-            let mut cfg = if config_file == PathBuf::from("-") {
+            let mut cfg = if config_file.as_os_str() == "-" {
                 let mut stdin = String::new();
                 _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
                 TomlConfigLoader::new_from_str(stdin.as_str())

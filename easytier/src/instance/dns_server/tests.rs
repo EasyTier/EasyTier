@@ -102,7 +102,7 @@ async fn test_magic_dns_server_instance() {
             .await
             .unwrap();
 
-    let routes = vec![
+    let routes = [
         Route {
             hostname: "test1".to_string(),
             ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),

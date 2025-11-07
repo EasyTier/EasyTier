@@ -2156,9 +2156,9 @@ impl OspfRouteRpc for RouteSessionManager {
         let peer_infos = request.peer_infos.map(|x| x.items);
         let conn_info = request.conn_info;
         let foreign_network = request.foreign_network_infos;
-        let raw_peer_infos = if peer_infos.is_some() {
+        let raw_peer_infos = if let Some(peer_infos_ref) = &peer_infos {
             let r = get_raw_peer_infos(&mut ctrl.get_raw_input().unwrap()).unwrap();
-            assert_eq!(r.len(), peer_infos.as_ref().unwrap().len());
+            assert_eq!(r.len(), peer_infos_ref.len());
             Some(r)
         } else {
             None
