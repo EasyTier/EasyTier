@@ -23,6 +23,11 @@ use tracing_subscriber::EnvFilter;
 
 use crate::db::cleanup::{CleanupConfig, CleanupManager};
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -31,7 +36,7 @@ struct Args {
     admin_password: Option<String>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // 加载配置
     let config = AppConfig::default();
