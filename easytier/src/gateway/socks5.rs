@@ -511,7 +511,7 @@ impl PeerPacketFilter for Socks5Server {
 }
 
 impl Socks5Server {
-    pub fn new(
+    pub(crate) fn new(
         global_ctx: Arc<GlobalCtx>,
         peer_manager: Arc<PeerManager>,
         auth: Option<SimpleUserPassword>,
@@ -592,7 +592,7 @@ impl Socks5Server {
         });
     }
 
-    pub async fn run(
+    pub(crate) async fn run(
         self: &Arc<Self>,
         kcp_endpoint: Option<Weak<KcpEndpoint>>,
     ) -> Result<(), Error> {
@@ -713,7 +713,7 @@ impl Socks5Server {
         let _ = self.cancel_tokens.remove(&cfg);
     }
 
-    pub async fn add_tcp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
+    pub(crate) async fn add_tcp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
         let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
         let listener = bind_tcp_socket(bind_addr, self.global_ctx.net_ns.clone())?;
 
@@ -795,7 +795,7 @@ impl Socks5Server {
     }
 
     #[tracing::instrument(name = "add_udp_port_forward", skip(self))]
-    pub async fn add_udp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
+    pub(crate) async fn add_udp_port_forward(&self, cfg: &PortForwardConfig) -> Result<(), Error> {
         let (bind_addr, dst_addr) = (cfg.bind_addr, cfg.dst_addr);
         let socket = Arc::new(bind_udp_socket(bind_addr, self.global_ctx.net_ns.clone())?);
 

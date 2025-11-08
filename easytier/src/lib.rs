@@ -7,6 +7,8 @@ use clap_complete::Generator;
 
 mod arch;
 mod gateway;
+#[cfg(feature = "socks5")]
+pub use gateway::socks5;
 mod instance;
 mod peer_center;
 mod vpn_portal;

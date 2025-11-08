@@ -22,7 +22,13 @@ use std::{
     collections::VecDeque,
     sync::{atomic::AtomicBool, Arc, RwLock},
 };
+use std::sync::mpsc;
 use tokio::{sync::broadcast, task::JoinSet};
+
+#[cfg(feature = "socks5")]
+use crate::gateway::socks5::Socks5Server;
+#[cfg(not(feature = "socks5"))]
+type Socks5Server = ();
 
 pub type MyNodeInfo = crate::proto::web::MyNodeInfo;
 
@@ -134,12 +140,11 @@ impl EasyTierLauncher {
     }
 
     async fn easytier_routine(
-        cfg: TomlConfigLoader,
+        mut instance: Instance,
         stop_signal: Arc<tokio::sync::Notify>,
         data: Arc<EasyTierData>,
         fetch_node_info: bool,
     ) -> Result<(), anyhow::Error> {
-        let mut instance = Instance::new(cfg);
         let mut tasks = JoinSet::new();
 
         // Subscribe to global context events
@@ -235,7 +240,7 @@ impl EasyTierLauncher {
         }
     }
 
-    pub fn start<F>(&mut self, cfg_generator: F)
+    pub fn start<F>(&mut self, cfg_generator: F) -> Option<Arc<Socks5Server>>
     where
         F: FnOnce() -> Result<TomlConfigLoader, anyhow::Error> + Send + Sync,
     {
@@ -243,7 +248,7 @@ impl EasyTierLauncher {
         let cfg = match cfg_generator() {
             Err(e) => {
                 error_msg.write().unwrap().replace(e.to_string());
-                return;
+                return None;
             }
             Ok(cfg) => cfg,
         };
@@ -260,6 +265,8 @@ impl EasyTierLauncher {
         let data = self.data.clone();
         let fetch_node_info = self.fetch_node_info;
 
+        #[cfg(feature = "socks5")]
+        let (sender, receiver) = mpsc::channel::<Arc<Socks5Server>>();
         self.thread_handle = Some(std::thread::spawn(move || {
             let rt = if cfg.get_flags().multi_thread {
                 let worker_threads = 2.max(cfg.get_flags().multi_thread_count as usize);
@@ -285,8 +292,12 @@ impl EasyTierLauncher {
             });
 
             let notifier = data.instance_stop_notifier.clone();
+            let mut instance = Instance::new(cfg);
+            
+            #[cfg(feature = "socks5")]
+            let _ = sender.send(instance.socks5_server.clone());
             let ret = rt.block_on(Self::easytier_routine(
-                cfg,
+                instance,
                 stop_notifier.clone(),
                 data,
                 fetch_node_info,
@@ -297,6 +308,11 @@ impl EasyTierLauncher {
             instance_alive.store(false, std::sync::atomic::Ordering::Relaxed);
             notifier.notify_one();
         }));
+
+        #[cfg(feature = "socks5")]
+        return receiver.recv().ok();
+        #[cfg(not(feature = "socks5"))]
+        return None;
     }
 
     pub fn error_msg(&self) -> Option<String> {
