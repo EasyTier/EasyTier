@@ -6,11 +6,11 @@ use std::{
 };
 
 use anyhow::Context;
-use cidr::IpCidr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     common::stun::StunInfoCollector,
+    instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
         common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
@@ -47,10 +47,12 @@ pub fn gen_default_flags() -> Flags {
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
+        quic_listen_port: 0,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),
         disable_sym_hole_punching: false,
+        tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
     }
 }
 
@@ -152,6 +154,7 @@ pub trait ConfigLoader: Send + Sync {
         mapped_cidr: Option<cidr::Ipv4Cidr>,
     ) -> Result<(), anyhow::Error>;
     fn remove_proxy_cidr(&self, cidr: cidr::Ipv4Cidr);
+    fn clear_proxy_cidrs(&self);
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig>;
 
     fn get_network_identity(&self) -> NetworkIdentity;
@@ -167,12 +170,6 @@ pub trait ConfigLoader: Send + Sync {
 
     fn get_mapped_listeners(&self) -> Vec<url::Url>;
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>);
-
-    fn get_rpc_portal(&self) -> Option<SocketAddr>;
-    fn set_rpc_portal(&self, addr: SocketAddr);
-
-    fn get_rpc_portal_whitelist(&self) -> Option<Vec<IpCidr>>;
-    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<IpCidr>>);
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig>;
     fn set_vpn_portal_config(&self, config: VpnPortalConfig);
@@ -324,9 +321,9 @@ pub struct ConsoleLoggerConfig {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, derive_builder::Builder)]
 pub struct LoggingConfig {
     #[builder(setter(into, strip_option), default = None)]
-    file_logger: Option<FileLoggerConfig>,
+    pub file_logger: Option<FileLoggerConfig>,
     #[builder(setter(into, strip_option), default = None)]
-    console_logger: Option<ConsoleLoggerConfig>,
+    pub console_logger: Option<ConsoleLoggerConfig>,
 }
 
 impl LoggingConfigLoader for &LoggingConfig {
@@ -396,9 +393,6 @@ struct Config {
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
-
-    rpc_portal: Option<SocketAddr>,
-    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -610,6 +604,11 @@ impl ConfigLoader for TomlConfigLoader {
         }
     }
 
+    fn clear_proxy_cidrs(&self) {
+        let mut locked_config = self.config.lock().unwrap();
+        locked_config.proxy_network = None;
+    }
+
     fn get_proxy_cidrs(&self) -> Vec<ProxyNetworkConfig> {
         self.config
             .lock()
@@ -684,22 +683,6 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_mapped_listeners(&self, listeners: Option<Vec<url::Url>>) {
         self.config.lock().unwrap().mapped_listeners = listeners;
-    }
-
-    fn get_rpc_portal(&self) -> Option<SocketAddr> {
-        self.config.lock().unwrap().rpc_portal
-    }
-
-    fn set_rpc_portal(&self, addr: SocketAddr) {
-        self.config.lock().unwrap().rpc_portal = Some(addr);
-    }
-
-    fn get_rpc_portal_whitelist(&self) -> Option<Vec<IpCidr>> {
-        self.config.lock().unwrap().rpc_portal_whitelist.clone()
-    }
-
-    fn set_rpc_portal_whitelist(&self, whitelist: Option<Vec<IpCidr>>) {
-        self.config.lock().unwrap().rpc_portal_whitelist = whitelist;
     }
 
     fn get_vpn_portal_config(&self) -> Option<VpnPortalConfig> {

@@ -41,8 +41,7 @@ pub struct RestfulServer {
 
     // serve_task: Option<ScopedTask<()>>,
     // delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
-    network_api: NetworkApi,
-
+    // network_api: NetworkApi<WebClientManager>,
     web_router: Option<Router>,
 }
 
@@ -108,7 +107,7 @@ impl RestfulServer {
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
-        let network_api = NetworkApi::new();
+        // let network_api = NetworkApi::new();
 
         Ok(RestfulServer {
             bind_addr,
@@ -116,7 +115,7 @@ impl RestfulServer {
             db,
             // serve_task: None,
             // delete_task: None,
-            network_api,
+            // network_api,
             web_router,
         })
     }
@@ -188,6 +187,7 @@ impl RestfulServer {
         }
     }
 
+    #[allow(unused_mut)]
     pub async fn start(
         mut self,
     ) -> Result<
@@ -238,7 +238,7 @@ impl RestfulServer {
         let app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
-            .merge(self.network_api.build_route())
+            .merge(NetworkApi::build_route())
             .route_layer(login_required!(Backend))
             .merge(auth::router())
             .with_state(self.client_mgr.clone())

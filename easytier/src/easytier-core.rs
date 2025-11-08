@@ -7,7 +7,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     process::ExitCode,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 
 use anyhow::Context;
@@ -27,9 +27,11 @@ use easytier::{
         stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
+    defer,
     instance_manager::NetworkInstanceManager,
-    launcher::{add_proxy_network_to_config, ConfigSource},
+    launcher::add_proxy_network_to_config,
     proto::common::{CompressionAlgoPb, NatType},
+    rpc_service::ApiRpcServer,
     tunnel::{IpVersion, PROTO_PORT_OFFSET},
     utils::{init_logger, setup_panic_handler},
     web_client,
@@ -56,7 +58,12 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 #[cfg(feature = "jemalloc-prof")]
 #[allow(non_upper_case_globals)]
 #[export_name = "malloc_conf"]
-pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
+pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19,retain:false\0";
+
+#[cfg(not(feature = "jemalloc-prof"))]
+#[allow(non_upper_case_globals)]
+#[export_name = "malloc_conf"]
+pub static malloc_conf: &[u8] = b"retain:false\0";
 
 fn set_prof_active(_active: bool) {
     #[cfg(feature = "jemalloc-prof")]
@@ -67,16 +74,21 @@ fn set_prof_active(_active: bool) {
     }
 }
 
+fn get_dump_profile_path(cur_allocated: usize, suffix: &str) -> String {
+    format!(
+        "profile-{}-{}.{}",
+        cur_allocated,
+        chrono::Local::now().format("%Y-%m-%d-%H-%M-%S"),
+        suffix
+    )
+}
+
 fn dump_profile(_cur_allocated: usize) {
     #[cfg(feature = "jemalloc-prof")]
     {
         const PROF_DUMP: &[u8] = b"prof.dump\0";
         static mut PROF_DUMP_FILE_NAME: [u8; 128] = [0; 128];
-        let file_name_str = format!(
-            "profile-{}-{}.out",
-            _cur_allocated,
-            chrono::Local::now().format("%Y-%m-%d-%H-%M-%S")
-        );
+        let file_name_str = get_dump_profile_path(_cur_allocated, "out");
         // copy file name to PROF_DUMP
         let file_name = file_name_str.as_bytes();
         let len = file_name.len();
@@ -129,6 +141,9 @@ struct Cli {
 
     #[command(flatten)]
     logging_options: LoggingOptions,
+
+    #[command(flatten)]
+    rpc_portal_options: RpcPortalOptions,
 
     #[clap(long, help = t!("core_clap.generate_completions").to_string())]
     gen_autocomplete: Option<Shell>,
@@ -204,22 +219,6 @@ struct NetworkOptions {
         help = t!("core_clap.proxy_networks").to_string()
     )]
     proxy_networks: Vec<String>,
-
-    #[arg(
-        short,
-        long,
-        env = "ET_RPC_PORTAL",
-        help = t!("core_clap.rpc_portal").to_string(),
-    )]
-    rpc_portal: Option<String>,
-
-    #[arg(
-        long,
-        env = "ET_RPC_PORTAL_WHITELIST",
-        value_delimiter = ',',
-        help = t!("core_clap.rpc_portal_whitelist").to_string(),
-    )]
-    rpc_portal_whitelist: Option<Vec<IpCidr>>,
 
     #[arg(
         short,
@@ -399,7 +398,7 @@ struct NetworkOptions {
 
     // if not in relay_network_whitelist:
     // for foreign virtual network, will refuse the incoming connection
-    // for local virtual network, will refuse relaying tun packet
+    // for local virtual network, will refuse to relay tun packets
     #[arg(
         long,
         env = "ET_RELAY_NETWORK_WHITELIST",
@@ -505,6 +504,14 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_QUIC_LISTEN_PORT",
+        help = t!("core_clap.quic_listen_port").to_string(),
+        num_args = 0..=1,
+    )]
+    quic_listen_port: Option<u16>,
+
+    #[arg(
+        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -518,6 +525,12 @@ struct NetworkOptions {
         help = t!("core_clap.accept_dns").to_string(),
     )]
     accept_dns: Option<bool>,
+
+    #[arg(
+        long = "tld-dns-zone",
+        env = "ET_TLD_DNS_ZONE",
+        help = t!("core_clap.tld_dns_zone").to_string())]
+    tld_dns_zone: Option<String>,
 
     #[arg(
         long,
@@ -624,6 +637,25 @@ struct LoggingOptions {
     file_log_count: Option<usize>,
 }
 
+#[derive(Parser, Debug)]
+struct RpcPortalOptions {
+    #[arg(
+        short,
+        long,
+        env = "ET_RPC_PORTAL",
+        help = t!("core_clap.rpc_portal").to_string(),
+    )]
+    rpc_portal: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_RPC_PORTAL_WHITELIST",
+        value_delimiter = ',',
+        help = t!("core_clap.rpc_portal_whitelist").to_string(),
+    )]
+    rpc_portal_whitelist: Option<Vec<IpCidr>>,
+}
+
 rust_i18n::i18n!("locales", fallback = "en");
 
 impl Cli {
@@ -632,10 +664,10 @@ impl Cli {
             return Ok(vec![]);
         }
 
-        let origin_listners = listeners;
+        let origin_listeners = listeners;
         let mut listeners: Vec<String> = Vec::new();
-        if origin_listners.len() == 1 {
-            if let Ok(port) = origin_listners[0].parse::<u16>() {
+        if origin_listeners.len() == 1 {
+            if let Ok(port) = origin_listeners[0].parse::<u16>() {
                 for (proto, offset) in PROTO_PORT_OFFSET {
                     listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
                 }
@@ -643,7 +675,7 @@ impl Cli {
             }
         }
 
-        for l in &origin_listners {
+        for l in &origin_listeners {
             let proto_port: Vec<&str> = l.split(':').collect();
             if proto_port.len() > 2 {
                 if let Ok(url) = l.parse::<url::Url>() {
@@ -670,14 +702,6 @@ impl Cli {
         }
 
         Ok(listeners)
-    }
-
-    fn parse_rpc_portal(rpc_portal: String) -> anyhow::Result<SocketAddr> {
-        if let Ok(port) = rpc_portal.parse::<u16>() {
-            return Ok(format!("0.0.0.0:{}", port).parse().unwrap());
-        }
-
-        Ok(rpc_portal.parse()?)
     }
 }
 
@@ -784,24 +808,6 @@ impl NetworkOptions {
 
         for n in self.proxy_networks.iter() {
             add_proxy_network_to_config(n, cfg)?;
-        }
-
-        let rpc_portal = if let Some(r) = &self.rpc_portal {
-            Cli::parse_rpc_portal(r.clone())
-                .with_context(|| format!("failed to parse rpc portal: {}", r))?
-        } else if let Some(r) = cfg.get_rpc_portal() {
-            r
-        } else {
-            Cli::parse_rpc_portal("0".into())?
-        };
-        cfg.set_rpc_portal(rpc_portal);
-
-        if let Some(rpc_portal_whitelist) = &self.rpc_portal_whitelist {
-            let mut whitelist = cfg.get_rpc_portal_whitelist().unwrap_or_default();
-            for cidr in rpc_portal_whitelist {
-                whitelist.push(*cidr);
-            }
-            cfg.set_rpc_portal_whitelist(Some(whitelist));
         }
 
         if let Some(external_nodes) = self.external_node.as_ref() {
@@ -943,6 +949,9 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
+        if let Some(quic_listen_port) = self.quic_listen_port {
+            f.quic_listen_port = quic_listen_port as u32;
+        }
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
@@ -954,6 +963,10 @@ impl NetworkOptions {
             .enable_relay_foreign_network_kcp
             .unwrap_or(f.enable_relay_foreign_network_kcp);
         f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
+        // Configure tld_dns_zone: use provided value if set
+        if let Some(tld_dns_zone) = &self.tld_dns_zone {
+            f.tld_dns_zone = tld_dns_zone.clone();
+        }
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
@@ -1125,7 +1138,18 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 }
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
+    defer!(dump_profile(0););
     init_logger(&cli.logging_options, true)?;
+
+    let manager = Arc::new(NetworkInstanceManager::new());
+
+    let _rpc_server = ApiRpcServer::new(
+        cli.rpc_portal_options.rpc_portal,
+        cli.rpc_portal_options.rpc_portal_whitelist,
+        manager.clone(),
+    )?
+    .serve()
+    .await?;
 
     if cli.config_server.is_some() {
         set_default_machine_id(cli.machine_id);
@@ -1145,6 +1169,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         let token = config_server_url
             .path_segments()
             .and_then(|mut x| x.next())
+            .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
+            .transpose()
+            .with_context(|| "failed to decode config server token")?
             .map(|x| x.to_string())
             .unwrap_or_default();
 
@@ -1175,17 +1202,17 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
             token.to_string(),
             hostname,
+            manager,
         );
         tokio::signal::ctrl_c().await.unwrap();
         return Ok(());
     }
-    let manager = NetworkInstanceManager::new();
     let mut crate_cli_network =
         cli.config_file.is_none() || cli.network_options.network_name.is_some();
     if let Some(config_files) = cli.config_file {
         let config_file_count = config_files.len();
         for config_file in config_files {
-            let mut cfg = if config_file == PathBuf::from("-") {
+            let mut cfg = if config_file.as_os_str() == "-" {
                 let mut stdin = String::new();
                 _ = tokio::io::stdin().read_to_string(&mut stdin).await?;
                 TomlConfigLoader::new_from_str(stdin.as_str())
@@ -1209,7 +1236,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             println!("############### TOML ###############\n");
             println!("{}", cfg.dump());
             println!("-----------------------------------");
-            manager.run_network_instance(cfg, ConfigSource::File)?;
+            manager.run_network_instance(cfg, true)?;
         }
     }
 
@@ -1222,12 +1249,12 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         println!("############### TOML ###############\n");
         println!("{}", cfg.dump());
         println!("-----------------------------------");
-        manager.run_network_instance(cfg, ConfigSource::Cli)?;
+        manager.run_network_instance(cfg, true)?;
     }
 
     tokio::select! {
         _ = manager.wait() => {
-            let infos = manager.collect_network_infos()?;
+            let infos = manager.collect_network_infos().await?;
             let errs = infos
                 .into_values()
                 .filter_map(|info| info.error_msg)
@@ -1243,7 +1270,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn memory_monitor() {
+fn memory_monitor(_force_dump: Arc<AtomicBool>) {
     #[cfg(feature = "jemalloc-prof")]
     {
         let mut last_peak_size = 0;
@@ -1261,9 +1288,10 @@ fn memory_monitor() {
             );
 
             // dump every 75MB
-            if last_peak_size > 0
+            if (last_peak_size > 0
                 && new_heap_size > last_peak_size
-                && new_heap_size - last_peak_size > 75 * 1024 * 1024
+                && new_heap_size - last_peak_size > 10 * 1024 * 1024)
+                || _force_dump.load(std::sync::atomic::Ordering::Relaxed)
             {
                 println!(
                     "heap size increased: {} bytes, time: {}",
@@ -1272,6 +1300,14 @@ fn memory_monitor() {
                 );
                 dump_profile(new_heap_size);
                 last_peak_size = new_heap_size;
+                if _force_dump.load(std::sync::atomic::Ordering::Relaxed) {
+                    // also dump whole jemalloc stats
+                    use jemalloc_ctl::stats_print::stats_print;
+                    let tmp_file = get_dump_profile_path(new_heap_size, "stats");
+                    let mut file = std::fs::File::create(tmp_file).unwrap();
+                    let _ = stats_print(&mut file, Default::default());
+                    _force_dump.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
             }
 
             if last_peak_size == 0 {
@@ -1306,7 +1342,20 @@ async fn main() -> ExitCode {
     };
 
     set_prof_active(true);
-    let _monitor = std::thread::spawn(memory_monitor);
+    // register a signal handler to set force dump when signal usr1 is received
+    let force_dump = Arc::new(AtomicBool::new(false));
+    #[cfg(all(feature = "jemalloc-prof", not(target_os = "windows")))]
+    {
+        let force_dump_clone = force_dump.clone();
+        let mut sigusr1 =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()).unwrap();
+        tokio::task::spawn(async move {
+            while sigusr1.recv().await.is_some() {
+                force_dump_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+    }
+    let _monitor = std::thread::spawn(move || memory_monitor(force_dump));
 
     let cli = parse_cli();
 
@@ -1334,15 +1383,13 @@ async fn main() -> ExitCode {
     }
 
     println!("Stopping easytier...");
-
-    dump_profile(0);
     set_prof_active(false);
 
     ExitCode::from(ret_code)
 }
 
 async fn validate_config(cli: &Cli) -> anyhow::Result<()> {
-    // Check if config file is provided
+    // Check if a config file is provided
     let config_files = cli
         .config_file
         .as_ref()

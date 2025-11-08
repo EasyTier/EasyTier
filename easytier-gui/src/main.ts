@@ -1,15 +1,15 @@
 import Aura from '@primeuix/themes/aura';
-import PrimeVue from 'primevue/config'
-import ToastService from 'primevue/toastservice'
+import PrimeVue from 'primevue/config';
 
-import { createRouter, createWebHistory } from 'vue-router/auto'
-import { routes } from 'vue-router/auto-routes'
-import App from '~/App.vue'
-import EasyTierFrontendLib, { I18nUtils } from 'easytier-frontend-lib'
+import EasyTierFrontendLib, { I18nUtils } from 'easytier-frontend-lib';
+import { createRouter, createWebHistory } from 'vue-router/auto';
+import { routes } from 'vue-router/auto-routes';
+import App from '~/App.vue';
 
-import { getAutoLaunchStatusAsync, loadAutoLaunchStatusAsync } from './modules/auto_launch'
-import '~/styles.css'
-import 'easytier-frontend-lib/style.css'
+import 'easytier-frontend-lib/style.css';
+import { ConfirmationService, DialogService, ToastService } from 'primevue';
+import '~/styles.css';
+import { getAutoLaunchStatusAsync, loadAutoLaunchStatusAsync } from './modules/auto_launch';
 
 if (import.meta.env.PROD) {
   document.addEventListener('keydown', (event) => {
@@ -55,7 +55,9 @@ async function main() {
       },
     },
   })
-  app.use(ToastService as any)
+  app.use(ToastService)
+  app.use(DialogService)
+  app.use(ConfirmationService)
   app.mount('#app')
 }
 

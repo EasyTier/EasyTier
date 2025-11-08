@@ -305,8 +305,7 @@ impl Socks5ServerNet {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
             }
-            tracing::error!("smoltcp stack sink exited");
-            panic!("smoltcp stack sink exited");
+            tracing::warn!("smoltcp stack sink exited");
         });
 
         forward_tasks.spawn(async move {
@@ -323,12 +322,14 @@ impl Socks5ServerNet {
 
                 let dst = ipv4.get_destination();
                 let packet = ZCPacket::new_with_payload(&data);
-                if let Err(e) = peer_manager.send_msg_by_ip(packet, IpAddr::V4(dst)).await {
+                if let Err(e) = peer_manager
+                    .send_msg_by_ip(packet, IpAddr::V4(dst), false)
+                    .await
+                {
                     tracing::error!("send to peer failed in smoltcp sender: {:?}", e);
                 }
             }
-            tracing::error!("smoltcp stack stream exited");
-            panic!("smoltcp stack stream exited");
+            tracing::warn!("smoltcp stack stream exited");
         });
 
         let interface_config = smoltcp::iface::Config::new(smoltcp::wire::HardwareAddress::Ip);
@@ -960,6 +961,7 @@ impl Socks5Server {
         let udp_client_map = self.udp_client_map.clone();
         let udp_forward_task = self.udp_forward_task.clone();
         let entries = self.entries.clone();
+        let cancel_tokens = self.cancel_tokens.clone();
         self.tasks.lock().unwrap().spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(30)).await;
@@ -974,6 +976,11 @@ impl Socks5Server {
                     }
                     _ => true,
                 });
+
+                udp_client_map.shrink_to_fit();
+                udp_forward_task.shrink_to_fit();
+                entries.shrink_to_fit();
+                cancel_tokens.shrink_to_fit();
             }
         });
 

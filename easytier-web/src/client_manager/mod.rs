@@ -7,13 +7,19 @@ use std::sync::{
 };
 
 use dashmap::DashMap;
-use easytier::{proto::web::HeartbeatRequest, tunnel::TunnelListener};
+use easytier::{
+    proto::{
+        api::manage::WebClientService, rpc_types::controller::BaseController, web::HeartbeatRequest,
+    },
+    rpc_service::remote_client::{self, RemoteClientManager},
+    tunnel::TunnelListener,
+};
 use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
 use tokio::task::JoinSet;
 
-use crate::db::{Db, UserIdInDb};
+use crate::db::{entity::user_running_network_configs, Db, UserIdInDb};
 
 #[derive(rust_embed::Embed)]
 #[folder = "resources/"]
@@ -152,7 +158,7 @@ impl ClientManager {
         s.data().read().await.location().cloned()
     }
 
-    pub fn db(&self) -> &Db {
+    fn db(&self) -> &Db {
         self.storage.db()
     }
 
@@ -245,11 +251,38 @@ impl ClientManager {
     }
 }
 
+impl
+    RemoteClientManager<
+        (UserIdInDb, uuid::Uuid),
+        user_running_network_configs::Model,
+        sea_orm::DbErr,
+    > for ClientManager
+{
+    fn get_rpc_client(
+        &self,
+        (user_id, machine_id): (UserIdInDb, uuid::Uuid),
+    ) -> Option<Box<dyn WebClientService<Controller = BaseController> + Send>> {
+        let s = self.get_session_by_machine_id(user_id, &machine_id)?;
+        Some(s.scoped_rpc_client())
+    }
+
+    fn get_storage(
+        &self,
+    ) -> &impl remote_client::Storage<
+        (UserIdInDb, uuid::Uuid),
+        user_running_network_configs::Model,
+        sea_orm::DbErr,
+    > {
+        self.storage.db()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use easytier::{
+        instance_manager::NetworkInstanceManager,
         tunnel::{
             common::tests::wait_for_condition,
             udp::{UdpTunnelConnector, UdpTunnelListener},
@@ -273,7 +306,12 @@ mod tests {
             .unwrap();
 
         let connector = UdpTunnelConnector::new("udp://127.0.0.1:54333".parse().unwrap());
-        let _c = WebClient::new(connector, "test", "test");
+        let _c = WebClient::new(
+            connector,
+            "test",
+            "test",
+            Arc::new(NetworkInstanceManager::new()),
+        );
 
         wait_for_condition(
             || async { mgr.client_sessions.len() == 1 },

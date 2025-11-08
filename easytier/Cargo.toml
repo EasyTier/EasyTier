@@ -63,7 +63,6 @@ timedmap = "=1.0.1"
 zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 bytes = "1.5.0"
 pin-project-lite = "0.2.13"
-tachyonix = "0.3.0"
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 
@@ -109,13 +108,15 @@ anyhow = "1.0"
 
 url = { version = "2.5", features = ["serde"] }
 percent-encoding = "2.3.1"
+idna = "1.0"
 
 # for tun packet
 byteorder = "1.5.0"
 
 # for proxy
-cidr = { version = "0.2.2", features = ["serde"] }
+cidr = { version = "0.3.1", features = ["serde"] }
 socket2 = { version = "0.5.10", features = ["all"] }
+prefix-trie = { version = "0.7.0", features = ["cidr"] }
 
 # for hole punching
 stun_codec = "0.3.4"
@@ -192,7 +193,7 @@ service-manager = { git = "https://github.com/chipsenkbeil/service-manager-rs.gi
 
 zstd = { version = "0.13" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "0f0a0558391ba391c089806c23f369651f6c9eeb" }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "71eff18c573a4a71bf99c7fabc6a8b9f211c84c1" }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
@@ -257,6 +258,7 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = tr
     "unprefixed_malloc_on_supported_platforms"
 ] }
 jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
+    "use_std"
 ] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
@@ -294,7 +296,7 @@ thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = f
 [dev-dependencies]
 serial_test = "3.0.0"
 rstest = "0.25.0"
-futures-util = "0.3.30"
+futures-util = "0.3.31"
 maplit = "1.0.2"
 tempfile = "3.22.0"
 

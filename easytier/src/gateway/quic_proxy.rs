@@ -1,18 +1,18 @@
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex, Weak};
-use std::{net::SocketAddr, pin::Pin};
-
 use anyhow::Context;
 use dashmap::DashMap;
 use pnet::packet::ipv4::Ipv4Packet;
 use prost::Message as _;
 use quinn::{Endpoint, Incoming};
+use std::net::{IpAddr, Ipv4Addr};
+use std::sync::{Arc, Mutex, Weak};
+use std::{net::SocketAddr, pin::Pin};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use crate::common::acl_processor::PacketInfo;
+use crate::common::config::ConfigLoader;
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
@@ -22,7 +22,7 @@ use crate::gateway::tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy};
 use crate::gateway::CidrSet;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::acl::{ChainType, Protocol};
-use crate::proto::cli::{
+use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
     TcpProxyEntryTransportType, TcpProxyRpc,
 };
@@ -261,8 +261,12 @@ impl QUICProxyDst {
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<Self> {
         let _g = global_ctx.net_ns.guard();
-        let (endpoint, _) = make_server_endpoint("0.0.0.0:0".parse().unwrap())
-            .map_err(|e| anyhow::anyhow!("failed to create QUIC endpoint: {}", e))?;
+        let (endpoint, _) = make_server_endpoint(
+            format!("0.0.0.0:{}", global_ctx.config.get_flags().quic_listen_port)
+                .parse()
+                .unwrap(),
+        )
+        .map_err(|e| anyhow::anyhow!("failed to create QUIC endpoint: {}", e))?;
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "QUICProxyDst tasks".to_string());
         Ok(Self {
@@ -329,6 +333,9 @@ impl QUICProxyDst {
         let remote_addr = conn.remote_address();
         defer!(
             proxy_entries.remove(&remote_addr);
+            if proxy_entries.capacity() - proxy_entries.len() > 16 {
+                proxy_entries.shrink_to_fit();
+            }
         );
         let ret = timeout(
             std::time::Duration::from_secs(10),

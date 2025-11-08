@@ -11,6 +11,7 @@ use api::routes::create_routes;
 use clap::Parser;
 use config::AppConfig;
 use db::{operations::NodeOperations, Db};
+use easytier::utils::init_logger;
 use health_checker::HealthChecker;
 use health_checker_manager::HealthCheckerManager;
 use std::env;
@@ -22,6 +23,11 @@ use tracing_subscriber::EnvFilter;
 
 use crate::db::cleanup::{CleanupConfig, CleanupManager};
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -30,24 +36,13 @@ struct Args {
     admin_password: Option<String>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() -> anyhow::Result<()> {
     // 加载配置
     let config = AppConfig::default();
 
     // 初始化日志
-    tracing_subscriber::fmt()
-        .with_max_level(match config.logging.level.as_str() {
-            "debug" => tracing::Level::DEBUG,
-            "info" => tracing::Level::INFO,
-            "warn" => tracing::Level::WARN,
-            "error" => tracing::Level::ERROR,
-            _ => tracing::Level::INFO,
-        })
-        .with_target(false)
-        .with_thread_ids(true)
-        .with_env_filter(EnvFilter::new("easytier_uptime"))
-        .init();
+    let _ = init_logger(&config.logging, false);
 
     // 解析命令行参数
     let args = Args::parse();

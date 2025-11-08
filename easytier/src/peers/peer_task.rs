@@ -96,6 +96,7 @@ where
                         }
                     }
                 }
+                peer_task_map.shrink_to_fit();
             }
 
             if !peers_to_connect.is_empty() {

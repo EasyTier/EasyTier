@@ -19,6 +19,8 @@ use easytier::{
     utils::{init_logger, setup_panic_handler},
 };
 
+use mimalloc::MiMalloc;
+
 mod client_manager;
 mod db;
 mod migrator;
@@ -26,6 +28,9 @@ mod restful;
 
 #[cfg(feature = "embed")]
 mod web;
+
+#[global_allocator]
+static GLOBAL_MIMALLOC: MiMalloc = MiMalloc;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -161,7 +166,7 @@ async fn get_dual_stack_listener(
     Ok((v6_listener, v4_listener))
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let locale = sys_locale::get_locale().unwrap_or_else(|| String::from("en-US"));
     rust_i18n::set_locale(&locale);

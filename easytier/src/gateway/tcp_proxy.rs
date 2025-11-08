@@ -27,7 +27,7 @@ use crate::common::join_joinset_background;
 use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
-use crate::proto::cli::{
+use crate::proto::api::instance::{
     ListTcpProxyEntryRequest, ListTcpProxyEntryResponse, TcpProxyEntry, TcpProxyEntryState,
     TcpProxyEntryTransportType, TcpProxyRpc,
 };
@@ -513,6 +513,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
                         true
                     }
                 });
+                syn_map.shrink_to_fit();
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
         };
@@ -564,7 +565,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
                     let dst = ipv4.get_destination();
                     let packet = ZCPacket::new_with_payload(&data);
-                    if let Err(e) = peer_mgr.send_msg_by_ip(packet, IpAddr::V4(dst)).await {
+                    if let Err(e) = peer_mgr
+                        .send_msg_by_ip(packet, IpAddr::V4(dst), false)
+                        .await
+                    {
                         tracing::error!("send to peer failed in smoltcp sender: {:?}", e);
                     }
                 }
@@ -706,6 +710,12 @@ impl<C: NatDstConnector> TcpProxy<C> {
     ) {
         conn_map.remove(&nat_entry.id);
         addr_conn_map.remove_if(&nat_entry.src, |_, entry| entry.id == nat_entry.id);
+        if conn_map.capacity() - conn_map.len() > 16 {
+            conn_map.shrink_to_fit();
+        }
+        if addr_conn_map.capacity() - addr_conn_map.len() > 16 {
+            addr_conn_map.shrink_to_fit();
+        }
     }
 
     async fn connect_to_nat_dst(

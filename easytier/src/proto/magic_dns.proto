@@ -2,7 +2,7 @@ syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
 import "common.proto";
-import "cli.proto";
+import "api_instance.proto";
 
 package magic_dns;
 
@@ -30,7 +30,7 @@ message DnsRecordList {
 
 message UpdateDnsRecordRequest {
     string zone = 1;
-    repeated cli.Route routes = 2;
+    repeated api.instance.Route routes = 2;
 }
 
 message GetDnsRecordResponse {

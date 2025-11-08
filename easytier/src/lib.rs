@@ -9,7 +9,7 @@ mod arch;
 mod gateway;
 #[cfg(feature = "socks5")]
 pub use gateway::socks5;
-mod instance;
+pub mod instance;
 mod peer_center;
 mod vpn_portal;
 
@@ -19,6 +19,7 @@ pub mod instance_manager;
 pub mod launcher;
 pub mod peers;
 pub mod proto;
+pub mod rpc_service;
 pub mod tunnel;
 pub mod utils;
 pub mod web_client;

@@ -4,7 +4,16 @@ import "common.proto";
 import "peer_rpc.proto";
 import "acl.proto";
 
-package cli;
+package api.instance;
+
+message InstanceIdentifier {
+  message InstanceSelector { optional string name = 1; }
+
+  oneof selector {
+    common.UUID id = 1;
+    InstanceSelector instance_selector = 2;
+  }
+}
 
 message Status {
   int32 code = 1;
@@ -41,7 +50,7 @@ message PeerInfo {
   repeated common.UUID directly_connected_conns = 4;
 }
 
-message ListPeerRequest {}
+message ListPeerRequest { InstanceIdentifier instance = 1; }
 
 message ListPeerResponse {
   repeated PeerInfo peer_infos = 1;
@@ -89,19 +98,19 @@ message NodeInfo {
   peer_rpc.GetIpListResponse ip_list = 11;
 }
 
-message ShowNodeInfoRequest {}
+message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }
 
 message ShowNodeInfoResponse { NodeInfo node_info = 1; }
 
-message ListRouteRequest {}
+message ListRouteRequest { InstanceIdentifier instance = 1; }
 
 message ListRouteResponse { repeated Route routes = 1; }
 
-message DumpRouteRequest {}
+message DumpRouteRequest { InstanceIdentifier instance = 1; }
 
 message DumpRouteResponse { string result = 1; }
 
-message ListForeignNetworkRequest {}
+message ListForeignNetworkRequest { InstanceIdentifier instance = 1; }
 
 message ForeignNetworkEntryPb {
   repeated PeerInfo peers = 1;
@@ -114,7 +123,7 @@ message ListForeignNetworkResponse {
   map<string, ForeignNetworkEntryPb> foreign_networks = 1;
 }
 
-message ListGlobalForeignNetworkRequest {}
+message ListGlobalForeignNetworkRequest { InstanceIdentifier instance = 1; }
 
 message ListGlobalForeignNetworkResponse {
   // foreign network in the entire network
@@ -130,6 +139,12 @@ message ListGlobalForeignNetworkResponse {
   map<uint32, ForeignNetworks> foreign_networks = 1;
 }
 
+message GetForeignNetworkSummaryRequest { InstanceIdentifier instance = 1; }
+
+message GetForeignNetworkSummaryResponse {
+  peer_rpc.RouteForeignNetworkSummary summary = 1;
+}
+
 service PeerManageRpc {
   rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
   rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
@@ -139,6 +154,8 @@ service PeerManageRpc {
   rpc ListGlobalForeignNetwork(ListGlobalForeignNetworkRequest)
       returns (ListGlobalForeignNetworkResponse);
   rpc ShowNodeInfo(ShowNodeInfoRequest) returns (ShowNodeInfoResponse);
+  rpc GetForeignNetworkSummary(GetForeignNetworkSummaryRequest)
+      returns (GetForeignNetworkSummaryResponse);
 }
 
 enum ConnectorStatus {
@@ -152,50 +169,25 @@ message Connector {
   ConnectorStatus status = 2;
 }
 
-message ListConnectorRequest {}
+message ListConnectorRequest { InstanceIdentifier instance = 1; }
 
 message ListConnectorResponse { repeated Connector connectors = 1; }
 
-enum ConnectorManageAction {
-  ADD = 0;
-  REMOVE = 1;
-}
-
-message ManageConnectorRequest {
-  ConnectorManageAction action = 1;
-  common.Url url = 2;
-}
-
-message ManageConnectorResponse {}
-
 service ConnectorManageRpc {
   rpc ListConnector(ListConnectorRequest) returns (ListConnectorResponse);
-  rpc ManageConnector(ManageConnectorRequest) returns (ManageConnectorResponse);
 }
 
-message MappedListener {
-  common.Url url = 1;
+message MappedListener { common.Url url = 1; }
+
+message ListMappedListenerRequest { InstanceIdentifier instance = 1; }
+
+message ListMappedListenerResponse {
+  repeated MappedListener mappedlisteners = 1;
 }
-
-message ListMappedListenerRequest {}
-
-message ListMappedListenerResponse { repeated MappedListener mappedlisteners = 1; }
-
-enum MappedListenerManageAction {
-  MAPPED_LISTENER_ADD = 0;
-  MAPPED_LISTENER_REMOVE = 1;
-}
-
-message ManageMappedListenerRequest {
-  MappedListenerManageAction action = 1;
-  common.Url url = 2;
-}
-
-message ManageMappedListenerResponse {}
 
 service MappedListenerManageRpc {
-  rpc ListMappedListener(ListMappedListenerRequest) returns (ListMappedListenerResponse);
-  rpc ManageMappedListener(ManageMappedListenerRequest) returns (ManageMappedListenerResponse);
+  rpc ListMappedListener(ListMappedListenerRequest)
+      returns (ListMappedListenerResponse);
 }
 
 message VpnPortalInfo {
@@ -204,7 +196,7 @@ message VpnPortalInfo {
   repeated string connected_clients = 3;
 }
 
-message GetVpnPortalInfoRequest {}
+message GetVpnPortalInfoRequest { InstanceIdentifier instance = 1; }
 message GetVpnPortalInfoResponse { VpnPortalInfo vpn_portal_info = 1; }
 
 service VpnPortalRpc {
@@ -219,19 +211,19 @@ enum TcpProxyEntryTransportType {
 }
 
 enum TcpProxyEntryState {
-    Unknown = 0;
-    // receive syn packet but not start connecting to dst
-    SynReceived = 1;
-    // connecting to dst
-    ConnectingDst = 2;
-    // connected to dst
-    Connected = 3;
-    // connection closed
-    Closed = 4;
-    // closing src
-    ClosingSrc = 5;
-    // closing dst
-    ClosingDst = 6;
+  Unknown = 0;
+  // receive syn packet but not start connecting to dst
+  SynReceived = 1;
+  // connecting to dst
+  ConnectingDst = 2;
+  // connected to dst
+  Connected = 3;
+  // connection closed
+  Closed = 4;
+  // closing src
+  ClosingSrc = 5;
+  // closing dst
+  ClosingDst = 6;
 }
 
 message TcpProxyEntry {
@@ -242,64 +234,38 @@ message TcpProxyEntry {
   TcpProxyEntryTransportType transport_type = 5;
 }
 
-message ListTcpProxyEntryRequest {}
+message ListTcpProxyEntryRequest { InstanceIdentifier instance = 1; }
 
-message ListTcpProxyEntryResponse {
-  repeated TcpProxyEntry entries = 1;
-}
+message ListTcpProxyEntryResponse { repeated TcpProxyEntry entries = 1; }
 
 service TcpProxyRpc {
   rpc ListTcpProxyEntry(ListTcpProxyEntryRequest)
       returns (ListTcpProxyEntryResponse);
 }
 
-message GetAclStatsRequest {}
+message GetAclStatsRequest { InstanceIdentifier instance = 1; }
 
-message GetAclStatsResponse {
-  acl.AclStats acl_stats = 1;
-}
+message GetAclStatsResponse { acl.AclStats acl_stats = 1; }
 
 service AclManageRpc {
   rpc GetAclStats(GetAclStatsRequest) returns (GetAclStatsResponse);
-  rpc SetWhitelist(SetWhitelistRequest) returns (SetWhitelistResponse);
   rpc GetWhitelist(GetWhitelistRequest) returns (GetWhitelistResponse);
 }
 
-message SetWhitelistRequest {
-  repeated string tcp_ports = 1;
-  repeated string udp_ports = 2;
-}
-
-message SetWhitelistResponse {}
-
-message GetWhitelistRequest {}
+message GetWhitelistRequest { InstanceIdentifier instance = 1; }
 
 message GetWhitelistResponse {
   repeated string tcp_ports = 1;
   repeated string udp_ports = 2;
 }
 
-message AddPortForwardRequest {
-  common.PortForwardConfigPb cfg = 1;
-}
-
-message AddPortForwardResponse {}
-
-message RemovePortForwardRequest {
-  common.PortForwardConfigPb cfg = 1;
-}
-
-message RemovePortForwardResponse {}
-
-message ListPortForwardRequest {}
+message ListPortForwardRequest { InstanceIdentifier instance = 1; }
 
 message ListPortForwardResponse {
   repeated common.PortForwardConfigPb cfgs = 1;
 }
 
 service PortForwardManageRpc {
-  rpc AddPortForward(AddPortForwardRequest) returns (AddPortForwardResponse);
-  rpc RemovePortForward(RemovePortForwardRequest) returns (RemovePortForwardResponse);
   rpc ListPortForward(ListPortForwardRequest) returns (ListPortForwardResponse);
 }
 
@@ -309,47 +275,16 @@ message MetricSnapshot {
   map<string, string> labels = 3;
 }
 
-message GetStatsRequest {}
+message GetStatsRequest { InstanceIdentifier instance = 1; }
 
-message GetStatsResponse {
-  repeated MetricSnapshot metrics = 1;
-}
+message GetStatsResponse { repeated MetricSnapshot metrics = 1; }
 
-message GetPrometheusStatsRequest {}
+message GetPrometheusStatsRequest { InstanceIdentifier instance = 1; }
 
-message GetPrometheusStatsResponse {
-  string prometheus_text = 1;
-}
+message GetPrometheusStatsResponse { string prometheus_text = 1; }
 
 service StatsRpc {
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
-  rpc GetPrometheusStats(GetPrometheusStatsRequest) returns (GetPrometheusStatsResponse);
-}
-
-enum LogLevel {
-  DISABLED = 0;
-  ERROR = 1;
-  WARNING = 2;
-  INFO = 3;
-  DEBUG = 4;
-  TRACE = 5;
-}
-
-message SetLoggerConfigRequest {
-    LogLevel level = 1;
-}
-
-message SetLoggerConfigResponse {
-}
-
-message GetLoggerConfigRequest {
-}
-
-message GetLoggerConfigResponse {
-    LogLevel level = 1;
-}
-
-service LoggerRpc {
-  rpc SetLoggerConfig(SetLoggerConfigRequest) returns (SetLoggerConfigResponse);
-  rpc GetLoggerConfig(GetLoggerConfigRequest) returns (GetLoggerConfigResponse);
+  rpc GetPrometheusStats(GetPrometheusStatsRequest)
+      returns (GetPrometheusStatsResponse);
 }

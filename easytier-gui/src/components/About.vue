@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { getEasytierVersion } from '~/composables/network'
+import { getEasytierVersion } from '~/composables/backend'
 
 const { t } = useI18n()
 

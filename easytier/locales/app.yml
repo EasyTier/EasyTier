@@ -184,12 +184,18 @@ core_clap:
   disable_quic_input:
     en: "do not allow other nodes to use QUIC to proxy tcp streams to this node. when a node with QUIC proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 QUIC 代理 TCP 流到此节点。开启 QUIC 代理的节点访问此节点时，依然使用原始 TCP 连接。"
+  quic_listen_port:
+    en: "the port to listen for quic connections, default is 0 (random port)"
+    zh-CN: "监听 QUIC 连接的端口，默认值为0（随机端口）。"
   port_forward:
     en: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
     zh-CN: "将本地端口转发到虚拟网络中的远程端口。例如：udp://0.0.0.0:12345/10.126.126.1:23456，表示将本地UDP端口12345转发到虚拟网络中的10.126.126.1:23456。可以指定多个。"
   accept_dns:
     en: "if true, enable magic dns. with magic dns, you can access other nodes with a domain name, e.g.: <hostname>.et.net. magic dns will modify your system dns settings, enable it carefully."
     zh-CN: "如果为true，则启用魔法DNS。使用魔法DNS，您可以使用域名访问其他节点，例如：<hostname>.et.net。魔法DNS将修改您的系统DNS设置，请谨慎启用。"
+  tld_dns_zone:
+    en: "specify the top-level domain zone for magic DNS. if not provided, defaults to the value from dns_server module (et.net.). only used when accept_dns is true."
+    zh-CN: "指定魔法DNS的顶级域名区域。如果未提供，默认使用dns_server模块中的值（et.net.）。仅在accept_dns为true时使用。"
   private_mode:
     en: "if true, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node."
     zh-CN: "如果为true，则不允许使用了与本网络不相同的网络名称和密码的节点通过本节点进行握手或中转"

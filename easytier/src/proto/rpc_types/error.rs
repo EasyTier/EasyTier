@@ -6,7 +6,7 @@ use thiserror;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("rust tun error {0}")]
+    #[error("Rust error: {0}")]
     ExecutionError(#[from] anyhow::Error),
 
     #[error("Decode error: {0}")]

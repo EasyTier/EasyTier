@@ -6,6 +6,18 @@ const api = axios.create({
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json'
+  },
+  // 保证数组参数使用 repeated keys 风格序列化：tags=a&tags=b
+  paramsSerializer: params => {
+    const usp = new URLSearchParams()
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        value.forEach(v => usp.append(key, v))
+      } else if (value !== undefined && value !== null && value !== '') {
+        usp.append(key, value)
+      }
+    })
+    return usp.toString()
   }
 })
 
@@ -50,9 +62,15 @@ api.interceptors.response.use(
 
 // 节点相关API
 export const nodeApi = {
-  // 获取节点列表
-  async getNodes(params = {}) {
-    const response = await api.get('/api/nodes', { params })
+  // 获取节点列表（支持传入 AbortController.signal 用于取消）
+  async getNodes(params = {}, options = {}) {
+    const response = await api.get('/api/nodes', { params, signal: options.signal })
+    return response.data
+  },
+
+  // 获取所有标签
+  async getAllTags() {
+    const response = await api.get('/api/tags')
     return response.data
   },
 
@@ -148,6 +166,28 @@ export const adminApi = {
   // 更新节点
   async updateNode(id, data) {
     const response = await api.put(`/api/admin/nodes/${id}`, data)
+    return response.data
+  },
+
+  // 兼容方法：获取所有节点（参数转换）
+  async getAllNodes(params = {}) {
+    const mapped = {
+      page: params.page,
+      per_page: params.page_size ?? params.per_page,
+      is_approved: params.approved ?? params.is_approved,
+      is_active: params.online ?? params.is_active,
+      protocol: params.protocol,
+      search: params.search,
+      tag: params.tag
+    }
+    // 移除未定义的字段
+    Object.keys(mapped).forEach(k => {
+      if (mapped[k] === undefined || mapped[k] === null || mapped[k] === '') {
+        delete mapped[k]
+      }
+    })
+    // 直接复用现有接口
+    const response = await api.get('/api/admin/nodes', { params: mapped })
     return response.data
   }
 }

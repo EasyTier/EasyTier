@@ -14,7 +14,7 @@ use pnet::packet::{
     udp::{self, MutableUdpPacket},
     Packet,
 };
-use tachyonix::{channel, Receiver, Sender, TrySendError};
+use tokio::sync::mpsc::{channel, error::TrySendError, Receiver, Sender};
 use tokio::{
     net::UdpSocket,
     sync::Mutex,
@@ -144,7 +144,7 @@ impl UdpNatEntry {
         real_ipv4: Ipv4Addr,
         mapped_ipv4: Ipv4Addr,
     ) {
-        let (s, mut r) = tachyonix::channel(128);
+        let (s, mut r) = channel(128);
 
         let self_clone = self.clone();
         let recv_task = ScopedTask::from(tokio::spawn(async move {
@@ -190,7 +190,7 @@ impl UdpNatEntry {
         let self_clone = self.clone();
         let send_task = ScopedTask::from(tokio::spawn(async move {
             let mut ip_id = 1;
-            while let Ok((mut packet, len, src_socket)) = r.recv().await {
+            while let Some((mut packet, len, src_socket)) = r.recv().await {
                 let SocketAddr::V4(mut src_v4) = src_socket else {
                     continue;
                 };
@@ -422,6 +422,7 @@ impl UdpProxy {
                         true
                     }
                 });
+                nat_table.shrink_to_fit();
             }
         });
 
@@ -438,12 +439,12 @@ impl UdpProxy {
         let peer_manager = self.peer_manager.clone();
         let is_latency_first = self.global_ctx.get_flags().latency_first;
         self.tasks.lock().await.spawn(async move {
-            while let Ok(mut msg) = receiver.recv().await {
+            while let Some(mut msg) = receiver.recv().await {
                 let hdr = msg.mut_peer_manager_header().unwrap();
                 hdr.set_latency_first(is_latency_first);
                 let to_peer_id = hdr.to_peer_id.into();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let ret = peer_manager.send_msg(msg, to_peer_id).await;
+                let ret = peer_manager.send_msg_for_proxy(msg, to_peer_id).await;
                 if ret.is_err() {
                     tracing::error!("send icmp packet to peer failed: {:?}", ret);
                 }

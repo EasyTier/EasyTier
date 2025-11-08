@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { healthApi } from './api'
 import {
@@ -70,6 +70,20 @@ const menuItems = [
   }
 ]
 
+// 根据当前路由计算默认激活的菜单项
+const activeMenuIndex = computed(() => {
+  const p = route.path
+  if (p.startsWith('/submit')) return 'submit'
+  return 'dashboard'
+})
+
+// 处理菜单选择，避免返回 Promise 导致异步补丁问题
+const handleMenuSelect = (key) => {
+  const item = menuItems.find((i) => i.name === key)
+  if (item && item.path) {
+    router.push(item.path)
+  }
+}
 onMounted(() => {
   checkHealth()
   // 定期检查健康状态
@@ -89,8 +103,8 @@ onMounted(() => {
           <h1 class="app-title">EasyTier Uptime</h1>
         </div>
 
-        <el-menu :default-active="route.name" mode="horizontal" class="nav-menu"
-          @select="(key) => router.push(menuItems.find(item => item.name === key)?.path || '/')">
+        <el-menu :default-active="activeMenuIndex" mode="horizontal" class="nav-menu"
+          @select="handleMenuSelect">
           <el-menu-item v-for="item in menuItems" :key="item.name" :index="item.name">
             <el-icon>
               <component :is="item.icon" />

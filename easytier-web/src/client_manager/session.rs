@@ -4,19 +4,18 @@ use anyhow::Context;
 use easytier::{
     common::scoped_task::ScopedTask,
     proto::{
+        api::manage::{
+            NetworkConfig, RunNetworkInstanceRequest, WebClientService,
+            WebClientServiceClientFactory,
+        },
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{self, controller::BaseController},
-        web::{
-            HeartbeatRequest, HeartbeatResponse, NetworkConfig, RunNetworkInstanceRequest,
-            WebClientService, WebClientServiceClientFactory, WebServerService,
-            WebServerServiceServer,
-        },
+        web::{HeartbeatRequest, HeartbeatResponse, WebServerService, WebServerServiceServer},
     },
+    rpc_service::remote_client::{ListNetworkProps, Storage as _},
     tunnel::Tunnel,
 };
 use tokio::sync::{broadcast, RwLock};
-
-use crate::db::ListNetworkProps;
 
 use super::storage::{Storage, StorageToken, WeakRefStorage};
 
@@ -224,10 +223,10 @@ impl Session {
             }
 
             let req = req.unwrap();
-            if req.machine_id.is_none() {
+            let Some(machine_id) = req.machine_id else {
                 tracing::warn!(?req, "Machine id is not set, ignore");
                 continue;
-            }
+            };
 
             let running_inst_ids = req
                 .running_network_instances
@@ -257,11 +256,7 @@ impl Session {
 
             let local_configs = match storage
                 .db
-                .list_network_configs(
-                    user_id,
-                    Some(req.machine_id.unwrap().into()),
-                    ListNetworkProps::EnabledOnly,
-                )
+                .list_network_configs((user_id, machine_id.into()), ListNetworkProps::EnabledOnly)
                 .await
             {
                 Ok(configs) => configs,
