@@ -179,7 +179,7 @@ impl EasyTierLauncher {
         Ok(())
     }
 
-    pub fn start<F>(&mut self, cfg_generator: F)
+    pub fn start<F>(&mut self, cfg_generator: F) -> Option<Arc<Socks5Server>>
     where
         F: FnOnce() -> Result<TomlConfigLoader, anyhow::Error> + Send + Sync,
     {
@@ -409,7 +409,7 @@ impl NetworkInstance {
         }
     }
 
-    pub fn start(&mut self) -> Result<EventBusSubscriber, anyhow::Error> {
+    pub fn start(&mut self) -> Result<(EventBusSubscriber, Socks5Server), anyhow::Error> {
         if self.is_easytier_running() {
             return Ok(self.subscribe_event().unwrap());
         }
@@ -418,12 +418,11 @@ impl NetworkInstance {
         self.launcher = Some(launcher);
         let ev = self.subscribe_event().unwrap();
 
-        self.launcher
+        Ok((ev, self.launcher
             .as_mut()
             .unwrap()
-            .start(|| Ok(self.config.clone()));
-
-        Ok(ev)
+            .start(|| Ok(self.config.clone()))
+        ))
     }
 
     pub fn subscribe_event(&self) -> Option<broadcast::Receiver<GlobalCtxEvent>> {
