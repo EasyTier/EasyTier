@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 
 use crate::{
     common::{
-        config::{ConfigLoader, TomlConfigLoader},
+        config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
         scoped_task::ScopedTask,
     },
@@ -13,11 +13,24 @@ use crate::{
     rpc_service::InstanceRpcService,
 };
 
+pub(crate) struct WebClientGuard {
+    guard: Option<Arc<()>>,
+    stop_check_notifier: Arc<tokio::sync::Notify>,
+}
+impl Drop for WebClientGuard {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.stop_check_notifier.notify_one();
+    }
+}
+
 pub struct NetworkInstanceManager {
     instance_map: Arc<DashMap<uuid::Uuid, NetworkInstance>>,
     instance_stop_tasks: Arc<DashMap<uuid::Uuid, ScopedTask<()>>>,
     stop_check_notifier: Arc<tokio::sync::Notify>,
     instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
+    config_dir: Option<PathBuf>,
+    web_client_counter: Arc<()>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -33,7 +46,14 @@ impl NetworkInstanceManager {
             instance_stop_tasks: Arc::new(DashMap::new()),
             stop_check_notifier: Arc::new(tokio::sync::Notify::new()),
             instance_error_messages: Arc::new(DashMap::new()),
+            config_dir: None,
+            web_client_counter: Arc::new(()),
         }
+    }
+
+    pub fn with_config_path(mut self, config_dir: Option<PathBuf>) -> Self {
+        self.config_dir = config_dir;
+        self
     }
 
     fn start_instance_task(&self, instance_id: uuid::Uuid) -> Result<(), anyhow::Error> {
@@ -83,13 +103,14 @@ impl NetworkInstanceManager {
         &self,
         cfg: TomlConfigLoader,
         watch_event: bool,
+        config_file_control: ConfigFileControl,
     ) -> Result<uuid::Uuid, anyhow::Error> {
         let instance_id = cfg.get_id();
         if self.instance_map.contains_key(&instance_id) {
             anyhow::bail!("instance {} already exists", instance_id);
         }
 
-        let mut instance = NetworkInstance::new(cfg);
+        let mut instance = NetworkInstance::new(cfg, config_file_control);
         instance.start()?;
 
         self.instance_map.insert(instance_id, instance);
@@ -174,18 +195,20 @@ impl NetworkInstanceManager {
     pub fn get_network_instance_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
         self.instance_map
             .get(instance_id)
-            .map(|instance| instance.value().get_inst_name())
+            .map(|instance| instance.value().get_network_name())
     }
 
-    pub fn filter_network_instance(
+    pub fn iter(&self) -> dashmap::iter::Iter<'_, uuid::Uuid, NetworkInstance> {
+        self.instance_map.iter()
+    }
+
+    pub fn get_instance_config_control(
         &self,
-        filter: impl Fn(&uuid::Uuid, &NetworkInstance) -> bool,
-    ) -> Vec<uuid::Uuid> {
+        instance_id: &uuid::Uuid,
+    ) -> Option<ConfigFileControl> {
         self.instance_map
-            .iter()
-            .filter(|item| filter(item.key(), item.value()))
-            .map(|item| *item.key())
-            .collect()
+            .get(instance_id)
+            .map(|instance| instance.value().get_config_file_control().clone())
     }
 
     pub fn get_instance_service(
@@ -206,12 +229,33 @@ impl NetworkInstanceManager {
         Ok(())
     }
 
+    pub fn get_config_dir(&self) -> Option<&PathBuf> {
+        self.config_dir.as_ref()
+    }
+
+    pub(crate) fn register_web_client(&self) -> WebClientGuard {
+        WebClientGuard {
+            guard: Some(self.web_client_counter.clone()),
+            stop_check_notifier: self.stop_check_notifier.clone(),
+        }
+    }
+
+    pub(crate) fn notify_stop_check(&self) {
+        self.stop_check_notifier.notify_one();
+    }
+
     pub async fn wait(&self) {
-        while self
-            .instance_map
-            .iter()
-            .any(|item| item.value().is_easytier_running())
-        {
+        loop {
+            let local_instance_running = self
+                .instance_map
+                .iter()
+                .any(|item| item.value().is_easytier_running());
+            let web_client_running = Arc::strong_count(&self.web_client_counter) > 1;
+
+            if !local_instance_running && !web_client_running {
+                break;
+            }
+
             self.stop_check_notifier.notified().await;
         }
     }
@@ -417,19 +461,36 @@ mod tests {
                     })
                     .unwrap(),
                 true,
+                ConfigFileControl::STATIC_CONFIG,
             )
             .unwrap();
         let instance_id2 = manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                true,
+                ConfigFileControl::STATIC_CONFIG,
+            )
             .unwrap();
         let instance_id3 = manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), false)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                false,
+                ConfigFileControl::STATIC_CONFIG,
+            )
             .unwrap();
         let instance_id4 = manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                true,
+                ConfigFileControl::STATIC_CONFIG,
+            )
             .unwrap();
         let instance_id5 = manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), false)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                false,
+                ConfigFileControl::STATIC_CONFIG,
+            )
             .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_secs(1)).await; // to make instance actually started
@@ -464,10 +525,18 @@ mod tests {
         let port = crate::utils::find_free_tcp_port(10012..65534).expect("no free tcp port found");
 
         assert!(manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true,)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                true,
+                ConfigFileControl::STATIC_CONFIG
+            )
             .is_err());
         assert!(manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true,)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                true,
+                ConfigFileControl::STATIC_CONFIG
+            )
             .is_err());
         assert!(manager
             .run_network_instance(
@@ -477,13 +546,22 @@ mod tests {
                     })
                     .unwrap(),
                 false,
+                ConfigFileControl::STATIC_CONFIG
             )
             .is_ok());
         assert!(manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), true,)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                true,
+                ConfigFileControl::STATIC_CONFIG
+            )
             .is_err());
         assert!(manager
-            .run_network_instance(TomlConfigLoader::new_from_str(cfg_str).unwrap(), false,)
+            .run_network_instance(
+                TomlConfigLoader::new_from_str(cfg_str).unwrap(),
+                false,
+                ConfigFileControl::STATIC_CONFIG
+            )
             .is_ok());
 
         std::thread::sleep(std::time::Duration::from_secs(1)); // wait instance actually started
@@ -526,6 +604,7 @@ mod tests {
                 .run_network_instance(
                     TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
                     watch_event,
+                    ConfigFileControl::STATIC_CONFIG,
                 )
                 .unwrap();
 
@@ -557,6 +636,7 @@ mod tests {
                 .run_network_instance(
                     TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
                     watch_event,
+                    ConfigFileControl::STATIC_CONFIG,
                 )
                 .unwrap();
 
@@ -584,6 +664,7 @@ mod tests {
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
                 true,
+                ConfigFileControl::STATIC_CONFIG,
             )
             .unwrap();
 
@@ -593,6 +674,7 @@ mod tests {
             .run_network_instance(
                 TomlConfigLoader::new_from_str(cfg_str.as_str()).unwrap(),
                 true,
+                ConfigFileControl::STATIC_CONFIG,
             )
             .unwrap();
 

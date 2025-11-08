@@ -160,7 +160,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
     }
     catch (e) {
       console.error('start vpn service failed, stop all other network insts.', e)
-      await runNetworkInstance(config);
+      await runNetworkInstance(config, true); //on android config should always be saved
     }
   }
 }

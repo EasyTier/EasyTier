@@ -1,9 +1,17 @@
 use std::sync::Arc;
 
 use crate::{
-    common::scoped_task::ScopedTask, instance_manager::NetworkInstanceManager,
-    tunnel::TunnelConnector,
+    common::{
+        config::TomlConfigLoader, global_ctx::GlobalCtx, scoped_task::ScopedTask,
+        set_default_machine_id, stun::MockStunInfoCollector,
+    },
+    connector::create_connector_by_url,
+    instance_manager::{NetworkInstanceManager, WebClientGuard},
+    proto::common::NatType,
+    tunnel::{IpVersion, TunnelConnector},
 };
+use anyhow::{Context as _, Result};
+use url::Url;
 
 pub mod controller;
 pub mod session;
@@ -11,6 +19,7 @@ pub mod session;
 pub struct WebClient {
     controller: Arc<controller::Controller>,
     tasks: ScopedTask<()>,
+    manager_guard: WebClientGuard,
 }
 
 impl WebClient {
@@ -20,6 +29,7 @@ impl WebClient {
         hostname: H,
         manager: Arc<NetworkInstanceManager>,
     ) -> Self {
+        let manager_guard = manager.register_web_client();
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
             hostname.to_string(),
@@ -31,7 +41,11 @@ impl WebClient {
             Self::routine(controller_clone, Box::new(connector)).await;
         }));
 
-        WebClient { controller, tasks }
+        WebClient {
+            controller,
+            tasks,
+            manager_guard,
+        }
     }
 
     async fn routine(
@@ -56,5 +70,92 @@ impl WebClient {
             let mut session = session::Session::new(conn, controller.clone());
             session.wait().await;
         }
+    }
+}
+
+pub async fn run_web_client(
+    config_server_url_s: &str,
+    machine_id: Option<String>,
+    hostname: Option<String>,
+    manager: Arc<NetworkInstanceManager>,
+) -> Result<WebClient> {
+    set_default_machine_id(machine_id);
+    let config_server_url = match Url::parse(config_server_url_s) {
+        Ok(u) => u,
+        Err(_) => format!(
+            "udp://config-server.easytier.cn:22020/{}",
+            config_server_url_s
+        )
+        .parse()
+        .unwrap(),
+    };
+
+    let mut c_url = config_server_url.clone();
+    c_url.set_path("");
+    let token = config_server_url
+        .path_segments()
+        .and_then(|mut x| x.next())
+        .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
+        .transpose()
+        .with_context(|| "failed to decode config server token")?
+        .map(|x| x.to_string())
+        .unwrap_or_default();
+
+    if token.is_empty() {
+        return Err(anyhow::anyhow!("empty token"));
+    }
+
+    let config = TomlConfigLoader::default();
+    let global_ctx = Arc::new(GlobalCtx::new(config));
+    global_ctx.replace_stun_info_collector(Box::new(MockStunInfoCollector {
+        udp_nat_type: NatType::Unknown,
+    }));
+    let mut flags = global_ctx.get_flags();
+    flags.bind_device = false;
+    global_ctx.set_flags(flags);
+    let hostname = match hostname {
+        None => gethostname::gethostname().to_string_lossy().to_string(),
+        Some(hostname) => hostname,
+    };
+    Ok(WebClient::new(
+        create_connector_by_url(c_url.as_str(), &global_ctx, IpVersion::Both).await?,
+        token.to_string(),
+        hostname,
+        manager.clone(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{atomic::AtomicBool, Arc};
+
+    use crate::instance_manager::NetworkInstanceManager;
+
+    #[tokio::test]
+    async fn test_manager_wait() {
+        let manager = Arc::new(NetworkInstanceManager::new());
+        let client = super::run_web_client(
+            format!("ring://{}/test", uuid::Uuid::new_v4()).as_str(),
+            None,
+            None,
+            manager.clone(),
+        )
+        .await
+        .unwrap();
+        let sleep_finish = Arc::new(AtomicBool::new(false));
+        let sleep_finish_clone = sleep_finish.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            println!("Dropping client...");
+            sleep_finish_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+            drop(client);
+            println!("Client dropped.");
+        });
+
+        println!("Waiting for manager...");
+        manager.wait().await;
+        assert!(sleep_finish.load(std::sync::atomic::Ordering::Relaxed));
+        println!("Manager stopped.");
     }
 }

@@ -79,18 +79,23 @@ fn get_instance_service(
     let id = if let Some(api::instance::instance_identifier::Selector::Id(id)) = selector {
         (*id).into()
     } else {
-        let ids = instance_manager.filter_network_instance(|_, i| {
-            if let Some(api::instance::instance_identifier::Selector::InstanceSelector(selector)) =
-                selector
-            {
-                if let Some(name) = selector.name.as_ref() {
-                    if i.get_inst_name() != *name {
-                        return false;
+        let ids = instance_manager
+            .iter()
+            .filter(|v| {
+                if let Some(api::instance::instance_identifier::Selector::InstanceSelector(
+                    selector,
+                )) = selector
+                {
+                    if let Some(name) = selector.name.as_ref() {
+                        if v.get_inst_name() != *name {
+                            return false;
+                        }
                     }
                 }
-            }
-            true
-        });
+                true
+            })
+            .map(|v| *v.key())
+            .collect::<Vec<_>>();
         match ids.len() {
             0 => return Err(anyhow::anyhow!("No instance matches the selector")),
             1 => ids[0],

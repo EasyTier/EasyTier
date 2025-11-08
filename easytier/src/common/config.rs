@@ -7,6 +7,7 @@ use std::{
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncReadExt as _;
 
 use crate::{
     common::stun::StunInfoCollector,
@@ -827,6 +828,157 @@ impl ConfigLoader for TomlConfigLoader {
         }
         toml::to_string_pretty(&config).unwrap()
     }
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct ConfigFilePermission(u8);
+impl ConfigFilePermission {
+    pub const READ_ONLY: u8 = 1 << 0;
+    pub const NO_DELETE: u8 = 1 << 1;
+
+    pub fn with_flag(self, flag: u8) -> Self {
+        Self(self.0 | flag)
+    }
+    pub fn remove_flag(self, flag: u8) -> Self {
+        Self(self.0 & !flag)
+    }
+    pub fn has_flag(&self, flag: u8) -> bool {
+        (self.0 & flag) != 0
+    }
+}
+impl From<u8> for ConfigFilePermission {
+    fn from(value: u8) -> Self {
+        ConfigFilePermission(value)
+    }
+}
+impl From<u32> for ConfigFilePermission {
+    fn from(value: u32) -> Self {
+        ConfigFilePermission(value as u8)
+    }
+}
+impl From<ConfigFilePermission> for u8 {
+    fn from(value: ConfigFilePermission) -> Self {
+        value.0
+    }
+}
+impl From<ConfigFilePermission> for u32 {
+    fn from(value: ConfigFilePermission) -> Self {
+        value.0 as u32
+    }
+}
+impl std::fmt::Debug for ConfigFilePermission {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut flags = vec![];
+        if self.has_flag(ConfigFilePermission::READ_ONLY) {
+            flags.push("READ_ONLY");
+        } else {
+            flags.push("EDITABLE");
+        }
+        if self.has_flag(ConfigFilePermission::NO_DELETE) {
+            flags.push("NO_DELETE");
+        } else {
+            flags.push("DELETABLE");
+        }
+        write!(f, "{}", flags.join("|"))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConfigFileControl {
+    pub path: Option<PathBuf>,
+    pub permission: ConfigFilePermission,
+}
+
+impl ConfigFileControl {
+    pub const STATIC_CONFIG: ConfigFileControl = Self {
+        path: None,
+        permission: ConfigFilePermission(
+            ConfigFilePermission::READ_ONLY | ConfigFilePermission::NO_DELETE,
+        ),
+    };
+
+    pub fn new(path: Option<PathBuf>, permission: ConfigFilePermission) -> Self {
+        ConfigFileControl { path, permission }
+    }
+
+    pub async fn from_path(path: PathBuf) -> Self {
+        let read_only = if let Ok(metadata) = tokio::fs::metadata(&path).await {
+            metadata.permissions().readonly()
+        } else {
+            true
+        };
+        Self::new(
+            Some(path),
+            if read_only {
+                ConfigFilePermission(ConfigFilePermission::READ_ONLY)
+            } else {
+                ConfigFilePermission(0)
+            },
+        )
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.permission.has_flag(ConfigFilePermission::READ_ONLY)
+    }
+    pub fn set_read_only(&mut self, read_only: bool) {
+        if read_only {
+            self.permission = self.permission.with_flag(ConfigFilePermission::READ_ONLY);
+        } else {
+            self.permission = self.permission.remove_flag(ConfigFilePermission::READ_ONLY);
+        }
+    }
+
+    pub fn is_no_delete(&self) -> bool {
+        self.permission.has_flag(ConfigFilePermission::NO_DELETE)
+    }
+    pub fn set_no_delete(&mut self, no_delete: bool) {
+        if no_delete {
+            self.permission = self.permission.with_flag(ConfigFilePermission::NO_DELETE);
+        } else {
+            self.permission = self.permission.remove_flag(ConfigFilePermission::NO_DELETE);
+        }
+    }
+
+    pub fn is_deletable(&self) -> bool {
+        !self.is_no_delete()
+    }
+}
+
+pub async fn load_config_from_file(
+    config_file: &PathBuf,
+    config_dir: Option<&PathBuf>,
+) -> Result<(TomlConfigLoader, ConfigFileControl), anyhow::Error> {
+    if config_file.as_os_str() == "-" {
+        let mut stdin = String::new();
+        _ = tokio::io::stdin()
+            .read_to_string(&mut stdin)
+            .await
+            .context("failed to read config from stdin")?;
+        let config = TomlConfigLoader::new_from_str(&stdin)?;
+        return Ok((config, ConfigFileControl::STATIC_CONFIG));
+    }
+    let config = TomlConfigLoader::new(config_file)
+        .with_context(|| format!("failed to load config file: {:?}", config_file))?;
+    let mut control = ConfigFileControl::from_path(config_file.clone()).await;
+    if control.is_read_only() {
+        control.set_no_delete(true);
+    } else if let Some(config_dir) = config_dir {
+        if let Some(config_file_dir) = config_file.parent() {
+            // if the config file is in the config dir and named as the instance id, it can be saved remotely
+            if config_file_dir == config_dir
+                && config_file.file_stem() == Some(config.get_id().to_string().as_ref())
+                && config_file.extension() == Some(std::ffi::OsStr::new("toml"))
+            {
+                control.set_no_delete(false);
+            } else {
+                control.set_no_delete(true);
+            }
+        }
+    } else {
+        control.set_no_delete(true);
+    }
+
+    Ok((config, control))
 }
 
 #[cfg(test)]

@@ -155,7 +155,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
         (user_id, _): (UserIdInDb, Uuid),
         network_inst_id: Uuid,
         disabled: bool,
-    ) -> Result<user_running_network_configs::Model, DbErr> {
+    ) -> Result<(), DbErr> {
         use entity::user_running_network_configs as urnc;
 
         urnc::Entity::update_many()
@@ -169,15 +169,7 @@ impl Storage<(UserIdInDb, Uuid), user_running_network_configs::Model, DbErr> for
             .exec(self.orm_db())
             .await?;
 
-        urnc::Entity::find()
-            .filter(urnc::Column::UserId.eq(user_id))
-            .filter(urnc::Column::NetworkInstanceId.eq(network_inst_id.to_string()))
-            .one(self.orm_db())
-            .await?
-            .ok_or(DbErr::RecordNotFound(format!(
-                "Network config not found for user {} and network instance {}",
-                user_id, network_inst_id
-            )))
+        Ok(())
     }
 
     async fn list_network_configs(

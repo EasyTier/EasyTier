@@ -56,6 +56,23 @@ const onLazyLoadNetworkMetas = async (event: VirtualScrollerLazyEvent) => {
         .map(item => item.uuid);
     await loadNetworkMetas(instanceIds);
 };
+const currentNetworkMeta = computed(() => {
+    if (!instanceId.value) {
+        return undefined;
+    }
+    return networkMetaCache.value[instanceId.value];
+});
+const currentNetworkControl = {
+    remoteSave: computed(() => {
+        return Api.ConfigFilePermission.isRemoveSaveable(currentNetworkMeta.value?.config_permission ?? 0);
+    }),
+    editable: computed(() => {
+        return Api.ConfigFilePermission.isEditable(currentNetworkMeta.value?.config_permission ?? 0);
+    }),
+    deletable: computed(() => {
+        return Api.ConfigFilePermission.isDeletable(currentNetworkMeta.value?.config_permission ?? 0);
+    })
+}
 
 const instanceList = ref<Array<{ uuid: string; meta?: Api.NetworkMeta }>>([]);
 const updateInstanceList = () => {
@@ -150,17 +167,12 @@ const loadCurrentNetworkConfig = async () => {
     currentNetworkConfig.value = ret;
 }
 
-const updateNetworkState = async (disabled: boolean) => {
+const stopNetwork = async () => {
     if (!selectedInstanceId.value) {
         return;
     }
 
-    if (disabled || !currentNetworkConfig.value) {
-        await props.api.update_network_instance_state(selectedInstanceId.value.uuid, disabled);
-    } else if (currentNetworkConfig.value) {
-        await props.api.delete_network(currentNetworkConfig.value.instance_id);
-        await props.api.run_network(currentNetworkConfig.value);
-    }
+    await props.api.update_network_instance_state(selectedInstanceId.value.uuid, true);
     await loadNetworkInstanceIds();
 }
 
@@ -199,7 +211,7 @@ const saveAndRunNewNetwork = async () => {
     }
     try {
         await props.api.delete_network(instanceId.value!);
-        let ret = await props.api.run_network(currentNetworkConfig.value);
+        let ret = await props.api.run_network(currentNetworkConfig.value, currentNetworkControl.remoteSave.value);
         console.debug("saveAndRunNewNetwork", ret);
 
         delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
@@ -377,7 +389,7 @@ const actionMenu: Ref<MenuItem[]> = ref([
     {
         label: t('web.device_management.edit_network'),
         icon: 'pi pi-pencil',
-        visible: () => !(networkIsDisabled.value ?? true),
+        visible: () => !(networkIsDisabled.value ?? true) && currentNetworkControl.editable.value,
         command: () => editNetwork()
     },
     {
@@ -389,6 +401,7 @@ const actionMenu: Ref<MenuItem[]> = ref([
         label: t('web.device_management.delete_network'),
         icon: 'pi pi-trash',
         class: 'p-error',
+        visible: () => currentNetworkControl.deletable.value,
         command: () => confirmDeleteNetwork(new Event('click'))
     }
 ]);
@@ -443,7 +456,7 @@ onUnmounted(() => {
                                         <span class="truncate block">
                                             &nbsp;
                                             <span v-if="slotProps.value.meta">
-                                                {{ slotProps.value.meta.instance_name }} ({{ slotProps.value.uuid }})
+                                                {{ slotProps.value.meta.network_name }} ({{ slotProps.value.uuid }})
                                             </span>
                                             <span v-else>
                                                 {{ slotProps.value.uuid }}
@@ -463,7 +476,7 @@ onUnmounted(() => {
                                     <div class="flex items-center min-w-0">
                                         <div class="mr-4 min-w-0 flex-1">
                                             <span class="truncate block">{{ t('network_name') }}: {{
-                                                slotProps.option.meta.instance_name }}</span>
+                                                slotProps.option.meta.network_name }}</span>
                                         </div>
                                         <Tag class="my-auto leading-3 shrink-0"
                                             :severity="isRunning(slotProps.option.uuid) ? 'success' : 'info'"
@@ -544,8 +557,9 @@ onUnmounted(() => {
                 <Message v-else severity="error" class="mb-4">{{ curNetworkInfo?.error_msg }}</Message>
 
                 <div class="text-center mt-4">
-                    <Button @click="updateNetworkState(true)" :label="t('web.device_management.disable_network')"
-                        severity="warning" icon="pi pi-power-off" iconPos="left" />
+                    <Button @click="stopNetwork" :disabled="!currentNetworkControl.deletable.value"
+                        :label="t('web.device_management.disable_network')" severity="danger" icon="pi pi-power-off"
+                        iconPos="left" />
                 </div>
             </div>
 
