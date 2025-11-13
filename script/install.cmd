@@ -24,7 +24,7 @@ IF !ERRORLEVEL! NEQ 0 (
     IF DEFINED args (
         SET args=!args:"=^\"!
     )
-    PowerShell -Command "Start-Process cmd.exe -Verb RunAs -ArgumentList '/k CD /d %~dp0 && "%~f0" !args!'"
+    PowerShell -Command "Start-Process cmd.exe -Verb RunAs -WorkingDirectory '%~dp0' -ArgumentList '/k ""%~f0"""" !args!'"
     EXIT
 )
 ECHO OK
