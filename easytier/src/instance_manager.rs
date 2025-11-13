@@ -13,11 +13,11 @@ use crate::{
     rpc_service::InstanceRpcService,
 };
 
-pub(crate) struct WebClientGuard {
+pub(crate) struct DaemonGuard {
     guard: Option<Arc<()>>,
     stop_check_notifier: Arc<tokio::sync::Notify>,
 }
-impl Drop for WebClientGuard {
+impl Drop for DaemonGuard {
     fn drop(&mut self) {
         drop(self.guard.take());
         self.stop_check_notifier.notify_one();
@@ -30,7 +30,7 @@ pub struct NetworkInstanceManager {
     stop_check_notifier: Arc<tokio::sync::Notify>,
     instance_error_messages: Arc<DashMap<uuid::Uuid, String>>,
     config_dir: Option<PathBuf>,
-    web_client_counter: Arc<()>,
+    guard_counter: Arc<()>,
 }
 
 impl Default for NetworkInstanceManager {
@@ -47,7 +47,7 @@ impl NetworkInstanceManager {
             stop_check_notifier: Arc::new(tokio::sync::Notify::new()),
             instance_error_messages: Arc::new(DashMap::new()),
             config_dir: None,
-            web_client_counter: Arc::new(()),
+            guard_counter: Arc::new(()),
         }
     }
 
@@ -233,9 +233,9 @@ impl NetworkInstanceManager {
         self.config_dir.as_ref()
     }
 
-    pub(crate) fn register_web_client(&self) -> WebClientGuard {
-        WebClientGuard {
-            guard: Some(self.web_client_counter.clone()),
+    pub(crate) fn register_daemon(&self) -> DaemonGuard {
+        DaemonGuard {
+            guard: Some(self.guard_counter.clone()),
             stop_check_notifier: self.stop_check_notifier.clone(),
         }
     }
@@ -250,9 +250,9 @@ impl NetworkInstanceManager {
                 .instance_map
                 .iter()
                 .any(|item| item.value().is_easytier_running());
-            let web_client_running = Arc::strong_count(&self.web_client_counter) > 1;
+            let daemon_running = Arc::strong_count(&self.guard_counter) > 1;
 
-            if !local_instance_running && !web_client_running {
+            if !local_instance_running && !daemon_running {
                 break;
             }
 

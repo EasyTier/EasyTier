@@ -12,6 +12,7 @@ const { t } = useI18n()
 const props = defineProps<{
     api: Api.RemoteClient;
     newConfigGenerator?: () => NetworkTypes.NetworkConfig;
+    pauseAutoRefresh?: boolean;
 }>();
 
 const instanceId = defineModel('instanceId', {
@@ -407,6 +408,9 @@ const actionMenu: Ref<MenuItem[]> = ref([
 ]);
 
 let periodFunc = new Utils.PeriodicTask(async () => {
+    if (props.pauseAutoRefresh) {
+        return;
+    }
     try {
         await Promise.all([loadNetworkInstanceIds(), loadCurrentNetworkInfo()]);
     } catch (e) {
