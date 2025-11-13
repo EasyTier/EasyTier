@@ -492,17 +492,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "auto-launch"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f012b8cc0c850f34117ec8252a44418f2e34a2cf501de89e29b241ae5f79471"
-dependencies = [
- "dirs 4.0.0",
- "thiserror 1.0.63",
- "winreg 0.10.1",
-]
-
-[[package]]
 name = "auto_impl"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2256,7 +2245,6 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
- "tauri-plugin-autostart",
  "tauri-plugin-clipboard-manager",
  "tauri-plugin-os",
  "tauri-plugin-positioner",
@@ -7703,13 +7691,14 @@ dependencies = [
 [[package]]
 name = "service-manager"
 version = "0.8.0"
-source = "git+https://github.com/chipsenkbeil/service-manager-rs.git?branch=main#0294d3b9769c8ef7db8b4e831fb1c4f14b7d473b"
+source = "git+https://github.com/EasyTier/service-manager-rs.git?branch=main#5eb28f7a686858eea4f4933534ed989d3b71dc2a"
 dependencies = [
  "cfg-if",
  "dirs 4.0.0",
  "encoding-utils",
  "encoding_rs",
  "plist",
+ "sys-info",
  "which 4.4.2",
  "xml-rs",
 ]
@@ -8320,6 +8309,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sys-info"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b3a0d0aba8bf96a0e1ddfdc352fc53b3df7f39318c71854910c3c4b024ae52c"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "sys-locale"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8582,20 +8581,6 @@ dependencies = [
  "tauri-utils",
  "toml 0.8.19",
  "walkdir",
-]
-
-[[package]]
-name = "tauri-plugin-autostart"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "062cdcd483d5e3148c9a64dabf8c574e239e2aa1193cf208d95cf89a676f87a5"
-dependencies = [
- "auto-launch",
- "serde",
- "serde_json",
- "tauri",
- "tauri-plugin",
- "thiserror 2.0.11",
 ]
 
 [[package]]
@@ -10889,15 +10874,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c06928c8748d81b05c9be96aad92e1b6ff01833332f281e8cfca3be4b35fc9ec"
 dependencies = [
  "memchr",
-]
-
-[[package]]
-name = "winreg"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
-dependencies = [
- "winapi",
 ]
 
 [[package]]

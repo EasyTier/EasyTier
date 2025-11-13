@@ -6,7 +6,7 @@ use crate::{
         set_default_machine_id, stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
-    instance_manager::{NetworkInstanceManager, WebClientGuard},
+    instance_manager::{DaemonGuard, NetworkInstanceManager},
     proto::common::NatType,
     tunnel::{IpVersion, TunnelConnector},
 };
@@ -19,7 +19,7 @@ pub mod session;
 pub struct WebClient {
     controller: Arc<controller::Controller>,
     tasks: ScopedTask<()>,
-    manager_guard: WebClientGuard,
+    manager_guard: DaemonGuard,
 }
 
 impl WebClient {
@@ -29,7 +29,7 @@ impl WebClient {
         hostname: H,
         manager: Arc<NetworkInstanceManager>,
     ) -> Self {
-        let manager_guard = manager.register_web_client();
+        let manager_guard = manager.register_daemon();
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
             hostname.to_string(),

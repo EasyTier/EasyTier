@@ -70,6 +70,11 @@ impl<T: TunnelListener + 'static> ApiRpcServer<T> {
         self.rpc_server.serve().await?;
         Ok(self)
     }
+
+    pub fn with_rx_timeout(mut self, timeout: Option<std::time::Duration>) -> Self {
+        self.rpc_server.set_rx_timeout(timeout);
+        self
+    }
 }
 
 impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {

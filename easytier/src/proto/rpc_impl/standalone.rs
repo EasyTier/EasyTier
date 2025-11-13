@@ -39,6 +39,7 @@ pub struct StandAloneServer<L> {
     inflight_server: Arc<AtomicU32>,
     tasks: JoinSet<()>,
     hook: Option<Arc<dyn RpcServerHook>>,
+    rx_timeout: Option<Duration>,
 }
 
 impl<L: TunnelListener + 'static> StandAloneServer<L> {
@@ -50,7 +51,12 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
             tasks: JoinSet::new(),
 
             hook: None,
+            rx_timeout: Some(Duration::from_secs(60)),
         }
+    }
+
+    pub fn set_rx_timeout(&mut self, timeout: Option<Duration>) {
+        self.rx_timeout = timeout;
     }
 
     pub fn set_hook(&mut self, hook: Arc<dyn RpcServerHook>) {
@@ -66,6 +72,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
         inflight: Arc<AtomicU32>,
         registry: Arc<ServiceRegistry>,
         hook: Arc<dyn RpcServerHook>,
+        rx_timeout: Option<Duration>,
     ) -> Result<(), Error> {
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "standalone serve_loop".to_string());
@@ -87,8 +94,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
 
             inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tasks.lock().unwrap().spawn(async move {
-                let server =
-                    BidirectRpcManager::new().set_rx_timeout(Some(Duration::from_secs(60)));
+                let server = BidirectRpcManager::new().set_rx_timeout(rx_timeout);
                 server.rpc_server().registry().replace_registry(&registry);
                 server.run_with_tunnel(tunnel);
                 server.wait().await;
@@ -101,6 +107,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
     pub async fn serve(&mut self) -> Result<(), Error> {
         let mut listener = self.listener.take().unwrap();
         let hook = self.hook.take().unwrap_or_else(|| Arc::new(DefaultHook));
+        let rx_timeout = self.rx_timeout;
 
         listener
             .listen()
@@ -118,6 +125,7 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
                     inflight_server.clone(),
                     registry.clone(),
                     hook.clone(),
+                    rx_timeout,
                 )
                 .await;
                 if let Err(e) = ret {

@@ -13,11 +13,13 @@ mod vpn_portal;
 
 pub mod common;
 pub mod connector;
+pub mod core;
 pub mod instance_manager;
 pub mod launcher;
 pub mod peers;
 pub mod proto;
 pub mod rpc_service;
+pub mod service_manager;
 pub mod tunnel;
 pub mod utils;
 pub mod web_client;
