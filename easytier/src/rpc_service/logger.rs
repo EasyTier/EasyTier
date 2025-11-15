@@ -26,7 +26,7 @@ impl LoggerRpcService {
         }
     }
 
-    fn string_to_log_level(level_str: &str) -> LogLevel {
+    pub fn string_to_log_level(level_str: &str) -> LogLevel {
         match level_str.to_lowercase().as_str() {
             "off" | "disabled" => LogLevel::Disabled,
             "error" => LogLevel::Error,
