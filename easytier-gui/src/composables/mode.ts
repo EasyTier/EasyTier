@@ -1,8 +1,14 @@
-interface NormalMode {
+import { type } from '@tauri-apps/plugin-os';
+
+export interface WebClientConfig {
+    config_server_url?: string
+}
+
+interface NormalMode extends WebClientConfig {
     mode: 'normal'
 }
 
-export interface ServiceMode {
+export interface ServiceMode extends WebClientConfig {
     mode: 'service'
     config_dir: string
     rpc_portal: string
@@ -19,15 +25,15 @@ export function saveMode(mode: Mode) {
     localStorage.setItem('app_mode', JSON.stringify(mode))
 }
 
-import { type } from '@tauri-apps/plugin-os';
 
 export function loadMode(): Mode {
-    if (type() === 'android') {
-        return { mode: 'normal' };
-    }
     const modeStr = localStorage.getItem('app_mode')
     if (modeStr) {
-        return JSON.parse(modeStr) as Mode
+        let mode = JSON.parse(modeStr) as Mode
+        if (type() === 'android') {
+            return { ...mode, mode: 'normal' }
+        }
+        return mode
     } else {
         return { mode: 'normal' }
     }

@@ -11,6 +11,7 @@ interface ServiceOptions {
   rpc_portal: string
   file_log_level: string
   file_log_dir: string
+  config_server?: string
 }
 
 export type ServiceStatus = "Running" | "Stopped" | "NotInstalled"
@@ -94,4 +95,12 @@ export async function initRpcConnection(url?: string) {
 
 export async function isClientRunning() {
   return await invoke<boolean>('is_client_running')
+}
+
+export async function initWebClient(url?: string) {
+  return await invoke('init_web_client', { url })
+}
+
+export async function isWebClientConnected() {
+  return await invoke<boolean>('is_web_client_connected')
 }
