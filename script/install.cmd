@@ -49,7 +49,11 @@ param(
     [switch]$Help,
 
     [Parameter(Mandatory = $false)]
-    [Alias("U")]
+    [Alias("UP")]
+    [switch]$Update,
+
+    [Parameter(Mandatory = $false)]
+    [Alias("UN")]
     [switch]$Uninstall,
 
     [Parameter(Mandatory = $false)]
@@ -233,7 +237,10 @@ EasyTier 安装脚本使用说明
     -H / -? / -Help
         显示此帮助信息并退出。
 
-    -U / -Uninstall
+    -UP / -Update
+        更新EasyTier
+
+    -UN / -Uninstall
         卸载EasyTier服务
 
     -CT / -ConfType / -ConfigType <类型>
@@ -487,7 +494,14 @@ try {
         Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue | Out-Null
         exit 0
     }
-    Get-EasyTier
+    if ($Update) {
+        Get-EasyTier
+        Show-Pause -Text "按任意键退出..."
+        exit 0
+    }
+    if (-not (Test-Path $EasyTierPath)) {
+        Get-EasyTier
+    }
     if (-not $ConfigType) {
         $choices = @(
             [System.Management.Automation.Host.ChoiceDescription]::new("&File", "本地配置文件"),
