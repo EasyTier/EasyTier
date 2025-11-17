@@ -281,8 +281,6 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 
 - [ZeroTier](https://www.zerotier.com/)：用于连接设备的全球虚拟网络。
 - [TailScale](https://tailscale.com/)：旨在简化网络配置的 VPN 解决方案。
-- [vpncloud](https://github.com/dswd/vpncloud)：一个 P2P 网状 VPN
-- [Candy](https://github.com/lanthora/candy)：一个可靠、低延迟、反审查的虚拟专用网络
 
 ### 联系我们
 

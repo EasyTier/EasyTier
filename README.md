@@ -280,8 +280,6 @@ sudo easytier-core --network-name mysharednode --network-secret mysharednode
 
 - [ZeroTier](https://www.zerotier.com/): A global virtual network for connecting devices.
 - [TailScale](https://tailscale.com/): A VPN solution aimed at simplifying network configuration.
-- [vpncloud](https://github.com/dswd/vpncloud): A P2P Mesh VPN
-- [Candy](https://github.com/lanthora/candy): A reliable, low-latency, and anti-censorship virtual private network
 
 ### Contact Us
 
