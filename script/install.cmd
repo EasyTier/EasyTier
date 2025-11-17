@@ -363,7 +363,12 @@ try {
             $OPTIONS += "--config-server $configServer"
         } 
         "CLI" {
-            $OPTIONS += $ServiceArgs
+            if (-not $ServiceArgs -or $ServiceArgs.Count -eq 0) {
+                $OPTIONS += Get-InputWithNoNullOrWhiteSpace -Prompt "自定义启动参数" 
+            }
+            else {
+                $OPTIONS += $ServiceArgs
+            }
         }
         default {
             throw "未知配置类型：$ConfigType"
