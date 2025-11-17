@@ -22,9 +22,10 @@ IF !ERRORLEVEL! NEQ 0 (
     ECHO Restart with administrator privileges ... 
     SET args=%*
     IF DEFINED args (
-        SET args=!args:"=^\"!
+        SET args=!args:'=''!
+        SET args=!args:"=\"!
     )
-    PowerShell -Command "Start-Process cmd.exe -Verb RunAs -WorkingDirectory '%~dp0' -ArgumentList '/k ""%~f0"""" !args!'"
+    PowerShell -NoProfile -Command "Start-Process 'cmd.exe' -Verb RunAs -WorkingDirectory '%~dp0' -ArgumentList '/d /s /k \"\"%~f0\" !args!\"'"
     EXIT
 )
 ECHO OK
