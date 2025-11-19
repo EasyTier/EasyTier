@@ -437,7 +437,7 @@ impl UdpProxy {
         // forward packets to peer manager
         let mut receiver = self.receiver.lock().await.take().unwrap();
         let peer_manager = self.peer_manager.clone();
-        let is_latency_first = self.global_ctx.get_flags().latency_first;
+        let is_latency_first = self.global_ctx.latency_first();
         self.tasks.lock().await.spawn(async move {
             while let Some(mut msg) = receiver.recv().await {
                 let hdr = msg.mut_peer_manager_header().unwrap();

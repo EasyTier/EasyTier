@@ -2,6 +2,7 @@
 
 use core::panic;
 use std::{
+    future::Future,
     sync::{atomic::AtomicU32, Arc},
     time::Duration,
 };
@@ -1948,6 +1949,107 @@ pub async fn acl_rule_test_subnet_proxy(
     .await;
 
     drop_insts(insts).await;
+}
+
+async fn assert_panics_ext<F, Fut>(f: F, expect_panic: bool)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future + Send + 'static,
+{
+    // Run the async function in a separate task so panics surface as JoinError
+    let res = tokio::spawn(async move {
+        f().await;
+    })
+    .await;
+
+    if expect_panic {
+        assert!(
+            res.is_err() && res.as_ref().unwrap_err().is_panic(),
+            "Expected function to panic, but it didn't",
+        );
+    } else {
+        assert!(res.is_ok(), "Expected function not to panic, but it did");
+    }
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn p2p_only_test(
+    #[values(true, false)] has_p2p_conn: bool,
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
+    use crate::peers::tests::wait_route_appear_with_cost;
+
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if cfg.get_inst_name() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.enable_kcp_proxy = enable_kcp_proxy;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                flags.disable_p2p = true;
+                flags.p2p_only = true;
+                cfg.set_flags(flags);
+            } else if cfg.get_inst_name() == "inst3" {
+                // 添加子网代理配置
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    if has_p2p_conn {
+        insts[2]
+            .get_conn_manager()
+            .add_connector(RingTunnelConnector::new(
+                format!("ring://{}", insts[0].id()).parse().unwrap(),
+            ));
+        wait_route_appear_with_cost(
+            insts[2].get_peer_manager(),
+            insts[0].get_peer_manager().my_peer_id(),
+            Some(1),
+        )
+        .await
+        .unwrap();
+    }
+
+    let target_ip = "10.1.2.4";
+
+    for target_ip in ["10.144.144.3", target_ip] {
+        assert_panics_ext(
+            || async {
+                subnet_proxy_test_icmp(target_ip).await;
+            },
+            !has_p2p_conn,
+        )
+        .await;
+
+        let listen_ip = if target_ip == "10.144.144.3" {
+            "0.0.0.0"
+        } else {
+            "10.1.2.4"
+        };
+        assert_panics_ext(
+            || async {
+                subnet_proxy_test_tcp(listen_ip, target_ip).await;
+            },
+            !has_p2p_conn,
+        )
+        .await;
+
+        assert_panics_ext(
+            || async {
+                subnet_proxy_test_udp(listen_ip, target_ip).await;
+            },
+            !has_p2p_conn,
+        )
+        .await;
+    }
 }
 
 #[rstest::rstest]

@@ -42,6 +42,7 @@ export interface NetworkConfig {
   enable_quic_proxy?: boolean
   disable_quic_input?: boolean
   disable_p2p?: boolean
+  p2p_only?: boolean
   bind_device?: boolean
   no_tun?: boolean
   enable_exit_node?: boolean
@@ -111,6 +112,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_quic_proxy: false,
     disable_quic_input: false,
     disable_p2p: false,
+    p2p_only: false,
     bind_device: true,
     no_tun: false,
     enable_exit_node: false,
