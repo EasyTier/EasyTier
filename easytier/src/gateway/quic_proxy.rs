@@ -1,20 +1,7 @@
-use anyhow::Context;
-use dashmap::DashMap;
-use pnet::packet::ipv4::Ipv4Packet;
-use prost::Message as _;
-use quinn::{Endpoint, Incoming};
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::{Arc, Mutex, Weak};
-use std::{net::SocketAddr, pin::Pin};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio::net::TcpStream;
-use tokio::task::JoinSet;
-use tokio::time::timeout;
-
 use crate::common::acl_processor::PacketInfo;
 use crate::common::config::ConfigLoader;
 use crate::common::error::Result;
-use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
+use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx, GlobalCtxEvent};
 use crate::common::join_joinset_background;
 use crate::defer;
 use crate::gateway::kcp_proxy::{ProxyAclHandler, TcpProxyForKcpSrcTrait};
@@ -31,6 +18,22 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::PeerManagerHeader;
 use crate::tunnel::quic::{configure_client, make_server_endpoint};
+use anyhow::Context;
+use dashmap::DashMap;
+use itertools::Itertools;
+use pnet::packet::ipv4::Ipv4Packet;
+use prost::Message as _;
+use quinn::{Endpoint, Incoming};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
+use std::sync::{Arc, Mutex, Weak};
+use std::{net::SocketAddr, pin::Pin};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio::select;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::mpsc;
+use tokio::task::JoinSet;
+use tokio::time::timeout;
 
 pub struct QUICStream {
     endpoint: Option<quinn::Endpoint>,
@@ -247,9 +250,9 @@ impl QUICProxySrc {
     }
 }
 
+#[derive(Clone)]
 pub struct QUICProxyDst {
-    global_ctx: Arc<GlobalCtx>,
-    endpoint: Arc<quinn::Endpoint>,
+    global_ctx: ArcGlobalCtx,
     proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
     route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
@@ -260,18 +263,13 @@ impl QUICProxyDst {
         global_ctx: ArcGlobalCtx,
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<Self> {
-        let _g = global_ctx.net_ns.guard();
-        let (endpoint, _) = make_server_endpoint(
-            format!("0.0.0.0:{}", global_ctx.config.get_flags().quic_listen_port)
-                .parse()
-                .unwrap(),
-        )
-        .map_err(|e| anyhow::anyhow!("failed to create QUIC endpoint: {}", e))?;
+        tracing::trace!("QUICProxyDst::new");
+
         let tasks = Arc::new(Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "QUICProxyDst tasks".to_string());
+
         Ok(Self {
             global_ctx,
-            endpoint: Arc::new(endpoint),
             proxy_entries: Arc::new(DashMap::new()),
             tasks,
             route,
@@ -279,53 +277,135 @@ impl QUICProxyDst {
     }
 
     pub async fn start(&self) -> Result<()> {
-        let endpoint = self.endpoint.clone();
-        let tasks = Arc::downgrade(&self.tasks.clone());
-        let ctx = self.global_ctx.clone();
-        let cidr_set = Arc::new(CidrSet::new(ctx.clone()));
-        let proxy_entries = self.proxy_entries.clone();
-        let route = self.route.clone();
-
+        let this = self.clone();
+        let (conn_tx, mut conn_rx) = mpsc::channel::<Incoming>(1024);
         let task = async move {
-            loop {
-                match endpoint.accept().await {
-                    Some(conn) => {
-                        let Some(tasks) = tasks.upgrade() else {
-                            tracing::warn!(
-                                "QUICProxyDst tasks is not available, stopping accept loop"
-                            );
-                            return;
-                        };
-                        tasks
-                            .lock()
-                            .unwrap()
-                            .spawn(Self::handle_connection_with_timeout(
-                                conn,
-                                ctx.clone(),
-                                cidr_set.clone(),
-                                proxy_entries.clone(),
-                                route.clone(),
-                            ));
-                    }
-                    None => {
-                        return;
-                    }
-                }
+            tracing::debug!("starting QUICProxyDst connection handler");
+            let ctx = this.global_ctx;
+            let cidr_set = Arc::new(CidrSet::new(ctx.clone()));
+            while let Some(conn) = conn_rx.recv().await {
+                this.tasks
+                    .lock()
+                    .unwrap()
+                    .spawn(Self::handle_connection_with_timeout(
+                        conn,
+                        ctx.clone(),
+                        cidr_set.clone(),
+                        this.proxy_entries.clone(),
+                        this.route.clone(),
+                    ));
+            }
+            tracing::debug!("connection handler exiting");
+        };
+        self.tasks.lock().unwrap().spawn(task);
+
+        let ctx = self.global_ctx.clone();
+        let task = async move {
+            if let Err(e) = Self::run_accept_loop(ctx, conn_tx).await {
+                tracing::error!("QUICProxyDst accept loop exited with error: {}", e);
             }
         };
-
         self.tasks.lock().unwrap().spawn(task);
 
         Ok(())
     }
 
-    pub fn local_addr(&self) -> Result<SocketAddr> {
-        self.endpoint.local_addr().map_err(Into::into)
+    async fn run_accept_loop(ctx: ArcGlobalCtx, conn_tx: mpsc::Sender<Incoming>) -> Result<()> {
+        tracing::debug!("starting QUICProxyDst accept loop");
+
+        let mut endpoint = Self::rebind(ctx.clone(), None)?;
+        tracing::debug!("QUIC endpoint bound to {:?}", endpoint.local_addr()?);
+
+        let mut sub = ctx.subscribe();
+
+        loop {
+            select! {
+                biased;
+
+                incoming = endpoint.accept() => match incoming {
+                    Some(conn) => {
+                        if conn_tx.send(conn).await.is_err() {
+                            break Err(anyhow::anyhow!("connection handler is gone").into())
+                        }
+                    },
+                    None => {
+                        break Err(anyhow::anyhow!("endpoint is closed").into())
+                    },
+                },
+
+                event = sub.recv(), if !ctx.config.get_flags().no_tun => {
+                    match event {
+                        Ok(GlobalCtxEvent::DhcpIpv4Changed(_, Some(_)))
+                        | Ok(GlobalCtxEvent::TunDeviceReady(_))
+                        | Err(RecvError::Lagged(_)) => {
+                            // QUICProxyDst::rebind automatically detects if a rebinding is necessary
+                            let Ok(ep) = Self::rebind(ctx.clone(), Some(endpoint.clone())) else {
+                                break Err(anyhow::anyhow!("failed to rebind QUIC endpoint").into());
+                            };
+                            endpoint = ep;
+                            tracing::debug!("QUIC endpoint bound to {:?}", endpoint.local_addr()?);
+                        }
+                        Err(_) => {
+                            break Err(anyhow::anyhow!("failed to receive global ctx event").into());
+                        }
+                        _ => { }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn rebind(ctx: ArcGlobalCtx, endpoint: Option<Arc<Endpoint>>) -> Result<Arc<Endpoint>> {
+        tracing::trace!("QUICProxyDst::rebind");
+
+        let _g = ctx.net_ns.guard();
+
+        let bind_ip = ctx
+            .get_ipv4()
+            .filter(|_| !ctx.config.get_flags().no_tun)
+            .map(|i| i.address())
+            .unwrap_or(Ipv4Addr::UNSPECIFIED);
+
+        let rebind = match endpoint {
+            Some(ep) if ep.local_addr().is_ok_and(|a| a.ip() == IpAddr::V4(bind_ip)) => {
+                tracing::trace!(
+                    "QUIC endpoint already bound to {}, no need to rebind",
+                    bind_ip
+                );
+                return Ok(ep);
+            }
+            Some(_) => true,
+            None => false,
+        };
+
+        let endpoint = [ctx.config.get_flags().quic_listen_port as u16, 0]
+            .into_iter()
+            .unique()
+            .find_map(|port| {
+                let bind = SocketAddr::V4(SocketAddrV4::new(bind_ip, port));
+                make_server_endpoint(bind)
+                    .map(|(ep, _)| Arc::new(ep))
+                    .inspect_err(|e| {
+                        tracing::warn!("failed to bind QUIC endpoint to {}: {:?}", bind, e)
+                    })
+                    .ok()
+            })
+            .ok_or_else(|| anyhow::anyhow!("failed to create QUIC endpoint on {}", bind_ip))?;
+
+        ctx.set_quic_proxy_port(Some(endpoint.local_addr()?.port()));
+
+        tracing::trace!(
+            "QUIC endpoint {} at {}",
+            if rebind { "recreated" } else { "newly created" },
+            endpoint.local_addr()?
+        );
+
+        Ok(endpoint)
     }
 
     async fn handle_connection_with_timeout(
         conn: Incoming,
-        ctx: Arc<GlobalCtx>,
+        ctx: ArcGlobalCtx,
         cidr_set: Arc<CidrSet>,
         proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
