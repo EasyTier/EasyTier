@@ -3882,13 +3882,14 @@ dependencies = [
 [[package]]
 name = "service-manager"
 version = "0.8.0"
-source = "git+https://github.com/chipsenkbeil/service-manager-rs.git?branch=main#0294d3b9769c8ef7db8b4e831fb1c4f14b7d473b"
+source = "git+https://github.com/EasyTier/service-manager-rs.git?branch=main#5eb28f7a686858eea4f4933534ed989d3b71dc2a"
 dependencies = [
  "cfg-if",
  "dirs",
  "encoding-utils",
  "encoding_rs",
  "plist",
+ "sys-info",
  "which 4.4.2",
  "xml-rs",
 ]
@@ -4069,6 +4070,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
+]
+
+[[package]]
+name = "sys-info"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b3a0d0aba8bf96a0e1ddfdc352fc53b3df7f39318c71854910c3c4b024ae52c"
+dependencies = [
+ "cc",
+ "libc",
 ]
 
 [[package]]

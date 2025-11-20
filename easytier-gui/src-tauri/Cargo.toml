@@ -50,7 +50,7 @@ tauri-plugin-clipboard-manager = "2.3.0"
 tauri-plugin-positioner = { version = "2.3.0", features = ["tray-icon"] }
 tauri-plugin-vpnservice = { path = "../../tauri-plugin-vpnservice" }
 tauri-plugin-os = "2.3.0"
-tauri-plugin-autostart = "2.5.0"
+
 uuid = "1.17.0"
 async-trait = "0.1.89"
 
