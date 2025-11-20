@@ -997,11 +997,20 @@ impl PeerManager {
         }
     }
 
+    fn check_p2p_only_before_send(&self, dst_peer_id: PeerId) -> Result<(), Error> {
+        if self.global_ctx.p2p_only() && !self.peers.has_peer(dst_peer_id) {
+            return Err(Error::RouteError(None));
+        }
+        Ok(())
+    }
+
     pub async fn send_msg_for_proxy(
         &self,
         mut msg: ZCPacket,
         dst_peer_id: PeerId,
     ) -> Result<(), Error> {
+        self.check_p2p_only_before_send(dst_peer_id)?;
+
         self.self_tx_counters
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
@@ -1199,7 +1208,7 @@ impl PeerManager {
             .compress_tx_bytes_after
             .add(msg.buf_len() as u64);
 
-        let is_latency_first = self.global_ctx.get_flags().latency_first;
+        let is_latency_first = self.global_ctx.latency_first();
         msg.mut_peer_manager_header()
             .unwrap()
             .set_latency_first(is_latency_first)
@@ -1209,6 +1218,11 @@ impl PeerManager {
         let mut msg = Some(msg);
         let total_dst_peers = dst_peers.len();
         for (i, peer_id) in dst_peers.iter().enumerate() {
+            if let Err(e) = self.check_p2p_only_before_send(*peer_id) {
+                errs.push(e);
+                continue;
+            }
+
             let mut msg = if i == total_dst_peers - 1 {
                 msg.take().unwrap()
             } else {

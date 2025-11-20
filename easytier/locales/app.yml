@@ -151,6 +151,9 @@ core_clap:
   disable_p2p:
     en: "disable p2p communication, will only relay packets with peers specified by --peers"
     zh-CN: "禁用P2P通信，只通过--peers指定的节点转发数据包"
+  p2p_only:
+    en: "only communicate with peers that already establish p2p connection"
+    zh-CN: "仅与已经建立P2P连接的对等节点通信"
   disable_udp_hole_punching:
     en: "disable udp hole punching"
     zh-CN: "禁用UDP打洞功能"

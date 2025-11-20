@@ -105,6 +105,9 @@ disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC pro
 disable_p2p: Disable P2P
 disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
 
+p2p_only: P2P Only
+p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
+
 bind_device: Bind to Physical Device Only
 bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
 

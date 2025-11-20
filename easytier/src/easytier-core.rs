@@ -422,6 +422,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_P2P_ONLY",
+        help = t!("core_clap.p2p_only").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    p2p_only: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_UDP_HOLE_PUNCHING",
         help = t!("core_clap.disable_udp_hole_punching").to_string(),
         num_args = 0..=1,
@@ -934,6 +943,7 @@ impl NetworkOptions {
             f.relay_network_whitelist = wl.join(" ");
         }
         f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
+        f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
         f.disable_udp_hole_punching = self
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
