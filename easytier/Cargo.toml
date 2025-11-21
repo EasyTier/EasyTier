@@ -143,6 +143,7 @@ network-interface = "2.0"
 # for ospf route
 petgraph = "0.8.1"
 hashbrown = "0.15.3"
+ordered_hash_map = "0.5.0"
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }
