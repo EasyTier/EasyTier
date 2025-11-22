@@ -1,11 +1,19 @@
 import { invoke } from '@tauri-apps/api/core'
 import { Api, type NetworkTypes } from 'easytier-frontend-lib'
 import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
-import { getAutoLaunchStatusAsync } from '~/modules/auto_launch'
+
 
 type NetworkConfig = NetworkTypes.NetworkConfig
 type ValidateConfigResponse = Api.ValidateConfigResponse
 type ListNetworkInstanceIdResponse = Api.ListNetworkInstanceIdResponse
+interface ServiceOptions {
+  config_dir: string
+  rpc_portal: string
+  file_log_level: string
+  file_log_dir: string
+}
+
+export type ServiceStatus = "Running" | "Stopped" | "NotInstalled"
 
 export async function parseNetworkConfig(cfg: NetworkConfig) {
   return invoke<string>('parse_network_config', { cfg })
@@ -61,10 +69,29 @@ export async function getConfig(instanceId: string) {
 
 export async function sendConfigs() {
   let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
-  let autoStartInstIds = getAutoLaunchStatusAsync() ? JSON.parse(localStorage.getItem('autoStartInstIds') || '[]') : []
-  return await invoke('load_configs', { configs: networkList, enabledNetworks: autoStartInstIds })
+  return await invoke('load_configs', { configs: networkList, enabledNetworks: [] })
 }
 
 export async function getNetworkMetas(instanceIds: string[]) {
   return await invoke<GetNetworkMetasResponse>('get_network_metas', { instanceIds })
+}
+
+export async function initService(opts?: ServiceOptions) {
+  return await invoke('init_service', { opts })
+}
+
+export async function setServiceStatus(enable: boolean) {
+  return await invoke('set_service_status', { enable })
+}
+
+export async function getServiceStatus() {
+  return await invoke<ServiceStatus>('get_service_status')
+}
+
+export async function initRpcConnection(url?: string) {
+  return await invoke('init_rpc_connection', { url })
+}
+
+export async function isClientRunning() {
+  return await invoke<boolean>('is_client_running')
 }
