@@ -12,6 +12,7 @@ use easytier::rpc_service::remote_client::{
     GetNetworkMetasResponse, ListNetworkInstanceIdsJsonResp, ListNetworkProps, RemoteClientManager,
     Storage,
 };
+use easytier::web_client::{self, WebClient};
 use easytier::{
     common::config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
     instance_manager::NetworkInstanceManager,
@@ -40,6 +41,9 @@ static CLIENT_MANAGER: once_cell::sync::Lazy<RwLock<Option<manager::GUIClientMan
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
 static RING_RPC_SERVER: once_cell::sync::Lazy<RwLock<Option<ApiRpcServer<RingTunnelListener>>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(None));
+
+static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
 macro_rules! get_client_manager {
@@ -260,13 +264,14 @@ async fn validate_config(
 
 #[tauri::command]
 async fn get_config(app: AppHandle, instance_id: String) -> Result<NetworkConfig, String> {
+    let instance_id = instance_id
+        .parse()
+        .map_err(|e: uuid::Error| e.to_string())?;
     let cfg = get_client_manager!()?
-        .storage
-        .get_network_config(app, &instance_id)
+        .handle_get_network_config(app, instance_id)
         .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Config not found for instance ID: {}", instance_id))?;
-    Ok(cfg.1)
+        .map_err(|e| e.to_string())?;
+    Ok(cfg)
 }
 
 #[tauri::command]
@@ -394,7 +399,7 @@ async fn init_rpc_connection(_app: AppHandle, url: Option<String>) -> Result<(),
         *ring_rpc_server_guard = None;
     }
 
-    let mut client_manager = tokio::time::timeout(
+    let client_manager = tokio::time::timeout(
         std::time::Duration::from_millis(1000),
         manager::GUIClientManager::new(url),
     )
@@ -402,12 +407,10 @@ async fn init_rpc_connection(_app: AppHandle, url: Option<String>) -> Result<(),
     .map_err(|_| "connect remote rpc timed out".to_string())?
     .with_context(|| "Failed to connect remote rpc")
     .map_err(|e| format!("{:#}", e))?;
-    if let Some(old_manager) = client_manager_guard.take() {
-        client_manager.storage = old_manager.storage;
-    }
     *client_manager_guard = Some(client_manager);
 
     if !normal_mode {
+        drop(WEB_CLIENT.write().await.take());
         if let Some(instance_manager) = instance_manager_guard.take() {
             instance_manager
                 .retain_network_instance(vec![])
@@ -422,6 +425,36 @@ async fn init_rpc_connection(_app: AppHandle, url: Option<String>) -> Result<(),
 #[tauri::command]
 async fn is_client_running() -> Result<bool, String> {
     Ok(get_client_manager!()?.rpc_manager.is_running())
+}
+
+#[tauri::command]
+async fn init_web_client(url: Option<String>) -> Result<(), String> {
+    let mut web_client_guard = WEB_CLIENT.write().await;
+    let Some(url) = url else {
+        *web_client_guard = None;
+        return Ok(());
+    };
+    let instance_manager = INSTANCE_MANAGER
+        .try_read()
+        .map_err(|_| "Failed to acquire read lock for instance manager")?
+        .clone()
+        .ok_or_else(|| "Instance manager is not available".to_string())?;
+    let web_client = web_client::run_web_client(url.as_str(), None, None, instance_manager)
+        .await
+        .with_context(|| "Failed to initialize web client")
+        .map_err(|e| format!("{:#}", e))?;
+    *web_client_guard = Some(web_client);
+    Ok(())
+}
+
+#[tauri::command]
+async fn is_web_client_connected() -> Result<bool, String> {
+    let web_client_guard = WEB_CLIENT.read().await;
+    if let Some(web_client) = web_client_guard.as_ref() {
+        Ok(web_client.is_connected())
+    } else {
+        Ok(false)
+    }
 }
 
 #[cfg(not(target_os = "android"))]
@@ -479,7 +512,7 @@ mod manager {
     use easytier::common::stun::MockStunInfoCollector;
     use easytier::launcher::NetworkConfig;
     use easytier::proto::api::logger::{LoggerRpc, LoggerRpcClientFactory, SetLoggerConfigRequest};
-    use easytier::proto::api::manage::{ListNetworkInstanceRequest, RunNetworkInstanceRequest};
+    use easytier::proto::api::manage::RunNetworkInstanceRequest;
     use easytier::proto::common::NatType;
     use easytier::proto::rpc_impl::bidirect::BidirectRpcManager;
     use easytier::proto::rpc_types::controller::BaseController;
@@ -737,12 +770,6 @@ mod manager {
             let client = self
                 .get_rpc_client(app.clone())
                 .ok_or_else(|| anyhow::anyhow!("RPC client not found"))?;
-            let running_instances = client
-                .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
-                .await?;
-            for id in running_instances.inst_ids {
-                self.storage.enabled_networks.insert(id.into());
-            }
             for id in enabled_networks {
                 if let Ok(uuid) = id.parse() {
                     if !self.storage.enabled_networks.contains(&uuid) {
@@ -803,10 +830,11 @@ mod service {
         pub(super) rpc_portal: String,
         pub(super) file_log_level: String,
         pub(super) file_log_dir: String,
+        pub(super) config_server: Option<String>,
     }
     impl ServiceOptions {
         fn to_args_vec(&self) -> Vec<std::ffi::OsString> {
-            vec![
+            let mut args = vec![
                 "--config-dir".into(),
                 self.config_dir.clone().into(),
                 "--rpc-portal".into(),
@@ -816,7 +844,14 @@ mod service {
                 "--file-log-dir".into(),
                 self.file_log_dir.clone().into(),
                 "--daemon".into(),
-            ]
+            ];
+
+            if let Some(config_server) = &self.config_server {
+                args.push("--config-server".into());
+                args.push(config_server.clone().into());
+            }
+
+            args
         }
     }
 
@@ -959,6 +994,8 @@ pub fn run_gui() -> std::process::ExitCode {
             get_service_status,
             init_rpc_connection,
             is_client_running,
+            init_web_client,
+            is_web_client_connected,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]

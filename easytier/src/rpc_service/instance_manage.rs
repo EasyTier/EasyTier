@@ -51,7 +51,14 @@ impl WebClientService for InstanceManageRpcService {
         };
 
         let mut control = if let Some(control) = self.manager.get_instance_config_control(&id) {
-            if !req.overwrite {
+            let error_msg = self
+                .manager
+                .get_network_info(&id)
+                .await
+                .and_then(|i| i.error_msg)
+                .unwrap_or_default();
+
+            if !req.overwrite && error_msg.is_empty() {
                 return Ok(resp);
             }
             if control.is_read_only() {

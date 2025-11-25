@@ -16,10 +16,13 @@ use url::Url;
 pub mod controller;
 pub mod session;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 pub struct WebClient {
     controller: Arc<controller::Controller>,
     tasks: ScopedTask<()>,
     manager_guard: DaemonGuard,
+    connected: Arc<AtomicBool>,
 }
 
 impl WebClient {
@@ -35,21 +38,25 @@ impl WebClient {
             hostname.to_string(),
             manager,
         ));
+        let connected = Arc::new(AtomicBool::new(false));
 
         let controller_clone = controller.clone();
+        let connected_clone = connected.clone();
         let tasks = ScopedTask::from(tokio::spawn(async move {
-            Self::routine(controller_clone, Box::new(connector)).await;
+            Self::routine(controller_clone, connected_clone, Box::new(connector)).await;
         }));
 
         WebClient {
             controller,
             tasks,
             manager_guard,
+            connected,
         }
     }
 
     async fn routine(
         controller: Arc<controller::Controller>,
+        connected: Arc<AtomicBool>,
         mut connector: Box<dyn TunnelConnector>,
     ) {
         loop {
@@ -65,11 +72,17 @@ impl WebClient {
                 }
             };
 
+            connected.store(true, Ordering::Release);
             println!("Successfully connected to {:?}", conn.info());
 
             let mut session = session::Session::new(conn, controller.clone());
             session.wait().await;
+            connected.store(false, Ordering::Release);
         }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 }
 
@@ -87,7 +100,7 @@ pub async fn run_web_client(
             config_server_url_s
         )
         .parse()
-        .unwrap(),
+        .with_context(|| "failed to parse config server URL")?,
     };
 
     let mut c_url = config_server_url.clone();
