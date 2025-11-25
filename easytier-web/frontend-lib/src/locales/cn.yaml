@@ -340,3 +340,33 @@ web:
     language: 语言
     theme: 主题
     logout: 退出登录
+
+mode:
+  title: 模式
+  switch_mode: 切换模式
+  config_dir: 配置目录
+  rpc_portal: RPC端口
+  log_level: 日志级别
+  log_dir: 日志目录
+  remote_rpc_address: 远程RPC地址
+  normal: 普通模式
+  service: 服务模式
+  remote: 远程模式
+  normal_description: 直接运行EasyTier，适合本地使用
+  service_description: 作为系统服务运行，支持开机自启和后台运行。退出GUI后服务仍在后台运行。
+  remote_description: 连接到远程RPC服务，管理和控制远程节点
+  service_status: 服务状态
+  service_status_running: 运行中
+  service_status_stopped: 已停止
+  service_status_notinstalled: 未安装
+  uninstall_service: 卸载服务
+  stop_service: 停止服务
+  uninstall_service_confirm: 确定要卸载服务吗？
+  uninstall_service_success: 服务卸载成功，已切换回普通模式
+  stop_service_success: 服务停止成功
+  remote_rpc_address_empty: 远程RPC地址不能为空
+  service_config_empty: 服务配置不能为空
+
+client:
+  not_running: 无法连接至远程客户端
+  retry: 重试
