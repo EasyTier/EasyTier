@@ -109,6 +109,10 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
   node_config.routes.forEach(r => {
     ret.push(r)
   })
+  
+  if (node_config.accept_dns) {
+    ret.push('100.100.100.101/32')
+  }
 
   // sort and dedup
   return Array.from(new Set(ret)).sort()
