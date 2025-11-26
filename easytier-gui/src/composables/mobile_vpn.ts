@@ -115,7 +115,7 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
     ret.push(r)
   })
 
-  if (node_config.accept_dns) {
+  if (node_config.enable_magic_dns) {
     ret.push('100.100.100.101/32')
   }
 
@@ -152,7 +152,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
 
-  let dns = curNetworkInfo?.accept_dns.then_some('100.100.100.101');
+  let dns = config.enable_magic_dns.then_some('100.100.100.101');
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
