@@ -168,7 +168,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
     }
 
     try {
-      await doStartVpn(virtual_ip, 24, routes, dns)
+      await doStartVpn(virtual_ip, network_length, routes, dns)
     }
     catch (e) {
       console.error('start vpn service failed, stop all other network insts.', e)
