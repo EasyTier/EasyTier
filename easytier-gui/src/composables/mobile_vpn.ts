@@ -152,7 +152,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
 
-  let dns = config.enable_magic_dns.then_some('100.100.100.101');
+  const dns: string | undefined = config.enable_magic_dns ? '100.100.100.101' : undefined;
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
