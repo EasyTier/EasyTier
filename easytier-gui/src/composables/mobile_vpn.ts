@@ -45,7 +45,7 @@ async function doStopVpn() {
   curVpnStatus.dns = undefined
 }
 
-async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns: string) {
+async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
   if (curVpnStatus.running) {
     return
   }
@@ -152,7 +152,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
 
-  const dns: string | undefined = config.enable_magic_dns ? '100.100.100.101' : undefined;
+  const dns = config.enable_magic_dns ? '100.100.100.101' : undefined;
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
