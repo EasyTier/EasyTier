@@ -61,7 +61,7 @@ export class ApiClient {
 
     constructor(baseUrl: string, authFailedCb: Function | undefined = undefined) {
         this.client = axios.create({
-            baseURL: baseUrl + '/api/v1',
+            baseURL: baseUrl.replace(/\/+$/, '') + '/api/v1',
             withCredentials: true, // 如果需要支持跨域携带cookie
             headers: {
                 'Content-Type': 'application/json',
