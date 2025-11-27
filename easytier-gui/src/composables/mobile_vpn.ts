@@ -10,6 +10,7 @@ interface vpnStatus {
   ipv4Addr: string | null | undefined
   ipv4Cidr: number | null | undefined
   routes: string[]
+  dns: string | null | undefined
 }
 
 const curVpnStatus: vpnStatus = {
@@ -17,6 +18,7 @@ const curVpnStatus: vpnStatus = {
   ipv4Addr: undefined,
   ipv4Cidr: undefined,
   routes: [],
+  dns: undefined,
 }
 
 async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
@@ -40,17 +42,19 @@ async function doStopVpn() {
 
   curVpnStatus.ipv4Addr = undefined
   curVpnStatus.routes = []
+  curVpnStatus.dns = undefined
 }
 
-async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
+async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
   if (curVpnStatus.running) {
     return
   }
 
-  console.log('start vpn service', ipv4Addr, cidr, routes)
+  console.log('start vpn service', ipv4Addr, cidr, routes, dns)
   const start_ret = await start_vpn({
     ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
+    dns,
     disallowedApplications: ['com.kkrainbow.easytier'],
     mtu: 1300,
   })
@@ -61,6 +65,7 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
 
   curVpnStatus.ipv4Addr = ipv4Addr
   curVpnStatus.routes = routes
+  curVpnStatus.dns = dns
 }
 
 async function onVpnServiceStart(payload: any) {
@@ -110,6 +115,10 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
     ret.push(r)
   })
 
+  if (node_config.enable_magic_dns) {
+    ret.push('100.100.100.101/32')
+  }
+
   // sort and dedup
   return Array.from(new Set(ret)).sort()
 }
@@ -143,10 +152,13 @@ export async function onNetworkInstanceChange(instanceId: string) {
 
   const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
 
+  const dns = config.enable_magic_dns ? '100.100.100.101' : undefined;
+
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
+  const dnsChanged = dns != curVpnStatus.dns
 
-  if (ipChanged || routesChanged) {
+  if (ipChanged || routesChanged || dnsChanged) {
     console.info('vpn service virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
     try {
       await doStopVpn()
@@ -156,7 +168,7 @@ export async function onNetworkInstanceChange(instanceId: string) {
     }
 
     try {
-      await doStartVpn(virtual_ip, 24, routes)
+      await doStartVpn(virtual_ip, network_length, routes, dns)
     }
     catch (e) {
       console.error('start vpn service failed, stop all other network insts.', e)
