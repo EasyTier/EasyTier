@@ -16,7 +16,7 @@ use tokio::{
 
 use crate::{
     common::{dns::socket_addrs, join_joinset_background, PeerId},
-    peers::{peer_conn::PeerConnId, peer_map::PeerMap},
+    peers::peer_conn::PeerConnId,
     proto::{
         api::instance::{
             Connector, ConnectorManageRpc, ConnectorStatus, ListConnectorRequest,
@@ -187,29 +187,9 @@ impl ManualConnectorManager {
                     Self::handle_event(&event, &data).await;
                 }
                 Err(RecvError::Lagged(n)) => {
-                    tracing::warn!("event_recv lagged: {}, rebuild alive conn list", n);
+                    tracing::warn!("event_recv lagged: {}, reset alive conn list", n);
                     event_recv = event_recv.resubscribe();
                     data.alive_conn_urls.clear();
-                    let Some(pm) = data.peer_manager.upgrade() else {
-                        tracing::warn!("peer manager is gone, exit");
-                        break;
-                    };
-                    let fill_alive_urls_with_peer_map = |peer_map: &PeerMap| {
-                        for x in peer_map.get_alive_conns().iter().map(|x| {
-                            x.tunnel
-                                .clone()
-                                .unwrap_or_default()
-                                .remote_addr
-                                .unwrap_or_default()
-                                .to_string()
-                        }) {
-                            data.alive_conn_urls.insert(x);
-                        }
-                    };
-
-                    fill_alive_urls_with_peer_map(&pm.get_peer_map());
-                    fill_alive_urls_with_peer_map(&pm.get_foreign_network_client().get_peer_map());
-
                     continue;
                 }
                 Err(RecvError::Closed) => {
