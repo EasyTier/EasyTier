@@ -269,6 +269,7 @@ no_tun = false
 use_smoltcp = false
 foreign_network_whitelist = "*"
 disable_p2p = false
+p2p_only = false
 relay_all_peer_rpc = false
 disable_udp_hole_punching = false
 

@@ -35,6 +35,7 @@ pub fn gen_default_flags() -> Flags {
         use_smoltcp: false,
         relay_network_whitelist: "*".to_string(),
         disable_p2p: false,
+        p2p_only: false,
         relay_all_peer_rpc: false,
         disable_udp_hole_punching: false,
         multi_thread: true,

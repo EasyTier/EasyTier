@@ -60,6 +60,8 @@ message FlagsInConfig {
 
    // tld dns zone for magic dns
   string tld_dns_zone = 31;
+
+  bool p2p_only = 32;
 }
 
 message RpcDescriptor {

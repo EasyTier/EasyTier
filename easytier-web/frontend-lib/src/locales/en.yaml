@@ -105,6 +105,9 @@ disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC pro
 disable_p2p: Disable P2P
 disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
 
+p2p_only: P2P Only
+p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
+
 bind_device: Bind to Physical Device Only
 bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
 
@@ -337,3 +340,33 @@ web:
     language: Language
     theme: Theme
     logout: Logout
+
+mode:
+  title: Mode
+  switch_mode: Switch Mode
+  config_dir: Config Dir
+  rpc_portal: RPC Portal
+  log_level: Log Level
+  log_dir: Log Dir
+  remote_rpc_address: Remote RPC Address
+  normal: Normal
+  service: Service
+  remote: Remote
+  normal_description: Run EasyTier directly, suitable for local use.
+  service_description: Run as a system service, supporting auto-startup and background operation. The service continues to run in the background after exiting the GUI.
+  remote_description: Connect to a remote RPC service to manage and control remote nodes.
+  service_status: Service Status
+  service_status_running: Running
+  service_status_stopped: Stopped
+  service_status_notinstalled: Not Installed
+  uninstall_service: Uninstall Service
+  stop_service: Stop Service
+  uninstall_service_confirm: Are you sure you want to uninstall the service?
+  uninstall_service_success: Service uninstalled successfully, switched back to normal mode
+  stop_service_success: Service stopped successfully
+  remote_rpc_address_empty: Remote RPC Address cannot be empty
+  service_config_empty: Service Config cannot be empty
+
+client:
+  not_running: Unable to connect to remote client.
+  retry: Retry

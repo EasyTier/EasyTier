@@ -9,7 +9,7 @@ import App from '~/App.vue';
 import 'easytier-frontend-lib/style.css';
 import { ConfirmationService, DialogService, ToastService } from 'primevue';
 import '~/styles.css';
-import { getAutoLaunchStatusAsync, loadAutoLaunchStatusAsync } from './modules/auto_launch';
+
 
 if (import.meta.env.PROD) {
   document.addEventListener('keydown', (event) => {
@@ -29,7 +29,6 @@ if (import.meta.env.PROD) {
 
 async function main() {
   await I18nUtils.loadLanguageAsync(localStorage.getItem('lang') || 'en')
-  await loadAutoLaunchStatusAsync(getAutoLaunchStatusAsync())
 
   const app = createApp(App)
 

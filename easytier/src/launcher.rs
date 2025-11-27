@@ -700,6 +700,10 @@ impl NetworkConfig {
             flags.disable_p2p = disable_p2p;
         }
 
+        if let Some(p2p_only) = self.p2p_only {
+            flags.p2p_only = p2p_only;
+        }
+
         if let Some(bind_device) = self.bind_device {
             flags.bind_device = bind_device;
         }
@@ -874,6 +878,7 @@ impl NetworkConfig {
         result.disable_quic_input = Some(flags.disable_quic_input);
         result.quic_listen_port = Some(flags.quic_listen_port as i32);
         result.disable_p2p = Some(flags.disable_p2p);
+        result.p2p_only = Some(flags.p2p_only);
         result.bind_device = Some(flags.bind_device);
         result.no_tun = Some(flags.no_tun);
         result.enable_exit_node = Some(flags.enable_exit_node);
@@ -1109,6 +1114,7 @@ mod tests {
                 flags.enable_quic_proxy = rng.gen_bool(0.5);
                 flags.disable_quic_input = rng.gen_bool(0.3);
                 flags.disable_p2p = rng.gen_bool(0.2);
+                flags.p2p_only = rng.gen_bool(0.2);
                 flags.bind_device = rng.gen_bool(0.3);
                 flags.no_tun = rng.gen_bool(0.1);
                 flags.enable_exit_node = rng.gen_bool(0.4);
