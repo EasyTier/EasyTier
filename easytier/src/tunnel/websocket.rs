@@ -12,7 +12,7 @@ use tokio_websockets::{ClientBuilder, Limits, MaybeTlsStream, Message};
 use zerocopy::AsBytes;
 
 use super::TunnelInfo;
-use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
+use crate::tunnel::insecure_tls::get_tls_client_config_by_url;
 
 use super::{
     common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
@@ -199,9 +199,8 @@ impl WSTunnelConnector {
 
         let c = ClientBuilder::from_uri(http::Uri::try_from(addr.to_string()).unwrap());
         let stream: MaybeTlsStream<TcpStream> = if is_wss {
-            init_crypto_provider();
             let tls_conn =
-                tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
+                tokio_rustls::TlsConnector::from(Arc::new(get_tls_client_config_by_url(&addr)));
             // Modify SNI logic: use "localhost" as SNI for url without domain to avoid IP blocking.
             let sni = match addr.domain() {
                 None => "localhost".to_string(),
