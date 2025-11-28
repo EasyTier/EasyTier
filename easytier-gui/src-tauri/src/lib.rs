@@ -113,6 +113,39 @@ async fn run_network_instance(
         .await
         .map_err(|e| e.to_string())?;
 
+    #[cfg(target_os = "android")]
+    if let Some(instance_manager) = INSTANCE_MANAGER.read().await.as_ref() {
+        let instance_uuid = instance_id
+            .parse::<uuid::Uuid>()
+            .map_err(|e| e.to_string())?;
+        if let Some(instance_ref) = instance_manager
+            .iter()
+            .find(|item| *item.key() == instance_uuid)
+        {
+            if let Some(mut event_receiver) = instance_ref.value().subscribe_event() {
+                let app_clone = app.clone();
+                let instance_id_clone = instance_id.clone();
+                tokio::spawn(async move {
+                    loop {
+                        match event_receiver.recv().await {
+                            Ok(event) => {
+                                if let easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _) = event {
+                                    let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone.clone());
+                                }
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                event_receiver = event_receiver.resubscribe();
+                            }
+                        }
+                    }
+                });
+            }
+        }
+    }
+
     app.emit("post_run_network_instance", instance_id)
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -637,7 +670,8 @@ mod manager {
             app: &AppHandle,
         ) -> Result<(), easytier::rpc_service::remote_client::RemoteClientError<anyhow::Error>>
         {
-            for inst_id in self.get_enabled_instances_with_tun_ids() {
+            let inst_ids: Vec<uuid::Uuid> = self.get_enabled_instances_with_tun_ids().collect();
+            for inst_id in inst_ids {
                 self.handle_update_network_state(app.clone(), inst_id, true)
                     .await?;
             }
