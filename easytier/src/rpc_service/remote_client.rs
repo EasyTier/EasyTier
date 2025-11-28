@@ -110,11 +110,12 @@ where
         // collect networks that are disabled
         let disabled_inst_ids = self
             .get_storage()
-            .list_network_configs(identify, ListNetworkProps::DisabledOnly)
+            .list_network_configs(identify, ListNetworkProps::All)
             .await
             .map_err(RemoteClientError::PersistentError)?
             .iter()
             .map(|x| Into::<crate::proto::common::Uuid>::into(x.get_network_inst_id().to_string()))
+            .filter(|id| !ret.inst_ids.contains(id))
             .collect::<Vec<_>>();
 
         Ok(ListNetworkInstanceIdsJsonResp {
