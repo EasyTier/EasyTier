@@ -392,19 +392,25 @@ async fn is_client_running() -> Result<bool, String> {
 }
 
 #[cfg(not(target_os = "android"))]
-fn toggle_window_visibility<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+fn toggle_window_visibility(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or_default() {
+        let visible = if window.is_visible().unwrap_or_default() {
             if window.is_minimized().unwrap_or_default() {
                 let _ = window.unminimize();
-                let _ = window.set_focus();
+                false
             } else {
-                let _ = window.hide();
+                true
             }
         } else {
             let _ = window.show();
+            false
+        };
+        if visible {
+            let _ = window.hide();
+        } else {
             let _ = window.set_focus();
         }
+        let _ = set_dock_visibility(app.clone(), !visible);
     }
 }
 
@@ -892,7 +898,7 @@ pub fn run_gui() -> std::process::ExitCode {
                 .icon(tauri::image::Image::from_bytes(include_bytes!(
                     "../icons/icon.png"
                 ))?)
-                .icon_as_template(false)
+                .icon_as_template(true)
                 .build(app)?;
 
             Ok(())
@@ -924,6 +930,7 @@ pub fn run_gui() -> std::process::ExitCode {
             #[cfg(not(target_os = "android"))]
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 let _ = _win.hide();
+                let _ = set_dock_visibility(_win.app_handle().clone(), false);
                 api.prevent_close();
             }
             _ => {}
@@ -931,19 +938,7 @@ pub fn run_gui() -> std::process::ExitCode {
         .build(tauri::generate_context!())
         .unwrap();
 
-    #[cfg(not(target_os = "macos"))]
     app.run(|_app, _event| {});
-
-    #[cfg(target_os = "macos")]
-    {
-        use tauri::RunEvent;
-        app.run(|app, event| match event {
-            RunEvent::Reopen { .. } => {
-                toggle_window_visibility(app);
-            }
-            _ => {}
-        });
-    }
 
     std::process::ExitCode::SUCCESS
 }
