@@ -24,8 +24,7 @@ impl Command {
     /// Prompting the user with a graphical OS dialog for the root password,
     /// excuting the command with escalated privileges, and return the output
     pub fn output(&self) -> Result<Output> {
-        let pkexec = PathBuf::from_str("/bin/pkexec")?;
-        let mut command = StdCommand::new(pkexec);
+        let mut command = StdCommand::new("pkexec");
         let display = env::var("DISPLAY");
         let xauthority = env::var("XAUTHORITY");
         let home = env::var("HOME");
