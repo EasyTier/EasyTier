@@ -13,6 +13,9 @@ interface vpnStatus {
   dns: string | null | undefined
 }
 
+let dhcpPollingTimer: NodeJS.Timeout | null = null
+const DHCP_POLLING_INTERVAL = 2000 // 2秒后重试
+
 const curVpnStatus: vpnStatus = {
   running: false,
   ipv4Addr: undefined,
@@ -125,6 +128,12 @@ function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfi
 
 export async function onNetworkInstanceChange(instanceId: string) {
   console.error('vpn service network instance change id', instanceId)
+
+  if (dhcpPollingTimer) {
+    clearTimeout(dhcpPollingTimer)
+    dhcpPollingTimer = null
+  }
+
   if (!instanceId) {
     await doStopVpn()
     return
@@ -140,6 +149,15 @@ export async function onNetworkInstanceChange(instanceId: string) {
   }
 
   const virtual_ip = Utils.ipv4ToString(curNetworkInfo?.my_node_info?.virtual_ipv4.address)
+
+  if (config.dhcp && (!virtual_ip || !virtual_ip.length)) {
+    console.log('DHCP enabled but no IP yet, will retry in', DHCP_POLLING_INTERVAL, 'ms')
+    dhcpPollingTimer = setTimeout(() => {
+      onNetworkInstanceChange(instanceId)
+    }, DHCP_POLLING_INTERVAL)
+    return
+  }
+
   if (!virtual_ip || !virtual_ip.length) {
     await doStopVpn()
     return
