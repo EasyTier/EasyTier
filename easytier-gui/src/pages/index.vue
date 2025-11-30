@@ -10,7 +10,6 @@ import type { MenuItem } from 'primevue/menuitem'
 import { useTray } from '~/composables/tray'
 import { GUIRemoteClient } from '~/modules/api'
 
-import { getDockVisibilityStatus, loadDockVisibilityAsync } from '~/modules/dock_visibility'
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, type Mode } from '~/composables/mode'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
@@ -262,14 +261,6 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     icon: 'pi pi-sync',
     command: openModeDialog,
     visible: () => type() !== 'android',
-  },
-  {
-    label: () => getDockVisibilityStatus() ? t('hide_dock_icon') : t('show_dock_icon'),
-    icon: 'pi pi-eye-slash',
-    command: async () => {
-      await loadDockVisibilityAsync(!getDockVisibilityStatus())
-    },
-    visible: () => type() === 'macos',
   },
   {
     key: 'logging_menu',
