@@ -2163,6 +2163,7 @@ dependencies = [
  "serial_test",
  "service-manager",
  "sha2",
+ "shellexpand",
  "smoltcp",
  "socket2 0.5.10",
  "stun_codec",
@@ -7752,6 +7753,15 @@ checksum = "09fa9338aed9a1df411814a5b2252f7cd206c55ae9bf2fa763f8de84603aa60c"
 dependencies = [
  "libc",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "shellexpand"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b1fdf65dd6331831494dd616b30351c38e96e45921a27745cf98490458b90bb"
+dependencies = [
+ "dirs 6.0.0",
 ]
 
 [[package]]

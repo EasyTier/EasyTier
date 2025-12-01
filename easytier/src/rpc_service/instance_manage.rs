@@ -213,6 +213,21 @@ impl WebClientService for InstanceManageRpcService {
             .inst_id
             .ok_or_else(|| anyhow::anyhow!("instance id is required"))?
             .into();
+
+        let control = self
+            .manager
+            .get_instance_config_control(&inst_id)
+            .ok_or_else(|| anyhow::anyhow!("instance config control not found"))?;
+
+        if control.is_read_only() {
+            return Err(anyhow::anyhow!(
+                "Configuration for instance {} is read-only (uses environment variables) and cannot be retrieved via API. \
+                 Please access the configuration file directly on the file system.",
+                inst_id
+            )
+            .into());
+        }
+
         let config = self
             .manager
             .get_instance_service(&inst_id)
