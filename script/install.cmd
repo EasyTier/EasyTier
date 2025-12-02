@@ -5,15 +5,11 @@ TITLE Initializing Script...
 CD /d %~dp0
 <NUL SET /p="Checking PowerShell ... "
 WHERE /q PowerShell 
-IF !ERRORLEVEL! NEQ 0 (
-    ECHO PowerShell is not installed. & PAUSE & EXIT
-)
+IF !ERRORLEVEL! NEQ 0 ( ECHO PowerShell is not installed. & PAUSE & EXIT )
 ECHO OK
 <NUL SET /p="Checking PowerShell version ... "
 PowerShell -Command "if ($PSVersionTable.PSVersion.Major -lt 3) { exit 1 }"
-IF !ERRORLEVEL! NEQ 0 (
-    ECHO Requires PowerShell 3 or later. & PAUSE & EXIT
-)
+IF !ERRORLEVEL! NEQ 0 ( ECHO Requires PowerShell 3 or later. & PAUSE & EXIT )
 ECHO OK
 <NUL SET /p="Checking execute permissions ... "
 PowerShell -Command "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 1 }"
@@ -30,16 +26,13 @@ IF !ERRORLEVEL! NEQ 0 (
 )
 ECHO OK
 <NUL SET /p="Extract embedded script ... "
-PowerShell -Command "$content = (Get-Content -Path '%~f0' -Encoding UTF8 | Out-String) -replace '(?s)' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9TVEFSVA==')) + '.*?' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9FTkQ=')); Set-Content -Path '%~f0.ps1' -Value $content -Encoding UTF8"
-IF !ERRORLEVEL! NEQ 0 (
-    ECHO Embedded script section not found. & PAUSE & EXIT
-)
+PowerShell -Command "$content = (Get-Content -Path '%~f0' -Encoding UTF8 | Out-String) -replace '(?s)' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9TVEFSVA==')) + '.*?' + [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('OjpCQVRDSF9FTkQ=')); Set-Content -Path '%~n0.ps1' -Value $content -Encoding UTF8"
+IF !ERRORLEVEL! NEQ 0 ( ECHO Embedded script section not found. & PAUSE & EXIT )
 ECHO OK
-<NUL SET /p="Execute script ... "
-PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~f0.ps1" %*
-ECHO OK
+ECHO Execute script
+PowerShell -NoProfile -ExecutionPolicy Bypass -File "%~n0.ps1" %*
 <NUL SET /p="Delete script ... "
-DEL /f /q "%~f0.ps1"
+DEL /f /q "%~n0.ps1"
 ECHO OK
 EXIT
 ::BATCH_END
@@ -752,3 +745,4 @@ catch {
     Unregister-ScheduledTask -TaskName "EasyTierWatchDog" -Confirm:$false -ErrorAction SilentlyContinue
     exit 1
 }
+
