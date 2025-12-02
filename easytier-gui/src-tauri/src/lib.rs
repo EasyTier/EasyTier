@@ -97,61 +97,18 @@ async fn run_network_instance(
     cfg: NetworkConfig,
     save: bool,
 ) -> Result<(), String> {
-    let instance_id = cfg.instance_id().to_string();
-
-    app.emit("pre_run_network_instance", cfg.instance_id())
-        .map_err(|e| e.to_string())?;
-
     let client_manager = get_client_manager!()?;
-
-    #[cfg(target_os = "android")]
-    if cfg.no_tun() == false {
-        client_manager
-            .disable_instances_with_tun(&app)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-
+    let toml_config = cfg.gen_config().map_err(|e| e.to_string())?;
+    client_manager
+        .pre_run_network_instance_hook(&app, &toml_config)
+        .await?;
     client_manager
         .handle_run_network_instance(app.clone(), cfg, save)
         .await
         .map_err(|e| e.to_string())?;
-
-    #[cfg(target_os = "android")]
-    if let Some(instance_manager) = INSTANCE_MANAGER.read().await.as_ref() {
-        let instance_uuid = instance_id
-            .parse::<uuid::Uuid>()
-            .map_err(|e| e.to_string())?;
-        if let Some(instance_ref) = instance_manager
-            .iter()
-            .find(|item| *item.key() == instance_uuid)
-        {
-            if let Some(mut event_receiver) = instance_ref.value().subscribe_event() {
-                let app_clone = app.clone();
-                let instance_id_clone = instance_id.clone();
-                tokio::spawn(async move {
-                    loop {
-                        match event_receiver.recv().await {
-                            Ok(event) => {
-                                if let easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _) = event {
-                                    let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone.clone());
-                                }
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                                break;
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                                event_receiver = event_receiver.resubscribe();
-                            }
-                        }
-                    }
-                });
-            }
-        }
-    }
-
-    app.emit("post_run_network_instance", instance_id)
-        .map_err(|e| e.to_string())?;
+    client_manager
+        .post_run_network_instance_hook(&app, &toml_config.get_id())
+        .await?;
     Ok(())
 }
 
@@ -215,7 +172,10 @@ async fn remove_network_instance(app: AppHandle, instance_id: String) -> Result<
         .handle_remove_network_instances(app.clone(), vec![instance_id])
         .await
         .map_err(|e| e.to_string())?;
-    client_manager.notify_vpn_stop_if_no_tun(&app)?;
+    client_manager
+        .post_remove_network_instances_hook(&app, &[instance_id])
+        .await?;
+
     Ok(())
 }
 
@@ -233,9 +193,13 @@ async fn update_network_config_state(
         .handle_update_network_state(app.clone(), instance_id, disabled)
         .await
         .map_err(|e| e.to_string())?;
+
     if disabled {
-        client_manager.notify_vpn_stop_if_no_tun(&app)?;
+        client_manager
+            .post_remove_network_instances_hook(&app, &[instance_id])
+            .await?;
     }
+
     Ok(())
 }
 
@@ -428,7 +392,7 @@ async fn is_client_running() -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn init_web_client(url: Option<String>) -> Result<(), String> {
+async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), String> {
     let mut web_client_guard = WEB_CLIENT.write().await;
     let Some(url) = url else {
         *web_client_guard = None;
@@ -439,10 +403,14 @@ async fn init_web_client(url: Option<String>) -> Result<(), String> {
         .map_err(|_| "Failed to acquire read lock for instance manager")?
         .clone()
         .ok_or_else(|| "Instance manager is not available".to_string())?;
-    let web_client = web_client::run_web_client(url.as_str(), None, None, instance_manager)
-        .await
-        .with_context(|| "Failed to initialize web client")
-        .map_err(|e| format!("{:#}", e))?;
+
+    let hooks = Arc::new(manager::GuiHooks { app: app.clone() });
+
+    let web_client =
+        web_client::run_web_client(url.as_str(), None, None, instance_manager, Some(hooks))
+            .await
+            .with_context(|| "Failed to initialize web client")
+            .map_err(|e| format!("{:#}", e))?;
     *web_client_guard = Some(web_client);
     Ok(())
 }
@@ -520,6 +488,38 @@ mod manager {
     use easytier::rpc_service::remote_client::PersistentConfig;
     use easytier::tunnel::ring::RingTunnelConnector;
     use easytier::tunnel::TunnelConnector;
+    use easytier::web_client::WebClientHooks;
+
+    pub(super) struct GuiHooks {
+        pub(super) app: AppHandle,
+    }
+
+    #[async_trait]
+    impl WebClientHooks for GuiHooks {
+        async fn pre_run_network_instance(
+            &self,
+            cfg: &easytier::common::config::TomlConfigLoader,
+        ) -> Result<(), String> {
+            let client_manager = get_client_manager!()?;
+            client_manager
+                .pre_run_network_instance_hook(&self.app, cfg)
+                .await
+        }
+
+        async fn post_run_network_instance(&self, instance_id: &uuid::Uuid) -> Result<(), String> {
+            let client_manager = get_client_manager!()?;
+            client_manager
+                .post_run_network_instance_hook(&self.app, instance_id)
+                .await
+        }
+
+        async fn post_remove_network_instances(&self, ids: &[uuid::Uuid]) -> Result<(), String> {
+            let client_manager = get_client_manager!()?;
+            client_manager
+                .post_remove_network_instances_hook(&self.app, ids)
+                .await
+        }
+    }
 
     #[derive(Clone)]
     pub(super) struct GUIConfig(String, pub(crate) NetworkConfig);
@@ -723,6 +723,89 @@ mod manager {
                 app.emit("vpn_service_stop", "")
                     .map_err(|e| e.to_string())?;
             }
+            Ok(())
+        }
+
+        pub(super) async fn pre_run_network_instance_hook(
+            &self,
+            app: &AppHandle,
+            cfg: &easytier::common::config::TomlConfigLoader,
+        ) -> Result<(), String> {
+            let instance_id = cfg.get_id();
+            app.emit("pre_run_network_instance", instance_id)
+                .map_err(|e| e.to_string())?;
+
+            #[cfg(target_os = "android")]
+            if !cfg.get_flags().no_tun {
+                self.disable_instances_with_tun(app)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+
+            self.storage
+                .save_config(
+                    app,
+                    instance_id,
+                    NetworkConfig::new_from_config(cfg).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+
+            Ok(())
+        }
+
+        pub(super) async fn post_run_network_instance_hook(
+            &self,
+            app: &AppHandle,
+            instance_id: &uuid::Uuid,
+        ) -> Result<(), String> {
+            #[cfg(target_os = "android")]
+            if let Some(instance_manager) = super::INSTANCE_MANAGER.read().await.as_ref() {
+                let instance_uuid = *instance_id;
+                if let Some(instance_ref) = instance_manager
+                    .iter()
+                    .find(|item| *item.key() == instance_uuid)
+                {
+                    if let Some(mut event_receiver) = instance_ref.value().subscribe_event() {
+                        let app_clone = app.clone();
+                        let instance_id_clone = *instance_id;
+                        tokio::spawn(async move {
+                            loop {
+                                match event_receiver.recv().await {
+                                    Ok(event) => {
+                                        if let easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _) = event {
+                                            let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone);
+                                        }
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                        break;
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                        event_receiver = event_receiver.resubscribe();
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
+            self.storage.enabled_networks.insert(*instance_id);
+
+            app.emit("post_run_network_instance", instance_id)
+                .map_err(|e| e.to_string())?;
+
+            Ok(())
+        }
+
+        pub(super) async fn post_remove_network_instances_hook(
+            &self,
+            app: &AppHandle,
+            _ids: &[uuid::Uuid],
+        ) -> Result<(), String> {
+            self.storage
+                .enabled_networks
+                .retain(|id| !_ids.contains(id));
+            self.notify_vpn_stop_if_no_tun(app)?;
             Ok(())
         }
 

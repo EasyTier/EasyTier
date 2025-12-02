@@ -2,21 +2,28 @@ use std::sync::Arc;
 
 use crate::{
     instance_manager::NetworkInstanceManager,
-    rpc_service::instance_manage::InstanceManageRpcService,
+    rpc_service::instance_manage::InstanceManageRpcService, web_client::WebClientHooks,
 };
 
 pub struct Controller {
     token: String,
     hostname: String,
     manager: Arc<NetworkInstanceManager>,
+    hooks: Arc<dyn WebClientHooks>,
 }
 
 impl Controller {
-    pub fn new(token: String, hostname: String, manager: Arc<NetworkInstanceManager>) -> Self {
+    pub fn new(
+        token: String,
+        hostname: String,
+        manager: Arc<NetworkInstanceManager>,
+        hooks: Arc<dyn WebClientHooks>,
+    ) -> Self {
         Controller {
             token,
             hostname,
             manager,
+            hooks,
         }
     }
 
@@ -33,7 +40,7 @@ impl Controller {
     }
 
     pub fn get_rpc_service(&self) -> InstanceManageRpcService {
-        InstanceManageRpcService::new(self.manager.clone())
+        InstanceManageRpcService::new(self.manager.clone(), self.hooks.clone())
     }
 
     pub(super) fn notify_manager_stopping(&self) {

@@ -11,7 +11,29 @@ use crate::{
     tunnel::{IpVersion, TunnelConnector},
 };
 use anyhow::{Context as _, Result};
+use async_trait::async_trait;
 use url::Url;
+use uuid::Uuid;
+
+#[async_trait]
+pub trait WebClientHooks: Send + Sync {
+    async fn pre_run_network_instance(&self, _cfg: &TomlConfigLoader) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn post_run_network_instance(&self, _id: &Uuid) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn post_remove_network_instances(&self, _ids: &[Uuid]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+pub struct DefaultHooks;
+
+#[async_trait]
+impl WebClientHooks for DefaultHooks {}
 
 pub mod controller;
 pub mod session;
@@ -31,12 +53,15 @@ impl WebClient {
         token: S,
         hostname: H,
         manager: Arc<NetworkInstanceManager>,
+        hooks: Option<Arc<dyn WebClientHooks>>,
     ) -> Self {
         let manager_guard = manager.register_daemon();
+        let hooks = hooks.unwrap_or_else(|| Arc::new(DefaultHooks));
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
             hostname.to_string(),
             manager,
+            hooks,
         ));
         let connected = Arc::new(AtomicBool::new(false));
 
@@ -91,6 +116,7 @@ pub async fn run_web_client(
     machine_id: Option<String>,
     hostname: Option<String>,
     manager: Arc<NetworkInstanceManager>,
+    hooks: Option<Arc<dyn WebClientHooks>>,
 ) -> Result<WebClient> {
     set_default_machine_id(machine_id);
     let config_server_url = match Url::parse(config_server_url_s) {
@@ -135,6 +161,7 @@ pub async fn run_web_client(
         token.to_string(),
         hostname,
         manager.clone(),
+        hooks,
     ))
 }
 
@@ -152,6 +179,7 @@ mod tests {
             None,
             None,
             manager.clone(),
+            None,
         )
         .await
         .unwrap();

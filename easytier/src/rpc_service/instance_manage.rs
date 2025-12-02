@@ -7,16 +7,18 @@ use crate::{
         api::{config::GetConfigRequest, manage::*},
         rpc_types::{self, controller::BaseController},
     },
+    web_client::WebClientHooks,
 };
 
 #[derive(Clone)]
 pub struct InstanceManageRpcService {
     manager: Arc<NetworkInstanceManager>,
+    hooks: Arc<dyn WebClientHooks>,
 }
 
 impl InstanceManageRpcService {
-    pub fn new(manager: Arc<NetworkInstanceManager>) -> Self {
-        Self { manager }
+    pub fn new(manager: Arc<NetworkInstanceManager>, hooks: Arc<dyn WebClientHooks>) -> Self {
+        Self { manager, hooks }
     }
 }
 
@@ -103,8 +105,17 @@ impl WebClientService for InstanceManageRpcService {
             }
         }
 
+        if let Err(e) = self.hooks.pre_run_network_instance(&cfg).await {
+            return Err(anyhow::anyhow!("pre-run hook failed: {}", e).into());
+        }
+
         self.manager.run_network_instance(cfg, true, control)?;
         println!("instance {} started", id);
+
+        if let Err(e) = self.hooks.post_run_network_instance(&id).await {
+            tracing::warn!("post-run hook failed: {}", e);
+        }
+
         Ok(resp)
     }
 
@@ -180,6 +191,9 @@ impl WebClientService for InstanceManageRpcService {
         req: DeleteNetworkInstanceRequest,
     ) -> Result<DeleteNetworkInstanceResponse, rpc_types::error::Error> {
         let inst_ids: HashSet<uuid::Uuid> = req.inst_ids.into_iter().map(Into::into).collect();
+
+        let hook_ids: Vec<uuid::Uuid> = inst_ids.iter().cloned().collect();
+
         let inst_ids = self
             .manager
             .iter()
@@ -197,6 +211,11 @@ impl WebClientService for InstanceManageRpcService {
             .collect::<Vec<_>>();
         let remain_inst_ids = self.manager.delete_network_instance(inst_ids)?;
         println!("instance {:?} retained", remain_inst_ids);
+
+        if let Err(e) = self.hooks.post_remove_network_instances(&hook_ids).await {
+            tracing::warn!("post-remove hook failed: {}", e);
+        }
+
         for config_file in config_files {
             if let Err(e) = std::fs::remove_file(&config_file) {
                 tracing::warn!(
