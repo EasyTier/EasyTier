@@ -21,6 +21,9 @@ core_clap:
   config_dir:
     en: "Load all .toml files in the directory to start network instances, and store the received configurations in this directory."
     zh-CN: "加载目录中的所有 .toml 文件以启动网络实例，并将下发的配置保存在此目录中。"
+  disable_env_parsing:
+    en: "disable environment variable parsing in config file"
+    zh-CN: "禁用配置文件中的环境变量解析"
   generate_completions:
     en: "generate shell completions"
     zh-CN: "生成 shell 补全脚本"

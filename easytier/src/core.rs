@@ -133,6 +133,9 @@ struct Cli {
 
     #[clap(long, help = t!("core_clap.daemon").to_string())]
     daemon: bool,
+
+    #[clap(long, help = t!("core_clap.disable_env_parsing").to_string())]
+    disable_env_parsing: bool,
 }
 
 #[derive(Parser, Debug, Default, PartialEq, Eq)]
@@ -1209,8 +1212,12 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         }
     };
     for config_file in config_files {
-        let (mut cfg, mut control) =
-            load_config_from_file(&config_file, cli.config_dir.as_ref()).await?;
+        let (mut cfg, mut control) = load_config_from_file(
+            &config_file,
+            cli.config_dir.as_ref(),
+            cli.disable_env_parsing,
+        )
+        .await?;
 
         if cli.network_options.can_merge(&cfg, config_file_count) {
             cli.network_options

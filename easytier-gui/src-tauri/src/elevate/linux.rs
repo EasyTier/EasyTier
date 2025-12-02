@@ -7,9 +7,7 @@ use super::Command;
 use anyhow::{anyhow, Result};
 use std::env;
 use std::ffi::OsStr;
-use std::path::PathBuf;
 use std::process::{Command as StdCommand, Output};
-use std::str::FromStr;
 
 /// The implementation of state check and elevated executing varies on each platform
 impl Command {
