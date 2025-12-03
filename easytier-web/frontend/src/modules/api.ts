@@ -32,6 +32,36 @@ export interface Summary {
     device_count: number;
 }
 
+export interface ServerStats {
+    config_server_port: number;
+    config_server_protocol: string;
+    config_active_connections: number;
+    api_server_port: number;
+    api_active_requests: number;
+}
+
+export interface SystemStats {
+    cpu_percent: number;
+    mem_percent: number;
+    timestamp: number;
+}
+
+export interface NetStats {
+    rx_mbps: number;
+    tx_mbps: number;
+    timestamp: number;
+}
+
+export interface ProcessInfo {
+    start_time: string;
+    query_time: string;
+    open_handles: number;
+    threads: number;
+    memory_mb: number;
+    gc_count: number;
+    heap_mb: number;
+}
+
 export interface ListNetworkInstanceIdResponse {
     running_inst_ids: Array<Utils.UUID>,
     disabled_inst_ids: Array<Utils.UUID>,
@@ -167,6 +197,26 @@ export class ApiClient {
 
     public async get_summary(): Promise<Summary> {
         const response = await this.client.get<any, Summary>('/summary');
+        return response;
+    }
+
+    public async get_server_stats(): Promise<ServerStats> {
+        const response = await this.client.get<any, ServerStats>('/server-stats');
+        return response;
+    }
+
+    public async get_system_stats(): Promise<SystemStats> {
+        const response = await this.client.get<any, SystemStats>('/system-stats');
+        return response;
+    }
+
+    public async get_net_stats(): Promise<NetStats> {
+        const response = await this.client.get<any, NetStats>('/net-stats');
+        return response;
+    }
+
+    public async get_process_info(): Promise<ProcessInfo> {
+        const response = await this.client.get<any, ProcessInfo>('/process-info');
         return response;
     }
 

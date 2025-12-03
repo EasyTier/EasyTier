@@ -65,6 +65,7 @@ uuid = { version = "1.5.0", features = [
 chrono = { version = "0.4.37", features = ["serde"] }
 
 mimalloc = { version = "*" }
+sysinfo = { version = "0.29", features = ["serde"] }
 
 [features]
 default = []

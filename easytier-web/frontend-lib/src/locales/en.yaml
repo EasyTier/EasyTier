@@ -285,6 +285,9 @@ web:
     version: Version
     machine_id: Machine ID
     unknown_location: Unknown Location
+    os_version: OS Version
+    cpu_usage: CPU (%)
+    memory: Memory
     
   device_management:
     edit_network: Edit Network

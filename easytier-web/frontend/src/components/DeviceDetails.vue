@@ -14,6 +14,12 @@ defineProps<{
   compact?: boolean;
 }>();
 
+const formatMemory = (used?: number, total?: number) => {
+  if (used === undefined || total === undefined) return '-';
+  const toMbString = (mb: number) => mb.toFixed(2);
+  return `${toMbString(used)} MB / ${toMbString(total)} MB`;
+};
+
 </script>
 
 <template>
@@ -37,6 +43,18 @@ defineProps<{
     <div class="detail-item version">
       <div class="detail-label">{{ t('web.device.version') }}</div>
       <div class="detail-value">{{ device.easytier_version }}</div>
+    </div>
+    <div class="detail-item os-version">
+      <div class="detail-label">{{ t('web.device.os_version') }}</div>
+      <div class="detail-value">{{ device.os_version || '-' }}</div>
+    </div>
+    <div class="detail-item cpu-usage">
+      <div class="detail-label">{{ t('web.device.cpu_usage') }}</div>
+      <div class="detail-value">{{ device.cpu_usage !== undefined ? device.cpu_usage.toFixed(1) + '%' : '-' }}</div>
+    </div>
+    <div class="detail-item memory">
+      <div class="detail-label">{{ t('web.device.memory') }}</div>
+      <div class="detail-value">{{ formatMemory(device.mem_used, device.mem_total) }}</div>
     </div>
     <div class="detail-item machine-id">
       <div class="detail-label">{{ t('web.device.machine_id') }}</div>

@@ -7,6 +7,7 @@ import { I18nUtils } from 'easytier-frontend-lib';
 import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
 import { useI18n } from 'vue-i18n'
 import ApiClient, { Credential, RegisterData } from '../modules/api';
+import { useBackgroundSettings } from '../modules/backgroundSettings';
 
 const { t } = useI18n()
 
@@ -72,11 +73,13 @@ onMounted(() => {
 
 });
 
+const { loginBackgroundStyle } = useBackgroundSettings();
+
 </script>
 
 <template>
-    <div class="flex items-center justify-center min-h-screen">
-        <Card class="w-full max-w-md p-6">
+    <div class="auth-wrapper" :style="loginBackgroundStyle">
+        <Card class="w-full max-w-md p-6 auth-card">
             <template #header>
                 <h2 class="text-2xl font-semibold text-center">{{ isRegistering ? t('web.login.register') :
                     t('web.login.login') }}
@@ -144,4 +147,35 @@ onMounted(() => {
     </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.auth-wrapper {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    position: relative;
+    overflow: hidden;
+}
+
+.auth-wrapper::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--login-bg);
+    background-size: cover;
+    background-position: center;
+    opacity: var(--login-opacity); /* 0 - 1 */
+    z-index: 0;
+}
+
+.auth-card {
+    position: relative;
+    z-index: 1;
+}
+
+:deep(.p-card) {
+    backdrop-filter: blur(4px);
+    background: rgba(255, 255, 255, 0.9);
+}
+</style>

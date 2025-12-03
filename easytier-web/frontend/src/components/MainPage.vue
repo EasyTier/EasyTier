@@ -8,6 +8,7 @@ import ChangePassword from './ChangePassword.vue';
 import Icon from '../assets/easytier.png'
 import { useI18n } from 'vue-i18n'
 import ApiClient from '../modules/api';
+import { useBackgroundSettings } from '../modules/backgroundSettings';
 
 const { t } = useI18n()
 const route = useRoute();
@@ -98,12 +99,17 @@ onUnmounted(() => {
     document.removeEventListener('click', handleClickOutside);
 });
 
+const { mainBackgroundStyle, state: bgState } = useBackgroundSettings();
+const chromeOpacity = computed(() => Math.min((bgState.mainOpacity ?? 0) + 0.25, 1));
+
 </script>
 
 <!-- https://flowbite.com/docs/components/sidebar/#sidebar-with-navbar -->
 <template>
+    <div class="main-wrapper" :style="mainBackgroundStyle">
     <nav
-        class="fixed top-0 z-50 w-full bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700 top-navbar">
+        class="fixed top-0 z-50 w-full bg-white border-b border-gray-200 dark:bg-gray-800 dark:border-gray-700 top-navbar"
+        :style="{ opacity: chromeOpacity }">
         <div class="px-3 py-3 lg:px-5 lg:pl-3">
             <div class="flex items-center justify-between">
                 <div class="flex items-center justify-start rtl:justify-end">
@@ -140,9 +146,10 @@ onUnmounted(() => {
 
     <aside ref="sidebarRef" id="logo-sidebar"
         class="fixed top-1 left-0 z-40 w-64 h-screen pt-20 transition-transform bg-white border-r border-gray-201 sm:translate-x-0 dark:bg-gray-800 dark:border-gray-700"
-        :class="{ '-translate-x-full': !forceShowSideBar }" aria-label="Sidebar">
+        :class="{ '-translate-x-full': !forceShowSideBar }" aria-label="Sidebar"
+        :style="{ opacity: chromeOpacity }">
         <div class="h-full px-3 pb-4 overflow-y-auto bg-white dark:bg-gray-800">
-            <ul class="space-y-2 font-medium">
+            <ul class="space-y-2 font-medium h-full flex flex-col">
                 <li>
                     <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
                         severity="contrast" @click="router.push({ name: 'dashboard' })">
@@ -159,9 +166,16 @@ onUnmounted(() => {
                 </li>
                 <li>
                     <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
-                        severity="contrast" @click="router.push({ name: 'login' })">
-                        <i class="pi pi-sign-in text-xl"></i>
-                        <span class="mb-0.5">{{ t('web.main.login_page') }}</span>
+                        severity="contrast" @click="router.push({ name: 'settings' })">
+                        <i class="pi pi-cog text-xl"></i>
+                        <span class="mb-0.5">Setting</span>
+                    </Button>
+                </li>
+                <li class="mt-auto">
+                    <Button variant="text" class="w-full justify-start gap-x-3 pl-1.5 sidebar-button"
+                        severity="danger" @click="router.push({ name: 'login' })">
+                        <i class="pi pi-sign-out text-xl"></i>
+                        <span class="mb-0.5">{{ t('web.main.logout') || 'Logout' }}</span>
                     </Button>
                 </li>
             </ul>
@@ -177,9 +191,26 @@ onUnmounted(() => {
             </div>
         </div>
     </div>
+    </div>
 </template>
 
 <style scoped>
+.main-wrapper {
+    min-height: 100vh;
+    position: relative;
+}
+
+.main-wrapper::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background-image: var(--main-bg, none);
+    background-size: cover;
+    background-position: center;
+    opacity: var(--main-opacity, 1);
+    z-index: -1;
+}
+
 .sidebar-button {
     text-align: left;
     justify-content: left;

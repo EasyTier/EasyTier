@@ -17,6 +17,8 @@ import Dashboard from './components/Dashboard.vue'
 import DialogService from 'primevue/dialogservice';
 import ToastService from 'primevue/toastservice';
 import ConfigGenerator from './components/ConfigGenerator.vue'
+import Settings from './components/Settings.vue'
+import { useThemeSettings } from './modules/themeSettings';
 
 const routes = [
     {
@@ -56,6 +58,11 @@ const routes = [
                     }
                 ]
             },
+            {
+                path: 'settings',
+                name: 'settings',
+                component: Settings,
+            },
         ]
     },
     {
@@ -80,6 +87,8 @@ const router = createRouter({
 })
 
 const app = createApp(App)
+// initialize theme preference early
+useThemeSettings();
 
 // Use i18n
 app.use(I18nUtils.i18n)
