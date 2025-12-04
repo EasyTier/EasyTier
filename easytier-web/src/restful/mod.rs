@@ -148,6 +148,14 @@ struct ProcessInfoResponse {
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct CombinedStatsResponse {
+    server: ServerStatsResponse,
+    system: SystemStatsResponse,
+    net: NetStatsResponse,
+    process: ProcessInfoResponse,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct Error {
     message: String,
 }
@@ -419,6 +427,117 @@ impl RestfulServer {
         .into())
     }
 
+    async fn handle_get_stats(
+        auth_session: AuthSession,
+        State(app_state): AppState,
+    ) -> Result<Json<CombinedStatsResponse>, HttpHandleError> {
+        if auth_session.user.is_none() {
+            return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
+        }
+
+        // Server stats (no lock needed)
+        let server = ServerStatsResponse {
+            config_server_port: app_state.config_info.config_server_port,
+            config_server_protocol: app_state.config_info.config_server_protocol.clone(),
+            config_active_connections: app_state.client_mgr.session_count(),
+            api_server_port: app_state.config_info.api_server_port,
+            api_active_requests: app_state.api_active_requests.load(Ordering::Relaxed),
+        };
+
+        // System + process reuse same sysinfo lock
+        let mut sys = app_state.sys.lock().await;
+        sys.refresh_cpu();
+        sys.refresh_memory();
+        sys.refresh_networks_list();
+        sys.refresh_networks();
+        sys.refresh_processes();
+
+        let cpu_percent = sys.global_cpu_info().cpu_usage();
+        let total_mem = sys.total_memory() as f64;
+        let used_mem = (sys.total_memory() - sys.available_memory()) as f64;
+        let mem_percent = if total_mem > 0.0 {
+            (used_mem / total_mem) * 100.0
+        } else {
+            0.0
+        };
+        let system = SystemStatsResponse {
+            cpu_percent,
+            mem_percent,
+            timestamp: chrono::Utc::now().timestamp() as u64,
+        };
+
+        let now = chrono::Utc::now().timestamp() as u64;
+        let mut total_rx = 0u64;
+        let mut total_tx = 0u64;
+        for (_iface, data) in sys.networks() {
+            total_rx += data.total_received();
+            total_tx += data.total_transmitted();
+        }
+        drop(sys);
+
+        let mut prev = app_state.net_prev.lock().await;
+        let (rx_mbps, tx_mbps) = if let Some((last_ts, last_rx, last_tx)) = *prev {
+            let dt = now.saturating_sub(last_ts).max(1);
+            let rx_rate =
+                (total_rx.saturating_sub(last_rx)) as f64 * 8.0 / (dt as f64) / 1_000_000.0;
+            let tx_rate =
+                (total_tx.saturating_sub(last_tx)) as f64 * 8.0 / (dt as f64) / 1_000_000.0;
+            (rx_rate, tx_rate)
+        } else {
+            (0.0, 0.0)
+        };
+        *prev = Some((now, total_rx, total_tx));
+        let net = NetStatsResponse {
+            rx_mbps,
+            tx_mbps,
+            timestamp: now,
+        };
+
+        let sys = app_state.sys.lock().await;
+        let pid = sysinfo::get_current_pid().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                other_error(format!("Pid error: {:?}", e)).into(),
+            )
+        })?;
+        let process = sys.process(pid).ok_or((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            other_error("Process not found").into(),
+        ))?;
+
+        let open_handles = std::fs::read_dir("/proc/self/fd")
+            .ok()
+            .map(|iter| iter.count() as u64)
+            .unwrap_or(0);
+
+        let threads = std::fs::read_dir("/proc/self/task")
+            .ok()
+            .map(|iter| iter.count())
+            .unwrap_or(0);
+        let memory_mb = (process.memory() as f64) / 1024.0; // KB to MB
+        let heap_mb = memory_mb;
+        let gc_count = 0u64; // Rust 无 GC
+
+        let fmt_time = |t: chrono::DateTime<chrono::Utc>| t.format("%Y-%m-%d %H:%M:%S").to_string();
+        let process = ProcessInfoResponse {
+            start_time: fmt_time(app_state.start_time),
+            query_time: fmt_time(chrono::Utc::now()),
+            open_handles,
+            threads,
+            memory_mb,
+            gc_count,
+            heap_mb,
+        };
+
+        Ok(CombinedStatsResponse {
+            server,
+            system,
+            net,
+            process,
+        }
+        .into())
+    }
+
     #[allow(unused_mut)]
     pub async fn start(
         mut self,
@@ -483,6 +602,7 @@ impl RestfulServer {
             .route("/api/v1/system-stats", get(Self::handle_get_system_stats))
             .route("/api/v1/net-stats", get(Self::handle_get_net_stats))
             .route("/api/v1/process-info", get(Self::handle_get_process_info))
+            .route("/api/v1/stats", get(Self::handle_get_stats))
             .merge(NetworkApi::build_route())
             .route_layer(login_required!(Backend))
             .merge(auth::router())

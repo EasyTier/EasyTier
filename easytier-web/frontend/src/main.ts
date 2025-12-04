@@ -19,6 +19,7 @@ import ToastService from 'primevue/toastservice';
 import ConfigGenerator from './components/ConfigGenerator.vue'
 import Settings from './components/Settings.vue'
 import { useThemeSettings } from './modules/themeSettings';
+import NetworkGraph from './components/NetworkGraph.vue'
 
 const routes = [
     {
@@ -62,6 +63,11 @@ const routes = [
                 path: 'settings',
                 name: 'settings',
                 component: Settings,
+            },
+            {
+                path: 'networkGraph',
+                name: 'networkGraph',
+                component: NetworkGraph,
             },
         ]
     },

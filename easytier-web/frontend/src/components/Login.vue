@@ -78,64 +78,64 @@ const { loginBackgroundStyle } = useBackgroundSettings();
 </script>
 
 <template>
-    <div class="auth-wrapper" :style="loginBackgroundStyle">
-        <Card class="w-full max-w-md p-6 auth-card">
+    <div id="login-auth-wrapper" class="auth-wrapper" :style="loginBackgroundStyle">
+        <Card id="login-card" class="w-full max-w-md p-6 auth-card">
             <template #header>
-                <h2 class="text-2xl font-semibold text-center">{{ isRegistering ? t('web.login.register') :
+                <h2 id="login-card-title" class="text-2xl font-semibold text-center">{{ isRegistering ? t('web.login.register') :
                     t('web.login.login') }}
                 </h2>
             </template>
             <template #content>
-                <div class="p-field mb-4">
-                    <label for="api-host" class="block text-sm font-medium">{{ t('web.login.api_host') }}</label>
+                <div id="login-api-host-field" class="p-field mb-4">
+                    <label id="login-api-host-label" for="api-host" class="block text-sm font-medium">{{ t('web.login.api_host') }}</label>
                     <AutoComplete id="api-host" v-model="apiHost" dropdown :suggestions="apiHostSuggestions"
                         @complete="apiHostSearch" class="w-full" />
                 </div>
-                <form v-if="!isRegistering" @submit.prevent="onSubmit" class="space-y-4">
-                    <div class="p-field">
-                        <label for="username" class="block text-sm font-medium">{{ t('web.login.username') }}</label>
+                <form v-if="!isRegistering" id="login-form" @submit.prevent="onSubmit" class="space-y-4">
+                    <div id="login-username-field" class="p-field">
+                        <label id="login-username-label" for="username" class="block text-sm font-medium">{{ t('web.login.username') }}</label>
                         <InputText id="username" v-model="username" required class="w-full" />
                     </div>
-                    <div class="p-field">
-                        <label for="password" class="block text-sm font-medium">{{ t('web.login.password') }}</label>
+                    <div id="login-password-field" class="p-field">
+                        <label id="login-password-label" for="password" class="block text-sm font-medium">{{ t('web.login.password') }}</label>
                         <Password id="password" v-model="password" required toggleMask :feedback="false" />
                     </div>
-                    <div class="flex items-center justify-between">
-                        <Button :label="t('web.login.login')" type="submit" class="w-full" />
+                    <div id="login-submit-container" class="flex items-center justify-between">
+                        <Button id="login-submit-btn" :label="t('web.login.login')" type="submit" class="w-full" />
                     </div>
-                    <div class="flex items-center justify-between">
-                        <Button :label="t('web.login.register')" type="button" class="w-full"
+                    <div id="login-to-register-container" class="flex items-center justify-between">
+                        <Button id="login-to-register-btn" :label="t('web.login.register')" type="button" class="w-full"
                             @click="saveApiHost(apiHost); $router.replace({ name: 'register' })" severity="secondary" />
                     </div>
                 </form>
 
-                <form v-else @submit.prevent="onRegister" class="space-y-4">
-                    <div class="p-field">
-                        <label for="register-username" class="block text-sm font-medium">{{ t('web.login.username')
+                <form v-else id="register-form" @submit.prevent="onRegister" class="space-y-4">
+                    <div id="register-username-field" class="p-field">
+                        <label id="register-username-label" for="register-username" class="block text-sm font-medium">{{ t('web.login.username')
                             }}</label>
                         <InputText id="register-username" v-model="registerUsername" required class="w-full" />
                     </div>
-                    <div class="p-field">
-                        <label for="register-password" class="block text-sm font-medium">{{ t('web.login.password')
+                    <div id="register-password-field" class="p-field">
+                        <label id="register-password-label" for="register-password" class="block text-sm font-medium">{{ t('web.login.password')
                             }}</label>
                         <Password id="register-password" v-model="registerPassword" required toggleMask
                             :feedback="false" class="w-full" />
                     </div>
-                    <div class="p-field">
-                        <label for="captcha" class="block text-sm font-medium">{{ t('web.login.captcha') }}</label>
+                    <div id="register-captcha-field" class="p-field">
+                        <label id="register-captcha-label" for="captcha" class="block text-sm font-medium">{{ t('web.login.captcha') }}</label>
                         <InputText id="captcha" v-model="captcha" required class="w-full" />
-                        <img :src="captchaSrc" alt="Captcha" class="mt-2 mb-2" />
+                        <img id="register-captcha-image" :src="captchaSrc" alt="Captcha" class="mt-2 mb-2" />
                     </div>
-                    <div class="flex items-center justify-between">
-                        <Button :label="t('web.login.register')" type="submit" class="w-full" />
+                    <div id="register-submit-container" class="flex items-center justify-between">
+                        <Button id="register-submit-btn" :label="t('web.login.register')" type="submit" class="w-full" />
                     </div>
-                    <div class="flex items-center justify-between">
-                        <Button :label="t('web.login.back_to_login')" type="button" class="w-full"
+                    <div id="register-back-container" class="flex items-center justify-between">
+                        <Button id="register-back-to-login-btn" :label="t('web.login.back_to_login')" type="button" class="w-full"
                             @click="saveApiHost(apiHost); $router.replace({ name: 'login' })" severity="secondary" />
                     </div>
                 </form>
 
-                <Button icon="pi pi-language" type="button" class="rounded-full absolute top-4 right-4 z-10"
+                <Button id="login-language-btn" icon="pi pi-language" type="button" class="rounded-full absolute top-4 right-4 z-10"
                     style="box-shadow: 0 2px 8px rgba(0,0,0,0.08);" severity="contrast"
                     @click="I18nUtils.toggleLanguage" :aria-label="t('web.main.language')"
                     :v-tooltip="t('web.main.language')" />

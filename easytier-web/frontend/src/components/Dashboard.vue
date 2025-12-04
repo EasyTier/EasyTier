@@ -297,32 +297,38 @@ const applyCanvasStyle = (container: HTMLElement) => {
 </script>
 
 <template>
-    <div class="grid grid-cols-3 gap-4">
-        <Card class="h-full">
-            <template #title>Device Count</template>
+    <div id="dashboard-summary-grid" class="grid grid-cols-3 gap-4">
+        <Card id="dashboard-device-count-card" class="h-full">
+            <template #title>
+                <span id="dashboard-device-count-title">Device Count</span>
+            </template>
             <template #content>
-                <div class="w-full flex justify-center text-7xl font-bold text-green-800 mt-4">
+                <div id="dashboard-device-count-value" class="w-full flex justify-center text-7xl font-bold text-green-800 mt-4">
                     {{ deviceCount }}
                 </div>
             </template>
         </Card>
-        <Card class="h-full">
-            <template #title>Config Server</template>
+        <Card id="dashboard-config-server-card" class="h-full">
+            <template #title>
+                <span id="dashboard-config-server-title">Config Server</span>
+            </template>
             <template #content>
-                <div class="space-y-2">
-                    <div class="text-lg">Port: {{ configInfo.port }} ({{ configInfo.protocol }})</div>
-                    <div class="w-full flex justify-center text-7xl font-bold text-green-800 mt-4">
+                <div id="dashboard-config-server-body" class="space-y-2">
+                    <div id="dashboard-config-server-port" class="text-lg">Port: {{ configInfo.port }} ({{ configInfo.protocol }})</div>
+                    <div id="dashboard-config-server-conn" class="w-full flex justify-center text-7xl font-bold text-green-800 mt-4">
                         {{ configInfo.connections }}
                     </div>
                 </div>
             </template>
         </Card>
-        <Card class="h-full">
-            <template #title>API Server</template>
+        <Card id="dashboard-api-server-card" class="h-full">
+            <template #title>
+                <span id="dashboard-api-server-title">API Server</span>
+            </template>
             <template #content>
-                <div class="space-y-2">
-                    <div class="text-lg">Port: {{ apiInfo.port }}</div>
-                    <div class="w-full flex justify-center text-7xl font-bold text-green-800 mt-4">
+                <div id="dashboard-api-server-body" class="space-y-2">
+                    <div id="dashboard-api-server-port" class="text-lg">Port: {{ apiInfo.port }}</div>
+                    <div id="dashboard-api-server-conn" class="w-full flex justify-center text-7xl font-bold text-green-800 mt-4">
                         {{ apiInfo.connections }}
                     </div>
                 </div>
@@ -330,46 +336,70 @@ const applyCanvasStyle = (container: HTMLElement) => {
         </Card>
     </div>
 
-    <div class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700 mt-4">
-        <div ref="chartRef" class="w-full" style="height: 360px;"></div>
+    <div id="dashboard-system-chart-card" class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700 mt-4 blurred-surface">
+        <div ref="chartRef" id="dashboard-system-chart" class="w-full" style="height: 360px;"></div>
     </div>
 
-    <div class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700 mt-4">
-        <div ref="netChartRef" class="w-full" style="height: 360px;"></div>
+    <div id="dashboard-net-chart-card" class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700 mt-4 blurred-surface">
+        <div ref="netChartRef" id="dashboard-net-chart" class="w-full" style="height: 360px;"></div>
     </div>
 
-    <div class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700 mt-4">
-        <h3 class="text-xl font-semibold text-center mb-4">服务器信息</h3>
-        <div class="space-y-2">
-            <div class="flex justify-between">
-                <span>进程启动时间</span>
-                <span class="text-right">{{ processInfo?.start_time }}</span>
+    <div id="dashboard-process-card" class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700 mt-4">
+        <h3 id="dashboard-process-title" class="text-xl font-semibold text-center mb-4 blurred-surface">服务器信息</h3>
+        <div id="dashboard-process-body" class="space-y-2 blurred-surface">
+            <div id="dashboard-process-start-time" class="flex justify-between">
+                <span id="dashboard-process-start-label">进程启动时间</span>
+                <span id="dashboard-process-start-value" class="text-right">{{ processInfo?.start_time }}</span>
             </div>
-            <div class="flex justify-between">
-                <span>查询时间</span>
-                <span class="text-right">{{ processInfo?.query_time }}</span>
+            <div id="dashboard-process-query-time" class="flex justify-between">
+                <span id="dashboard-process-query-label">查询时间</span>
+                <span id="dashboard-process-query-value" class="text-right">{{ processInfo?.query_time }}</span>
             </div>
-            <div class="flex justify-between">
-                <span>进程已打开句柄数</span>
-                <span class="text-right">{{ processInfo?.open_handles }}</span>
+            <div id="dashboard-process-handles" class="flex justify-between">
+                <span id="dashboard-process-handles-label">进程已打开句柄数</span>
+                <span id="dashboard-process-handles-value" class="text-right">{{ processInfo?.open_handles }}</span>
             </div>
-            <div class="flex justify-between">
-                <span>协程数</span>
-                <span class="text-right">{{ processInfo?.threads }}</span>
+            <div id="dashboard-process-threads" class="flex justify-between">
+                <span id="dashboard-process-threads-label">协程数</span>
+                <span id="dashboard-process-threads-value" class="text-right">{{ processInfo?.threads }}</span>
             </div>
-            <div class="flex justify-between">
-                <span>进程占用内存 (MB)</span>
-                <span class="text-right">{{ processInfo?.memory_mb.toFixed(2) }}</span>
+            <div id="dashboard-process-memory" class="flex justify-between">
+                <span id="dashboard-process-memory-label">进程占用内存 (MB)</span>
+                <span id="dashboard-process-memory-value" class="text-right">{{ processInfo?.memory_mb.toFixed(2) }}</span>
             </div>
-            <div class="flex justify-between">
-                <span>GC总次数</span>
-                <span class="text-right">{{ processInfo?.gc_count }}</span>
-            </div>
-            <div class="flex justify-between">
-                <span>堆占用内存 (MB)</span>
-                <span class="text-right">{{ processInfo?.heap_mb.toFixed(2) }}</span>
+            <div id="dashboard-process-heap" class="flex justify-between">
+                <span id="dashboard-process-heap-label">堆占用内存 (MB)</span>
+                <span id="dashboard-process-heap-value" class="text-right">{{ processInfo?.heap_mb.toFixed(2) }}</span>
             </div>
         </div>
     </div>
 
 </template>
+
+<style scoped>
+.blurred-surface {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background-color: rgba(255, 255, 255, 0.35);
+}
+
+@media (prefers-color-scheme: dark) {
+    .blurred-surface {
+        background-color: rgba(30, 41, 59, 0.5);
+    }
+}
+
+#dashboard-system-chart,
+#dashboard-net-chart {
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    background-color: rgba(255, 255, 255, 0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+    #dashboard-system-chart,
+    #dashboard-net-chart {
+        background-color: rgba(15, 23, 42, 0.35);
+    }
+}
+</style>

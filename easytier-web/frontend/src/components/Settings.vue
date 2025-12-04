@@ -51,57 +51,57 @@ const onThemeChange = (val: ThemeMode) => {
 </script>
 
 <template>
-    <div class="grid gap-4 md:grid-cols-2 mb-4 p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700">
-        <Card>
+    <div id="settings-background-grid" class="grid gap-4 md:grid-cols-2 mb-4 p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700">
+        <Card id="settings-login-card">
             <template #title>
-                登陆界面自定义背景图片
+                <span id="settings-login-title">登陆界面自定义背景图片</span>
             </template>
             <template #content>
-                <div class="space-y-3">
-                    <div class="flex items-center gap-3">
-                        <input type="file" accept="image/*" @change="(e) => handleFile(e, 'login')" />
-                        <Button :label="t('web.settings.reset') || 'Reset'" size="small" severity="secondary"
+                <div id="settings-login-content" class="space-y-3">
+                    <div id="settings-login-upload" class="flex items-center gap-3">
+                        <input id="settings-login-file" type="file" accept="image/*" @change="(e) => handleFile(e, 'login')" />
+                        <Button id="settings-login-reset" :label="t('web.settings.reset') || 'Reset'" size="small" severity="secondary"
                             @click="resetLogin" :disabled="loadingLogin" />
                     </div>
-                    <div>
-                        <label class="text-sm block mb-1">
+                    <div id="settings-login-opacity">
+                        <label id="settings-login-opacity-label" class="text-sm block mb-1">
                             {{ t('web.settings.opacity') || 'Opacity' }}: {{ Math.round(state.loginOpacity * 100) }}%
                         </label>
-                        <Slider v-model="state.loginOpacity" :min="0" :max="1" :step="0.01" />
+                        <Slider id="settings-login-opacity-slider" v-model="state.loginOpacity" :min="0" :max="1" :step="0.01" />
                     </div>
                 </div>
             </template>
         </Card>
 
-        <Card>
+        <Card id="settings-main-card">
             <template #title>
-                仪表盘主界面自定义背景图片
+                <span id="settings-main-title">仪表盘主界面自定义背景图片</span>
             </template>
             <template #content>
-                <div class="space-y-3">
-                    <div class="flex items-center gap-3">
-                        <input type="file" accept="image/*" @change="(e) => handleFile(e, 'main')" />
-                        <Button :label="t('web.settings.reset') || 'Reset'" size="small" severity="secondary"
+                <div id="settings-main-content" class="space-y-3">
+                    <div id="settings-main-upload" class="flex items-center gap-3">
+                        <input id="settings-main-file" type="file" accept="image/*" @change="(e) => handleFile(e, 'main')" />
+                        <Button id="settings-main-reset" :label="t('web.settings.reset') || 'Reset'" size="small" severity="secondary"
                             @click="resetMain" :disabled="loadingMain" />
                     </div>
-                    <div>
-                        <label class="text-sm block mb-1">
+                    <div id="settings-main-opacity">
+                        <label id="settings-main-opacity-label" class="text-sm block mb-1">
                             {{ t('web.settings.opacity') || 'Opacity' }}: {{ Math.round(state.mainOpacity * 100) }}%
                         </label>
-                        <Slider v-model="state.mainOpacity" :min="0" :max="1" :step="0.01" />
+                        <Slider id="settings-main-opacity-slider" v-model="state.mainOpacity" :min="0" :max="1" :step="0.01" />
                     </div>
                 </div>
             </template>
         </Card>
     </div>
 
-    <div class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700">
-        <Card>
-            <template #title> 主题 </template>
+    <div id="settings-theme-wrapper" class="p-4 border-2 border-gray-200 border-dashed rounded-lg dark:border-gray-700">
+        <Card id="settings-theme-card">
+            <template #title> <span id="settings-theme-title">主题</span> </template>
             <template #content>
-                <div class="space-y-2">
-                    <label class="text-sm block">选择主题模式</label>
-                    <Select v-model="themeState.mode" :options="themeOptions" optionLabel="label" optionValue="value"
+                <div id="settings-theme-content" class="space-y-2">
+                    <label id="settings-theme-label" class="text-sm block">选择主题模式</label>
+                    <Select id="settings-theme-select" v-model="themeState.mode" :options="themeOptions" optionLabel="label" optionValue="value"
                         class="w-full" @update:modelValue="onThemeChange" />
                 </div>
             </template>
