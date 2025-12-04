@@ -28,6 +28,7 @@ use crate::{
         proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
     tunnel::{tcp::TcpTunnelListener, TunnelListener},
+    web_client::DefaultHooks,
 };
 
 pub struct ApiRpcServer<T: TunnelListener + 'static> {
@@ -142,7 +143,10 @@ fn register_api_rpc_service(
     );
 
     registry.register(
-        WebClientServiceServer::new(InstanceManageRpcService::new(instance_manager.clone())),
+        WebClientServiceServer::new(InstanceManageRpcService::new(
+            instance_manager.clone(),
+            Arc::new(DefaultHooks),
+        )),
         "",
     );
 }

@@ -311,6 +311,7 @@ mod tests {
             "test",
             "test",
             Arc::new(NetworkInstanceManager::new()),
+            None,
         );
 
         wait_for_condition(

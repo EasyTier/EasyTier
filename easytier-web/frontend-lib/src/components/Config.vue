@@ -9,7 +9,7 @@ import {
   NetworkingMethod,
   removeRow
 } from '../types/network'
-import { defineProps, defineEmits, ref, onMounted } from 'vue'
+import { defineProps, defineEmits, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -209,11 +209,11 @@ onMounted(() => {
     });
     resizeObserver.observe(portForwardContainer.value);
 
-    return () => {
+    onUnmounted(() => {
       if (resizeObserver && portForwardContainer.value) {
         resizeObserver.unobserve(portForwardContainer.value);
       }
-    }
+    });
   }
 });
 </script>
