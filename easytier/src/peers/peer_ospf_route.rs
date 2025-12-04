@@ -68,7 +68,7 @@ static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
 static REMOVE_DEAD_PEER_INFO_AFTER: Duration = Duration::from_secs(3660);
 // the cost (latency between two peers) is i32, i32::MAX is large enough.
 static AVOID_RELAY_COST: usize = i32::MAX as usize;
-static FORCE_USE_CONN_LIST: AtomicBool = AtomicBool::new(true);
+static FORCE_USE_CONN_LIST: AtomicBool = AtomicBool::new(false);
 
 type Version = u32;
 
