@@ -213,7 +213,7 @@ hickory-client = "0.25.2"
 hickory-server = { version = "0.25.2", features = ["resolver"] }
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
-multimap = "0.10.0"
+multimap = "0.10.1"
 version-compare = "0.2.0"
 hmac = "0.12.1"
 sha2 = "0.10.8"
