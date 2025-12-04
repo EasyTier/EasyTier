@@ -67,6 +67,8 @@ message NetworkConfig {
 
   optional bool enable_magic_dns = 42;
   optional bool enable_private_mode = 43;
+  optional common.CompressionAlgoPb data_compress_algo = 52;
+  optional string encryption_algorithm = 53;
 
   // repeated string rpc_portal_whitelists = 44;
 

@@ -1,5 +1,6 @@
 use crate::common::config::{ConfigFileControl, PortForwardConfig};
 use crate::proto::api::{self, manage};
+use crate::proto::common::CompressionAlgoPb;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::{
@@ -758,6 +759,17 @@ impl NetworkConfig {
 
         if let Some(enable_private_mode) = self.enable_private_mode {
             flags.private_mode = enable_private_mode;
+        }
+
+        if let Some(encryption_algorithm) = self.encryption_algorithm.clone() {
+            flags.encryption_algorithm = encryption_algorithm;
+        }
+
+        match CompressionAlgoPb::try_from(self.data_compress_algo.unwrap_or_default())
+            .unwrap_or_default()
+        {
+            CompressionAlgoPb::Invalid | CompressionAlgoPb::None => flags.data_compress_algo = 1,
+            CompressionAlgoPb::Zstd => flags.data_compress_algo = 2,
         }
 
         cfg.set_flags(flags);
