@@ -1154,6 +1154,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             cli.machine_id.clone(),
             cli.network_options.hostname.clone(),
             manager.clone(),
+            None,
         )
         .await
         .inspect(|_| {

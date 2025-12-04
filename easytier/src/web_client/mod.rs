@@ -11,15 +11,40 @@ use crate::{
     tunnel::{IpVersion, TunnelConnector},
 };
 use anyhow::{Context as _, Result};
+use async_trait::async_trait;
 use url::Url;
+use uuid::Uuid;
+
+#[async_trait]
+pub trait WebClientHooks: Send + Sync {
+    async fn pre_run_network_instance(&self, _cfg: &TomlConfigLoader) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn post_run_network_instance(&self, _id: &Uuid) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn post_remove_network_instances(&self, _ids: &[Uuid]) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+pub struct DefaultHooks;
+
+#[async_trait]
+impl WebClientHooks for DefaultHooks {}
 
 pub mod controller;
 pub mod session;
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct WebClient {
     controller: Arc<controller::Controller>,
     tasks: ScopedTask<()>,
     manager_guard: DaemonGuard,
+    connected: Arc<AtomicBool>,
 }
 
 impl WebClient {
@@ -28,28 +53,35 @@ impl WebClient {
         token: S,
         hostname: H,
         manager: Arc<NetworkInstanceManager>,
+        hooks: Option<Arc<dyn WebClientHooks>>,
     ) -> Self {
         let manager_guard = manager.register_daemon();
+        let hooks = hooks.unwrap_or_else(|| Arc::new(DefaultHooks));
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
             hostname.to_string(),
             manager,
+            hooks,
         ));
+        let connected = Arc::new(AtomicBool::new(false));
 
         let controller_clone = controller.clone();
+        let connected_clone = connected.clone();
         let tasks = ScopedTask::from(tokio::spawn(async move {
-            Self::routine(controller_clone, Box::new(connector)).await;
+            Self::routine(controller_clone, connected_clone, Box::new(connector)).await;
         }));
 
         WebClient {
             controller,
             tasks,
             manager_guard,
+            connected,
         }
     }
 
     async fn routine(
         controller: Arc<controller::Controller>,
+        connected: Arc<AtomicBool>,
         mut connector: Box<dyn TunnelConnector>,
     ) {
         loop {
@@ -65,11 +97,17 @@ impl WebClient {
                 }
             };
 
+            connected.store(true, Ordering::Release);
             println!("Successfully connected to {:?}", conn.info());
 
             let mut session = session::Session::new(conn, controller.clone());
             session.wait().await;
+            connected.store(false, Ordering::Release);
         }
+    }
+
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 }
 
@@ -78,6 +116,7 @@ pub async fn run_web_client(
     machine_id: Option<String>,
     hostname: Option<String>,
     manager: Arc<NetworkInstanceManager>,
+    hooks: Option<Arc<dyn WebClientHooks>>,
 ) -> Result<WebClient> {
     set_default_machine_id(machine_id);
     let config_server_url = match Url::parse(config_server_url_s) {
@@ -87,7 +126,7 @@ pub async fn run_web_client(
             config_server_url_s
         )
         .parse()
-        .unwrap(),
+        .with_context(|| "failed to parse config server URL")?,
     };
 
     let mut c_url = config_server_url.clone();
@@ -122,6 +161,7 @@ pub async fn run_web_client(
         token.to_string(),
         hostname,
         manager.clone(),
+        hooks,
     ))
 }
 
@@ -139,6 +179,7 @@ mod tests {
             None,
             None,
             manager.clone(),
+            None,
         )
         .await
         .unwrap();

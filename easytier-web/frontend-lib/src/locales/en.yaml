@@ -370,6 +370,22 @@ mode:
   remote_rpc_address_empty: Remote RPC Address cannot be empty
   service_config_empty: Service Config cannot be empty
 
+config-server:
+  title: Config Server
+  address: Config Server Address
+  address_placeholder: "e.g.: udp://127.0.0.1:22020/admin or admin"
+  description: |
+    Config server address, allowed formats:
+    Full URL: udp://127.0.0.1:22020/admin
+    Username only: admin (uses official server)
+    Leave blank: Don't connect to a config server
+  connection_status: Connection Status
+  connected: ": Connected"
+  disconnected: ": Disconnected"
+  connecting: ": Connecting..."
+  unknown: ""
+  update_service_confirm: The service will be restarted to apply changes, do you want to continue?
+
 client:
   not_running: Unable to connect to remote client.
   retry: Retry
