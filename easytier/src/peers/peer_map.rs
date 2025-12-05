@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::Context;
 use dashmap::{DashMap, DashSet};
+use parking_lot::Mutex;
 use tokio::sync::RwLock;
 
 use crate::{
@@ -33,7 +34,7 @@ pub struct PeerMap {
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
-    alive_conns: Arc<DashMap<(PeerId, PeerConnId), PeerConnInfo>>,
+    alive_client_urls: Arc<Mutex<multimap::MultiMap<url::Url, PeerConnId>>>,
 }
 
 impl PeerMap {
@@ -44,7 +45,7 @@ impl PeerMap {
             peer_map: DashMap::new(),
             packet_send,
             routes: RwLock::new(Vec::new()),
-            alive_conns: Arc::new(DashMap::new()),
+            alive_client_urls: Arc::new(Mutex::new(multimap::MultiMap::new())),
         }
     }
 
@@ -56,7 +57,7 @@ impl PeerMap {
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
-        self.maintain_alive_conns(&peer_conn);
+        let _ = self.maintain_alive_client_urls(&peer_conn);
         let peer_id = peer_conn.get_peer_id();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
@@ -69,29 +70,48 @@ impl PeerMap {
         }
     }
 
-    fn maintain_alive_conns(&self, peer_conn: &PeerConn) {
-        let close_notifier = peer_conn.get_close_notifier();
-        let alive_conns_weak = Arc::downgrade(&self.alive_conns);
-        let conn_id = close_notifier.get_conn_id();
+    fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<()> {
         let conn_info = peer_conn.get_conn_info();
-        self.alive_conns
-            .insert((conn_info.peer_id, conn_id), conn_info.clone());
+        if !conn_info.is_client {
+            return None;
+        }
+
+        let close_notifier = peer_conn.get_close_notifier();
+        let alive_conns_weak = Arc::downgrade(&self.alive_client_urls);
+        let conn_id = close_notifier.get_conn_id();
+        let alive_client_url: url::Url = conn_info.tunnel?.remote_addr?.into();
+        self.alive_client_urls
+            .lock()
+            .insert(alive_client_url.clone(), conn_id);
+
         tokio::spawn(async move {
             if let Some(mut waiter) = close_notifier.get_waiter().await {
                 let _ = waiter.recv().await;
             }
-            let mut alive_conn_count = 0;
-            if let Some(alive_conns) = alive_conns_weak.upgrade() {
-                alive_conns.remove(&(conn_info.peer_id, conn_id)).unwrap();
-                alive_conn_count = alive_conns.len();
-                shrink_dashmap(&alive_conns, None);
-            }
+            let Some(alive_conns) = alive_conns_weak.upgrade() else {
+                return;
+            };
+            let mut guard = alive_conns.lock();
+            if let Some(mut conn_ids) = guard.remove(&alive_client_url) {
+                conn_ids.retain(|id| id != &conn_id);
+                if !conn_ids.is_empty() {
+                    guard.insert_many(alive_client_url, conn_ids);
+                }
+            };
+            let alive_conn_count = guard.len();
+            drop(guard);
             tracing::debug!(
                 ?conn_id,
                 "peer conn is closed, current alive conns: {}",
                 alive_conn_count
             );
         });
+
+        Some(())
+    }
+
+    pub fn is_client_url_alive(&self, url: &url::Url) -> bool {
+        self.alive_client_urls.lock().contains_key(url)
     }
 
     pub fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
@@ -357,13 +377,6 @@ impl PeerMap {
             ))))?;
 
         Ok(!self.has_peer(gateway_id))
-    }
-
-    pub fn get_alive_conns(&self) -> DashMap<(PeerId, PeerConnId), PeerConnInfo> {
-        self.alive_conns
-            .iter()
-            .map(|v| (*v.key(), v.value().clone()))
-            .collect()
     }
 
     pub fn my_peer_id(&self) -> PeerId {
