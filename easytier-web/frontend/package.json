@@ -13,6 +13,7 @@
     "@primeuix/themes": "^1.2.3",
     "axios": "^1.7.7",
     "easytier-frontend-lib": "workspace:*",
+    "echarts": "^5.5.1",
     "primevue": "^4.3.9",
     "tailwindcss-primeui": "^0.3.4",
     "ts-md5": "^1.3.1",

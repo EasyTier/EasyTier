@@ -44,6 +44,7 @@ arc-swap = "1.7"
 time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
+sysinfo = { version = "0.29", default-features = false }
 
 gethostname = "0.5.0"
 

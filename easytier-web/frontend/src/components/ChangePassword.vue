@@ -16,16 +16,16 @@ const changePassword = async () => {
 </script>
 
 <template>
-    <div class="flex items-center justify-center">
-        <Card class="w-full max-w-md p-6">
+    <div id="change-password-wrapper" class="flex items-center justify-center">
+        <Card id="change-password-card" class="w-full max-w-md p-6">
             <template #header>
-                <h2 class="text-2xl font-semibold text-center">Change Password
+                <h2 id="change-password-title" class="text-2xl font-semibold text-center">Change Password
                 </h2>
             </template>
             <template #content>
-                <div class="flex flex-col space-y-4">
-                    <Password v-model="password" placeholder="New Password" :feedback="false" toggleMask />
-                    <Button @click="changePassword" label="Ok" />
+                <div id="change-password-body" class="flex flex-col space-y-4">
+                    <Password id="change-password-input" v-model="password" placeholder="New Password" :feedback="false" toggleMask />
+                    <Button id="change-password-submit" @click="changePassword" label="Ok" />
                 </div>
             </template>
         </Card>

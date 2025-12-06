@@ -68,6 +68,10 @@ export interface DeviceInfo {
     running_network_instances?: Array<string>;
     machine_id: string;
     location: Location | undefined;
+    os_version?: string;
+    cpu_usage?: number;
+    mem_used?: number;
+    mem_total?: number;
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
@@ -80,6 +84,10 @@ export function buildDeviceInfo(device: any): DeviceInfo {
         easytier_version: device.info?.easytier_version,
         machine_id: UuidToStr(device.info?.machine_id),
         location: device.location,
+        os_version: device.info?.os_version,
+        cpu_usage: device.info?.cpu_usage,
+        mem_used: device.info?.mem_used,
+        mem_total: device.info?.mem_total,
     };
 
     return dev_info;

@@ -114,6 +114,10 @@ impl ClientManager {
         self.listeners_cnt.load(Ordering::Relaxed) > 0
     }
 
+    pub fn session_count(&self) -> u32 {
+        self.client_sessions.len() as u32
+    }
+
     pub async fn list_sessions(&self) -> Vec<StorageToken> {
         let sessions = self
             .client_sessions

@@ -14,34 +14,55 @@ defineProps<{
   compact?: boolean;
 }>();
 
+const formatMemory = (used?: number, total?: number) => {
+  if (used === undefined || total === undefined) return '-';
+  // Backend值在实际环境相当于字节，转换为 GiB 以匹配 free -h 直观展示
+  const toGiB = (bytes: number) => bytes / 1024 / 1024 / 1024;
+  const usedGiB = toGiB(used).toFixed(2);
+  const totalGiB = toGiB(total).toFixed(2);
+  return `${usedGiB} GiB / ${totalGiB} GiB`;
+};
+
 </script>
 
 <template>
-  <div :class="['device-details', containerClass, { 'compact': compact }]">
-    <div class="detail-item hostname">
-      <div class="detail-label">{{ t('web.device.hostname') }}</div>
-      <div class="detail-value">{{ device.hostname }}</div>
+  <div :id="`device-details-${device.machine_id}`" :class="['device-details', containerClass, { 'compact': compact }]">
+    <div :id="`device-details-${device.machine_id}-hostname`" class="detail-item hostname">
+      <div :id="`device-details-${device.machine_id}-hostname-label`" class="detail-label">{{ t('web.device.hostname') }}</div>
+      <div :id="`device-details-${device.machine_id}-hostname-value`" class="detail-value">{{ device.hostname }}</div>
     </div>
-    <div class="detail-item public-ip">
-      <div class="detail-label">{{ t('web.device.public_ip') }}</div>
-      <div class="detail-value">{{ device.public_ip }}</div>
+    <div :id="`device-details-${device.machine_id}-public-ip`" class="detail-item public-ip">
+      <div :id="`device-details-${device.machine_id}-public-ip-label`" class="detail-label">{{ t('web.device.public_ip') }}</div>
+      <div :id="`device-details-${device.machine_id}-public-ip-value`" class="detail-value">{{ device.public_ip }}</div>
     </div>
-    <div class="detail-item running-networks">
-      <div class="detail-label">{{ t('web.device.networks') }}</div>
-      <div class="detail-value">{{ device.running_network_count }}</div>
+    <div :id="`device-details-${device.machine_id}-networks`" class="detail-item running-networks">
+      <div :id="`device-details-${device.machine_id}-networks-label`" class="detail-label">{{ t('web.device.networks') }}</div>
+      <div :id="`device-details-${device.machine_id}-networks-value`" class="detail-value">{{ device.running_network_count }}</div>
     </div>
-    <div class="detail-item last-report">
-      <div class="detail-label">{{ t('web.device.last_report') }}</div>
-      <div class="detail-value">{{ device.report_time }}</div>
+    <div :id="`device-details-${device.machine_id}-last-report`" class="detail-item last-report">
+      <div :id="`device-details-${device.machine_id}-last-report-label`" class="detail-label">{{ t('web.device.last_report') }}</div>
+      <div :id="`device-details-${device.machine_id}-last-report-value`" class="detail-value">{{ device.report_time }}</div>
     </div>
-    <div class="detail-item version">
-      <div class="detail-label">{{ t('web.device.version') }}</div>
-      <div class="detail-value">{{ device.easytier_version }}</div>
+    <div :id="`device-details-${device.machine_id}-version`" class="detail-item version">
+      <div :id="`device-details-${device.machine_id}-version-label`" class="detail-label">{{ t('web.device.version') }}</div>
+      <div :id="`device-details-${device.machine_id}-version-value`" class="detail-value">{{ device.easytier_version }}</div>
     </div>
-    <div class="detail-item machine-id">
-      <div class="detail-label">{{ t('web.device.machine_id') }}</div>
-      <div class="detail-value">
-        <span class="machine-id-value" :title="device.machine_id">{{ device.machine_id }}</span>
+    <div :id="`device-details-${device.machine_id}-os-version`" class="detail-item os-version">
+      <div :id="`device-details-${device.machine_id}-os-version-label`" class="detail-label">{{ t('web.device.os_version') }}</div>
+      <div :id="`device-details-${device.machine_id}-os-version-value`" class="detail-value">{{ device.os_version || '-' }}</div>
+    </div>
+    <div :id="`device-details-${device.machine_id}-cpu-usage`" class="detail-item cpu-usage">
+      <div :id="`device-details-${device.machine_id}-cpu-usage-label`" class="detail-label">{{ t('web.device.cpu_usage') }}</div>
+      <div :id="`device-details-${device.machine_id}-cpu-usage-value`" class="detail-value">{{ device.cpu_usage !== undefined ? device.cpu_usage.toFixed(1) + '%' : '-' }}</div>
+    </div>
+    <div :id="`device-details-${device.machine_id}-memory`" class="detail-item memory">
+      <div :id="`device-details-${device.machine_id}-memory-label`" class="detail-label">{{ t('web.device.memory') }}</div>
+      <div :id="`device-details-${device.machine_id}-memory-value`" class="detail-value">{{ formatMemory(device.mem_used, device.mem_total) }}</div>
+    </div>
+    <div :id="`device-details-${device.machine_id}-machine-id`" class="detail-item machine-id">
+      <div :id="`device-details-${device.machine_id}-machine-id-label`" class="detail-label">{{ t('web.device.machine_id') }}</div>
+      <div :id="`device-details-${device.machine_id}-machine-id-value`" class="detail-value">
+        <span :id="`device-details-${device.machine_id}-machine-id-text`" class="machine-id-value" :title="device.machine_id">{{ device.machine_id }}</span>
       </div>
     </div>
   </div>
