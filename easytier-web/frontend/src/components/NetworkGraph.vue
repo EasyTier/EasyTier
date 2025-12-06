@@ -39,6 +39,7 @@ const dialogStyle = computed(() => ({
 const isHoverRefreshing = ref(false);
 const lastHoverRefresh = ref(0);
 const hoverRefreshIntervalMs = 1000;
+const draggingNodeId = ref<string | null>(null);
 
 const hasData = computed(() => networkCards.value.length > 0);
 
@@ -173,6 +174,7 @@ const openNetwork = async (networkName: string) => {
 
 const renderChart = () => {
   if (!chartRef.value || !selectedNetwork.value) return;
+
   if (!chartInstance.value) {
     chartInstance.value = echarts.init(chartRef.value);
   }
@@ -181,7 +183,7 @@ const renderChart = () => {
 
   // Preserve existing node positions to avoid jumping
   const existingPositions = new Map<string, { x: number; y: number }>();
-  const existing = chartInstance.value.getOption() as any;
+  const existing = chartInstance.value?.getOption() as any;
   const prevData = existing?.series?.[0]?.data || [];
   prevData.forEach((d: any) => {
     if (d?.id !== undefined && d.x !== undefined && d.y !== undefined) {
@@ -216,63 +218,80 @@ const renderChart = () => {
 
   const layoutMode = existingPositions.size > 0 ? 'none' : 'force';
 
-  chartInstance.value.setOption({
-    tooltip: {
-      formatter: (params: any) => {
-        if (params.dataType === 'edge') {
-          const data = params.data as GraphEdge;
-          const latency = data.latencyMs !== undefined ? `${data.latencyMs.toFixed(2)} ms` : 'N/A';
-          const loss = data.lossRate !== undefined ? `${(data.lossRate * 100).toFixed(2)} %` : 'N/A';
-          return `Latency: ${latency}<br/>Loss: ${loss}`;
-        }
-        if (params.dataType === 'node') {
-          const node = params.data as GraphNode;
-          const ip = node.ip || 'N/A';
-          const version = node.version || 'Unknown';
-          const nat = node.nat || 'Unknown';
-          return `IP: ${ip}<br/>Version: ${version}<br/>NAT: ${nat}`;
-        }
-        return params.name || '';
-      },
+  const seriesConfig = {
+    type: 'graph' as const,
+    layout: layoutMode,
+    roam: true,
+    draggable: true,
+    force: { repulsion: 200, edgeLength: 120 },
+    data: seriesData,
+    edges: data.edges,
+    label: {
+      show: true,
+      formatter: '{b}',
+      color: 'rgb(24, 24, 24)',
+      fontWeight: 'bold',
     },
-    legend: [{ data: ['Node'] }],
-    series: [
-      {
-        type: 'graph',
-        layout: layoutMode,
-        roam: true,
-        draggable: true,
-        force: { repulsion: 200, edgeLength: 120 },
-        data: seriesData,
-        edges: data.edges,
-        label: {
-          show: true,
-          formatter: '{b}',
-          color: 'rgb(24, 24, 24)',
-          fontWeight: 'bold',
-        },
-        lineStyle: { color: '#4b5563', opacity: 0.8 },
-      },
-    ],
-  });
+    lineStyle: { color: '#4b5563', opacity: 0.8 },
+  };
 
-  chartInstance.value.off('mouseover');
-  chartInstance.value.on('mouseover', (params: any) => {
-    if (params.dataType !== 'node' && params.dataType !== 'edge') return;
-    if (!dialogVisible.value) return;
-    const now = Date.now();
-    if (now - lastHoverRefresh.value < hoverRefreshIntervalMs) return;
-    if (isHoverRefreshing.value) return;
-    isHoverRefreshing.value = true;
-    buildGraph()
-      .then(() => {
-        renderChart();
-        lastHoverRefresh.value = Date.now();
-      })
-      .finally(() => {
-        isHoverRefreshing.value = false;
-      });
-  });
+  if (!existing || !existing.series) {
+    chartInstance.value.setOption({
+      tooltip: {
+        formatter: (params: any) => {
+          if (params.dataType === 'edge') {
+            const d = params.data as GraphEdge;
+            const latency = d.latencyMs !== undefined ? `${d.latencyMs.toFixed(2)} ms` : 'N/A';
+            const loss = d.lossRate !== undefined ? `${(d.lossRate * 100).toFixed(2)} %` : 'N/A';
+            return `Latency: ${latency}<br/>Loss: ${loss}`;
+          }
+          if (params.dataType === 'node') {
+            const node = params.data as GraphNode;
+            const ip = node.ip || 'N/A';
+            const version = node.version || 'Unknown';
+            const nat = node.nat || 'Unknown';
+            return `IP: ${ip}<br/>Version: ${version}<br/>NAT: ${nat}`;
+          }
+            return params.name || '';
+        },
+      },
+      legend: [{ data: ['Node'] }],
+      series: [seriesConfig],
+    });
+
+    chartInstance.value.on('mouseover', (params: any) => {
+      if (draggingNodeId.value) return;
+      if (params.dataType !== 'node' && params.dataType !== 'edge') return;
+      if (!dialogVisible.value) return;
+      const now = Date.now();
+      if (now - lastHoverRefresh.value < hoverRefreshIntervalMs) return;
+      if (isHoverRefreshing.value) return;
+      isHoverRefreshing.value = true;
+      buildGraph()
+        .then(() => {
+          renderChart();
+          lastHoverRefresh.value = Date.now();
+        })
+        .finally(() => {
+          isHoverRefreshing.value = false;
+        });
+    });
+    chartInstance.value.on('mousedown', (params: any) => {
+      if (params.dataType === 'node' && params.data?.id !== undefined) {
+        draggingNodeId.value = String(params.data.id);
+      }
+    });
+    chartInstance.value.on('mouseup', () => {
+      draggingNodeId.value = null;
+    });
+  } else {
+    chartInstance.value.setOption(
+      {
+        series: [seriesConfig],
+      },
+      { notMerge: false, lazyUpdate: true },
+    );
+  }
 };
 
 watch(dialogVisible, (visible) => {
