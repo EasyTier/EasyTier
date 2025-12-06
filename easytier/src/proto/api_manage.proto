@@ -78,6 +78,8 @@ message NetworkConfig {
   optional bool disable_sym_hole_punching = 49;
 
   optional bool p2p_only = 51;
+  optional common.CompressionAlgoPb data_compress_algo = 52;
+  optional string encryption_algorithm = 53;
 }
 
 message PortForwardConfig {

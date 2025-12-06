@@ -760,6 +760,18 @@ impl NetworkConfig {
             flags.private_mode = enable_private_mode;
         }
 
+        if let Some(encryption_algorithm) = self.encryption_algorithm.clone() {
+            flags.encryption_algorithm = encryption_algorithm;
+        }
+
+        if let Some(data_compress_algo) = self.data_compress_algo {
+            if data_compress_algo < 1 {
+                flags.data_compress_algo = 1;
+            } else {
+                flags.data_compress_algo = data_compress_algo
+            }
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
