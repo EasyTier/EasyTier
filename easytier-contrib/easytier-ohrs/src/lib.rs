@@ -59,7 +59,7 @@ pub fn parse_network_config(cfg_json: String) -> bool {
     match serde_json::from_str::<NetworkConfig>(&cfg_json) {
         Ok(cfg) => match cfg.gen_config() {
             Ok(toml) => {
-                hilog_debug!("[Rust] Convert to Toml {}", toml);
+                hilog_debug!("[Rust] Convert to Toml {}", toml.dump());
                 true
             }
             Err(e) => {
