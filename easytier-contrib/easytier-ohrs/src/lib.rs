@@ -55,6 +55,23 @@ pub fn default_network_config() -> String {
 }
 
 #[napi]
+pub fn convert_toml_to_network_config(cfg_str: String) -> String {
+    match TomlConfigLoader::new_from_str(&cfg_str) {
+        Ok(cfg) => match NetworkConfig::new_from_config(cfg) {
+            Ok(result) => serde_json::to_string(&result).unwrap_or_else(|e| format!("ERROR {}", e)),
+            Err(e) => {
+                hilog_error!("[Rust] convert_toml_to_network_config failed {}", e);
+                format!("ERROR {}", e)
+            }
+        },
+        Err(e) => {
+            hilog_error!("[Rust] convert_toml_to_network_config failed {}", e);
+            format!("ERROR {}", e)
+        }
+    }
+}
+
+#[napi]
 pub fn parse_network_config(cfg_json: String) -> bool {
     match serde_json::from_str::<NetworkConfig>(&cfg_json) {
         Ok(cfg) => match cfg.gen_config() {
