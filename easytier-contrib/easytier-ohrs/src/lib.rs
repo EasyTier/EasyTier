@@ -61,7 +61,7 @@ pub fn parse_network_config(cfg_json: String) -> bool {
             Ok(toml) => {
                 hilog_debug!("[Rust] Convert to Toml {}", toml);
                 true
-            },
+            }
             Err(e) => {
                 hilog_error!("[Rust] parse config failed {}", e);
                 false

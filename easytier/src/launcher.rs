@@ -767,7 +767,7 @@ impl NetworkConfig {
         if let Some(data_compress_algo) = self.data_compress_algo {
             if data_compress_algo < 1 {
                 flags.data_compress_algo = 1;
-            }else {
+            } else {
                 flags.data_compress_algo = data_compress_algo
             }
         }
