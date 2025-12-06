@@ -765,11 +765,12 @@ impl NetworkConfig {
             flags.encryption_algorithm = encryption_algorithm;
         }
 
-        match CompressionAlgoPb::try_from(self.data_compress_algo.unwrap_or_default())
-            .unwrap_or_default()
-        {
-            CompressionAlgoPb::Invalid | CompressionAlgoPb::None => flags.data_compress_algo = 1,
-            CompressionAlgoPb::Zstd => flags.data_compress_algo = 2,
+        if let Some(data_compress_algo) = self.data_compress_algo {
+            if data_compress_algo < 1 {
+                flags.data_compress_algo = 1;
+            }else {
+                flags.data_compress_algo = data_compress_algo
+            }
         }
 
         cfg.set_flags(flags);
