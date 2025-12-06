@@ -1,6 +1,5 @@
 use crate::common::config::{ConfigFileControl, PortForwardConfig};
 use crate::proto::api::{self, manage};
-use crate::proto::common::CompressionAlgoPb;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
 use crate::{
