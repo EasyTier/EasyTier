@@ -484,7 +484,7 @@ impl InstanceConfigPatcher {
             match ConfigPatchAction::try_from(connector.action) {
                 Ok(ConfigPatchAction::Add) => {
                     tracing::info!("Connector added: {}", url);
-                    conn_manager.add_connector_by_url(url.as_str()).await?;
+                    conn_manager.add_connector_by_url(url).await?;
                 }
                 Ok(ConfigPatchAction::Remove) => {
                     tracing::info!("Connector removed: {}", url);
@@ -620,7 +620,7 @@ impl Instance {
     async fn add_initial_peers(&mut self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
             self.get_conn_manager()
-                .add_connector_by_url(peer.uri.as_str())
+                .add_connector_by_url(peer.uri.clone())
                 .await?;
         }
         Ok(())
