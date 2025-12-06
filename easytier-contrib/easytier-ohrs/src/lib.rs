@@ -58,7 +58,10 @@ pub fn default_network_config() -> String {
 pub fn parse_network_config(cfg_json: String) -> bool {
     match serde_json::from_str::<NetworkConfig>(&cfg_json) {
         Ok(cfg) => match cfg.gen_config() {
-            Ok(_) => true,
+            Ok(toml) => {
+                hilog_debug!("[Rust] Convert to Toml {}", toml);
+                true
+            },
             Err(e) => {
                 hilog_error!("[Rust] parse config failed {}", e);
                 false
