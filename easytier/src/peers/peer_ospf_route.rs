@@ -146,6 +146,15 @@ impl RoutePeerInfo {
         }
     }
 
+    /// Creates a new `RoutePeerInfo` instance with updated information from the given context.
+    ///
+    /// # Parameters
+    /// - `my_peer_id`: The unique identifier for the peer.
+    /// - `peer_route_id`: The route identifier associated with the peer.
+    /// - `global_ctx`: Reference to the global context containing configuration and state.
+    ///
+    /// # Returns
+    /// A new `RoutePeerInfo` instance initialized with values from the provided context and parameters.
     pub fn new_updated_self(
         my_peer_id: PeerId,
         peer_route_id: u64,
@@ -189,6 +198,16 @@ impl RoutePeerInfo {
         }
     }
 
+    /// Attempts to update the `new` RoutePeerInfo based on the `old` RoutePeerInfo.
+    ///
+    /// An update is triggered if any fields in `new` differ from `old`, or if the time since
+    /// `old.last_update` exceeds the `UPDATE_PEER_INFO_PERIOD`.
+    ///
+    /// If an update occurs, `new.last_update` is set to the current time and `new.version` is incremented.
+    /// Otherwise, `new.last_update` and `new.version` are copied from `old` without modification.
+    ///
+    /// Returns `true` if an update was performed (fields changed or periodic update required),
+    /// or `false` if no update was necessary.
     pub fn try_update_new_peer_info(old: &RoutePeerInfo, new: &mut RoutePeerInfo) -> bool {
         let need_update_periodically = if let Ok(Ok(d)) =
             SystemTime::try_from(old.last_update.unwrap_or_default()).map(|x| x.elapsed())
@@ -295,7 +314,7 @@ impl Default for RouteConnInfo {
 // constructed with all infos synced from all peers.
 struct SyncedRouteInfo {
     peer_infos: RwLock<OrderedHashMap<PeerId, RoutePeerInfo>>,
-    // prost doesn't support unknown fields, so we use DynamicMessage to store raw infos and progate them to other peers.
+    // prost doesn't support unknown fields, so we use DynamicMessage to store raw infos and propagate them to other peers.
     raw_peer_infos: DashMap<PeerId, DynamicMessage>,
     conn_map: RwLock<OrderedHashMap<PeerId, RouteConnInfo>>,
     foreign_network: DashMap<ForeignNetworkRouteInfoKey, ForeignNetworkRouteInfoEntry>,
@@ -702,21 +721,6 @@ impl SyncedRouteInfo {
         // TODO: add conn and foreign network lock
 
         SystemTime::now()
-    }
-
-    fn check_peer_info_last_update_monotonic_increasing(&self) {
-        let mut last_update: Option<prost_types::Timestamp> = None;
-        for peer_info in self.peer_infos.read().values() {
-            if let Some(last_update) = last_update {
-                let cur_last_update = peer_info.last_update.unwrap();
-                assert!(
-                    cur_last_update.seconds > last_update.seconds
-                        || cur_last_update.nanos >= last_update.nanos,
-                    "peer info last update not monotonic increasing"
-                );
-            }
-            last_update = peer_info.last_update;
-        }
     }
 
     fn verify_and_update_group_trusts(
@@ -1823,14 +1827,12 @@ impl PeerRouteServiceImpl {
     }
 
     fn build_route_info(&self, session: &SyncRouteSession) -> Option<Vec<RoutePeerInfo>> {
-        self.synced_route_info
-            .check_peer_info_last_update_monotonic_increasing();
         let mut route_infos = Vec::new();
         let peer_infos = self.synced_route_info.peer_infos.read();
         let mut unreachable_peers_for_peer_info = session.unreachable_peers_for_peer_info.lock();
         let last_sync_succ_timestamp = session.last_sync_succ_timestamp.load();
         for (peer_id, peer_info) in peer_infos.iter().rev() {
-            // stop iter if last_update of peer info is older than session.latest_scanned_peer_info_timestamp
+            // stop iter if last_update of peer info is older than session.last_sync_succ_timestamp
             if let Some(last_update) = peer_info.last_update {
                 let last_update = TryInto::<SystemTime>::try_into(last_update).unwrap();
                 if last_sync_succ_timestamp.is_some_and(|t| last_update < t) {
@@ -1843,7 +1845,7 @@ impl PeerRouteServiceImpl {
                         self.my_peer_id,
                         session
                     );
-                    continue;
+                    break;
                 }
             }
 
@@ -1909,8 +1911,8 @@ impl PeerRouteServiceImpl {
                 + conn_info.connected_peers.len() * std::mem::size_of::<PeerId>();
         };
 
-        for (peer_id, conn_info) in conn_map.iter() {
-            // stop iter if last_update of conn info is older than session.latest_scanned_peer_info_timestamp
+        for (peer_id, conn_info) in conn_map.iter().rev() {
+            // stop iter if last_update of conn info is older than session.last_sync_succ_timestamp
             let last_update = TryInto::<SystemTime>::try_into(conn_info.last_update).unwrap();
             if last_sync_succ_timestamp.is_some_and(|t| last_update < t) {
                 tracing::debug!(
@@ -1922,7 +1924,7 @@ impl PeerRouteServiceImpl {
                         self.my_peer_id,
                         session
                     );
-                continue;
+                break;
             }
 
             if session.check_saved_conn_version_update_to_date(*peer_id, conn_info.version.get()) {
