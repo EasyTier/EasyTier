@@ -1100,7 +1100,7 @@ impl AclRuleBuilder {
             description: "Auto-generated inbound whitelist from CLI".to_string(),
             enabled: true,
             rules: vec![],
-            default_action: Action::Drop as i32, // Default deny
+            default_action: Action::Allow as i32,
         };
 
         let mut rule_priority = self.whitelist_priority.unwrap_or(1000u32);
@@ -1125,7 +1125,25 @@ impl AclRuleBuilder {
                 source_groups: vec![],
                 destination_groups: vec![],
             };
+            let tcp_rule_deny_other = Rule {
+                name: "tcp_whitelist_deny_other".to_string(),
+                description: "Auto-generated TCP whitelist rule to deny other ports".to_string(),
+                priority: 0,
+                enabled: true,
+                protocol: Protocol::Tcp as i32,
+                ports: vec!["0-65535".to_string()],
+                source_ips: vec![],
+                destination_ips: vec![],
+                source_ports: vec![],
+                action: Action::Drop as i32,
+                rate_limit: 0,
+                burst_limit: 0,
+                stateful: false,
+                source_groups: vec![],
+                destination_groups: vec![],
+            };
             inbound_chain.rules.push(tcp_rule);
+            inbound_chain.rules.push(tcp_rule_deny_other);
             rule_priority -= 1;
         }
 
@@ -1149,7 +1167,25 @@ impl AclRuleBuilder {
                 source_groups: vec![],
                 destination_groups: vec![],
             };
+            let udp_rule_deny_other = Rule {
+                name: "udp_whitelist_deny_other".to_string(),
+                description: "Auto-generated UDP whitelist rule to deny other ports".to_string(),
+                priority: 0,
+                enabled: true,
+                protocol: Protocol::Udp as i32,
+                ports: vec!["0-65535".to_string()],
+                source_ips: vec![],
+                destination_ips: vec![],
+                source_ports: vec![],
+                action: Action::Drop as i32,
+                rate_limit: 0,
+                burst_limit: 0,
+                stateful: false,
+                source_groups: vec![],
+                destination_groups: vec![],
+            };
             inbound_chain.rules.push(udp_rule);
+            inbound_chain.rules.push(udp_rule_deny_other);
         }
 
         if self.acl.is_none() {
