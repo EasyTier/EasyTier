@@ -2468,6 +2468,100 @@ pub async fn acl_group_self_test(
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
+pub async fn whitelist_test(#[values("tcp", "udp")] protocol: &str) {
+    let port = 44553;
+    let insts = init_three_node_ex(
+        protocol,
+        move |cfg| {
+            if cfg.get_inst_name() == "inst3" {
+                if protocol == "tcp" {
+                    cfg.set_tcp_whitelist(vec![format!("{}", port)]);
+                } else if protocol == "udp" {
+                    cfg.set_udp_whitelist(vec![format!("{}", port)]);
+                }
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns_with_timeout,
+        tcp::{TcpTunnelConnector, TcpTunnelListener},
+        udp::{UdpTunnelConnector, UdpTunnelListener},
+        TunnelConnector, TunnelListener,
+    };
+    use rand::Rng;
+
+    let make_listener =
+        |protocol: &str, port: u16| -> Box<dyn TunnelListener + Send + Sync + 'static> {
+            match protocol {
+                "tcp" => Box::new(TcpTunnelListener::new(
+                    format!("tcp://0.0.0.0:{}", port).parse().unwrap(),
+                )),
+                "udp" => Box::new(UdpTunnelListener::new(
+                    format!("udp://0.0.0.0:{}", port).parse().unwrap(),
+                )),
+                _ => panic!("unsupported protocol: {}", protocol),
+            }
+        };
+
+    let make_connector =
+        |protocol: &str, port: u16| -> Box<dyn TunnelConnector + Send + Sync + 'static> {
+            match protocol {
+                "tcp" => Box::new(TcpTunnelConnector::new(
+                    format!("tcp://10.144.144.3:{}", port).parse().unwrap(),
+                )),
+                "udp" => Box::new(UdpTunnelConnector::new(
+                    format!("udp://10.144.144.3:{}", port).parse().unwrap(),
+                )),
+                _ => panic!("unsupported protocol: {}", protocol),
+            }
+        };
+
+    let mut buf = vec![0; 32];
+    rand::thread_rng().fill(&mut buf[..]);
+
+    for p in &["tcp", "udp"] {
+        _tunnel_pingpong_netns_with_timeout(
+            make_listener(p, port),
+            make_connector(p, port),
+            NetNS::new(Some("net_c".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            std::time::Duration::from_millis(100),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("{} should be allowed", p));
+    }
+
+    // test other port
+    let other_port = port + 1;
+    for p in ["tcp", "udp"] {
+        let r = _tunnel_pingpong_netns_with_timeout(
+            make_listener(p, other_port),
+            make_connector(p, other_port),
+            NetNS::new(Some("net_c".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        if p != protocol {
+            assert!(r.is_ok(), "{} should be allowed", p);
+        } else {
+            assert!(r.is_err(), "{} should be blocked", p);
+        }
+    }
+
+    drop_insts(insts).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
 pub async fn config_patch_test() {
     use crate::proto::{
         api::config::{
