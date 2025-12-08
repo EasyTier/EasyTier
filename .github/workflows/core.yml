@@ -160,7 +160,7 @@ jobs:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
           prefix-key: ""
-
+          cache-targets: "false"
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
