@@ -240,6 +240,49 @@ impl AsyncTcpConnector for Socks5KcpConnector {
     }
 }
 
+struct Socks5AutoConnector {
+    kcp_endpoint: Option<Weak<KcpEndpoint>>,
+    peer_mgr: Weak<PeerManager>,
+    entries: Socks5EntrySet,
+    smoltcp_net: Arc<Net>,
+    src_addr: SocketAddr,
+}
+
+#[async_trait::async_trait]
+impl AsyncTcpConnector for Socks5AutoConnector {
+    type S = SocksTcpStream;
+
+    async fn tcp_connect(
+        &self,
+        addr: SocketAddr,
+        timeout_s: u64,
+    ) -> crate::gateway::fast_socks5::Result<SocksTcpStream> {
+        let Some(peer_mgr_arc) = self.peer_mgr.upgrade() else {
+            tracing::error!("peer manager is dropped");
+            return Err(anyhow::anyhow!("peer manager is dropped").into());
+        };
+
+        let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&addr.ip()).await;
+        tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
+
+        let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
+            match (&self.kcp_endpoint, dst_allow_kcp) {
+                (Some(kcp_endpoint), true) => Box::new(Socks5KcpConnector {
+                    kcp_endpoint: kcp_endpoint.clone(),
+                    peer_mgr: self.peer_mgr.clone(),
+                    src_addr: self.src_addr,
+                }),
+                (_, _) => Box::new(SmolTcpConnector {
+                    net: self.smoltcp_net.clone(),
+                    entries: self.entries.clone(),
+                    current_entry: std::sync::Mutex::new(None),
+                }),
+            };
+
+        connector.tcp_connect(addr, timeout_s).await
+    }
+}
+
 fn bind_tcp_socket(addr: SocketAddr, net_ns: NetNS) -> Result<TcpListener, Error> {
     let _g = net_ns.guard();
     let socket2_socket = socket2::Socket::new(
@@ -360,21 +403,13 @@ impl Socks5ServerNet {
         }
     }
 
-    fn handle_tcp_stream(&self, stream: tokio::net::TcpStream) {
+    fn handle_tcp_stream(&self, stream: tokio::net::TcpStream, connector: Socks5AutoConnector) {
         let mut config = Config::<AcceptAuthentication>::default();
         config.set_request_timeout(10);
         config.set_skip_auth(false);
         config.set_allow_no_auth(true);
 
-        let socket = Socks5Socket::new(
-            stream,
-            Arc::new(config),
-            SmolTcpConnector {
-                net: self.smoltcp_net.clone(),
-                entries: self.entries.clone(),
-                current_entry: std::sync::Mutex::new(None),
-            },
-        );
+        let socket = Socks5Socket::new(stream, Arc::new(config), connector);
 
         self.forward_tasks.lock().unwrap().spawn(async move {
             match socket.upgrade_to_socks5().await {
@@ -597,7 +632,7 @@ impl Socks5Server {
         self: &Arc<Self>,
         kcp_endpoint: Option<Weak<KcpEndpoint>>,
     ) -> Result<(), Error> {
-        *self.kcp_endpoint.lock().await = kcp_endpoint;
+        *self.kcp_endpoint.lock().await = kcp_endpoint.clone();
         if let Some(proxy_url) = self.global_ctx.config.get_socks5_portal() {
             let bind_addr = format!(
                 "{}:{}",
@@ -610,14 +645,23 @@ impl Socks5Server {
                 self.global_ctx.net_ns.clone(),
             )?;
 
+            let entries = self.entries.clone();
+            let peer_manager = Arc::downgrade(&self.peer_manager);
             let net = self.net.clone();
             self.tasks.lock().unwrap().spawn(async move {
                 loop {
                     match listener.accept().await {
-                        Ok((socket, _addr)) => {
+                        Ok((socket, addr)) => {
                             tracing::info!("accept a new connection, {:?}", socket);
                             if let Some(net) = net.lock().await.as_ref() {
-                                net.handle_tcp_stream(socket);
+                                let connector = Socks5AutoConnector {
+                                    smoltcp_net: net.smoltcp_net.clone(),
+                                    entries: entries.clone(),
+                                    kcp_endpoint: kcp_endpoint.clone(),
+                                    peer_mgr: peer_manager.clone(),
+                                    src_addr: addr,
+                                };
+                                net.handle_tcp_stream(socket, connector);
                             }
                         }
                         Err(err) => tracing::error!("accept error = {:?}", err),
@@ -759,34 +803,20 @@ impl Socks5Server {
                     continue;
                 };
 
-                let Some(peer_mgr_arc) = peer_mgr.upgrade() else {
-                    tracing::error!("peer manager is dropped");
-                    continue;
+                let connector = Socks5AutoConnector {
+                    kcp_endpoint: kcp_endpoint.clone(),
+                    peer_mgr: peer_mgr.clone(),
+                    entries: entries.clone(),
+                    smoltcp_net: net.smoltcp_net.clone(),
+                    src_addr: addr,
                 };
-
-                let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&dst_addr.ip()).await;
-                tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
-
-                let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
-                    match (&kcp_endpoint, dst_allow_kcp) {
-                        (Some(kcp_endpoint), true) => Box::new(Socks5KcpConnector {
-                            kcp_endpoint: kcp_endpoint.clone(),
-                            peer_mgr: peer_mgr.clone(),
-                            src_addr: addr,
-                        }),
-                        (_, _) => Box::new(SmolTcpConnector {
-                            net: net.smoltcp_net.clone(),
-                            entries: entries.clone(),
-                            current_entry: std::sync::Mutex::new(None),
-                        }),
-                    };
 
                 forward_tasks
                     .lock()
                     .unwrap()
                     .spawn(Self::handle_port_forward_connection(
                         incoming_socket,
-                        connector,
+                        Box::new(connector),
                         dst_addr,
                     ));
             }
