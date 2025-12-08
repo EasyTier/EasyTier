@@ -363,8 +363,11 @@ impl RestfulServer {
         let mut prev = app_state.net_prev.lock().await;
         let (rx_mbps, tx_mbps) = if let Some((last_ts, last_rx, last_tx)) = *prev {
             let dt = now.saturating_sub(last_ts).max(1);
-            let rx_rate = (total_rx.saturating_sub(last_rx)) as f64 * 8.0 / (dt as f64) / 1_000_000.0;
-            let tx_rate = (total_tx.saturating_sub(last_tx)) as f64 * 8.0 / (dt as f64) / 1_000_000.0;
+            let dt_f = dt as f64;
+            let rx_rate =
+                (total_rx.saturating_sub(last_rx) as f64) * 8.0 / dt_f / 1_000_000.0;
+            let tx_rate =
+                (total_tx.saturating_sub(last_tx) as f64) * 8.0 / dt_f / 1_000_000.0;
             (rx_rate, tx_rate)
         } else {
             (0.0, 0.0)
@@ -478,10 +481,11 @@ impl RestfulServer {
         let mut prev = app_state.net_prev.lock().await;
         let (rx_mbps, tx_mbps) = if let Some((last_ts, last_rx, last_tx)) = *prev {
             let dt = now.saturating_sub(last_ts).max(1);
+            let dt_f = dt as f64;
             let rx_rate =
-                (total_rx.saturating_sub(last_rx)) as f64 * 8.0 / (dt as f64) / 1_000_000.0;
+                (total_rx.saturating_sub(last_rx) as f64) * 8.0 / dt_f / 1_000_000.0;
             let tx_rate =
-                (total_tx.saturating_sub(last_tx)) as f64 * 8.0 / (dt as f64) / 1_000_000.0;
+                (total_tx.saturating_sub(last_tx) as f64) * 8.0 / dt_f / 1_000_000.0;
             (rx_rate, tx_rate)
         } else {
             (0.0, 0.0)
