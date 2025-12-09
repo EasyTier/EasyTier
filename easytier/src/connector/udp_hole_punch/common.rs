@@ -636,7 +636,6 @@ pub(crate) async fn try_connect_with_socket(
             remote_mapped_addr.ip(),
             remote_mapped_addr.port()
         )
-        .to_string()
         .parse()
         .unwrap(),
     );

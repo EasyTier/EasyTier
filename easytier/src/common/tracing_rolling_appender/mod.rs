@@ -90,7 +90,7 @@ where
 
     /// Rotates old files to make room for a new one.
     /// This may result in the deletion of the oldest file
-    fn rotate_files(&mut self) -> io::Result<()> {
+    fn rotate_files(&self) -> io::Result<()> {
         // ignore any failure removing the oldest file (may not exist)
         let _ = fs::remove_file(self.filename_for(self.max_filecount.max(1)));
         let mut r = Ok(());

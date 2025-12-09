@@ -243,7 +243,7 @@ mod tests {
         let iterations = 100000;
 
         let peer_group_info =
-            PeerGroupInfo::generate_with_proof(group_name.clone(), group_secret.clone(), peer_id);
+            PeerGroupInfo::generate_with_proof(group_name, group_secret.clone(), peer_id);
 
         let start = std::time::Instant::now();
         for _ in 0..iterations {

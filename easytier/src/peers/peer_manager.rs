@@ -242,7 +242,7 @@ impl PeerManager {
         ));
         let foreign_network_client = Arc::new(ForeignNetworkClient::new(
             global_ctx.clone(),
-            packet_send.clone(),
+            packet_send,
             peer_rpc_mgr.clone(),
             my_peer_id,
         ));
@@ -289,7 +289,7 @@ impl PeerManager {
 
             packet_recv: Arc::new(Mutex::new(Some(packet_recv))),
 
-            peers: peers.clone(),
+            peers,
 
             peer_rpc_mgr,
             peer_rpc_tspt: rpc_tspt,

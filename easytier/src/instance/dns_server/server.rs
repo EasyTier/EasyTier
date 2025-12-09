@@ -67,7 +67,7 @@ impl RequestHandler for CatalogRequestHandler {
 
 pub fn build_authority(domain: &str, records: &[Record]) -> Result<InMemoryAuthority> {
     let zone = rr::Name::from_str(domain)?;
-    let mut authority = InMemoryAuthority::empty(zone.clone(), ZoneType::Primary, false);
+    let mut authority = InMemoryAuthority::empty(zone, ZoneType::Primary, false);
     for record in records.iter() {
         let r = record.try_into()?;
         authority.upsert_mut(r, 0);

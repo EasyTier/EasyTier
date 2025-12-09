@@ -109,7 +109,7 @@ impl Peer {
 
         Peer {
             peer_node_id,
-            conns: conns.clone(),
+            conns,
             packet_recv_chan,
             global_ctx,
 

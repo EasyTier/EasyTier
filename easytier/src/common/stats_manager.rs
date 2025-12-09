@@ -509,7 +509,7 @@ impl StatsManager {
         let counters = Arc::new(DashMap::new());
 
         // Start cleanup task only if we're in a tokio runtime
-        let counters_clone = Arc::downgrade(&counters.clone());
+        let counters_clone = Arc::downgrade(&counters);
         let cleanup_task = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(60)); // Check every minute
             loop {

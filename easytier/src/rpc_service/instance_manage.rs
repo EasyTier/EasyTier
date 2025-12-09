@@ -206,7 +206,7 @@ impl WebClientService for InstanceManageRpcService {
             .filter_map(|id| {
                 self.manager
                     .get_instance_config_control(id)
-                    .and_then(|control| control.path.clone())
+                    .and_then(|control| control.path)
             })
             .collect::<Vec<_>>();
         let remain_inst_ids = self.manager.delete_network_instance(inst_ids)?;

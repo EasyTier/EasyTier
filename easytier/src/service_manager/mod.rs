@@ -100,7 +100,7 @@ impl Service {
         }
 
         self.service_manager
-            .install(ctx.clone())
+            .install(ctx)
             .map_err(|e| anyhow::anyhow!("failed to install service: {:?}", e))?;
 
         println!(

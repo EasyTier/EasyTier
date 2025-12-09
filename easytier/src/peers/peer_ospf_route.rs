@@ -2717,7 +2717,7 @@ impl PeerRoute {
 
         Arc::new(PeerRoute {
             my_peer_id,
-            global_ctx: global_ctx.clone(),
+            global_ctx,
             peer_rpc: Arc::downgrade(&peer_rpc),
 
             service_impl,

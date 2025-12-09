@@ -551,7 +551,7 @@ impl KcpProxyDst {
 
     async fn run_accept_task(&mut self) {
         let kcp_endpoint = self.kcp_endpoint.clone();
-        let global_ctx = self.peer_manager.get_global_ctx().clone();
+        let global_ctx = self.peer_manager.get_global_ctx();
         let proxy_entries = self.proxy_entries.clone();
         let cidr_set = self.cidr_set.clone();
         let route = Arc::new(self.peer_manager.get_route());

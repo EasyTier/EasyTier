@@ -126,7 +126,7 @@ impl Reactor {
         (
             Reactor {
                 notify,
-                iface: iface.clone(),
+                iface,
                 socket_allocator,
             },
             fut,

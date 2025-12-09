@@ -62,7 +62,7 @@ struct UdpHolePunchServer {
 
 impl UdpHolePunchServer {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Arc<Self> {
-        let common = Arc::new(PunchHoleServerCommon::new(peer_mgr.clone()));
+        let common = Arc::new(PunchHoleServerCommon::new(peer_mgr));
         let cone_server = PunchConeHoleServer::new(common.clone());
         let sym_to_cone_server = PunchSymToConeHoleServer::new(common.clone());
         let both_easy_sym_server = PunchBothEasySymHoleServer::new(common.clone());

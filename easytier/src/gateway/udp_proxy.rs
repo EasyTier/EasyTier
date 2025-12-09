@@ -85,7 +85,7 @@ impl UdpNatEntry {
 
     async fn compose_ipv4_packet(
         self: &Arc<Self>,
-        packet_sender: &mut Sender<ZCPacket>,
+        packet_sender: &Sender<ZCPacket>,
         buf: &mut [u8],
         src_v4: &SocketAddrV4,
         payload_len: usize,
@@ -139,7 +139,7 @@ impl UdpNatEntry {
 
     async fn forward_task(
         self: Arc<Self>,
-        mut packet_sender: Sender<ZCPacket>,
+        packet_sender: Sender<ZCPacket>,
         virtual_ipv4: Ipv4Addr,
         real_ipv4: Ipv4Addr,
         mapped_ipv4: Ipv4Addr,
@@ -207,7 +207,7 @@ impl UdpNatEntry {
 
                 let Ok(_) = Self::compose_ipv4_packet(
                     &self_clone,
-                    &mut packet_sender,
+                    &packet_sender,
                     &mut packet,
                     &src_v4,
                     len,

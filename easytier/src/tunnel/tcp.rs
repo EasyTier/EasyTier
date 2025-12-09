@@ -29,7 +29,7 @@ impl TcpTunnelListener {
         }
     }
 
-    async fn do_accept(&mut self) -> Result<Box<dyn Tunnel>, std::io::Error> {
+    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, std::io::Error> {
         let listener = self.listener.as_ref().unwrap();
         let (stream, _) = listener.accept().await?;
 
@@ -149,7 +149,7 @@ impl TcpTunnelConnector {
     }
 
     async fn connect_with_default_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
@@ -159,7 +159,7 @@ impl TcpTunnelConnector {
     }
 
     async fn connect_with_custom_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();

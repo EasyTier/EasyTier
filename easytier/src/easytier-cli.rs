@@ -610,17 +610,13 @@ impl CommandHandler<'_> {
                     loss_rate: format!("{:.1}%", p.get_loss_rate().unwrap_or(0.0) * 100.0),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
-                    tunnel_proto: p
-                        .get_conn_protos()
-                        .unwrap_or_default()
-                        .join(",")
-                        .to_string(),
+                    tunnel_proto: p.get_conn_protos().unwrap_or_default().join(","),
                     nat_type: p.get_udp_nat_type(),
                     id: route.peer_id.to_string(),
                     version: if route.version.is_empty() {
                         "unknown".to_string()
                     } else {
-                        route.version.to_string()
+                        route.version
                     },
                 }
             }
@@ -1521,7 +1517,7 @@ async fn main() -> Result<(), Error> {
                 node_info.peer_id,
                 PeerCenterNodeInfo {
                     hostname: node_info.hostname.clone(),
-                    ipv4: node_info.ipv4_addr.clone(),
+                    ipv4: node_info.ipv4_addr,
                 },
             );
             for route_info in route_infos {
