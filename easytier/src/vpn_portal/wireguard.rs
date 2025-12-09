@@ -330,11 +330,7 @@ impl VpnPortal for WireGuard {
 
         allow_ips.push(client_cidr.to_string());
 
-        let allow_ips = allow_ips
-            .into_iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
+        let allow_ips = allow_ips.into_iter().collect::<Vec<_>>().join(",");
 
         let cfg = self.inner.as_ref().unwrap().wg_config.clone();
         let cfg_str = format!(

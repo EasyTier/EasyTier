@@ -715,7 +715,7 @@ impl NetworkOptions {
         false
     }
 
-    fn merge_into(&self, cfg: &mut TomlConfigLoader) -> anyhow::Result<()> {
+    fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
         if self.hostname.is_some() {
             cfg.set_hostname(self.hostname.clone());
         }
@@ -1213,7 +1213,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         }
     };
     for config_file in config_files {
-        let (mut cfg, mut control) = load_config_from_file(
+        let (cfg, mut control) = load_config_from_file(
             &config_file,
             cli.config_dir.as_ref(),
             cli.disable_env_parsing,
@@ -1222,7 +1222,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
 
         if cli.network_options.can_merge(&cfg, config_file_count) {
             cli.network_options
-                .merge_into(&mut cfg)
+                .merge_into(&cfg)
                 .with_context(|| format!("failed to merge config from cli: {:?}", config_file))?;
             crate_cli_network = false;
             control.set_read_only(true);
@@ -1240,9 +1240,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     }
 
     if crate_cli_network {
-        let mut cfg = TomlConfigLoader::default();
+        let cfg = TomlConfigLoader::default();
         cli.network_options
-            .merge_into(&mut cfg)
+            .merge_into(&cfg)
             .with_context(|| "failed to create config from cli".to_string())?;
         println!("Starting easytier from cli with config:");
         println!("############### TOML ###############\n");
@@ -1261,11 +1261,9 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
     tokio::select! {
         _ = manager.wait() => {
             let infos = manager.collect_network_infos().await?;
-            let errs = infos
+            if infos
                 .into_values()
-                .filter_map(|info| info.error_msg)
-                .collect::<Vec<_>>();
-            if !errs.is_empty() {
+                .filter_map(|info| info.error_msg).next().is_some() {
                 return Err(anyhow::anyhow!("some instances stopped with errors"));
             }
         }

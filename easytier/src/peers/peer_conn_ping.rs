@@ -161,7 +161,7 @@ impl PeerConnPinger {
     async fn do_pingpong_once(
         my_node_id: PeerId,
         peer_id: PeerId,
-        sink: &mut MpscTunnelSender,
+        sink: &MpscTunnelSender,
         receiver: &mut broadcast::Receiver<ZCPacket>,
         seq: u32,
     ) -> Result<u128, Error> {
@@ -258,7 +258,7 @@ impl PeerConnPinger {
                         controller,
                     );
 
-                    let mut sink = sink.clone();
+                    let sink = sink.clone();
                     let receiver = ctrl_resp_sender.subscribe();
                     let ping_res_sender = ping_res_sender.clone();
                     pingpong_tasks.spawn(async move {
@@ -266,7 +266,7 @@ impl PeerConnPinger {
                         let pingpong_once_ret = Self::do_pingpong_once(
                             my_node_id,
                             peer_id,
-                            &mut sink,
+                            &sink,
                             &mut receiver,
                             req_seq,
                         )

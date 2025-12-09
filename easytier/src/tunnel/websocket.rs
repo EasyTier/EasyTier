@@ -73,7 +73,7 @@ impl WSTunnelListener {
         }
     }
 
-    async fn try_accept(&mut self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
+    async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
         let info = TunnelInfo {
             tunnel_type: self.addr.scheme().to_owned(),
             local_addr: Some(self.local_url().into()),
@@ -223,7 +223,7 @@ impl WSTunnelConnector {
     }
 
     async fn connect_with_default_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let socket = if addr.is_ipv4() {
@@ -235,7 +235,7 @@ impl WSTunnelConnector {
     }
 
     async fn connect_with_custom_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();

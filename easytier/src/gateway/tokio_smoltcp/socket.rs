@@ -46,10 +46,7 @@ impl TcpListener {
             local_addr,
         })
     }
-    pub fn poll_accept(
-        &mut self,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<(TcpStream, SocketAddr)>> {
+    pub fn poll_accept(&mut self, cx: &Context<'_>) -> Poll<io::Result<(TcpStream, SocketAddr)>> {
         let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
 
         if socket.state() == tcp::State::Established {
@@ -69,7 +66,7 @@ impl TcpListener {
         Ok(self.local_addr)
     }
 
-    pub fn relisten(&mut self) {
+    pub fn relisten(&self) {
         let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
         let local_endpoint = socket.local_endpoint().unwrap();
         socket.abort();
@@ -169,7 +166,7 @@ impl TcpStream {
         Ok((
             TcpStream {
                 handle: replace(&mut listener.handle, new_handle),
-                reactor: reactor.clone(),
+                reactor,
                 local_addr,
                 peer_addr,
             },
@@ -183,7 +180,7 @@ impl TcpStream {
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         Ok(self.peer_addr)
     }
-    pub fn poll_connected(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+    pub fn poll_connected(&self, cx: &Context<'_>) -> Poll<io::Result<()>> {
         let mut socket = self.reactor.get_socket::<tcp::Socket>(*self.handle);
         if socket.state() == tcp::State::Established {
             return Poll::Ready(Ok(()));
@@ -290,7 +287,7 @@ impl UdpSocket {
     /// Note that on multiple calls to a poll_* method in the send direction, only the Waker from the Context passed to the most recent call will be scheduled to receive a wakeup.
     pub fn poll_send_to(
         &self,
-        cx: &mut Context<'_>,
+        cx: &Context<'_>,
         buf: &[u8],
         target: SocketAddr,
     ) -> Poll<io::Result<usize>> {
@@ -317,7 +314,7 @@ impl UdpSocket {
     /// Note that on multiple calls to a poll_* method in the recv direction, only the Waker from the Context passed to the most recent call will be scheduled to receive a wakeup.
     pub fn poll_recv_from(
         &self,
-        cx: &mut Context<'_>,
+        cx: &Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<(usize, SocketAddr)>> {
         let mut socket = self.reactor.get_socket::<udp::Socket>(*self.handle);

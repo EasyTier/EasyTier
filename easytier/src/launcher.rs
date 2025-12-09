@@ -224,7 +224,7 @@ impl EasyTierLauncher {
             let notifier = data.instance_stop_notifier.clone();
             let ret = rt.block_on(Self::easytier_routine(
                 cfg,
-                stop_notifier.clone(),
+                stop_notifier,
                 api_service,
                 data,
             ));
@@ -792,7 +792,7 @@ impl NetworkConfig {
 
         let network_identity = config.get_network_identity();
         result.network_name = Some(network_identity.network_name.clone());
-        result.network_secret = network_identity.network_secret.clone();
+        result.network_secret = network_identity.network_secret;
 
         if let Some(ipv4) = config.get_ipv4() {
             result.virtual_ipv4 = Some(ipv4.address().to_string());

@@ -690,10 +690,7 @@ impl WgTunnelConnector {
         Ok(ret)
     }
 
-    async fn connect_with_ipv6(
-        &mut self,
-        addr: SocketAddr,
-    ) -> Result<Box<dyn Tunnel>, TunnelError> {
+    async fn connect_with_ipv6(&self, addr: SocketAddr) -> Result<Box<dyn Tunnel>, TunnelError> {
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::DGRAM,

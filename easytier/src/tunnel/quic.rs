@@ -156,7 +156,7 @@ impl QUICTunnelListener {
         }
     }
 
-    async fn do_accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         // accept a single connection
         let conn = self
             .endpoint

@@ -296,7 +296,6 @@ impl Socks5ServerNet {
         cap.medium = smoltcp::phy::Medium::Ip;
         let (dev, stack_sink, mut stack_stream) = channel_device::ChannelDevice::new(cap);
 
-        let packet_recv = packet_recv.clone();
         forward_tasks.spawn(async move {
             let mut smoltcp_stack_receiver = packet_recv.lock().await;
             while let Some(packet) = smoltcp_stack_receiver.recv().await {

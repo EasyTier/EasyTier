@@ -73,7 +73,7 @@ impl IpProxy {
         let tcp_proxy = TcpProxy::new(peer_manager.clone(), NatDstTcpConnector {});
         let icmp_proxy = IcmpProxy::new(global_ctx.clone(), peer_manager.clone())
             .with_context(|| "create icmp proxy failed")?;
-        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager.clone())
+        let udp_proxy = UdpProxy::new(global_ctx.clone(), peer_manager)
             .with_context(|| "create udp proxy failed")?;
         Ok(IpProxy {
             tcp_proxy,
@@ -551,7 +551,7 @@ impl Instance {
         let peer_manager = Arc::new(PeerManager::new(
             RouteAlgoType::Ospf,
             global_ctx.clone(),
-            peer_packet_sender.clone(),
+            peer_packet_sender,
         ));
 
         peer_manager.set_allow_loopback_tunnel(false);
@@ -617,7 +617,7 @@ impl Instance {
         self.conn_manager.clone()
     }
 
-    async fn add_initial_peers(&mut self) -> Result<(), Error> {
+    async fn add_initial_peers(&self) -> Result<(), Error> {
         for peer in self.global_ctx.config.get_peers().iter() {
             self.get_conn_manager()
                 .add_connector_by_url(peer.uri.clone())

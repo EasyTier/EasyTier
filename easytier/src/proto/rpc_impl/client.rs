@@ -348,7 +348,7 @@ impl Client {
                     return Err(err.into());
                 }
 
-                let raw_output = Bytes::from(rpc_resp.response.clone());
+                let raw_output = Bytes::from(rpc_resp.response);
                 ctrl.set_raw_output(raw_output.clone());
 
                 // Record RPC client RX and duration stats
@@ -372,7 +372,7 @@ impl Client {
         }
 
         F::new(HandlerImpl::<F> {
-            domain_name: domain_name.to_string(),
+            domain_name,
             from_peer_id,
             to_peer_id,
             zc_packet_sender: self.mpsc.lock().unwrap().get_sink(),

@@ -249,7 +249,7 @@ impl ManualConnectorManager {
             create_connector_by_url(&dead_url, &data.global_ctx.clone(), ip_version).await?;
 
         data.global_ctx
-            .issue_event(GlobalCtxEvent::Connecting(connector.remote_url().clone()));
+            .issue_event(GlobalCtxEvent::Connecting(connector.remote_url()));
         tracing::info!("reconnect try connect... conn: {:?}", connector);
         let Some(pm) = data.peer_manager.upgrade() else {
             return Err(Error::AnyhowError(anyhow::anyhow!(
