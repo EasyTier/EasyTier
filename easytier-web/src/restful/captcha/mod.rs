@@ -117,7 +117,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod base;
-pub mod captcha;
+pub mod builder;
 pub mod extension;
 mod utils;
 

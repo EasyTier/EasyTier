@@ -9,35 +9,41 @@ declare global {
   const EffectScope: typeof import('vue')['EffectScope']
   const MenuItemExit: typeof import('./composables/tray')['MenuItemExit']
   const MenuItemShow: typeof import('./composables/tray')['MenuItemShow']
-  const ReinitTray: typeof import('./composables/tray')['ReinitTray']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
-  const collectNetworkInfos: typeof import('./composables/network')['collectNetworkInfos']
+  const collectNetworkInfo: typeof import('./composables/backend')['collectNetworkInfo']
   const computed: typeof import('vue')['computed']
   const createApp: typeof import('vue')['createApp']
   const createPinia: typeof import('pinia')['createPinia']
   const customRef: typeof import('vue')['customRef']
   const defineAsyncComponent: typeof import('vue')['defineAsyncComponent']
   const defineComponent: typeof import('vue')['defineComponent']
-  const definePage: typeof import('unplugin-vue-router/runtime')['definePage']
   const defineStore: typeof import('pinia')['defineStore']
+  const deleteNetworkInstance: typeof import('./composables/backend')['deleteNetworkInstance']
   const effectScope: typeof import('vue')['effectScope']
-  const event2human: typeof import('./composables/utils')['event2human']
   const generateMenuItem: typeof import('./composables/tray')['generateMenuItem']
+  const generateNetworkConfig: typeof import('./composables/backend')['generateNetworkConfig']
   const getActivePinia: typeof import('pinia')['getActivePinia']
+  const getConfig: typeof import('./composables/backend')['getConfig']
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
-  const getEasytierVersion: typeof import('./composables/network')['getEasytierVersion']
-  const getOsHostname: typeof import('./composables/network')['getOsHostname']
+  const getEasytierVersion: typeof import('./composables/backend')['getEasytierVersion']
+  const getNetworkMetas: typeof import('./composables/backend')['getNetworkMetas']
+  const getServiceStatus: typeof import('./composables/backend')['getServiceStatus']
   const h: typeof import('vue')['h']
-  const initMobileService: typeof import('./composables/mobile_vpn')['initMobileService']
   const initMobileVpnService: typeof import('./composables/mobile_vpn')['initMobileVpnService']
+  const initRpcConnection: typeof import('./composables/backend')['initRpcConnection']
+  const initService: typeof import('./composables/backend')['initService']
+  const initWebClient: typeof import('./composables/backend')['initWebClient']
   const inject: typeof import('vue')['inject']
-  const isAutostart: typeof import('./composables/network')['isAutostart']
+  const isClientRunning: typeof import('./composables/backend')['isClientRunning']
   const isProxy: typeof import('vue')['isProxy']
   const isReactive: typeof import('vue')['isReactive']
   const isReadonly: typeof import('vue')['isReadonly']
   const isRef: typeof import('vue')['isRef']
-  const loadRunningInstanceIdsFromLocalStorage: typeof import('./stores/network')['loadRunningInstanceIdsFromLocalStorage']
+  const isWebClientConnected: typeof import('./composables/backend')['isWebClientConnected']
+  const listNetworkInstanceIds: typeof import('./composables/backend')['listNetworkInstanceIds']
+  const listenGlobalEvents: typeof import('./composables/event')['listenGlobalEvents']
+  const loadMode: typeof import('./composables/mode')['loadMode']
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
   const mapState: typeof import('pinia')['mapState']
@@ -45,8 +51,6 @@ declare global {
   const mapWritableState: typeof import('pinia')['mapWritableState']
   const markRaw: typeof import('vue')['markRaw']
   const nextTick: typeof import('vue')['nextTick']
-  const num2ipv4: typeof import('./composables/utils')['num2ipv4']
-  const num2ipv6: typeof import('./composables/utils')['num2ipv6']
   const onActivated: typeof import('vue')['onActivated']
   const onBeforeMount: typeof import('vue')['onBeforeMount']
   const onBeforeRouteLeave: typeof import('vue-router')['onBeforeRouteLeave']
@@ -56,6 +60,7 @@ declare global {
   const onDeactivated: typeof import('vue')['onDeactivated']
   const onErrorCaptured: typeof import('vue')['onErrorCaptured']
   const onMounted: typeof import('vue')['onMounted']
+  const onNetworkInstanceChange: typeof import('./composables/mobile_vpn')['onNetworkInstanceChange']
   const onRenderTracked: typeof import('vue')['onRenderTracked']
   const onRenderTriggered: typeof import('vue')['onRenderTriggered']
   const onScopeDispose: typeof import('vue')['onScopeDispose']
@@ -63,34 +68,36 @@ declare global {
   const onUnmounted: typeof import('vue')['onUnmounted']
   const onUpdated: typeof import('vue')['onUpdated']
   const onWatcherCleanup: typeof import('vue')['onWatcherCleanup']
-  const parseNetworkConfig: typeof import('./composables/network')['parseNetworkConfig']
+  const parseNetworkConfig: typeof import('./composables/backend')['parseNetworkConfig']
   const prepareVpnService: typeof import('./composables/mobile_vpn')['prepareVpnService']
   const provide: typeof import('vue')['provide']
   const reactive: typeof import('vue')['reactive']
   const readonly: typeof import('vue')['readonly']
   const ref: typeof import('vue')['ref']
   const resolveComponent: typeof import('vue')['resolveComponent']
-  const retainNetworkInstance: typeof import('./composables/network')['retainNetworkInstance']
-  const runNetworkInstance: typeof import('./composables/network')['runNetworkInstance']
+  const runNetworkInstance: typeof import('./composables/backend')['runNetworkInstance']
+  const saveMode: typeof import('./composables/mode')['saveMode']
+  const saveNetworkConfig: typeof import('./composables/backend')['saveNetworkConfig']
+  const sendConfigs: typeof import('./composables/backend')['sendConfigs']
   const setActivePinia: typeof import('pinia')['setActivePinia']
-  const setAutoLaunchStatus: typeof import('./composables/network')['setAutoLaunchStatus']
-  const setLoggingLevel: typeof import('./composables/network')['setLoggingLevel']
+  const setLoggingLevel: typeof import('./composables/backend')['setLoggingLevel']
   const setMapStoreSuffix: typeof import('pinia')['setMapStoreSuffix']
+  const setServiceStatus: typeof import('./composables/backend')['setServiceStatus']
   const setTrayMenu: typeof import('./composables/tray')['setTrayMenu']
   const setTrayRunState: typeof import('./composables/tray')['setTrayRunState']
   const setTrayTooltip: typeof import('./composables/tray')['setTrayTooltip']
-  const setTunFd: typeof import('./composables/network')['setTunFd']
+  const setTunFd: typeof import('./composables/backend')['setTunFd']
   const shallowReactive: typeof import('vue')['shallowReactive']
   const shallowReadonly: typeof import('vue')['shallowReadonly']
   const shallowRef: typeof import('vue')['shallowRef']
   const storeToRefs: typeof import('pinia')['storeToRefs']
-  const timeAgoCn: typeof import('./composables/utils')['timeAgoCn']
   const toRaw: typeof import('vue')['toRaw']
   const toRef: typeof import('vue')['toRef']
   const toRefs: typeof import('vue')['toRefs']
   const toValue: typeof import('vue')['toValue']
   const triggerRef: typeof import('vue')['triggerRef']
   const unref: typeof import('vue')['unref']
+  const updateNetworkConfigState: typeof import('./composables/backend')['updateNetworkConfigState']
   const useAttrs: typeof import('vue')['useAttrs']
   const useCssModule: typeof import('vue')['useCssModule']
   const useCssVars: typeof import('vue')['useCssVars']
@@ -98,12 +105,12 @@ declare global {
   const useId: typeof import('vue')['useId']
   const useLink: typeof import('vue-router/auto')['useLink']
   const useModel: typeof import('vue')['useModel']
-  const useNetworkStore: typeof import('./stores/network')['useNetworkStore']
   const useRoute: typeof import('vue-router')['useRoute']
   const useRouter: typeof import('vue-router')['useRouter']
   const useSlots: typeof import('vue')['useSlots']
   const useTemplateRef: typeof import('vue')['useTemplateRef']
   const useTray: typeof import('./composables/tray')['useTray']
+  const validateConfig: typeof import('./composables/backend')['validateConfig']
   const watch: typeof import('vue')['watch']
   const watchEffect: typeof import('vue')['watchEffect']
   const watchPostEffect: typeof import('vue')['watchPostEffect']
@@ -115,6 +122,7 @@ declare global {
   export type { Component, ComponentPublicInstance, ComputedRef, DirectiveBinding, ExtractDefaultPropTypes, ExtractPropTypes, ExtractPublicPropTypes, InjectionKey, PropType, Ref, MaybeRef, MaybeRefOrGetter, VNode, WritableComputedRef } from 'vue'
   import('vue')
 }
+
 // for vue template auto import
 import { UnwrapRef } from 'vue'
 declare module 'vue' {
@@ -124,7 +132,7 @@ declare module 'vue' {
     readonly MenuItemExit: UnwrapRef<typeof import('./composables/tray')['MenuItemExit']>
     readonly MenuItemShow: UnwrapRef<typeof import('./composables/tray')['MenuItemShow']>
     readonly acceptHMRUpdate: UnwrapRef<typeof import('pinia')['acceptHMRUpdate']>
-    readonly collectNetworkInfos: UnwrapRef<typeof import('./composables/network')['collectNetworkInfos']>
+    readonly collectNetworkInfo: UnwrapRef<typeof import('./composables/backend')['collectNetworkInfo']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
     readonly createApp: UnwrapRef<typeof import('vue')['createApp']>
     readonly createPinia: UnwrapRef<typeof import('pinia')['createPinia']>
@@ -132,21 +140,32 @@ declare module 'vue' {
     readonly defineAsyncComponent: UnwrapRef<typeof import('vue')['defineAsyncComponent']>
     readonly defineComponent: UnwrapRef<typeof import('vue')['defineComponent']>
     readonly defineStore: UnwrapRef<typeof import('pinia')['defineStore']>
+    readonly deleteNetworkInstance: UnwrapRef<typeof import('./composables/backend')['deleteNetworkInstance']>
     readonly effectScope: UnwrapRef<typeof import('vue')['effectScope']>
     readonly generateMenuItem: UnwrapRef<typeof import('./composables/tray')['generateMenuItem']>
+    readonly generateNetworkConfig: UnwrapRef<typeof import('./composables/backend')['generateNetworkConfig']>
     readonly getActivePinia: UnwrapRef<typeof import('pinia')['getActivePinia']>
+    readonly getConfig: UnwrapRef<typeof import('./composables/backend')['getConfig']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
-    readonly getEasytierVersion: UnwrapRef<typeof import('./composables/network')['getEasytierVersion']>
-    readonly getOsHostname: UnwrapRef<typeof import('./composables/network')['getOsHostname']>
+    readonly getEasytierVersion: UnwrapRef<typeof import('./composables/backend')['getEasytierVersion']>
+    readonly getNetworkMetas: UnwrapRef<typeof import('./composables/backend')['getNetworkMetas']>
+    readonly getServiceStatus: UnwrapRef<typeof import('./composables/backend')['getServiceStatus']>
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly initMobileVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['initMobileVpnService']>
+    readonly initRpcConnection: UnwrapRef<typeof import('./composables/backend')['initRpcConnection']>
+    readonly initService: UnwrapRef<typeof import('./composables/backend')['initService']>
+    readonly initWebClient: UnwrapRef<typeof import('./composables/backend')['initWebClient']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
-    readonly isAutostart: UnwrapRef<typeof import('./composables/network')['isAutostart']>
+    readonly isClientRunning: UnwrapRef<typeof import('./composables/backend')['isClientRunning']>
     readonly isProxy: UnwrapRef<typeof import('vue')['isProxy']>
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
     readonly isRef: UnwrapRef<typeof import('vue')['isRef']>
+    readonly isWebClientConnected: UnwrapRef<typeof import('./composables/backend')['isWebClientConnected']>
+    readonly listNetworkInstanceIds: UnwrapRef<typeof import('./composables/backend')['listNetworkInstanceIds']>
+    readonly listenGlobalEvents: UnwrapRef<typeof import('./composables/event')['listenGlobalEvents']>
+    readonly loadMode: UnwrapRef<typeof import('./composables/mode')['loadMode']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
     readonly mapState: UnwrapRef<typeof import('pinia')['mapState']>
@@ -163,6 +182,7 @@ declare module 'vue' {
     readonly onDeactivated: UnwrapRef<typeof import('vue')['onDeactivated']>
     readonly onErrorCaptured: UnwrapRef<typeof import('vue')['onErrorCaptured']>
     readonly onMounted: UnwrapRef<typeof import('vue')['onMounted']>
+    readonly onNetworkInstanceChange: UnwrapRef<typeof import('./composables/mobile_vpn')['onNetworkInstanceChange']>
     readonly onRenderTracked: UnwrapRef<typeof import('vue')['onRenderTracked']>
     readonly onRenderTriggered: UnwrapRef<typeof import('vue')['onRenderTriggered']>
     readonly onScopeDispose: UnwrapRef<typeof import('vue')['onScopeDispose']>
@@ -170,22 +190,25 @@ declare module 'vue' {
     readonly onUnmounted: UnwrapRef<typeof import('vue')['onUnmounted']>
     readonly onUpdated: UnwrapRef<typeof import('vue')['onUpdated']>
     readonly onWatcherCleanup: UnwrapRef<typeof import('vue')['onWatcherCleanup']>
-    readonly parseNetworkConfig: UnwrapRef<typeof import('./composables/network')['parseNetworkConfig']>
+    readonly parseNetworkConfig: UnwrapRef<typeof import('./composables/backend')['parseNetworkConfig']>
     readonly prepareVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['prepareVpnService']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
-    readonly retainNetworkInstance: UnwrapRef<typeof import('./composables/network')['retainNetworkInstance']>
-    readonly runNetworkInstance: UnwrapRef<typeof import('./composables/network')['runNetworkInstance']>
+    readonly runNetworkInstance: UnwrapRef<typeof import('./composables/backend')['runNetworkInstance']>
+    readonly saveMode: UnwrapRef<typeof import('./composables/mode')['saveMode']>
+    readonly saveNetworkConfig: UnwrapRef<typeof import('./composables/backend')['saveNetworkConfig']>
+    readonly sendConfigs: UnwrapRef<typeof import('./composables/backend')['sendConfigs']>
     readonly setActivePinia: UnwrapRef<typeof import('pinia')['setActivePinia']>
-    readonly setLoggingLevel: UnwrapRef<typeof import('./composables/network')['setLoggingLevel']>
+    readonly setLoggingLevel: UnwrapRef<typeof import('./composables/backend')['setLoggingLevel']>
     readonly setMapStoreSuffix: UnwrapRef<typeof import('pinia')['setMapStoreSuffix']>
+    readonly setServiceStatus: UnwrapRef<typeof import('./composables/backend')['setServiceStatus']>
     readonly setTrayMenu: UnwrapRef<typeof import('./composables/tray')['setTrayMenu']>
     readonly setTrayRunState: UnwrapRef<typeof import('./composables/tray')['setTrayRunState']>
     readonly setTrayTooltip: UnwrapRef<typeof import('./composables/tray')['setTrayTooltip']>
-    readonly setTunFd: UnwrapRef<typeof import('./composables/network')['setTunFd']>
+    readonly setTunFd: UnwrapRef<typeof import('./composables/backend')['setTunFd']>
     readonly shallowReactive: UnwrapRef<typeof import('vue')['shallowReactive']>
     readonly shallowReadonly: UnwrapRef<typeof import('vue')['shallowReadonly']>
     readonly shallowRef: UnwrapRef<typeof import('vue')['shallowRef']>
@@ -196,6 +219,7 @@ declare module 'vue' {
     readonly toValue: UnwrapRef<typeof import('vue')['toValue']>
     readonly triggerRef: UnwrapRef<typeof import('vue')['triggerRef']>
     readonly unref: UnwrapRef<typeof import('vue')['unref']>
+    readonly updateNetworkConfigState: UnwrapRef<typeof import('./composables/backend')['updateNetworkConfigState']>
     readonly useAttrs: UnwrapRef<typeof import('vue')['useAttrs']>
     readonly useCssModule: UnwrapRef<typeof import('vue')['useCssModule']>
     readonly useCssVars: UnwrapRef<typeof import('vue')['useCssVars']>
@@ -203,12 +227,12 @@ declare module 'vue' {
     readonly useId: UnwrapRef<typeof import('vue')['useId']>
     readonly useLink: UnwrapRef<typeof import('vue-router/auto')['useLink']>
     readonly useModel: UnwrapRef<typeof import('vue')['useModel']>
-    readonly useNetworkStore: UnwrapRef<typeof import('./stores/network')['useNetworkStore']>
     readonly useRoute: UnwrapRef<typeof import('vue-router')['useRoute']>
     readonly useRouter: UnwrapRef<typeof import('vue-router')['useRouter']>
     readonly useSlots: UnwrapRef<typeof import('vue')['useSlots']>
     readonly useTemplateRef: UnwrapRef<typeof import('vue')['useTemplateRef']>
     readonly useTray: UnwrapRef<typeof import('./composables/tray')['useTray']>
+    readonly validateConfig: UnwrapRef<typeof import('./composables/backend')['validateConfig']>
     readonly watch: UnwrapRef<typeof import('vue')['watch']>
     readonly watchEffect: UnwrapRef<typeof import('vue')['watchEffect']>
     readonly watchPostEffect: UnwrapRef<typeof import('vue')['watchPostEffect']>

@@ -1,0 +1,290 @@
+syntax = "proto3";
+
+import "common.proto";
+import "peer_rpc.proto";
+import "acl.proto";
+
+package api.instance;
+
+message InstanceIdentifier {
+  message InstanceSelector { optional string name = 1; }
+
+  oneof selector {
+    common.UUID id = 1;
+    InstanceSelector instance_selector = 2;
+  }
+}
+
+message Status {
+  int32 code = 1;
+  string message = 2;
+}
+
+message PeerConnStats {
+  uint64 rx_bytes = 1;
+  uint64 tx_bytes = 2;
+
+  uint64 rx_packets = 3;
+  uint64 tx_packets = 4;
+
+  uint64 latency_us = 5;
+}
+
+message PeerConnInfo {
+  string conn_id = 1;
+  uint32 my_peer_id = 2;
+  uint32 peer_id = 3;
+  repeated string features = 4;
+  common.TunnelInfo tunnel = 5;
+  PeerConnStats stats = 6;
+  float loss_rate = 7;
+  bool is_client = 8;
+  string network_name = 9;
+  bool is_closed = 10;
+}
+
+message PeerInfo {
+  uint32 peer_id = 1;
+  repeated PeerConnInfo conns = 2;
+  common.UUID default_conn_id = 3;
+  repeated common.UUID directly_connected_conns = 4;
+}
+
+message ListPeerRequest { InstanceIdentifier instance = 1; }
+
+message ListPeerResponse {
+  repeated PeerInfo peer_infos = 1;
+  NodeInfo my_info = 2;
+}
+
+message Route {
+  uint32 peer_id = 1;
+  common.Ipv4Inet ipv4_addr = 2;
+
+  uint32 next_hop_peer_id = 3;
+  int32 cost = 4;
+  int32 path_latency = 11;
+
+  repeated string proxy_cidrs = 5;
+  string hostname = 6;
+  common.StunInfo stun_info = 7;
+  string inst_id = 8;
+  string version = 9;
+  common.PeerFeatureFlag feature_flag = 10;
+
+  optional uint32 next_hop_peer_id_latency_first = 12;
+  optional int32 cost_latency_first = 13;
+  optional int32 path_latency_latency_first = 14;
+
+  common.Ipv6Inet ipv6_addr = 15;
+}
+
+message PeerRoutePair {
+  Route route = 1;
+  PeerInfo peer = 2;
+}
+
+message NodeInfo {
+  uint32 peer_id = 1;
+  string ipv4_addr = 2;
+  repeated string proxy_cidrs = 3;
+  string hostname = 4;
+  common.StunInfo stun_info = 5;
+  string inst_id = 6;
+  repeated string listeners = 7;
+  string config = 8;
+  string version = 9;
+  common.PeerFeatureFlag feature_flag = 10;
+  peer_rpc.GetIpListResponse ip_list = 11;
+}
+
+message ShowNodeInfoRequest { InstanceIdentifier instance = 1; }
+
+message ShowNodeInfoResponse { NodeInfo node_info = 1; }
+
+message ListRouteRequest { InstanceIdentifier instance = 1; }
+
+message ListRouteResponse { repeated Route routes = 1; }
+
+message DumpRouteRequest { InstanceIdentifier instance = 1; }
+
+message DumpRouteResponse { string result = 1; }
+
+message ListForeignNetworkRequest { InstanceIdentifier instance = 1; }
+
+message ForeignNetworkEntryPb {
+  repeated PeerInfo peers = 1;
+  bytes network_secret_digest = 2;
+  uint32 my_peer_id_for_this_network = 3;
+}
+
+message ListForeignNetworkResponse {
+  // foreign network in local
+  map<string, ForeignNetworkEntryPb> foreign_networks = 1;
+}
+
+message ListGlobalForeignNetworkRequest { InstanceIdentifier instance = 1; }
+
+message ListGlobalForeignNetworkResponse {
+  // foreign network in the entire network
+  message OneForeignNetwork {
+    string network_name = 1;
+    repeated uint32 peer_ids = 2;
+    string last_updated = 3;
+    uint32 version = 4;
+  }
+
+  message ForeignNetworks { repeated OneForeignNetwork foreign_networks = 1; }
+
+  map<uint32, ForeignNetworks> foreign_networks = 1;
+}
+
+message GetForeignNetworkSummaryRequest { InstanceIdentifier instance = 1; }
+
+message GetForeignNetworkSummaryResponse {
+  peer_rpc.RouteForeignNetworkSummary summary = 1;
+}
+
+service PeerManageRpc {
+  rpc ListPeer(ListPeerRequest) returns (ListPeerResponse);
+  rpc ListRoute(ListRouteRequest) returns (ListRouteResponse);
+  rpc DumpRoute(DumpRouteRequest) returns (DumpRouteResponse);
+  rpc ListForeignNetwork(ListForeignNetworkRequest)
+      returns (ListForeignNetworkResponse);
+  rpc ListGlobalForeignNetwork(ListGlobalForeignNetworkRequest)
+      returns (ListGlobalForeignNetworkResponse);
+  rpc ShowNodeInfo(ShowNodeInfoRequest) returns (ShowNodeInfoResponse);
+  rpc GetForeignNetworkSummary(GetForeignNetworkSummaryRequest)
+      returns (GetForeignNetworkSummaryResponse);
+}
+
+enum ConnectorStatus {
+  CONNECTED = 0;
+  DISCONNECTED = 1;
+  CONNECTING = 2;
+}
+
+message Connector {
+  common.Url url = 1;
+  ConnectorStatus status = 2;
+}
+
+message ListConnectorRequest { InstanceIdentifier instance = 1; }
+
+message ListConnectorResponse { repeated Connector connectors = 1; }
+
+service ConnectorManageRpc {
+  rpc ListConnector(ListConnectorRequest) returns (ListConnectorResponse);
+}
+
+message MappedListener { common.Url url = 1; }
+
+message ListMappedListenerRequest { InstanceIdentifier instance = 1; }
+
+message ListMappedListenerResponse {
+  repeated MappedListener mappedlisteners = 1;
+}
+
+service MappedListenerManageRpc {
+  rpc ListMappedListener(ListMappedListenerRequest)
+      returns (ListMappedListenerResponse);
+}
+
+message VpnPortalInfo {
+  string vpn_type = 1;
+  string client_config = 2;
+  repeated string connected_clients = 3;
+}
+
+message GetVpnPortalInfoRequest { InstanceIdentifier instance = 1; }
+message GetVpnPortalInfoResponse { VpnPortalInfo vpn_portal_info = 1; }
+
+service VpnPortalRpc {
+  rpc GetVpnPortalInfo(GetVpnPortalInfoRequest)
+      returns (GetVpnPortalInfoResponse);
+}
+
+enum TcpProxyEntryTransportType {
+  TCP = 0;
+  KCP = 1;
+  QUIC = 2;
+}
+
+enum TcpProxyEntryState {
+  Unknown = 0;
+  // receive syn packet but not start connecting to dst
+  SynReceived = 1;
+  // connecting to dst
+  ConnectingDst = 2;
+  // connected to dst
+  Connected = 3;
+  // connection closed
+  Closed = 4;
+  // closing src
+  ClosingSrc = 5;
+  // closing dst
+  ClosingDst = 6;
+}
+
+message TcpProxyEntry {
+  common.SocketAddr src = 1;
+  common.SocketAddr dst = 2;
+  uint64 start_time = 3;
+  TcpProxyEntryState state = 4;
+  TcpProxyEntryTransportType transport_type = 5;
+}
+
+message ListTcpProxyEntryRequest { InstanceIdentifier instance = 1; }
+
+message ListTcpProxyEntryResponse { repeated TcpProxyEntry entries = 1; }
+
+service TcpProxyRpc {
+  rpc ListTcpProxyEntry(ListTcpProxyEntryRequest)
+      returns (ListTcpProxyEntryResponse);
+}
+
+message GetAclStatsRequest { InstanceIdentifier instance = 1; }
+
+message GetAclStatsResponse { acl.AclStats acl_stats = 1; }
+
+service AclManageRpc {
+  rpc GetAclStats(GetAclStatsRequest) returns (GetAclStatsResponse);
+  rpc GetWhitelist(GetWhitelistRequest) returns (GetWhitelistResponse);
+}
+
+message GetWhitelistRequest { InstanceIdentifier instance = 1; }
+
+message GetWhitelistResponse {
+  repeated string tcp_ports = 1;
+  repeated string udp_ports = 2;
+}
+
+message ListPortForwardRequest { InstanceIdentifier instance = 1; }
+
+message ListPortForwardResponse {
+  repeated common.PortForwardConfigPb cfgs = 1;
+}
+
+service PortForwardManageRpc {
+  rpc ListPortForward(ListPortForwardRequest) returns (ListPortForwardResponse);
+}
+
+message MetricSnapshot {
+  string name = 1;
+  uint64 value = 2;
+  map<string, string> labels = 3;
+}
+
+message GetStatsRequest { InstanceIdentifier instance = 1; }
+
+message GetStatsResponse { repeated MetricSnapshot metrics = 1; }
+
+message GetPrometheusStatsRequest { InstanceIdentifier instance = 1; }
+
+message GetPrometheusStatsResponse { string prometheus_text = 1; }
+
+service StatsRpc {
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+  rpc GetPrometheusStats(GetPrometheusStatsRequest)
+      returns (GetPrometheusStatsResponse);
+}

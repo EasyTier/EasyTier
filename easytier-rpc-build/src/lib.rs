@@ -14,16 +14,9 @@ const NAMESPACE: &str = "easytier::proto::rpc_types";
 ///
 /// See the crate-level documentation for more info.
 #[allow(missing_copy_implementations)]
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ServiceGenerator {
     _private: (),
-}
-
-impl ServiceGenerator {
-    /// Create a new `ServiceGenerator` instance with the default options set.
-    pub fn new() -> ServiceGenerator {
-        ServiceGenerator { _private: () }
-    }
 }
 
 impl prost_build::ServiceGenerator for ServiceGenerator {
@@ -78,7 +71,7 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 enum_methods,
                 "    {name} = {index},",
                 name = method.proto_name,
-                index = format!("{}", idx + 1)
+                index = idx + 1
             )
             .unwrap();
 
@@ -87,7 +80,7 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 "            {index} => Ok({service_name}MethodDescriptor::{name}),",
                 service_name = service.name,
                 name = method.proto_name,
-                index = format!("{}", idx + 1),
+                index = idx + 1,
             )
             .unwrap();
 
@@ -102,12 +95,12 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
             writeln!(
                 client_methods,
                 r#"    async fn {name}(&self, ctrl: H::Controller, input: {input_type}) -> {namespace}::error::Result<{output_type}> {{
-        {client_name}::{name}_inner(self.0.clone(), ctrl, input).await
+        {client_name}Client::{name}_inner(self.0.clone(), ctrl, input).await
     }}"#,
                 name = method.name,
                 input_type = method.input_type,
                 output_type = method.output_type,
-                client_name = format!("{}Client", service.name),
+                client_name = service.name,
                 namespace = NAMESPACE,
             )
             .unwrap();

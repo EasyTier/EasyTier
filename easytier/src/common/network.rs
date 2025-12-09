@@ -16,14 +16,14 @@ struct InterfaceFilter {
     iface: NetworkInterface,
 }
 
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_env = "ohos"))]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
         true
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 impl InterfaceFilter {
     async fn is_tun_tap_device(&self) -> bool {
         let path = format!("/sys/class/net/{}/tun_flags", self.iface.name);
@@ -59,18 +59,52 @@ impl InterfaceFilter {
     }
 }
 
+// Cache for networksetup command output
+#[cfg(target_os = "macos")]
+static NETWORKSETUP_CACHE: std::sync::OnceLock<Mutex<(String, std::time::Instant)>> =
+    std::sync::OnceLock::new();
+
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 impl InterfaceFilter {
     #[cfg(target_os = "macos")]
-    async fn is_interface_physical(&self) -> bool {
-        let interface_name = &self.iface.name;
-        let output = tokio::process::Command::new("networksetup")
-            .args(&["-listallhardwareports"])
+    async fn get_networksetup_output() -> String {
+        use anyhow::Context;
+        use std::time::{Duration, Instant};
+        let cache = NETWORKSETUP_CACHE.get_or_init(|| Mutex::new((String::new(), Instant::now())));
+        let mut cache_guard = cache.lock().await;
+
+        // Check if cache is still valid (less than 1 minute old)
+        if cache_guard.1.elapsed() < Duration::from_secs(60) && !cache_guard.0.is_empty() {
+            return cache_guard.0.clone();
+        }
+
+        // Cache is expired or empty, fetch new data
+        let stdout = tokio::process::Command::new("networksetup")
+            .args(["-listallhardwareports"])
             .output()
             .await
-            .expect("Failed to execute command");
+            .with_context(|| "Failed to execute networksetup command")
+            .and_then(|output| {
+                std::str::from_utf8(&output.stdout)
+                    .map(|s| s.to_string())
+                    .with_context(|| "Failed to convert networksetup output to string")
+            })
+            .unwrap_or_else(|e| {
+                tracing::error!("Failed to execute networksetup command: {:?}", e);
+                String::new()
+            });
 
-        let stdout = std::str::from_utf8(&output.stdout).expect("Invalid UTF-8");
+        // Update cache
+        cache_guard.0 = stdout.clone();
+        cache_guard.1 = Instant::now();
+
+        stdout
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn is_interface_physical(&self) -> bool {
+        let interface_name = &self.iface.name;
+        let stdout = Self::get_networksetup_output().await;
 
         let lines: Vec<&str> = stdout.lines().collect();
 
@@ -79,11 +113,7 @@ impl InterfaceFilter {
 
             if line.contains("Device:") && line.contains(interface_name) {
                 let next_line = lines[i + 1];
-                if next_line.contains("Virtual Interface") {
-                    return false;
-                } else {
-                    return true;
-                }
+                return !next_line.contains("Virtual Interface");
             }
         }
 
@@ -179,18 +209,16 @@ impl IPCollector {
                 Self::do_collect_local_ip_addrs(self.net_ns.clone()).await;
             let net_ns = self.net_ns.clone();
             let stun_info_collector = self.stun_info_collector.clone();
-            task.spawn(async move {
-                loop {
-                    let ip_addrs = Self::do_collect_local_ip_addrs(net_ns.clone()).await;
-                    *cached_ip_list.write().await = ip_addrs;
-                    tokio::time::sleep(std::time::Duration::from_secs(CACHED_IP_LIST_TIMEOUT_SEC))
-                        .await;
-                }
-            });
-
             let cached_ip_list = self.cached_ip_list.clone();
             task.spawn(async move {
+                let mut last_fetch_iface_time = std::time::Instant::now();
                 loop {
+                    if last_fetch_iface_time.elapsed().as_secs() > CACHED_IP_LIST_TIMEOUT_SEC {
+                        let ifaces = Self::do_collect_local_ip_addrs(net_ns.clone()).await;
+                        *cached_ip_list.write().await = ifaces;
+                        last_fetch_iface_time = std::time::Instant::now();
+                    }
+
                     let stun_info = stun_info_collector.get_stun_info();
                     for ip in stun_info.public_ip.iter() {
                         let Ok(ip_addr) = ip.parse::<IpAddr>() else {
@@ -199,15 +227,21 @@ impl IPCollector {
 
                         match ip_addr {
                             IpAddr::V4(v) => {
-                                cached_ip_list.write().await.public_ipv4 = Some(v.into())
+                                cached_ip_list.write().await.public_ipv4.replace(v.into());
                             }
                             IpAddr::V6(v) => {
-                                cached_ip_list.write().await.public_ipv6 = Some(v.into())
+                                cached_ip_list.write().await.public_ipv6.replace(v.into());
                             }
                         }
                     }
 
-                    let sleep_sec = if !cached_ip_list.read().await.public_ipv4.is_none() {
+                    tracing::debug!(
+                        "got public ip: {:?}, {:?}",
+                        cached_ip_list.read().await.public_ipv4,
+                        cached_ip_list.read().await.public_ipv6
+                    );
+
+                    let sleep_sec = if cached_ip_list.read().await.public_ipv4.is_some() {
                         CACHED_IP_LIST_TIMEOUT_SEC
                     } else {
                         3
@@ -217,10 +251,10 @@ impl IPCollector {
             });
         }
 
-        return self.cached_ip_list.read().await.deref().clone();
+        self.cached_ip_list.read().await.deref().clone()
     }
 
-    pub async fn collect_interfaces(net_ns: NetNS) -> Vec<NetworkInterface> {
+    pub async fn collect_interfaces(net_ns: NetNS, filter: bool) -> Vec<NetworkInterface> {
         let _g = net_ns.guard();
         let ifaces = pnet::datalink::interfaces();
         let mut ret = vec![];
@@ -229,7 +263,7 @@ impl IPCollector {
                 iface: iface.clone(),
             };
 
-            if !f.filter_iface().await {
+            if filter && !f.filter_iface().await {
                 continue;
             }
 
@@ -243,21 +277,30 @@ impl IPCollector {
     async fn do_collect_local_ip_addrs(net_ns: NetNS) -> GetIpListResponse {
         let mut ret = GetIpListResponse::default();
 
-        let ifaces = Self::collect_interfaces(net_ns.clone()).await;
+        let ifaces = Self::collect_interfaces(net_ns.clone(), true).await;
         let _g = net_ns.guard();
         for iface in ifaces {
             for ip in iface.ips {
                 let ip: std::net::IpAddr = ip.ip();
-                if ip.is_loopback() || ip.is_multicast() {
-                    continue;
+                if let std::net::IpAddr::V4(v4) = ip {
+                    if ip.is_loopback() || ip.is_multicast() {
+                        continue;
+                    }
+                    ret.interface_ipv4s.push(v4.into());
                 }
-                match ip {
-                    std::net::IpAddr::V4(v4) => {
-                        ret.interface_ipv4s.push(v4.into());
+            }
+        }
+
+        let ifaces = Self::collect_interfaces(net_ns.clone(), false).await;
+        let _g = net_ns.guard();
+        for iface in ifaces {
+            for ip in iface.ips {
+                let ip: std::net::IpAddr = ip.ip();
+                if let std::net::IpAddr::V6(v6) = ip {
+                    if v6.is_multicast() || v6.is_loopback() || v6.is_unicast_link_local() {
+                        continue;
                     }
-                    std::net::IpAddr::V6(v6) => {
-                        ret.interface_ipv6s.push(v6.into());
-                    }
+                    ret.interface_ipv6s.push(v6.into());
                 }
             }
         }

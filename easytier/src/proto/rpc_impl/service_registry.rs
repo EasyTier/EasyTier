@@ -52,6 +52,12 @@ pub struct ServiceRegistry {
     table: DashMap<ServiceKey, ServiceEntry>,
 }
 
+impl Default for ServiceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceRegistry {
     pub fn new() -> Self {
         Self {
@@ -78,6 +84,14 @@ impl ServiceRegistry {
         self.table.insert(key, entry);
     }
 
+    pub fn get_method_name(&self, rpc_desc: &RpcDescriptor) -> Option<String> {
+        let service_key = ServiceKey::from(rpc_desc);
+        let entry = self.table.get(&service_key)?;
+        let method_index = rpc_desc.method_index as u8;
+        let method_name = entry.service.get_method_name(method_index).ok()?;
+        Some(method_name)
+    }
+
     pub fn unregister<H: Handler<Controller = RpcController>>(
         &self,
         h: H,
@@ -94,6 +108,10 @@ impl ServiceRegistry {
 
     pub fn unregister_by_domain(&self, domain_name: &str) {
         self.table.retain(|k, _| k.domain_name != domain_name);
+    }
+
+    pub fn unregister_all(&self) {
+        self.table.clear();
     }
 
     pub async fn call_method(

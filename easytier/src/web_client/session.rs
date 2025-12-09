@@ -9,12 +9,10 @@ use tokio::{
 use crate::{
     common::{constants::EASYTIER_VERSION, get_machine_id},
     proto::{
+        api::manage::WebClientServiceServer,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
-        web::{
-            HeartbeatRequest, HeartbeatResponse, WebClientServiceServer,
-            WebServerServiceClientFactory,
-        },
+        web::{HeartbeatRequest, HeartbeatResponse, WebServerServiceClientFactory},
     },
     tunnel::Tunnel,
 };
@@ -41,10 +39,10 @@ impl Session {
         let rpc_mgr = BidirectRpcManager::new();
         rpc_mgr.run_with_tunnel(tunnel);
 
-        rpc_mgr
-            .rpc_server()
-            .registry()
-            .register(WebClientServiceServer::new(controller.clone()), "");
+        rpc_mgr.rpc_server().registry().register(
+            WebClientServiceServer::new(controller.get_rpc_service()),
+            "",
+        );
 
         let mut tasks: JoinSet<()> = JoinSet::new();
         let heartbeat_ctx =
@@ -73,7 +71,7 @@ impl Session {
         let mid = get_machine_id();
         let inst_id = uuid::Uuid::new_v4();
         let token = controller.upgrade().unwrap().token();
-        let hostname = gethostname::gethostname().to_string_lossy().to_string();
+        let hostname = controller.upgrade().unwrap().hostname();
 
         let ctx_clone = ctx.clone();
         let mut tick = interval(std::time::Duration::from_secs(1));
@@ -95,7 +93,7 @@ impl Session {
 
                     easytier_version: EASYTIER_VERSION.to_string(),
                     hostname: hostname.clone(),
-                    report_time: chrono::Local::now().to_string(),
+                    report_time: chrono::Local::now().to_rfc3339(),
 
                     running_network_instances: controller
                         .list_network_instance_ids()
@@ -114,7 +112,7 @@ impl Session {
                     }
                     Ok(resp) => {
                         tracing::debug!("heartbeat response: {:?}", resp);
-                        let _ = ctx_clone.notifier.send(resp.clone());
+                        let _ = ctx_clone.notifier.send(resp);
                         ctx_clone.resp.lock().await.replace(resp);
                     }
                 }

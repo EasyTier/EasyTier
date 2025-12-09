@@ -21,7 +21,7 @@ on:
       version:
         description: 'Version for this release'
         type: string
-        default: 'v2.1.1'
+        default: 'v2.4.5'
         required: true
       make_latest:
         description: 'Mark this release as latest'
@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download Core Artifact
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
@@ -50,15 +50,15 @@ jobs:
           path: release_assets
 
       - name: Download GUI Artifact
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.gui_run_id }}
           repo: EasyTier/EasyTier
           path: release_assets_nozip
 
-      - name: Download GUI Artifact
-        uses: dawidd6/action-download-artifact@v6
+      - name: Download Mobile Artifact
+        uses: dawidd6/action-download-artifact@v11
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.mobile_run_id }}
@@ -78,7 +78,14 @@ jobs:
           ls -l -R ./
           chmod -R 755 .
           for x in `ls`; do
-            zip ../zipped_assets/$x-${VERSION}.zip $x/*;
+            if [ "$x" = "Easytier-Magisk" ]; then
+              # for Easytier-Magisk, make sure files are in the root of the zip
+              cd $x;
+              zip -r ../../zipped_assets/$x-${VERSION}.zip .;
+              cd ..;
+            else
+              zip -r ../zipped_assets/$x-${VERSION}.zip $x;
+            fi
           done
 
       - name: Release

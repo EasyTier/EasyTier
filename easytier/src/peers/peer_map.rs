@@ -1,16 +1,23 @@
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+};
 
 use anyhow::Context;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
+use parking_lot::Mutex;
 use tokio::sync::RwLock;
 
 use crate::{
     common::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent, NetworkIdentity},
-        PeerId,
+        shrink_dashmap, PeerId,
     },
-    proto::cli::PeerConnInfo,
+    proto::{
+        api::instance::{self, PeerConnInfo},
+        peer_rpc::RoutePeerInfo,
+    },
     tunnel::{packet_def::ZCPacket, TunnelError},
 };
 
@@ -27,6 +34,7 @@ pub struct PeerMap {
     peer_map: DashMap<PeerId, Arc<Peer>>,
     packet_send: PacketRecvChan,
     routes: RwLock<Vec<ArcRoute>>,
+    alive_client_urls: Arc<Mutex<multimap::MultiMap<url::Url, PeerConnId>>>,
 }
 
 impl PeerMap {
@@ -37,17 +45,19 @@ impl PeerMap {
             peer_map: DashMap::new(),
             packet_send,
             routes: RwLock::new(Vec::new()),
+            alive_client_urls: Arc::new(Mutex::new(multimap::MultiMap::new())),
         }
     }
 
     async fn add_new_peer(&self, peer: Peer) {
-        let peer_id = peer.peer_node_id.clone();
-        self.peer_map.insert(peer_id.clone(), Arc::new(peer));
+        let peer_id = peer.peer_node_id;
+        self.peer_map.insert(peer_id, Arc::new(peer));
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerAdded(peer_id));
     }
 
     pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
+        let _ = self.maintain_alive_client_urls(&peer_conn);
         let peer_id = peer_conn.get_peer_id();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
@@ -60,8 +70,60 @@ impl PeerMap {
         }
     }
 
-    fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
+    fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<()> {
+        let conn_info = peer_conn.get_conn_info();
+        if !conn_info.is_client {
+            return None;
+        }
+
+        let close_notifier = peer_conn.get_close_notifier();
+        let alive_conns_weak = Arc::downgrade(&self.alive_client_urls);
+        let conn_id = close_notifier.get_conn_id();
+        let alive_client_url: url::Url = conn_info.tunnel?.remote_addr?.into();
+        self.alive_client_urls
+            .lock()
+            .insert(alive_client_url.clone(), conn_id);
+
+        tokio::spawn(async move {
+            if let Some(mut waiter) = close_notifier.get_waiter().await {
+                let _ = waiter.recv().await;
+            }
+            let Some(alive_conns) = alive_conns_weak.upgrade() else {
+                return;
+            };
+            let mut guard = alive_conns.lock();
+            if let Some(mut conn_ids) = guard.remove(&alive_client_url) {
+                conn_ids.retain(|id| id != &conn_id);
+                if !conn_ids.is_empty() {
+                    guard.insert_many(alive_client_url, conn_ids);
+                }
+            };
+            let alive_conn_count = guard.len();
+            drop(guard);
+            tracing::debug!(
+                ?conn_id,
+                "peer conn is closed, current alive conns: {}",
+                alive_conn_count
+            );
+        });
+
+        Some(())
+    }
+
+    pub fn is_client_url_alive(&self, url: &url::Url) -> bool {
+        self.alive_client_urls.lock().contains_key(url)
+    }
+
+    pub fn get_peer_by_id(&self, peer_id: PeerId) -> Option<Arc<Peer>> {
         self.peer_map.get(&peer_id).map(|v| v.clone())
+    }
+
+    pub fn get_directly_connections_by_peer_id(&self, peer_id: PeerId) -> DashSet<uuid::Uuid> {
+        if let Some(peer) = self.get_peer_by_id(peer_id) {
+            return peer.get_directly_connections();
+        }
+
+        DashSet::new()
     }
 
     pub fn has_peer(&self, peer_id: PeerId) -> bool {
@@ -70,11 +132,17 @@ impl PeerMap {
 
     pub async fn send_msg_directly(&self, msg: ZCPacket, dst_peer_id: PeerId) -> Result<(), Error> {
         if dst_peer_id == self.my_peer_id {
-            return Ok(self
-                .packet_send
-                .send(msg)
-                .await
-                .with_context(|| "send msg to self failed")?);
+            let packet_send = self.packet_send.clone();
+            tokio::spawn(async move {
+                let ret = packet_send
+                    .send(msg)
+                    .await
+                    .with_context(|| "send msg to self failed");
+                if ret.is_err() {
+                    tracing::error!("send msg to self failed: {:?}", ret);
+                }
+            });
+            return Ok(());
         }
 
         match self.get_peer_by_id(dst_peer_id) {
@@ -126,9 +194,7 @@ impl PeerMap {
     ) -> Vec<PeerId> {
         let mut ret = Vec::new();
         for route in self.routes.read().await.iter() {
-            let peers = route
-                .list_peers_own_foreign_network(&network_identity)
-                .await;
+            let peers = route.list_peers_own_foreign_network(network_identity).await;
             ret.extend(peers);
         }
         ret
@@ -148,7 +214,7 @@ impl PeerMap {
         };
 
         self.send_msg_directly(msg, gateway_peer_id).await?;
-        return Ok(());
+        Ok(())
     }
 
     pub async fn get_peer_id_by_ipv4(&self, ipv4: &Ipv4Addr) -> Option<PeerId> {
@@ -156,6 +222,41 @@ impl PeerMap {
             let peer_id = route.get_peer_id_by_ipv4(ipv4).await;
             if peer_id.is_some() {
                 return peer_id;
+            }
+        }
+        None
+    }
+
+    pub async fn get_peer_id_by_ipv6(&self, ipv6: &Ipv6Addr) -> Option<PeerId> {
+        for route in self.routes.read().await.iter() {
+            let peer_id = route.get_peer_id_by_ipv6(ipv6).await;
+            if peer_id.is_some() {
+                return peer_id;
+            }
+        }
+        None
+    }
+
+    pub async fn get_route_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo> {
+        for route in self.routes.read().await.iter() {
+            if let Some(info) = route.get_peer_info(peer_id).await {
+                return Some(info);
+            }
+        }
+        None
+    }
+
+    pub async fn get_origin_my_peer_id(
+        &self,
+        network_name: &str,
+        foreign_my_peer_id: PeerId,
+    ) -> Option<PeerId> {
+        for route in self.routes.read().await.iter() {
+            let origin_peer_id = route
+                .get_origin_my_peer_id(network_name, foreign_my_peer_id)
+                .await;
+            if origin_peer_id.is_some() {
+                return origin_peer_id;
             }
         }
         None
@@ -181,7 +282,7 @@ impl PeerMap {
             let Some(peer) = self.get_peer_by_id(*peer_id) else {
                 continue;
             };
-            if peer.list_peer_conns().await.len() > 0 {
+            if !peer.list_peer_conns().await.is_empty() {
                 ret.push(*peer_id);
             }
         }
@@ -192,8 +293,13 @@ impl PeerMap {
         if let Some(p) = self.get_peer_by_id(peer_id) {
             Some(p.list_peer_conns().await)
         } else {
-            return None;
+            None
         }
+    }
+
+    pub async fn get_peer_default_conn_id(&self, peer_id: PeerId) -> Option<PeerConnId> {
+        self.get_peer_by_id(peer_id)
+            .map(|p| p.get_default_conn_id())
     }
 
     pub async fn close_peer_conn(
@@ -204,12 +310,14 @@ impl PeerMap {
         if let Some(p) = self.get_peer_by_id(peer_id) {
             p.close_peer_conn(conn_id).await
         } else {
-            return Err(Error::NotFound);
+            Err(Error::NotFound)
         }
     }
 
     pub async fn close_peer(&self, peer_id: PeerId) -> Result<(), TunnelError> {
         let remove_ret = self.peer_map.remove(&peer_id);
+        shrink_dashmap(&self.peer_map, None);
+
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerRemoved(peer_id));
         tracing::info!(
@@ -251,6 +359,13 @@ impl PeerMap {
         route_map
     }
 
+    pub async fn list_route_infos(&self) -> Vec<instance::Route> {
+        if let Some(route) = self.routes.read().await.iter().next() {
+            return route.list_routes().await;
+        }
+        vec![]
+    }
+
     pub async fn need_relay_by_foreign_network(&self, dst_peer_id: PeerId) -> Result<bool, Error> {
         // if gateway_peer_id is not connected to me, means need relay by foreign network
         let gateway_id = self
@@ -262,6 +377,14 @@ impl PeerMap {
             ))))?;
 
         Ok(!self.has_peer(gateway_id))
+    }
+
+    pub fn my_peer_id(&self) -> PeerId {
+        self.my_peer_id
+    }
+
+    pub fn get_global_ctx(&self) -> ArcGlobalCtx {
+        self.global_ctx.clone()
     }
 }
 

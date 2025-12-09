@@ -1,9 +1,50 @@
 #!/bin/bash
 
+RED_COLOR='\e[1;31m'
+GREEN_COLOR='\e[1;32m'
+YELLOW_COLOR='\e[1;33m'
+BLUE_COLOR='\e[1;34m'
+PINK_COLOR='\e[1;35m'
+SHAN='\e[1;33;5m'
+RES='\e[0m'
+
+HELP() {
+  echo -e "\r\n${GREEN_COLOR}EasyTier Installation Script Help${RES}\r\n"
+  echo "Usage: ./install.sh [command] [options]"
+  echo
+  echo "Commands:"
+  echo "  install    Install EasyTier"
+  echo "  uninstall  Uninstall EasyTier"
+  echo "  update     Update EasyTier to the latest version"
+  echo "  help       Show this help message"
+  echo
+  echo "Options:"
+  echo "  --skip-folder-verify  Skip folder verification during installation"
+  echo "  --skip-folder-fix     Skip automatic folder path fixing"
+  echo "  --no-gh-proxy        Disable GitHub proxy"
+  echo "  --gh-proxy URL       Set custom GitHub proxy URL"
+  echo
+  echo "Examples:"
+  echo "  ./install.sh install /opt/easytier"
+  echo "  ./install.sh install --skip-folder-verify"
+  echo "  ./install.sh install --no-gh-proxy"
+  echo "  ./install.sh install --gh-proxy https://your-proxy.com/"
+  echo "  ./install.sh update"
+  echo "  ./install.sh uninstall"
+}
+
+# Show help if no arguments or help command is used
+if [ $# -eq 0 ] || [ "$1" = "help" ]; then
+  HELP
+  exit 0
+fi
+
 # This script copy from alist , Thank for it!
 
 SKIP_FOLDER_VERIFY=false
 SKIP_FOLDER_FIX=false
+NO_GH_PROXY=false
+GH_PROXY='https://ghfast.top/'
 
 COMMEND=$1
 shift
@@ -19,6 +60,16 @@ while [[ "$#" -gt 0 ]]; do
     case $1 in
         --skip-folder-verify) SKIP_FOLDER_VERIFY=true ;;
         --skip-folder-fix) SKIP_FOLDER_FIX=true ;;
+        --no-gh-proxy) NO_GH_PROXY=true ;;
+        --gh-proxy) 
+            if [ -n "$2" ]; then
+                GH_PROXY=$2
+                shift
+            else
+                echo "Error: --gh-proxy requires a URL"
+                exit 1
+            fi
+            ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
     shift
@@ -40,13 +91,6 @@ echo INSTALL PATH : $INSTALL_PATH
 echo SKIP FOLDER FIX : $SKIP_FOLDER_FIX
 echo SKIP FOLDER VERIFY : $SKIP_FOLDER_VERIFY
 
-RED_COLOR='\e[1;31m'
-GREEN_COLOR='\e[1;32m'
-YELLOW_COLOR='\e[1;33m'
-BLUE_COLOR='\e[1;34m'
-PINK_COLOR='\e[1;35m'
-SHAN='\e[1;33;5m'
-RES='\e[0m'
 # clear
 
 # check if unzip is installed
@@ -109,27 +153,34 @@ fi
 
 echo -e "\r\n${GREEN_COLOR}Your platform: ${ARCH} (${platform}) ${RES}\r\n" 1>&2
 
-GH_PROXY='https://ghp.ci/'
-
 if [ "$(id -u)" != "0" ]; then
   echo -e "\r\n${RED_COLOR}This script requires run as Root !${RES}\r\n" 1>&2
   exit 1
 elif [ "$ARCH" == "UNKNOWN" ]; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platfrom\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
-  exit 1
-elif ! command -v systemctl >/dev/null 2>&1; then
-  echo -e "\r\n${RED_COLOR}Opus${RES}, your Linux do not support systemctl\r\nTry ${GREEN_COLOR}install by band${RES}\r\n"
+  echo -e "\r\n${RED_COLOR}Opus${RES}, this script do not support your platform\r\nTry ${GREEN_COLOR}install by hand${RES}\r\n"
   exit 1
 fi
 
+# Detect init system
+if command -v systemctl >/dev/null 2>&1; then
+  INIT_SYSTEM="systemd"
+elif command -v rc-update >/dev/null 2>&1; then
+  INIT_SYSTEM="openrc"
+else
+  echo -e "\r\n${RED_COLOR}Error: Unsupported init system (neither systemd nor OpenRC found)${RES}\r\n"
+  exit 1
+fi
+
+
 CHECK() {
   if ! $SKIP_FOLDER_VERIFY; then
-	if [ -f "$INSTALL_PATH/easytier-core" ]; then
-		echo "There is EasyTier in $INSTALL_PATH. Please choose other path or use \"update\""
-	    echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
-		exit 0
-	fi
+    if [ -f "$INSTALL_PATH/easytier-core" ]; then
+      echo "There is EasyTier in $INSTALL_PATH. Please choose other path or use \"update\""
+        echo -e "Or use Try ${GREEN_COLOR}--skip-folder-verify${RES} to skip"
+      exit 0
+    fi
   fi
+
   if [ ! -d "$INSTALL_PATH/" ]; then
     mkdir -p $INSTALL_PATH
   else
@@ -152,14 +203,18 @@ INSTALL() {
   LATEST_VERSION=$(echo -e "$LATEST_VERSION" | tr -d '[:space:]')
 
   if [ -z "$LATEST_VERSION" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, failure to get latest version. Check your internel\r\nOr try ${GREEN_COLOR}install by band${RES}\r\n"
+    echo -e "\r\n${RED_COLOR}Opus${RES}, failure to get latest version. Check your internet\r\nOr try ${GREEN_COLOR}install by hand${RES}\r\n"
     exit 1
   fi
 
   # Download
   echo -e "\r\n${GREEN_COLOR}Downloading EasyTier $LATEST_VERSION ...${RES}"
   rm -rf /tmp/easytier_tmp_install.zip
-  curl -L ${GH_PROXY}https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip -o /tmp/easytier_tmp_install.zip $CURL_BAR
+  BASE_URL="https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip"
+  DOWNLOAD_URL=$($NO_GH_PROXY && echo "$BASE_URL" || echo "${GH_PROXY}${BASE_URL}")
+  echo -e "Download URL: ${GREEN_COLOR}${DOWNLOAD_URL}${RES}"
+  curl -L ${DOWNLOAD_URL} -o /tmp/easytier_tmp_install.zip $CURL_BAR
+
   # Unzip resource
   echo -e "\r\n${GREEN_COLOR}Unzip resource ...${RES}"
   unzip -o /tmp/easytier_tmp_install.zip -d $INSTALL_PATH/
@@ -193,6 +248,7 @@ listeners = [
     "wss://0.0.0.0:11012/",
 ]
 exit_nodes = []
+rpc_portal = "0.0.0.0:0"
 
 [[peer]]
 uri = "tcp://public.easytier.top:11010"
@@ -213,13 +269,38 @@ no_tun = false
 use_smoltcp = false
 foreign_network_whitelist = "*"
 disable_p2p = false
+p2p_only = false
 relay_all_peer_rpc = false
 disable_udp_hole_punching = false
 
 EOF
 
+  # Create init script
+  if [ "$INIT_SYSTEM" = "openrc" ]; then
+    cat >/etc/init.d/easytier <<EOF
+#!/sbin/openrc-run
+
+name="EasyTier"
+description="EasyTier Service"
+command="$INSTALL_PATH/easytier-core"
+command_args="-c $INSTALL_PATH/config/default.conf"
+command_user="nobody:nobody"
+command_background=true
+
+pidfile="/run/\${RC_SVCNAME}.pid"
+
+depend() {
+  need net
+}
+
+
+EOF
+    chmod +x /etc/init.d/easytier
+  fi
+
   # Create systemd
-  cat >/etc/systemd/system/easytier@.service <<EOF
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    cat >/etc/systemd/system/easytier@.service <<EOF
 [Unit]
 Description=EasyTier Service
 Wants=network.target
@@ -236,6 +317,7 @@ RestartSec=1s
 [Install]
 WantedBy=multi-user.target
 EOF
+  fi
 
 #   # Create run script
 #   cat >$INSTALL_PATH/run.sh <<EOF
@@ -243,9 +325,14 @@ EOF
 # EOF
 
   # Startup
-  systemctl daemon-reload
-  systemctl enable easytier@default >/dev/null 2>&1
-  systemctl start easytier@default
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl daemon-reload
+    systemctl enable easytier@default >/dev/null 2>&1
+    systemctl start easytier@default
+  else
+    rc-update add easytier default
+    rc-service easytier start
+  fi
 
   # For issues from the previous version
   rm -rf /etc/systemd/system/easytier.service
@@ -264,56 +351,152 @@ SUCCESS() {
   echo -e "Default Network Name: ${GREEN_COLOR}default${RES}, Please change it to your own network name!\r\n"
 
   echo -e "Now EasyTier supports multiple config files. You can create config files in the ${GREEN_COLOR}${INSTALL_PATH}/config/${RES} folder"
-  echo -e "For more information, please check the documents in offical site"
+  echo -e "For more information, please check the documents in official site"
   echo -e "The management example of a single configuration file is as follows"
 
   echo
-  echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
-  echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
-  echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
-  echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    echo -e "Status: ${GREEN_COLOR}systemctl status easytier@default${RES}"
+    echo -e "Start: ${GREEN_COLOR}systemctl start easytier@default${RES}"
+    echo -e "Restart: ${GREEN_COLOR}systemctl restart easytier@default${RES}"
+    echo -e "Stop: ${GREEN_COLOR}systemctl stop easytier@default${RES}"
+  else
+    echo -e "Status: ${GREEN_COLOR}rc-service easytier status${RES}"
+    echo -e "Start: ${GREEN_COLOR}rc-service easytier start${RES}"
+    echo -e "Restart: ${GREEN_COLOR}rc-service easytier restart${RES}"
+    echo -e "Stop: ${GREEN_COLOR}rc-service easytier stop${RES}"
+  fi
   echo
 }
 
 UNINSTALL() {
   echo -e "\r\n${GREEN_COLOR}Uninstall EasyTier ...${RES}\r\n"
   echo -e "${GREEN_COLOR}Stop process ...${RES}"
-  systemctl disable "easytier@*" >/dev/null 2>&1
-  systemctl stop "easytier@*" >/dev/null 2>&1
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    systemctl disable "easytier@*" >/dev/null 2>&1
+    systemctl stop "easytier@*" >/dev/null 2>&1
+  else
+    rc-update del easytier
+    rc-service easytier stop
+  fi
   echo -e "${GREEN_COLOR}Delete files ...${RES}"
-  rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli /etc/systemd/system/easytier@.service /usr/sbin/easytier-cli /usr/sbin/easytier-cli
-  systemctl daemon-reload
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    rm -rf $INSTALL_PATH /etc/systemd/system/easytier.service /usr/bin/easytier-core /usr/bin/easytier-cli /etc/systemd/system/easytier@.service /usr/sbin/easytier-core /usr/sbin/easytier-cli
+    systemctl daemon-reload
+  else
+    rm -rf $INSTALL_PATH /etc/init.d/easytier /usr/bin/easytier-core /usr/bin/easytier-cli /usr/sbin/easytier-core /usr/sbin/easytier-cli
+  fi
   echo -e "\r\n${GREEN_COLOR}EasyTier was removed successfully! ${RES}\r\n"
 }
 
+# Minimizes downtime by preparing new files before stopping the service.
+# Correctly handles restarting multiple systemd service instances.
 UPDATE() {
   if [ ! -f "$INSTALL_PATH/easytier-core" ]; then
-    echo -e "\r\n${RED_COLOR}Opus${RES}, unable to find EasyTier\r\n"
+    echo -e "\r\n${RED_COLOR}Error${RES}: EasyTier not found in $INSTALL_PATH. Cannot perform update.\r\n"
     exit 1
-  else
-    echo
-    echo -e "${GREEN_COLOR}Stopping EasyTier process${RES}\r\n"
-    systemctl stop "easytier@*"
-    # Backup
-    rm -rf /tmp/easytier_tmp_update
-    mkdir -p  /tmp/easytier_tmp_update
-    cp -a $INSTALL_PATH/* /tmp/easytier_tmp_update/
-    INSTALL
-    if [ -f $INSTALL_PATH/easytier-core ]; then
-      echo -e "${GREEN_COLOR} Vrify successfully ${RES}"
-    else
-      echo -e "${RED_COLOR} Download failed, unable to update${RES}"
-      echo "Rollback all ..."
-      rm -rf $INSTALL_PATH/*
-      mv /tmp/easytier_tmp_update/* $INSTALL_PATH/
-      systemctl start "easytier@*"
-      exit 1
-    fi
-    echo -e "\r\n${GREEN_COLOR} Starting EasyTier process${RES}"
-    systemctl start "easytier@*"
-    echo -e "\r\n${GREEN_COLOR} EasyTier was the latest stable version! ${RES}\r\n"
   fi
+
+  # 1. Get the latest version info (while service is still running)
+  echo -e "${GREEN_COLOR}Checking for the latest version...${RES}"
+  RESPONSE=$(curl -s "https://api.github.com/repos/EasyTier/EasyTier/releases/latest")
+  LATEST_VERSION=$(echo "$RESPONSE" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+  LATEST_VERSION=$(echo -e "$LATEST_VERSION" | tr -d '[:space:]')
+
+  if [ -z "$LATEST_VERSION" ]; then
+    echo -e "\r\n${RED_COLOR}Error${RES}: Failed to get the latest version. Please check your network connection.\r\n"
+    exit 1
+  fi
+
+  echo -e "Latest version found: ${GREEN_COLOR}$LATEST_VERSION${RES}"
+
+  # 2. Download and extract the new version to a temporary directory (while service is still running)
+  TEMP_UPDATE_DIR=$(mktemp -d /tmp/easytier_update_XXXXXX)
+  echo -e "${GREEN_COLOR}Downloading new version to temporary directory: $TEMP_UPDATE_DIR${RES}"
+  
+  BASE_URL="https://github.com/EasyTier/EasyTier/releases/latest/download/easytier-linux-${ARCH}-${LATEST_VERSION}.zip"
+  DOWNLOAD_URL=$($NO_GH_PROXY && echo "$BASE_URL" || echo "${GH_PROXY}${BASE_URL}")
+  
+  echo -e "Download URL: ${GREEN_COLOR}${DOWNLOAD_URL}${RES}"
+  curl -L ${DOWNLOAD_URL} -o "$TEMP_UPDATE_DIR/easytier.zip" $CURL_BAR
+  if [ $? -ne 0 ]; then
+      echo -e "${RED_COLOR}Download failed!${RES}"
+      rm -rf "$TEMP_UPDATE_DIR"
+      exit 1
+  fi
+  
+  unzip -o "$TEMP_UPDATE_DIR/easytier.zip" -d "$TEMP_UPDATE_DIR/"
+  
+  NEW_CORE_FILE="$TEMP_UPDATE_DIR/easytier-linux-${ARCH}/easytier-core"
+  if [ ! -f "$NEW_CORE_FILE" ]; then
+      echo -e "${RED_COLOR}Extraction failed or the downloaded archive is invalid.${RES}"
+      rm -rf "$TEMP_UPDATE_DIR"
+      exit 1
+  fi
+  
+  echo -e "${GREEN_COLOR}New version is ready. Starting update process...${RES}"
+  
+  # 3. Enter minimal downtime window
+  
+  # Record currently running service instances before stopping them
+  ACTIVE_SERVICES=()
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    # Get the list of active instances and store them in an array
+    mapfile -t ACTIVE_SERVICES < <(systemctl list-units --type=service --state=active | grep "easytier@" | awk '{print $1}')
+    if [ ${#ACTIVE_SERVICES[@]} -gt 0 ]; then
+        echo -e "\r\n${YELLOW_COLOR}Found running services: ${ACTIVE_SERVICES[*]}${RES}"
+        echo -e "${YELLOW_COLOR}Stopping EasyTier services...${RES}"
+        systemctl stop "${ACTIVE_SERVICES[@]}"
+    else
+        echo -e "\r\n${YELLOW_COLOR}No running EasyTier services found. Nothing to stop.${RES}"
+    fi
+  else # openrc
+    # openrc script seems to handle a single service, so keep it simple
+    echo -e "\r\n${YELLOW_COLOR}Stopping EasyTier service...${RES}"
+    rc-service easytier stop
+  fi
+
+  # Backup critical files, primarily the configuration
+  echo "Backing up configuration..."
+  BACKUP_CONFIG_DIR=$(mktemp -d /tmp/easytier_config_backup_XXXXXX)
+  if [ -d "$INSTALL_PATH/config" ]; then
+      cp -a "$INSTALL_PATH/config" "$BACKUP_CONFIG_DIR/"
+  fi
+  
+  echo "Replacing files..."
+  # Remove old binaries and docs, but not the config directory
+  rm -f "$INSTALL_PATH/easytier-core" "$INSTALL_PATH/easytier-cli" "$INSTALL_PATH/LICENSE" "$INSTALL_PATH/README.md"
+  
+  # Move new files into the installation directory
+  mv "$TEMP_UPDATE_DIR/easytier-linux-${ARCH}"/* "$INSTALL_PATH/"
+  chmod +x "$INSTALL_PATH/easytier-core" "$INSTALL_PATH/easytier-cli"
+
+  # Restore configuration to prevent user-defined settings from being overwritten
+  if [ -d "$BACKUP_CONFIG_DIR/config" ]; then
+      cp -af "$BACKUP_CONFIG_DIR/config/." "$INSTALL_PATH/config/"
+  fi
+  
+  # 4. Start the services, restoring operation
+  if [ "$INIT_SYSTEM" = "systemd" ]; then
+    if [ ${#ACTIVE_SERVICES[@]} -gt 0 ]; then
+        echo -e "${GREEN_COLOR}Starting new version of EasyTier services: ${ACTIVE_SERVICES[*]}${RES}"
+        systemctl start "${ACTIVE_SERVICES[@]}"
+    else
+        echo -e "${GREEN_COLOR}No services were running before the update. Update complete.${RES}"
+    fi
+  else # openrc
+    echo -e "${GREEN_COLOR}Starting new version of EasyTier service...${RES}"
+    rc-service easytier start
+  fi
+  
+  # 5. Clean up temporary files
+  echo "Cleaning up temporary files..."
+  rm -rf "$TEMP_UPDATE_DIR"
+  rm -rf "$BACKUP_CONFIG_DIR"
+  
+  echo -e "\r\n${GREEN_COLOR}EasyTier was successfully updated to version $LATEST_VERSION!${RES}\r\n"
 }
+
 
 # CURL progress
 if curl --help | grep progress-bar >/dev/null 2>&1; then # $CURL_BAR
@@ -341,9 +524,9 @@ elif [ "$COMMEND" = "install" ]; then
     echo -e "${RED_COLOR} Install fail, try install by hand${RES}"
   fi
 else
-  echo -e "${RED_COLOR} Error Commend ${RES}\n\r"
+  echo -e "${RED_COLOR} Error Command ${RES}\n\r"
   echo " ALLOW:"
-  echo -e "\n\r${GREEN_COLOR} install, uninstall, update ${RES}"
+  echo -e "\n\r${GREEN_COLOR} install, uninstall, update, help ${RES}"
 fi
 
 rm -rf /tmp/easytier_tmp_*

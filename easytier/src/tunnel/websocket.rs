@@ -36,9 +36,9 @@ async fn sink_from_zc_packet<E>(msg: ZCPacket) -> Result<Message, E> {
 async fn map_from_ws_message(
     msg: Result<Message, tokio_websockets::Error>,
 ) -> Option<Result<ZCPacket, TunnelError>> {
-    if msg.is_err() {
-        tracing::error!(?msg, "recv from websocket error");
-        return Some(Err(TunnelError::WebSocketError(msg.unwrap_err())));
+    if let Err(e) = msg {
+        tracing::error!(?e, "recv from websocket error");
+        return Some(Err(TunnelError::WebSocketError(e)));
     }
 
     let msg = msg.unwrap();
@@ -73,7 +73,7 @@ impl WSTunnelListener {
         }
     }
 
-    async fn try_accept(&mut self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
+    async fn try_accept(&self, stream: TcpStream) -> Result<Box<dyn Tunnel>, TunnelError> {
         let info = TunnelInfo {
             tunnel_type: self.addr.scheme().to_owned(),
             local_addr: Some(self.local_url().into()),
@@ -101,15 +101,15 @@ impl WSTunnelListener {
             let (write, read) = server_bulder.accept(stream).await?.split();
 
             Box::new(TunnelWrapper::new(
-                read.filter_map(move |msg| map_from_ws_message(msg)),
-                write.with(move |msg| sink_from_zc_packet(msg)),
+                read.filter_map(map_from_ws_message),
+                write.with(sink_from_zc_packet),
                 Some(info),
             ))
         } else {
             let (write, read) = server_bulder.accept(stream).await?.split();
             Box::new(TunnelWrapper::new(
-                read.filter_map(move |msg| map_from_ws_message(msg)),
-                write.with(move |msg| sink_from_zc_packet(msg)),
+                read.filter_map(map_from_ws_message),
+                write.with(sink_from_zc_packet),
                 Some(info),
             ))
         };
@@ -121,7 +121,7 @@ impl WSTunnelListener {
 #[async_trait::async_trait]
 impl TunnelListener for WSTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both)?;
+        let addr = SocketAddr::from_url(self.addr.clone(), IpVersion::Both).await?;
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::STREAM,
@@ -182,8 +182,7 @@ impl WSTunnelConnector {
         tcp_socket: TcpSocket,
     ) -> Result<Box<dyn Tunnel>, TunnelError> {
         let is_wss = is_wss(&addr)?;
-        let socket_addr = SocketAddr::from_url(addr.clone(), ip_version)?;
-        let host = socket_addr.ip();
+        let socket_addr = SocketAddr::from_url(addr.clone(), ip_version).await?;
         let stream = tcp_socket.connect(socket_addr).await?;
 
         let info = TunnelInfo {
@@ -203,9 +202,14 @@ impl WSTunnelConnector {
             init_crypto_provider();
             let tls_conn =
                 tokio_rustls::TlsConnector::from(Arc::new(get_insecure_tls_client_config()));
-            let stream = tls_conn
-                .connect(host.to_string().try_into().unwrap(), stream)
-                .await?;
+            // Modify SNI logic: use "localhost" as SNI for url without domain to avoid IP blocking.
+            let sni = match addr.domain() {
+                None => "localhost".to_string(),
+                Some(domain) => domain.to_string(),
+            };
+            let server_name = rustls::pki_types::ServerName::try_from(sni)
+                .map_err(|_| TunnelError::InvalidProtocol("Invalid SNI".to_string()))?;
+            let stream = tls_conn.connect(server_name, stream).await?;
             MaybeTlsStream::Rustls(stream)
         } else {
             MaybeTlsStream::Plain(stream)
@@ -213,13 +217,13 @@ impl WSTunnelConnector {
 
         let (client, _) = c.connect_on(stream).await?;
         let (write, read) = client.split();
-        let read = read.filter_map(move |msg| map_from_ws_message(msg));
-        let write = write.with(move |msg| sink_from_zc_packet(msg));
+        let read = read.filter_map(map_from_ws_message);
+        let write = write.with(sink_from_zc_packet);
         Ok(Box::new(TunnelWrapper::new(read, write, Some(info))))
     }
 
     async fn connect_with_default_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let socket = if addr.is_ipv4() {
@@ -231,7 +235,7 @@ impl WSTunnelConnector {
     }
 
     async fn connect_with_custom_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();
@@ -265,7 +269,7 @@ impl WSTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for WSTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version)?;
+        let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
         if self.bind_addrs.is_empty() || addr.is_ipv6() {
             self.connect_with_default_bind(addr).await
         } else {

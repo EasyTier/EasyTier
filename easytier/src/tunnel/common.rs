@@ -145,8 +145,7 @@ where
                 return Poll::Ready(None);
             }
 
-            while let Some(packet) =
-                Self::extract_one_packet(self_mut.buf, *self_mut.max_packet_size)
+            if let Some(packet) = Self::extract_one_packet(self_mut.buf, *self_mut.max_packet_size)
             {
                 if let Err(TunnelError::InvalidPacket(msg)) = packet.as_ref() {
                     self_mut
@@ -157,9 +156,9 @@ where
             }
 
             reserve_buf(
-                &mut self_mut.buf,
+                self_mut.buf,
                 *self_mut.max_packet_size,
-                *self_mut.max_packet_size * 32,
+                *self_mut.max_packet_size * 2,
             );
 
             let cap = self_mut.buf.capacity() - self_mut.buf.len();
@@ -186,12 +185,12 @@ where
 }
 
 pub trait ZCPacketToBytes {
-    fn into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
+    fn zcpacket_into_bytes(&self, zc_packet: ZCPacket) -> Result<Bytes, TunnelError>;
 }
 
 pub struct TcpZCPacketToBytes;
 impl ZCPacketToBytes for TcpZCPacketToBytes {
-    fn into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
+    fn zcpacket_into_bytes(&self, item: ZCPacket) -> Result<Bytes, TunnelError> {
         let mut item = item.convert_type(ZCPacketType::TCP);
 
         let tcp_len = PEER_MANAGER_HEADER_SIZE + item.payload_len();
@@ -280,7 +279,9 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: ZCPacket) -> Result<(), Self::Error> {
         let pinned = self.project();
-        pinned.sending_bufs.push(pinned.converter.into_bytes(item)?);
+        pinned
+            .sending_bufs
+            .push(pinned.converter.zcpacket_into_bytes(item)?);
 
         Ok(())
     }
@@ -360,7 +361,13 @@ pub(crate) fn setup_sokcet2_ext(
 
     socket2_socket.set_nonblocking(true)?;
     socket2_socket.set_reuse_address(true)?;
-    socket2_socket.bind(&socket2::SockAddr::from(*bind_addr))?;
+    if let Err(e) = socket2_socket.bind(&socket2::SockAddr::from(*bind_addr)) {
+        if bind_addr.is_ipv4() {
+            return Err(e.into());
+        } else {
+            tracing::warn!(?e, "bind failed, do not return error for ipv6");
+        }
+    }
 
     // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     // socket2_socket.set_reuse_port(true)?;
@@ -377,12 +384,21 @@ pub(crate) fn setup_sokcet2_ext(
         unsafe {
             let dev_idx = nix::libc::if_nametoindex(dev_name.as_str().as_ptr() as *const i8);
             tracing::warn!(?dev_idx, ?dev_name, "bind device");
-            socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
+            if bind_addr.is_ipv4() {
+                socket2_socket.bind_device_by_index_v4(std::num::NonZeroU32::new(dev_idx))?;
+            } else {
+                socket2_socket.bind_device_by_index_v6(std::num::NonZeroU32::new(dev_idx))?;
+            }
             tracing::warn!(?dev_idx, ?dev_name, "bind device doen");
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "fuchsia",
+        target_os = "linux",
+        target_env = "ohos"
+    ))]
     if let Some(dev_name) = bind_dev {
         tracing::trace!(dev_name = ?dev_name, "bind device");
         socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
@@ -395,8 +411,8 @@ pub(crate) async fn wait_for_connect_futures<Fut, Ret, E>(
     mut futures: FuturesUnordered<Fut>,
 ) -> Result<Ret, TunnelError>
 where
-    Fut: Future<Output = Result<Ret, E>> + Send + Sync,
-    E: std::error::Error + Into<TunnelError> + Send + Sync + 'static,
+    Fut: Future<Output = Result<Ret, E>> + Send,
+    E: std::error::Error + Into<TunnelError> + Send + 'static,
 {
     // return last error
     let mut last_err = None;
@@ -430,9 +446,10 @@ pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
 }
 
 pub mod tests {
-    use std::time::Instant;
+    use atomic_shim::AtomicU64;
+    use std::{sync::Arc, time::Instant};
 
-    use futures::{Future, SinkExt, StreamExt, TryStreamExt};
+    use futures::{Future, SinkExt, StreamExt};
     use tokio_util::bytes::{BufMut, Bytes, BytesMut};
 
     use crate::{
@@ -448,14 +465,14 @@ pub mod tests {
                 let Ok(msg) = item else {
                     continue;
                 };
-                if let Err(_) = send.send(msg).await {
+                tracing::debug!(?msg, "recv a msg, try echo back");
+                if send.send(msg).await.is_err() {
                     break;
                 }
             }
         } else {
             let Some(ret) = recv.next().await else {
-                assert!(false, "recv error");
-                return;
+                panic!("recv error");
             };
 
             if ret.is_err() {
@@ -547,21 +564,95 @@ pub mod tests {
         }
     }
 
-    pub(crate) async fn _tunnel_bench<L, C>(mut listener: L, mut connector: C)
+    pub(crate) async fn _tunnel_pingpong_netns_with_timeout<L, C>(
+        listener: L,
+        connector: C,
+        l_netns: NetNS,
+        c_netns: NetNS,
+        buf: Vec<u8>,
+        timeout: std::time::Duration,
+    ) -> Result<(), anyhow::Error>
     where
         L: TunnelListener + Send + Sync + 'static,
         C: TunnelConnector + Send + Sync + 'static,
     {
-        listener.listen().await.unwrap();
+        let handle = tokio::spawn(async move {
+            _tunnel_pingpong_netns(listener, connector, l_netns, c_netns, buf).await;
+        });
+
+        match tokio::time::timeout(timeout, handle).await {
+            Ok(join_res) => match join_res {
+                Ok(_) => Ok(()),
+                Err(join_err) => {
+                    if join_err.is_panic() {
+                        let payload = join_err.into_panic();
+                        let msg = match payload.downcast::<String>() {
+                            Ok(s) => *s,
+                            Err(payload) => match payload.downcast::<&str>() {
+                                Ok(s) => (*s).to_string(),
+                                Err(_) => "non-string panic payload".to_string(),
+                            },
+                        };
+                        Err(anyhow::anyhow!("task panicked: {}", msg))
+                    } else {
+                        Err(anyhow::anyhow!("task cancelled"))
+                    }
+                }
+            },
+            Err(elapsed) => Err(elapsed.into()),
+        }
+    }
+
+    pub(crate) async fn _tunnel_bench<L, C>(listener: L, connector: C)
+    where
+        L: TunnelListener + Send + Sync + 'static,
+        C: TunnelConnector + Send + Sync + 'static,
+    {
+        _tunnel_bench_netns(listener, connector, NetNS::new(None), NetNS::new(None)).await;
+    }
+
+    pub(crate) async fn _tunnel_bench_netns<L, C>(
+        mut listener: L,
+        mut connector: C,
+        netns_l: NetNS,
+        netns_c: NetNS,
+    ) -> usize
+    where
+        L: TunnelListener + Send + Sync + 'static,
+        C: TunnelConnector + Send + Sync + 'static,
+    {
+        {
+            let _g = netns_l.guard();
+            listener.listen().await.unwrap();
+        }
+
+        let bps = Arc::new(AtomicU64::new(0));
+        let bps_clone = bps.clone();
 
         let lis = tokio::spawn(async move {
             let ret = listener.accept().await.unwrap();
-            _tunnel_echo_server(ret, false).await
+            // _tunnel_echo_server(ret, false).await
+            let (mut r, _s) = ret.split();
+            let now = Instant::now();
+            let mut count = 0;
+            while let Some(Ok(p)) = r.next().await {
+                count += p.payload_len();
+                let elapsed_sec = now.elapsed().as_secs();
+                if elapsed_sec > 0 {
+                    bps_clone.store(
+                        count as u64 / now.elapsed().as_secs(),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            }
         });
 
-        let tunnel = connector.connect().await.unwrap();
+        let tunnel = {
+            let _g = netns_c.guard();
+            connector.connect().await.unwrap()
+        };
 
-        let (recv, mut send) = tunnel.split();
+        let (_recv, mut send) = tunnel.split();
 
         // prepare a 4k buffer with random data
         let mut send_buf = BytesMut::new();
@@ -569,27 +660,11 @@ pub mod tests {
             send_buf.put_i128(rand::random::<i128>());
         }
 
-        let r = tokio::spawn(async move {
-            let now = Instant::now();
-            let count = recv
-                .try_fold(0usize, |mut ret, _| async move {
-                    ret += 1;
-                    Ok(ret)
-                })
-                .await
-                .unwrap();
-
-            println!(
-                "bps: {}",
-                (count / 1024) * 4 / now.elapsed().as_secs() as usize
-            );
-        });
-
         let now = Instant::now();
         while now.elapsed().as_secs() < 10 {
             // send.feed(item)
             let item = ZCPacket::new_with_payload(send_buf.as_ref());
-            let _ = send.feed(item).await.unwrap();
+            send.feed(item).await.unwrap();
         }
 
         send.close().await.unwrap();
@@ -598,11 +673,11 @@ pub mod tests {
         drop(tunnel);
 
         tracing::warn!("wait for recv to finish...");
-
-        let _ = tokio::join!(r);
+        let bps = bps.load(std::sync::atomic::Ordering::Acquire);
+        println!("bps: {}", bps);
 
         lis.abort();
-        let _ = tokio::join!(lis);
+        bps as usize
     }
 
     pub fn enable_log() {
@@ -617,7 +692,7 @@ pub mod tests {
             .init();
     }
 
-    pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration) -> ()
+    pub async fn wait_for_condition<F, FRet>(mut condition: F, timeout: std::time::Duration)
     where
         F: FnMut() -> FRet + Send,
         FRet: Future<Output = bool>,

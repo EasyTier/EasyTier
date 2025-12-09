@@ -9,6 +9,7 @@ use tokio::task::JoinSet;
 use crate::{
     common::join_joinset_background,
     proto::{
+        common::TunnelInfo,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::{__rt::RpcClientFactory, error::Error},
     },
@@ -17,11 +18,28 @@ use crate::{
 
 use super::service_registry::ServiceRegistry;
 
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(Arc, Box)]
+pub trait RpcServerHook: Send + Sync {
+    async fn on_new_client(
+        &self,
+        tunnel_info: Option<TunnelInfo>,
+    ) -> Result<Option<TunnelInfo>, anyhow::Error> {
+        Ok(tunnel_info)
+    }
+    async fn on_client_disconnected(&self, _tunnel_info: Option<TunnelInfo>) {}
+}
+
+struct DefaultHook;
+impl RpcServerHook for DefaultHook {}
+
 pub struct StandAloneServer<L> {
     registry: Arc<ServiceRegistry>,
     listener: Option<L>,
     inflight_server: Arc<AtomicU32>,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    tasks: JoinSet<()>,
+    hook: Option<Arc<dyn RpcServerHook>>,
+    rx_timeout: Option<Duration>,
 }
 
 impl<L: TunnelListener + 'static> StandAloneServer<L> {
@@ -30,8 +48,19 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
             registry: Arc::new(ServiceRegistry::new()),
             listener: Some(listener),
             inflight_server: Arc::new(AtomicU32::new(0)),
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            tasks: JoinSet::new(),
+
+            hook: None,
+            rx_timeout: Some(Duration::from_secs(60)),
         }
+    }
+
+    pub fn set_rx_timeout(&mut self, timeout: Option<Duration>) {
+        self.rx_timeout = timeout;
+    }
+
+    pub fn set_hook(&mut self, hook: Arc<dyn RpcServerHook>) {
+        self.hook = Some(hook);
     }
 
     pub fn registry(&self) -> &ServiceRegistry {
@@ -42,45 +71,61 @@ impl<L: TunnelListener + 'static> StandAloneServer<L> {
         listener: &mut L,
         inflight: Arc<AtomicU32>,
         registry: Arc<ServiceRegistry>,
-        tasks: Arc<Mutex<JoinSet<()>>>,
+        hook: Arc<dyn RpcServerHook>,
+        rx_timeout: Option<Duration>,
     ) -> Result<(), Error> {
-        listener
-            .listen()
-            .await
-            .with_context(|| "failed to listen")?;
+        let tasks = Arc::new(Mutex::new(JoinSet::new()));
+        join_joinset_background(tasks.clone(), "standalone serve_loop".to_string());
 
         loop {
             let tunnel = listener.accept().await?;
+            let tunnel_info = tunnel.info();
             let registry = registry.clone();
             let inflight_server = inflight.clone();
+            let hook = hook.clone();
+
+            let tunnel_info = match hook.on_new_client(tunnel_info).await {
+                Ok(info) => info,
+                Err(e) => {
+                    tracing::warn!(?e, "standalone hook.on_new_client failed");
+                    continue;
+                }
+            };
+
             inflight_server.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tasks.lock().unwrap().spawn(async move {
-                let server =
-                    BidirectRpcManager::new().set_rx_timeout(Some(Duration::from_secs(60)));
+                let server = BidirectRpcManager::new().set_rx_timeout(rx_timeout);
                 server.rpc_server().registry().replace_registry(&registry);
                 server.run_with_tunnel(tunnel);
                 server.wait().await;
+                hook.on_client_disconnected(tunnel_info.clone()).await;
                 inflight_server.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             });
         }
     }
 
     pub async fn serve(&mut self) -> Result<(), Error> {
-        let tasks = self.tasks.clone();
         let mut listener = self.listener.take().unwrap();
-        let registry = self.registry.clone();
+        let hook = self.hook.take().unwrap_or_else(|| Arc::new(DefaultHook));
+        let rx_timeout = self.rx_timeout;
 
-        join_joinset_background(tasks.clone(), "standalone server tasks".to_string());
+        listener
+            .listen()
+            .await
+            .with_context(|| "failed to listen")?;
+
+        let registry = self.registry.clone();
 
         let inflight_server = self.inflight_server.clone();
 
-        self.tasks.lock().unwrap().spawn(async move {
+        self.tasks.spawn(async move {
             loop {
                 let ret = Self::serve_loop(
                     &mut listener,
                     inflight_server.clone(),
                     registry.clone(),
-                    tasks.clone(),
+                    hook.clone(),
+                    rx_timeout,
                 )
                 .await;
                 if let Err(e) = ret {
@@ -145,5 +190,35 @@ impl<C: TunnelConnector> StandAloneClient<C> {
             .unwrap()
             .rpc_client()
             .scoped_client::<F>(1, 1, domain_name))
+    }
+
+    pub async fn wait(&mut self) {
+        if let Some(client) = self.client.take() {
+            client.wait().await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        proto::rpc_impl::standalone::StandAloneServer,
+        tunnel::{
+            tcp::{TcpTunnelConnector, TcpTunnelListener},
+            TunnelConnector as _,
+        },
+    };
+
+    #[tokio::test]
+    async fn standalone_exit_on_drop() {
+        let addr: url::Url = "tcp://0.0.0.0:53884".parse().unwrap();
+        let tunnel = TcpTunnelListener::new(addr.clone());
+        let mut server = StandAloneServer::new(tunnel);
+        server.serve().await.unwrap();
+        drop(server);
+
+        // tcp should closed
+        let mut connector = TcpTunnelConnector::new(addr);
+        connector.connect().await.unwrap_err();
     }
 }

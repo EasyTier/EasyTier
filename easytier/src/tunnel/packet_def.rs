@@ -28,6 +28,15 @@ pub enum UdpPacketType {
     Data = 3,
     Fin = 4,
     HolePunch = 5,
+    V6HolePunch = 6, // when receiving v6 hole punch packet, the packet contains a socket addr of other peer, we
+                     // will send a hole punch packet to that peer. we only accept this packet from lookback interface.
+}
+
+#[repr(C, packed)]
+#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
+pub struct V6HolePunchPacket {
+    pub dst_ipv6: [u8; 16],
+    pub dst_port: U16<DefaultEndian>,
 }
 
 #[repr(C, packed)]
@@ -61,6 +70,8 @@ pub enum PacketType {
     RpcReq = 8,
     RpcResp = 9,
     ForeignNetworkPacket = 10,
+    KcpSrc = 11,
+    KcpDst = 12,
 }
 
 bitflags::bitflags! {
@@ -70,6 +81,8 @@ bitflags::bitflags! {
         const EXIT_NODE = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
+        const KCP_SRC_MODIFIED = 0b0010_0000;
+        const NOT_SEND_TO_TUN = 0b0100_0000;
 
         const _ = !0;
     }
@@ -172,6 +185,40 @@ impl PeerManagerHeader {
         self.flags = flags.bits();
         self
     }
+
+    pub fn set_kcp_src_modified(&mut self, modified: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if modified {
+            flags.insert(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn is_kcp_src_modified(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::KCP_SRC_MODIFIED)
+    }
+
+    pub fn set_not_send_to_tun(&mut self, not_send_to_tun: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if not_send_to_tun {
+            flags.insert(PeerManagerHeaderFlags::NOT_SEND_TO_TUN);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::NOT_SEND_TO_TUN);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn is_not_send_to_tun(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::NOT_SEND_TO_TUN)
+    }
 }
 
 #[repr(C, packed)]
@@ -223,7 +270,7 @@ pub struct AesGcmTail {
 }
 pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
 
-#[derive(AsBytes, FromZeroes, Clone, Debug, Copy)]
+#[derive(AsBytes, FromZeroes, Clone, Debug, Copy, PartialEq, Hash, Eq)]
 #[repr(u8)]
 pub enum CompressorAlgo {
     None = 0,
@@ -394,7 +441,7 @@ impl ZCPacket {
         let total_len = payload_off + payload.len();
         ret.inner.reserve(total_len);
         unsafe { ret.inner.set_len(total_len) };
-        ret.mut_payload()[..payload.len()].copy_from_slice(&payload);
+        ret.mut_payload()[..payload.len()].copy_from_slice(payload);
         ret
     }
 
@@ -411,7 +458,7 @@ impl ZCPacket {
         dst_peer_id: u32,
         foreign_zc_packet: &ZCPacket,
     ) -> Self {
-        let foreign_network_hdr = ForeignNetworkPacketHeader::new(dst_peer_id, &network_name);
+        let foreign_network_hdr = ForeignNetworkPacketHeader::new(dst_peer_id, network_name);
         let total_payload_len =
             foreign_network_hdr.get_header_len() + foreign_zc_packet.tunnel_payload().len();
 
@@ -492,6 +539,10 @@ impl ZCPacket {
     // ref versions
     pub fn payload(&self) -> &[u8] {
         &self.inner[self.payload_offset()..]
+    }
+
+    pub fn payload_bytes(mut self) -> BytesMut {
+        self.inner.split_off(self.payload_offset())
     }
 
     pub fn peer_manager_header(&self) -> Option<&PeerManagerHeader> {
@@ -606,7 +657,7 @@ impl ZCPacket {
             return Self::new_from_buf(buf, target_packet_type);
         }
 
-        return Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type);
+        Self::new_from_buf(self.inner.split_off(new_offset), target_packet_type)
     }
 
     pub fn into_bytes(self) -> Bytes {
@@ -623,7 +674,7 @@ impl ZCPacket {
 
     pub fn is_lossy(&self) -> bool {
         self.peer_manager_header()
-            .and_then(|hdr| Some(hdr.packet_type == PacketType::Data as u8))
+            .map(|hdr| hdr.packet_type == PacketType::Data as u8)
             .unwrap_or(false)
     }
 
@@ -645,6 +696,14 @@ impl ZCPacket {
                 .split_off(foreign_hdr_len + self.payload_offset()),
             ZCPacketType::DummyTunnel,
         )
+    }
+
+    pub fn get_src_peer_id(&self) -> Option<u32> {
+        self.peer_manager_header().map(|hdr| hdr.from_peer_id.get())
+    }
+
+    pub fn get_dst_peer_id(&self) -> Option<u32> {
+        self.peer_manager_header().map(|hdr| hdr.to_peer_id.get())
     }
 }
 

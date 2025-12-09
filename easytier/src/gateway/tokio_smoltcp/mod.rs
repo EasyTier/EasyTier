@@ -4,7 +4,7 @@
 
 use std::{
     io,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicU16, Ordering},
         Arc,
@@ -20,7 +20,7 @@ use smoltcp::{
     time::{Duration, Instant},
     wire::{HardwareAddress, IpAddress, IpCidr},
 };
-pub use socket::{TcpListener, TcpStream};
+pub use socket::{TcpListener, TcpStream, UdpSocket};
 pub use socket_allocator::BufferSize;
 use tokio::sync::Notify;
 
@@ -34,7 +34,7 @@ mod socket_allocator;
 /// Can be used to create a forever timestamp in neighbor.
 // The 60_000 is the same as NeighborCache::ENTRY_LIFETIME.
 pub const FOREVER: Instant =
-    Instant::from_micros_const(i64::max_value() - Duration::from_millis(60_000).micros() as i64);
+    Instant::from_micros_const(i64::MAX - Duration::from_millis(60_000).micros() as i64);
 
 pub struct Neighbor {
     pub protocol_addr: IpAddress,
@@ -54,12 +54,17 @@ pub struct NetConfig {
 }
 
 impl NetConfig {
-    pub fn new(interface_config: Config, ip_addr: IpCidr, gateway: Vec<IpAddress>) -> Self {
+    pub fn new(
+        interface_config: Config,
+        ip_addr: IpCidr,
+        gateway: Vec<IpAddress>,
+        buffer_size: Option<BufferSize>,
+    ) -> Self {
         Self {
             interface_config,
             ip_addr,
             gateway,
-            buffer_size: Default::default(),
+            buffer_size: buffer_size.unwrap_or_default(),
         }
     }
 }
@@ -158,11 +163,18 @@ impl Net {
         )
         .await
     }
+
+    /// This function will create a new UDP socket and attempt to bind it to the `addr` provided.
+    pub async fn udp_bind(&self, addr: SocketAddr) -> io::Result<UdpSocket> {
+        let addr = self.set_address(addr);
+        UdpSocket::new(self.reactor.clone(), addr.into()).await
+    }
+
     fn set_address(&self, mut addr: SocketAddr) -> SocketAddr {
         if addr.ip().is_unspecified() {
             addr.set_ip(match self.ip_addr.address() {
-                IpAddress::Ipv4(ip) => Ipv4Addr::from(ip).into(),
-                IpAddress::Ipv6(ip) => Ipv6Addr::from(ip).into(),
+                IpAddress::Ipv4(ip) => ip.into(),
+                IpAddress::Ipv6(ip) => ip.into(),
                 #[allow(unreachable_patterns)]
                 _ => panic!("address must not be unspecified"),
             });

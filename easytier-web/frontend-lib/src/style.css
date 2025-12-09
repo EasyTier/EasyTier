@@ -1,8 +1,6 @@
 @import 'primeicons/primeicons.css';
 @import 'floating-vue/dist/style.css';
 
-.frontend-lib {
-
 @layer tailwind-base, primevue, tailwind-utilities;
 
 @layer tailwind-base {
@@ -19,8 +17,6 @@
   font-size: 12px;
   line-height: 24px;
   font-weight: 400;
-
-  color: #0f0f0f;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -51,4 +47,6 @@
   background-color: #0000005d;
 }
 
+.v-popper__inner {
+  white-space: pre-wrap;
 }

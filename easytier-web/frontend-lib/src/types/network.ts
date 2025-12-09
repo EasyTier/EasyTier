@@ -31,10 +31,46 @@ export interface NetworkConfig {
   advanced_settings: boolean
 
   listener_urls: string[]
-  rpc_port: number
   latency_first: boolean
 
   dev_name: string
+
+  use_smoltcp?: boolean
+  disable_ipv6?: boolean
+  enable_kcp_proxy?: boolean
+  disable_kcp_input?: boolean
+  enable_quic_proxy?: boolean
+  disable_quic_input?: boolean
+  disable_p2p?: boolean
+  p2p_only?: boolean
+  bind_device?: boolean
+  no_tun?: boolean
+  enable_exit_node?: boolean
+  relay_all_peer_rpc?: boolean
+  multi_thread?: boolean
+  proxy_forward_by_system?: boolean
+  disable_encryption?: boolean
+  disable_udp_hole_punching?: boolean
+  disable_sym_hole_punching?: boolean
+
+  enable_relay_network_whitelist?: boolean
+  relay_network_whitelist: string[]
+
+  enable_manual_routes: boolean
+  routes: string[]
+
+  exit_nodes: string[]
+
+  enable_socks5?: boolean
+  socks5_port: number
+
+  mtu: number | null
+  mapped_listeners: string[]
+
+  enable_magic_dns?: boolean
+  enable_private_mode?: boolean
+
+  port_forwards: PortForwardConfig[]
 }
 
 export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
@@ -66,9 +102,38 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
     ],
-    rpc_port: 0,
-    latency_first: true,
+    latency_first: false,
     dev_name: '',
+
+    use_smoltcp: false,
+    disable_ipv6: false,
+    enable_kcp_proxy: false,
+    disable_kcp_input: false,
+    enable_quic_proxy: false,
+    disable_quic_input: false,
+    disable_p2p: false,
+    p2p_only: false,
+    bind_device: true,
+    no_tun: false,
+    enable_exit_node: false,
+    relay_all_peer_rpc: false,
+    multi_thread: true,
+    proxy_forward_by_system: false,
+    disable_encryption: false,
+    disable_udp_hole_punching: false,
+    disable_sym_hole_punching: false,
+    enable_relay_network_whitelist: false,
+    relay_network_whitelist: [],
+    enable_manual_routes: false,
+    routes: [],
+    exit_nodes: [],
+    enable_socks5: false,
+    socks5_port: 1080,
+    mtu: null,
+    mapped_listeners: [],
+    enable_magic_dns: false,
+    enable_private_mode: false,
+    port_forwards: [],
   }
 }
 
@@ -178,10 +243,14 @@ export interface PeerRoutePair {
   peer?: PeerInfo
 }
 
+export interface UrlPb {
+  url: string
+}
+
 export interface TunnelInfo {
   tunnel_type: string
-  local_addr: string
-  remote_addr: string
+  local_addr: UrlPb
+  remote_addr: UrlPb
 }
 
 export interface PeerConnStats {
@@ -191,6 +260,30 @@ export interface PeerConnStats {
   tx_packets: number
   latency_us: number
 }
+
+export interface PortForwardConfig {
+  bind_ip: string,
+  bind_port: number,
+  dst_ip: string,
+  dst_port: number,
+  proto: string
+}
+
+// 添加新行
+export const addRow = (rows: PortForwardConfig[]) => {
+  rows.push({
+    proto: 'tcp',
+    bind_ip: '',
+    bind_port: 65535,
+    dst_ip: '',
+    dst_port: 65535,
+  });
+};
+
+// 删除行
+export const removeRow = (index: number, rows: PortForwardConfig[]) => {
+  rows.splice(index, 1);
+};
 
 export enum EventType {
   TunDeviceReady = 'TunDeviceReady', // string
@@ -210,9 +303,12 @@ export enum EventType {
   Connecting = 'Connecting', // any
   ConnectError = 'ConnectError', // string, string, string
 
+  VpnPortalStarted = 'VpnPortalStarted', // string
   VpnPortalClientConnected = 'VpnPortalClientConnected', // string, string
   VpnPortalClientDisconnected = 'VpnPortalClientDisconnected', // string, string, string
 
   DhcpIpv4Changed = 'DhcpIpv4Changed', // ipv4 | null, ipv4 | null
   DhcpIpv4Conflicted = 'DhcpIpv4Conflicted', // ipv4 | null
+
+  PortForwardAdded = 'PortForwardAdded', // PortForwardConfigPb
 }

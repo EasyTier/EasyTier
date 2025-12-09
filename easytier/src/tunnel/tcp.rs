@@ -8,7 +8,7 @@ use super::TunnelInfo;
 use crate::tunnel::common::setup_sokcet2;
 
 use super::{
-    check_scheme_and_get_socket_addr, check_scheme_and_get_socket_addr_ext,
+    check_scheme_and_get_socket_addr,
     common::{wait_for_connect_futures, FramedReader, FramedWriter, TunnelWrapper},
     IpVersion, Tunnel, TunnelError, TunnelListener,
 };
@@ -28,13 +28,39 @@ impl TcpTunnelListener {
             listener: None,
         }
     }
+
+    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, std::io::Error> {
+        let listener = self.listener.as_ref().unwrap();
+        let (stream, _) = listener.accept().await?;
+
+        if let Err(e) = stream.set_nodelay(true) {
+            tracing::warn!(?e, "set_nodelay fail in accept");
+        }
+
+        let info = TunnelInfo {
+            tunnel_type: "tcp".to_owned(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
+            ),
+        };
+
+        let (r, w) = stream.into_split();
+        Ok(Box::new(TunnelWrapper::new(
+            FramedReader::new(r, TCP_MTU_BYTES),
+            FramedWriter::new(w),
+            Some(info),
+        )))
+    }
 }
 
 #[async_trait]
 impl TunnelListener for TcpTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         self.listener = None;
-        let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp")?;
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", IpVersion::Both)
+                .await?;
 
         let socket2_socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -57,27 +83,23 @@ impl TunnelListener for TcpTunnelListener {
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let listener = self.listener.as_ref().unwrap();
-        let (stream, _) = listener.accept().await?;
-
-        if let Err(e) = stream.set_nodelay(true) {
-            tracing::warn!(?e, "set_nodelay fail in accept");
+        loop {
+            match self.do_accept().await {
+                Ok(ret) => return Ok(ret),
+                Err(e) => {
+                    use std::io::ErrorKind::*;
+                    if matches!(
+                        e.kind(),
+                        NotConnected | ConnectionAborted | ConnectionRefused | ConnectionReset
+                    ) {
+                        tracing::warn!(?e, "accept fail with retryable error: {:?}", e);
+                        continue;
+                    }
+                    tracing::warn!(?e, "accept fail");
+                    return Err(e.into());
+                }
+            }
         }
-
-        let info = TunnelInfo {
-            tunnel_type: "tcp".to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(&stream.peer_addr()?.to_string(), "tcp").into(),
-            ),
-        };
-
-        let (r, w) = stream.into_split();
-        Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new(r, TCP_MTU_BYTES),
-            FramedWriter::new(w),
-            Some(info),
-        )))
     }
 
     fn local_url(&self) -> url::Url {
@@ -127,17 +149,17 @@ impl TcpTunnelConnector {
     }
 
     async fn connect_with_default_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        tracing::info!(addr = ?self.addr, "connect tcp start");
+        tracing::info!(url = ?self.addr, ?addr, "connect tcp start, bind addrs: {:?}", self.bind_addrs);
         let stream = TcpStream::connect(addr).await?;
-        tracing::info!(addr = ?self.addr, "connect tcp succ");
-        return get_tunnel_with_tcp_stream(stream, self.addr.clone().into());
+        tracing::info!(url = ?self.addr, ?addr, "connect tcp succ");
+        get_tunnel_with_tcp_stream(stream, self.addr.clone())
     }
 
     async fn connect_with_custom_bind(
-        &mut self,
+        &self,
         addr: SocketAddr,
     ) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let futures = FuturesUnordered::new();
@@ -157,11 +179,11 @@ impl TcpTunnelConnector {
             }
 
             let socket = TcpSocket::from_std_stream(socket2_socket.into());
-            futures.push(socket.connect(addr.clone()));
+            futures.push(socket.connect(addr));
         }
 
         let ret = wait_for_connect_futures(futures).await;
-        return get_tunnel_with_tcp_stream(ret?, self.addr.clone().into());
+        get_tunnel_with_tcp_stream(ret?, self.addr.clone())
     }
 }
 
@@ -169,8 +191,9 @@ impl TcpTunnelConnector {
 impl super::TunnelConnector for TcpTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let addr =
-            check_scheme_and_get_socket_addr_ext::<SocketAddr>(&self.addr, "tcp", self.ip_version)?;
-        if self.bind_addrs.is_empty() || addr.is_ipv6() {
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", self.ip_version)
+                .await?;
+        if self.bind_addrs.is_empty() {
             self.connect_with_default_bind(addr).await
         } else {
             self.connect_with_custom_bind(addr).await

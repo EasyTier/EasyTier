@@ -70,7 +70,7 @@ pub fn get_insecure_tls_client_config() -> rustls::ClientConfig {
         .dangerous()
         .with_custom_certificate_verifier(SkipServerVerification::new(provider.clone()))
         .with_no_client_auth();
-    config.enable_sni = false;
+    config.enable_sni = true;
     config.enable_early_data = false;
     config
 }
@@ -80,7 +80,7 @@ pub fn get_insecure_tls_cert<'a>() -> (Vec<CertificateDer<'a>>, PrivateKeyDer<'a
     let cert_der = cert.serialize_der().unwrap();
     let priv_key = cert.serialize_private_key_der();
     let priv_key = rustls::pki_types::PrivatePkcs8KeyDer::from(priv_key);
-    let cert_chain = vec![cert_der.clone().into()];
+    let cert_chain = vec![cert_der.into()];
 
     (cert_chain, priv_key.into())
 }

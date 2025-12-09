@@ -76,32 +76,32 @@ impl Backend {
 
     pub async fn register_new_user(&self, new_user: &RegisterNewUser) -> anyhow::Result<()> {
         let hashed_password = password_auth::generate_hash(new_user.credentials.password.as_str());
-        let mut txn = self.db.orm_db().begin().await?;
+        let txn = self.db.orm_db().begin().await?;
 
         entity::users::ActiveModel {
             username: Set(new_user.credentials.username.clone()),
             password: Set(hashed_password.clone()),
             ..Default::default()
         }
-        .save(&mut txn)
+        .save(&txn)
         .await?;
 
         entity::users_groups::ActiveModel {
             user_id: Set(entity::users::Entity::find()
                 .filter(entity::users::Column::Username.eq(new_user.credentials.username.as_str()))
-                .one(&mut txn)
+                .one(&txn)
                 .await?
                 .unwrap()
                 .id),
             group_id: Set(entity::groups::Entity::find()
                 .filter(entity::groups::Column::Name.eq("users"))
-                .one(&mut txn)
+                .one(&txn)
                 .await?
                 .unwrap()
                 .id),
             ..Default::default()
         }
-        .save(&mut txn)
+        .save(&txn)
         .await?;
         txn.commit().await?;
 

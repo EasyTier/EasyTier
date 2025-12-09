@@ -5,20 +5,23 @@ import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
 
 type Route = NetworkTypes.Route
 
-const networkStore = useNetworkStore()
-
 interface vpnStatus {
   running: boolean
   ipv4Addr: string | null | undefined
   ipv4Cidr: number | null | undefined
   routes: string[]
+  dns: string | null | undefined
 }
+
+let dhcpPollingTimer: NodeJS.Timeout | null = null
+const DHCP_POLLING_INTERVAL = 2000 // 2秒后重试
 
 const curVpnStatus: vpnStatus = {
   running: false,
   ipv4Addr: undefined,
   ipv4Cidr: undefined,
   routes: [],
+  dns: undefined,
 }
 
 async function waitVpnStatus(target_status: boolean, timeout_sec: number) {
@@ -42,17 +45,19 @@ async function doStopVpn() {
 
   curVpnStatus.ipv4Addr = undefined
   curVpnStatus.routes = []
+  curVpnStatus.dns = undefined
 }
 
-async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
+async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[], dns?: string) {
   if (curVpnStatus.running) {
     return
   }
 
-  console.log('start vpn service', ipv4Addr, cidr, routes)
+  console.log('start vpn service', ipv4Addr, cidr, routes, dns)
   const start_ret = await start_vpn({
     ipv4Addr: `${ipv4Addr}/${cidr}`,
     routes,
+    dns,
     disallowedApplications: ['com.kkrainbow.easytier'],
     mtu: 1300,
   })
@@ -63,13 +68,14 @@ async function doStartVpn(ipv4Addr: string, cidr: number, routes: string[]) {
 
   curVpnStatus.ipv4Addr = ipv4Addr
   curVpnStatus.routes = routes
+  curVpnStatus.dns = dns
 }
 
 async function onVpnServiceStart(payload: any) {
   console.log('vpn service start', JSON.stringify(payload))
   curVpnStatus.running = true
   if (payload.fd) {
-    setTunFd(networkStore.networkInstanceIds[0], payload.fd)
+    setTunFd(payload.fd)
   }
 }
 
@@ -93,7 +99,7 @@ async function registerVpnServiceListener() {
   )
 }
 
-function getRoutesForVpn(routes: Route[]): string[] {
+function getRoutesForVpn(routes: Route[], node_config: NetworkTypes.NetworkConfig): string[] {
   if (!routes) {
     return []
   }
@@ -108,25 +114,50 @@ function getRoutesForVpn(routes: Route[]): string[] {
     }
   }
 
+  node_config.routes.forEach(r => {
+    ret.push(r)
+  })
+
+  if (node_config.enable_magic_dns) {
+    ret.push('100.100.100.101/32')
+  }
+
   // sort and dedup
   return Array.from(new Set(ret)).sort()
 }
 
-async function onNetworkInstanceChange() {
-  console.error('vpn service watch network instance change ids', JSON.stringify(networkStore.networkInstanceIds))
-  const insts = networkStore.networkInstanceIds
-  if (!insts) {
+export async function onNetworkInstanceChange(instanceId: string) {
+  console.error('vpn service network instance change id', instanceId)
+
+  if (dhcpPollingTimer) {
+    clearTimeout(dhcpPollingTimer)
+    dhcpPollingTimer = null
+  }
+
+  if (!instanceId) {
     await doStopVpn()
     return
   }
-
-  const curNetworkInfo = networkStore.networkInfos[insts[0]]
+  const config = await getConfig(instanceId)
+  if (config.no_tun) {
+    return
+  }
+  const curNetworkInfo = (await collectNetworkInfo(instanceId)).info.map[instanceId]
   if (!curNetworkInfo || curNetworkInfo?.error_msg?.length) {
     await doStopVpn()
     return
   }
 
   const virtual_ip = Utils.ipv4ToString(curNetworkInfo?.my_node_info?.virtual_ipv4.address)
+
+  if (config.dhcp && (!virtual_ip || !virtual_ip.length)) {
+    console.log('DHCP enabled but no IP yet, will retry in', DHCP_POLLING_INTERVAL, 'ms')
+    dhcpPollingTimer = setTimeout(() => {
+      onNetworkInstanceChange(instanceId)
+    }, DHCP_POLLING_INTERVAL)
+    return
+  }
+
   if (!virtual_ip || !virtual_ip.length) {
     await doStopVpn()
     return
@@ -137,12 +168,15 @@ async function onNetworkInstanceChange() {
     network_length = 24
   }
 
-  const routes = getRoutesForVpn(curNetworkInfo?.routes)
+  const routes = getRoutesForVpn(curNetworkInfo?.routes, config)
+
+  const dns = config.enable_magic_dns ? '100.100.100.101' : undefined;
 
   const ipChanged = virtual_ip !== curVpnStatus.ipv4Addr
   const routesChanged = JSON.stringify(routes) !== JSON.stringify(curVpnStatus.routes)
+  const dnsChanged = dns != curVpnStatus.dns
 
-  if (ipChanged || routesChanged) {
+  if (ipChanged || routesChanged || dnsChanged) {
     console.info('vpn service virtual ip changed', JSON.stringify(curVpnStatus), virtual_ip)
     try {
       await doStopVpn()
@@ -152,39 +186,30 @@ async function onNetworkInstanceChange() {
     }
 
     try {
-      await doStartVpn(virtual_ip, 24, routes)
+      await doStartVpn(virtual_ip, network_length, routes, dns)
     }
     catch (e) {
-      console.error('start vpn service failed, clear all network insts.', e)
-      networkStore.clearNetworkInstances()
-      await retainNetworkInstance(networkStore.networkInstanceIds)
+      console.error('start vpn service failed, stop all other network insts.', e)
+      await runNetworkInstance(config, true); //on android config should always be saved
     }
   }
 }
 
-async function watchNetworkInstance() {
-  let subscribe_running = false
-  networkStore.$subscribe(async () => {
-    if (subscribe_running) {
-      return
-    }
-    subscribe_running = true
-    try {
-      await onNetworkInstanceChange()
-    }
-    catch (_) {
-    }
-    subscribe_running = false
-  })
-  console.error('vpn service watch network instance')
+async function isNoTunEnabled(instanceId: string | undefined) {
+  if (!instanceId) {
+    return false
+  }
+  return (await getConfig(instanceId)).no_tun ?? false
 }
 
 export async function initMobileVpnService() {
   await registerVpnServiceListener()
-  await watchNetworkInstance()
 }
 
-export async function prepareVpnService() {
+export async function prepareVpnService(instanceId: string) {
+  if (await isNoTunEnabled(instanceId)) {
+    return
+  }
   console.log('prepare vpn')
   const prepare_ret = await prepare_vpn()
   console.log('prepare vpn', JSON.stringify((prepare_ret)))

@@ -18,6 +18,7 @@ advanced_settings: Advanced Settings
 basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
+rpc_portal_whitelists: RPC Whitelist
 config_network: Config Network
 running: Running
 error_msg: Error Message
@@ -43,15 +44,23 @@ logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
+hide_dock_icon: Hide Dock Icon
+show_dock_icon: Show Dock Icon
 exit: Exit
 use_latency_first: Latency First Mode
-chips_placeholder: 'e.g: {0}, press Enter to add'
+show_node_details: Show Node Details
+hide_node_details: Hide Node Details
+chips_placeholder: 'e.g: {0}, select from the dropdown after input'
 hostname_placeholder: 'Leave blank and default to host name: {0}'
 dev_name_placeholder: 'Note: When multiple networks use the same TUN interface name at the same time, there will be a conflict when setting the TUN''s IP. Leave blank to automatically generate a random name.'
 off_text: Press to disable
 on_text: Press to enable
 show_config: Show Config
+edit_config: Edit Config File
+config_file: Config File
 close: Close
+save: Save
+config_saved: Configuration saved
 my_node_info: My Node Info
 peer_count: Connected
 upload: Upload
@@ -62,11 +71,113 @@ show_event_log: Show Event Log
 event_log: Event Log
 peer_info: Peer Info
 route_cost: Route Cost
+tunnel_proto: Protocol
 hostname: Hostname
 latency: Latency
 upload_bytes: Upload
 download_bytes: Download
 loss_rate: Loss Rate
+nat_type: NAT Type
+
+flags_switch: Feature Switch
+
+latency_first: Enable Latency-First Mode
+latency_first_help: Ignore hop count and select the path with the lowest total latency
+
+use_smoltcp: Use User-Space Protocol Stack
+use_smoltcp_help: Use a user-space TCP/IP stack to avoid issues with operating system firewalls blocking subnet or KCP proxy functionality.
+
+disable_ipv6: Disable IPv6
+disable_ipv6_help: Disable IPv6 functionality for this node, only use IPv4 for network communication.
+
+enable_kcp_proxy: Enable KCP Proxy
+enable_kcp_proxy_help: Convert TCP traffic to KCP traffic to reduce latency and boost transmission speed.
+
+disable_kcp_input: Disable KCP Input
+disable_kcp_input_help: Disable inbound KCP traffic, while nodes with KCP proxy enabled continue to connect using TCP.
+
+enable_quic_proxy: Enable QUIC Proxy
+enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency and boost transmission speed.
+
+disable_quic_input: Disable QUIC Input
+disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
+
+disable_p2p: Disable P2P
+disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
+
+p2p_only: P2P Only
+p2p_only_help: Only communicate with peers that have already established P2P connections, do not relay through other nodes.
+
+bind_device: Bind to Physical Device Only
+bind_device_help: Use only the physical network interface to prevent EasyTier from connecting via virtual networks.
+
+no_tun: No TUN Mode
+no_tun_help: Do not use a TUN interface, suitable for environments without administrator privileges. This node is only accessible; accessing other nodes requires SOCKS5.
+
+enable_exit_node: Enable Exit Node
+enable_exit_node_help: Allow this node to be an exit node
+
+relay_all_peer_rpc: Relay RPC Packets
+relay_all_peer_rpc_help: |
+  Relay all peer rpc packets, even if the peer is not in the relay network whitelist.
+  This can help peers not in relay network whitelist to establish p2p connection.
+
+multi_thread: Multi Thread
+multi_thread_help: Use multi-thread runtime
+
+proxy_forward_by_system: System Forward
+proxy_forward_by_system_help: Forward packet to proxy networks via system kernel, disable internal nat for network proxy
+
+disable_encryption: Disable Encryption
+disable_encryption_help: Disable encryption for peers communication, default is false, must be same with peers
+
+disable_udp_hole_punching: Disable UDP Hole Punching
+disable_udp_hole_punching_help: Disable udp hole punching
+
+disable_sym_hole_punching: Disable Symmetric NAT Hole Punching
+disable_sym_hole_punching_help: Disable special hole punching handling for symmetric NAT (based on birthday attack), treat symmetric NAT as cone NAT
+
+enable_magic_dns: Enable Magic DNS
+enable_magic_dns_help: |
+  Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
+
+enable_private_mode: Enable Private Mode
+enable_private_mode_help: |
+  Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
+
+relay_network_whitelist: Network Whitelist
+relay_network_whitelist_help: |
+  Only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
+  If this parameter is empty, forwarding is disabled. By default, all networks are allowed.
+  e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)
+
+manual_routes: Manual Route
+manual_routes_help: |
+  Assign routes cidr manually, will disable subnet proxy and wireguard routes propagated from peers. e.g.:192.168.0.0/16
+
+socks5: Socks5 Server
+socks5_help: |
+  Enable socks5 server, allow socks5 client to access virtual network. format: <port>, e.g.: 1080
+
+exit_nodes: Exit Nodes
+exit_nodes_help: Exit nodes to forward all traffic to, a virtual ipv4 address, priority is determined by the order of the list
+
+port_forwards: Port Forward
+port_forwards_help: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
+port_forwards_bind_addr: "Bind address, e.g.: 0.0.0.0"
+port_forwards_dst_addr: "Destination address, e.g.: 10.126.126.1"
+port_forwards_add_btn: "Add"
+edit_port_forward: "Edit Port Forward"
+
+mtu: MTU
+mtu_help: |
+  MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
+mtu_placeholder: Leave blank as default value 1380
+
+mapped_listeners: Map Listeners
+mapped_listeners_help: |
+  Manually specify the public address of the listener, other nodes can use this address to connect to this node.
+  e.g.: tcp://123.123.123.123:11223, can specify multiple.
 
 status:
   version: Version
@@ -108,7 +219,170 @@ event:
   ConnectionError: ConnectionError
   Connecting: Connecting
   ConnectError: ConnectError
+  VpnPortalStarted: VpnPortalStarted
   VpnPortalClientConnected: VpnPortalClientConnected
   VpnPortalClientDisconnected: VpnPortalClientDisconnected
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
+  PortForwardAdded: PortForwardAdded
+
+web:
+  login:
+    title: Login
+    username: Username
+    password: Password
+    submit: Login
+    register: Register
+    remember_me: Remember Me
+    api_host: API Host
+    captcha: Captcha
+    back_to_login: Back to Login
+    login: Login
+
+  register:
+    title: Register
+    username: Username
+    password: Password
+    confirm_password: Confirm Password
+    submit: Register
+    login: Back to Login
+  
+  main:
+    dashboard: Dashboard
+    device_list: Device List
+    device_management: Device Management
+    login_page: Login Page
+    settings: Settings
+    logout: Logout
+    language: Language
+    change_password: Change Password
+
+  device:
+    list: Device List
+    management: Device Management
+    add: Add Device
+    delete: Delete Device
+    refresh: Refresh
+    status: Status
+    online: Online
+    offline: Offline
+    last_seen: Last Seen
+    no_devices: No Devices Found
+    sort_by: Sort By
+    sort_direction: Sort Direction
+    show_detailed_view: Show Details
+    hide_detailed_view: Hide Details
+    sort_by_hostname: Hostname
+    sort_by_public_ip: Public IP
+    sort_by_version: Version
+    sort_by_networks: Network Count
+    sort_direction_asc: Currently ascending, click to switch to descending
+    sort_direction_desc: Currently descending, click to switch to ascending
+    hostname: Hostname
+    public_ip: Public IP
+    networks: Network Count
+    last_report: Last Seen
+    version: Version
+    machine_id: Machine ID
+    unknown_location: Unknown Location
+    
+  device_management:
+    edit_network: Edit Network
+    export_config: Export Config
+    delete_network: Delete Network
+    network: Network
+    select_network: Select Network
+    create_network: Create Network
+    cancel_edit: Cancel Edit
+    more_actions: More Actions
+    edit_as_file: Edit as File
+    save_config: Save Config
+    config_saved: Config Saved
+    import_config: Import Config
+    create_new: Create New Network
+    network_status: Network Status
+    network_configuration: Network Configuration
+    loading_network_configuration: Loading Network Configuration
+    no_network_selected: No Network Selected
+    select_existing_network_or_create_new: Select an existing network instance or create a new one to manage network settings
+    disable_network: Disable Network
+
+  network:
+    title: Network
+    create: Create Network
+    delete: Delete Network
+    start: Start Network
+    stop: Stop Network
+    config: Network Config
+    status: Network Status
+    import: Import Config
+    export: Export Config
+
+  common:
+    confirm: Confirm
+    cancel: Cancel
+    save: Save
+    delete: Delete
+    edit: Edit
+    refresh: Refresh
+    loading: Loading...
+    error: Error
+    success: Success
+    warning: Warning
+    info: Info
+
+  settings:
+    title: Settings
+    change_password: Change Password
+    old_password: Old Password
+    new_password: New Password
+    confirm_password: Confirm New Password
+    language: Language
+    theme: Theme
+    logout: Logout
+
+mode:
+  title: Mode
+  switch_mode: Switch Mode
+  config_dir: Config Dir
+  rpc_portal: RPC Portal
+  log_level: Log Level
+  log_dir: Log Dir
+  remote_rpc_address: Remote RPC Address
+  normal: Normal
+  service: Service
+  remote: Remote
+  normal_description: Run EasyTier directly, suitable for local use.
+  service_description: Run as a system service, supporting auto-startup and background operation. The service continues to run in the background after exiting the GUI.
+  remote_description: Connect to a remote RPC service to manage and control remote nodes.
+  service_status: Service Status
+  service_status_running: Running
+  service_status_stopped: Stopped
+  service_status_notinstalled: Not Installed
+  uninstall_service: Uninstall Service
+  stop_service: Stop Service
+  uninstall_service_confirm: Are you sure you want to uninstall the service?
+  uninstall_service_success: Service uninstalled successfully, switched back to normal mode
+  stop_service_success: Service stopped successfully
+  remote_rpc_address_empty: Remote RPC Address cannot be empty
+  service_config_empty: Service Config cannot be empty
+
+config-server:
+  title: Config Server
+  address: Config Server Address
+  address_placeholder: "e.g.: udp://127.0.0.1:22020/admin or admin"
+  description: |
+    Config server address, allowed formats:
+    Full URL: udp://127.0.0.1:22020/admin
+    Username only: admin (uses official server)
+    Leave blank: Don't connect to a config server
+  connection_status: Connection Status
+  connected: ": Connected"
+  disconnected: ": Disconnected"
+  connecting: ": Connecting..."
+  unknown: ""
+  update_service_confirm: The service will be restarted to apply changes, do you want to continue?
+
+client:
+  not_running: Unable to connect to remote client.
+  retry: Retry

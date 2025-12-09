@@ -53,7 +53,7 @@ impl ForeignNetworkClient {
 
     pub fn get_next_hop(&self, peer_id: PeerId) -> Option<PeerId> {
         if self.peer_map.has_peer(peer_id) {
-            return Some(peer_id.clone());
+            return Some(peer_id);
         }
         None
     }

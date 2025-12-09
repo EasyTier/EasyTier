@@ -1,5 +1,5 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
     time::Duration,
 };
@@ -56,8 +56,8 @@ impl From<NatType> for UdpNatType {
     fn from(nat_type: NatType) -> Self {
         match nat_type {
             NatType::Unknown => UdpNatType::Unknown,
-            NatType::NoPat | NatType::OpenInternet => UdpNatType::Open(nat_type),
-            NatType::FullCone | NatType::Restricted | NatType::PortRestricted => {
+            NatType::OpenInternet => UdpNatType::Open(nat_type),
+            NatType::NoPat | NatType::FullCone | NatType::Restricted | NatType::PortRestricted => {
                 UdpNatType::Cone(nat_type)
             }
             NatType::Symmetric | NatType::SymUdpFirewall => UdpNatType::HardSymmetric(nat_type),
@@ -67,9 +67,9 @@ impl From<NatType> for UdpNatType {
     }
 }
 
-impl Into<NatType> for UdpNatType {
-    fn into(self) -> NatType {
-        match self {
+impl From<UdpNatType> for NatType {
+    fn from(val: UdpNatType) -> Self {
+        match val {
             UdpNatType::Unknown => NatType::Unknown,
             UdpNatType::Open(nat_type) => nat_type,
             UdpNatType::Cone(nat_type) => nat_type,
@@ -111,7 +111,24 @@ impl UdpNatType {
         }
     }
 
-    pub(crate) fn get_punch_hole_method(&self, other: Self) -> UdpPunchClientMethod {
+    pub(crate) fn get_punch_hole_method(
+        &self,
+        other: Self,
+        global_ctx: ArcGlobalCtx,
+    ) -> UdpPunchClientMethod {
+        // Check if symmetric NAT hole punching is disabled
+        let disable_sym_hole_punching = global_ctx.get_flags().disable_sym_hole_punching;
+
+        // If symmetric NAT hole punching is disabled, treat symmetric as cone
+        if disable_sym_hole_punching && self.is_sym() {
+            // Convert symmetric to cone type for hole punching logic
+            if other.is_sym() {
+                return UdpPunchClientMethod::None;
+            } else {
+                return UdpPunchClientMethod::ConeToCone;
+            }
+        }
+
         if other.is_unknown() {
             if self.is_sym() {
                 return UdpPunchClientMethod::SymToCone;
@@ -163,8 +180,9 @@ impl UdpNatType {
         other: Self,
         my_peer_id: PeerId,
         dst_peer_id: PeerId,
+        global_ctx: ArcGlobalCtx,
     ) -> bool {
-        match self.get_punch_hole_method(other) {
+        match self.get_punch_hole_method(other, global_ctx) {
             UdpPunchClientMethod::None => false,
             UdpPunchClientMethod::ConeToCone | UdpPunchClientMethod::SymToCone => true,
             UdpPunchClientMethod::EasySymToEasySym => my_peer_id < dst_peer_id,
@@ -249,7 +267,7 @@ impl UdpSocketArray {
                         tracing::info!(?addr, ?tid, "got hole punching packet with intreast tid");
                         tid_to_socket
                             .entry(tid)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(PunchedUdpSocket {
                                 socket: socket.clone(),
                                 tid,
@@ -388,7 +406,7 @@ impl UdpHolePunchListener {
                 tracing::warn!(?conn, "udp hole punching listener got peer connection");
                 let peer_mgr = peer_mgr.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = peer_mgr.add_tunnel_as_server(conn).await {
+                    if let Err(e) = peer_mgr.add_tunnel_as_server(conn, false).await {
                         tracing::error!(
                             ?e,
                             "failed to add tunnel as server in hole punch listener"
@@ -495,6 +513,7 @@ impl PunchHoleServerCommon {
             .udp_nat_type
     }
 
+    #[async_recursion::async_recursion]
     pub(crate) async fn select_listener(
         &self,
         use_new_listener: bool,
@@ -515,24 +534,28 @@ impl PunchHoleServerCommon {
         let mut locked = all_listener_sockets.lock().await;
 
         let listener = if use_last {
-            locked.last_mut()?
+            Some(locked.last_mut()?)
         } else {
             // use the listener that is active most recently
             locked
                 .iter_mut()
-                .max_by_key(|listener| listener.last_active_time.load())?
+                .filter(|l| !l.mapped_addr.ip().is_unspecified())
+                .max_by_key(|listener| listener.last_active_time.load())
         };
 
-        if listener.mapped_addr.ip().is_unspecified() {
-            tracing::info!("listener mapped addr is unspecified, trying to get mapped addr");
-            listener.mapped_addr = self
-                .get_global_ctx()
-                .get_stun_info_collector()
-                .get_udp_port_mapping(listener.mapped_addr.port())
-                .await
-                .ok()?;
+        if listener.is_none() || listener.as_ref().unwrap().mapped_addr.ip().is_unspecified() {
+            tracing::warn!(
+                ?use_new_listener,
+                "no available udp hole punching listener with mapped address"
+            );
+            if !use_new_listener {
+                return self.select_listener(true).await;
+            } else {
+                return None;
+            }
         }
 
+        let listener = listener.unwrap();
         Some((listener.get_socket().await, listener.mapped_addr))
     }
 
@@ -551,7 +574,7 @@ impl PunchHoleServerCommon {
 
 #[tracing::instrument(err, ret(level=Level::DEBUG), skip(ports))]
 pub(crate) async fn send_symmetric_hole_punch_packet(
-    ports: &Vec<u16>,
+    ports: &[u16],
     udp: Arc<UdpSocket>,
     transaction_id: u32,
     public_ips: &Vec<Ipv4Addr>,
@@ -577,7 +600,33 @@ pub(crate) async fn send_symmetric_hole_punch_packet(
     Ok(cur_port_idx % ports.len())
 }
 
+async fn check_udp_socket_local_addr(
+    global_ctx: ArcGlobalCtx,
+    remote_mapped_addr: SocketAddr,
+) -> Result<(), Error> {
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    socket.connect(remote_mapped_addr).await?;
+    if let Ok(local_addr) = socket.local_addr() {
+        // local_addr should not be equal to virtual ipv4 or virtual ipv6
+        match local_addr.ip() {
+            IpAddr::V4(ip) => {
+                if global_ctx.get_ipv4().map(|ip| ip.address()) == Some(ip) {
+                    return Err(anyhow::anyhow!("local address is virtual ipv4").into());
+                }
+            }
+            IpAddr::V6(ip) => {
+                if global_ctx.get_ipv6().map(|ip| ip.address()) == Some(ip) {
+                    return Err(anyhow::anyhow!("local address is virtual ipv6").into());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn try_connect_with_socket(
+    global_ctx: ArcGlobalCtx,
     socket: Arc<UdpSocket>,
     remote_mapped_addr: SocketAddr,
 ) -> Result<Box<dyn Tunnel>, Error> {
@@ -587,12 +636,14 @@ pub(crate) async fn try_connect_with_socket(
             remote_mapped_addr.ip(),
             remote_mapped_addr.port()
         )
-        .to_string()
         .parse()
         .unwrap(),
     );
+
+    check_udp_socket_local_addr(global_ctx, remote_mapped_addr).await?;
+
     connector
         .try_connect_with_socket(socket, remote_mapped_addr)
         .await
-        .map_err(|e| Error::from(e))
+        .map_err(Error::from)
 }

@@ -6,11 +6,14 @@ mod users;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::http::StatusCode;
+use axum::routing::post;
 use axum::{extract::State, routing::get, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
-use axum_login::{login_required, AuthManagerLayerBuilder, AuthzBackend};
+use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
+use easytier::common::config::{ConfigLoader, TomlConfigLoader};
 use easytier::common::scoped_task::ScopedTask;
+use easytier::launcher::NetworkConfig;
 use easytier::proto::rpc_types;
 use network::NetworkApi;
 use sea_orm::DbErr;
@@ -21,20 +24,25 @@ use tower_sessions::Expiry;
 use tower_sessions_sqlx_store::SqliteStore;
 use users::{AuthSession, Backend};
 
-use crate::client_manager::session::Session;
 use crate::client_manager::storage::StorageToken;
 use crate::client_manager::ClientManager;
 use crate::db::Db;
+
+/// Embed assets for web dashboard, build frontend first
+#[cfg(feature = "embed")]
+#[derive(rust_embed::RustEmbed, Clone)]
+#[folder = "frontend/dist/"]
+struct Assets;
 
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
     db: Db,
 
-    serve_task: Option<ScopedTask<()>>,
-    delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
-
-    network_api: NetworkApi,
+    // serve_task: Option<ScopedTask<()>>,
+    // delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
+    // network_api: NetworkApi<WebClientManager>,
+    web_router: Option<Router>,
 }
 
 type AppStateInner = Arc<ClientManager>;
@@ -46,6 +54,28 @@ struct ListSessionJsonResp(Vec<StorageToken>);
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct GetSummaryJsonResp {
     device_count: u32,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct GenerateConfigRequest {
+    config: NetworkConfig,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct GenerateConfigResponse {
+    error: Option<String>,
+    toml_config: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ParseConfigRequest {
+    toml_config: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct ParseConfigResponse {
+    error: Option<String>,
+    config: Option<NetworkConfig>,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -73,30 +103,21 @@ impl RestfulServer {
         bind_addr: SocketAddr,
         client_mgr: Arc<ClientManager>,
         db: Db,
+        web_router: Option<Router>,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
-        let network_api = NetworkApi::new();
+        // let network_api = NetworkApi::new();
 
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
             db,
-            serve_task: None,
-            delete_task: None,
-            network_api,
+            // serve_task: None,
+            // delete_task: None,
+            // network_api,
+            web_router,
         })
-    }
-
-    async fn get_session_by_machine_id(
-        client_mgr: &ClientManager,
-        machine_id: &uuid::Uuid,
-    ) -> Result<Arc<Session>, HttpHandleError> {
-        let Some(result) = client_mgr.get_session_by_machine_id(machine_id) else {
-            return Err((StatusCode::NOT_FOUND, other_error("No such session").into()));
-        };
-
-        Ok(result)
     }
 
     async fn handle_list_all_sessions(
@@ -121,9 +142,7 @@ impl RestfulServer {
             return Err((StatusCode::UNAUTHORIZED, other_error("No such user").into()));
         };
 
-        let machines = client_mgr
-            .list_machine_by_token(user.tokens[0].clone())
-            .await;
+        let machines = client_mgr.list_machine_by_user_id(user.id()).await;
 
         Ok(GetSummaryJsonResp {
             device_count: machines.len() as u32,
@@ -131,7 +150,53 @@ impl RestfulServer {
         .into())
     }
 
-    pub async fn start(&mut self) -> Result<(), anyhow::Error> {
+    async fn handle_generate_config(
+        Json(req): Json<GenerateConfigRequest>,
+    ) -> Result<Json<GenerateConfigResponse>, HttpHandleError> {
+        let config = req.config.gen_config();
+        match config {
+            Ok(c) => Ok(GenerateConfigResponse {
+                error: None,
+                toml_config: Some(c.dump()),
+            }
+            .into()),
+            Err(e) => Ok(GenerateConfigResponse {
+                error: Some(format!("{:?}", e)),
+                toml_config: None,
+            }
+            .into()),
+        }
+    }
+
+    async fn handle_parse_config(
+        Json(req): Json<ParseConfigRequest>,
+    ) -> Result<Json<ParseConfigResponse>, HttpHandleError> {
+        let config = TomlConfigLoader::new_from_str(&req.toml_config)
+            .and_then(|config| NetworkConfig::new_from_config(&config));
+        match config {
+            Ok(c) => Ok(ParseConfigResponse {
+                error: None,
+                config: Some(c),
+            }
+            .into()),
+            Err(e) => Ok(ParseConfigResponse {
+                error: Some(format!("{:?}", e)),
+                config: None,
+            }
+            .into()),
+        }
+    }
+
+    #[allow(unused_mut)]
+    pub async fn start(
+        mut self,
+    ) -> Result<
+        (
+            ScopedTask<()>,
+            ScopedTask<tower_sessions::session_store::Result<()>>,
+        ),
+        anyhow::Error,
+    > {
         let listener = TcpListener::bind(self.bind_addr).await?;
 
         // Session layer.
@@ -141,14 +206,13 @@ impl RestfulServer {
         let session_store = SqliteStore::new(self.db.inner());
         session_store.migrate().await?;
 
-        self.delete_task.replace(
+        let delete_task: ScopedTask<tower_sessions::session_store::Result<()>> =
             tokio::task::spawn(
                 session_store
                     .clone()
                     .continuously_delete_expired(tokio::time::Duration::from_secs(60)),
             )
-            .into(),
-        );
+            .into();
 
         // Generate a cryptographic key to sign the session cookie.
         let key = Key::generate();
@@ -174,20 +238,32 @@ impl RestfulServer {
         let app = Router::new()
             .route("/api/v1/summary", get(Self::handle_get_summary))
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
-            .merge(self.network_api.build_route())
+            .merge(NetworkApi::build_route())
             .route_layer(login_required!(Backend))
             .merge(auth::router())
             .with_state(self.client_mgr.clone())
+            .route(
+                "/api/v1/generate-config",
+                post(Self::handle_generate_config),
+            )
+            .route("/api/v1/parse-config", post(Self::handle_parse_config))
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())
             .layer(compression_layer);
 
-        let task = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        self.serve_task = Some(task.into());
+        #[cfg(feature = "embed")]
+        let app = if let Some(web_router) = self.web_router.take() {
+            app.merge(web_router)
+        } else {
+            app
+        };
 
-        Ok(())
+        let serve_task: ScopedTask<()> = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        })
+        .into();
+
+        Ok((serve_task, delete_task))
     }
 }

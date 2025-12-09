@@ -9,7 +9,8 @@ use crate::{
     tunnel::{packet_def::PacketType, ring::create_ring_tunnel_pair, Tunnel},
 };
 
-use super::{client::Client, server::Server};
+use super::{client::Client, server::Server, service_registry::ServiceRegistry};
+use crate::common::stats_manager::StatsManager;
 
 pub struct BidirectRpcManager {
     rpc_client: Client,
@@ -23,11 +24,34 @@ pub struct BidirectRpcManager {
     tasks: Mutex<Option<JoinSet<()>>>,
 }
 
+impl Default for BidirectRpcManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BidirectRpcManager {
     pub fn new() -> Self {
         Self {
             rpc_client: Client::new(),
             rpc_server: Server::new(),
+
+            rx_timeout: None,
+            error: Arc::new(Mutex::new(None)),
+            tunnel: Mutex::new(None),
+            running: Arc::new(AtomicBool::new(false)),
+
+            tasks: Mutex::new(None),
+        }
+    }
+
+    pub fn new_with_stats_manager(stats_manager: Arc<StatsManager>) -> Self {
+        Self {
+            rpc_client: Client::new_with_stats_manager(stats_manager.clone()),
+            rpc_server: Server::new_with_registry_and_stats_manager(
+                Arc::new(ServiceRegistry::new()),
+                stats_manager,
+            ),
 
             rx_timeout: None,
             error: Arc::new(Mutex::new(None)),
@@ -131,11 +155,14 @@ impl BidirectRpcManager {
                     }
                 };
 
-                if o.peer_manager_header().unwrap().packet_type == PacketType::RpcReq as u8 {
+                let Some(peer_manager_header) = o.peer_manager_header() else {
+                    tracing::error!("peer manager header not found");
+                    continue;
+                };
+                if peer_manager_header.packet_type == PacketType::RpcReq as u8 {
                     server_tx.send(o).await.unwrap();
                     continue;
-                } else if o.peer_manager_header().unwrap().packet_type == PacketType::RpcResp as u8
-                {
+                } else if peer_manager_header.packet_type == PacketType::RpcResp as u8 {
                     client_tx.send(o).await.unwrap();
                     continue;
                 }
@@ -158,7 +185,7 @@ impl BidirectRpcManager {
             return;
         };
         tasks.abort_all();
-        while let Some(_) = tasks.join_next().await {}
+        while tasks.join_next().await.is_some() {}
     }
 
     pub fn take_error(&self) -> Option<Error> {
@@ -169,7 +196,7 @@ impl BidirectRpcManager {
         let Some(mut tasks) = self.tasks.lock().unwrap().take() else {
             return;
         };
-        while let Some(_) = tasks.join_next().await {
+        while tasks.join_next().await.is_some() {
             // when any task is done, abort all tasks
             tasks.abort_all();
         }

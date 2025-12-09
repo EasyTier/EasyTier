@@ -1,9 +1,15 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button } from 'primevue'
-import { DEFAULT_NETWORK_CONFIG, NetworkConfig, NetworkingMethod } from '../types/network'
-import { defineProps, defineEmits, ref, } from 'vue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import {
+  addRow,
+  DEFAULT_NETWORK_CONFIG,
+  NetworkConfig,
+  NetworkingMethod,
+  removeRow
+} from '../types/network'
+import { defineProps, defineEmits, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -120,13 +126,103 @@ function searchListenerSuggestions(e: { query: string }) {
   listenerSuggestions.value = ret
 }
 
+
+const exitNodesSuggestions = ref([''])
+
+function searchExitNodesSuggestions(e: { query: string }) {
+  const ret = []
+  ret.push(e.query)
+  exitNodesSuggestions.value = ret
+}
+
+const whitelistSuggestions = ref([''])
+
+function searchWhitelistSuggestions(e: { query: string }) {
+  const ret = []
+  ret.push(e.query)
+  whitelistSuggestions.value = ret
+}
+
+interface BoolFlag {
+  field: keyof NetworkConfig
+  help: string
+}
+
+const bool_flags: BoolFlag[] = [
+  { field: 'latency_first', help: 'latency_first_help' },
+  { field: 'use_smoltcp', help: 'use_smoltcp_help' },
+  { field: 'disable_ipv6', help: 'disable_ipv6_help' },
+  { field: 'enable_kcp_proxy', help: 'enable_kcp_proxy_help' },
+  { field: 'disable_kcp_input', help: 'disable_kcp_input_help' },
+  { field: 'enable_quic_proxy', help: 'enable_quic_proxy_help' },
+  { field: 'disable_quic_input', help: 'disable_quic_input_help' },
+  { field: 'disable_p2p', help: 'disable_p2p_help' },
+  { field: 'p2p_only', help: 'p2p_only_help' },
+  { field: 'bind_device', help: 'bind_device_help' },
+  { field: 'no_tun', help: 'no_tun_help' },
+  { field: 'enable_exit_node', help: 'enable_exit_node_help' },
+  { field: 'relay_all_peer_rpc', help: 'relay_all_peer_rpc_help' },
+  { field: 'multi_thread', help: 'multi_thread_help' },
+  { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
+  { field: 'disable_encryption', help: 'disable_encryption_help' },
+  { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
+  { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
+  { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
+  { field: 'enable_private_mode', help: 'enable_private_mode_help' },
+]
+
+const portForwardProtocolOptions = ref(["tcp", "udp"]);
+
+const editingPortForward = ref(false);
+const editingPortForwardIndex = ref(-1);
+const editingPortForwardData = ref();
+
+function openPortForwardEditor(index: number) {
+  editingPortForwardIndex.value = index;
+  // deep copy
+  editingPortForwardData.value = JSON.parse(JSON.stringify(curNetwork.value.port_forwards[index]));
+  editingPortForward.value = true;
+}
+
+function addPortForward() {
+  addRow(curNetwork.value.port_forwards)
+  if (isCompact.value) {
+    openPortForwardEditor(curNetwork.value.port_forwards.length - 1)
+  }
+}
+
+function savePortForward() {
+  curNetwork.value.port_forwards[editingPortForwardIndex.value] = editingPortForwardData.value;
+  editingPortForward.value = false;
+}
+
+const portForwardContainer = ref<HTMLElement | null>(null);
+const isCompact = ref(false);
+
+
+onMounted(() => {
+  if (portForwardContainer.value) {
+    let resizeObserver = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        isCompact.value = entry.contentRect.width < 540;
+      }
+    });
+    resizeObserver.observe(portForwardContainer.value);
+
+    onUnmounted(() => {
+      if (resizeObserver && portForwardContainer.value) {
+        resizeObserver.unobserve(portForwardContainer.value);
+      }
+    });
+  }
+});
 </script>
 
 <template>
   <div class="frontend-lib">
     <div class="flex flex-col h-full">
       <div class="flex flex-col">
-        <div class="w-10/12 self-center ">
+        <div class="w-full self-center ">
           <Panel :header="t('basic_settings')">
             <div class="flex flex-col gap-y-2">
               <div class="flex flex-row gap-x-9 flex-wrap">
@@ -159,8 +255,8 @@ function searchListenerSuggestions(e: { query: string }) {
                 </div>
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="network_secret">{{ t('network_secret') }}</label>
-                  <InputText id="network_secret" v-model="curNetwork.network_secret"
-                    aria-describedby="network_secret-help" />
+                  <Password id="network_secret" v-model="curNetwork.network_secret"
+                    aria-describedby="network_secret-help" toggleMask :feedback="false" />
                 </div>
               </div>
 
@@ -175,9 +271,8 @@ function searchListenerSuggestions(e: { query: string }) {
                       class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
 
                     <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions"
-                      :virtual-scroller-options="{ itemSize: 38 }" class="grow" dropdown :complete-on-focus="true"
-                      @complete="searchPresetPublicServers" />
+                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
+                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
                   </div>
                 </div>
               </div>
@@ -188,11 +283,18 @@ function searchListenerSuggestions(e: { query: string }) {
 
           <Panel :header="t('advanced_settings')" toggleable collapsed>
             <div class="flex flex-col gap-y-2">
+
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <div class="flex items-center">
-                    <Checkbox v-model="curNetwork.latency_first" input-id="use_latency_first" :binary="true" />
-                    <label for="use_latency_first" class="ml-2"> {{ t('use_latency_first') }} </label>
+                  <label> {{ t('flags_switch') }} </label>
+                  <div class="flex flex-row flex-wrap">
+
+                    <div class="basis-[20rem] flex items-center" v-for="flag in bool_flags">
+                      <Checkbox v-model="curNetwork[flag.field]" :input-id="flag.field" :binary="true" />
+                      <label :for="flag.field" class="ml-2"> {{ t(flag.field) }} </label>
+                      <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t(flag.help)"></span>
+                    </div>
+
                   </div>
                 </div>
               </div>
@@ -220,17 +322,20 @@ function searchListenerSuggestions(e: { query: string }) {
                   <ToggleButton v-model="curNetwork.enable_vpn_portal" on-icon="pi pi-check" off-icon="pi pi-times"
                     :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
                   <div v-if="curNetwork.enable_vpn_portal" class="items-center flex flex-row gap-x-4">
-                    <div class="min-w-64">
-                      <InputGroup>
-                        <InputText v-model="curNetwork.vpn_portal_client_network_addr"
-                          :placeholder="t('vpn_portal_client_network')" />
-                        <InputGroupAddon>
-                          <span>/{{ curNetwork.vpn_portal_client_network_len }}</span>
-                        </InputGroupAddon>
-                      </InputGroup>
-
-                      <InputNumber v-model="curNetwork.vpn_portal_listen_port" :allow-empty="false" :format="false"
-                        :min="0" :max="65535" class="w-8/12" fluid />
+                    <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                      <div class="flex flex-col gap-2 basis-8/12 grow">
+                        <InputGroup>
+                          <InputText v-model="curNetwork.vpn_portal_client_network_addr"
+                            :placeholder="t('vpn_portal_client_network')" />
+                          <InputGroupAddon>
+                            <span>/{{ curNetwork.vpn_portal_client_network_len }}</span>
+                          </InputGroupAddon>
+                        </InputGroup>
+                      </div>
+                      <div class="flex flex-col gap-2 basis-3/12 grow">
+                        <InputNumber v-model="curNetwork.vpn_portal_listen_port" :allow-empty="false" :format="false"
+                          :min="0" :max="65535" fluid />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -248,17 +353,188 @@ function searchListenerSuggestions(e: { query: string }) {
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <label for="rpc_port">{{ t('rpc_port') }}</label>
-                  <InputNumber id="rpc_port" v-model="curNetwork.rpc_port" aria-describedby="rpc_port-help"
-                    :format="false" :min="0" :max="65535" />
+                  <label for="dev_name">{{ t('dev_name') }}</label>
+                  <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
+                    :placeholder="t('dev_name_placeholder')" />
                 </div>
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <label for="dev_name">{{ t('dev_name') }}</label>
-                  <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
-                    :placeholder="t('dev_name_placeholder')" />
+                  <div class="flex">
+                    <label for="mtu">{{ t('mtu') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mtu_help')"></span>
+                  </div>
+                  <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
+                    :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="relay_network_whitelist">{{ t('relay_network_whitelist') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center"
+                      v-tooltip="t('relay_network_whitelist_help')"></span>
+                  </div>
+                  <ToggleButton v-model="curNetwork.enable_relay_network_whitelist" on-icon="pi pi-check"
+                    off-icon="pi pi-times" :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                  <div v-if="curNetwork.enable_relay_network_whitelist" class="items-center flex flex-row gap-x-4">
+                    <div class="min-w-64 w-full">
+                      <AutoComplete id="relay_network_whitelist" v-model="curNetwork.relay_network_whitelist"
+                        :placeholder="t('relay_network_whitelist')" class="w-full" multiple fluid
+                        :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap ">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex">
+                    <label for="routes">{{ t('manual_routes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('manual_routes_help')"></span>
+                  </div>
+                  <ToggleButton v-model="curNetwork.enable_manual_routes" on-icon="pi pi-check" off-icon="pi pi-times"
+                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                  <div v-if="curNetwork.enable_manual_routes" class="items-center flex flex-row gap-x-4">
+                    <div class="min-w-64 w-full">
+                      <AutoComplete id="routes" v-model="curNetwork.routes"
+                        :placeholder="t('chips_placeholder', ['192.168.0.0/16'])" class="w-full" multiple fluid
+                        :suggestions="inetSuggestions" @complete="searchInetSuggestions" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap ">
+                <div class="flex flex-col gap-2 grow">
+                  <div class="flex">
+                    <label for="socks5_port">{{ t('socks5') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('socks5_help')"></span>
+                  </div>
+                  <ToggleButton v-model="curNetwork.enable_socks5" on-icon="pi pi-check" off-icon="pi pi-times"
+                    :on-label="t('off_text')" :off-label="t('on_text')" class="w-48" />
+                  <div v-if="curNetwork.enable_socks5" class="items-center flex flex-row gap-x-4">
+                    <div class="min-w-64 w-full">
+                      <InputNumber id="socks5_port" v-model="curNetwork.socks5_port" aria-describedby="rpc_port-help"
+                        :format="false" :allow-empty="false" :min="0" :max="65535" class="w-full" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="exit_nodes">{{ t('exit_nodes') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('exit_nodes_help')"></span>
+                  </div>
+                  <AutoComplete id="exit_nodes" v-model="curNetwork.exit_nodes"
+                    :placeholder="t('chips_placeholder', ['192.168.8.8'])" class="w-full" multiple fluid
+                    :suggestions="exitNodesSuggestions" @complete="searchExitNodesSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="mapped_listeners">{{ t('mapped_listeners') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
+                  </div>
+                  <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
+                    :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full" multiple fluid
+                    :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                </div>
+              </div>
+
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <Panel :header="t('port_forwards')" toggleable collapsed>
+            <div ref="portForwardContainer" class="flex flex-col gap-y-2">
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="port_forwards">{{ t('port_forwards_help') }}</label>
+                  </div>
+                  <div v-for="(row, index) in curNetwork.port_forwards" :key="index" class="form-row">
+                    <!-- Wide screen view -->
+                    <div v-if="!isCompact" class="flex gap-2 items-end">
+                      <SelectButton v-model="row.proto" :options="portForwardProtocolOptions" :allow-empty="false" />
+                      <div style="flex-grow: 4;">
+                        <InputGroup>
+                          <InputText v-model="row.bind_ip" :placeholder="t('port_forwards_bind_addr')" />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.bind_port" :format="false" inputId="horizontal-buttons" :step="1"
+                            mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 4;">
+                        <InputGroup>
+                          <InputText v-model="row.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
+                          <InputGroupAddon>
+                            <span style="font-weight: bold">:</span>
+                          </InputGroupAddon>
+                          <InputNumber v-model="row.dst_port" :format="false" inputId="horizontal-buttons" :step="1"
+                            mode="decimal" :min="1" :max="65535" fluid class="max-w-20" />
+                        </InputGroup>
+                      </div>
+                      <div style="flex-grow: 1;">
+                        <Button v-if="curNetwork.port_forwards.length > 0" icon="pi pi-trash" severity="danger" text
+                          rounded @click="removeRow(index, curNetwork.port_forwards)" />
+                      </div>
+                    </div>
+                    <!-- Small screen view -->
+                    <div v-else class="flex justify-between items-center p-2 border-b">
+                      <span>{{ row.proto }}://{{ row.bind_ip }}:{{ row.bind_port }}/{{ row.dst_ip }}:{{
+                        row.dst_port }}</span>
+                      <div class="flex gap-2">
+                        <Button icon="pi pi-pencil" class="p-button-sm" @click="openPortForwardEditor(index)" />
+                        <Button icon="pi pi-trash" class="p-button-sm p-button-danger"
+                          @click="removeRow(index, curNetwork.port_forwards)" />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="flex justify-content-end mt-4">
+                    <Button icon="pi pi-plus" :label="t('port_forwards_add_btn')" severity="success"
+                      @click="addPortForward" />
+                  </div>
+
+                  <Dialog v-model:visible="editingPortForward" modal :header="t('edit_port_forward')"
+                    :style="{ width: '90vw', maxWidth: '600px' }">
+                    <div v-if="editingPortForwardData" class="flex flex-col gap-4">
+                      <SelectButton v-model="editingPortForwardData.proto" :options="portForwardProtocolOptions"
+                        :allow-empty="false" />
+                      <InputGroup>
+                        <InputText v-model="editingPortForwardData.bind_ip"
+                          :placeholder="t('port_forwards_bind_addr')" />
+                        <InputGroupAddon>
+                          <span style="font-weight: bold">:</span>
+                        </InputGroupAddon>
+                        <InputNumber v-model="editingPortForwardData.bind_port" :format="false" :step="1" mode="decimal"
+                          :min="1" :max="65535" class="max-w-20" />
+                      </InputGroup>
+                      <InputGroup>
+                        <InputText v-model="editingPortForwardData.dst_ip" :placeholder="t('port_forwards_dst_addr')" />
+                        <InputGroupAddon>
+                          <span style="font-weight: bold">:</span>
+                        </InputGroupAddon>
+                        <InputNumber v-model="editingPortForwardData.dst_port" :format="false" :step="1" mode="decimal"
+                          :min="1" :max="65535" class="max-w-20" />
+                      </InputGroup>
+                    </div>
+                    <template #footer>
+                      <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="editingPortForward = false"
+                        text />
+                      <Button :label="t('web.common.save')" icon="pi pi-save" @click="savePortForward" />
+                    </template>
+                  </Dialog>
                 </div>
               </div>
             </div>

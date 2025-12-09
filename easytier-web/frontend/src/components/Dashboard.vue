@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { Card, useToast } from 'primevue';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
-import { Api, Utils } from 'easytier-frontend-lib';
+import { Utils } from 'easytier-frontend-lib';
+import ApiClient, { Summary } from '../modules/api';
 
 const props = defineProps({
-    api: Api.ApiClient,
+    api: ApiClient,
 });
 
 const toast = useToast();
 
-const summary = ref<Api.Summary | undefined>(undefined);
+const summary = ref<Summary | undefined>(undefined);
 
 const loadSummary = async () => {
     const resp = await props.api?.get_summary();

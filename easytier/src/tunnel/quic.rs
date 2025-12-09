@@ -2,15 +2,20 @@
 //!
 //! Checkout the `README.md` for guidance.
 
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use std::{
+    error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
+};
 
 use crate::tunnel::{
-    check_scheme_and_get_socket_addr_ext,
-    common::{FramedReader, FramedWriter, TunnelWrapper},
+    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
-use quinn::{crypto::rustls::QuicClientConfig, ClientConfig, Connection, Endpoint, ServerConfig};
+
+use quinn::{
+    congestion::BbrConfig, crypto::rustls::QuicClientConfig, udp::RecvMeta, AsyncUdpSocket,
+    ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
+};
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -18,10 +23,60 @@ use super::{
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
-fn configure_client() -> ClientConfig {
-    ClientConfig::new(Arc::new(
-        QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap(),
-    ))
+pub fn configure_client() -> ClientConfig {
+    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
+    let mut client_config = ClientConfig::new(Arc::new(client_crypto));
+
+    // // Create a new TransportConfig and set BBR
+    let mut transport_config = TransportConfig::default();
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
+    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
+    // Replace the default TransportConfig with the transport_config() method
+    client_config.transport_config(Arc::new(transport_config));
+
+    client_config
+}
+
+#[derive(Clone, Debug)]
+struct NoGroAsyncUdpSocket {
+    inner: Arc<dyn AsyncUdpSocket>,
+}
+
+impl AsyncUdpSocket for NoGroAsyncUdpSocket {
+    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
+        self.inner.clone().create_io_poller()
+    }
+
+    fn try_send(&self, transmit: &quinn::udp::Transmit) -> std::io::Result<()> {
+        self.inner.try_send(transmit)
+    }
+
+    /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future
+    fn poll_recv(
+        &self,
+        cx: &mut std::task::Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> Poll<std::io::Result<usize>> {
+        self.inner.poll_recv(cx, bufs, meta)
+    }
+
+    /// Look up the local IP address and port used by this socket
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
+    }
+
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+
+    fn max_receive_segments(&self) -> usize {
+        1
+    }
 }
 
 /// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
@@ -34,26 +89,47 @@ fn configure_client() -> ClientConfig {
 #[allow(unused)]
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
     let (server_config, server_cert) = configure_server()?;
-    let endpoint = Endpoint::server(server_config, bind_addr)?;
+
+    let socket2_socket = socket2::Socket::new(
+        socket2::Domain::for_address(bind_addr),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    setup_sokcet2(&socket2_socket, &bind_addr)?;
+    let socket = std::net::UdpSocket::from(socket2_socket);
+
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+    let mut endpoint_config = EndpointConfig::default();
+    endpoint_config.max_udp_payload_size(1200)?;
+    let socket: NoGroAsyncUdpSocket = NoGroAsyncUdpSocket {
+        inner: runtime.wrap_udp_socket(socket)?,
+    };
+    let endpoint = Endpoint::new_with_abstract_socket(
+        endpoint_config,
+        Some(server_config),
+        Arc::new(socket),
+        runtime,
+    )?;
     Ok((endpoint, server_cert))
 }
 
 /// Returns default server configuration along with its certificate.
-fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
+pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
     let (certs, key) = get_insecure_tls_cert();
 
-    let mut server_config = ServerConfig::with_single_cert(certs.clone(), key.into())?;
+    let mut server_config = ServerConfig::with_single_cert(certs.clone(), key)?;
     let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
     transport_config.max_concurrent_uni_streams(10_u8.into());
     transport_config.max_concurrent_bidi_streams(10_u8.into());
+    // Setting BBR congestion control
+    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
 
     Ok((server_config, certs[0].to_vec()))
 }
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
-
-/// Runs a QUIC server bound to given address.
 
 struct ConnWrapper {
     conn: Connection,
@@ -79,31 +155,17 @@ impl QUICTunnelListener {
             server_cert: None,
         }
     }
-}
 
-#[async_trait::async_trait]
-impl TunnelListener for QUICTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr = check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic")?;
-        let (endpoint, server_cert) = make_server_endpoint(addr).unwrap();
-        self.endpoint = Some(endpoint);
-        self.server_cert = Some(server_cert);
-
-        self.addr
-            .set_port(Some(self.endpoint.as_ref().unwrap().local_addr()?.port()))
-            .unwrap();
-
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         // accept a single connection
-        let incoming_conn = self.endpoint.as_ref().unwrap().accept().await.unwrap();
-        let conn = incoming_conn.await.unwrap();
-        println!(
-            "[server] connection accepted: addr={}",
-            conn.remote_address()
-        );
+        let conn = self
+            .endpoint
+            .as_ref()
+            .unwrap()
+            .accept()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("accept failed, no incoming"))?;
+        let conn = conn.await.with_context(|| "accept connection failed")?;
         let remote_addr = conn.remote_address();
         let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
 
@@ -122,6 +184,37 @@ impl TunnelListener for QUICTunnelListener {
             FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
             Some(info),
         )))
+    }
+}
+
+#[async_trait::async_trait]
+impl TunnelListener for QUICTunnelListener {
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
+                .await?;
+        let (endpoint, server_cert) = make_server_endpoint(addr)
+            .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
+        self.endpoint = Some(endpoint);
+        self.server_cert = Some(server_cert);
+
+        self.addr
+            .set_port(Some(self.endpoint.as_ref().unwrap().local_addr()?.port()))
+            .unwrap();
+
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+        loop {
+            match self.do_accept().await {
+                Ok(ret) => return Ok(ret),
+                Err(e) => {
+                    tracing::warn!(?e, "accept fail");
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
     }
 
     fn local_url(&self) -> url::Url {
@@ -148,11 +241,9 @@ impl QUICTunnelConnector {
 #[async_trait::async_trait]
 impl TunnelConnector for QUICTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let addr = check_scheme_and_get_socket_addr_ext::<SocketAddr>(
-            &self.addr,
-            "quic",
-            self.ip_version,
-        )?;
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
+                .await?;
         let local_addr = if addr.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -163,10 +254,14 @@ impl TunnelConnector for QUICTunnelConnector {
         endpoint.set_default_client_config(configure_client());
 
         // connect to server
-        let connection = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
-        println!("[client] connected: addr={}", connection.remote_address());
+        let connection = endpoint
+            .connect(addr, "localhost")
+            .unwrap()
+            .await
+            .with_context(|| "connect failed")?;
+        tracing::info!("[client] connected: addr={}", connection.remote_address());
 
-        let local_addr = endpoint.local_addr().unwrap();
+        let local_addr = endpoint.local_addr()?;
 
         self.endpoint = Some(endpoint);
 

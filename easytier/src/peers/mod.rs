@@ -1,3 +1,6 @@
+mod graph_algo;
+
+pub mod acl_filter;
 pub mod peer;
 // pub mod peer_conn;
 pub mod peer_conn;
@@ -33,11 +36,33 @@ pub trait PeerPacketFilter {
 #[async_trait::async_trait]
 #[auto_impl::auto_impl(Arc)]
 pub trait NicPacketFilter {
-    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket);
+    async fn try_process_packet_from_nic(&self, data: &mut ZCPacket) -> bool;
+
+    fn id(&self) -> String {
+        format!("{:p}", self)
+    }
 }
 
 type BoxPeerPacketFilter = Box<dyn PeerPacketFilter + Send + Sync>;
 type BoxNicPacketFilter = Box<dyn NicPacketFilter + Send + Sync>;
 
+// pub type PacketRecvChan = tachyonix::Sender<ZCPacket>;
+// pub type PacketRecvChanReceiver = tachyonix::Receiver<ZCPacket>;
+// pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
+//     tachyonix::channel(128)
+// }
 pub type PacketRecvChan = tokio::sync::mpsc::Sender<ZCPacket>;
 pub type PacketRecvChanReceiver = tokio::sync::mpsc::Receiver<ZCPacket>;
+pub fn create_packet_recv_chan() -> (PacketRecvChan, PacketRecvChanReceiver) {
+    tokio::sync::mpsc::channel(128)
+}
+pub async fn recv_packet_from_chan(
+    packet_recv_chan_receiver: &mut PacketRecvChanReceiver,
+) -> Result<ZCPacket, anyhow::Error> {
+    packet_recv_chan_receiver
+        .recv()
+        .await
+        .ok_or(anyhow::anyhow!("recv_packet_from_chan failed"))
+}
+
+pub const PUBLIC_SERVER_HOSTNAME_PREFIX: &str = "PublicServer_";

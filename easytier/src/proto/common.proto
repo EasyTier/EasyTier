@@ -18,9 +18,50 @@ message FlagsInConfig {
   bool disable_p2p = 11;
   bool relay_all_peer_rpc = 12;
   bool disable_udp_hole_punching = 13;
-  string ipv6_listener = 14;
+  // string ipv6_listener = 14; [deprecated = true]; use -l udp://[::]:12345
+  // instead
   bool multi_thread = 15;
   CompressionAlgoPb data_compress_algo = 16;
+  bool bind_device = 17;
+
+  // should we convert all tcp streams into kcp streams
+  bool enable_kcp_proxy = 18;
+  // does this peer allow kcp input
+  bool disable_kcp_input = 19;
+  // disable relay local network kcp packets
+  bool disable_relay_kcp = 20;
+  bool proxy_forward_by_system = 21;
+
+  // enable magic dns or not
+  bool accept_dns = 22;
+  // enable private mode
+  bool private_mode = 23;
+
+  // should we convert all tcp streams into quic streams
+  bool enable_quic_proxy = 24;
+  // does this peer allow quic input
+  bool disable_quic_input = 25;
+  // quic listen port
+  uint32 quic_listen_port = 33;
+
+  // a global relay limit, only work for foreign network
+  uint64 foreign_relay_bps_limit = 26;
+
+  uint32 multi_thread_count = 27;
+
+  // enable relay foreign network kcp packets
+  bool enable_relay_foreign_network_kcp = 28;
+
+  // encryption algorithm to use, empty string means default (aes-gcm)
+  string encryption_algorithm = 29;
+
+  // disable symmetric nat hole punching, treat symmetric as cone when enabled
+  bool disable_sym_hole_punching = 30;
+
+   // tld dns zone for magic dns
+  string tld_dns_zone = 31;
+
+  bool p2p_only = 32;
 }
 
 message RpcDescriptor {
@@ -110,9 +151,28 @@ message Ipv6Addr {
   uint32 part4 = 4;
 }
 
+message IpAddr {
+  oneof ip {
+    Ipv4Addr ipv4 = 1;
+    Ipv6Addr ipv6 = 2;
+  };
+}
+
 message Ipv4Inet {
   Ipv4Addr address = 1;
   uint32 network_length = 2;
+}
+
+message Ipv6Inet {
+  Ipv6Addr address = 1;
+  uint32 network_length = 2;
+}
+
+message IpInet {
+  oneof ip {
+    Ipv4Inet ipv4 = 1;
+    Ipv6Inet ipv6 = 2;
+  };
 }
 
 message Url { string url = 1; }
@@ -143,4 +203,28 @@ message StunInfo {
 message PeerFeatureFlag {
   bool is_public_server = 1;
   bool avoid_relay_data = 2;
+  bool kcp_input = 3;
+  bool no_relay_kcp = 4;
+  bool support_conn_list_sync = 5;
+}
+
+enum SocketType {
+  TCP = 0;
+  UDP = 1;
+}
+
+message PortForwardConfigPb {
+  SocketAddr bind_addr = 1;
+  SocketAddr dst_addr = 2;
+  SocketType socket_type = 3;
+}
+
+message ProxyDstInfo { SocketAddr dst_addr = 1; }
+
+message LimiterConfig {
+  optional uint64 burst_rate =
+      1; // default 1 means no burst (capacity is same with bps)
+  optional uint64 bps = 2; // default 0 means no limit (unit is B/s)
+  optional uint64 fill_duration_ms =
+      3; // default 10ms, the period to fill the bucket
 }

@@ -1,6 +1,4 @@
-
-use rand::{random};
-
+use rand::random;
 
 /// 随机数工具类
 pub(crate) struct Randoms {

@@ -1,4 +1,7 @@
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+};
 
 use dashmap::DashMap;
 
@@ -6,19 +9,15 @@ use crate::{
     common::{global_ctx::NetworkIdentity, PeerId},
     proto::peer_rpc::{
         ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
+        RouteForeignNetworkSummary, RoutePeerInfo,
     },
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub enum NextHopPolicy {
+    #[default]
     LeastHop,
     LeastCost,
-}
-
-impl Default for NextHopPolicy {
-    fn default() -> Self {
-        NextHopPolicy::LeastHop
-    }
 }
 
 pub type ForeignNetworkRouteInfoMap =
@@ -75,10 +74,21 @@ pub trait Route {
         self.get_next_hop(peer_id).await
     }
 
-    async fn list_routes(&self) -> Vec<crate::proto::cli::Route>;
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route>;
 
     async fn get_peer_id_by_ipv4(&self, _ipv4: &Ipv4Addr) -> Option<PeerId> {
         None
+    }
+
+    async fn get_peer_id_by_ipv6(&self, _ipv6: &Ipv6Addr) -> Option<PeerId> {
+        None
+    }
+
+    async fn get_peer_id_by_ip(&self, ip: &std::net::IpAddr) -> Option<PeerId> {
+        match ip {
+            std::net::IpAddr::V4(v4) => self.get_peer_id_by_ipv4(v4).await,
+            std::net::IpAddr::V6(v6) => self.get_peer_id_by_ipv6(v6).await,
+        }
     }
 
     async fn list_peers_own_foreign_network(
@@ -92,7 +102,41 @@ pub trait Route {
         Default::default()
     }
 
+    async fn get_foreign_network_summary(&self) -> RouteForeignNetworkSummary {
+        Default::default()
+    }
+
+    // my peer id in foreign network is different from the one in local network
+    // this function is used to get the peer id in local network
+    async fn get_origin_my_peer_id(
+        &self,
+        _network_name: &str,
+        _foreign_my_peer_id: PeerId,
+    ) -> Option<PeerId> {
+        None
+    }
+
     async fn set_route_cost_fn(&self, _cost_fn: RouteCostCalculator) {}
+
+    async fn get_peer_info(&self, peer_id: PeerId) -> Option<RoutePeerInfo>;
+
+    async fn get_peer_info_last_update_time(&self) -> std::time::Instant;
+
+    fn get_peer_groups(&self, peer_id: PeerId) -> Arc<Vec<String>>;
+
+    async fn get_peer_groups_by_ip(&self, ip: &std::net::IpAddr) -> Arc<Vec<String>> {
+        match self.get_peer_id_by_ip(ip).await {
+            Some(peer_id) => self.get_peer_groups(peer_id),
+            None => Arc::new(Vec::new()),
+        }
+    }
+
+    async fn get_peer_groups_by_ipv4(&self, ipv4: &Ipv4Addr) -> Arc<Vec<String>> {
+        match self.get_peer_id_by_ipv4(ipv4).await {
+            Some(peer_id) => self.get_peer_groups(peer_id),
+            None => Arc::new(Vec::new()),
+        }
+    }
 
     async fn dump(&self) -> String {
         "this route implementation does not support dump".to_string()
@@ -100,3 +144,36 @@ pub trait Route {
 }
 
 pub type ArcRoute = Arc<Box<dyn Route + Send + Sync>>;
+
+pub struct MockRoute {}
+
+#[async_trait::async_trait]
+impl Route for MockRoute {
+    async fn open(&self, _interface: RouteInterfaceBox) -> Result<u8, ()> {
+        panic!("mock route")
+    }
+
+    async fn close(&self) {
+        panic!("mock route")
+    }
+
+    async fn get_next_hop(&self, _peer_id: PeerId) -> Option<PeerId> {
+        panic!("mock route")
+    }
+
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
+        panic!("mock route")
+    }
+
+    async fn get_peer_info(&self, _peer_id: PeerId) -> Option<RoutePeerInfo> {
+        panic!("mock route")
+    }
+
+    async fn get_peer_info_last_update_time(&self) -> std::time::Instant {
+        panic!("mock route")
+    }
+
+    fn get_peer_groups(&self, _peer_id: PeerId) -> Arc<Vec<String>> {
+        panic!("mock route")
+    }
+}

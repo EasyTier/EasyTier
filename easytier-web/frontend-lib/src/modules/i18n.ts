@@ -22,6 +22,16 @@ export const availableLocales = Object.keys(localesMap)
 
 const loadedLanguages: string[] = []
 
+export function toggleLanguage() {
+  const currentLang = localStorage.getItem('lang') || 'en'
+  const newLang = currentLang === 'en' ? 'cn' : 'en'
+  loadLanguageAsync(newLang)
+}
+
+export function getCurrentLanguage() {
+  return localStorage.getItem('lang') || 'en'
+}
+
 function setI18nLanguage(lang: Locale) {
   i18n.global.locale.value = lang as any
   localStorage.setItem('lang', lang)
@@ -56,4 +66,6 @@ export default {
   i18n,
   localesMap,
   loadLanguageAsync,
+  toggleLanguage,
+  getCurrentLanguage,
 }

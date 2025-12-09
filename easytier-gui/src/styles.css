@@ -15,8 +15,6 @@
   line-height: 24px;
   font-weight: 400;
 
-  color: #0f0f0f;
-
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -44,4 +42,12 @@
 ::-webkit-scrollbar-thumb {
   border-radius: 4px;
   background-color: #0000005d;
+}
+
+.p-password {
+  width: 100%;
+}
+
+.p-password>input {
+  width: 100%;
 }

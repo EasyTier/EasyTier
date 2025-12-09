@@ -1,0 +1,56 @@
+# EasyTier Android JNI 示例配置文件
+# 这是一个基本的配置示例，展示如何配置 EasyTier 网络实例
+
+# 实例名称 (必需)
+inst_name = "android_instance"
+
+# 网络名称 (必需)
+network = "my_easytier_network"
+
+# 网络密钥 (可选，用于网络加密)
+# network_secret = "your_secret_key_here"
+
+# 监听地址 (可选)
+# listeners = ["tcp://0.0.0.0:11010", "udp://0.0.0.0:11010"]
+
+# 对等节点地址 (可选)
+# peers = ["tcp://peer1.example.com:11010", "udp://peer2.example.com:11010"]
+
+# 虚拟 IP 地址 (可选)
+# ipv4 = "10.144.144.1"
+
+# 主机名 (可选)
+# hostname = "android-device"
+
+# 启用 IPv6 (可选)
+# ipv6 = "fd00::1"
+
+# 代理网络 (可选)
+# proxy_networks = ["192.168.1.0/24"]
+
+# 退出节点 (可选)
+# exit_nodes = ["peer1"]
+
+# 启用加密 (可选)
+# enable_encryption = true
+
+# 启用 IPv4 转发 (可选)
+# enable_ipv4 = true
+
+# 启用 IPv6 转发 (可选)
+# enable_ipv6 = false
+
+# MTU 设置 (可选)
+# mtu = 1420
+
+# 日志级别 (可选: error, warn, info, debug, trace)
+# log_level = "info"
+
+# 禁用 P2P (可选)
+# disable_p2p = false
+
+# 使用多路径 (可选)
+# use_multi_path = true
+
+# 延迟优先 (可选)
+# latency_first = false

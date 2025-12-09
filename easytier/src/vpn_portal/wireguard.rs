@@ -1,7 +1,6 @@
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
     sync::Arc,
-    time::Duration,
 };
 
 use anyhow::Context;
@@ -10,14 +9,14 @@ use cidr::Ipv4Inet;
 use dashmap::DashMap;
 use futures::StreamExt;
 use pnet::packet::ipv4::Ipv4Packet;
-use tokio::{task::JoinSet, time::timeout};
+use tokio::task::JoinSet;
 use tracing::Level;
 
 use crate::{
     common::{
         config::NetworkIdentity,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
-        join_joinset_background,
+        join_joinset_background, shrink_dashmap,
     },
     peers::{peer_manager::PeerManager, PeerPacketFilter},
     tunnel::{
@@ -50,7 +49,7 @@ struct WireGuardImpl {
     global_ctx: ArcGlobalCtx,
     peer_mgr: Arc<PeerManager>,
     wg_config: WgConfig,
-    listenr_addr: SocketAddr,
+    listener_addr: SocketAddr,
 
     wg_peer_ip_table: WgPeerIpTable,
 
@@ -63,13 +62,13 @@ impl WireGuardImpl {
         let wg_config = get_wg_config_for_portal(&nid);
 
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
-        let listenr_addr = vpn_cfg.wireguard_listen;
+        let listener_addr = vpn_cfg.wireguard_listen;
 
         Self {
             global_ctx,
             peer_mgr,
             wg_config,
-            listenr_addr,
+            listener_addr,
             wg_peer_ip_table: Arc::new(DashMap::new()),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
         }
@@ -86,6 +85,7 @@ impl WireGuardImpl {
         let mut ip_registered = false;
 
         let remote_addr = info.remote_addr.clone();
+        let endpoint_addr = remote_addr.clone().map(Into::into);
         peer_mgr
             .get_global_ctx()
             .issue_event(GlobalCtxEvent::VpnPortalClientConnected(
@@ -96,18 +96,14 @@ impl WireGuardImpl {
         let mut map_key = None;
 
         loop {
-            let msg = match timeout(Duration::from_secs(120), stream.next()).await {
-                Ok(Some(Ok(msg))) => msg,
-                Ok(Some(Err(err))) => {
+            let msg = match stream.next().await {
+                Some(Ok(msg)) => msg,
+                Some(Err(err)) => {
                     tracing::error!(?err, "Failed to receive from wg client");
                     break;
                 }
-                Ok(None) => {
+                None => {
                     tracing::info!("Wireguard client disconnected");
-                    break;
-                }
-                Err(err) => {
-                    tracing::error!(?err, "Timeout while receiving from wg client");
                     break;
                 }
             };
@@ -120,23 +116,39 @@ impl WireGuardImpl {
             };
             if !ip_registered {
                 let client_entry = Arc::new(ClientEntry {
-                    endpoint_addr: remote_addr.clone().map(Into::into),
+                    endpoint_addr: endpoint_addr.clone(),
                     sink: mpsc_tunnel.get_sink(),
                 });
                 map_key = Some(i.get_source());
+                // Be careful here: we may overwrite an existing entry if the client IP is reused,
+                // which is common when clients are behind NAT.
                 wg_peer_ip_table.insert(i.get_source(), client_entry.clone());
                 ip_registered = true;
             }
             tracing::trace!(?i, "Received from wg client");
             let dst = i.get_destination();
             let _ = peer_mgr
-                .send_msg_ipv4(ZCPacket::new_with_payload(inner.as_ref()), dst)
+                .send_msg_by_ip(
+                    ZCPacket::new_with_payload(inner.as_ref()),
+                    IpAddr::V4(dst),
+                    false,
+                )
                 .await;
         }
 
-        if map_key.is_some() {
-            tracing::info!(?map_key, "Removing wg client from table");
-            wg_peer_ip_table.remove(&map_key.unwrap());
+        if let Some(map_key) = map_key {
+            // Remove the client from the wg_peer_ip_table only when its endpoint address is unchanged,
+            // or we may break clients behind NAT.
+            match wg_peer_ip_table
+                .remove_if(&map_key, |_, entry| entry.endpoint_addr == endpoint_addr)
+            {
+                Some(_) => tracing::info!(?map_key, "Removed wg client from table"),
+                None => tracing::info!(
+                    ?map_key,
+                    "The wg client changed its endpoint address, not removing from table"
+                ),
+            }
+            shrink_dashmap(&wg_peer_ip_table, None);
         }
 
         peer_mgr
@@ -202,12 +214,11 @@ impl WireGuardImpl {
             .await;
     }
 
-    #[tracing::instrument(skip(self), err(level = Level::WARN))]
-    async fn start(&self) -> anyhow::Result<()> {
-        let mut l = WgTunnelListener::new(
-            format!("wg://{}", self.listenr_addr).parse().unwrap(),
-            self.wg_config.clone(),
-        );
+    async fn start_listener(&self, listener_addr: &SocketAddr) -> anyhow::Result<()> {
+        let mut listener_url = url::Url::parse("wg://0.0.0.0:0").unwrap();
+        listener_url.set_port(Some(listener_addr.port())).unwrap();
+        listener_url.set_ip_host(listener_addr.ip()).unwrap();
+        let mut l = WgTunnelListener::new(listener_url.clone(), self.wg_config.clone());
 
         tracing::info!("Wireguard VPN Portal Starting");
 
@@ -217,9 +228,6 @@ impl WireGuardImpl {
                 .await
                 .with_context(|| "Failed to start wireguard listener for vpn portal")?;
         }
-
-        join_joinset_background(self.tasks.clone(), "wireguard".to_string());
-
         let tasks = Arc::downgrade(&self.tasks.clone());
         let peer_mgr = self.peer_mgr.clone();
         let wg_peer_ip_table = self.wg_peer_ip_table.clone();
@@ -236,6 +244,32 @@ impl WireGuardImpl {
             }
         });
 
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::VpnPortalStarted(listener_url.to_string()));
+
+        Ok(())
+    }
+
+    #[tracing::instrument(skip(self), err(level = Level::WARN))]
+    async fn start(&self) -> anyhow::Result<()> {
+        tracing::info!("Wireguard VPN Portal Starting");
+
+        self.start_listener(&self.listener_addr).await?;
+        // if binding to v4 unspecified, also start a listener on v6 unspecified
+        if let SocketAddr::V4(v4) = &self.listener_addr {
+            if v4.ip().is_unspecified() {
+                let _ = self
+                    .start_listener(&SocketAddr::V6(SocketAddrV6::new(
+                        Ipv6Addr::UNSPECIFIED,
+                        v4.port(),
+                        0,
+                        0,
+                    )))
+                    .await;
+            }
+        };
+
+        join_joinset_background(self.tasks.clone(), "wireguard".to_string());
         self.start_pipeline_processor().await;
 
         Ok(())
@@ -279,18 +313,16 @@ impl VpnPortal for WireGuard {
         let routes = peer_mgr.list_routes().await;
         let mut allow_ips = routes
             .iter()
-            .map(|x| x.proxy_cidrs.iter().map(String::to_string))
-            .flatten()
+            .flat_map(|x| x.proxy_cidrs.iter().map(String::to_string))
             .collect::<Vec<_>>();
-        for ipv4 in routes
+        if let Some(ipv4) = routes
             .iter()
-            .filter(|x| x.ipv4_addr.is_some())
-            .map(|x| x.ipv4_addr.unwrap())
+            .filter_map(|x| x.ipv4_addr)
             .chain(global_ctx.get_ipv4().into_iter().map(Into::into))
+            .next()
         {
             let inet = Ipv4Inet::from(ipv4);
             allow_ips.push(inet.network().to_string());
-            break;
         }
 
         let vpn_cfg = global_ctx.config.get_vpn_portal_config().unwrap();
@@ -298,11 +330,7 @@ impl VpnPortal for WireGuard {
 
         allow_ips.push(client_cidr.to_string());
 
-        let allow_ips = allow_ips
-            .into_iter()
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
+        let allow_ips = allow_ips.into_iter().collect::<Vec<_>>().join(",");
 
         let cfg = self.inner.as_ref().unwrap().wg_config.clone();
         let cfg_str = format!(
@@ -319,7 +347,7 @@ PersistentKeepalive = 25
 "#,
             peer_secret_key = BASE64_STANDARD.encode(cfg.peer_secret_key()),
             my_public_key = BASE64_STANDARD.encode(cfg.my_public_key()),
-            listenr_addr = self.inner.as_ref().unwrap().listenr_addr,
+            listenr_addr = self.inner.as_ref().unwrap().listener_addr,
             allow_ips = allow_ips,
             address = client_cidr.first_address().to_string() + "/32",
         );
@@ -334,19 +362,17 @@ PersistentKeepalive = 25
     async fn list_clients(&self) -> Vec<String> {
         self.inner
             .as_ref()
-            .and_then(|w| {
-                Some(
-                    w.wg_peer_ip_table
-                        .iter()
-                        .map(|x| {
-                            x.value()
-                                .endpoint_addr
-                                .as_ref()
-                                .map(|x| x.to_string())
-                                .unwrap_or_default()
-                        })
-                        .collect(),
-                )
+            .map(|w| {
+                w.wg_peer_ip_table
+                    .iter()
+                    .map(|x| {
+                        x.value()
+                            .endpoint_addr
+                            .as_ref()
+                            .map(|x| x.to_string())
+                            .unwrap_or_default()
+                    })
+                    .collect()
             })
             .unwrap_or_default()
     }

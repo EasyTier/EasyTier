@@ -10,7 +10,7 @@ use axum::response::Response;
 use std::fmt::Debug;
 use tower_sessions::Session;
 
-const CAPTCHA_KEY: &'static str = "ez-captcha";
+const CAPTCHA_KEY: &str = "ez-captcha";
 
 /// Axum & Tower_Sessions
 #[async_trait]
@@ -32,7 +32,7 @@ pub trait CaptchaAxumTowerSessionStaticExt {
     /// Verify the Captcha code, and return whether user's code is correct.
     async fn ver(code: &str, session: &Session) -> bool {
         match session.get::<String>(CAPTCHA_KEY).await {
-            Ok(Some(ans)) => ans.to_ascii_lowercase() == code.to_ascii_lowercase(),
+            Ok(Some(ans)) => ans.eq_ignore_ascii_case(code),
             _ => false,
         }
     }

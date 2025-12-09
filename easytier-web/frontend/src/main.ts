@@ -1,11 +1,12 @@
 import { createApp } from 'vue'
-import './style.css'
 import 'easytier-frontend-lib/style.css'
+import './style.css'
 import App from './App.vue'
 import EasytierFrontendLib from 'easytier-frontend-lib'
 import PrimeVue from 'primevue/config'
-import Aura from '@primevue/themes/aura'
+import Aura from '@primeuix/themes/aura';
 import ConfirmationService from 'primevue/confirmationservice';
+import { I18nUtils } from 'easytier-frontend-lib'
 
 import { createRouter, createWebHashHistory } from 'vue-router'
 import MainPage from './components/MainPage.vue'
@@ -15,6 +16,7 @@ import DeviceManagement from './components/DeviceManagement.vue'
 import Dashboard from './components/Dashboard.vue'
 import DialogService from 'primevue/dialogservice';
 import ToastService from 'primevue/toastservice';
+import ConfigGenerator from './components/ConfigGenerator.vue'
 
 const routes = [
     {
@@ -66,6 +68,10 @@ const routes = [
             }
         }
     },
+    {
+        path: '/config_generator',
+        component: ConfigGenerator,
+    }
 ]
 
 const router = createRouter({
@@ -73,7 +79,12 @@ const router = createRouter({
     routes,
 })
 
-createApp(App).use(PrimeVue,
+const app = createApp(App)
+
+// Use i18n
+app.use(I18nUtils.i18n)
+
+app.use(PrimeVue,
     {
         theme: {
             preset: Aura,

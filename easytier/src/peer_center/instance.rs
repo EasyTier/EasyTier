@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeSet,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, Instant},
 };
 
@@ -12,17 +12,19 @@ use tokio::task::JoinSet;
 use tracing::Instrument;
 
 use crate::{
-    common::PeerId,
+    common::{global_ctx::GlobalCtx, PeerId},
     peers::{
         peer_manager::PeerManager,
+        peer_map::PeerMap,
+        peer_rpc::PeerRpcManager,
         route_trait::{RouteCostCalculator, RouteCostCalculatorInterface},
         rpc_service::PeerManagerRpcService,
     },
     proto::{
         peer_rpc::{
-            GetGlobalPeerMapRequest, GetGlobalPeerMapResponse, GlobalPeerMap, PeerCenterRpc,
-            PeerCenterRpcClientFactory, PeerCenterRpcServer, PeerInfoForGlobalMap,
-            ReportPeersRequest, ReportPeersResponse,
+            DirectConnectedPeerInfo, GetGlobalPeerMapRequest, GetGlobalPeerMapResponse,
+            GlobalPeerMap, PeerCenterRpc, PeerCenterRpcClientFactory, PeerCenterRpcServer,
+            PeerInfoForGlobalMap, ReportPeersRequest, ReportPeersResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -30,9 +32,20 @@ use crate::{
 
 use super::{server::PeerCenterServer, Digest, Error};
 
+#[async_trait::async_trait]
+#[auto_impl::auto_impl(&, Arc, Box)]
+pub trait PeerCenterPeerManagerTrait: Send + Sync + 'static {
+    async fn list_peers(&self) -> PeerInfoForGlobalMap;
+    fn my_peer_id(&self) -> PeerId;
+    fn get_global_ctx(&self) -> Arc<GlobalCtx>;
+    fn get_rpc_mgr(&self) -> Weak<PeerRpcManager>;
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route>;
+}
+
 struct PeerCenterBase {
-    peer_mgr: Arc<PeerManager>,
-    tasks: Arc<Mutex<JoinSet<()>>>,
+    peer_mgr: Arc<dyn PeerCenterPeerManagerTrait>,
+    my_peer_id: PeerId,
+    tasks: Mutex<JoinSet<()>>,
     lock: Arc<Mutex<()>>,
 }
 
@@ -40,25 +53,25 @@ struct PeerCenterBase {
 static SERVICE_ID: u32 = 50;
 
 struct PeridicJobCtx<T> {
-    peer_mgr: Arc<PeerManager>,
+    peer_mgr: Arc<dyn PeerCenterPeerManagerTrait>,
+    my_peer_id: PeerId,
     center_peer: AtomicCell<PeerId>,
     job_ctx: T,
 }
 
 impl PeerCenterBase {
     pub async fn init(&self) -> Result<(), Error> {
-        self.peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_server()
-            .registry()
-            .register(
-                PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
-                &self.peer_mgr.get_global_ctx().get_network_name(),
-            );
+        let Some(rpc_mgr) = self.peer_mgr.get_rpc_mgr().upgrade() else {
+            return Err(Error::Shutdown);
+        };
+        rpc_mgr.rpc_server().registry().register(
+            PeerCenterRpcServer::new(PeerCenterServer::new(self.peer_mgr.my_peer_id())),
+            &self.peer_mgr.get_global_ctx().get_network_name(),
+        );
         Ok(())
     }
 
-    async fn select_center_peer(peer_mgr: &Arc<PeerManager>) -> Option<PeerId> {
+    async fn select_center_peer(peer_mgr: &dyn PeerCenterPeerManagerTrait) -> Option<PeerId> {
         let peers = peer_mgr.list_routes().await;
         if peers.is_empty() {
             return None;
@@ -83,21 +96,22 @@ impl PeerCenterBase {
     >(
         &self,
         job_ctx: T,
-        job_fn: (impl Fn(
-            Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
-            Arc<PeridicJobCtx<T>>,
-        ) -> Fut
-             + Send
-             + Sync
-             + 'static),
-    ) -> () {
-        let my_peer_id = self.peer_mgr.my_peer_id();
+        job_fn: impl Fn(
+                Box<dyn PeerCenterRpc<Controller = BaseController> + Send>,
+                Arc<PeridicJobCtx<T>>,
+            ) -> Fut
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        let my_peer_id = self.my_peer_id;
         let peer_mgr = self.peer_mgr.clone();
         let lock = self.lock.clone();
         self.tasks.lock().await.spawn(
             async move {
                 let ctx = Arc::new(PeridicJobCtx {
                     peer_mgr: peer_mgr.clone(),
+                    my_peer_id,
                     center_peer: AtomicCell::new(PeerId::default()),
                     job_ctx,
                 });
@@ -107,9 +121,13 @@ impl PeerCenterBase {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     };
-                    ctx.center_peer.store(center_peer.clone());
+                    let Some(rpc_mgr) = peer_mgr.get_rpc_mgr().upgrade() else {
+                        tracing::error!("rpc manager is shutdown, exit periodic job");
+                        return;
+                    };
+
+                    ctx.center_peer.store(center_peer);
                     tracing::trace!(?center_peer, "run periodic job");
-                    let rpc_mgr = peer_mgr.get_peer_rpc_mgr();
                     let _g = lock.lock().await;
                     let stub = rpc_mgr
                         .rpc_client()
@@ -136,10 +154,12 @@ impl PeerCenterBase {
         );
     }
 
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(peer_mgr: Arc<dyn PeerCenterPeerManagerTrait>) -> Self {
+        let my_peer_id = peer_mgr.my_peer_id();
         PeerCenterBase {
             peer_mgr,
-            tasks: Arc::new(Mutex::new(JoinSet::new())),
+            my_peer_id,
+            tasks: Mutex::new(JoinSet::new()),
             lock: Arc::new(Mutex::new(())),
         }
     }
@@ -177,7 +197,7 @@ impl PeerCenterRpc for PeerCenterInstanceService {
 }
 
 pub struct PeerCenterInstance {
-    peer_mgr: Arc<PeerManager>,
+    peer_mgr: Arc<dyn PeerCenterPeerManagerTrait>,
 
     client: Arc<PeerCenterBase>,
     global_peer_map: Arc<RwLock<GlobalPeerMap>>,
@@ -186,7 +206,7 @@ pub struct PeerCenterInstance {
 }
 
 impl PeerCenterInstance {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(peer_mgr: Arc<dyn PeerCenterPeerManagerTrait>) -> Self {
         PeerCenterInstance {
             peer_mgr: peer_mgr.clone(),
             client: Arc::new(PeerCenterBase::new(peer_mgr.clone())),
@@ -273,15 +293,14 @@ impl PeerCenterInstance {
 
     async fn init_report_peers_job(&self) {
         struct Ctx {
-            service: PeerManagerRpcService,
-
+            peer_mgr: Arc<dyn PeerCenterPeerManagerTrait>,
             last_report_peers: Mutex<BTreeSet<PeerId>>,
 
             last_center_peer: AtomicCell<PeerId>,
             last_report_time: AtomicCell<Instant>,
         }
         let ctx = Arc::new(Ctx {
-            service: PeerManagerRpcService::new(self.peer_mgr.clone()),
+            peer_mgr: self.peer_mgr.clone(),
             last_report_peers: Mutex::new(BTreeSet::new()),
             last_center_peer: AtomicCell::new(PeerId::default()),
             last_report_time: AtomicCell::new(Instant::now()),
@@ -289,9 +308,9 @@ impl PeerCenterInstance {
 
         self.client
             .init_periodic_job(ctx, |client, ctx| async move {
-                let my_node_id = ctx.peer_mgr.my_peer_id();
-                let peers: PeerInfoForGlobalMap = ctx.job_ctx.service.list_peers().await.into();
-                let peer_list = peers.direct_peers.keys().map(|k| *k).collect();
+                let my_node_id = ctx.my_peer_id;
+                let peers = ctx.job_ctx.peer_mgr.list_peers().await;
+                let peer_list = peers.direct_peers.keys().copied().collect();
                 let job_ctx = &ctx.job_ctx;
 
                 // only report when:
@@ -351,7 +370,7 @@ impl PeerCenterInstance {
                     .map
                     .get(&src)
                     .and_then(|src_peer_info| src_peer_info.direct_peers.get(&dst))
-                    .and_then(|info| Some(info.latency_ms))
+                    .map(|info| info.latency_ms)
             }
         }
 
@@ -360,7 +379,7 @@ impl PeerCenterInstance {
                 if let Some(cost) = self.directed_cost(src, dst) {
                     return cost;
                 }
-                self.directed_cost(dst, src).unwrap_or(100)
+                self.directed_cost(dst, src).unwrap_or(500)
             }
 
             fn begin_update(&mut self) {
@@ -389,6 +408,81 @@ impl PeerCenterInstance {
     }
 }
 
+#[async_trait::async_trait]
+impl PeerCenterPeerManagerTrait for PeerManager {
+    async fn list_peers(&self) -> PeerInfoForGlobalMap {
+        PeerManagerRpcService::list_peers(self).await.into()
+    }
+
+    fn my_peer_id(&self) -> PeerId {
+        self.get_peer_map().my_peer_id()
+    }
+
+    fn get_global_ctx(&self) -> Arc<GlobalCtx> {
+        self.get_peer_map().get_global_ctx()
+    }
+
+    fn get_rpc_mgr(&self) -> Weak<PeerRpcManager> {
+        Arc::downgrade(&self.get_peer_rpc_mgr())
+    }
+
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
+        self.list_routes().await
+    }
+}
+
+pub struct PeerMapWithPeerRpcManager {
+    pub peer_map: Arc<PeerMap>,
+    pub rpc_mgr: Arc<PeerRpcManager>,
+}
+
+#[async_trait::async_trait]
+impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
+    async fn list_peers(&self) -> PeerInfoForGlobalMap {
+        // TODO: currently latency between public server cannot be calculated because one public-server pair
+        // has no connection between them. (hard to get latency from peer manager because it's hard to transfrom the peer id)
+        // but it's fine because we don't want to too much traffic between public servers.
+        let peers = self.peer_map.list_peers().await;
+        let mut ret = PeerInfoForGlobalMap::default();
+        for peer in peers {
+            if let Some(conns) = self.peer_map.list_peer_conns(peer).await {
+                let Some(min_lat) = conns
+                    .iter()
+                    .map(|conn| conn.stats.as_ref().unwrap().latency_us)
+                    .min()
+                else {
+                    continue;
+                };
+
+                ret.direct_peers.insert(
+                    peer,
+                    DirectConnectedPeerInfo {
+                        latency_ms: std::cmp::max(1, (min_lat as u32 / 1000) as i32),
+                    },
+                );
+            }
+        }
+
+        ret
+    }
+
+    fn my_peer_id(&self) -> PeerId {
+        self.peer_map.my_peer_id()
+    }
+
+    fn get_global_ctx(&self) -> Arc<GlobalCtx> {
+        self.peer_map.get_global_ctx()
+    }
+
+    fn get_rpc_mgr(&self) -> Weak<PeerRpcManager> {
+        Arc::downgrade(&self.rpc_mgr)
+    }
+
+    async fn list_routes(&self) -> Vec<crate::proto::api::instance::Route> {
+        self.peer_map.list_route_infos().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -409,7 +503,7 @@ mod tests {
         let peer_center_b = PeerCenterInstance::new(peer_mgr_b.clone());
         let peer_center_c = PeerCenterInstance::new(peer_mgr_c.clone());
 
-        let peer_centers = vec![&peer_center_a, &peer_center_b, &peer_center_c];
+        let peer_centers = [&peer_center_a, &peer_center_b, &peer_center_c];
         for pc in peer_centers.iter() {
             pc.init().await;
         }

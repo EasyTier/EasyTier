@@ -12,10 +12,7 @@ use async_trait::async_trait;
 use futures::{Sink, SinkExt, Stream, StreamExt};
 use once_cell::sync::Lazy;
 
-use tokio::sync::{
-    mpsc::{UnboundedReceiver, UnboundedSender},
-    Mutex,
-};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use uuid::Uuid;
 
@@ -50,7 +47,7 @@ impl RingTunnel {
         let ring_impl = AsyncHeapRb::new(std::cmp::max(RING_TUNNEL_RESERVERD_CAP * 2, cap));
         let (ring_prod_impl, ring_cons_impl) = ring_impl.split();
         Self {
-            id: id.clone(),
+            id,
             ring_cons_impl: AtomicCell::new(Some(ring_cons_impl)),
             ring_prod_impl: AtomicCell::new(Some(ring_prod_impl)),
         }
@@ -77,7 +74,7 @@ pub struct RingStream {
 impl RingStream {
     pub fn new(tunnel: Arc<RingTunnel>) -> Self {
         Self {
-            id: tunnel.id.clone(),
+            id: tunnel.id,
             ring_cons_impl: tunnel.ring_cons_impl.take().unwrap(),
         }
     }
@@ -116,7 +113,7 @@ pub struct RingSink {
 impl RingSink {
     pub fn new(tunnel: Arc<RingTunnel>) -> Self {
         Self {
-            id: tunnel.id.clone(),
+            id: tunnel.id,
             ring_prod_impl: tunnel.ring_prod_impl.take().unwrap(),
         }
     }
@@ -184,14 +181,18 @@ struct Connection {
     server: Arc<RingTunnel>,
 }
 
-static CONNECTION_MAP: Lazy<Arc<Mutex<HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+type ConnectionMap = HashMap<uuid::Uuid, UnboundedSender<Arc<Connection>>>;
+
+static CONNECTION_MAP: Lazy<Arc<std::sync::Mutex<ConnectionMap>>> =
+    Lazy::new(|| Arc::new(std::sync::Mutex::new(HashMap::new())));
 
 #[derive(Debug)]
 pub struct RingTunnelListener {
     listerner_addr: url::Url,
     conn_sender: UnboundedSender<Arc<Connection>>,
     conn_receiver: UnboundedReceiver<Arc<Connection>>,
+
+    key_in_conn_map: Option<uuid::Uuid>,
 }
 
 impl RingTunnelListener {
@@ -201,6 +202,7 @@ impl RingTunnelListener {
             listerner_addr: key,
             conn_sender,
             conn_receiver,
+            key_in_conn_map: None,
         }
     }
 }
@@ -230,8 +232,13 @@ fn get_tunnel_for_server(conn: Arc<Connection>) -> impl Tunnel {
 }
 
 impl RingTunnelListener {
-    fn get_addr(&self) -> Result<uuid::Uuid, TunnelError> {
-        check_scheme_and_get_socket_addr::<Uuid>(&self.listerner_addr, "ring")
+    async fn get_addr(&self) -> Result<uuid::Uuid, TunnelError> {
+        check_scheme_and_get_socket_addr::<Uuid>(
+            &self.listerner_addr,
+            "ring",
+            super::IpVersion::Both,
+        )
+        .await
     }
 }
 
@@ -239,16 +246,18 @@ impl RingTunnelListener {
 impl TunnelListener for RingTunnelListener {
     async fn listen(&mut self) -> Result<(), TunnelError> {
         tracing::info!("listen new conn of key: {}", self.listerner_addr);
+        let addr = self.get_addr().await?;
         CONNECTION_MAP
             .lock()
-            .await
-            .insert(self.get_addr()?, self.conn_sender.clone());
+            .unwrap()
+            .insert(addr, self.conn_sender.clone());
+        self.key_in_conn_map = Some(addr);
         Ok(())
     }
 
     async fn accept(&mut self) -> Result<Box<dyn Tunnel>, TunnelError> {
         tracing::info!("waiting accept new conn of key: {}", self.listerner_addr);
-        let my_addr = self.get_addr()?;
+        let my_addr = self.get_addr().await?;
         if let Some(conn) = self.conn_receiver.recv().await {
             if conn.server.id == my_addr {
                 tracing::info!("accept new conn of key: {}", self.listerner_addr);
@@ -271,6 +280,14 @@ impl TunnelListener for RingTunnelListener {
     }
 }
 
+impl Drop for RingTunnelListener {
+    fn drop(&mut self) {
+        if let Some(addr) = self.key_in_conn_map {
+            CONNECTION_MAP.lock().unwrap().remove(&addr);
+        }
+    }
+}
+
 pub struct RingTunnelConnector {
     remote_addr: url::Url,
 }
@@ -284,20 +301,22 @@ impl RingTunnelConnector {
 #[async_trait]
 impl TunnelConnector for RingTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        let remote_addr = check_scheme_and_get_socket_addr::<Uuid>(&self.remote_addr, "ring")?;
+        let remote_addr = check_scheme_and_get_socket_addr::<Uuid>(
+            &self.remote_addr,
+            "ring",
+            super::IpVersion::Both,
+        )
+        .await?;
         let entry = CONNECTION_MAP
             .lock()
-            .await
+            .unwrap()
             .get(&remote_addr)
             .unwrap()
             .clone();
         tracing::info!("connecting");
         let conn = Arc::new(Connection {
             client: Arc::new(RingTunnel::new(RING_TUNNEL_CAP)),
-            server: Arc::new(RingTunnel::new_with_id(
-                remote_addr.clone(),
-                RING_TUNNEL_CAP,
-            )),
+            server: Arc::new(RingTunnel::new_with_id(remote_addr, RING_TUNNEL_CAP)),
         });
         entry
             .send(conn.clone())

@@ -162,7 +162,7 @@ impl PeerCenterRpc for PeerCenterServer {
                     direct_peers: Default::default(),
                 })
                 .direct_peers
-                .insert(pair.dst, entry.info.clone());
+                .insert(pair.dst, entry.info);
         }
 
         Ok(GetGlobalPeerMapResponse {

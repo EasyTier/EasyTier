@@ -1,8 +1,8 @@
 import './style.css'
 
 import type { App } from 'vue';
-import { Config, Status } from "./components";
-import Aura from '@primevue/themes/aura'
+import { Config, Status, ConfigEditDialog, RemoteManagement } from "./components";
+import Aura from '@primeuix/themes/aura';
 import PrimeVue from 'primevue/config'
 
 import I18nUtils from './modules/i18n'
@@ -41,10 +41,12 @@ export default {
         });
 
         app.component('Config', Config);
+        app.component('ConfigEditDialog', ConfigEditDialog);
         app.component('Status', Status);
         app.component('HumanEvent', HumanEvent);
+        app.component('RemoteManagement', RemoteManagement);
         app.directive('tooltip', vTooltip as any);
     }
 };
 
-export { Config, Status, I18nUtils, NetworkTypes, Api, Utils };
+export { Config, ConfigEditDialog, RemoteManagement, Status, I18nUtils, NetworkTypes, Api, Utils };

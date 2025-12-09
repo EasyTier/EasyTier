@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crossbeam::atomic::AtomicCell;
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
-use tokio::{select, sync::mpsc, task::JoinHandle};
+use tokio::{select, sync::mpsc};
 
 use tracing::Instrument;
 
@@ -11,7 +11,6 @@ use super::{
     peer_conn::{PeerConn, PeerConnId},
     PacketRecvChan,
 };
-use crate::proto::cli::PeerConnInfo;
 use crate::{
     common::{
         error::Error,
@@ -19,6 +18,10 @@ use crate::{
         PeerId,
     },
     tunnel::packet_def::ZCPacket,
+};
+use crate::{
+    common::{scoped_task::ScopedTask, shrink_dashmap},
+    proto::api::instance::PeerConnInfo,
 };
 
 type ArcPeerConn = Arc<PeerConn>;
@@ -32,11 +35,12 @@ pub struct Peer {
     packet_recv_chan: PacketRecvChan,
 
     close_event_sender: mpsc::Sender<PeerConnId>,
-    close_event_listener: JoinHandle<()>,
+    close_event_listener: ScopedTask<()>,
 
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
-    default_conn_id: AtomicCell<PeerConnId>,
+    default_conn_id: Arc<AtomicCell<PeerConnId>>,
+    default_conn_id_clear_task: ScopedTask<()>,
 }
 
 impl Peer {
@@ -71,6 +75,7 @@ impl Peer {
                                 global_ctx_copy.issue_event(GlobalCtxEvent::PeerConnRemoved(
                                     conn.get_conn_info(),
                                 ));
+                                shrink_dashmap(&conns_copy, Some(4));
                             }
                         }
 
@@ -86,11 +91,25 @@ impl Peer {
                 "peer_close_event_listener",
                 ?peer_node_id,
             )),
-        );
+        )
+        .into();
+
+        let default_conn_id = Arc::new(AtomicCell::new(PeerConnId::default()));
+
+        let conns_copy = conns.clone();
+        let default_conn_id_copy = default_conn_id.clone();
+        let default_conn_id_clear_task = ScopedTask::from(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if conns_copy.len() > 1 {
+                    default_conn_id_copy.store(PeerConnId::default());
+                }
+            }
+        }));
 
         Peer {
             peer_node_id,
-            conns: conns.clone(),
+            conns,
             packet_recv_chan,
             global_ctx,
 
@@ -98,17 +117,32 @@ impl Peer {
             close_event_listener,
 
             shutdown_notifier,
-            default_conn_id: AtomicCell::new(PeerConnId::default()),
+            default_conn_id,
+            default_conn_id_clear_task,
         }
     }
 
     pub async fn add_peer_conn(&self, mut conn: PeerConn) {
-        conn.set_close_event_sender(self.close_event_sender.clone());
+        let close_notifier = conn.get_close_notifier();
+        let conn_info = conn.get_conn_info();
+
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
-        self.global_ctx
-            .issue_event(GlobalCtxEvent::PeerConnAdded(conn.get_conn_info()));
         self.conns.insert(conn.get_conn_id(), Arc::new(conn));
+
+        let close_event_sender = self.close_event_sender.clone();
+        tokio::spawn(async move {
+            let conn_id = close_notifier.get_conn_id();
+            if let Some(mut waiter) = close_notifier.get_waiter().await {
+                let _ = waiter.recv().await;
+            }
+            if let Err(e) = close_event_sender.send(conn_id).await {
+                tracing::warn!(?conn_id, "failed to send close event: {}", e);
+            }
+        });
+
+        self.global_ctx
+            .issue_event(GlobalCtxEvent::PeerConnAdded(conn_info));
     }
 
     async fn select_conn(&self) -> Option<ArcPeerConn> {
@@ -117,14 +151,19 @@ impl Peer {
             return Some(conn.clone());
         }
 
-        let conn = self.conns.iter().next();
-        if conn.is_none() {
-            return None;
+        // find a conn with the smallest latency
+        let mut min_latency = u64::MAX;
+        for conn in self.conns.iter() {
+            let latency = conn.value().get_stats().latency_us;
+            if latency < min_latency {
+                min_latency = latency;
+                self.default_conn_id.store(conn.get_conn_id());
+            }
         }
 
-        let conn = conn.unwrap().clone();
-        self.default_conn_id.store(conn.get_conn_id());
-        Some(conn)
+        self.conns
+            .get(&self.default_conn_id.load())
+            .map(|conn| conn.clone())
     }
 
     pub async fn send_msg(&self, msg: ZCPacket) -> Result<(), Error> {
@@ -141,7 +180,7 @@ impl Peer {
         if !has_key {
             return Err(Error::NotFound);
         }
-        self.close_event_sender.send(conn_id.clone()).await.unwrap();
+        self.close_event_sender.send(*conn_id).await.unwrap();
         Ok(())
     }
 
@@ -154,15 +193,44 @@ impl Peer {
 
         let mut ret = Vec::new();
         for conn in conns {
-            ret.push(conn.get_conn_info());
+            let info = conn.get_conn_info();
+            if !info.is_closed {
+                ret.push(info);
+            } else {
+                let conn_id = info.conn_id.parse().unwrap();
+                let _ = self.close_peer_conn(&conn_id).await;
+            }
         }
         ret
+    }
+
+    pub fn has_directly_connected_conn(&self) -> bool {
+        self.conns
+            .iter()
+            .any(|entry| !(entry.value()).is_hole_punched())
+    }
+
+    pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
+        self.conns
+            .iter()
+            .filter(|entry| !(entry.value()).is_hole_punched())
+            .map(|entry| (entry.value()).get_conn_id())
+            .collect()
+    }
+
+    pub fn get_default_conn_id(&self) -> PeerConnId {
+        self.default_conn_id.load()
     }
 }
 
 // pritn on drop
 impl Drop for Peer {
     fn drop(&mut self) {
+        self.conns.retain(|_, conn| {
+            self.global_ctx
+                .issue_event(GlobalCtxEvent::PeerConnRemoved(conn.get_conn_info()));
+            false
+        });
         self.shutdown_notifier.notify_one();
         tracing::info!("peer {} drop", self.peer_node_id);
     }
@@ -171,11 +239,11 @@ impl Drop for Peer {
 #[cfg(test)]
 mod tests {
 
-    use tokio::{sync::mpsc, time::timeout};
+    use tokio::time::timeout;
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, new_peer_id},
-        peers::peer_conn::PeerConn,
+        peers::{create_packet_recv_chan, peer_conn::PeerConn},
         tunnel::ring::create_ring_tunnel_pair,
     };
 
@@ -183,8 +251,8 @@ mod tests {
 
     #[tokio::test]
     async fn close_peer() {
-        let (local_packet_send, _local_packet_recv) = mpsc::channel(10);
-        let (remote_packet_send, _remote_packet_recv) = mpsc::channel(10);
+        let (local_packet_send, _local_packet_recv) = create_packet_recv_chan();
+        let (remote_packet_send, _remote_packet_recv) = create_packet_recv_chan();
         let global_ctx = get_mock_global_ctx();
         let local_peer = Peer::new(new_peer_id(), local_packet_send, global_ctx.clone());
         let remote_peer = Peer::new(new_peer_id(), remote_packet_send, global_ctx.clone());
@@ -218,7 +286,7 @@ mod tests {
 
         // wait for remote peer conn close
         timeout(std::time::Duration::from_secs(5), async {
-            while (&remote_peer).list_peer_conns().await.len() != 0 {
+            while !remote_peer.list_peer_conns().await.is_empty() {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         })
