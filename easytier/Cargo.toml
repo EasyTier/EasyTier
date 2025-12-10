@@ -220,6 +220,10 @@ hmac = "0.12.1"
 sha2 = "0.10.8"
 shellexpand = "3.1.1"
 
+# for fake tcp
+internet-checksum = "0.2"
+flume = "0.12"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 

@@ -15,6 +15,7 @@ use self::packet_def::ZCPacket;
 
 pub mod buf;
 pub mod common;
+pub mod fake_tcp;
 pub mod filter;
 pub mod mpsc;
 pub mod packet_def;
