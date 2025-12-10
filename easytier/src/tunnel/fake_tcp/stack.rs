@@ -182,6 +182,38 @@ impl Socket {
         }
     }
 
+    pub async fn recv_bytes(&self) -> Option<Vec<u8>> {
+        match self.state {
+            State::Established => {
+                let raw_buf = self.incoming.recv_async().await.ok()?;
+                let (_v4_packet, tcp_packet) = parse_ip_packet(&raw_buf).unwrap();
+
+                if (tcp_packet.get_flags() & tcp::TcpFlags::RST) != 0 {
+                    info!("Connection {} reset by peer", self);
+                    return None;
+                }
+
+                let payload = tcp_packet.payload();
+
+                let new_ack = tcp_packet.get_sequence().wrapping_add(payload.len() as u32);
+                let last_ask = self.last_ack.load(Ordering::Relaxed);
+                self.ack.store(new_ack, Ordering::Relaxed);
+
+                if new_ack.overflowing_sub(last_ask).0 > MAX_UNACKED_LEN {
+                    let buf = self.build_tcp_packet(tcp::TcpFlags::ACK, None);
+                    if let Err(e) = self.tun.try_send(&buf) {
+                        // This should not really happen as we have not sent anything for
+                        // quite some time...
+                        info!("Connection {} unable to send idling ACK back: {}", self, e)
+                    }
+                }
+
+                Some(payload.to_vec())
+            }
+            _ => unreachable!(),
+        }
+    }
+
     /// Attempt to receive a datagram from the other end.
     ///
     /// This method takes `&self`, and it can be called safely by multiple threads
@@ -319,6 +351,13 @@ impl Socket {
 
         None
     }
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
+
+    pub fn remote_addr(&self) -> SocketAddr {
+        self.remote_addr
+    }
 }
 
 impl Drop for Socket {
@@ -403,8 +442,22 @@ impl Stack {
     /// Connects to the remote end. `None` returned means
     /// the connection attempt failed.
     pub async fn connect(&mut self, addr: SocketAddr) -> Option<Socket> {
-        let mut rng = rand::thread_rng();
-        for local_port in rng.gen_range(32768..=60999)..=60999 {
+        // let mut rng = rand::thread_rng(); // ThreadRng is not Send
+        // use rand::rngs::StdRng;
+        // use rand::SeedableRng;
+        // let mut rng = StdRng::from_entropy();
+
+        // Use a simple loop with random offset instead of holding rng across await
+        let start_port = {
+            let mut rng = rand::thread_rng();
+            rng.gen_range(32768..=60999)
+        };
+
+        for i in 0..20000 {
+            let local_port = start_port + i;
+            if local_port > 60999 {
+                continue;
+            }
             let local_addr = SocketAddr::new(
                 if addr.is_ipv4() {
                     IpAddr::V4(self.local_ip)
@@ -429,7 +482,8 @@ impl Stack {
                 let incoming;
                 (sock, incoming) = Socket::new(
                     self.shared.clone(),
-                    self.shared.tun.choose(&mut rng).unwrap().clone(),
+                    // self.shared.tun.choose(&mut rng).unwrap().clone(),
+                    self.shared.tun[0].clone(), // Simplification: just use the first tun
                     local_addr,
                     addr,
                     None,
@@ -546,6 +600,7 @@ impl Stack {
                             }
                         }
                         None => {
+                            trace!("Dropping packet with no IP/TCP header");
                             continue;
                         }
                     }
