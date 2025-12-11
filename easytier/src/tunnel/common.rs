@@ -534,6 +534,11 @@ pub mod tests {
         let tunnel = c_netns.run_async(|| connector.connect()).await.unwrap();
         println!("connect: {:?}", tunnel.info());
 
+        if connector.remote_url().scheme() == "faketcp" {
+            // listener need some time to start capturing packet
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
         assert_eq!(
             url::Url::from(tunnel.info().unwrap().remote_addr.unwrap()),
             connector.remote_url(),

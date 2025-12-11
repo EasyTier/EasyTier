@@ -2124,7 +2124,6 @@ dependencies = [
  "humansize",
  "humantime-serde",
  "idna 1.0.3",
- "internet-checksum",
  "kcp-sys",
  "machine-uid",
  "maplit",
@@ -4018,12 +4017,6 @@ checksum = "a0c10553d664a4d0bcff9f4215d0aac67a639cc68ef660840afe309b807bc9f5"
 dependencies = [
  "generic-array",
 ]
-
-[[package]]
-name = "internet-checksum"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc6d6206008e25125b1f97fbe5d309eb7b85141cf9199d52dbd3729a1584dd16"
 
 [[package]]
 name = "ip_network"

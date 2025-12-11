@@ -21,8 +21,8 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, Tunnel,
-        TunnelListener,
+        fake_tcp::FakeTcpTunnelListener, ring::RingTunnelListener, tcp::TcpTunnelListener,
+        udp::UdpTunnelListener, Tunnel, TunnelListener,
     },
 };
 
@@ -49,6 +49,7 @@ pub fn get_listener_by_url(
             use crate::tunnel::websocket::WSTunnelListener;
             Box::new(WSTunnelListener::new(l.clone()))
         }
+        "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),
         _ => {
             return Err(Error::InvalidUrl(l.to_string()));
         }
@@ -143,7 +144,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 && !is_url_host_ipv6(&l)
                 && is_url_host_unspecified(&l)
                 // quic enables dual-stack by default, may conflict with v4 listener
-                && l.scheme() != "quic"
+                && l.scheme() != "quic" && l.scheme() != "faketcp"
             {
                 let mut ipv6_listener = l.clone();
                 ipv6_listener

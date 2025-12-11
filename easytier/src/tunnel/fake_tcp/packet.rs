@@ -1,7 +1,7 @@
 use bytes::{Bytes, BytesMut};
-use internet_checksum::Checksum;
-use pnet::packet::Packet;
+use pnet::packet::ethernet::{EtherTypes, EthernetPacket, MutableEthernetPacket};
 use pnet::packet::{ip, ipv4, ipv6, tcp};
+use pnet::util::MacAddr;
 use std::convert::TryInto;
 use std::net::{IpAddr, SocketAddr};
 
@@ -31,7 +31,12 @@ impl IPPacket<'_> {
     }
 }
 
+const ETH_HDR_LEN: usize = 14;
+
+#[allow(clippy::too_many_arguments)]
 pub fn build_tcp_packet(
+    src_mac: MacAddr,
+    dst_mac: MacAddr,
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
     seq: u32,
@@ -47,38 +52,12 @@ pub fn build_tcp_packet(
     let tcp_header_len = TCP_HEADER_LEN + if wscale { 4 } else { 0 }; // nop + wscale
     let tcp_total_len = tcp_header_len + payload.map_or(0, |payload| payload.len());
     let total_len = ip_header_len + tcp_total_len;
-    let mut buf = BytesMut::zeroed(total_len);
+    let mut buf = BytesMut::zeroed(ETH_HDR_LEN + total_len);
 
+    let mut eth_buf = buf.split_to(ETH_HDR_LEN);
     let mut ip_buf = buf.split_to(ip_header_len);
     let mut tcp_buf = buf.split_to(tcp_total_len);
     assert_eq!(0, buf.len());
-
-    match (local_addr, remote_addr) {
-        (SocketAddr::V4(local), SocketAddr::V4(remote)) => {
-            let mut v4 = ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
-            v4.set_version(4);
-            v4.set_header_length(IPV4_HEADER_LEN as u8 / 4);
-            v4.set_next_level_protocol(ip::IpNextHeaderProtocols::Tcp);
-            v4.set_ttl(64);
-            v4.set_source(*local.ip());
-            v4.set_destination(*remote.ip());
-            v4.set_total_length(total_len.try_into().unwrap());
-            v4.set_flags(ipv4::Ipv4Flags::DontFragment);
-            let mut cksm = Checksum::new();
-            cksm.add_bytes(v4.packet());
-            v4.set_checksum(u16::from_be_bytes(cksm.checksum()));
-        }
-        (SocketAddr::V6(local), SocketAddr::V6(remote)) => {
-            let mut v6 = ipv6::MutableIpv6Packet::new(&mut ip_buf).unwrap();
-            v6.set_version(6);
-            v6.set_payload_length(tcp_total_len.try_into().unwrap());
-            v6.set_next_header(ip::IpNextHeaderProtocols::Tcp);
-            v6.set_hop_limit(64);
-            v6.set_source(*local.ip());
-            v6.set_destination(*remote.ip());
-        }
-        _ => unreachable!(),
-    };
 
     let mut tcp = tcp::MutableTcpPacket::new(&mut tcp_buf).unwrap();
     tcp.set_window(0xffff);
@@ -97,37 +76,64 @@ pub fn build_tcp_packet(
         tcp.set_payload(payload);
     }
 
-    let mut cksm = Checksum::new();
-    let ip::IpNextHeaderProtocol(tcp_protocol) = ip::IpNextHeaderProtocols::Tcp;
+    let mut ethernet = MutableEthernetPacket::new(&mut eth_buf).unwrap();
+    ethernet.set_destination(dst_mac);
+    ethernet.set_source(src_mac);
+    ethernet.set_ethertype(EtherTypes::Ipv4);
 
     match (local_addr, remote_addr) {
         (SocketAddr::V4(local), SocketAddr::V4(remote)) => {
-            cksm.add_bytes(&local.ip().octets());
-            cksm.add_bytes(&remote.ip().octets());
+            let mut v4 = ipv4::MutableIpv4Packet::new(&mut ip_buf).unwrap();
+            v4.set_version(4);
+            v4.set_header_length(IPV4_HEADER_LEN as u8 / 4);
+            v4.set_next_level_protocol(ip::IpNextHeaderProtocols::Tcp);
+            v4.set_ttl(64);
+            v4.set_source(*local.ip());
+            v4.set_destination(*remote.ip());
+            v4.set_total_length(total_len.try_into().unwrap());
+            v4.set_flags(ipv4::Ipv4Flags::DontFragment);
 
-            let mut pseudo = [0u8, tcp_protocol, 0, 0];
-            pseudo[2..].copy_from_slice(&(tcp_total_len as u16).to_be_bytes());
-            cksm.add_bytes(&pseudo);
+            tcp.set_checksum(tcp::ipv4_checksum(
+                &tcp.to_immutable(),
+                &v4.get_source(),
+                &v4.get_destination(),
+            ));
+
+            v4.set_checksum(ipv4::checksum(&v4.to_immutable()));
         }
         (SocketAddr::V6(local), SocketAddr::V6(remote)) => {
-            cksm.add_bytes(&local.ip().octets());
-            cksm.add_bytes(&remote.ip().octets());
+            let mut v6 = ipv6::MutableIpv6Packet::new(&mut ip_buf).unwrap();
+            v6.set_version(6);
+            v6.set_payload_length(tcp_total_len.try_into().unwrap());
+            v6.set_next_header(ip::IpNextHeaderProtocols::Tcp);
+            v6.set_hop_limit(64);
+            v6.set_source(*local.ip());
+            v6.set_destination(*remote.ip());
 
-            let mut pseudo = [0u8, 0, 0, 0, 0, 0, 0, tcp_protocol];
-            pseudo[0..4].copy_from_slice(&(tcp_total_len as u32).to_be_bytes());
-            cksm.add_bytes(&pseudo);
+            tcp.set_checksum(tcp::ipv6_checksum(
+                &tcp.to_immutable(),
+                &v6.get_source(),
+                &v6.get_destination(),
+            ));
         }
         _ => unreachable!(),
     };
 
-    cksm.add_bytes(tcp.packet());
-    tcp.set_checksum(u16::from_be_bytes(cksm.checksum()));
-
     ip_buf.unsplit(tcp_buf);
-    ip_buf.freeze()
+    eth_buf.unsplit(ip_buf);
+    eth_buf.freeze()
 }
 
-pub fn parse_ip_packet(buf: &Bytes) -> Option<(IPPacket<'_>, tcp::TcpPacket<'_>)> {
+pub fn parse_ip_packet(
+    buf: &Bytes,
+) -> Option<(MacAddr, MacAddr, IPPacket<'_>, tcp::TcpPacket<'_>)> {
+    let eth = EthernetPacket::new(buf).unwrap();
+    let src_mac = eth.get_source();
+    let dst_mac = eth.get_destination();
+
+    tracing::trace!("Parsing IP packet: {:?}", eth);
+
+    let buf = &buf[ETH_HDR_LEN..];
     if buf[0] >> 4 == 4 {
         let v4 = ipv4::Ipv4Packet::new(buf).unwrap();
         if v4.get_next_level_protocol() != ip::IpNextHeaderProtocols::Tcp {
@@ -135,7 +141,7 @@ pub fn parse_ip_packet(buf: &Bytes) -> Option<(IPPacket<'_>, tcp::TcpPacket<'_>)
         }
 
         let tcp = tcp::TcpPacket::new(&buf[IPV4_HEADER_LEN..]).unwrap();
-        Some((IPPacket::V4(v4), tcp))
+        Some((src_mac, dst_mac, IPPacket::V4(v4), tcp))
     } else if buf[0] >> 4 == 6 {
         let v6 = ipv6::Ipv6Packet::new(buf).unwrap();
         if v6.get_next_header() != ip::IpNextHeaderProtocols::Tcp {
@@ -143,8 +149,9 @@ pub fn parse_ip_packet(buf: &Bytes) -> Option<(IPPacket<'_>, tcp::TcpPacket<'_>)
         }
 
         let tcp = tcp::TcpPacket::new(&buf[IPV6_HEADER_LEN..]).unwrap();
-        Some((IPPacket::V6(v6), tcp))
+        Some((src_mac, dst_mac, IPPacket::V6(v6), tcp))
     } else {
+        tracing::trace!("Invalid IP version: {}", buf[0] >> 4);
         None
     }
 }
