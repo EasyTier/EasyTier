@@ -11494,3 +11494,7 @@ dependencies = [
  "syn 2.0.111",
  "winnow 0.7.14",
 ]
+
+[[patch.unused]]
+name = "fastbloom"
+version = "0.9.0"

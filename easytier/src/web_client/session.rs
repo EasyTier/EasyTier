@@ -90,8 +90,10 @@ impl Session {
 
                 sys.refresh_cpu();
                 sys.refresh_memory();
-                let os_version =
-                    sys.long_os_version().or_else(|| sys.name()).unwrap_or_default();
+                let os_version = sys
+                    .long_os_version()
+                    .or_else(|| sys.name())
+                    .unwrap_or_default();
                 let cpu_usage = sys.global_cpu_info().cpu_usage();
                 let mem_used = sys.used_memory() / 1024; // MB
                 let mem_total = sys.total_memory() / 1024; // MB
