@@ -14,6 +14,10 @@ exclude = [
     "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
 ]
 
+[patch.crates-io]
+# Use a local copy of fastbloom that does not rely on AtomicU64 (better compatibility on targets without 64-bit atomics)
+fastbloom = { path = "vendor/fastbloom" }
+
 [profile.dev]
 panic = "unwind"
 debug = 2

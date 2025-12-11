@@ -12,10 +12,11 @@ onMounted(async () => {
 <!-- https://flowbite.com/docs/components/sidebar/#sidebar-with-navbar -->
 
 <template>
-  <Toast position="bottom-right" />
-  <DynamicDialog />
-
-  <RouterView />
+  <div id="app-shell">
+    <Toast id="app-toast" position="bottom-right" />
+    <DynamicDialog id="app-dialog-root" />
+    <RouterView id="app-router-view" />
+  </div>
 </template>
 
 <style scoped>

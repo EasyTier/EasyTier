@@ -211,6 +211,11 @@ async fn main() {
     let _restful_server_tasks = restful::RestfulServer::new(
         format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
         mgr.clone(),
+        restful::ConfigInfo {
+            config_server_port: cli.config_server_port,
+            config_server_protocol: cli.config_server_protocol.clone(),
+            api_server_port: cli.api_server_port,
+        },
         db,
         web_router_restful,
     )

@@ -36,6 +36,7 @@ export default defineConfig(async () => ({
   resolve: {
     alias: {
       '~/': `${path.resolve(__dirname, 'src')}/`,
+      'tauri-plugin-vpnservice-api': `${path.resolve(__dirname, 'src/mocks/tauri-plugin-vpnservice-api.ts')}`,
     },
   },
   plugins: [

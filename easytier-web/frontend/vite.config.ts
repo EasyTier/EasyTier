@@ -10,6 +10,10 @@ const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:11211';
 export default defineConfig({
   base: WEB_BASE_URL,
   plugins: [vue(), ViteYaml(),/* viteSingleFile() */],
+  build: {
+    // Increase chunk size warning threshold to reduce noise in prod builds
+    chunkSizeWarningLimit: 1200,
+  },
   server: {
     proxy: {
       "/api": {

@@ -18,6 +18,26 @@
 }
 
 :root {
+  --input-bg-light: #f2f2f2;
+  --input-bg-dark: #2f2f33;
+}
+
+:root .p-inputtext,
+:root .p-password input,
+:root .p-password-input,
+:root .p-autocomplete input {
+  background-color: var(--input-bg-light);
+}
+
+:root.dark .p-inputtext,
+:root.dark .p-password input,
+:root.dark .p-password-input,
+:root.dark .p-autocomplete input {
+  background-color: var(--input-bg-dark);
+  color: #e5e7eb;
+}
+
+:root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 0.9rem;
   line-height: 24px;

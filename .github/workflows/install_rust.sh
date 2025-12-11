@@ -54,8 +54,12 @@ if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
         cp -f $RUST_LIB_SRC/library/Cargo.lock $RUST_LIB_SRC/Cargo.lock
     fi
 else
+if [[ -n "${TARGET:-}" ]]; then
     rustup target add $TARGET
-    if [[ $GUI_TARGET != '' ]]; then
-        rustup target add $GUI_TARGET
-    fi
+else
+    echo "TARGET not set, skip rustup target add"
+fi
+if [[ -n "${GUI_TARGET:-}" ]]; then
+    rustup target add $GUI_TARGET
+fi
 fi
