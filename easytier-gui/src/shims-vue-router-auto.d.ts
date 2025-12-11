@@ -6,6 +6,5 @@ declare module 'vue-router/auto' {
 }
 
 declare module 'vue-router/auto-routes' {
-  export * from 'unplugin-vue-router/routes';
-  export { default } from 'unplugin-vue-router/routes';
+  export const routes: import('vue-router').RouteRecordRaw[];
 }

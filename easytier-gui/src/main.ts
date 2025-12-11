@@ -5,7 +5,7 @@ import PrimeVue from 'primevue/config'
 
 import EasyTierFrontendLib, { I18nUtils } from 'easytier-frontend-lib'
 import { createRouter, createWebHistory } from 'vue-router/auto'
-import routes from 'vue-router/auto-routes'
+import { routes } from 'vue-router/auto-routes'
 import App from '~/App.vue'
 
 import 'easytier-frontend-lib/style.css'
