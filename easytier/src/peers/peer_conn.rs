@@ -223,8 +223,8 @@ impl PeerConn {
 
         if peer_mgr_hdr.packet_type != PacketType::HandShake as u8 {
             return Err(Error::WaitRespError(format!(
-                "unexpected packet type: {:?}",
-                peer_mgr_hdr.packet_type
+                "unexpected packet type: {:?}, packet: {:?}",
+                peer_mgr_hdr.packet_type, rsp
             )));
         }
 
