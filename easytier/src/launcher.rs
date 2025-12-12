@@ -904,13 +904,19 @@ impl NetworkConfig {
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
 
-        if !flags.relay_network_whitelist.is_empty() && flags.relay_network_whitelist != "*" {
+        if flags.relay_network_whitelist == "*" {
+            result.enable_relay_network_whitelist = Some(false);
+        } else {
             result.enable_relay_network_whitelist = Some(true);
-            result.relay_network_whitelist = flags
-                .relay_network_whitelist
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
+            if flags.relay_network_whitelist.is_empty() {
+                result.relay_network_whitelist = vec![];
+            } else {
+                result.relay_network_whitelist = flags
+                    .relay_network_whitelist
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+            }
         }
 
         Ok(result)
