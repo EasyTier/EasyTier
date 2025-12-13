@@ -2107,6 +2107,7 @@ dependencies = [
  "derive_builder",
  "easytier-rpc-build 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "encoding",
+ "flume 0.12.0",
  "futures",
  "futures-util",
  "gethostname 0.5.0",
@@ -2123,6 +2124,7 @@ dependencies = [
  "humansize",
  "humantime-serde",
  "idna 1.0.3",
+ "internet-checksum",
  "kcp-sys",
  "machine-uid",
  "maplit",
@@ -2615,6 +2617,9 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+dependencies = [
+ "getrandom 0.2.15",
+]
 
 [[package]]
 name = "fdeflate"
@@ -2670,6 +2675,18 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55ac459de2512911e4b674ce33cf20befaba382d05b62b008afc1c8b57cbf181"
 dependencies = [
+ "futures-core",
+ "futures-sink",
+ "spin",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand",
  "futures-core",
  "futures-sink",
  "spin",
@@ -4001,6 +4018,12 @@ checksum = "a0c10553d664a4d0bcff9f4215d0aac67a639cc68ef660840afe309b807bc9f5"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "internet-checksum"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc6d6206008e25125b1f97fbe5d309eb7b85141cf9199d52dbd3729a1584dd16"
 
 [[package]]
 name = "ip_network"
@@ -8175,7 +8198,7 @@ checksum = "d5b2cf34a45953bfd3daaf3db0f7a7878ab9b7a6b91b422d24a7a9e4c857b680"
 dependencies = [
  "atoi",
  "chrono",
- "flume",
+ "flume 0.11.0",
  "futures-channel",
  "futures-core",
  "futures-executor",
