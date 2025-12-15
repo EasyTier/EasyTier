@@ -56,38 +56,43 @@ jobs:
             wget \
             unzip \
             git \
-            pkg-config
+            pkg-config curl libgl1-mesa-dev expect
           sudo apt-get clean
 
-      - name: Download and extract native SDK
-        working-directory: ../../../
+      - name: Get easytier version
         run: |
-          echo $PWD
-          wget -q \
-            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.aa
-          wget -q \
-            https://github.com/openharmony-rs/ohos-sdk/releases/download/v5.1.0/ohos-sdk-windows_linux-public.tar.gz.ab
-          cat ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab > sdk.tar.gz
-          echo "Extracting native..."
-          mkdir sdk
-          tar -xzf sdk.tar.gz ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip
-          tar -xzf sdk.tar.gz ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip
-          unzip -qq ohos-sdk/linux/native-linux-x64-5.1.0.107-Release.zip -d sdk
-          unzip -qq ohos-sdk/linux/toolchains-linux-x64-5.1.0.107-Release.zip -d sdk
-          ls -la sdk/native/llvm/bin/
-          rm -rf ohos-sdk-windows_linux-public.tar.gz.aa ohos-sdk-windows_linux-public.tar.gz.ab ohos-sdk/
+          EASYTIER_CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path easytier/Cargo.toml \
+            | jq -r '.packages[0].version')
+          EASYTIER_GIT_HASH=$(git -C easytier rev-parse --short HEAD)
+          EASYTIER_VERSION="${EASYTIER_CARGO_VERSION}-${EASYTIER_GIT_HASH}"
+          echo "EASYTIER_VERSION=${EASYTIER_VERSION}" >> $GITHUB_ENV
+          cd ./easytier-contrib/easytier-ohrs/package
+          jq --arg v "$EASYTIER_VERSION" '.version = $v' oh-package.json5 > oh-package.tmp.json5
+          mv oh-package.tmp.json5 oh-package.json5
+
+      - name: Generate CHANGELOG.md for current commit
+        working-directory: ./easytier-contrib/easytier-ohrs/package
+        run: |
+          {
+            echo "## easytier-ohrs ${EASYTIER_VERSION}"
+            echo
+            git log -1 --pretty=format:"- %s"
+            echo
+          } > CHANGELOG.md
+
+      - name: Setup HarmonyOS CLI tools
+        uses: ErBWs/setup-ohos@v1
 
       - name: Download and Extract Custom SDK
         run: |
           wget https://github.com/FrankHan052176/Easytier-OHOS-sdk/releases/download/v1/ohos-sdk.zip -O /tmp/ohos-sdk.zip
           sudo unzip -o /tmp/ohos-sdk.zip -d /tmp/custom-sdk
-          sudo cp -rf /tmp/custom-sdk/linux/native/* $HOME/sdk/native
-          echo "Custom SDK files deployed to $HOME/sdk/native"
-          ls -a $HOME/sdk/native
+          sudo cp -rf /tmp/custom-sdk/linux/native/* $OHOS_NDK_HOME/native
+          echo "Custom SDK files deployed to $OHOS_NDK_HOME/native"
+          ls -a $OHOS_NDK_HOME/native
 
       - name: Setup build environment
         run: |
-          echo "OHOS_NDK_HOME=$HOME/sdk" >> $GITHUB_ENV
           echo "TARGET_ARCH=aarch64-linux-ohos" >> $GITHUB_ENV
 
       - name: Create clang wrapper script
@@ -117,6 +122,35 @@ jobs:
           ohrs build --release --arch aarch
           ohrs artifact
           mv package.har easytier-ohrs.har
+
+      - name: Publish To Center Ohpm
+        working-directory: ./easytier-contrib/easytier-ohrs
+        env:
+          OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
+          OHPM_PRIVATE_KEY: ${{ secrets.OHPM_PRIVATE_KEY }}
+          OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
+        run: |
+          ohpm config set publish_id "$OHPM_PUBLISH_CODE"
+          ohpm config set publish_registry https://ohpm.openharmony.cn/ohpm
+          TMP_DIR=$(mktemp -d)
+          PRIVATE_KEY_FILE="$TMP_DIR/private_key"
+          printf '%s' "$OHPM_PRIVATE_KEY" > "$PRIVATE_KEY_FILE"
+          chmod 600 "$PRIVATE_KEY_FILE"
+          ohpm config set key_path $PRIVATE_KEY_FILE
+          unzip ohpm_crypto.zip -d /home/runner/work/
+          ohpm config set crypto_path /home/runner/work/ohpm_crypto
+          chmod 755 /home/runner/work/ohpm_crypto/*
+          PASSPHRASE="$(printf '%s' "$OHPM_KEY_PASSPHRASE" | tr -d '\r\n')"
+          ohpm config set key_passphrase "$PASSPHRASE"
+          ohpm publish easytier-ohrs.har
+          
+      - name: Publish To Private Ohpm
+        working-directory: ./easytier-contrib/easytier-ohrs
+        run: |
+          printf '%s' "${{ secrets.CODEARTS_PRIVATE_OHPM }}" > ~/.ohpm/.ohpmrc
+          ohpm config set strict_ssl false
+          ohpm publish easytier-ohrs.har
+          curl --header "Content-Type: application/json" --request POST --data "{}" ${{ secrets.CODEARTS_WEBHOOKS }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
