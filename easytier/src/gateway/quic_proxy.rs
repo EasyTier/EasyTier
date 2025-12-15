@@ -250,7 +250,7 @@ impl QUICProxySrc {
 pub struct QUICProxyDst {
     global_ctx: Arc<GlobalCtx>,
     endpoint: Arc<quinn::Endpoint>,
-    proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
+    proxy_entries: Arc<DashMap<SocketAddr, Weak<TcpProxyEntry>>>,
     tasks: Arc<Mutex<JoinSet<()>>>,
     route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
 }
@@ -327,7 +327,7 @@ impl QUICProxyDst {
         conn: Incoming,
         ctx: Arc<GlobalCtx>,
         cidr_set: Arc<CidrSet>,
-        proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
+        proxy_entries: Arc<DashMap<SocketAddr, Weak<TcpProxyEntry>>>,
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) {
         let remote_addr = conn.remote_address();
@@ -374,7 +374,7 @@ impl QUICProxyDst {
         ctx: ArcGlobalCtx,
         cidr_set: Arc<CidrSet>,
         proxy_entry_key: SocketAddr,
-        proxy_entries: Arc<DashMap<SocketAddr, TcpProxyEntry>>,
+        proxy_entries: Arc<DashMap<SocketAddr, Weak<TcpProxyEntry>>>,
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<(QUICStream, TcpStream, ProxyAclHandler)> {
         let conn = incoming.await.with_context(|| "accept failed")?;
@@ -418,17 +418,14 @@ impl QUICProxyDst {
         if send_to_self && ctx.no_tun() {
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
-
-        proxy_entries.insert(
-            proxy_entry_key,
-            TcpProxyEntry {
-                src: Some(addr.into()),
-                dst: Some(SocketAddr::V4(dst_socket).into()),
-                start_time: chrono::Local::now().timestamp() as u64,
-                state: TcpProxyEntryState::ConnectingDst.into(),
-                transport_type: TcpProxyEntryTransportType::Quic.into(),
-            },
-        );
+        let entry = Arc::new(TcpProxyEntry {
+            src: Some(addr.into()),
+            dst: Some(SocketAddr::V4(dst_socket).into()),
+            start_time: chrono::Local::now().timestamp() as u64,
+            state: TcpProxyEntryState::ConnectingDst.into(),
+            transport_type: TcpProxyEntryTransportType::Quic.into(),
+        });
+        proxy_entries.insert(proxy_entry_key, Arc::downgrade(&entry));
 
         let acl_handler = ProxyAclHandler {
             acl_filter: ctx.get_acl_filter().clone(),
@@ -454,13 +451,30 @@ impl QUICProxyDst {
 
         let dst_stream = {
             let _g = ctx.net_ns.guard();
-            connector
+            match connector
                 .connect("0.0.0.0:0".parse().unwrap(), dst_socket.into())
-                .await?
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    if let Some(e) = proxy_entries.get_mut(&proxy_entry_key) {
+                        if let Some(_) = e.value().upgrade() {
+                            replace_entry(&proxy_entries, proxy_entry_key, |e| {
+                                e.state = TcpProxyEntryState::Closed.into();
+                            });
+                        }
+                    }
+                    return Err(e);
+                }
+            }
         };
 
-        if let Some(mut e) = proxy_entries.get_mut(&proxy_entry_key) {
-            e.state = TcpProxyEntryState::Connected.into();
+        if let Some(e) = proxy_entries.get_mut(&proxy_entry_key) {
+            if let Some(_) = e.value().upgrade() {
+                replace_entry(&proxy_entries, proxy_entry_key, |e| {
+                    e.state = TcpProxyEntryState::Connected.into();
+                });
+            }
         }
 
         let quic_stream = QUICStream {
@@ -474,8 +488,23 @@ impl QUICProxyDst {
     }
 }
 
+fn replace_entry(
+    map: &DashMap<SocketAddr, Weak<TcpProxyEntry>>,
+    key: SocketAddr,
+    f: impl FnOnce(&mut TcpProxyEntry),
+) -> bool {
+    map.get(&key)
+        .and_then(|kv| kv.value().upgrade())
+        .map(|arc_entry| {
+            let mut e = (*arc_entry).clone();
+            f(&mut e);
+            map.insert(key, Arc::downgrade(&Arc::new(e)));
+        })
+        .is_some()
+}
+
 #[derive(Clone)]
-pub struct QUICProxyDstRpcService(Weak<DashMap<SocketAddr, TcpProxyEntry>>);
+pub struct QUICProxyDstRpcService(Weak<DashMap<SocketAddr, Weak<TcpProxyEntry>>>);
 
 impl QUICProxyDstRpcService {
     pub fn new(quic_proxy_dst: &QUICProxyDst) -> Self {
@@ -494,7 +523,9 @@ impl TcpProxyRpc for QUICProxyDstRpcService {
         let mut reply = ListTcpProxyEntryResponse::default();
         if let Some(tcp_proxy) = self.0.upgrade() {
             for item in tcp_proxy.iter() {
-                reply.entries.push(*item.value());
+                if let Some(e) = item.value().upgrade() {
+                    reply.entries.push(*e);
+                }
             }
         }
         Ok(reply)
