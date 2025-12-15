@@ -2,9 +2,19 @@
   "license": "LGPL-3.0",
   "author": "easytier",
   "name": "easytier-ohrs",
-  "description": "",
+  "description": "EasyTier for OpenHarmonyOS",
   "main": "index.ets",
   "version": "0.0.1",
   "types": "libs/index.d.ts",
-  "dependencies": {}
+  "dependencies": {},
+  "compatibleSdkVersion": "17",
+  "compatibleSdkType": "OpenHarmony",
+  "obfuscated": false,
+  "nativeComponents": [
+    {
+      "name": "libeasytier_ohrs.so",
+      "compatibleSdkVersion": "17",
+      "compatibleSdkType": "OpenHarmony"
+    }
+  ]
 }
