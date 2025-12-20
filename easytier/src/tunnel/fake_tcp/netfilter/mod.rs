@@ -1,4 +1,3 @@
-#[cfg(target_os = "linux")]
 use std::{net::SocketAddr, sync::Arc};
 
 #[cfg(target_os = "linux")]
