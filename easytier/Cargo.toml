@@ -237,6 +237,7 @@ dbus = { version = "0.9.7", features = ["vendored"] }
 which = "7.0.3"
 
 [target.'cfg(windows)'.dependencies]
+windivert = { version = "0.6.0", features = ["vendored"] }
 windows = { version = "0.52.0", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_WindowsFirewall",
