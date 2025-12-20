@@ -1,3 +1,4 @@
+mod netfilter;
 mod packet;
 mod stack;
 
@@ -5,313 +6,20 @@ use std::net::{IpAddr, Ipv4Addr, UdpSocket};
 use std::sync::Arc;
 use std::{net::SocketAddr, pin::Pin};
 
-use bytes::{Bytes, BytesMut};
-use pnet::datalink::DataLinkSender;
-use pnet::packet::ethernet::EtherTypes;
-use pnet::packet::ip::IpNextHeaderProtocols;
-use pnet::packet::ipv6::Ipv6Packet;
+use bytes::BytesMut;
+use pnet::datalink;
 use pnet::util::MacAddr;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
 use crate::common::scoped_task::ScopedTask;
+use crate::tunnel::fake_tcp::netfilter::create_tun;
 use crate::tunnel::{common::TunnelWrapper, Tunnel, TunnelError, TunnelInfo, TunnelListener};
 
 use futures::Future;
 
 use dashmap::DashMap;
-use once_cell::sync::Lazy;
-use pnet::datalink::{self, Channel::Ethernet, NetworkInterface};
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Weak;
-
-#[cfg(windows)]
-use windivert::prelude::*;
-#[cfg(windows)]
-use windivert::layer;
-#[cfg(windows)]
-use windivert::packet::WinDivertPacket;
-#[cfg(windows)]
-use windivert::address::WinDivertAddress;
-
-#[cfg(windows)]
-struct WinDivertTun {
-    recv_queue: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
-    sender: Arc<std::sync::Mutex<WinDivert<layer::NetworkLayer>>>,
-}
-
-#[cfg(windows)]
-impl WinDivertTun {
-    fn new(local_addr: SocketAddr) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(1024);
-
-        let ip_filter = match local_addr {
-            SocketAddr::V4(addr) => format!("ip.DstAddr == {}", addr.ip()),
-            SocketAddr::V6(addr) => format!("ipv6.DstAddr == {}", addr.ip()),
-        };
-        // Filter: DstIP == LocalIP AND TCP.
-        let filter = format!("{} and tcp", ip_filter);
-
-        // Sniff mode: 1 (WINDIVERT_FLAG_SNIFF)
-        // Layer: Network (0)
-        // Priority: 0
-        let flags = WinDivertFlags::default().set_sniff();
-        let reader = WinDivert::network(&filter, 0, flags)
-            .expect("Failed to create WinDivert reader");
-
-        std::thread::spawn(move || {
-            let mut buffer = vec![0u8; 65536];
-            loop {
-                match reader.recv(Some(&mut buffer)) {
-                    Ok(packet) => {
-                        let data = &packet.data; 
-                        
-                        let mut eth_data = vec![0u8; 14 + data.len()];
-                        // Set EtherType
-                        if data.len() > 0 && data[0] >> 4 == 4 {
-                            eth_data[12] = 0x08;
-                            eth_data[13] = 0x00;
-                        } else {
-                            eth_data[12] = 0x86;
-                            eth_data[13] = 0xDD;
-                        }
-                        eth_data[14..].copy_from_slice(data);
-                        
-                        if let Err(_) = tx.blocking_send(eth_data) {
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                         // log error?
-                         break;
-                    }
-                }
-            }
-        });
-
-        // Sender: non-sniff, empty filter?
-        // Use "false" to avoid capturing anything.
-        // Flags: 0
-        let sender = WinDivert::network("false", 0, WinDivertFlags::default())
-            .expect("Failed to create WinDivert sender");
-
-        Self {
-            recv_queue: Mutex::new(rx),
-            sender: Arc::new(std::sync::Mutex::new(sender)),
-        }
-    }
-}
-
-#[cfg(windows)]
-#[async_trait::async_trait]
-impl stack::Tun for WinDivertTun {
-    async fn recv(&self, packet: &mut BytesMut) -> Result<usize, std::io::Error> {
-        let mut rx = self.recv_queue.lock().await;
-        match rx.recv().await {
-            Some(data) => {
-                packet.extend_from_slice(&data);
-                Ok(data.len())
-            }
-            None => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Channel closed")),
-        }
-    }
-
-    fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error> {
-        // Strip ethernet header
-        if packet.len() < 14 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Packet too short"));
-        }
-        let ip_data = &packet[14..];
-        
-        let Ok(sender) = self.sender.try_lock() else {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, "WinDivert sender lock failed"));
-        };
-        
-        let mut pkt = unsafe { WinDivertPacket::<layer::NetworkLayer>::new(ip_data.to_vec()) };
-        pkt.address.set_outbound(true);
-        
-        sender.send(&pkt).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("WinDivert send failed: {}", e)))?;
-        
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn create_tun(interface_name: &str, filter: PacketFilter, _local_addr: SocketAddr) -> Arc<dyn stack::Tun> {
-    Arc::new(PnetTun::new(interface_name, filter))
-}
-
-#[cfg(windows)]
-fn create_tun(_interface_name: &str, _filter: PacketFilter, local_addr: SocketAddr) -> Arc<dyn stack::Tun> {
-    Arc::new(WinDivertTun::new(local_addr))
-}
-type PacketFilter = Box<dyn Fn(&[u8]) -> bool + Send + Sync>;
-
-struct Subscriber {
-    filter: PacketFilter,
-    sender: tokio::sync::mpsc::Sender<Vec<u8>>,
-}
-
-struct InterfaceWorker {
-    tx: Mutex<Box<dyn DataLinkSender>>,
-    subscribers: Arc<DashMap<u32, Subscriber>>,
-}
-
-impl InterfaceWorker {
-    fn new(interface: NetworkInterface) -> Arc<Self> {
-        let (tx, mut rx) = match datalink::channel(&interface, Default::default()) {
-            Ok(Ethernet(tx, rx)) => (tx, rx),
-            Ok(_) => panic!("Unhandled channel type"),
-            Err(e) => panic!(
-                "An error occurred when creating the datalink channel: {}",
-                e
-            ),
-        };
-
-        let subscribers = Arc::new(DashMap::<u32, Subscriber>::new());
-        let subscribers_clone = subscribers.clone();
-
-        std::thread::spawn(move || {
-            loop {
-                match rx.next() {
-                    Ok(packet) => {
-                        // Iterate over subscribers and send packet if filter matches
-                        // Note: DashMap iteration might be slow if many subscribers, but usually few per interface.
-                        // For high performance we might need a better structure or read-copy-update.
-                        for r in subscribers_clone.iter() {
-                            let subscriber = r.value();
-                            if (subscriber.filter)(packet) {
-                                tracing::trace!(
-                                    ?packet,
-                                    "InterfaceWorker packet matched filter, dispatching"
-                                );
-                                // Try send, ignore errors (best effort)
-                                let _ = subscriber.sender.try_send(packet.to_vec());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("InterfaceWorker read error: {}", e);
-                        // If interface goes down, we might need to handle it.
-                        // For now just break and maybe the worker is dead.
-                        break;
-                    }
-                }
-            }
-        });
-
-        Arc::new(Self {
-            tx: Mutex::new(tx),
-            subscribers,
-        })
-    }
-
-    fn subscribe(&self, filter: PacketFilter, sender: tokio::sync::mpsc::Sender<Vec<u8>>) -> u32 {
-        static ID_GEN: AtomicU32 = AtomicU32::new(0);
-        let id = ID_GEN.fetch_add(1, Ordering::Relaxed);
-        self.subscribers.insert(id, Subscriber { filter, sender });
-        id
-    }
-
-    fn unsubscribe(&self, id: u32) {
-        self.subscribers.remove(&id);
-    }
-}
-
-static INTERFACE_MANAGERS: Lazy<DashMap<String, Weak<InterfaceWorker>>> = Lazy::new(DashMap::new);
-
-fn get_or_create_worker(interface_name: &str) -> Arc<InterfaceWorker> {
-    // Check if we have an active worker
-    if let Some(worker) = INTERFACE_MANAGERS
-        .get(interface_name)
-        .and_then(|w| w.upgrade())
-    {
-        return worker;
-    }
-
-    // Need to create new worker.
-    // Lock effectively by using entry API? DashMap entry API might not be enough for complex init.
-    // Let's use a double-check locking style or just accept race condition (creating two workers and one wins).
-    // DashMap doesn't support easy "compute_if_absent" with async or heavy logic without blocking the map shard.
-
-    // But creation is rare.
-    // Let's find interface first.
-    let interfaces = datalink::interfaces();
-    let interface = interfaces
-        .into_iter()
-        .find(|iface| iface.name == interface_name)
-        .expect("Network interface not found");
-
-    let worker = InterfaceWorker::new(interface);
-    INTERFACE_MANAGERS.insert(interface_name.to_string(), Arc::downgrade(&worker));
-    worker
-}
-
-struct PnetTun {
-    worker: Arc<InterfaceWorker>,
-    subscription_id: u32,
-    recv_queue: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
-}
-
-impl PnetTun {
-    pub fn new(interface_name: &str, filter: PacketFilter) -> Self {
-        tracing::debug!(interface_name, "Creating new PnetTun");
-        let worker = get_or_create_worker(interface_name);
-        let (tx, rx) = tokio::sync::mpsc::channel(1024);
-        let id = worker.subscribe(filter, tx);
-
-        Self {
-            worker,
-            subscription_id: id,
-            recv_queue: Mutex::new(rx),
-        }
-    }
-}
-
-impl Drop for PnetTun {
-    fn drop(&mut self) {
-        tracing::debug!(subscription_id = self.subscription_id, "Dropping PnetTun");
-        self.worker.unsubscribe(self.subscription_id);
-    }
-}
-
-#[async_trait::async_trait]
-impl stack::Tun for PnetTun {
-    async fn recv(&self, packet: &mut BytesMut) -> Result<usize, std::io::Error> {
-        let mut rx = self.recv_queue.lock().await;
-        match rx.recv().await {
-            Some(data) => {
-                tracing::trace!(?data, "PnetTun received packet");
-                packet.extend_from_slice(&data);
-                Ok(data.len())
-            }
-            None => {
-                tracing::warn!("PnetTun recv channel closed");
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::BrokenPipe,
-                    "PnetTun channel closed",
-                ))
-            }
-        }
-    }
-
-    fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error> {
-        tracing::trace!(len = packet.len(), "PnetTun try_sending packet");
-        // We need async lock for tx.
-        // try_send is sync. We can use try_lock if available or blocking lock.
-        // tokio::sync::Mutex::try_lock is available.
-        if let Ok(mut tx) = self.worker.tx.try_lock() {
-            tx.send_to(packet, None)
-                .ok_or(std::io::Error::other("send_to failed"))?
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::WouldBlock,
-                "PnetTun tx lock busy",
-            ))
-        }
-    }
-}
 
 struct IpToIfNameCache {
     ip_to_ifname: DashMap<IpAddr, (String, Option<MacAddr>)>,
@@ -352,115 +60,6 @@ pub struct FakeTcpTunnelListener {
     stack_map: DashMap<String, Arc<Mutex<stack::Stack>>>,
     // a cache from ip addr to interface name
     ip_to_ifname: IpToIfNameCache,
-}
-
-fn filter_tcp_packet(
-    packet: &[u8],
-    src_addr: Option<&SocketAddr>,
-    dst_addr: Option<&SocketAddr>,
-) -> bool {
-    use pnet::packet::ethernet::EthernetPacket;
-    use pnet::packet::ipv4::Ipv4Packet;
-    use pnet::packet::tcp::TcpPacket;
-    use pnet::packet::Packet;
-
-    let ethernet = if let Some(ethernet) = EthernetPacket::new(packet) {
-        ethernet
-    } else {
-        return false;
-    };
-
-    match ethernet.get_ethertype() {
-        EtherTypes::Ipv4 => {
-            let ipv4 = if let Some(ipv4) = Ipv4Packet::new(ethernet.payload()) {
-                ipv4
-            } else {
-                return false;
-            };
-
-            if ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
-                return false;
-            }
-
-            let tcp = if let Some(tcp) = TcpPacket::new(ipv4.payload()) {
-                tcp
-            } else {
-                return false;
-            };
-
-            if let Some(src_addr) = src_addr {
-                if IpAddr::V4(ipv4.get_source()) != src_addr.ip() {
-                    return false;
-                }
-                if tcp.get_source() != src_addr.port() {
-                    return false;
-                }
-            }
-
-            if let Some(dst_addr) = dst_addr {
-                if IpAddr::V4(ipv4.get_destination()) != dst_addr.ip() {
-                    return false;
-                }
-                if tcp.get_destination() != dst_addr.port() {
-                    return false;
-                }
-            }
-
-            tracing::trace!(
-                ?tcp,
-                "FakeTcpTunnelListener packet matched filter, dispatching, src_addr: {:?}, dst_addr: {:?}, packet_src_ip: {:?}, packet_dst_ip: {:?}, packet_src_port: {:?}, packet_dst_port: {:?}",
-                src_addr,
-                dst_addr,
-                ipv4.get_source(),
-                ipv4.get_destination(),
-                tcp.get_source(),
-                tcp.get_destination(),
-            );
-        }
-        EtherTypes::Ipv6 => {
-            let ipv6 = if let Some(ipv6) = Ipv6Packet::new(ethernet.payload()) {
-                ipv6
-            } else {
-                return false;
-            };
-
-            if ipv6.get_next_header() != IpNextHeaderProtocols::Tcp {
-                return false;
-            }
-
-            let tcp = if let Some(tcp) = TcpPacket::new(ipv6.payload()) {
-                tcp
-            } else {
-                return false;
-            };
-
-            if let Some(src_addr) = src_addr {
-                if IpAddr::V6(ipv6.get_source()) != src_addr.ip() {
-                    return false;
-                }
-                if tcp.get_source() != src_addr.port() {
-                    return false;
-                }
-            }
-
-            if let Some(dst_addr) = dst_addr {
-                if IpAddr::V6(ipv6.get_destination()) != dst_addr.ip() {
-                    return false;
-                }
-                if tcp.get_destination() != dst_addr.port() {
-                    return false;
-                }
-            }
-
-            tracing::trace!(
-                ?tcp,
-                "FakeTcpTunnelListener packet matched filter, dispatching"
-            );
-        }
-        _ => return false,
-    }
-
-    true
 }
 
 impl FakeTcpTunnelListener {
@@ -523,9 +122,6 @@ impl FakeTcpTunnelListener {
         accept_result: &AcceptResult,
     ) -> Result<Arc<Mutex<stack::Stack>>, TunnelError> {
         let local_socket_addr = accept_result.local_addr;
-        let filter: PacketFilter = Box::new(move |packet: &[u8]| -> bool {
-            filter_tcp_packet(packet, None, Some(&local_socket_addr))
-        });
 
         let interface_name = &accept_result.interface_name;
 
@@ -538,8 +134,7 @@ impl FakeTcpTunnelListener {
             .stack_map
             .entry(interface_name.to_string())
             .or_insert_with(|| {
-                let tun =
-                    vec![create_tun(interface_name, filter, local_socket_addr)];
+                let tun = vec![create_tun(interface_name, None, local_socket_addr)];
                 tracing::info!(
                     ?local_socket_addr,
                     "create new stack with interface_name: {:?}",
@@ -705,11 +300,6 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         let local_port = os_socket.local_addr()?.port();
         let local_addr = SocketAddr::new(local_ip, local_port);
 
-        // Similar filter logic as listener
-        let filter: PacketFilter = Box::new(move |packet: &[u8]| -> bool {
-            filter_tcp_packet(packet, Some(&remote_addr), Some(&local_addr))
-        });
-
         let (interface_name, mac) =
             self.ip_to_if_name
                 .get_ifname(&local_ip)
@@ -722,7 +312,7 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let tun = vec![create_tun(&interface_name, filter, local_addr)];
+        let tun = vec![create_tun(&interface_name, Some(remote_addr), local_addr)];
         let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
         let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
 
@@ -881,6 +471,13 @@ mod tests {
 
     #[tokio::test]
     async fn faketcp_pingpong() {
+        #[cfg(target_family = "unix")]
+        {
+            if unsafe { nix::libc::geteuid() } != 0 {
+                return;
+            }
+        }
+
         let listener = FakeTcpTunnelListener::new("faketcp://0.0.0.0:31011".parse().unwrap());
         let connector = FakeTcpTunnelConnector::new("faketcp://127.0.0.1:31011".parse().unwrap());
 
