@@ -4,7 +4,7 @@ use std::{net::SocketAddr, sync::Arc};
 use crate::tunnel::fake_tcp::stack;
 
 #[cfg(target_os = "linux")]
-pub mod bpf;
+pub mod linux_bpf;
 
 #[cfg(target_os = "windows")]
 pub mod windivert;
@@ -17,7 +17,7 @@ pub fn create_tun(
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
 ) -> Arc<dyn stack::Tun> {
-    match bpf::LinuxBpfTun::new(interface_name, src_addr, dst_addr) {
+    match linux_bpf::LinuxBpfTun::new(interface_name, src_addr, dst_addr) {
         Ok(tun) => Arc::new(tun),
         Err(e) => {
             tracing::warn!(
