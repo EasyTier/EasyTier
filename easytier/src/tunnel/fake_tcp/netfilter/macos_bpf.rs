@@ -118,13 +118,78 @@ struct BpfProgram {
     bf_insns: *mut BpfInsn,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct BpfHdr {
-    bh_tstamp: libc::timeval,
-    bh_caplen: u32,
-    bh_datalen: u32,
-    bh_hdrlen: u16,
+fn read_u16_ne(bytes: &[u8]) -> u16 {
+    u16::from_ne_bytes([bytes[0], bytes[1]])
+}
+
+fn read_u32_ne(bytes: &[u8]) -> u32 {
+    u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+fn bpf_word_align_with(align: usize, x: usize) -> usize {
+    (x + (align - 1)) & !(align - 1)
+}
+
+fn parse_bpf_record(buf: &[u8], align: usize) -> Option<(usize, std::ops::Range<usize>, u16, u32)> {
+    let max_shift = std::cmp::min(align, buf.len());
+    for shift in 0..max_shift {
+        let rest = &buf[shift..];
+
+        let try_ts8 = || -> Option<(usize, std::ops::Range<usize>, u16, u32)> {
+            let base_hdr_len = 18usize;
+            if rest.len() < base_hdr_len {
+                return None;
+            }
+            let caplen = read_u32_ne(rest.get(8..12)?) as usize;
+            let datalen = read_u32_ne(rest.get(12..16)?) as usize;
+            let hdrlen = read_u16_ne(rest.get(16..18)?) as usize;
+            if hdrlen < base_hdr_len || hdrlen > 512 {
+                return None;
+            }
+            if caplen > datalen {
+                return None;
+            }
+            let pkt_start = shift + hdrlen;
+            let pkt_end = pkt_start.checked_add(caplen)?;
+            if pkt_end > buf.len() {
+                return None;
+            }
+            let advance = shift + bpf_word_align_with(align, hdrlen + caplen);
+            Some((advance, pkt_start..pkt_end, hdrlen as u16, caplen as u32))
+        };
+
+        if let Some(v) = try_ts8() {
+            return Some(v);
+        }
+
+        let try_ts16 = || -> Option<(usize, std::ops::Range<usize>, u16, u32)> {
+            let base_hdr_len = 26usize;
+            if rest.len() < base_hdr_len {
+                return None;
+            }
+            let caplen = read_u32_ne(rest.get(16..20)?) as usize;
+            let datalen = read_u32_ne(rest.get(20..24)?) as usize;
+            let hdrlen = read_u16_ne(rest.get(24..26)?) as usize;
+            if hdrlen < base_hdr_len || hdrlen > 512 {
+                return None;
+            }
+            if caplen > datalen {
+                return None;
+            }
+            let pkt_start = shift + hdrlen;
+            let pkt_end = pkt_start.checked_add(caplen)?;
+            if pkt_end > buf.len() {
+                return None;
+            }
+            let advance = shift + bpf_word_align_with(align, hdrlen + caplen);
+            Some((advance, pkt_start..pkt_end, hdrlen as u16, caplen as u32))
+        };
+
+        if let Some(v) = try_ts16() {
+            return Some(v);
+        }
+    }
+    None
 }
 
 fn ioc(inout: u32, group: u8, num: u8, len: u32) -> libc::c_ulong {
@@ -577,11 +642,6 @@ fn build_tcp_filter(
     }
 }
 
-fn bpf_word_align(x: usize) -> usize {
-    let align = mem::size_of::<libc::c_long>();
-    (x + (align - 1)) & !(align - 1)
-}
-
 fn open_bpf_device() -> io::Result<OwnedFd> {
     let mut last_err: Option<io::Error> = None;
     for i in 0..256 {
@@ -638,6 +698,30 @@ impl MacosBpfTun {
     ) -> io::Result<Self> {
         let fd = open_bpf_device()?;
         let raw_fd = fd.as_raw_fd();
+
+        let mut buf_len: libc::c_uint = 0;
+        unsafe {
+            ioctl_ptr(
+                raw_fd,
+                ior::<libc::c_uint>(BPF_GROUP, BIOCGBLEN_NUM),
+                &mut buf_len,
+            )
+        }?;
+        if buf_len == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bpf buffer length is zero",
+            ));
+        }
+
+        let mut desired_buf_len: libc::c_uint = buf_len;
+        let _ = unsafe {
+            ioctl_ptr(
+                raw_fd,
+                iowr::<libc::c_uint>(BPF_GROUP, BIOCSBLEN_NUM),
+                &mut desired_buf_len,
+            )
+        };
 
         let mut immediate: libc::c_uint = 1;
         unsafe {
@@ -729,30 +813,6 @@ impl MacosBpfTun {
             )
         }?;
 
-        let mut buf_len: libc::c_uint = 0;
-        unsafe {
-            ioctl_ptr(
-                raw_fd,
-                ior::<libc::c_uint>(BPF_GROUP, BIOCGBLEN_NUM),
-                &mut buf_len,
-            )
-        }?;
-        if buf_len == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "bpf buffer length is zero",
-            ));
-        }
-
-        let mut desired_buf_len: libc::c_uint = buf_len;
-        let _ = unsafe {
-            ioctl_ptr(
-                raw_fd,
-                iowr::<libc::c_uint>(BPF_GROUP, BIOCSBLEN_NUM),
-                &mut desired_buf_len,
-            )
-        };
-
         info!(
             interface_name,
             ?src_addr,
@@ -777,8 +837,10 @@ impl MacosBpfTun {
         let worker_link_type = link_type;
         let worker = std::thread::spawn(move || {
             let mut buf = vec![0u8; desired_buf_len as usize];
-            let mut bad_record_logs_left: u8 = 5;
             let mut wrap_fail_logs_left: u8 = 5;
+            let mut bad_record_logs_left: u8 = 8;
+            let mut shifted_record_logs_left: u8 = 8;
+            let align = mem::size_of::<libc::c_long>();
             while !stop_clone.load(AtomicOrdering::Relaxed) {
                 let n = unsafe {
                     libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
@@ -799,44 +861,36 @@ impl MacosBpfTun {
                 }
                 let mut off = 0usize;
                 let n = n as usize;
-                while off + mem::size_of::<BpfHdr>() <= n {
-                    let hdr_ptr = unsafe { buf.as_ptr().add(off) as *const BpfHdr };
-                    let hdr = unsafe { std::ptr::read_unaligned(hdr_ptr) };
-                    let hdr_len = hdr.bh_hdrlen as usize;
-                    let cap_len = hdr.bh_caplen as usize;
-                    if hdr_len < mem::size_of::<BpfHdr>() {
+                while off < n {
+                    let window = &buf[off..n];
+                    let Some((advance, pkt_range, hdr_len, cap_len)) =
+                        parse_bpf_record(window, align)
+                    else {
                         if bad_record_logs_left > 0 {
                             bad_record_logs_left -= 1;
-                            warn!(
-                                hdr_len,
-                                cap_len,
-                                hdr_size = mem::size_of::<BpfHdr>(),
-                                read_len = n,
-                                "MacosBpfTun invalid bpf header length"
-                            );
+                            let preview_len = std::cmp::min(window.len(), 48);
+                            let preview = &window[..preview_len];
+                            warn!(off, read_len = n, preview = ?preview, "MacosBpfTun failed to parse bpf records");
                         }
                         break;
+                    };
+
+                    let pkt_start = off + pkt_range.start;
+                    let pkt_end = off + pkt_range.end;
+                    let shift = (pkt_range.start as usize).saturating_sub(hdr_len as usize);
+                    if shift != 0 && shifted_record_logs_left > 0 {
+                        shifted_record_logs_left -= 1;
+                        warn!(
+                            off,
+                            record_start = off + shift,
+                            shift,
+                            hdr_len,
+                            cap_len,
+                            read_len = n,
+                            "MacosBpfTun parsed bpf record with non-zero offset"
+                        );
                     }
-                    let pkt_start = off + hdr_len;
-                    let pkt_end = pkt_start.saturating_add(cap_len);
-                    if pkt_end > n {
-                        if bad_record_logs_left > 0 {
-                            bad_record_logs_left -= 1;
-                            let preview_len = std::cmp::min(n, 32);
-                            let preview = &buf[..preview_len];
-                            warn!(
-                                off,
-                                hdr_len,
-                                cap_len,
-                                pkt_start,
-                                pkt_end,
-                                n,
-                                preview = ?preview,
-                                "MacosBpfTun bpf record out of bounds"
-                            );
-                        }
-                        break;
-                    }
+
                     let packet = &buf[pkt_start..pkt_end];
                     let framed = match worker_link_type {
                         LinkType::En10Mb => Some(packet.to_vec()),
@@ -866,7 +920,10 @@ impl MacosBpfTun {
                             "MacosBpfTun failed to wrap packet"
                         );
                     }
-                    off = off.saturating_add(bpf_word_align(hdr_len + cap_len));
+                    if advance == 0 {
+                        break;
+                    }
+                    off = off.saturating_add(advance);
                 }
             }
         });
