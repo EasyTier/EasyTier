@@ -19,6 +19,11 @@ const ETHERTYPE_IPV4: u32 = 0x0800;
 const ETHERTYPE_IPV6: u32 = 0x86DD;
 const IPPROTO_TCP_U32: u32 = 6;
 
+const DLT_EN10MB: u32 = 1;
+const DLT_NULL: u32 = 4;
+const DLT_RAW: u32 = 12;
+const DLT_LOOP: u32 = 108;
+
 const BPF_LD: u16 = 0x00;
 const BPF_LDX: u16 = 0x01;
 const BPF_JMP: u16 = 0x05;
@@ -55,6 +60,47 @@ const IOC_VOID: u32 = 0x2000_0000;
 const IOC_OUT: u32 = 0x4000_0000;
 const IOC_IN: u32 = 0x8000_0000;
 const IOC_INOUT: u32 = IOC_IN | IOC_OUT;
+
+#[derive(Clone, Copy)]
+enum LinkType {
+    En10Mb,
+    Null,
+    Raw,
+    Loop,
+}
+
+impl LinkType {
+    fn from_dlt(dlt: u32) -> Option<Self> {
+        match dlt {
+            DLT_EN10MB => Some(Self::En10Mb),
+            DLT_NULL => Some(Self::Null),
+            DLT_RAW => Some(Self::Raw),
+            DLT_LOOP => Some(Self::Loop),
+            _ => None,
+        }
+    }
+}
+
+fn ether_type_from_ip_packet(ip: &[u8]) -> Option<u16> {
+    let v = *ip.first()?;
+    match v >> 4 {
+        4 => Some(0x0800),
+        6 => Some(0x86DD),
+        _ => None,
+    }
+}
+
+fn wrap_ip_with_ethernet(ip: &[u8]) -> Option<Vec<u8>> {
+    let ether_type = ether_type_from_ip_packet(ip)?;
+    let mut out = vec![0u8; ETH_HDR_LEN + ip.len()];
+    out[12..14].copy_from_slice(&ether_type.to_be_bytes());
+    out[ETH_HDR_LEN..].copy_from_slice(ip);
+    Some(out)
+}
+
+fn family_word_for_null(family: u32) -> u32 {
+    u32::from_be_bytes(family.to_ne_bytes())
+}
 
 #[repr(C)]
 struct BpfInsn {
@@ -249,7 +295,7 @@ impl BpfBuilder {
     }
 }
 
-fn build_tcp_filter(
+fn build_tcp_filter_ethernet(
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
 ) -> io::Result<Vec<BpfInsn>> {
@@ -380,6 +426,154 @@ fn build_tcp_filter(
     b.finish()
 }
 
+fn build_tcp_filter_ip(
+    base: u32,
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+    family_word: Option<u32>,
+) -> io::Result<Vec<BpfInsn>> {
+    if let Some(src) = src_addr {
+        if src.is_ipv4() != dst_addr.is_ipv4() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "src/dst addr family mismatch",
+            ));
+        }
+    }
+
+    let mut b = BpfBuilder::new();
+    let l_accept = b.new_label();
+    let l_reject = b.new_label();
+
+    if let Some(family_word) = family_word {
+        let l_family_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_W | BPF_ABS, 0));
+        b.push_jeq(family_word, l_family_ok, l_reject);
+        b.set_label(l_family_ok);
+    }
+
+    if dst_addr.is_ipv4() {
+        let l_v4_proto_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, base + 9));
+        b.push_jeq(IPPROTO_TCP_U32, l_v4_proto_ok, l_reject);
+
+        b.set_label(l_v4_proto_ok);
+        let dst_ip = match dst_addr.ip() {
+            IpAddr::V4(ip) => u32::from(ip),
+            _ => unreachable!(),
+        };
+        let l_v4_dstip_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_W | BPF_ABS, base + 16));
+        b.push_jeq(dst_ip, l_v4_dstip_ok, l_reject);
+
+        b.set_label(l_v4_dstip_ok);
+        if let Some(src) = src_addr {
+            let src_ip = match src.ip() {
+                IpAddr::V4(ip) => u32::from(ip),
+                _ => unreachable!(),
+            };
+            let l_v4_srcip_ok = b.new_label();
+            b.push(stmt(BPF_LD | BPF_W | BPF_ABS, base + 12));
+            b.push_jeq(src_ip, l_v4_srcip_ok, l_reject);
+            b.set_label(l_v4_srcip_ok);
+        }
+
+        b.push(stmt(BPF_LDX | BPF_B | BPF_MSH, base));
+
+        let l_v4_dstport_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_H | BPF_IND, base + 2));
+        b.push_jeq(dst_addr.port() as u32, l_v4_dstport_ok, l_reject);
+
+        b.set_label(l_v4_dstport_ok);
+        if let Some(src) = src_addr {
+            b.push(stmt(BPF_LD | BPF_H | BPF_IND, base));
+            b.push_jeq(src.port() as u32, l_accept, l_reject);
+        } else {
+            b.push_ja(l_accept);
+        }
+    } else {
+        let l_v6_proto_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_B | BPF_ABS, base + 6));
+        b.push_jeq(IPPROTO_TCP_U32, l_v6_proto_ok, l_reject);
+
+        b.set_label(l_v6_proto_ok);
+        let dst_ip = match dst_addr.ip() {
+            IpAddr::V6(ip) => ip.octets(),
+            _ => unreachable!(),
+        };
+        for (i, chunk) in dst_ip.chunks_exact(4).enumerate() {
+            let off = base + 24 + (i * 4) as u32;
+            let v = u32::from_be_bytes(chunk.try_into().unwrap());
+            let l_v6_dstip_word_ok = b.new_label();
+            b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off));
+            b.push_jeq(v, l_v6_dstip_word_ok, l_reject);
+            b.set_label(l_v6_dstip_word_ok);
+        }
+
+        if let Some(src) = src_addr {
+            let src_ip = match src.ip() {
+                IpAddr::V6(ip) => ip.octets(),
+                _ => unreachable!(),
+            };
+            for (i, chunk) in src_ip.chunks_exact(4).enumerate() {
+                let off = base + 8 + (i * 4) as u32;
+                let v = u32::from_be_bytes(chunk.try_into().unwrap());
+                let l_v6_srcip_word_ok = b.new_label();
+                b.push(stmt(BPF_LD | BPF_W | BPF_ABS, off));
+                b.push_jeq(v, l_v6_srcip_word_ok, l_reject);
+                b.set_label(l_v6_srcip_word_ok);
+            }
+        }
+
+        let l_v6_dstport_ok = b.new_label();
+        b.push(stmt(BPF_LD | BPF_H | BPF_ABS, base + 40 + 2));
+        b.push_jeq(dst_addr.port() as u32, l_v6_dstport_ok, l_reject);
+
+        b.set_label(l_v6_dstport_ok);
+        if let Some(src) = src_addr {
+            b.push(stmt(BPF_LD | BPF_H | BPF_ABS, base + 40));
+            b.push_jeq(src.port() as u32, l_accept, l_reject);
+        } else {
+            b.push_ja(l_accept);
+        }
+    }
+
+    b.set_label(l_accept);
+    b.push(stmt(BPF_RET | BPF_K, 0xFFFF));
+
+    b.set_label(l_reject);
+    b.push(stmt(BPF_RET | BPF_K, 0));
+
+    b.finish()
+}
+
+fn build_tcp_filter(
+    link_type: LinkType,
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+) -> io::Result<Vec<BpfInsn>> {
+    match link_type {
+        LinkType::En10Mb => build_tcp_filter_ethernet(src_addr, dst_addr),
+        LinkType::Raw => build_tcp_filter_ip(0, src_addr, dst_addr, None),
+        LinkType::Null => {
+            let family = if dst_addr.is_ipv4() {
+                libc::AF_INET as u32
+            } else {
+                libc::AF_INET6 as u32
+            };
+            build_tcp_filter_ip(4, src_addr, dst_addr, Some(family_word_for_null(family)))
+        }
+        LinkType::Loop => {
+            let family = if dst_addr.is_ipv4() {
+                libc::AF_INET as u32
+            } else {
+                libc::AF_INET6 as u32
+            };
+            build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))
+        }
+    }
+}
+
 fn bpf_word_align(x: usize) -> usize {
     let align = mem::size_of::<libc::c_long>();
     (x + (align - 1)) & !(align - 1)
@@ -426,6 +620,7 @@ fn set_ifreq_name(ifr: &mut libc::ifreq, interface_name: &str) -> io::Result<()>
 
 pub struct MacosBpfTun {
     fd: OwnedFd,
+    link_type: LinkType,
     stop: Arc<AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
     recv_queue: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
@@ -437,8 +632,6 @@ impl MacosBpfTun {
         src_addr: Option<SocketAddr>,
         dst_addr: SocketAddr,
     ) -> io::Result<Self> {
-        let filter = build_tcp_filter(src_addr, dst_addr)?;
-
         let fd = open_bpf_device()?;
         let raw_fd = fd.as_raw_fd();
 
@@ -461,13 +654,17 @@ impl MacosBpfTun {
         }?;
 
         let mut hdr_complete: libc::c_uint = 1;
-        unsafe {
+        match unsafe {
             ioctl_ptr(
                 raw_fd,
                 iow::<libc::c_uint>(BPF_GROUP, BIOCSHDRCMPLT_NUM),
                 &mut hdr_complete,
             )
-        }?;
+        } {
+            Ok(()) => {}
+            Err(e) if e.raw_os_error() == Some(libc::EINVAL) => {}
+            Err(e) => return Err(e),
+        }
 
         let timeout = libc::timeval {
             tv_sec: 0,
@@ -502,12 +699,15 @@ impl MacosBpfTun {
                 &mut dlt,
             )
         }?;
-        if dlt != 1 {
-            return Err(io::Error::new(
+
+        let link_type = LinkType::from_dlt(dlt as u32).ok_or_else(|| {
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("unsupported datalink type {}", dlt),
-            ));
-        }
+            )
+        })?;
+
+        let filter = build_tcp_filter(link_type, src_addr, dst_addr)?;
 
         let mut bpf_insns: Vec<BpfInsn> = filter;
         let mut prog = BpfProgram {
@@ -553,6 +753,7 @@ impl MacosBpfTun {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let stop_clone = stop.clone();
         let read_fd = raw_fd;
+        let worker_link_type = link_type;
         let worker = std::thread::spawn(move || {
             let mut buf = vec![0u8; desired_buf_len as usize];
             while !stop_clone.load(AtomicOrdering::Relaxed) {
@@ -587,9 +788,22 @@ impl MacosBpfTun {
                     if pkt_end > n {
                         break;
                     }
-                    let packet = buf[pkt_start..pkt_end].to_vec();
-                    if tx.blocking_send(packet).is_err() {
-                        return;
+                    let packet = &buf[pkt_start..pkt_end];
+                    let framed = match worker_link_type {
+                        LinkType::En10Mb => Some(packet.to_vec()),
+                        LinkType::Raw => wrap_ip_with_ethernet(packet),
+                        LinkType::Null | LinkType::Loop => {
+                            if packet.len() < 4 {
+                                None
+                            } else {
+                                wrap_ip_with_ethernet(&packet[4..])
+                            }
+                        }
+                    };
+                    if let Some(framed) = framed {
+                        if tx.blocking_send(framed).is_err() {
+                            return;
+                        }
                     }
                     off = off.saturating_add(bpf_word_align(hdr_len + cap_len));
                 }
@@ -598,6 +812,7 @@ impl MacosBpfTun {
 
         Ok(Self {
             fd,
+            link_type,
             stop,
             worker: Some(worker),
             recv_queue: Mutex::new(rx),
@@ -637,13 +852,39 @@ impl stack::Tun for MacosBpfTun {
                 "packet too short",
             ));
         }
-        let ret = unsafe {
-            libc::write(
-                self.fd.as_raw_fd(),
-                packet.as_ptr() as *const libc::c_void,
-                packet.len(),
-            )
+        let payload = &packet[ETH_HDR_LEN..];
+        let mut out_buf: Option<Vec<u8>> = None;
+        let (ptr, len) = match self.link_type {
+            LinkType::En10Mb => (packet.as_ptr(), packet.len()),
+            LinkType::Raw => (payload.as_ptr(), payload.len()),
+            LinkType::Null | LinkType::Loop => {
+                let family = match payload.first().map(|b| b >> 4) {
+                    Some(4) => libc::AF_INET as u32,
+                    Some(6) => libc::AF_INET6 as u32,
+                    _ => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "invalid ip version",
+                        ))
+                    }
+                };
+                out_buf = Some({
+                    let mut out = vec![0u8; 4 + payload.len()];
+                    let hdr = match self.link_type {
+                        LinkType::Null => family.to_ne_bytes(),
+                        LinkType::Loop => family.to_be_bytes(),
+                        _ => unreachable!(),
+                    };
+                    out[..4].copy_from_slice(&hdr);
+                    out[4..].copy_from_slice(payload);
+                    out
+                });
+                let out = out_buf.as_ref().unwrap();
+                (out.as_ptr(), out.len())
+            }
         };
+
+        let ret = unsafe { libc::write(self.fd.as_raw_fd(), ptr as *const libc::c_void, len) };
         if ret < 0 {
             return Err(std::io::Error::last_os_error());
         }
