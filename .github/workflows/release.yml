@@ -6,17 +6,14 @@ on:
       core_run_id:
         description: 'The run id of EasyTier-Core Action in EasyTier repo'
         type: number
-        default: 10322498549
         required: true
       gui_run_id:
         description: 'The run id of EasyTier-GUI Action in EasyTier repo'
         type: number
-        default: 10322498557
         required: true
       mobile_run_id:
         description: 'The run id of EasyTier-Mobile Action in EasyTier repo'
         type: number
-        default: 10322498555
         required: true
       version:
         description: 'Version for this release'
@@ -34,7 +31,6 @@ permissions:
 
 jobs:
   release:
-    if: contains('["KKRainbow"]', github.actor)
     runs-on: ubuntu-latest
     steps:
       -
@@ -46,7 +42,7 @@ jobs:
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.core_run_id }}
-          repo: EasyTier/EasyTier
+          repo: ${{ github.repository }}
           path: release_assets
 
       - name: Download GUI Artifact
@@ -54,7 +50,7 @@ jobs:
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.gui_run_id }}
-          repo: EasyTier/EasyTier
+          repo: ${{ github.repository }}
           path: release_assets_nozip
 
       - name: Download Mobile Artifact
@@ -62,7 +58,7 @@ jobs:
         with:
           github_token: ${{secrets.GITHUB_TOKEN}}
           run_id: ${{ inputs.mobile_run_id }}
-          repo: EasyTier/EasyTier
+          repo: ${{ github.repository }}
           path: release_assets_nozip
 
       - name: Zip release assets
