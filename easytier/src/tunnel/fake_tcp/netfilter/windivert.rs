@@ -3,20 +3,19 @@ use std::sync::Arc;
 
 use bytes::{Bytes, BytesMut};
 use tokio::sync::Mutex;
-use windivert::address::WinDivertAddress;
 use windivert::layer;
 use windivert::packet::WinDivertPacket;
 use windivert::prelude::*;
 
 use crate::tunnel::fake_tcp::stack;
 
-struct WinDivertTun {
+pub struct WinDivertTun {
     recv_queue: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     sender: Arc<std::sync::Mutex<WinDivert<layer::NetworkLayer>>>,
 }
 
 impl WinDivertTun {
-    fn new(local_addr: SocketAddr) -> Self {
+    pub fn new(local_addr: SocketAddr) -> Self {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
         let ip_filter = match local_addr {

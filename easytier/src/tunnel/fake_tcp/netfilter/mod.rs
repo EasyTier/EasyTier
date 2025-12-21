@@ -50,6 +50,6 @@ pub fn create_tun(
     _interface_name: &str,
     _src_addr: Option<SocketAddr>,
     local_addr: SocketAddr,
-) -> Arc<dyn stack::Tun> {
-    Arc::new(WinDivertTun::new(local_addr))
+) -> Arc<dyn super::stack::Tun> {
+    Arc::new(windivert::WinDivertTun::new(local_addr))
 }
