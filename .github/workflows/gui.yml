@@ -170,11 +170,11 @@ jobs:
         if: ${{ matrix.OS == 'windows-latest' }}
         run: |
           if [[ $GUI_TARGET =~ ^aarch64.*$ ]]; then
-            cp ./easytier/third_party/arm64/*.dll ./easytier-gui/src-tauri/
+            cp ./easytier/third_party/arm64/* ./easytier-gui/src-tauri/
           elif [[ $GUI_TARGET =~ ^i686.*$ ]]; then
-            cp ./easytier/third_party/i686/*.dll ./easytier-gui/src-tauri/
+            cp ./easytier/third_party/i686/* ./easytier-gui/src-tauri/
           else
-            cp ./easytier/third_party/*.dll ./easytier-gui/src-tauri/
+            cp ./easytier/third_party/x86_64/* ./easytier-gui/src-tauri/
           fi
 
       - name: Build GUI
