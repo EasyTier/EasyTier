@@ -584,8 +584,8 @@ fn open_bpf_device() -> io::Result<OwnedFd> {
     let mut last_err: Option<io::Error> = None;
     for i in 0..256 {
         let path = format!("/dev/bpf{}", i);
-        let c_path =
-            CString::new(path).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path"))?;
+        let c_path = CString::new(path.as_str())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path"))?;
         let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR) };
         if fd >= 0 {
             debug!(path, "opened bpf device");
@@ -903,10 +903,9 @@ impl stack::Tun for MacosBpfTun {
             ));
         }
         let payload = &packet[ETH_HDR_LEN..];
-        let mut out_buf: Option<Vec<u8>> = None;
-        let (ptr, len) = match self.link_type {
-            LinkType::En10Mb => (packet.as_ptr(), packet.len()),
-            LinkType::Raw => (payload.as_ptr(), payload.len()),
+        let (ptr, len, _keepalive): (*const u8, usize, Option<Vec<u8>>) = match self.link_type {
+            LinkType::En10Mb => (packet.as_ptr(), packet.len(), None),
+            LinkType::Raw => (payload.as_ptr(), payload.len(), None),
             LinkType::Null | LinkType::Loop => {
                 let family = match payload.first().map(|b| b >> 4) {
                     Some(4) => libc::AF_INET as u32,
@@ -923,19 +922,17 @@ impl stack::Tun for MacosBpfTun {
                         ));
                     }
                 };
-                out_buf = Some({
-                    let mut out = vec![0u8; 4 + payload.len()];
-                    let hdr = match self.link_type {
-                        LinkType::Null => family.to_ne_bytes(),
-                        LinkType::Loop => family.to_be_bytes(),
-                        _ => unreachable!(),
-                    };
-                    out[..4].copy_from_slice(&hdr);
-                    out[4..].copy_from_slice(payload);
-                    out
-                });
-                let out = out_buf.as_ref().unwrap();
-                (out.as_ptr(), out.len())
+                let mut out = vec![0u8; 4 + payload.len()];
+                let hdr = match self.link_type {
+                    LinkType::Null => family.to_ne_bytes(),
+                    LinkType::Loop => family.to_be_bytes(),
+                    _ => unreachable!(),
+                };
+                out[..4].copy_from_slice(&hdr);
+                out[4..].copy_from_slice(payload);
+                let ptr = out.as_ptr();
+                let len = out.len();
+                (ptr, len, Some(out))
             }
         };
 
