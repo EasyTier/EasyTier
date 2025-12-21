@@ -10,6 +10,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
 use crate::tunnel::fake_tcp::stack;
 
@@ -587,6 +588,7 @@ fn open_bpf_device() -> io::Result<OwnedFd> {
             CString::new(path).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path"))?;
         let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR) };
         if fd >= 0 {
+            debug!(path, "opened bpf device");
             return Ok(unsafe { OwnedFd::from_raw_fd(fd) });
         }
         let err = io::Error::last_os_error();
@@ -749,6 +751,23 @@ impl MacosBpfTun {
             )
         };
 
+        info!(
+            interface_name,
+            ?src_addr,
+            ?dst_addr,
+            dlt,
+            link_type = match link_type {
+                LinkType::En10Mb => "en10mb",
+                LinkType::Null => "null",
+                LinkType::Raw => "raw",
+                LinkType::Loop => "loop",
+            },
+            filter_len = bpf_insns.len(),
+            buf_len,
+            desired_buf_len,
+            "MacosBpfTun created"
+        );
+
         let stop = Arc::new(AtomicBool::new(false));
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let stop_clone = stop.clone();
@@ -756,6 +775,8 @@ impl MacosBpfTun {
         let worker_link_type = link_type;
         let worker = std::thread::spawn(move || {
             let mut buf = vec![0u8; desired_buf_len as usize];
+            let mut bad_record_logs_left: u8 = 5;
+            let mut wrap_fail_logs_left: u8 = 5;
             while !stop_clone.load(AtomicOrdering::Relaxed) {
                 let n = unsafe {
                     libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
@@ -768,6 +789,7 @@ impl MacosBpfTun {
                     ) {
                         continue;
                     }
+                    warn!(?err, "MacosBpfTun bpf read failed");
                     break;
                 }
                 if n == 0 {
@@ -781,11 +803,27 @@ impl MacosBpfTun {
                     let hdr_len = hdr.bh_hdrlen as usize;
                     let cap_len = hdr.bh_caplen as usize;
                     if hdr_len < mem::size_of::<BpfHdr>() {
+                        if bad_record_logs_left > 0 {
+                            bad_record_logs_left -= 1;
+                            warn!(hdr_len, cap_len, "MacosBpfTun invalid bpf header length");
+                        }
                         break;
                     }
                     let pkt_start = off + hdr_len;
                     let pkt_end = pkt_start.saturating_add(cap_len);
                     if pkt_end > n {
+                        if bad_record_logs_left > 0 {
+                            bad_record_logs_left -= 1;
+                            warn!(
+                                off,
+                                hdr_len,
+                                cap_len,
+                                pkt_start,
+                                pkt_end,
+                                n,
+                                "MacosBpfTun bpf record out of bounds"
+                            );
+                        }
                         break;
                     }
                     let packet = &buf[pkt_start..pkt_end];
@@ -804,6 +842,18 @@ impl MacosBpfTun {
                         if tx.blocking_send(framed).is_err() {
                             return;
                         }
+                    } else if wrap_fail_logs_left > 0 {
+                        wrap_fail_logs_left -= 1;
+                        warn!(
+                            link_type = match worker_link_type {
+                                LinkType::En10Mb => "en10mb",
+                                LinkType::Null => "null",
+                                LinkType::Raw => "raw",
+                                LinkType::Loop => "loop",
+                            },
+                            packet_len = packet.len(),
+                            "MacosBpfTun failed to wrap packet"
+                        );
                     }
                     off = off.saturating_add(bpf_word_align(hdr_len + cap_len));
                 }
@@ -862,10 +912,15 @@ impl stack::Tun for MacosBpfTun {
                     Some(4) => libc::AF_INET as u32,
                     Some(6) => libc::AF_INET6 as u32,
                     _ => {
+                        warn!(
+                            first_byte = payload.first().copied(),
+                            payload_len = payload.len(),
+                            "MacosBpfTun try_send invalid ip version"
+                        );
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::InvalidData,
                             "invalid ip version",
-                        ))
+                        ));
                     }
                 };
                 out_buf = Some({
@@ -886,7 +941,20 @@ impl stack::Tun for MacosBpfTun {
 
         let ret = unsafe { libc::write(self.fd.as_raw_fd(), ptr as *const libc::c_void, len) };
         if ret < 0 {
-            return Err(std::io::Error::last_os_error());
+            let err = std::io::Error::last_os_error();
+            warn!(
+                ?err,
+                link_type = match self.link_type {
+                    LinkType::En10Mb => "en10mb",
+                    LinkType::Null => "null",
+                    LinkType::Raw => "raw",
+                    LinkType::Loop => "loop",
+                },
+                in_len = packet.len(),
+                out_len = len,
+                "MacosBpfTun bpf write failed"
+            );
+            return Err(err);
         }
         Ok(())
     }
