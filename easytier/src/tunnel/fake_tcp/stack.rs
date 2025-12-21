@@ -331,7 +331,8 @@ impl Socket {
                         return None;
                     }
 
-                    if tcp_packet.get_flags() == tcp::TcpFlags::SYN | tcp::TcpFlags::ACK {
+                    let expected_flag = tcp::TcpFlags::SYN | tcp::TcpFlags::ACK;
+                    if (tcp_packet.get_flags() & expected_flag) == expected_flag {
                         // found our SYN + ACK
                         self.seq
                             .store(tcp_packet.get_acknowledgement(), Ordering::Relaxed);
