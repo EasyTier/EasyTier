@@ -645,7 +645,8 @@ fn build_tcp_filter_utun(
     } else {
         libc::AF_INET6 as u32
     };
-    let family_hdr = build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))?;
+    let family_hdr =
+        build_tcp_filter_ip(4, src_addr, dst_addr, Some(family_word_for_null(family)))?;
 
     if raw.is_empty() {
         return Ok(family_hdr);
@@ -1067,7 +1068,8 @@ impl stack::Tun for MacosBpfTun {
 
                 let primary_hdr = match self.link_type {
                     LinkType::Null => family.to_ne_bytes(),
-                    LinkType::Loop | LinkType::Utun => family.to_be_bytes(),
+                    LinkType::Loop => family.to_be_bytes(),
+                    LinkType::Utun => family.to_ne_bytes(),
                     _ => unreachable!(),
                 };
 
@@ -1081,10 +1083,10 @@ impl stack::Tun for MacosBpfTun {
                     Err(e)
                         if matches!(self.link_type, LinkType::Utun)
                             && e.raw_os_error() == Some(libc::EINVAL)
-                            && primary_hdr != family.to_ne_bytes() =>
+                            && primary_hdr != family.to_be_bytes() =>
                     {
                         let mut out = vec![0u8; 4 + payload.len()];
-                        out[..4].copy_from_slice(&family.to_ne_bytes());
+                        out[..4].copy_from_slice(&family.to_be_bytes());
                         out[4..].copy_from_slice(payload);
                         out_len = out.len();
                         write_all(out.as_ptr(), out.len())
