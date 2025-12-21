@@ -104,6 +104,7 @@ fn family_word_for_null(family: u32) -> u32 {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct BpfInsn {
     code: u16,
     jt: u8,
@@ -118,6 +119,7 @@ struct BpfProgram {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct BpfHdr {
     bh_tstamp: libc::timeval,
     bh_caplen: u32,
@@ -799,13 +801,19 @@ impl MacosBpfTun {
                 let n = n as usize;
                 while off + mem::size_of::<BpfHdr>() <= n {
                     let hdr_ptr = unsafe { buf.as_ptr().add(off) as *const BpfHdr };
-                    let hdr = unsafe { &*hdr_ptr };
+                    let hdr = unsafe { std::ptr::read_unaligned(hdr_ptr) };
                     let hdr_len = hdr.bh_hdrlen as usize;
                     let cap_len = hdr.bh_caplen as usize;
                     if hdr_len < mem::size_of::<BpfHdr>() {
                         if bad_record_logs_left > 0 {
                             bad_record_logs_left -= 1;
-                            warn!(hdr_len, cap_len, "MacosBpfTun invalid bpf header length");
+                            warn!(
+                                hdr_len,
+                                cap_len,
+                                hdr_size = mem::size_of::<BpfHdr>(),
+                                read_len = n,
+                                "MacosBpfTun invalid bpf header length"
+                            );
                         }
                         break;
                     }
@@ -814,6 +822,8 @@ impl MacosBpfTun {
                     if pkt_end > n {
                         if bad_record_logs_left > 0 {
                             bad_record_logs_left -= 1;
+                            let preview_len = std::cmp::min(n, 32);
+                            let preview = &buf[..preview_len];
                             warn!(
                                 off,
                                 hdr_len,
@@ -821,6 +831,7 @@ impl MacosBpfTun {
                                 pkt_start,
                                 pkt_end,
                                 n,
+                                preview = ?preview,
                                 "MacosBpfTun bpf record out of bounds"
                             );
                         }
