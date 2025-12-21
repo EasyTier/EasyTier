@@ -963,6 +963,7 @@ impl stack::Tun for MacosBpfTun {
         }
     }
 
+    #[tracing::instrument(ret)]
     fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error> {
         if packet.len() < ETH_HDR_LEN {
             return Err(std::io::Error::new(
