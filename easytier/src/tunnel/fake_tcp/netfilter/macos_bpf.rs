@@ -634,6 +634,35 @@ fn build_tcp_filter_ip(
     b.finish()
 }
 
+fn build_tcp_filter_utun(
+    src_addr: Option<SocketAddr>,
+    dst_addr: SocketAddr,
+) -> io::Result<Vec<BpfInsn>> {
+    let raw = build_tcp_filter_ip(0, src_addr, dst_addr, None)?;
+
+    let family = if dst_addr.is_ipv4() {
+        libc::AF_INET as u32
+    } else {
+        libc::AF_INET6 as u32
+    };
+    let family_hdr = build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))?;
+
+    if raw.is_empty() {
+        return Ok(family_hdr);
+    }
+
+    let mut combined = raw;
+    if let Some(last) = combined.last_mut() {
+        if last.code == (BPF_RET | BPF_K) && last.k == 0 {
+            *last = ja(0);
+        } else {
+            combined.push(ja(0));
+        }
+    }
+    combined.extend(family_hdr);
+    Ok(combined)
+}
+
 fn build_tcp_filter(
     link_type: LinkType,
     src_addr: Option<SocketAddr>,
@@ -658,14 +687,7 @@ fn build_tcp_filter(
             };
             build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))
         }
-        LinkType::Utun => {
-            let family = if dst_addr.is_ipv4() {
-                libc::AF_INET as u32
-            } else {
-                libc::AF_INET6 as u32
-            };
-            build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))
-        }
+        LinkType::Utun => build_tcp_filter_utun(src_addr, dst_addr),
     }
 }
 
