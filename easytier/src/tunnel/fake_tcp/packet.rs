@@ -10,6 +10,7 @@ const IPV6_HEADER_LEN: usize = 40;
 const TCP_HEADER_LEN: usize = 20;
 pub const MAX_PACKET_LEN: usize = 1500;
 
+#[derive(Debug)]
 pub enum IPPacket<'p> {
     V4(ipv4::Ipv4Packet<'p>),
     V6(ipv6::Ipv6Packet<'p>),
@@ -124,6 +125,7 @@ pub fn build_tcp_packet(
     eth_buf.freeze()
 }
 
+#[tracing::instrument(ret)]
 pub fn parse_ip_packet(
     buf: &Bytes,
 ) -> Option<(MacAddr, MacAddr, IPPacket<'_>, tcp::TcpPacket<'_>)> {
