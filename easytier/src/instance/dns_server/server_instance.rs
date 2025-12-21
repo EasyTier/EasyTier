@@ -527,6 +527,11 @@ impl MagicDnsServerInstance {
         // Use configured tld_dns_zone or fall back to DEFAULT_ET_DNS_ZONE if empty
         let flags = peer_mgr.get_global_ctx().config.get_flags();
         let tld_dns_zone_clone = flags.tld_dns_zone.clone();
+
+        data.update_dns_records(std::iter::empty(), &tld_dns_zone_clone)
+            .await
+            .context("Failed to initialize DNS zone")?;
+
         let data_clone = data.clone();
         tokio::task::spawn_blocking(move || data_clone.do_system_config(&tld_dns_zone_clone))
             .await
