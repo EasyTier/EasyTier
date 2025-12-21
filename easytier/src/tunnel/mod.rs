@@ -203,6 +203,7 @@ fn default_port(scheme: &str) -> Option<u16> {
         "udp" => Some(11010),
         "ws" => Some(11011),
         "wss" => Some(11012),
+        "faketcp" => Some(11013),
         "quic" => Some(11012),
         "wg" => Some(11011),
         _ => None,

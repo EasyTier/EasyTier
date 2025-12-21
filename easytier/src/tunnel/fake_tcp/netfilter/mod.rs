@@ -38,8 +38,8 @@ pub fn create_tun(
     interface_name: &str,
     src_addr: Option<SocketAddr>,
     dst_addr: SocketAddr,
-) -> Arc<dyn stack::Tun> {
-    Arc::new(PnetTun::new(
+) -> Arc<dyn super::stack::Tun> {
+    Arc::new(pnet::PnetTun::new(
         interface_name,
         pnet::create_packet_filter(src_addr, dst_addr),
     ))

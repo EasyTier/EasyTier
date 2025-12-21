@@ -257,7 +257,6 @@ impl Socket {
                     let payload = tcp_packet.payload();
 
                     let new_ack = tcp_packet.get_sequence().wrapping_add(payload.len() as u32);
-                    let last_ask = self.last_ack.load(Ordering::Relaxed);
                     self.ack.store(new_ack, Ordering::Relaxed);
 
                     for opt in tcp_packet.get_options_iter() {
@@ -298,22 +297,6 @@ impl Socket {
                             }
                         }
                     }
-
-                    // if new_ack.overflowing_sub(last_ask).0 > MAX_UNACKED_LEN {
-                    //     let buf = self.build_tcp_packet(tcp::TcpFlags::ACK, None);
-                    //     tracing::trace!(
-                    //         "Socket sent idling ACK {}:{} to {}: {:?}",
-                    //         last_ask,
-                    //         new_ack,
-                    //         self.remote_addr,
-                    //         buf
-                    //     );
-                    //     if let Err(e) = self.tun.try_send(&buf) {
-                    //         // This should not really happen as we have not sent anything for
-                    //         // quite some time...
-                    //         info!("Connection {} unable to send idling ACK back: {}", self, e)
-                    //     }
-                    // }
 
                     if payload.is_empty() {
                         continue;
