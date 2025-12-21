@@ -68,6 +68,7 @@ enum LinkType {
     Null,
     Raw,
     Loop,
+    Utun,
 }
 
 impl LinkType {
@@ -80,6 +81,24 @@ impl LinkType {
             _ => None,
         }
     }
+}
+
+fn looks_like_ip(packet: &[u8]) -> bool {
+    matches!(packet.first().map(|b| b >> 4), Some(4 | 6))
+}
+
+fn maybe_unwrap_utun_payload(packet: &[u8]) -> Option<&[u8]> {
+    if looks_like_ip(packet) {
+        return Some(packet);
+    }
+    if packet.len() < 5 {
+        return None;
+    }
+    let payload = &packet[4..];
+    if !looks_like_ip(payload) {
+        return None;
+    }
+    Some(payload)
 }
 
 fn ether_type_from_ip_packet(ip: &[u8]) -> Option<u16> {
@@ -639,6 +658,14 @@ fn build_tcp_filter(
             };
             build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))
         }
+        LinkType::Utun => {
+            let family = if dst_addr.is_ipv4() {
+                libc::AF_INET as u32
+            } else {
+                libc::AF_INET6 as u32
+            };
+            build_tcp_filter_ip(4, src_addr, dst_addr, Some(family))
+        }
     }
 }
 
@@ -788,12 +815,16 @@ impl MacosBpfTun {
             )
         }?;
 
-        let link_type = LinkType::from_dlt(dlt as u32).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("unsupported datalink type {}", dlt),
-            )
-        })?;
+        let link_type = if interface_name.starts_with("utun") {
+            LinkType::Utun
+        } else {
+            LinkType::from_dlt(dlt as u32).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported datalink type {}", dlt),
+                )
+            })?
+        };
 
         let filter = build_tcp_filter(link_type, src_addr, dst_addr)?;
 
@@ -823,6 +854,7 @@ impl MacosBpfTun {
                 LinkType::Null => "null",
                 LinkType::Raw => "raw",
                 LinkType::Loop => "loop",
+                LinkType::Utun => "utun",
             },
             filter_len = bpf_insns.len(),
             buf_len,
@@ -902,6 +934,9 @@ impl MacosBpfTun {
                                 wrap_ip_with_ethernet(&packet[4..])
                             }
                         }
+                        LinkType::Utun => {
+                            maybe_unwrap_utun_payload(packet).and_then(wrap_ip_with_ethernet)
+                        }
                     };
                     if let Some(framed) = framed {
                         if tx.blocking_send(framed).is_err() {
@@ -915,6 +950,7 @@ impl MacosBpfTun {
                                 LinkType::Null => "null",
                                 LinkType::Raw => "raw",
                                 LinkType::Loop => "loop",
+                                LinkType::Utun => "utun",
                             },
                             packet_len = packet.len(),
                             "MacosBpfTun failed to wrap packet"
@@ -972,10 +1008,25 @@ impl stack::Tun for MacosBpfTun {
             ));
         }
         let payload = &packet[ETH_HDR_LEN..];
-        let (ptr, len, _keepalive): (*const u8, usize, Option<Vec<u8>>) = match self.link_type {
-            LinkType::En10Mb => (packet.as_ptr(), packet.len(), None),
-            LinkType::Raw => (payload.as_ptr(), payload.len(), None),
-            LinkType::Null | LinkType::Loop => {
+        let write_all = |ptr: *const u8, len: usize| -> Result<(), std::io::Error> {
+            let ret = unsafe { libc::write(self.fd.as_raw_fd(), ptr as *const libc::c_void, len) };
+            if ret < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        };
+
+        let mut out_len = 0usize;
+        let res = match self.link_type {
+            LinkType::En10Mb => {
+                out_len = packet.len();
+                write_all(packet.as_ptr(), packet.len())
+            }
+            LinkType::Raw => {
+                out_len = payload.len();
+                write_all(payload.as_ptr(), payload.len())
+            }
+            LinkType::Null | LinkType::Loop | LinkType::Utun => {
                 let family = match payload.first().map(|b| b >> 4) {
                     Some(4) => libc::AF_INET as u32,
                     Some(6) => libc::AF_INET6 as u32,
@@ -991,23 +1042,37 @@ impl stack::Tun for MacosBpfTun {
                         ));
                     }
                 };
-                let mut out = vec![0u8; 4 + payload.len()];
-                let hdr = match self.link_type {
+
+                let primary_hdr = match self.link_type {
                     LinkType::Null => family.to_ne_bytes(),
-                    LinkType::Loop => family.to_be_bytes(),
+                    LinkType::Loop | LinkType::Utun => family.to_be_bytes(),
                     _ => unreachable!(),
                 };
-                out[..4].copy_from_slice(&hdr);
+
+                let mut out = vec![0u8; 4 + payload.len()];
+                out[..4].copy_from_slice(&primary_hdr);
                 out[4..].copy_from_slice(payload);
-                let ptr = out.as_ptr();
-                let len = out.len();
-                (ptr, len, Some(out))
+                out_len = out.len();
+
+                match write_all(out.as_ptr(), out.len()) {
+                    Ok(()) => Ok(()),
+                    Err(e)
+                        if matches!(self.link_type, LinkType::Utun)
+                            && e.raw_os_error() == Some(libc::EINVAL)
+                            && primary_hdr != family.to_ne_bytes() =>
+                    {
+                        let mut out = vec![0u8; 4 + payload.len()];
+                        out[..4].copy_from_slice(&family.to_ne_bytes());
+                        out[4..].copy_from_slice(payload);
+                        out_len = out.len();
+                        write_all(out.as_ptr(), out.len())
+                    }
+                    Err(e) => Err(e),
+                }
             }
         };
 
-        let ret = unsafe { libc::write(self.fd.as_raw_fd(), ptr as *const libc::c_void, len) };
-        if ret < 0 {
-            let err = std::io::Error::last_os_error();
+        if let Err(err) = res {
             warn!(
                 ?err,
                 link_type = match self.link_type {
@@ -1015,13 +1080,15 @@ impl stack::Tun for MacosBpfTun {
                     LinkType::Null => "null",
                     LinkType::Raw => "raw",
                     LinkType::Loop => "loop",
+                    LinkType::Utun => "utun",
                 },
                 in_len = packet.len(),
-                out_len = len,
+                out_len,
                 "MacosBpfTun bpf write failed"
             );
             return Err(err);
         }
+
         Ok(())
     }
 }
