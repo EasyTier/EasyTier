@@ -57,7 +57,20 @@ cfg_if::cfg_if! {
             _src_addr: Option<SocketAddr>,
             local_addr: SocketAddr,
         ) -> Arc<dyn super::stack::Tun> {
-            Arc::new(windivert::WinDivertTun::new(local_addr))
+            match windivert::WinDivertTun::new(local_addr) {
+                Ok(tun) => Arc::new(tun),
+                Err(e) => {
+                    tracing::warn!(
+                        ?e,
+                        ?local_addr,
+                        "WinDivertTun init failed, falling back to PnetTun"
+                    );
+                    Arc::new(pnet::PnetTun::new(
+                        local_addr.to_string().as_str(),
+                        pnet::create_packet_filter(None, local_addr),
+                    ))
+                }
+            }
         }
     } else {
         pub fn create_tun(

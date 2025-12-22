@@ -297,4 +297,8 @@ impl stack::Tun for PnetTun {
             ))
         }
     }
+
+    fn driver_type(&self) -> &'static str {
+        "pnet"
+    }
 }

@@ -66,6 +66,7 @@ const MAX_UNACKED_LEN: u32 = 128 * 1024 * 1024; // 128MB
 pub trait Tun: Send + Sync + 'static {
     async fn recv(&self, packet: &mut BytesMut) -> Result<usize, std::io::Error>;
     fn try_send(&self, packet: &Bytes) -> Result<(), std::io::Error>;
+    fn driver_type(&self) -> &'static str;
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug)]
@@ -433,6 +434,11 @@ impl Stack {
             local_mac: local_mac.unwrap_or(MacAddr::zero()),
             ready: ready_rx,
         }
+    }
+
+    /// Returns the driver type of the stack.
+    pub fn driver_type(&self) -> &'static str {
+        self.shared.tun[0].driver_type()
     }
 
     /// Listens for incoming connections on the given `port`.

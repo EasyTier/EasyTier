@@ -53,6 +53,10 @@ impl IpToIfNameCache {
     }
 }
 
+fn get_faketcp_tunnel_type_str(driver_type: &str) -> String {
+    format!("faketcp_{}", driver_type)
+}
+
 pub struct FakeTcpTunnelListener {
     addr: url::Url,
     os_listener: Option<tokio::net::TcpListener>,
@@ -213,7 +217,7 @@ impl TunnelListener for FakeTcpTunnelListener {
         );
 
         let info = TunnelInfo {
-            tunnel_type: "faketcp".to_owned(),
+            tunnel_type: get_faketcp_tunnel_type_str(stack.lock().await.driver_type()),
             local_addr: Some(self.local_url().into()),
             remote_addr: Some(
                 crate::tunnel::build_url_from_socket_addr(
@@ -315,6 +319,7 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         let tun = vec![create_tun(&interface_name, Some(remote_addr), local_addr)];
         let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
         let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
+        let driver_type = stack.driver_type();
 
         *self.stack.lock().await = Some(stack);
 
@@ -338,7 +343,7 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         tracing::info!(local_addr = ?socket.local_addr(), "FakeTcpTunnelConnector connected");
 
         let info = TunnelInfo {
-            tunnel_type: "faketcp".to_owned(),
+            tunnel_type: get_faketcp_tunnel_type_str(driver_type),
             local_addr: Some(
                 crate::tunnel::build_url_from_socket_addr(
                     &socket.local_addr().to_string(),

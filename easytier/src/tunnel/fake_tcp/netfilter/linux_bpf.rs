@@ -489,6 +489,10 @@ impl stack::Tun for LinuxBpfTun {
         }
         Ok(())
     }
+
+    fn driver_type(&self) -> &'static str {
+        "linux_bpf"
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

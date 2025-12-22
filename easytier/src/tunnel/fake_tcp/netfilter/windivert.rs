@@ -1,3 +1,4 @@
+use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -15,7 +16,7 @@ pub struct WinDivertTun {
 }
 
 impl WinDivertTun {
-    pub fn new(local_addr: SocketAddr) -> Self {
+    pub fn new(local_addr: SocketAddr) -> io::Result<Self> {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
 
         let ip_filter = match local_addr {
@@ -29,8 +30,8 @@ impl WinDivertTun {
         // Layer: Network (0)
         // Priority: 0
         let flags = WinDivertFlags::default().set_sniff();
-        let reader =
-            WinDivert::network(&filter, 0, flags).expect("Failed to create WinDivert reader");
+        let reader = WinDivert::network(&filter, 0, flags)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
         std::thread::spawn(move || {
             let mut buffer = vec![0u8; 65536];
@@ -66,12 +67,12 @@ impl WinDivertTun {
         // Use "false" to avoid capturing anything.
         // Flags: 0
         let sender = WinDivert::network("false", 0, WinDivertFlags::default())
-            .expect("Failed to create WinDivert sender");
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
-        Self {
+        Ok(Self {
             recv_queue: Mutex::new(rx),
             sender: Arc::new(std::sync::Mutex::new(sender)),
-        }
+        })
     }
 }
 
@@ -119,5 +120,9 @@ impl stack::Tun for WinDivertTun {
         })?;
 
         Ok(())
+    }
+
+    fn driver_type(&self) -> &'static str {
+        "windivert"
     }
 }

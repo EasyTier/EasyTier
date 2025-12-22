@@ -1115,4 +1115,8 @@ impl stack::Tun for MacosBpfTun {
 
         Ok(())
     }
+
+    fn driver_type(&self) -> &'static str {
+        "macos_bpf"
+    }
 }
