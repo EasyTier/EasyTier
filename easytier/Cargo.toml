@@ -222,6 +222,7 @@ shellexpand = "3.1.1"
 
 # for fake tcp
 flume = "0.12"
+cfg-if = "1.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
