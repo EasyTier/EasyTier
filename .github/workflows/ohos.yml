@@ -129,6 +129,7 @@ jobs:
           OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
           OHPM_PRIVATE_KEY: ${{ secrets.OHPM_PRIVATE_KEY }}
           OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
+        if: ${{ env.OHPM_PUBLISH_CODE != '' }}
         run: |
           ohpm config set publish_id "$OHPM_PUBLISH_CODE"
           ohpm config set publish_registry https://ohpm.openharmony.cn/ohpm
@@ -146,6 +147,9 @@ jobs:
           
       - name: Publish To Private Ohpm
         working-directory: ./easytier-contrib/easytier-ohrs
+        env:
+          OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
+        if: ${{ env.OHPM_PUBLISH_CODE != '' }}
         run: |
           printf '%s' "${{ secrets.CODEARTS_PRIVATE_OHPM }}" > ~/.ohpm/.ohpmrc
           ohpm config set strict_ssl false
