@@ -138,7 +138,7 @@ impl FakeTcpTunnelListener {
             .stack_map
             .entry(interface_name.to_string())
             .or_insert_with(|| {
-                let tun = vec![create_tun(interface_name, None, local_socket_addr)];
+                let tun = create_tun(interface_name, None, local_socket_addr);
                 tracing::info!(
                     ?local_socket_addr,
                     "create new stack with interface_name: {:?}",
@@ -254,7 +254,6 @@ impl TunnelListener for FakeTcpTunnelListener {
 
 pub struct FakeTcpTunnelConnector {
     addr: url::Url,
-    stack: Arc<Mutex<Option<stack::Stack>>>,
     ip_to_if_name: IpToIfNameCache,
 }
 
@@ -262,7 +261,6 @@ impl FakeTcpTunnelConnector {
     pub fn new(addr: url::Url) -> Self {
         FakeTcpTunnelConnector {
             addr,
-            stack: Arc::new(Mutex::new(None)),
             ip_to_if_name: IpToIfNameCache::new(),
         }
     }
@@ -316,19 +314,12 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let tun = vec![create_tun(&interface_name, Some(remote_addr), local_addr)];
+        let tun = create_tun(&interface_name, Some(remote_addr), local_addr);
         let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
-        let stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
+        let mut stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
         let driver_type = stack.driver_type();
 
-        *self.stack.lock().await = Some(stack);
-
-        let socket = self
-            .stack
-            .lock()
-            .await
-            .as_mut()
-            .unwrap()
+        let socket = stack
             .alloc_established_socket(local_addr, remote_addr, stack::State::SynSent)
             .await;
 
@@ -358,11 +349,12 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         let reader = FakeTcpStream::new(socket.clone());
         let writer = FakeTcpSink::new(socket);
 
+
         Ok(Box::new(TunnelWrapper::new_with_associate_data(
             reader,
             writer,
             Some(info),
-            Some(Box::new(build_os_socket_reader_task(os_stream))),
+            Some(Box::new((build_os_socket_reader_task(os_stream), stack))),
         )))
     }
 

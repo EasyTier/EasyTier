@@ -1,18 +1,82 @@
+use std::cell::UnsafeCell;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use anyhow::Context as _;
 use bytes::{Bytes, BytesMut};
 use tokio::sync::Mutex;
-use windivert::layer;
+use windivert::error::WinDivertError;
 use windivert::packet::WinDivertPacket;
-use windivert::prelude::*;
+use windivert::prelude::{WinDivertFlags, WinDivertShutdownMode};
+use windivert::{layer, WinDivert};
 
 use crate::tunnel::fake_tcp::stack;
+
+struct WinDivertReader {
+    inner: UnsafeCell<WinDivert<layer::NetworkLayer>>,
+}
+
+unsafe impl Send for WinDivertReader {}
+unsafe impl Sync for WinDivertReader {}
+
+impl WinDivertReader {
+    fn new(inner: WinDivert<layer::NetworkLayer>) -> Self {
+        Self {
+            inner: UnsafeCell::new(inner),
+        }
+    }
+
+    fn recv<'a>(
+        &self,
+        buffer: Option<&'a mut [u8]>,
+    ) -> Result<WinDivertPacket<'a, layer::NetworkLayer>, WinDivertError> {
+        let inner = unsafe { &*self.inner.get() };
+        inner.recv(buffer)
+    }
+
+    fn shutdown(&self) -> anyhow::Result<()> {
+        let inner = unsafe { &mut *self.inner.get() };
+        inner
+            .shutdown(WinDivertShutdownMode::Recv)
+            .with_context(|| "WinDivertReader shutdown failed")?;
+        Ok(())
+    }
+
+    fn close(&self) -> anyhow::Result<()> {
+        let inner = unsafe { &mut *self.inner.get() };
+        inner
+            .close(windivert::CloseAction::Nothing)
+            .with_context(|| "WinDivertReader close failed")?;
+        Ok(())
+    }
+}
+
+impl Drop for WinDivertReader {
+    fn drop(&mut self) {
+        if let Err(e) = self.close() {
+            tracing::error!("WinDivertReader close failed: {:?}", e);
+        }
+    }
+}
 
 pub struct WinDivertTun {
     recv_queue: Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>,
     sender: Arc<std::sync::Mutex<WinDivert<layer::NetworkLayer>>>,
+    reader: Arc<WinDivertReader>,
+}
+
+impl Drop for WinDivertTun {
+    fn drop(&mut self) {
+        if let Ok(mut sender) = self.sender.lock() {
+            if let Err(e) = sender.close(windivert::CloseAction::Nothing) {
+                tracing::error!("WinDivertSender close failed: {:?}", e);
+            }
+        }
+        if let Err(e) = self.reader.shutdown() {
+            tracing::error!("WinDivertReader shutdown failed: {:?}", e);
+        }
+    }
 }
 
 impl WinDivertTun {
@@ -32,8 +96,11 @@ impl WinDivertTun {
         let flags = WinDivertFlags::default().set_sniff();
         let reader = WinDivert::network(&filter, 0, flags)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let reader = Arc::new(WinDivertReader::new(reader));
+        let reader_clone = reader.clone();
 
         std::thread::spawn(move || {
+            let reader = reader_clone;
             let mut buffer = vec![0u8; 65536];
             loop {
                 match reader.recv(Some(&mut buffer)) {
@@ -72,6 +139,7 @@ impl WinDivertTun {
         Ok(Self {
             recv_queue: Mutex::new(rx),
             sender: Arc::new(std::sync::Mutex::new(sender)),
+            reader,
         })
     }
 }

@@ -38,6 +38,8 @@
 //! and [`server.rs`](https://github.com/dndx/phantun/blob/main/phantun/src/bin/server.rs) files
 //! from the `phantun` crate for how to use this library in client/server mode, respectively.
 
+use crate::common::scoped_task::ScopedTask;
+
 use super::packet::*;
 use bytes::{Bytes, BytesMut};
 use crossbeam::atomic::AtomicCell;
@@ -87,7 +89,7 @@ impl AddrTuple {
 struct Shared {
     tuples: RwLock<HashMap<AddrTuple, flume::Sender<Bytes>>>,
     listening: RwLock<HashSet<u16>>,
-    tun: Vec<Arc<dyn Tun>>,
+    tun: Arc<dyn Tun>,
     ready: mpsc::Sender<Socket>,
     tuples_purge: broadcast::Sender<AddrTuple>,
 }
@@ -98,6 +100,7 @@ pub struct Stack {
     local_ip6: Option<Ipv6Addr>,
     local_mac: MacAddr,
     ready: mpsc::Receiver<Socket>,
+    reader_task: ScopedTask<()>,
 }
 
 #[derive(Hash, Eq, PartialEq, Clone, Copy, Debug)]
@@ -404,7 +407,7 @@ impl Stack {
     /// of reader will be spawned later. This allows user to utilize the performance
     /// benefit of Multiqueue Tun support on machines with SMP.
     pub fn new(
-        tun: Vec<Arc<dyn Tun>>,
+        tun: Arc<dyn Tun>,
         local_ip: Ipv4Addr,
         local_ip6: Option<Ipv6Addr>,
         local_mac: Option<MacAddr>,
@@ -419,13 +422,11 @@ impl Stack {
             tuples_purge: tuples_purge_tx.clone(),
         });
 
-        for t in tun {
-            tokio::spawn(Stack::reader_task(
-                t,
-                shared.clone(),
-                tuples_purge_tx.subscribe(),
-            ));
-        }
+        let t = tokio::spawn(Stack::reader_task(
+            tun,
+            shared.clone(),
+            tuples_purge_tx.subscribe(),
+        ));
 
         Stack {
             shared,
@@ -433,12 +434,13 @@ impl Stack {
             local_ip6,
             local_mac: local_mac.unwrap_or(MacAddr::zero()),
             ready: ready_rx,
+            reader_task: t.into(),
         }
     }
 
     /// Returns the driver type of the stack.
     pub fn driver_type(&self) -> &'static str {
-        self.shared.tun[0].driver_type()
+        self.shared.tun.driver_type()
     }
 
     /// Listens for incoming connections on the given `port`.
@@ -462,7 +464,7 @@ impl Stack {
         let (sock, incoming) = Socket::new(
             self.shared.clone(),
             // self.shared.tun.choose(&mut rng).unwrap().clone(),
-            self.shared.tun[0].clone(), // Simplification: just use the first tun
+            self.shared.tun.clone(), // Simplification: just use the first tun
             local_addr,
             remote_addr,
             self.local_mac,
