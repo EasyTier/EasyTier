@@ -220,6 +220,10 @@ hmac = "0.12.1"
 sha2 = "0.10.8"
 shellexpand = "3.1.1"
 
+# for fake tcp
+flume = "0.12"
+cfg-if = "1.0"
+
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
 machine-uid = "0.5.3"
 
@@ -232,6 +236,9 @@ netlink-packet-utils = "0.5.2"
 resolv-conf = "0.7.3"
 dbus = { version = "0.9.7", features = ["vendored"] }
 which = "7.0.3"
+
+[target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
+windivert = { version = "0.6.0", features = ["static"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52.0", features = [

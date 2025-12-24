@@ -15,6 +15,7 @@ use self::packet_def::ZCPacket;
 
 pub mod buf;
 pub mod common;
+pub mod fake_tcp;
 pub mod filter;
 pub mod mpsc;
 pub mod packet_def;
@@ -23,8 +24,14 @@ pub mod stats;
 pub mod tcp;
 pub mod udp;
 
-pub const PROTO_PORT_OFFSET: &[(&str, u16)] =
-    &[("tcp", 0), ("udp", 0), ("wg", 1), ("ws", 1), ("wss", 2)];
+pub const PROTO_PORT_OFFSET: &[(&str, u16)] = &[
+    ("tcp", 0),
+    ("udp", 0),
+    ("wg", 1),
+    ("ws", 1),
+    ("wss", 2),
+    ("faketcp", 3),
+];
 
 #[cfg(feature = "wireguard")]
 pub mod wireguard;
@@ -139,7 +146,9 @@ pub trait TunnelConnector: Send {
 
 pub fn build_url_from_socket_addr(addr: &String, scheme: &str) -> url::Url {
     if let Ok(sock_addr) = addr.parse::<SocketAddr>() {
-        let mut ret_url = url::Url::parse(format!("{}://0.0.0.0", scheme).as_str()).unwrap();
+        let url_str = format!("{}://0.0.0.0", scheme);
+        let mut ret_url = url::Url::parse(url_str.as_str())
+            .unwrap_or_else(|_| panic!("invalid url: {}", url_str));
         ret_url.set_ip_host(sock_addr.ip()).unwrap();
         ret_url.set_port(Some(sock_addr.port())).unwrap();
         ret_url
@@ -200,6 +209,7 @@ fn default_port(scheme: &str) -> Option<u16> {
         "udp" => Some(11010),
         "ws" => Some(11011),
         "wss" => Some(11012),
+        "faketcp" => Some(11013),
         "quic" => Some(11012),
         "wg" => Some(11011),
         _ => None,

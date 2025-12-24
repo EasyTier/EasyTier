@@ -2095,6 +2095,7 @@ dependencies = [
  "bytecodec",
  "byteorder",
  "bytes",
+ "cfg-if",
  "chrono",
  "cidr",
  "clap",
@@ -2107,6 +2108,7 @@ dependencies = [
  "derive_builder",
  "easytier-rpc-build 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "encoding",
+ "flume 0.12.0",
  "futures",
  "futures-util",
  "gethostname 0.5.0",
@@ -2195,6 +2197,7 @@ dependencies = [
  "which 7.0.3",
  "wildmatch",
  "winapi",
+ "windivert",
  "windows 0.52.0",
  "windows-service",
  "windows-sys 0.52.0",
@@ -2578,6 +2581,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "etherparse"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "827292ea592108849932ad8e30218f8b1f21c0dfd0696698a18b5d0aed62d990"
+dependencies = [
+ "arrayvec",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2615,6 +2627,9 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+dependencies = [
+ "getrandom 0.2.15",
+]
 
 [[package]]
 name = "fdeflate"
@@ -2670,6 +2685,18 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "55ac459de2512911e4b674ce33cf20befaba382d05b62b008afc1c8b57cbf181"
 dependencies = [
+ "futures-core",
+ "futures-sink",
+ "spin",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand",
  "futures-core",
  "futures-sink",
  "spin",
@@ -8175,7 +8202,7 @@ checksum = "d5b2cf34a45953bfd3daaf3db0f7a7878ab9b7a6b91b422d24a7a9e4c857b680"
 dependencies = [
  "atoi",
  "chrono",
- "flume",
+ "flume 0.11.0",
  "futures-channel",
  "futures-core",
  "futures-executor",
@@ -10328,6 +10355,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
+name = "windivert"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc6b6833a760d1c36b489314a5541a12a39d162dc8341d8f6f400212b96d3df1"
+dependencies = [
+ "etherparse",
+ "thiserror 1.0.63",
+ "windivert-sys",
+ "windows 0.48.0",
+]
+
+[[package]]
+name = "windivert-sys"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "832bc4af9272458a8a64395b3aabe10dc4089546486fcbd0e19b9b6d28ba6e54"
+dependencies = [
+ "cc",
+ "thiserror 1.0.63",
+ "windows 0.48.0",
+]
+
+[[package]]
 name = "window-vibrancy"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10340,6 +10390,15 @@ dependencies = [
  "raw-window-handle",
  "windows-sys 0.59.0",
  "windows-version",
+]
+
+[[package]]
+name = "windows"
+version = "0.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e686886bc078bc1b0b600cac0147aadb815089b6e4da64016cbd754b6342700f"
+dependencies = [
+ "windows-targets 0.48.5",
 ]
 
 [[package]]

@@ -70,7 +70,7 @@ impl WindowsBuild {
         let target = std::env::var("TARGET").unwrap_or_default();
 
         if target.contains("x86_64") {
-            println!("cargo:rustc-link-search=native=easytier/third_party/");
+            println!("cargo:rustc-link-search=native=easytier/third_party/x86_64/");
         } else if target.contains("i686") {
             println!("cargo:rustc-link-search=native=easytier/third_party/i686/");
         } else if target.contains("aarch64") {
