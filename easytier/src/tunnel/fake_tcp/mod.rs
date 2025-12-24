@@ -349,7 +349,6 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
         let reader = FakeTcpStream::new(socket.clone());
         let writer = FakeTcpSink::new(socket);
 
-
         Ok(Box::new(TunnelWrapper::new_with_associate_data(
             reader,
             writer,
