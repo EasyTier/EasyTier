@@ -3,7 +3,8 @@
         "externalBin": [],
         "resources": [
             "./wintun.dll",
-            "./Packet.dll"
+            "./Packet.dll",
+            "./*.sys"
         ],
         "windows": {
             "webviewInstallMode": {
