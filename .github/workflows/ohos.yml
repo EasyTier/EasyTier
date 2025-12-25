@@ -59,19 +59,25 @@ jobs:
             pkg-config curl libgl1-mesa-dev expect
           sudo apt-get clean
 
-      - name: Get commit count for this tag
+      - name: Count commits since last tag on upstream main
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          TOTAL_COUNT=$(git rev-list --count "$TAG_NAME")
-
-          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^" 2>/dev/null || echo "")
-          if [ -z "$PREV_TAG" ]; then
-            DIFF_COUNT=$TOTAL_COUNT
+          UPSTREAM_REPO="https://github.com/EasyTier/EasyTier.git"
+      
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || true
+          git fetch upstream --tags --force
+      
+          # 获取 upstream/main 最新提交
+          git fetch upstream main
+      
+          LAST_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo "")
+      
+          if [ -z "$LAST_TAG" ]; then
+            DIFF_COUNT=$(git rev-list --count upstream/main)
           else
-            DIFF_COUNT=$(git rev-list --count "${PREV_TAG}..${TAG_NAME}")
+            DIFF_COUNT=$(git rev-list --count "${LAST_TAG}..upstream/main")
           fi
-
-          echo "TAG_COMMIT_TOTAL=$TOTAL_COUNT" >> $GITHUB_ENV
+      
+          echo "TAG_COMMIT_DIFF=$DIFF_COUNT"
           echo "TAG_COMMIT_DIFF=$DIFF_COUNT" >> $GITHUB_ENV
 
       - name: Get easytier version
