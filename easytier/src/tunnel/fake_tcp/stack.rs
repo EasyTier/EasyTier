@@ -61,7 +61,6 @@ use tracing::{info, trace, warn};
 const TIMEOUT: time::Duration = time::Duration::from_secs(1);
 const RETRIES: usize = 6;
 const MPMC_BUFFER_LEN: usize = 512;
-const MPSC_BUFFER_LEN: usize = 128;
 const MAX_UNACKED_LEN: u32 = 128 * 1024 * 1024; // 128MB
 
 #[async_trait::async_trait]
@@ -90,7 +89,6 @@ struct Shared {
     tuples: RwLock<HashMap<AddrTuple, flume::Sender<Bytes>>>,
     listening: RwLock<HashSet<u16>>,
     tun: Arc<dyn Tun>,
-    ready: mpsc::Sender<Socket>,
     tuples_purge: broadcast::Sender<AddrTuple>,
 }
 
@@ -99,7 +97,6 @@ pub struct Stack {
     local_ip: Ipv4Addr,
     local_ip6: Option<Ipv6Addr>,
     local_mac: MacAddr,
-    ready: mpsc::Receiver<Socket>,
     reader_task: ScopedTask<()>,
 }
 
@@ -412,13 +409,11 @@ impl Stack {
         local_ip6: Option<Ipv6Addr>,
         local_mac: Option<MacAddr>,
     ) -> Stack {
-        let (ready_tx, ready_rx) = mpsc::channel(MPSC_BUFFER_LEN);
         let (tuples_purge_tx, _tuples_purge_rx) = broadcast::channel(16);
         let shared = Arc::new(Shared {
             tuples: RwLock::new(HashMap::new()),
             tun: tun.clone(),
             listening: RwLock::new(HashSet::new()),
-            ready: ready_tx,
             tuples_purge: tuples_purge_tx.clone(),
         });
 
@@ -433,7 +428,6 @@ impl Stack {
             local_ip,
             local_ip6,
             local_mac: local_mac.unwrap_or(MacAddr::zero()),
-            ready: ready_rx,
             reader_task: t.into(),
         }
     }
@@ -446,11 +440,6 @@ impl Stack {
     /// Listens for incoming connections on the given `port`.
     pub fn listen(&mut self, port: u16) {
         assert!(self.shared.listening.write().unwrap().insert(port));
-    }
-
-    /// Accepts an incoming connection.
-    pub async fn accept(&mut self) -> Socket {
-        self.ready.recv().await.unwrap()
     }
 
     pub async fn alloc_established_socket(
