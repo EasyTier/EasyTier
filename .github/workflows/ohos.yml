@@ -59,12 +59,26 @@ jobs:
             pkg-config curl libgl1-mesa-dev expect
           sudo apt-get clean
 
+      - name: Get commit count for this tag
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          TOTAL_COUNT=$(git rev-list --count "$TAG_NAME")
+
+          PREV_TAG=$(git describe --tags --abbrev=0 "${TAG_NAME}^" 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            DIFF_COUNT=$TOTAL_COUNT
+          else
+            DIFF_COUNT=$(git rev-list --count "${PREV_TAG}..${TAG_NAME}")
+          fi
+
+          echo "TAG_COMMIT_TOTAL=$TOTAL_COUNT" >> $GITHUB_ENV
+          echo "TAG_COMMIT_DIFF=$DIFF_COUNT" >> $GITHUB_ENV
+
       - name: Get easytier version
         run: |
           EASYTIER_CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path easytier/Cargo.toml \
             | jq -r '.packages[0].version')
-          EASYTIER_GIT_HASH=$(git -C easytier rev-parse --short HEAD)
-          EASYTIER_VERSION="${EASYTIER_CARGO_VERSION}-${EASYTIER_GIT_HASH}"
+          EASYTIER_VERSION="${EASYTIER_CARGO_VERSION}-${TAG_COMMIT_DIFF}"
           echo "EASYTIER_VERSION=${EASYTIER_VERSION}" >> $GITHUB_ENV
           cd ./easytier-contrib/easytier-ohrs/package
           jq --arg v "$EASYTIER_VERSION" '.version = $v' oh-package.json5 > oh-package.tmp.json5
