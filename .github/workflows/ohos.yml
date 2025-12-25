@@ -59,12 +59,32 @@ jobs:
             pkg-config curl libgl1-mesa-dev expect
           sudo apt-get clean
 
+      - name: Count commits since last tag on upstream main
+        run: |
+          UPSTREAM_REPO="https://github.com/EasyTier/EasyTier.git"
+      
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || true
+          git fetch upstream --tags --force
+      
+          # 获取 upstream/main 最新提交
+          git fetch upstream main
+      
+          LAST_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo "")
+      
+          if [ -z "$LAST_TAG" ]; then
+            DIFF_COUNT=$(git rev-list --count upstream/main)
+          else
+            DIFF_COUNT=$(git rev-list --count "${LAST_TAG}..upstream/main")
+          fi
+      
+          echo "TAG_COMMIT_DIFF=$DIFF_COUNT"
+          echo "TAG_COMMIT_DIFF=$DIFF_COUNT" >> $GITHUB_ENV
+
       - name: Get easytier version
         run: |
           EASYTIER_CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path easytier/Cargo.toml \
             | jq -r '.packages[0].version')
-          EASYTIER_GIT_HASH=$(git -C easytier rev-parse --short HEAD)
-          EASYTIER_VERSION="${EASYTIER_CARGO_VERSION}-${EASYTIER_GIT_HASH}"
+          EASYTIER_VERSION="${EASYTIER_CARGO_VERSION}-${TAG_COMMIT_DIFF}"
           echo "EASYTIER_VERSION=${EASYTIER_VERSION}" >> $GITHUB_ENV
           cd ./easytier-contrib/easytier-ohrs/package
           jq --arg v "$EASYTIER_VERSION" '.version = $v' oh-package.json5 > oh-package.tmp.json5
