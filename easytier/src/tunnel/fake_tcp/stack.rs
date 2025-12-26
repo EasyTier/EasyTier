@@ -203,11 +203,6 @@ impl Socket {
         }
     }
 
-    pub async fn recv_bytes(&self) -> Option<Vec<u8>> {
-        let mut buf = [0u8; 2048];
-        self.recv(&mut buf).await.map(|size| buf[..size].to_vec())
-    }
-
     /// Attempt to receive a datagram from the other end.
     ///
     /// This method takes `&self`, and it can be called safely by multiple threads
@@ -215,7 +210,7 @@ impl Socket {
     ///
     /// A return of `None` means the TCP connection is broken
     /// and this socket must be closed.
-    pub async fn recv(&self, buf: &mut [u8]) -> Option<usize> {
+    pub async fn recv(&self, buf: &mut BytesMut) -> Option<usize> {
         tracing::trace!(
             "Socket recv called, local_addr: {:?}, remote_addr: {:?}",
             self.local_addr,
@@ -303,18 +298,7 @@ impl Socket {
                         continue;
                     }
 
-                    if payload.len() >= buf.len() {
-                        tracing::warn!(
-                            "Payload len {} > buf len {}, tcp: {:?}, payload: {:?}",
-                            payload.len(),
-                            buf.len(),
-                            tcp_packet,
-                            payload
-                        );
-                        continue;
-                    }
-
-                    buf[..payload.len()].copy_from_slice(payload);
+                    buf.extend_from_slice(payload);
 
                     return Some(payload.len());
                 }

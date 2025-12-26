@@ -362,22 +362,29 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
     }
 }
 
-use crate::tunnel::packet_def::{ZCPacket, ZCPacketType};
+use crate::tunnel::packet_def::{ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE};
 use crate::tunnel::{SinkError, SinkItem, StreamItem};
 use futures::{Sink, Stream};
 use std::task::{Context as TaskContext, Poll};
 
+type RecvFut = Pin<Box<dyn Future<Output = Option<(BytesMut, usize)>> + Send + Sync>>;
+
+enum FakeTcpStreamState {
+    ConsumingBuf(BytesMut),
+    PollFuture(RecvFut),
+    Closed,
+}
+
 struct FakeTcpStream {
     socket: Arc<stack::Socket>,
-    #[allow(clippy::type_complexity)]
-    recv_fut: Option<Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + Sync>>>,
+    state: FakeTcpStreamState,
 }
 
 impl FakeTcpStream {
     fn new(socket: Arc<stack::Socket>) -> Self {
         Self {
             socket,
-            recv_fut: None,
+            state: FakeTcpStreamState::ConsumingBuf(BytesMut::new()),
         }
     }
 }
@@ -387,27 +394,56 @@ impl Stream for FakeTcpStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         let s = self.get_mut();
-        if s.recv_fut.is_none() {
-            let socket = s.socket.clone();
-            s.recv_fut = Some(Box::pin(async move { socket.recv_bytes().await }));
-        }
+        loop {
+            match s.state {
+                FakeTcpStreamState::ConsumingBuf(mut buf) => {
+                    let buf_len = buf.len();
+                    // check peer manager header and split buf out
+                    let packet = ZCPacket::new_from_buf(buf, ZCPacketType::DummyTunnel);
+                    let mut buf = if let Some(hdr) = packet.peer_manager_header() {
+                        let payload_len = hdr.len.get() + PEER_MANAGER_HEADER_SIZE as u32;
+                        if packet.payload_offset() < buf_len
+                            && payload_len <= packet.payload_len() as u32
+                        {
+                            let mut buf = packet.inner();
+                            let new_inner = buf.split_to(payload_len as usize);
+                            s.state = FakeTcpStreamState::ConsumingBuf(new_inner);
+                            return Poll::Ready(Some(Ok(ZCPacket::new_from_buf(
+                                buf,
+                                ZCPacketType::DummyTunnel,
+                            ))));
+                        }
+                        packet.inner()
+                    } else {
+                        packet.inner()
+                    };
 
-        match s.recv_fut.as_mut().unwrap().as_mut().poll(cx) {
-            Poll::Ready(Some(data)) => {
-                let mut buf = BytesMut::new();
-                buf.extend_from_slice(&data);
-                let packet = ZCPacket::new_from_buf(buf, ZCPacketType::DummyTunnel);
+                    buf.truncate(0);
 
-                s.recv_fut = None;
-
-                Poll::Ready(Some(Ok(packet)))
+                    let socket = s.socket.clone();
+                    s.state = FakeTcpStreamState::PollFuture(Box::pin(async move {
+                        let ret = socket.recv(&mut buf).await;
+                        ret.map(|s| (buf, s))
+                    }));
+                }
+                FakeTcpStreamState::PollFuture(ref mut fut) => {
+                    match fut.as_mut().poll(cx) {
+                        Poll::Ready(Some((buf, sz))) => {
+                            s.state = FakeTcpStreamState::ConsumingBuf(buf);
+                        }
+                        Poll::Ready(None) => {
+                            // 连接关闭
+                            s.state = FakeTcpStreamState::Closed;
+                        }
+                        Poll::Pending => {
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                FakeTcpStreamState::Closed => {
+                    return Poll::Ready(None);
+                }
             }
-            Poll::Ready(None) => {
-                // 连接关闭
-                s.recv_fut = None;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
