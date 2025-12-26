@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::tunnel::fake_tcp::stack;
+use crate::use_global_var;
 
 const ETH_HDR_LEN: usize = 14;
 const ETH_TYPE_OFFSET: u32 = 12;
@@ -458,7 +459,7 @@ impl LinuxBpfTun {
 
         let worker = std::thread::spawn(move || {
             let mut buf = vec![0u8; 65536];
-            let mut stats_enabled = true;
+            let mut stats_enabled = use_global_var!(LINUX_BPF_ENABLE_STATS);
             let mut total_packets: u64 = 0;
             let mut total_drops: u64 = 0;
             let mut total_bytes: u64 = 0;
