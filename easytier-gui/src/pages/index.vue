@@ -4,6 +4,7 @@ import { type } from '@tauri-apps/plugin-os'
 
 import { appLogDir } from '@tauri-apps/api/path'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
