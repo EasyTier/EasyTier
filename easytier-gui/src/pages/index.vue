@@ -2,7 +2,7 @@
 
 import { type } from '@tauri-apps/plugin-os'
 
-import { appLogDir } from '@tauri-apps/api/path'
+import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
