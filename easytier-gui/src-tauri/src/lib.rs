@@ -1015,9 +1015,15 @@ pub fn run_gui() -> std::process::ExitCode {
     let app = builder
         .setup(|app| {
             // for logging config
-            let Ok(log_dir) = app.path().app_log_dir() else {
+            let log_dir = if cfg!(target_os = "android") {
+                app.path().external_cache_dir().map(|p| p.join("logs"))
+            } else {
+                app.path().app_log_dir()
+            };
+            let Ok(log_dir) = log_dir else {
                 return Ok(());
             };
+            std::fs::create_dir_all(&log_dir).ok();
             let config = LoggingConfigBuilder::default()
                 .file_logger(FileLoggerConfig {
                     dir: Some(log_dir.to_string_lossy().to_string()),
