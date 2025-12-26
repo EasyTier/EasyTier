@@ -1039,20 +1039,18 @@ pub fn run_gui() -> std::process::ExitCode {
     let app = builder
         .setup(|app| {
             // for logging config
-            // 从 App 获取 AppHandle
-            let app_handle = app.app_handle();
-            let Ok(log_dir) = get_log_dir(&app_handle) else {
+            let Ok(log_dir) = get_log_dir(&app.app_handle()) else {
                 return Ok(());
             };
             let config = LoggingConfigBuilder::default()
-                    .file_logger(FileLoggerConfig {
-                        dir: Some(log_dir.to_string_lossy().to_string()),
-                        level: None,
-                        file: None,
-                        size_mb: None,
-                        count: None,
-                    })
-                    .build()
+                .file_logger(FileLoggerConfig {
+                    dir: Some(log_dir.to_string_lossy().to_string()),
+                    level: None,
+                    file: None,
+                    size_mb: None,
+                    count: None,
+                })
+                .build()
                 .map_err(|e| e.to_string())?;
             let Ok(_) = utils::init_logger(&config, true) else {
                 return Ok(());
