@@ -425,6 +425,27 @@ async fn is_web_client_connected() -> Result<bool, String> {
     }
 }
 
+// 获取日志目录的辅助函数
+fn get_log_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    if cfg!(target_os = "android") {
+        // Android: cache_dir + logs 子目录
+        app.path().cache_dir().map(|p| p.join("logs"))
+    } else {
+        // 其他平台: 默认日志目录
+        app.path().app_log_dir()
+    }
+}
+
+#[tauri::command]
+async fn get_log_dir_pathapp: tauri::AppHandle) -> Result<String, String> {
+    if let Some(log_dir) = get_log_dir(&app) {
+        std::fs::create_dir_all(&log_dir).ok();
+        Ok(log_dir.to_string_lossy().to_string())
+    } else {
+        Err("Failed to get log directory".to_string())
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 fn toggle_window_visibility(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -1015,24 +1036,18 @@ pub fn run_gui() -> std::process::ExitCode {
     let app = builder
         .setup(|app| {
             // for logging config
-            let log_dir = if cfg!(target_os = "android") {
-                app.path().cache_dir().map(|p| p.join("logs"))
-            } else {
-                app.path().app_log_dir()
-            };
-            let Ok(log_dir) = log_dir else {
+            let Ok(log_dir) = get_log_dir(app) else {
                 return Ok(());
             };
-            std::fs::create_dir_all(&log_dir).ok();
             let config = LoggingConfigBuilder::default()
-                .file_logger(FileLoggerConfig {
-                    dir: Some(log_dir.to_string_lossy().to_string()),
-                    level: None,
-                    file: None,
-                    size_mb: None,
-                    count: None,
-                })
-                .build()
+                    .file_logger(FileLoggerConfig {
+                        dir: Some(log_dir.to_string_lossy().to_string()),
+                        level: None,
+                        file: None,
+                        size_mb: None,
+                        count: None,
+                    })
+                    .build()
                 .map_err(|e| e.to_string())?;
             let Ok(_) = utils::init_logger(&config, true) else {
                 return Ok(());
@@ -1085,6 +1100,7 @@ pub fn run_gui() -> std::process::ExitCode {
             is_client_running,
             init_web_client,
             is_web_client_connected,
+            get_log_dir_path,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]
