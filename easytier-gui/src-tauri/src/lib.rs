@@ -1016,7 +1016,7 @@ pub fn run_gui() -> std::process::ExitCode {
         .setup(|app| {
             // for logging config
             let log_dir = if cfg!(target_os = "android") {
-                app.path().external_cache_dir().map(|p| p.join("logs"))
+                app.path().cache_dir().map(|p| p.join("logs"))
             } else {
                 app.path().app_log_dir()
             };
