@@ -327,9 +327,13 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
 
         tracing::info!(?remote_addr, "FakeTcpTunnelConnector connecting");
 
-        socket.recv_bytes().await.ok_or(TunnelError::InternalError(
-            "Failed to recv bytes to establish connection".into(),
-        ))?;
+        let mut buf = BytesMut::new();
+        socket
+            .recv(&mut buf)
+            .await
+            .ok_or(TunnelError::InternalError(
+                "Failed to recv bytes to establish connection".into(),
+            ))?;
 
         tracing::info!(local_addr = ?socket.local_addr(), "FakeTcpTunnelConnector connected");
 
@@ -367,17 +371,24 @@ use crate::tunnel::{SinkError, SinkItem, StreamItem};
 use futures::{Sink, Stream};
 use std::task::{Context as TaskContext, Poll};
 
+type RecvFut = Pin<Box<dyn Future<Output = Option<(BytesMut, usize)>> + Send + Sync>>;
+
+enum FakeTcpStreamState {
+    ConsumingBuf(BytesMut),
+    PollFuture(RecvFut),
+    Closed,
+}
+
 struct FakeTcpStream {
     socket: Arc<stack::Socket>,
-    #[allow(clippy::type_complexity)]
-    recv_fut: Option<Pin<Box<dyn Future<Output = Option<Vec<u8>>> + Send + Sync>>>,
+    state: FakeTcpStreamState,
 }
 
 impl FakeTcpStream {
     fn new(socket: Arc<stack::Socket>) -> Self {
         Self {
             socket,
-            recv_fut: None,
+            state: FakeTcpStreamState::ConsumingBuf(BytesMut::new()),
         }
     }
 }
@@ -387,27 +398,51 @@ impl Stream for FakeTcpStream {
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
         let s = self.get_mut();
-        if s.recv_fut.is_none() {
-            let socket = s.socket.clone();
-            s.recv_fut = Some(Box::pin(async move { socket.recv_bytes().await }));
-        }
+        loop {
+            let state = std::mem::replace(&mut s.state, FakeTcpStreamState::Closed);
+            match state {
+                FakeTcpStreamState::ConsumingBuf(buf) => {
+                    let buf_len = buf.len();
+                    // check peer manager header and split buf out
+                    let packet = ZCPacket::new_from_buf(buf, ZCPacketType::TCP);
+                    if let Some(tcp_hdr) = packet.tcp_tunnel_header() {
+                        let expected_payload_len = tcp_hdr.len.get() as usize;
+                        if expected_payload_len <= buf_len && expected_payload_len != 0 {
+                            let mut buf = packet.inner();
+                            let new_inner = buf.split_to(expected_payload_len);
+                            s.state = FakeTcpStreamState::ConsumingBuf(buf);
+                            return Poll::Ready(Some(Ok(ZCPacket::new_from_buf(
+                                new_inner,
+                                ZCPacketType::TCP,
+                            ))));
+                        }
+                    }
 
-        match s.recv_fut.as_mut().unwrap().as_mut().poll(cx) {
-            Poll::Ready(Some(data)) => {
-                let mut buf = BytesMut::new();
-                buf.extend_from_slice(&data);
-                let packet = ZCPacket::new_from_buf(buf, ZCPacketType::DummyTunnel);
+                    let mut buf = packet.inner();
+                    buf.truncate(0);
 
-                s.recv_fut = None;
-
-                Poll::Ready(Some(Ok(packet)))
+                    let socket = s.socket.clone();
+                    s.state = FakeTcpStreamState::PollFuture(Box::pin(async move {
+                        let ret = socket.recv(&mut buf).await;
+                        ret.map(|s| (buf, s))
+                    }));
+                }
+                FakeTcpStreamState::PollFuture(mut fut) => match fut.as_mut().poll(cx) {
+                    Poll::Ready(Some((buf, _sz))) => {
+                        s.state = FakeTcpStreamState::ConsumingBuf(buf);
+                    }
+                    Poll::Ready(None) => {
+                        s.state = FakeTcpStreamState::Closed;
+                    }
+                    Poll::Pending => {
+                        s.state = FakeTcpStreamState::PollFuture(fut);
+                        return Poll::Pending;
+                    }
+                },
+                FakeTcpStreamState::Closed => {
+                    return Poll::Ready(None);
+                }
             }
-            Poll::Ready(None) => {
-                // 连接关闭
-                s.recv_fut = None;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -435,10 +470,10 @@ impl Sink<SinkItem> for FakeTcpSink {
     fn start_send(self: Pin<&mut Self>, item: SinkItem) -> Result<(), Self::Error> {
         // We need to send the packet as bytes
         // The item is ZCPacket, which has into_bytes() method
-        let bytes = item.convert_type(ZCPacketType::DummyTunnel).into_bytes();
-
-        // Let's just spawn for now as a simple implementation, noting the limitation.
-        self.socket.try_send(&bytes);
+        let mut packet = item.convert_type(ZCPacketType::TCP);
+        let len = packet.buf_len();
+        packet.mut_tcp_tunnel_header().unwrap().len.set(len as u32);
+        self.socket.try_send(&packet.into_bytes());
 
         Ok(())
     }

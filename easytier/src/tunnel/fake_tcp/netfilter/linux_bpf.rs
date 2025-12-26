@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 use crate::tunnel::fake_tcp::stack;
@@ -36,6 +37,11 @@ const BPF_JA: u16 = 0x00;
 const BPF_JEQ: u16 = 0x10;
 
 const BPF_K: u16 = 0x00;
+
+const SOL_PACKET: i32 = 263;
+const PACKET_STATISTICS: i32 = 6;
+
+const DEFAULT_RCVBUF_BYTES: i32 = 32 * 1024 * 1024;
 
 fn stmt(code: u16, k: u32) -> libc::sock_filter {
     libc::sock_filter {
@@ -303,6 +309,63 @@ fn build_tcp_filter(
     b.finish()
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct PacketSocketStats {
+    tp_packets: u32,
+    tp_drops: u32,
+}
+
+fn set_socket_rcvbuf(fd: i32, desired_bytes: i32) -> io::Result<i32> {
+    let ret = unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &desired_bytes as *const _ as *const libc::c_void,
+            mem::size_of_val(&desired_bytes) as u32,
+        )
+    };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut actual: i32 = 0;
+    let mut len = mem::size_of_val(&actual) as libc::socklen_t;
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &mut actual as *mut _ as *mut libc::c_void,
+            &mut len as *mut _,
+        )
+    };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(actual)
+}
+
+fn read_packet_socket_stats(fd: i32) -> io::Result<PacketSocketStats> {
+    let mut stats = PacketSocketStats::default();
+    let mut len = mem::size_of_val(&stats) as libc::socklen_t;
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            SOL_PACKET,
+            PACKET_STATISTICS,
+            &mut stats as *mut _ as *mut libc::c_void,
+            &mut len as *mut _,
+        )
+    };
+    if ret != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(stats)
+}
+
 pub struct LinuxBpfTun {
     fd: OwnedFd,
     ifindex: i32,
@@ -350,6 +413,8 @@ impl LinuxBpfTun {
             return Err(io::Error::last_os_error());
         }
 
+        let actual_rcvbuf = set_socket_rcvbuf(fd.as_raw_fd(), DEFAULT_RCVBUF_BYTES)?;
+
         let filter = build_tcp_filter(src_addr, dst_addr)?;
         let mut prog = libc::sock_fprog {
             len: filter
@@ -389,9 +454,16 @@ impl LinuxBpfTun {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let stop_clone = stop.clone();
         let read_fd = fd.as_raw_fd();
+        let interface_name_for_worker = interface_name.to_string();
 
         let worker = std::thread::spawn(move || {
             let mut buf = vec![0u8; 65536];
+            let mut stats_enabled = true;
+            let mut total_packets: u64 = 0;
+            let mut total_drops: u64 = 0;
+            let mut total_bytes: u64 = 0;
+            let mut dropped_by_queue_full: u64 = 0;
+            let mut last_stats_log = Instant::now();
             while !stop_clone.load(AtomicOrdering::Relaxed) {
                 let n = unsafe {
                     libc::recv(read_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0)
@@ -410,8 +482,60 @@ impl LinuxBpfTun {
                     continue;
                 }
                 let data = buf[..(n as usize)].to_vec();
-                if tx.blocking_send(data).is_err() {
-                    break;
+                total_bytes = total_bytes.wrapping_add(n as u64);
+                match tx.try_send(data) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                        dropped_by_queue_full = dropped_by_queue_full.wrapping_add(1);
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
+                }
+
+                if last_stats_log.elapsed() >= Duration::from_secs(1) {
+                    if stats_enabled {
+                        match read_packet_socket_stats(read_fd) {
+                            Ok(delta) => {
+                                total_packets = total_packets.wrapping_add(delta.tp_packets as u64);
+                                total_drops = total_drops.wrapping_add(delta.tp_drops as u64);
+
+                                let denom =
+                                    (delta.tp_packets as u64).saturating_add(delta.tp_drops as u64);
+                                let drop_rate = if denom == 0 {
+                                    0.0
+                                } else {
+                                    (delta.tp_drops as f64) / (denom as f64)
+                                };
+
+                                tracing::debug!(
+                                    "{}: delta_packets = {}, delta_drops = {}, delta_drop_rate = {}, total_packets = {}, total_drops = {}, total_bytes = {}, dropped_by_queue_full = {}",
+                                    interface_name_for_worker,
+                                    delta.tp_packets,
+                                    delta.tp_drops,
+                                    drop_rate,
+                                    total_packets,
+                                    total_drops,
+                                    total_bytes,
+                                    dropped_by_queue_full,
+                                );
+                            }
+                            Err(e) => {
+                                stats_enabled = false;
+                                tracing::warn!(
+                                    ?e,
+                                    interface_name_for_worker,
+                                    "LinuxBpfTun failed to read PACKET_STATISTICS, stats disabled"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::debug!(
+                            "{}: total_bytes = {}, dropped_by_queue_full = {}",
+                            interface_name_for_worker,
+                            total_bytes,
+                            dropped_by_queue_full,
+                        );
+                    }
+                    last_stats_log = Instant::now();
                 }
             }
         });
@@ -419,6 +543,8 @@ impl LinuxBpfTun {
         tracing::info!(
             interface_name,
             ifindex,
+            desired_rcvbuf = DEFAULT_RCVBUF_BYTES,
+            actual_rcvbuf,
             "LinuxBpfTun created with filter {:?}",
             filter
         );
