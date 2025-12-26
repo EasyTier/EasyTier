@@ -426,7 +426,7 @@ async fn is_web_client_connected() -> Result<bool, String> {
 }
 
 // 获取日志目录的辅助函数
-fn get_log_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+fn get_log_dir(app: &tauri::App) -> Result<std::path::PathBuf, tauri::Error> {
     if cfg!(target_os = "android") {
         // Android: cache_dir + logs 子目录
         app.path().cache_dir().map(|p| p.join("logs"))
@@ -438,11 +438,14 @@ fn get_log_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 
 #[tauri::command]
 async fn get_log_dir_path(app: tauri::AppHandle) -> Result<String, String> {
-    if let Some(log_dir) = get_log_dir(&app) {
-        std::fs::create_dir_all(&log_dir).ok();
-        Ok(log_dir.to_string_lossy().to_string())
-    } else {
-        Err("Failed to get log directory".to_string())
+    match get_log_dir(&app) {
+        Ok(log_dir) => {
+            std::fs::create_dir_all(&log_dir).ok();
+            Ok(log_dir.to_string_lossy().to_string())
+        },
+        Err(e) => {
+            Err(format!("Failed to get log directory: {}", e))
+        }
     }
 }
 
