@@ -232,8 +232,8 @@ let current_log_level = 'off'
 
 const log_menu = ref()
 // 从后端获取正确的日志路径
-async function getLogDirPath() {
-  return await invoke('get_log_dir_path')
+async function getLogDirPath(): Promise<string> {
+  return await invoke<string>('get_log_dir_path')
 }
 
 const log_menu_items_popup: Ref<MenuItem[]> = ref([

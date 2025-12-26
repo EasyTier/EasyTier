@@ -437,7 +437,7 @@ fn get_log_dir(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 }
 
 #[tauri::command]
-async fn get_log_dir_pathapp: tauri::AppHandle) -> Result<String, String> {
+async fn get_log_dir_path(app: tauri::AppHandle) -> Result<String, String> {
     if let Some(log_dir) = get_log_dir(&app) {
         std::fs::create_dir_all(&log_dir).ok();
         Ok(log_dir.to_string_lossy().to_string())
