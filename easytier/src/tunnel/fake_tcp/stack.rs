@@ -54,14 +54,12 @@ use std::sync::{
     Arc, RwLock,
 };
 use tokio::sync::broadcast;
-use tokio::sync::mpsc;
 use tokio::time;
 use tracing::{info, trace, warn};
 
 const TIMEOUT: time::Duration = time::Duration::from_secs(1);
 const RETRIES: usize = 6;
 const MPMC_BUFFER_LEN: usize = 512;
-const MPSC_BUFFER_LEN: usize = 128;
 const MAX_UNACKED_LEN: u32 = 128 * 1024 * 1024; // 128MB
 
 #[async_trait::async_trait]
@@ -90,7 +88,6 @@ struct Shared {
     tuples: RwLock<HashMap<AddrTuple, flume::Sender<Bytes>>>,
     listening: RwLock<HashSet<u16>>,
     tun: Arc<dyn Tun>,
-    ready: mpsc::Sender<Socket>,
     tuples_purge: broadcast::Sender<AddrTuple>,
 }
 
@@ -99,7 +96,6 @@ pub struct Stack {
     local_ip: Ipv4Addr,
     local_ip6: Option<Ipv6Addr>,
     local_mac: MacAddr,
-    ready: mpsc::Receiver<Socket>,
     reader_task: ScopedTask<()>,
 }
 
@@ -206,11 +202,6 @@ impl Socket {
         }
     }
 
-    pub async fn recv_bytes(&self) -> Option<Vec<u8>> {
-        let mut buf = [0u8; 2048];
-        self.recv(&mut buf).await.map(|size| buf[..size].to_vec())
-    }
-
     /// Attempt to receive a datagram from the other end.
     ///
     /// This method takes `&self`, and it can be called safely by multiple threads
@@ -218,7 +209,7 @@ impl Socket {
     ///
     /// A return of `None` means the TCP connection is broken
     /// and this socket must be closed.
-    pub async fn recv(&self, buf: &mut [u8]) -> Option<usize> {
+    pub async fn recv(&self, buf: &mut BytesMut) -> Option<usize> {
         tracing::trace!(
             "Socket recv called, local_addr: {:?}, remote_addr: {:?}",
             self.local_addr,
@@ -306,18 +297,7 @@ impl Socket {
                         continue;
                     }
 
-                    if payload.len() >= buf.len() {
-                        tracing::warn!(
-                            "Payload len {} > buf len {}, tcp: {:?}, payload: {:?}",
-                            payload.len(),
-                            buf.len(),
-                            tcp_packet,
-                            payload
-                        );
-                        continue;
-                    }
-
-                    buf[..payload.len()].copy_from_slice(payload);
+                    buf.extend_from_slice(payload);
 
                     return Some(payload.len());
                 }
@@ -412,13 +392,11 @@ impl Stack {
         local_ip6: Option<Ipv6Addr>,
         local_mac: Option<MacAddr>,
     ) -> Stack {
-        let (ready_tx, ready_rx) = mpsc::channel(MPSC_BUFFER_LEN);
         let (tuples_purge_tx, _tuples_purge_rx) = broadcast::channel(16);
         let shared = Arc::new(Shared {
             tuples: RwLock::new(HashMap::new()),
             tun: tun.clone(),
             listening: RwLock::new(HashSet::new()),
-            ready: ready_tx,
             tuples_purge: tuples_purge_tx.clone(),
         });
 
@@ -433,7 +411,6 @@ impl Stack {
             local_ip,
             local_ip6,
             local_mac: local_mac.unwrap_or(MacAddr::zero()),
-            ready: ready_rx,
             reader_task: t.into(),
         }
     }
@@ -446,11 +423,6 @@ impl Stack {
     /// Listens for incoming connections on the given `port`.
     pub fn listen(&mut self, port: u16) {
         assert!(self.shared.listening.write().unwrap().insert(port));
-    }
-
-    /// Accepts an incoming connection.
-    pub async fn accept(&mut self) -> Socket {
-        self.ready.recv().await.unwrap()
     }
 
     pub async fn alloc_established_socket(
