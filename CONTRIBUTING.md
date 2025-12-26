@@ -26,7 +26,7 @@ Thank you for your interest in contributing to EasyTier! This document provides 
 #### Required Tools
 - Node.js v21 or higher
 - pnpm v9 or higher
-- Rust toolchain (version 1.89)
+- Rust toolchain (version 1.92)
 - LLVM and Clang
 - Protoc (Protocol Buffers compiler)
 
@@ -79,8 +79,8 @@ sudo apt install -y bridge-utils
 2. Install dependencies:
    ```bash
    # Install Rust toolchain
-   rustup install 1.89
-   rustup default 1.89
+   rustup install 1.92
+   rustup default 1.92
 
    # Install project dependencies
    pnpm -r install
