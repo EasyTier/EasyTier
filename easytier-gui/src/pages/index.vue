@@ -255,6 +255,7 @@ const log_menu_items_popup: Ref<MenuItem[]> = ref([
       // console.log('open log dir', await getLogDirPath())
       await open(await getLogDirPath())
     },
+    visible: () => type() !== 'android',
   },
   {
     label: () => t('logging_copy_dir'),
