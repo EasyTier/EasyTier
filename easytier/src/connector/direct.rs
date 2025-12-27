@@ -35,7 +35,6 @@ use crate::{
     use_global_var,
 };
 
-use crate::proto::api::instance::PeerConnInfo;
 use anyhow::Context;
 use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
