@@ -425,6 +425,28 @@ async fn is_web_client_connected() -> Result<bool, String> {
     }
 }
 
+// 获取日志目录的辅助函数
+fn get_log_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, tauri::Error> {
+    if cfg!(target_os = "android") {
+        // Android: cache_dir + logs 子目录
+        app.path().cache_dir().map(|p| p.join("logs"))
+    } else {
+        // 其他平台: 默认日志目录
+        app.path().app_log_dir()
+    }
+}
+
+#[tauri::command]
+async fn get_log_dir_path(app: tauri::AppHandle) -> Result<String, String> {
+    match get_log_dir(&app) {
+        Ok(log_dir) => {
+            std::fs::create_dir_all(&log_dir).ok();
+            Ok(log_dir.to_string_lossy().to_string())
+        }
+        Err(e) => Err(format!("Failed to get log directory: {}", e)),
+    }
+}
+
 #[cfg(not(target_os = "android"))]
 fn toggle_window_visibility(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
@@ -1015,7 +1037,7 @@ pub fn run_gui() -> std::process::ExitCode {
     let app = builder
         .setup(|app| {
             // for logging config
-            let Ok(log_dir) = app.path().app_log_dir() else {
+            let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
             let config = LoggingConfigBuilder::default()
@@ -1079,6 +1101,7 @@ pub fn run_gui() -> std::process::ExitCode {
             is_client_running,
             init_web_client,
             is_web_client_connected,
+            get_log_dir_path,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]

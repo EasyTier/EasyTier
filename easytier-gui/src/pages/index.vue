@@ -2,7 +2,7 @@
 
 import { type } from '@tauri-apps/plugin-os'
 
-import { appLogDir } from '@tauri-apps/api/path'
+import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
 import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
@@ -232,6 +232,11 @@ onMounted(async () => {
 let current_log_level = 'off'
 
 const log_menu = ref()
+// 从后端获取正确的日志路径
+async function getLogDirPath(): Promise<string> {
+  return await invoke<string>('get_log_dir_path')
+}
+
 const log_menu_items_popup: Ref<MenuItem[]> = ref([
   ...['off', 'warn', 'info', 'debug', 'trace'].map(level => ({
     label: () => t(`logging_level_${level}`) + (current_log_level === level ? ' ✓' : ''),
@@ -247,15 +252,15 @@ const log_menu_items_popup: Ref<MenuItem[]> = ref([
     label: () => t('logging_open_dir'),
     icon: 'pi pi-folder-open',
     command: async () => {
-      // console.log('open log dir', await appLogDir())
-      await open(await appLogDir())
+      // console.log('open log dir', await getLogDirPath())
+      await open(await getLogDirPath())
     },
   },
   {
     label: () => t('logging_copy_dir'),
     icon: 'pi pi-tablet',
     command: async () => {
-      await writeText(await appLogDir())
+      await writeText(await getLogDirPath())
     },
   },
 ])
