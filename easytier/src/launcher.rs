@@ -13,6 +13,7 @@ use crate::{
     },
     instance::instance::Instance,
     proto::api::instance::list_peer_route_pair,
+    utils::process_url_port,
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
@@ -518,11 +519,10 @@ impl NetworkConfig {
         {
             NetworkingMethod::PublicServer => {
                 let public_server_url = self.public_server_url.clone().unwrap_or_default();
-                cfg.set_peers(vec![PeerConfig {
-                    uri: public_server_url.parse().with_context(|| {
-                        format!("failed to parse public server uri: {}", public_server_url)
-                    })?,
-                }]);
+                let uri = process_url_port(&public_server_url).with_context(|| {
+                    format!("failed to parse public server uri: {}", public_server_url)
+                })?;
+                cfg.set_peers(vec![PeerConfig { uri }]);
             }
             NetworkingMethod::Manual => {
                 let mut peers = vec![];
@@ -530,11 +530,9 @@ impl NetworkConfig {
                     if peer_url.is_empty() {
                         continue;
                     }
-                    peers.push(PeerConfig {
-                        uri: peer_url
-                            .parse()
-                            .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
-                    });
+                    let uri = process_url_port(peer_url)
+                        .with_context(|| format!("failed to parse peer uri: {}", peer_url))?;
+                    peers.push(PeerConfig { uri });
                 }
 
                 cfg.set_peers(peers);
@@ -547,11 +545,9 @@ impl NetworkConfig {
             if listener_url.is_empty() {
                 continue;
             }
-            listener_urls.push(
-                listener_url
-                    .parse()
-                    .with_context(|| format!("failed to parse listener uri: {}", listener_url))?,
-            );
+            let uri = process_url_port(listener_url)
+                .with_context(|| format!("failed to parse listener uri: {}", listener_url))?;
+            listener_urls.push(uri);
         }
         cfg.set_listeners(listener_urls);
 
@@ -645,15 +641,9 @@ impl NetworkConfig {
                 self.mapped_listeners
                     .iter()
                     .map(|s| {
-                        s.parse()
+                        crate::utils::process_url_port(s)
                             .with_context(|| format!("mapped listener is not a valid url: {}", s))
                             .unwrap()
-                    })
-                    .map(|s: url::Url| {
-                        if s.port().is_none() {
-                            panic!("mapped listener port is missing: {}", s);
-                        }
-                        s
                     })
                     .collect(),
             ));

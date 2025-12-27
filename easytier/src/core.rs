@@ -22,7 +22,7 @@ use crate::{
     proto::common::CompressionAlgoPb,
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
-    utils::{init_logger, setup_panic_handler},
+    utils::{init_logger, process_url_port, setup_panic_handler},
     web_client,
 };
 use anyhow::Context;
@@ -657,44 +657,47 @@ impl Cli {
             return Ok(vec![]);
         }
 
-        let origin_listeners = listeners;
-        let mut listeners: Vec<String> = Vec::new();
-        if origin_listeners.len() == 1 {
-            if let Ok(port) = origin_listeners[0].parse::<u16>() {
+        if listeners.len() == 1 {
+            if let Ok(port) = listeners[0].parse::<u16>() {
+                let mut result = Vec::new();
                 for (proto, offset) in PROTO_PORT_OFFSET {
-                    listeners.push(format!("{}://0.0.0.0:{}", proto, port + *offset));
+                    let url_str = format!("{}://0.0.0.0:{}", proto, port + *offset);
+                    let url = crate::utils::process_url_port(&url_str)
+                        .with_context(|| format!("failed to parse listener uri: {}", url_str))?;
+                    result.push(url.to_string());
                 }
-                return Ok(listeners);
+                return Ok(result);
             }
         }
 
-        for l in &origin_listeners {
-            let proto_port: Vec<&str> = l.split(':').collect();
-            if proto_port.len() > 2 {
-                if let Ok(url) = l.parse::<url::Url>() {
-                    listeners.push(url.to_string());
-                } else {
-                    panic!("failed to parse listener: {}", l);
-                }
+        let mut result = Vec::new();
+        for l in &listeners {
+            if l.contains(":") && l.split(":").count() > 2 {
+                let url = crate::utils::process_url_port(l)
+                    .with_context(|| format!("failed to parse listener uri: {}", l))?;
+                result.push(url.to_string());
             } else {
-                let Some((proto, offset)) = PROTO_PORT_OFFSET
+                let parts: Vec<&str> = l.split(":").collect();
+                let proto = parts[0];
+                let (_, offset) = PROTO_PORT_OFFSET
                     .iter()
-                    .find(|(proto, _)| *proto == proto_port[0])
-                else {
-                    return Err(anyhow::anyhow!("unknown protocol: {}", proto_port[0]));
-                };
+                    .find(|(p, _)| *p == proto)
+                    .ok_or_else(|| anyhow::anyhow!("unknown protocol: {}", proto))?;
 
-                let port = if proto_port.len() == 2 {
-                    proto_port[1].parse::<u16>().unwrap()
+                let port = if parts.len() == 2 {
+                    parts[1].parse::<u16>()?
                 } else {
                     11010 + offset
                 };
 
-                listeners.push(format!("{}://0.0.0.0:{}", proto, port));
+                let url_str = format!("{}://0.0.0.0:{}", proto, port);
+                let url = crate::utils::process_url_port(&url_str)
+                    .with_context(|| format!("failed to parse listener uri: {}", url_str))?;
+                result.push(url.to_string());
             }
         }
 
-        Ok(listeners)
+        Ok(result)
     }
 }
 
@@ -748,11 +751,9 @@ impl NetworkOptions {
             let mut peers = cfg.get_peers();
             peers.reserve(peers.len() + self.peers.len());
             for p in &self.peers {
-                peers.push(PeerConfig {
-                    uri: p
-                        .parse()
-                        .with_context(|| format!("failed to parse peer uri: {}", p))?,
-                });
+                let uri = process_url_port(p)
+                    .with_context(|| format!("failed to parse peer uri: {}", p))?;
+                peers.push(PeerConfig { uri });
             }
             cfg.set_peers(peers);
         }
@@ -779,7 +780,7 @@ impl NetworkOptions {
                 self.mapped_listeners
                     .iter()
                     .map(|s| {
-                        s.parse()
+                        crate::utils::process_url_port(s)
                             .with_context(|| format!("mapped listener is not a valid url: {}", s))
                             .unwrap()
                     })
@@ -808,11 +809,10 @@ impl NetworkOptions {
 
         if let Some(external_nodes) = self.external_node.as_ref() {
             let mut old_peers = cfg.get_peers();
-            old_peers.push(PeerConfig {
-                uri: external_nodes.parse().with_context(|| {
-                    format!("failed to parse external node uri: {}", external_nodes)
-                })?,
-            });
+            let uri = process_url_port(external_nodes).with_context(|| {
+                format!("failed to parse external node uri: {}", external_nodes)
+            })?;
+            old_peers.push(PeerConfig { uri });
             cfg.set_peers(old_peers);
         }
 

@@ -5,6 +5,7 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{
     layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer, Registry,
 };
+use url::Url;
 
 use crate::common::{
     config::LoggingConfigLoader, get_logger_timer_rfc3339, tracing_rolling_appender::*,
@@ -259,6 +260,32 @@ pub fn weak_upgrade<T>(weak: &std::sync::Weak<T>) -> anyhow::Result<std::sync::A
         .ok_or_else(|| anyhow::anyhow!("{} not available", std::any::type_name::<T>()))
 }
 
+/// 处理URL中的特殊端口
+/// 如果协议是ws且端口号是80，或者协议是wss且端口号是443，就把端口改成0
+/// 必须在解析前检查原始字符串，因为解析后默认端口会被修剪
+pub fn process_url_port(url_str: &str) -> Result<Url, anyhow::Error> {
+    // 检查ws协议的80端口或wss协议的443端口
+    let use_port_zero = if let Some(host_part) = url_str.strip_prefix("ws://") {
+        host_part.split('/').next().unwrap_or("").ends_with(":80")
+    } else if let Some(host_part) = url_str.strip_prefix("wss://") {
+        host_part.split('/').next().unwrap_or("").ends_with(":443")
+    } else {
+        false
+    };
+
+    // 解析URL
+    let mut url = url_str
+        .parse::<Url>()
+        .with_context(|| format!("failed to parse uri: {}", url_str))?;
+
+    // 如果需要，将端口设置为0（unwrap安全，因为URL已成功解析）
+    if use_port_zero {
+        url.set_port(Some(0)).unwrap();
+    }
+
+    Ok(url)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::common::config::{self};
@@ -273,5 +300,178 @@ mod tests {
         s.unwrap().send(LevelFilter::DEBUG.to_string()).unwrap();
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         tracing::debug!("test display debug");
+    }
+
+    // 辅助函数：测试URL端口处理
+    fn test_url_port_helper(
+        url_str: &str,
+        expected_scheme: &str,
+        expected_host: Option<&str>,
+        expected_port: Option<u16>,
+        expected_path: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let url = process_url_port(url_str)?;
+        assert_eq!(
+            url.scheme(),
+            expected_scheme,
+            "Scheme mismatch for {}",
+            url_str
+        );
+        assert_eq!(
+            url.host_str(),
+            expected_host,
+            "Host mismatch for {}",
+            url_str
+        );
+        assert_eq!(url.port(), expected_port, "Port mismatch for {}", url_str);
+        if let Some(expected_path) = expected_path {
+            assert_eq!(url.path(), expected_path, "Path mismatch for {}", url_str);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_url_port() -> anyhow::Result<()> {
+        // 核心功能测试
+        test_url_port_helper(
+            "ws://example.com:80",
+            "ws",
+            Some("example.com"),
+            Some(0),
+            None,
+        )?;
+        test_url_port_helper(
+            "wss://example.com:443",
+            "wss",
+            Some("example.com"),
+            Some(0),
+            None,
+        )?;
+
+        // 带路径的情况
+        test_url_port_helper(
+            "ws://example.com:80/path",
+            "ws",
+            Some("example.com"),
+            Some(0),
+            Some("/path"),
+        )?;
+        test_url_port_helper(
+            "ws://example.com:80/path:80",
+            "ws",
+            Some("example.com"),
+            Some(0),
+            Some("/path:80"),
+        )?;
+        test_url_port_helper(
+            "wss://example.com:443/path:443",
+            "wss",
+            Some("example.com"),
+            Some(0),
+            Some("/path:443"),
+        )?;
+        test_url_port_helper(
+            "ws://example.com:80//double-slash/path",
+            "ws",
+            Some("example.com"),
+            Some(0),
+            Some("//double-slash/path"),
+        )?;
+        test_url_port_helper(
+            "wss://example.com:443//double-slash/path",
+            "wss",
+            Some("example.com"),
+            Some(0),
+            Some("//double-slash/path"),
+        )?;
+        test_url_port_helper(
+            "wss://example.com:443/",
+            "wss",
+            Some("example.com"),
+            Some(0),
+            Some("/"),
+        )?;
+
+        // 非标准端口保持不变
+        test_url_port_helper(
+            "ws://example.com:8080/path",
+            "ws",
+            Some("example.com"),
+            Some(8080),
+            Some("/path"),
+        )?;
+
+        // 其他协议保持不变
+        test_url_port_helper(
+            "tcp://example.com:80/path",
+            "tcp",
+            Some("example.com"),
+            Some(80),
+            Some("/path"),
+        )?;
+
+        // 无端口情况保持不变
+        test_url_port_helper(
+            "ws://example.com/path",
+            "ws",
+            Some("example.com"),
+            None,
+            Some("/path"),
+        )?;
+        test_url_port_helper(
+            "wss://example.com/path",
+            "wss",
+            Some("example.com"),
+            None,
+            Some("/path"),
+        )?;
+
+        // IPv6地址测试
+        test_url_port_helper(
+            "ws://[2001:80::80]",
+            "ws",
+            Some("[2001:80::80]"),
+            None,
+            None,
+        )?;
+        test_url_port_helper(
+            "ws://[2001:80::80]:80",
+            "ws",
+            Some("[2001:80::80]"),
+            Some(0),
+            None,
+        )?;
+        test_url_port_helper(
+            "wss://[2001::443]:443/path",
+            "wss",
+            Some("[2001::443]"),
+            Some(0),
+            Some("/path"),
+        )?;
+        test_url_port_helper(
+            "wss://[2001:443::443]/path",
+            "wss",
+            Some("[2001:443::443]"),
+            None,
+            Some("/path"),
+        )?;
+
+        // 路径中包含80的情况
+        test_url_port_helper(
+            "ws://example.com/path:80/",
+            "ws",
+            Some("example.com"),
+            None,
+            Some("/path:80/"),
+        )?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_process_url_port_invalid_url() {
+        let url_str = "invalid-url";
+        let result = process_url_port(url_str);
+        assert!(result.is_err(), "Invalid URL should return error");
     }
 }
