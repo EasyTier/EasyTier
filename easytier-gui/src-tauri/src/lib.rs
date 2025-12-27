@@ -442,10 +442,8 @@ async fn get_log_dir_path(app: tauri::AppHandle) -> Result<String, String> {
         Ok(log_dir) => {
             std::fs::create_dir_all(&log_dir).ok();
             Ok(log_dir.to_string_lossy().to_string())
-        },
-        Err(e) => {
-            Err(format!("Failed to get log directory: {}", e))
         }
+        Err(e) => Err(format!("Failed to get log directory: {}", e)),
     }
 }
 
@@ -1039,7 +1037,7 @@ pub fn run_gui() -> std::process::ExitCode {
     let app = builder
         .setup(|app| {
             // for logging config
-            let Ok(log_dir) = get_log_dir(&app.app_handle()) else {
+            let Ok(log_dir) = get_log_dir(app.app_handle()) else {
                 return Ok(());
             };
             let config = LoggingConfigBuilder::default()
