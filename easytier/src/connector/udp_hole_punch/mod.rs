@@ -14,7 +14,6 @@ use tokio::{sync::Mutex, task::JoinHandle};
 
 use crate::{
     common::{stun::StunInfoCollectorTrait, PeerId},
-    connector::direct::PeerManagerForDirectConnector,
     peers::{
         peer_manager::PeerManager,
         peer_task::{PeerTaskLauncher, PeerTaskManager},
@@ -461,8 +460,7 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            let conns = data.peer_mgr.list_peer_conns(peer_id).await;
-            if conns.is_some() && !conns.unwrap().is_empty() {
+            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
                 continue;
             }
 

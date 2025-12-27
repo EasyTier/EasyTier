@@ -209,6 +209,14 @@ service UdpHolePunchRpc {
       returns (SendPunchPacketBothEasySymResponse);
 }
 
+message TcpHolePunchRequest { common.SocketAddr connector_mapped_addr = 1; }
+
+message TcpHolePunchResponse { common.SocketAddr listener_mapped_addr = 1; }
+
+service TcpHolePunchRpc {
+  rpc ExchangeMappedAddr(TcpHolePunchRequest) returns (TcpHolePunchResponse);
+}
+
 message DirectConnectedPeerInfo { int32 latency_ms = 1; }
 
 message PeerInfoForGlobalMap {
