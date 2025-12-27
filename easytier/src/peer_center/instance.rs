@@ -545,11 +545,12 @@ mod tests {
 
             println!("rpc service ready, {:#?}", rpc_service.global_peer_map);
 
-            if digest.is_none() {
-                digest = Some(rpc_service.global_peer_map_digest.load());
-            } else {
+            if let Some(prev) = digest {
                 let v = rpc_service.global_peer_map_digest.load();
-                assert_eq!(digest.unwrap(), v);
+                assert_eq!(prev, v);
+                digest = Some(prev);
+            } else {
+                digest = Some(rpc_service.global_peer_map_digest.load());
             }
 
             let mut route_cost = pc.get_cost_calculator();

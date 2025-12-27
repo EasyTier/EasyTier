@@ -20,6 +20,7 @@ use crate::{
 
 pub mod direct;
 pub mod manual;
+pub mod tcp_hole_punch;
 pub mod udp_hole_punch;
 
 pub mod dns_connector;

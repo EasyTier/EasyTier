@@ -1470,7 +1470,9 @@ async fn main() -> Result<(), Error> {
                 let collector = StunInfoCollector::new_with_default_servers();
                 loop {
                     let ret = collector.get_stun_info();
-                    if ret.udp_nat_type != NatType::Unknown as i32 {
+                    if ret.udp_nat_type != NatType::Unknown as i32
+                        && ret.tcp_nat_type != NatType::Unknown as i32
+                    {
                         if cli.output_format == OutputFormat::Json {
                             match serde_json::to_string_pretty(&ret) {
                                 Ok(json) => println!("{}", json),
