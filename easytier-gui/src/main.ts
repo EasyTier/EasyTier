@@ -1,14 +1,16 @@
-import Aura from '@primeuix/themes/aura';
-import PrimeVue from 'primevue/config';
+import { createApp } from 'vue'
+import { createPinia } from 'pinia'
+import Aura from '@primeuix/themes/aura'
+import PrimeVue from 'primevue/config'
 
-import EasyTierFrontendLib, { I18nUtils } from 'easytier-frontend-lib';
-import { createRouter, createWebHistory } from 'vue-router/auto';
-import { routes } from 'vue-router/auto-routes';
-import App from '~/App.vue';
+import EasyTierFrontendLib, { I18nUtils } from 'easytier-frontend-lib'
+import { createRouter, createWebHistory } from 'vue-router/auto'
+import { routes } from 'vue-router/auto-routes'
+import App from '~/App.vue'
 
-import 'easytier-frontend-lib/style.css';
-import { ConfirmationService, DialogService, ToastService } from 'primevue';
-import '~/styles.css';
+import 'easytier-frontend-lib/style.css'
+import { ConfirmationService, DialogService, ToastService } from 'primevue'
+import '~/styles.css'
 
 
 if (import.meta.env.PROD) {

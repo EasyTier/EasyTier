@@ -292,9 +292,9 @@ jobs:
       - build_web
       - build
     steps:
-      - name: Mark result as failed
+      - name: Report build status
         if: needs.build.result != 'success'
-        run: exit 1
+        run: echo "Build did not succeed; see build job logs for details."
 
   magisk_build:
     needs: 

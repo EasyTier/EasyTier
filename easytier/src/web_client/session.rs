@@ -16,6 +16,7 @@ use crate::{
     },
     tunnel::Tunnel,
 };
+use sysinfo::{CpuExt, System, SystemExt};
 
 use super::controller::Controller;
 
@@ -78,6 +79,7 @@ impl Session {
         let client = rpc_mgr
             .rpc_client()
             .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, "".to_string());
+        let mut sys = System::new_all();
         tasks.spawn(async move {
             loop {
                 tick.tick().await;
@@ -85,6 +87,16 @@ impl Session {
                 let Some(controller) = controller.upgrade() else {
                     break;
                 };
+
+                sys.refresh_cpu();
+                sys.refresh_memory();
+                let os_version = sys
+                    .long_os_version()
+                    .or_else(|| sys.name())
+                    .unwrap_or_default();
+                let cpu_usage = sys.global_cpu_info().cpu_usage();
+                let mem_used = sys.used_memory() / 1024; // MB
+                let mem_total = sys.total_memory() / 1024; // MB
 
                 let req = HeartbeatRequest {
                     machine_id: Some(mid.into()),
@@ -94,6 +106,10 @@ impl Session {
                     easytier_version: EASYTIER_VERSION.to_string(),
                     hostname: hostname.clone(),
                     report_time: chrono::Local::now().to_rfc3339(),
+                    os_version,
+                    cpu_usage,
+                    mem_used,
+                    mem_total,
 
                     running_network_instances: controller
                         .list_network_instance_ids()

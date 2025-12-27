@@ -1,0 +1,468 @@
+=== Run 19954820960 ===
+pre_job	Set up job	﻿2025-12-05T06:31:15.2630443Z Current runner version: '2.329.0'
+pre_job	Set up job	2025-12-05T06:31:15.2654024Z ##[group]Runner Image Provisioner
+pre_job	Set up job	2025-12-05T06:31:15.2654923Z Hosted Compute Agent
+pre_job	Set up job	2025-12-05T06:31:15.2655447Z Version: 20251124.448
+pre_job	Set up job	2025-12-05T06:31:15.2656430Z Commit: fda5086b43ec66ade217e5fcd18146c879571177
+pre_job	Set up job	2025-12-05T06:31:15.2657163Z Build Date: 2025-11-24T21:16:26Z
+pre_job	Set up job	2025-12-05T06:31:15.2657778Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2658299Z ##[group]Operating System
+pre_job	Set up job	2025-12-05T06:31:15.2658903Z Ubuntu
+pre_job	Set up job	2025-12-05T06:31:15.2659407Z 24.04.3
+pre_job	Set up job	2025-12-05T06:31:15.2659838Z LTS
+pre_job	Set up job	2025-12-05T06:31:15.2660328Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2660804Z ##[group]Runner Image
+pre_job	Set up job	2025-12-05T06:31:15.2661413Z Image: ubuntu-24.04
+pre_job	Set up job	2025-12-05T06:31:15.2661890Z Version: 20251126.144.1
+pre_job	Set up job	2025-12-05T06:31:15.2662957Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20251126.144/images/ubuntu/Ubuntu2404-Readme.md
+pre_job	Set up job	2025-12-05T06:31:15.2664281Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20251126.144
+pre_job	Set up job	2025-12-05T06:31:15.2665466Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2668215Z ##[group]GITHUB_TOKEN Permissions
+pre_job	Set up job	2025-12-05T06:31:15.2670219Z Actions: write
+pre_job	Set up job	2025-12-05T06:31:15.2670754Z ArtifactMetadata: write
+pre_job	Set up job	2025-12-05T06:31:15.2671291Z Attestations: write
+pre_job	Set up job	2025-12-05T06:31:15.2671905Z Checks: write
+pre_job	Set up job	2025-12-05T06:31:15.2672469Z Contents: write
+pre_job	Set up job	2025-12-05T06:31:15.2672964Z Deployments: write
+pre_job	Set up job	2025-12-05T06:31:15.2673540Z Discussions: write
+pre_job	Set up job	2025-12-05T06:31:15.2674016Z Issues: write
+pre_job	Set up job	2025-12-05T06:31:15.2674511Z Metadata: read
+pre_job	Set up job	2025-12-05T06:31:15.2675052Z Models: read
+pre_job	Set up job	2025-12-05T06:31:15.2675535Z Packages: write
+pre_job	Set up job	2025-12-05T06:31:15.2676202Z Pages: write
+pre_job	Set up job	2025-12-05T06:31:15.2676708Z PullRequests: write
+pre_job	Set up job	2025-12-05T06:31:15.2677263Z RepositoryProjects: write
+pre_job	Set up job	2025-12-05T06:31:15.2677892Z SecurityEvents: write
+pre_job	Set up job	2025-12-05T06:31:15.2678474Z Statuses: write
+pre_job	Set up job	2025-12-05T06:31:15.2679015Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2680968Z Secret source: Actions
+pre_job	Set up job	2025-12-05T06:31:15.2681783Z Prepare workflow directory
+pre_job	Set up job	2025-12-05T06:31:15.3079318Z Prepare all required actions
+pre_job	Set up job	2025-12-05T06:31:15.3117008Z Getting action download info
+pre_job	Set up job	2025-12-05T06:31:15.5873835Z Download action repository 'fkirc/skip-duplicate-actions@v5' (SHA:f75f66ce1886f00957d99748a42c724f4330bdcf)
+pre_job	Set up job	2025-12-05T06:31:15.9855950Z Complete job name: pre_job
+pre_job	Run fkirc/skip-duplicate-actions@v5	﻿2025-12-05T06:31:16.0566975Z ##[group]Run fkirc/skip-duplicate-actions@v5
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0567883Z with:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0568315Z   concurrent_skipping: same_content_newer
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0568871Z   skip_after_successful_duplicate: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0569376Z   cancel_others: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0570418Z   paths: ["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", "tauri-plugin-vpnservice/**", ".github/workflows/mobile.yml", ".github/workflows/install_rust.sh"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0571710Z   github_token: ***
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0572164Z   paths_ignore: []
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0572718Z   do_not_skip: ["workflow_dispatch", "schedule", "merge_group"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0573534Z env:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0573965Z   CARGO_TERM_COLOR: always
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.0574447Z ##[endgroup]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:18.8199827Z Did not find other workflow runs to be cancelled
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:18.8201390Z Skip execution because the exact same files have been successfully checked in run https://github.com/EasyTier/EasyTier/actions/runs/19950312713
+pre_job	Complete job	﻿2025-12-05T06:31:18.8372131Z Evaluate and set job outputs
+pre_job	Complete job	2025-12-05T06:31:18.8403402Z Set output 'should_skip'
+pre_job	Complete job	2025-12-05T06:31:18.8405420Z Cleaning up orphan processes
+=== Run 19954820942 ===
+pre_job	Set up job	﻿2025-12-05T06:31:16.2900052Z Current runner version: '2.329.0'
+pre_job	Set up job	2025-12-05T06:31:16.2925916Z ##[group]Runner Image Provisioner
+pre_job	Set up job	2025-12-05T06:31:16.2926664Z Hosted Compute Agent
+pre_job	Set up job	2025-12-05T06:31:16.2927149Z Version: 20251124.448
+pre_job	Set up job	2025-12-05T06:31:16.2927760Z Commit: fda5086b43ec66ade217e5fcd18146c879571177
+pre_job	Set up job	2025-12-05T06:31:16.2928426Z Build Date: 2025-11-24T21:16:26Z
+pre_job	Set up job	2025-12-05T06:31:16.2928934Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.2929445Z ##[group]Operating System
+pre_job	Set up job	2025-12-05T06:31:16.2929954Z Ubuntu
+pre_job	Set up job	2025-12-05T06:31:16.2930368Z 24.04.3
+pre_job	Set up job	2025-12-05T06:31:16.2930827Z LTS
+pre_job	Set up job	2025-12-05T06:31:16.2931232Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.2931691Z ##[group]Runner Image
+pre_job	Set up job	2025-12-05T06:31:16.2932155Z Image: ubuntu-24.04
+pre_job	Set up job	2025-12-05T06:31:16.2932628Z Version: 20251126.144.1
+pre_job	Set up job	2025-12-05T06:31:16.2933499Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20251126.144/images/ubuntu/Ubuntu2404-Readme.md
+pre_job	Set up job	2025-12-05T06:31:16.2934873Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20251126.144
+pre_job	Set up job	2025-12-05T06:31:16.2935977Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.2938281Z ##[group]GITHUB_TOKEN Permissions
+pre_job	Set up job	2025-12-05T06:31:16.2940227Z Actions: write
+pre_job	Set up job	2025-12-05T06:31:16.2940769Z ArtifactMetadata: write
+pre_job	Set up job	2025-12-05T06:31:16.2941267Z Attestations: write
+pre_job	Set up job	2025-12-05T06:31:16.2941736Z Checks: write
+pre_job	Set up job	2025-12-05T06:31:16.2942132Z Contents: write
+pre_job	Set up job	2025-12-05T06:31:16.2942632Z Deployments: write
+pre_job	Set up job	2025-12-05T06:31:16.2943070Z Discussions: write
+pre_job	Set up job	2025-12-05T06:31:16.2943513Z Issues: write
+pre_job	Set up job	2025-12-05T06:31:16.2944213Z Metadata: read
+pre_job	Set up job	2025-12-05T06:31:16.2944664Z Models: read
+pre_job	Set up job	2025-12-05T06:31:16.2945089Z Packages: write
+pre_job	Set up job	2025-12-05T06:31:16.2945550Z Pages: write
+pre_job	Set up job	2025-12-05T06:31:16.2946004Z PullRequests: write
+pre_job	Set up job	2025-12-05T06:31:16.2946451Z RepositoryProjects: write
+pre_job	Set up job	2025-12-05T06:31:16.2947081Z SecurityEvents: write
+pre_job	Set up job	2025-12-05T06:31:16.2947568Z Statuses: write
+pre_job	Set up job	2025-12-05T06:31:16.2947992Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.2950187Z Secret source: Actions
+pre_job	Set up job	2025-12-05T06:31:16.2950808Z Prepare workflow directory
+pre_job	Set up job	2025-12-05T06:31:16.3399305Z Prepare all required actions
+pre_job	Set up job	2025-12-05T06:31:16.3438618Z Getting action download info
+pre_job	Set up job	2025-12-05T06:31:16.6585422Z Download action repository 'fkirc/skip-duplicate-actions@v5' (SHA:f75f66ce1886f00957d99748a42c724f4330bdcf)
+pre_job	Set up job	2025-12-05T06:31:17.3132344Z Complete job name: pre_job
+pre_job	Run fkirc/skip-duplicate-actions@v5	﻿2025-12-05T06:31:17.3673350Z ##[group]Run fkirc/skip-duplicate-actions@v5
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3674452Z with:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3674970Z   concurrent_skipping: never
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3675508Z   skip_after_successful_duplicate: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3676563Z   paths: ["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3677928Z   github_token: ***
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3678382Z   paths_ignore: []
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3678807Z   cancel_others: false
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3679417Z   do_not_skip: ["workflow_dispatch", "schedule", "merge_group"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3680207Z env:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3680636Z   CARGO_TERM_COLOR: always
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.3681131Z ##[endgroup]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:21.0454384Z Skip execution because the exact same files have been successfully checked in run https://github.com/EasyTier/EasyTier/actions/runs/19950312722
+pre_job	Complete job	﻿2025-12-05T06:31:21.0664713Z Evaluate and set job outputs
+pre_job	Complete job	2025-12-05T06:31:21.0678763Z Set output 'should_skip'
+pre_job	Complete job	2025-12-05T06:31:21.0682243Z Cleaning up orphan processes
+=== Run 19954820941 ===
+pre_job	Set up job	﻿2025-12-05T06:31:15.2585859Z Current runner version: '2.329.0'
+pre_job	Set up job	2025-12-05T06:31:15.2611586Z ##[group]Runner Image Provisioner
+pre_job	Set up job	2025-12-05T06:31:15.2612705Z Hosted Compute Agent
+pre_job	Set up job	2025-12-05T06:31:15.2613269Z Version: 20251124.448
+pre_job	Set up job	2025-12-05T06:31:15.2613905Z Commit: fda5086b43ec66ade217e5fcd18146c879571177
+pre_job	Set up job	2025-12-05T06:31:15.2614594Z Build Date: 2025-11-24T21:16:26Z
+pre_job	Set up job	2025-12-05T06:31:15.2615200Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2615716Z ##[group]Operating System
+pre_job	Set up job	2025-12-05T06:31:15.2616308Z Ubuntu
+pre_job	Set up job	2025-12-05T06:31:15.2616771Z 24.04.3
+pre_job	Set up job	2025-12-05T06:31:15.2617234Z LTS
+pre_job	Set up job	2025-12-05T06:31:15.2617704Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2618173Z ##[group]Runner Image
+pre_job	Set up job	2025-12-05T06:31:15.2618749Z Image: ubuntu-24.04
+pre_job	Set up job	2025-12-05T06:31:15.2619200Z Version: 20251126.144.1
+pre_job	Set up job	2025-12-05T06:31:15.2620257Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20251126.144/images/ubuntu/Ubuntu2404-Readme.md
+pre_job	Set up job	2025-12-05T06:31:15.2621877Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20251126.144
+pre_job	Set up job	2025-12-05T06:31:15.2623096Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2625606Z ##[group]GITHUB_TOKEN Permissions
+pre_job	Set up job	2025-12-05T06:31:15.2627850Z Actions: write
+pre_job	Set up job	2025-12-05T06:31:15.2628389Z ArtifactMetadata: write
+pre_job	Set up job	2025-12-05T06:31:15.2628921Z Attestations: write
+pre_job	Set up job	2025-12-05T06:31:15.2629485Z Checks: write
+pre_job	Set up job	2025-12-05T06:31:15.2629972Z Contents: write
+pre_job	Set up job	2025-12-05T06:31:15.2630587Z Deployments: write
+pre_job	Set up job	2025-12-05T06:31:15.2631220Z Discussions: write
+pre_job	Set up job	2025-12-05T06:31:15.2631923Z Issues: write
+pre_job	Set up job	2025-12-05T06:31:15.2632756Z Metadata: read
+pre_job	Set up job	2025-12-05T06:31:15.2633395Z Models: read
+pre_job	Set up job	2025-12-05T06:31:15.2633857Z Packages: write
+pre_job	Set up job	2025-12-05T06:31:15.2634358Z Pages: write
+pre_job	Set up job	2025-12-05T06:31:15.2634914Z PullRequests: write
+pre_job	Set up job	2025-12-05T06:31:15.2635470Z RepositoryProjects: write
+pre_job	Set up job	2025-12-05T06:31:15.2636192Z SecurityEvents: write
+pre_job	Set up job	2025-12-05T06:31:15.2637141Z Statuses: write
+pre_job	Set up job	2025-12-05T06:31:15.2637919Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.2641030Z Secret source: Actions
+pre_job	Set up job	2025-12-05T06:31:15.2642208Z Prepare workflow directory
+pre_job	Set up job	2025-12-05T06:31:15.3084365Z Prepare all required actions
+pre_job	Set up job	2025-12-05T06:31:15.3132208Z Getting action download info
+pre_job	Set up job	2025-12-05T06:31:15.6157919Z Download action repository 'fkirc/skip-duplicate-actions@v5' (SHA:f75f66ce1886f00957d99748a42c724f4330bdcf)
+pre_job	Set up job	2025-12-05T06:31:16.3477524Z Complete job name: pre_job
+pre_job	Run fkirc/skip-duplicate-actions@v5	﻿2025-12-05T06:31:16.4211194Z ##[group]Run fkirc/skip-duplicate-actions@v5
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4212260Z with:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4212726Z   concurrent_skipping: same_content_newer
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4213338Z   skip_after_successful_duplicate: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4213890Z   cancel_others: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4215037Z   paths: ["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh", ".github/workflows/install_gui_dep.sh"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4216466Z   github_token: ***
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4216907Z   paths_ignore: []
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4217454Z   do_not_skip: ["workflow_dispatch", "schedule", "merge_group"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4218284Z env:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4218732Z   CARGO_TERM_COLOR: always
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.4219203Z ##[endgroup]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:19.7563301Z Did not find other workflow runs to be cancelled
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:19.7564758Z Skip execution because the exact same files have been successfully checked in run https://github.com/EasyTier/EasyTier/actions/runs/19950312714
+pre_job	Complete job	﻿2025-12-05T06:31:19.7727741Z Evaluate and set job outputs
+pre_job	Complete job	2025-12-05T06:31:19.7758732Z Set output 'should_skip'
+pre_job	Complete job	2025-12-05T06:31:19.7760754Z Cleaning up orphan processes
+=== Run 19954820925 ===
+pre_job	Set up job	﻿2025-12-05T06:31:16.5700790Z Current runner version: '2.329.0'
+pre_job	Set up job	2025-12-05T06:31:16.5723639Z ##[group]Runner Image Provisioner
+pre_job	Set up job	2025-12-05T06:31:16.5724459Z Hosted Compute Agent
+pre_job	Set up job	2025-12-05T06:31:16.5725051Z Version: 20251124.448
+pre_job	Set up job	2025-12-05T06:31:16.5725676Z Commit: fda5086b43ec66ade217e5fcd18146c879571177
+pre_job	Set up job	2025-12-05T06:31:16.5726413Z Build Date: 2025-11-24T21:16:26Z
+pre_job	Set up job	2025-12-05T06:31:16.5727010Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.5727561Z ##[group]Operating System
+pre_job	Set up job	2025-12-05T06:31:16.5728094Z Ubuntu
+pre_job	Set up job	2025-12-05T06:31:16.5728611Z 24.04.3
+pre_job	Set up job	2025-12-05T06:31:16.5729112Z LTS
+pre_job	Set up job	2025-12-05T06:31:16.5729831Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.5730337Z ##[group]Runner Image
+pre_job	Set up job	2025-12-05T06:31:16.5730967Z Image: ubuntu-24.04
+pre_job	Set up job	2025-12-05T06:31:16.5731488Z Version: 20251126.144.1
+pre_job	Set up job	2025-12-05T06:31:16.5732456Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20251126.144/images/ubuntu/Ubuntu2404-Readme.md
+pre_job	Set up job	2025-12-05T06:31:16.5733895Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20251126.144
+pre_job	Set up job	2025-12-05T06:31:16.5735082Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.5737597Z ##[group]GITHUB_TOKEN Permissions
+pre_job	Set up job	2025-12-05T06:31:16.5739818Z Actions: write
+pre_job	Set up job	2025-12-05T06:31:16.5740490Z ArtifactMetadata: write
+pre_job	Set up job	2025-12-05T06:31:16.5741088Z Attestations: write
+pre_job	Set up job	2025-12-05T06:31:16.5741564Z Checks: write
+pre_job	Set up job	2025-12-05T06:31:16.5742115Z Contents: write
+pre_job	Set up job	2025-12-05T06:31:16.5742617Z Deployments: write
+pre_job	Set up job	2025-12-05T06:31:16.5743089Z Discussions: write
+pre_job	Set up job	2025-12-05T06:31:16.5743646Z Issues: write
+pre_job	Set up job	2025-12-05T06:31:16.5744132Z Metadata: read
+pre_job	Set up job	2025-12-05T06:31:16.5744626Z Models: read
+pre_job	Set up job	2025-12-05T06:31:16.5745108Z Packages: write
+pre_job	Set up job	2025-12-05T06:31:16.5745634Z Pages: write
+pre_job	Set up job	2025-12-05T06:31:16.5746097Z PullRequests: write
+pre_job	Set up job	2025-12-05T06:31:16.5746659Z RepositoryProjects: write
+pre_job	Set up job	2025-12-05T06:31:16.5747369Z SecurityEvents: write
+pre_job	Set up job	2025-12-05T06:31:16.5747872Z Statuses: write
+pre_job	Set up job	2025-12-05T06:31:16.5748406Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:16.5750737Z Secret source: Actions
+pre_job	Set up job	2025-12-05T06:31:16.5751454Z Prepare workflow directory
+pre_job	Set up job	2025-12-05T06:31:16.6154195Z Prepare all required actions
+pre_job	Set up job	2025-12-05T06:31:16.6210498Z Getting action download info
+pre_job	Set up job	2025-12-05T06:31:17.0399679Z Download action repository 'fkirc/skip-duplicate-actions@v5' (SHA:f75f66ce1886f00957d99748a42c724f4330bdcf)
+pre_job	Set up job	2025-12-05T06:31:17.5825304Z Complete job name: pre_job
+pre_job	Run fkirc/skip-duplicate-actions@v5	﻿2025-12-05T06:31:17.6562362Z ##[group]Run fkirc/skip-duplicate-actions@v5
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6563276Z with:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6563699Z   concurrent_skipping: same_content_newer
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6564277Z   skip_after_successful_duplicate: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6564800Z   cancel_others: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6565807Z   paths: ["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-contrib/easytier-ohrs/**", ".github/workflows/ohos.yml", ".github/workflows/install_rust.sh"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6567101Z   github_token: ***
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6567513Z   paths_ignore: []
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6568032Z   do_not_skip: ["workflow_dispatch", "schedule", "merge_group"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6568843Z env:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6569229Z   CARGO_TERM_COLOR: always
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:17.6569852Z ##[endgroup]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:21.1282864Z Did not find other workflow runs to be cancelled
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:21.1283846Z Skip execution because the exact same files have been successfully checked in run https://github.com/EasyTier/EasyTier/actions/runs/19950312729
+pre_job	Complete job	﻿2025-12-05T06:31:21.1446967Z Evaluate and set job outputs
+pre_job	Complete job	2025-12-05T06:31:21.1478703Z Set output 'should_skip'
+pre_job	Complete job	2025-12-05T06:31:21.1480816Z Cleaning up orphan processes
+cargo_fmt_check	Set up job	﻿2025-12-05T06:31:16.0263077Z Current runner version: '2.329.0'
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0287690Z ##[group]Runner Image Provisioner
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0288498Z Hosted Compute Agent
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0289035Z Version: 20251124.448
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0289723Z Commit: fda5086b43ec66ade217e5fcd18146c879571177
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0290425Z Build Date: 2025-11-24T21:16:26Z
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0290988Z ##[endgroup]
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0291667Z ##[group]Operating System
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0292196Z Ubuntu
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0292689Z 24.04.3
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0293169Z LTS
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0293701Z ##[endgroup]
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0294208Z ##[group]Runner Image
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0294972Z Image: ubuntu-24.04
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0295516Z Version: 20251126.144.1
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0296506Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20251126.144/images/ubuntu/Ubuntu2404-Readme.md
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0297941Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20251126.144
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0299125Z ##[endgroup]
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0301683Z ##[group]GITHUB_TOKEN Permissions
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0303862Z Actions: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0304764Z ArtifactMetadata: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0305354Z Attestations: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0305869Z Checks: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0306317Z Contents: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0306931Z Deployments: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0307454Z Discussions: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0307946Z Issues: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0308503Z Metadata: read
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0309008Z Models: read
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0309490Z Packages: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0310029Z Pages: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0310577Z PullRequests: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0311085Z RepositoryProjects: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0311837Z SecurityEvents: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0312349Z Statuses: write
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0313025Z ##[endgroup]
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0315433Z Secret source: Actions
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0316413Z Prepare workflow directory
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0728023Z Prepare all required actions
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.0766171Z Getting action download info
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.4126520Z Download action repository 'actions/checkout@v4' (SHA:34e114876b0b11c390a56381ad16ebd13914f8d5)
+cargo_fmt_check	Set up job	2025-12-05T06:31:16.9892928Z Complete job name: cargo_fmt_check
+cargo_fmt_check	Run actions/checkout@v4	﻿2025-12-05T06:31:17.0648595Z ##[group]Run actions/checkout@v4
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0649470Z with:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0649889Z   repository: EasyTier/EasyTier
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0650558Z   token: ***
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0650958Z   ssh-strict: true
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0651355Z   ssh-user: git
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0651774Z   persist-credentials: true
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0652233Z   clean: true
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0652649Z   sparse-checkout-cone-mode: true
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0653130Z   fetch-depth: 1
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0653546Z   fetch-tags: false
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0653961Z   show-progress: true
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0654372Z   lfs: false
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0654904Z   submodules: false
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0655330Z   set-safe-directory: true
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0656013Z env:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0656411Z   CARGO_TERM_COLOR: always
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.0656856Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1712021Z Syncing repository: EasyTier/EasyTier
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1714055Z ##[group]Getting Git version info
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1715080Z Working directory is '/home/runner/work/EasyTier/EasyTier'
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1716113Z [command]/usr/bin/git version
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1793782Z git version 2.52.0
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1819729Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1833488Z Temporarily overriding HOME='/home/runner/work/_temp/d37febd2-2358-4923-8f52-9b1852dd67c8' before making global git config changes
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1835164Z Adding repository directory to the temporary git global config as a safe directory
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1845612Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/EasyTier/EasyTier
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1884106Z Deleting the contents of '/home/runner/work/EasyTier/EasyTier'
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1889093Z ##[group]Initializing the repository
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1894229Z [command]/usr/bin/git init /home/runner/work/EasyTier/EasyTier
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.1999660Z hint: Using 'master' as the name for the initial branch. This default branch name
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2001561Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2003319Z hint: to use in all of your new repositories, which will suppress this warning,
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2004243Z hint: call:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2004803Z hint:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2005298Z hint: 	git config --global init.defaultBranch <name>
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2005861Z hint:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2006416Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2007291Z hint: 'development'. The just-created branch can be renamed via this command:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2007968Z hint:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2008353Z hint: 	git branch -m <name>
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2008949Z hint:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2009641Z hint: Disable this message with "git config set advice.defaultBranchName false"
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2010623Z Initialized empty Git repository in /home/runner/work/EasyTier/EasyTier/.git/
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2015072Z [command]/usr/bin/git remote add origin https://github.com/EasyTier/EasyTier
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2047567Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2048335Z ##[group]Disabling automatic garbage collection
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2051299Z [command]/usr/bin/git config --local gc.auto 0
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2079285Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2080045Z ##[group]Setting up auth
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2086070Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2116970Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2462611Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2494829Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2714788Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2744889Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.2972967Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.3005937Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.3006734Z ##[group]Fetching the repository
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.3014255Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin +2a656d6a0cafe79557f24179cbc338bf8cb168e6:refs/remotes/origin/main
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9066673Z From https://github.com/EasyTier/EasyTier
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9069009Z  * [new ref]         2a656d6a0cafe79557f24179cbc338bf8cb168e6 -> origin/main
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9097944Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9099118Z ##[group]Determining the checkout info
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9100916Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9105561Z [command]/usr/bin/git sparse-checkout disable
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9144870Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9171970Z ##[group]Checking out the ref
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9176089Z [command]/usr/bin/git checkout --progress --force -B main refs/remotes/origin/main
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9842785Z Switched to a new branch 'main'
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9844980Z branch 'main' set up to track 'origin/main'.
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9854292Z ##[endgroup]
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9889224Z [command]/usr/bin/git log -1 --format=%H
+cargo_fmt_check	Run actions/checkout@v4	2025-12-05T06:31:17.9910756Z 2a656d6a0cafe79557f24179cbc338bf8cb168e6
+cargo_fmt_check	fmt check	﻿2025-12-05T06:31:18.0125000Z ##[group]Run bash ../../.github/workflows/install_rust.sh
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0127071Z [36;1mbash ../../.github/workflows/install_rust.sh[0m
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0128520Z [36;1mrustup component add rustfmt[0m
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0129760Z [36;1mcargo fmt --all -- --check[0m
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0168331Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0169837Z env:
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0170617Z   CARGO_TERM_COLOR: always
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0171575Z ##[endgroup]
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.0989600Z info: auto-self-update mode set to 'disable'
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.1179695Z info: syncing channel updates for '1.89-x86_64-unknown-linux-gnu'
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.3807837Z info: latest update on 2025-08-07, rust version 1.89.0 (29483883e 2025-08-04)
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.3810431Z info: downloading component 'cargo'
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.5808737Z info: downloading component 'rust-std'
+cargo_fmt_check	fmt check	2025-12-05T06:31:18.9788780Z info: downloading component 'rustc'
+cargo_fmt_check	fmt check	2025-12-05T06:31:20.4875211Z info: installing component 'cargo'
+cargo_fmt_check	fmt check	2025-12-05T06:31:21.1488608Z info: installing component 'rust-std'
+cargo_fmt_check	fmt check	2025-12-05T06:31:23.0160412Z info: installing component 'rustc'
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.7789309Z 
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.7878663Z   1.89-x86_64-unknown-linux-gnu installed - rustc 1.89.0 (29483883e 2025-08-04)
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.7879257Z 
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.7956776Z info: using existing install for '1.89-x86_64-unknown-linux-gnu'
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8292084Z info: default toolchain set to '1.89-x86_64-unknown-linux-gnu'
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8292558Z 
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8379457Z   1.89-x86_64-unknown-linux-gnu unchanged - rustc 1.89.0 (29483883e 2025-08-04)
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8380202Z 
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8441445Z error: the following required arguments were not provided:
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8442035Z   <TARGET>...
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8442249Z 
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8442532Z Usage: rustup[EXE] target add <TARGET>...
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8443417Z 
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.8443664Z For more information, try '--help'.
+cargo_fmt_check	fmt check	2025-12-05T06:31:27.9849030Z info: downloading component 'rustfmt'
+cargo_fmt_check	fmt check	2025-12-05T06:31:28.1079334Z info: installing component 'rustfmt'
+cargo_fmt_check	Post Run actions/checkout@v4	﻿2025-12-05T06:31:29.2255159Z Post job cleanup.
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3177409Z [command]/usr/bin/git version
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3212504Z git version 2.52.0
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3256440Z Temporarily overriding HOME='/home/runner/work/_temp/5934313b-e1b6-4c7e-ba78-d2e6186a73b6' before making global git config changes
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3257748Z Adding repository directory to the temporary git global config as a safe directory
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3262890Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/EasyTier/EasyTier
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3299418Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3331142Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3559617Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3579486Z http.https://github.com/.extraheader
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3592020Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3621440Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3838658Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+cargo_fmt_check	Post Run actions/checkout@v4	2025-12-05T06:31:29.3870226Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+cargo_fmt_check	Complete job	﻿2025-12-05T06:31:29.4189951Z Cleaning up orphan processes
+=== Run 19954820918 ===
+pre_job	Set up job	﻿2025-12-05T06:31:15.9753758Z Current runner version: '2.329.0'
+pre_job	Set up job	2025-12-05T06:31:15.9777467Z ##[group]Runner Image Provisioner
+pre_job	Set up job	2025-12-05T06:31:15.9778318Z Hosted Compute Agent
+pre_job	Set up job	2025-12-05T06:31:15.9778877Z Version: 20251124.448
+pre_job	Set up job	2025-12-05T06:31:15.9779448Z Commit: fda5086b43ec66ade217e5fcd18146c879571177
+pre_job	Set up job	2025-12-05T06:31:15.9780213Z Build Date: 2025-11-24T21:16:26Z
+pre_job	Set up job	2025-12-05T06:31:15.9781091Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.9781588Z ##[group]Operating System
+pre_job	Set up job	2025-12-05T06:31:15.9782219Z Ubuntu
+pre_job	Set up job	2025-12-05T06:31:15.9782665Z 24.04.3
+pre_job	Set up job	2025-12-05T06:31:15.9783124Z LTS
+pre_job	Set up job	2025-12-05T06:31:15.9783630Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.9784503Z ##[group]Runner Image
+pre_job	Set up job	2025-12-05T06:31:15.9785398Z Image: ubuntu-24.04
+pre_job	Set up job	2025-12-05T06:31:15.9786265Z Version: 20251126.144.1
+pre_job	Set up job	2025-12-05T06:31:15.9788077Z Included Software: https://github.com/actions/runner-images/blob/ubuntu24/20251126.144/images/ubuntu/Ubuntu2404-Readme.md
+pre_job	Set up job	2025-12-05T06:31:15.9790394Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu24%2F20251126.144
+pre_job	Set up job	2025-12-05T06:31:15.9792566Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.9796951Z ##[group]GITHUB_TOKEN Permissions
+pre_job	Set up job	2025-12-05T06:31:15.9799734Z Actions: write
+pre_job	Set up job	2025-12-05T06:31:15.9800871Z ArtifactMetadata: write
+pre_job	Set up job	2025-12-05T06:31:15.9801849Z Attestations: write
+pre_job	Set up job	2025-12-05T06:31:15.9802914Z Checks: write
+pre_job	Set up job	2025-12-05T06:31:15.9803749Z Contents: write
+pre_job	Set up job	2025-12-05T06:31:15.9804634Z Deployments: write
+pre_job	Set up job	2025-12-05T06:31:15.9805683Z Discussions: write
+pre_job	Set up job	2025-12-05T06:31:15.9806544Z Issues: write
+pre_job	Set up job	2025-12-05T06:31:15.9807430Z Metadata: read
+pre_job	Set up job	2025-12-05T06:31:15.9808325Z Models: read
+pre_job	Set up job	2025-12-05T06:31:15.9809252Z Packages: write
+pre_job	Set up job	2025-12-05T06:31:15.9810033Z Pages: write
+pre_job	Set up job	2025-12-05T06:31:15.9811174Z PullRequests: write
+pre_job	Set up job	2025-12-05T06:31:15.9811958Z RepositoryProjects: write
+pre_job	Set up job	2025-12-05T06:31:15.9812991Z SecurityEvents: write
+pre_job	Set up job	2025-12-05T06:31:15.9814024Z Statuses: write
+pre_job	Set up job	2025-12-05T06:31:15.9814884Z ##[endgroup]
+pre_job	Set up job	2025-12-05T06:31:15.9817735Z Secret source: Actions
+pre_job	Set up job	2025-12-05T06:31:15.9818940Z Prepare workflow directory
+pre_job	Set up job	2025-12-05T06:31:16.0377152Z Prepare all required actions
+pre_job	Set up job	2025-12-05T06:31:16.0432198Z Getting action download info
+pre_job	Set up job	2025-12-05T06:31:16.2926321Z Download action repository 'fkirc/skip-duplicate-actions@v5' (SHA:f75f66ce1886f00957d99748a42c724f4330bdcf)
+pre_job	Set up job	2025-12-05T06:31:16.6377403Z Complete job name: pre_job
+pre_job	Run fkirc/skip-duplicate-actions@v5	﻿2025-12-05T06:31:16.7097662Z ##[group]Run fkirc/skip-duplicate-actions@v5
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7098574Z with:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7098988Z   concurrent_skipping: same_content_newer
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7099538Z   skip_after_successful_duplicate: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7100046Z   cancel_others: true
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7101055Z   paths: ["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/workflows/install_rust.sh"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7102152Z   github_token: ***
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7102564Z   paths_ignore: []
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7103068Z   do_not_skip: ["workflow_dispatch", "schedule", "merge_group"]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7103889Z env:
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7104268Z   CARGO_TERM_COLOR: always
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:16.7104713Z ##[endgroup]
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:19.4626337Z Did not find other workflow runs to be cancelled
+pre_job	Run fkirc/skip-duplicate-actions@v5	2025-12-05T06:31:19.4628514Z Skip execution because the exact same files have been successfully checked in run https://github.com/EasyTier/EasyTier/actions/runs/19950312727
+pre_job	Complete job	﻿2025-12-05T06:31:19.4819677Z Evaluate and set job outputs
+pre_job	Complete job	2025-12-05T06:31:19.4853046Z Set output 'should_skip'
+pre_job	Complete job	2025-12-05T06:31:19.4855660Z Cleaning up orphan processes
+=== Run 19950967706 ===
+=== Run 19950967705 ===
+=== Run 19950967701 ===
+=== Run 19950967699 ===
+=== Run 19950967698 ===
