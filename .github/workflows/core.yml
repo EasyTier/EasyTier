@@ -77,59 +77,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - TARGET: aarch64-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-aarch64
-          - TARGET: x86_64-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-x86_64
-          - TARGET: riscv64gc-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-riscv64
-          - TARGET: mips-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-mips
-          - TARGET: mipsel-unknown-linux-musl
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-mipsel
-          - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-armv7hf
-          - TARGET: armv7-unknown-linux-musleabi # raspberry pi 2-3-4, not tested
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-armv7
-          - TARGET: arm-unknown-linux-musleabihf # raspberry pi 0-1, not tested
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-armhf
-          - TARGET: arm-unknown-linux-musleabi # raspberry pi 0-1, not tested
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: linux-arm
-
-          - TARGET: loongarch64-unknown-linux-musl
-            OS: ubuntu-24.04
-            ARTIFACT_NAME: linux-loongarch64
-
-          - TARGET: x86_64-apple-darwin
-            OS: macos-latest
-            ARTIFACT_NAME: macos-x86_64
-          - TARGET: aarch64-apple-darwin
-            OS: macos-latest
-            ARTIFACT_NAME: macos-aarch64
-
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
-          - TARGET: aarch64-pc-windows-msvc
-            OS: windows-latest
-            ARTIFACT_NAME: windows-arm64
-          - TARGET: i686-pc-windows-msvc
-            OS: windows-latest
-            ARTIFACT_NAME: windows-i686
-
-          - TARGET: x86_64-unknown-freebsd
-            OS: ubuntu-22.04
-            ARTIFACT_NAME: freebsd-13.2-x86_64
-            BSD_VERSION: 13.2
 
     runs-on: ${{ matrix.OS }}
     env:
@@ -269,6 +219,8 @@ jobs:
 
           mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
           mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
+          mv ./target/$TARGET/release/easytier_core.pdb ./artifacts/objects/
+          mv ./target/$TARGET/release/easytier_cli.pdb ./artifacts/objects/
           if [[ ! $TARGET =~ ^mips.*$ ]]; then
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./artifacts/objects/
             mv ./target/$TARGET/release/easytier-web-embed"$SUFFIX" ./artifacts/objects/
