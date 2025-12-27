@@ -13,7 +13,7 @@ message RoutePeerInfo {
   optional common.Ipv4Addr ipv4_addr = 4;
   repeated string proxy_cidrs = 5;
   optional string hostname = 6;
-  common.NatType udp_stun_info = 7;
+  common.NatType udp_nat_type = 7;
   google.protobuf.Timestamp last_update = 8;
   uint32 version = 9;
 
@@ -27,6 +27,8 @@ message RoutePeerInfo {
   optional common.Ipv6Inet ipv6_addr = 15;
 
   repeated PeerGroupInfo groups = 16;
+
+  common.NatType tcp_nat_type = 17;
 }
 
 message PeerIdVersion {

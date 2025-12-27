@@ -131,7 +131,8 @@ impl RoutePeerInfo {
             ipv4_addr: None,
             proxy_cidrs: Vec::new(),
             hostname: None,
-            udp_stun_info: 0,
+            udp_nat_type: 0,
+            tcp_nat_type: 0,
             // ensure this is updated when the peer_infos/conn_info/foreign_network lock is acquired.
             // else we may assign a older timestamp than iterate time.
             last_update: None,
@@ -160,6 +161,7 @@ impl RoutePeerInfo {
         peer_route_id: u64,
         global_ctx: &ArcGlobalCtx,
     ) -> Self {
+        let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
         Self {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
@@ -174,10 +176,8 @@ impl RoutePeerInfo {
                 .map(|x| x.to_string())
                 .collect(),
             hostname: Some(global_ctx.get_hostname()),
-            udp_stun_info: global_ctx
-                .get_stun_info_collector()
-                .get_stun_info()
-                .udp_nat_type,
+            udp_nat_type: stun_info.udp_nat_type,
+            tcp_nat_type: stun_info.tcp_nat_type,
 
             // these two fields should not participate in comparison.
             last_update: None,
@@ -251,8 +251,11 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
             hostname: val.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
-                if let Ok(udp_nat_type) = NatType::try_from(val.udp_stun_info) {
+                if let Ok(udp_nat_type) = NatType::try_from(val.udp_nat_type) {
                     stun_info.set_udp_nat_type(udp_nat_type);
+                }
+                if let Ok(tcp_nat_type) = NatType::try_from(val.tcp_nat_type) {
+                    stun_info.set_tcp_nat_type(tcp_nat_type);
                 }
                 Some(stun_info)
             },
@@ -869,10 +872,10 @@ impl RouteTable {
         self.get_next_hop(peer_id).is_some()
     }
 
-    fn get_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
+    fn get_udp_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
         self.peer_infos
             .get(&peer_id)
-            .map(|x| NatType::try_from(x.udp_stun_info).unwrap_or_default())
+            .map(|x| NatType::try_from(x.udp_nat_type).unwrap_or_default())
     }
 
     // return graph and start node index (node of my peer id).
@@ -2516,7 +2519,7 @@ impl RouteSessionManager {
             let mut new_initiator_dst = None;
             // if any peer has NoPAT or OpenInternet stun type, we should use it.
             for peer_id in initiator_candidates.iter() {
-                let Some(nat_type) = service_impl.route_table.get_nat_type(*peer_id) else {
+                let Some(nat_type) = service_impl.route_table.get_udp_nat_type(*peer_id) else {
                     continue;
                 };
                 if nat_type == NatType::NoPat || nat_type == NatType::OpenInternet {

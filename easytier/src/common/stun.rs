@@ -680,7 +680,6 @@ struct TcpStunClient {
     stun_server: SocketAddr,
     conn_timeout: Duration,
     io_timeout: Duration,
-    req_repeat: u32,
     source_port: u16,
 }
 
@@ -690,7 +689,6 @@ impl TcpStunClient {
             stun_server,
             conn_timeout: Duration::from_millis(1500),
             io_timeout: Duration::from_millis(3000),
-            req_repeat: 1,
             source_port,
         }
     }
@@ -810,17 +808,14 @@ impl TcpStunClient {
         let local_addr = stream.local_addr()?;
         let stun_host = self.stun_server;
 
-        for _ in 0..self.req_repeat {
-            let tid = rand::random::<u32>();
-            let message =
-                Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(tid));
-            let mut encoder = MessageEncoder::new();
-            let msg = encoder
-                .encode_into_bytes(message.clone())
-                .with_context(|| "encode tcp stun message")?;
-            tids.push(tid);
-            tokio::time::timeout(self.io_timeout, stream.write_all(msg.as_slice())).await??;
-        }
+        let tid = rand::random::<u32>();
+        let message = Message::<Attribute>::new(MessageClass::Request, BINDING, u32_to_tid(tid));
+        let mut encoder = MessageEncoder::new();
+        let msg = encoder
+            .encode_into_bytes(message.clone())
+            .with_context(|| "encode tcp stun message")?;
+        tids.push(tid);
+        tokio::time::timeout(self.io_timeout, stream.write_all(msg.as_slice())).await??;
 
         let now = Instant::now();
         let msg = Self::tcp_read_stun_message(&mut stream, self.io_timeout).await?;
