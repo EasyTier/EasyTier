@@ -4,6 +4,7 @@ import { type } from '@tauri-apps/plugin-os'
 
 import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
@@ -254,6 +255,7 @@ const log_menu_items_popup: Ref<MenuItem[]> = ref([
       // console.log('open log dir', await getLogDirPath())
       await open(await getLogDirPath())
     },
+    visible: () => type() !== 'android',
   },
   {
     label: () => t('logging_copy_dir'),
