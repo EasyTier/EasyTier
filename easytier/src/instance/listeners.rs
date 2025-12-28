@@ -201,6 +201,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
                 }
             }
             loop {

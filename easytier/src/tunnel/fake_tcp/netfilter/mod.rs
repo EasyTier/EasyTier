@@ -1,6 +1,6 @@
 pub mod pnet;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, sync::Arc};
 
 cfg_if::cfg_if! {
     if #[cfg(target_os = "linux")] {
@@ -10,19 +10,19 @@ cfg_if::cfg_if! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
-        ) -> Arc<dyn super::stack::Tun> {
+        ) -> io::Result<Arc<dyn super::stack::Tun>> {
             match linux_bpf::LinuxBpfTun::new(interface_name, src_addr, dst_addr) {
-                Ok(tun) => Arc::new(tun),
+                Ok(tun) => Ok(Arc::new(tun)),
                 Err(e) => {
                     tracing::warn!(
                         ?e,
                         interface_name,
                         "LinuxBpfTun init failed, falling back to PnetTun"
                     );
-                    Arc::new(pnet::PnetTun::new(
+                    Ok(Arc::new(pnet::PnetTun::new(
                         interface_name,
                         pnet::create_packet_filter(src_addr, dst_addr),
-                    ))
+                    )?))
                 }
             }
         }
@@ -33,19 +33,19 @@ cfg_if::cfg_if! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
-        ) -> Arc<dyn super::stack::Tun> {
+        ) -> io::Result<Arc<dyn super::stack::Tun>> {
             match macos_bpf::MacosBpfTun::new(interface_name, src_addr, dst_addr) {
-                Ok(tun) => Arc::new(tun),
+                Ok(tun) => Ok(Arc::new(tun)),
                 Err(e) => {
                     tracing::warn!(
                         ?e,
                         interface_name,
                         "MacosBpfTun init failed, falling back to PnetTun"
                     );
-                    Arc::new(pnet::PnetTun::new(
+                    Ok(Arc::new(pnet::PnetTun::new(
                         interface_name,
                         pnet::create_packet_filter(src_addr, dst_addr),
-                    ))
+                    )?))
                 }
             }
         }
@@ -56,19 +56,19 @@ cfg_if::cfg_if! {
             _interface_name: &str,
             _src_addr: Option<SocketAddr>,
             local_addr: SocketAddr,
-        ) -> Arc<dyn super::stack::Tun> {
+        ) -> io::Result<Arc<dyn super::stack::Tun>> {
             match windivert::WinDivertTun::new(local_addr) {
-                Ok(tun) => Arc::new(tun),
+                Ok(tun) => Ok(Arc::new(tun)),
                 Err(e) => {
                     tracing::warn!(
                         ?e,
                         ?local_addr,
                         "WinDivertTun init failed, falling back to PnetTun"
                     );
-                    Arc::new(pnet::PnetTun::new(
+                    Ok(Arc::new(pnet::PnetTun::new(
                         local_addr.to_string().as_str(),
                         pnet::create_packet_filter(None, local_addr),
-                    ))
+                    )?))
                 }
             }
         }
@@ -77,11 +77,11 @@ cfg_if::cfg_if! {
             interface_name: &str,
             src_addr: Option<SocketAddr>,
             dst_addr: SocketAddr,
-        ) -> Arc<dyn super::stack::Tun> {
-            Arc::new(pnet::PnetTun::new(
+        ) -> io::Result<Arc<dyn super::stack::Tun>> {
+            Ok(Arc::new(pnet::PnetTun::new(
                 interface_name,
                 pnet::create_packet_filter(src_addr, dst_addr),
-            ))
+            )?))
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    io,
     net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -145,14 +146,11 @@ struct InterfaceWorker {
 }
 
 impl InterfaceWorker {
-    fn new(interface: NetworkInterface) -> Arc<Self> {
+    fn new(interface: NetworkInterface) -> io::Result<Arc<Self>> {
         let (tx, mut rx) = match datalink::channel(&interface, Default::default()) {
             Ok(pnet::datalink::Channel::Ethernet(tx, rx)) => (tx, rx),
-            Ok(_) => panic!("Unhandled channel type"),
-            Err(e) => panic!(
-                "An error occurred when creating the datalink channel: {}",
-                e
-            ),
+            Ok(_) => return Err(io::Error::other("Unhandled channel type")),
+            Err(e) => return Err(io::Error::other(e)),
         };
 
         let subscribers = Arc::new(DashMap::<u32, Subscriber>::new());
@@ -187,10 +185,10 @@ impl InterfaceWorker {
             }
         });
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             tx: Mutex::new(tx),
             subscribers,
-        })
+        }))
     }
 
     fn subscribe(&self, filter: PacketFilter, sender: tokio::sync::mpsc::Sender<Vec<u8>>) -> u32 {
@@ -207,13 +205,13 @@ impl InterfaceWorker {
 
 static INTERFACE_MANAGERS: Lazy<DashMap<String, Weak<InterfaceWorker>>> = Lazy::new(DashMap::new);
 
-fn get_or_create_worker(interface_name: &str) -> Arc<InterfaceWorker> {
+fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>> {
     // Check if we have an active worker
     if let Some(worker) = INTERFACE_MANAGERS
         .get(interface_name)
         .and_then(|w| w.upgrade())
     {
-        return worker;
+        return Ok(worker);
     }
 
     // Need to create new worker.
@@ -229,9 +227,9 @@ fn get_or_create_worker(interface_name: &str) -> Arc<InterfaceWorker> {
         .find(|iface| iface.name == interface_name)
         .expect("Network interface not found");
 
-    let worker = InterfaceWorker::new(interface);
+    let worker = InterfaceWorker::new(interface)?;
     INTERFACE_MANAGERS.insert(interface_name.to_string(), Arc::downgrade(&worker));
-    worker
+    Ok(worker)
 }
 
 pub struct PnetTun {
@@ -241,17 +239,17 @@ pub struct PnetTun {
 }
 
 impl PnetTun {
-    pub fn new(interface_name: &str, filter: PacketFilter) -> Self {
+    pub fn new(interface_name: &str, filter: PacketFilter) -> io::Result<Self> {
         tracing::debug!(interface_name, "Creating new PnetTun");
-        let worker = get_or_create_worker(interface_name);
+        let worker = get_or_create_worker(interface_name)?;
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         let id = worker.subscribe(filter, tx);
 
-        Self {
+        Ok(Self {
             worker,
             subscription_id: id,
             recv_queue: Mutex::new(rx),
-        }
+        })
     }
 }
 
