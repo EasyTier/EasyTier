@@ -793,11 +793,13 @@ mod manager {
                         tokio::spawn(async move {
                             loop {
                                 match event_receiver.recv().await {
-                                    Ok(event) => {
-                                        if let easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _) = event {
-                                            let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone);
-                                        }
+                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)) => {
+                                        let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone);
                                     }
+                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated()) => {
+                                        let _ = app_clone.emit("proxy_cidrs_updated", instance_id_clone);
+                                    }
+                                    Ok(_) => {}
                                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                                         break;
                                     }

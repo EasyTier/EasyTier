@@ -837,8 +837,16 @@ impl NicCtx {
 
         self.tasks.spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
+            let mut last_update = std::time::Instant::now();
             loop {
                 let mut proxy_cidrs = BTreeSet::new();
+                let last_update_time = peer_mgr.get_route_peer_info_last_update_time().await;
+                if last_update != last_update_time {
+                    last_update = last_update_time;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
+                }
                 let routes = peer_mgr.list_routes().await;
                 for r in routes {
                     for cidr in r.proxy_cidrs {
@@ -903,6 +911,10 @@ impl NicCtx {
                             "add route failed.",
                         );
                     }
+                }
+
+                if cur_proxy_cidrs != proxy_cidrs {
+                    global_ctx.issue_event(GlobalCtxEvent::ProxyCidrsUpdated());
                 }
 
                 cur_proxy_cidrs = proxy_cidrs;
