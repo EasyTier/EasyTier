@@ -132,6 +132,9 @@ proxy_forward_by_system_help: 通过系统内核转发子网代理数据包，�
 disable_encryption: 禁用加密
 disable_encryption_help: 禁用对等节点通信的加密，默认为false，必须与对等节点相同
 
+disable_tcp_hole_punching: 禁用TCP打洞
+disable_tcp_hole_punching_help: 禁用TCP打洞功能
+
 disable_udp_hole_punching: 禁用UDP打洞
 disable_udp_hole_punching_help: 禁用UDP打洞功能
 

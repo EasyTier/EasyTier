@@ -35,7 +35,6 @@ use crate::{
     use_global_var,
 };
 
-use crate::proto::api::instance::PeerConnInfo;
 use anyhow::Context;
 use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
@@ -51,7 +50,6 @@ static TESTING: AtomicBool = AtomicBool::new(false);
 #[async_trait::async_trait]
 pub trait PeerManagerForDirectConnector {
     async fn list_peers(&self) -> Vec<PeerId>;
-    async fn list_peer_conns(&self, peer_id: PeerId) -> Option<Vec<PeerConnInfo>>;
     fn get_peer_rpc_mgr(&self) -> Arc<PeerRpcManager>;
 }
 
@@ -71,10 +69,6 @@ impl PeerManagerForDirectConnector for PeerManager {
         }
 
         ret
-    }
-
-    async fn list_peer_conns(&self, peer_id: PeerId) -> Option<Vec<PeerConnInfo>> {
-        self.get_peer_map().list_peer_conns(peer_id).await
     }
 
     fn get_peer_rpc_mgr(&self) -> Arc<PeerRpcManager> {

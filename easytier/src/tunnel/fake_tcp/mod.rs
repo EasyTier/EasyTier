@@ -134,25 +134,25 @@ impl FakeTcpTunnelListener {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let ret = self
-            .stack_map
-            .entry(interface_name.to_string())
-            .or_insert_with(|| {
-                let tun = create_tun(interface_name, None, local_socket_addr);
+        let ret = match self.stack_map.entry(interface_name.to_string()) {
+            dashmap::Entry::Occupied(entry) => entry.get().clone(),
+            dashmap::Entry::Vacant(entry) => {
+                let tun = create_tun(interface_name, None, local_socket_addr)?;
                 tracing::info!(
                     ?local_socket_addr,
                     "create new stack with interface_name: {:?}",
                     interface_name
                 );
-                // TODO: Get local MAC address of the interface
-                Arc::new(Mutex::new(stack::Stack::new(
+                let stack = Arc::new(Mutex::new(stack::Stack::new(
                     tun,
                     local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED),
                     local_ip6,
                     accept_result.mac,
-                )))
-            })
-            .clone();
+                )));
+                entry.insert(stack.clone());
+                stack
+            }
+        };
 
         Ok(ret)
     }
@@ -314,7 +314,7 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
             IpAddr::V6(ip) => (None, Some(ip)),
         };
 
-        let tun = create_tun(&interface_name, Some(remote_addr), local_addr);
+        let tun = create_tun(&interface_name, Some(remote_addr), local_addr)?;
         let local_ip = local_ip.unwrap_or("0.0.0.0".parse().unwrap());
         let mut stack = stack::Stack::new(tun, local_ip, local_ip6, mac);
         let driver_type = stack.driver_type();

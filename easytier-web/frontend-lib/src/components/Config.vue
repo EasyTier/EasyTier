@@ -165,6 +165,7 @@ const bool_flags: BoolFlag[] = [
   { field: 'multi_thread', help: 'multi_thread_help' },
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
   { field: 'disable_encryption', help: 'disable_encryption_help' },
+  { field: 'disable_tcp_hole_punching', help: 'disable_tcp_hole_punching_help' },
   { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
   { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
