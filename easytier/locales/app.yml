@@ -157,6 +157,9 @@ core_clap:
   p2p_only:
     en: "only communicate with peers that already establish p2p connection"
     zh-CN: "仅与已经建立P2P连接的对等节点通信"
+  disable_tcp_hole_punching:
+    en: "disable tcp hole punching"
+    zh-CN: "禁用TCP打洞功能"
   disable_udp_hole_punching:
     en: "disable udp hole punching"
     zh-CN: "禁用UDP打洞功能"

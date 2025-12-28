@@ -374,6 +374,7 @@ impl HealthChecker {
         flags.no_tun = true;
         flags.disable_p2p = true;
         flags.disable_udp_hole_punching = true;
+        flags.disable_tcp_hole_punching = true;
         cfg.set_flags(flags);
 
         Ok(cfg)

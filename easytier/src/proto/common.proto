@@ -62,6 +62,8 @@ message FlagsInConfig {
   string tld_dns_zone = 31;
 
   bool p2p_only = 32;
+
+  bool disable_tcp_hole_punching = 34;
 }
 
 message RpcDescriptor {
