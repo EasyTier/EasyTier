@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Error};
+use rand::Rng as _;
 use tokio::task::JoinSet;
 
 use crate::{
@@ -102,6 +103,82 @@ async fn send_syn_from_port(
     Ok(())
 }
 
+// tcp support simultaneous connect, so initiator and server can both use connect.
+async fn try_connect_to_remote(
+    peer_mgr: Arc<PeerManager>,
+    a_mapped_addr: SocketAddr,
+    local_port: u16,
+    is_client: bool,
+    max_attempts: u32,
+) -> Result<(), Error> {
+    tracing::info!(
+        ?a_mapped_addr,
+        local_port,
+        "tcp hole punch server start connect loop"
+    );
+
+    let mut connector =
+        TcpTunnelConnector::new(format!("tcp://{}", a_mapped_addr).parse().unwrap());
+    connector.set_bind_addrs(vec![bind_addr_for_port(
+        local_port,
+        a_mapped_addr.is_ipv6(),
+    )]);
+
+    let start = tokio::time::Instant::now();
+    let mut attempts: u32 = 0;
+    while start.elapsed() < Duration::from_secs(10) && attempts < max_attempts {
+        attempts = attempts.wrapping_add(1);
+        let _g = peer_mgr.get_global_ctx().net_ns.guard();
+        if let Ok(Ok(tunnel)) =
+            tokio::time::timeout(Duration::from_secs(3), connector.connect()).await
+        {
+            let add_tunnel_ret = if is_client {
+                peer_mgr.add_client_tunnel(tunnel, false).await.map(|_| ())
+            } else {
+                peer_mgr.add_tunnel_as_server(tunnel, false).await
+            };
+            if let Err(e) = add_tunnel_ret {
+                tracing::error!(
+                    ?a_mapped_addr,
+                    local_port,
+                    attempts,
+                    ?e,
+                    "tcp hole punch server connected and added client tunnel failed"
+                );
+                continue;
+            } else {
+                tracing::info!(
+                    ?a_mapped_addr,
+                    local_port,
+                    attempts,
+                    is_client,
+                    "tcp hole punch server connected and added tunnel"
+                );
+                return Ok(());
+            }
+        }
+        tracing::trace!(
+            ?a_mapped_addr,
+            local_port,
+            attempts,
+            "tcp hole punch server connect attempt failed"
+        );
+        let sleep_ms = rand::thread_rng().gen_range(10..100);
+        tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+    }
+
+    tracing::warn!(
+        ?a_mapped_addr,
+        local_port,
+        attempts,
+        "tcp hole punch server connect loop timeout"
+    );
+
+    Err(anyhow::anyhow!(
+        "tcp hole punch server connect loop timeout"
+    ))
+}
+
 struct TcpHolePunchServer {
     peer_mgr: Arc<PeerManager>,
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
@@ -112,60 +189,6 @@ impl TcpHolePunchServer {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "tcp hole punch server".to_string());
         Arc::new(Self { peer_mgr, tasks })
-    }
-
-    async fn spawn_connect_task(&self, a_mapped_addr: SocketAddr, local_port: u16) {
-        let peer_mgr = self.peer_mgr.clone();
-        let mut connector =
-            TcpTunnelConnector::new(format!("tcp://{}", a_mapped_addr).parse().unwrap());
-        connector.set_bind_addrs(vec![bind_addr_for_port(
-            local_port,
-            a_mapped_addr.is_ipv6(),
-        )]);
-
-        tracing::info!(
-            ?a_mapped_addr,
-            local_port,
-            "tcp hole punch server start connect loop"
-        );
-
-        self.tasks.lock().unwrap().spawn(async move {
-            let start = tokio::time::Instant::now();
-            let mut attempts: u32 = 0;
-            loop {
-                if start.elapsed() > Duration::from_secs(10) {
-                    tracing::warn!(
-                        ?a_mapped_addr,
-                        local_port,
-                        attempts,
-                        "tcp hole punch server connect loop timeout"
-                    );
-                    break;
-                }
-                attempts = attempts.wrapping_add(1);
-                let _g = peer_mgr.get_global_ctx().net_ns.guard();
-                if let Ok(Ok(tunnel)) =
-                    tokio::time::timeout(Duration::from_secs(3), connector.connect()).await
-                {
-                    if peer_mgr.add_client_tunnel(tunnel, false).await.is_ok() {
-                        tracing::info!(
-                            ?a_mapped_addr,
-                            local_port,
-                            attempts,
-                            "tcp hole punch server connected and added client tunnel"
-                        );
-                        break;
-                    }
-                }
-                tracing::trace!(
-                    ?a_mapped_addr,
-                    local_port,
-                    attempts,
-                    "tcp hole punch server connect attempt finished"
-                );
-                tokio::time::sleep(Duration::from_millis(150)).await;
-            }
-        });
     }
 }
 
@@ -219,7 +242,11 @@ impl TcpHolePunchRpc for TcpHolePunchServer {
             ?mapped_addr,
             "tcp hole punch rpc responding with listener mapped addr and start connecting"
         );
-        self.spawn_connect_task(a_mapped_addr, local_port).await;
+
+        let peer_mgr = self.peer_mgr.clone();
+        self.tasks.lock().unwrap().spawn(async move {
+            let _ = try_connect_to_remote(peer_mgr, a_mapped_addr, local_port, true, 5).await;
+        });
 
         Ok(TcpHolePunchResponse {
             listener_mapped_addr: Some(mapped_addr.into()),
@@ -323,11 +350,29 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator rpc returned"
         );
 
-        let _ = send_syn_from_port(&self.peer_mgr, local_port, mapped_addr).await;
+        if let Ok(()) = try_connect_to_remote(
+            self.peer_mgr.clone(),
+            remote_mapped_addr,
+            local_port,
+            false,
+            1,
+        )
+        .await
+        {
+            tracing::info!(
+                dst_peer_id,
+                local_port,
+                ?remote_mapped_addr,
+                "tcp hole punch initiator connected to remote mapped addr with simultaneous connection"
+            );
+            return Ok(());
+        }
+
         tracing::debug!(
             dst_peer_id,
             local_port,
-            "tcp hole punch initiator sent syn to own mapped addr"
+            ?remote_mapped_addr,
+            "tcp hole punch initiator sent syn to remote mapped addr"
         );
 
         let mut listener =
@@ -343,16 +388,43 @@ impl TcpHolePunchConnectorData {
             "tcp hole punch initiator listening"
         );
 
-        let tunnel = tokio::time::timeout(Duration::from_secs(10), listener.accept())
-            .await
-            .with_context(|| "waiting tcp hole punch accept timeout")??;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            self.accept_loop(&mut listener, dst_peer_id),
+        )
+        .await??;
 
-        self.peer_mgr.add_tunnel_as_server(tunnel, false).await?;
         tracing::info!(
             dst_peer_id,
             "tcp hole punch initiator accepted and added server tunnel"
         );
+
         Ok(())
+    }
+
+    async fn accept_loop(
+        &self,
+        listener: &mut TcpTunnelListener,
+        dst_peer_id: PeerId,
+    ) -> Result<(), Error> {
+        loop {
+            match listener.accept().await {
+                Ok(tunnel) => {
+                    if let Err(e) = self.peer_mgr.add_tunnel_as_server(tunnel, false).await {
+                        tracing::error!("tcp hole punch add tunnel error: {}", e);
+                        continue;
+                    }
+
+                    tracing::info!(
+                        dst_peer_id,
+                        "tcp hole punch initiator accepted and added server tunnel"
+                    );
+                }
+                Err(e) => {
+                    tracing::error!("tcp hole punch accept error: {}", e);
+                }
+            }
+        }
     }
 }
 
