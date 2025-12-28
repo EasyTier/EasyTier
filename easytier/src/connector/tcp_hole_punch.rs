@@ -24,7 +24,6 @@ use crate::{
         rpc_types::{self, controller::BaseController},
     },
     tunnel::{
-        common::setup_sokcet2,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         TunnelConnector as _, TunnelListener as _,
     },
@@ -71,36 +70,6 @@ async fn select_local_port(peer_mgr: &Arc<PeerManager>, is_v6: bool) -> Result<u
     let port = listener.local_addr()?.port();
     tracing::debug!(?bind_addr, port, "tcp hole punch selected local port");
     Ok(port)
-}
-
-async fn send_syn_from_port(
-    peer_mgr: &Arc<PeerManager>,
-    local_port: u16,
-    dst: SocketAddr,
-) -> Result<(), Error> {
-    let bind_addr = bind_addr_for_port(local_port, dst.is_ipv6());
-    tracing::debug!(?bind_addr, ?dst, "tcp hole punch send syn");
-    let _g = peer_mgr.get_global_ctx().net_ns.guard();
-
-    let socket2_socket = socket2::Socket::new(
-        socket2::Domain::for_address(dst),
-        socket2::Type::STREAM,
-        Some(socket2::Protocol::TCP),
-    )?;
-    setup_sokcet2(&socket2_socket, &bind_addr)?;
-    let socket = tokio::net::TcpSocket::from_std_stream(socket2_socket.into());
-    match tokio::time::timeout(Duration::from_millis(600), socket.connect(dst)).await {
-        Ok(Ok(_stream)) => {
-            tracing::trace!(?bind_addr, ?dst, "tcp hole punch syn connect succeeded");
-        }
-        Ok(Err(e)) => {
-            tracing::trace!(?bind_addr, ?dst, ?e, "tcp hole punch syn connect failed");
-        }
-        Err(e) => {
-            tracing::trace!(?bind_addr, ?dst, ?e, "tcp hole punch syn connect timeout");
-        }
-    }
-    Ok(())
 }
 
 // tcp support simultaneous connect, so initiator and server can both use connect.
@@ -576,8 +545,13 @@ impl TcpHolePunchConnector {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
-        if self.peer_mgr.get_global_ctx().get_flags().disable_p2p {
-            tracing::debug!("tcp hole punch disabled by disable_p2p");
+        let flags = self.peer_mgr.get_global_ctx().get_flags();
+        if flags.disable_p2p || flags.disable_tcp_hole_punching {
+            tracing::debug!(
+                "tcp hole punch disabled by disable_p2p(={}) or disable_tcp_hole_punching(={});",
+                flags.disable_p2p,
+                flags.disable_tcp_hole_punching
+            );
             return Ok(());
         }
 

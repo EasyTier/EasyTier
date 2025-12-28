@@ -225,7 +225,12 @@ fn get_or_create_worker(interface_name: &str) -> io::Result<Arc<InterfaceWorker>
     let interface = interfaces
         .into_iter()
         .find(|iface| iface.name == interface_name)
-        .expect("Network interface not found");
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Network interface '{}' not found", interface_name),
+            )
+        })?;
 
     let worker = InterfaceWorker::new(interface)?;
     INTERFACE_MANAGERS.insert(interface_name.to_string(), Arc::downgrade(&worker));

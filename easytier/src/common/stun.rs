@@ -432,7 +432,7 @@ impl StunNatTypeDetectResult {
         false
     }
 
-    fn is_pat(&self) -> bool {
+    fn is_no_pat(&self) -> bool {
         for resp in self.stun_resps.iter() {
             if resp.mapped_socket_addr.map(|x| x.port()) == Some(self.source_addr.port()) {
                 return true;
@@ -470,7 +470,7 @@ impl StunNatTypeDetectResult {
             if self.has_ip_changed_resp() {
                 if self.is_open_internet() {
                     NatType::OpenInternet
-                } else if self.is_pat() {
+                } else if self.is_no_pat() {
                     NatType::NoPat
                 } else {
                     NatType::FullCone
@@ -522,7 +522,7 @@ impl StunNatTypeDetectResult {
         }
 
         if self.is_cone() {
-            if self.is_pat() {
+            if self.is_no_pat() {
                 NatType::NoPat
             } else {
                 NatType::FullCone
@@ -802,8 +802,6 @@ impl TcpStunClient {
 
     #[tracing::instrument(ret, level = Level::TRACE)]
     pub async fn bind_request(self) -> Result<BindRequestResponse, Error> {
-        let mut tids = vec![];
-
         let mut stream = self.connect().await?;
         let local_addr = stream.local_addr()?;
         let stun_host = self.stun_server;
@@ -814,14 +812,13 @@ impl TcpStunClient {
         let msg = encoder
             .encode_into_bytes(message.clone())
             .with_context(|| "encode tcp stun message")?;
-        tids.push(tid);
         tokio::time::timeout(self.io_timeout, stream.write_all(msg.as_slice())).await??;
 
         let now = Instant::now();
         let msg = Self::tcp_read_stun_message(&mut stream, self.io_timeout).await?;
         if msg.class() != MessageClass::SuccessResponse
             || msg.method() != BINDING
-            || !tids.contains(&tid_to_u32(&msg.transaction_id()))
+            || tid_to_u32(&msg.transaction_id()) != tid
         {
             return Err(Error::MessageDecodeError(
                 "unexpected stun response".to_string(),
