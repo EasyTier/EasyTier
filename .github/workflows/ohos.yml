@@ -143,13 +143,23 @@ jobs:
           ohrs artifact
           mv package.har easytier-ohrs.har
 
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-ohos
+          path: |
+            ./easytier-contrib/easytier-ohrs/easytier-ohrs.har
+            ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
+          retention-days: 5
+          if-no-files-found: error
+
       - name: Publish To Center Ohpm
+        if: github.event_name == 'push'
         working-directory: ./easytier-contrib/easytier-ohrs
         env:
           OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
           OHPM_PRIVATE_KEY: ${{ secrets.OHPM_PRIVATE_KEY }}
           OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
-        if: ${{ env.OHPM_PUBLISH_CODE != '' }}
         run: |
           ohpm config set publish_id "$OHPM_PUBLISH_CODE"
           ohpm config set publish_registry https://ohpm.openharmony.cn/ohpm
@@ -166,22 +176,10 @@ jobs:
           ohpm publish easytier-ohrs.har
           
       - name: Publish To Private Ohpm
+        if: github.event_name == 'push'
         working-directory: ./easytier-contrib/easytier-ohrs
-        env:
-          OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
-        if: ${{ env.OHPM_PUBLISH_CODE != '' }}
         run: |
           printf '%s' "${{ secrets.CODEARTS_PRIVATE_OHPM }}" > ~/.ohpm/.ohpmrc
           ohpm config set strict_ssl false
           ohpm publish easytier-ohrs.har
           curl --header "Content-Type: application/json" --request POST --data "{}" ${{ secrets.CODEARTS_WEBHOOKS }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: easytier-ohos
-          path: |
-            ./easytier-contrib/easytier-ohrs/easytier-ohrs.har
-            ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
-          retention-days: 5
-          if-no-files-found: error
