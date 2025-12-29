@@ -313,4 +313,6 @@ export enum EventType {
   DhcpIpv4Conflicted = 'DhcpIpv4Conflicted', // ipv4 | null
 
   PortForwardAdded = 'PortForwardAdded', // PortForwardConfigPb
+
+  ProxyCidrsUpdated = 'ProxyCidrsUpdated', // string[], string[]
 }

@@ -228,6 +228,7 @@ event:
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded
+  ProxyCidrsUpdated: ProxyCidrsUpdated
 
 web:
   login:

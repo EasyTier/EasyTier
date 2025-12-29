@@ -41,6 +41,7 @@ async function onDhcpIpChanged(event: Event<string>) {
 }
 
 async function onProxyCidrsUpdated(event: Event<string>) {
+    console.log(`Received event '${EVENTS.PROXY_CIDRS_UPDATED}' for instance: ${event.payload}`);
     if (type() === 'android') {
         await onNetworkInstanceChange(event.payload);
     }

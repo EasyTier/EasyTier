@@ -534,6 +534,8 @@ pub struct Instance {
     #[cfg(feature = "socks5")]
     socks5_server: Arc<Socks5Server>,
 
+    proxy_cidrs_monitor: Option<ScopedTask<()>>,
+
     global_ctx: ArcGlobalCtx,
 }
 
@@ -612,6 +614,8 @@ impl Instance {
 
             #[cfg(feature = "socks5")]
             socks5_server,
+
+            proxy_cidrs_monitor: None,
 
             global_ctx,
         }
@@ -963,6 +967,12 @@ impl Instance {
             .await;
 
         self.add_initial_peers().await?;
+
+        let monitor = super::proxy_cidrs_monitor::ProxyCidrsMonitor::new(
+            self.peer_manager.clone(),
+            self.global_ctx.clone(),
+        );
+        self.proxy_cidrs_monitor = Some(monitor.start());
 
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;

@@ -415,8 +415,14 @@ fn handle_event(
                         print_event(instance_id, format!("config patched. patch: {:?}", patch));
                     }
 
-                    GlobalCtxEvent::ProxyCidrsUpdated() => {
-                        print_event(instance_id, "proxy CIDRs updated.".to_string());
+                    GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => {
+                        print_event(
+                            instance_id,
+                            format!(
+                                "proxy CIDRs updated. added: {:?}, removed: {:?}",
+                                added, removed
+                            ),
+                        );
                     }
                 }
             } else {

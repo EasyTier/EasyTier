@@ -780,7 +780,7 @@ mod manager {
             app: &AppHandle,
             instance_id: &uuid::Uuid,
         ) -> Result<(), String> {
-            // #[cfg(target_os = "android")]
+            #[cfg(target_os = "android")]
             if let Some(instance_manager) = super::INSTANCE_MANAGER.read().await.as_ref() {
                 let instance_uuid = *instance_id;
                 if let Some(instance_ref) = instance_manager
@@ -796,7 +796,7 @@ mod manager {
                                     Ok(easytier::common::global_ctx::GlobalCtxEvent::DhcpIpv4Changed(_, _)) => {
                                         let _ = app_clone.emit("dhcp_ip_changed", instance_id_clone);
                                     }
-                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated()) => {
+                                    Ok(easytier::common::global_ctx::GlobalCtxEvent::ProxyCidrsUpdated(_, _)) => {
                                         let _ = app_clone.emit("proxy_cidrs_updated", instance_id_clone);
                                     }
                                     Ok(_) => {}
