@@ -45,6 +45,9 @@ pub mod websocket;
 #[cfg(any(feature = "quic", feature = "websocket"))]
 pub mod insecure_tls;
 
+#[cfg(unix)]
+pub mod unix;
+
 #[derive(thiserror::Error, Debug)]
 pub enum TunnelError {
     #[error("io error")]

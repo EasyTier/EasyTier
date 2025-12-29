@@ -13,8 +13,8 @@ use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
     tunnel::{
         check_scheme_and_get_socket_addr, fake_tcp::FakeTcpTunnelConnector,
-        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, IpVersion,
-        TunnelConnector,
+        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
+        unix::UnixSocketTunnelConnector, IpVersion, TunnelConnector,
     },
 };
 
@@ -171,6 +171,11 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
+            Box::new(connector)
+        }
+        #[cfg(unix)]
+        "unix" => {
+            let connector = UnixSocketTunnelConnector::new(url);
             Box::new(connector)
         }
         _ => {
