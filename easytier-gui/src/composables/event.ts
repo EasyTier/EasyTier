@@ -9,6 +9,7 @@ const EVENTS = Object.freeze({
     VPN_SERVICE_STOP: 'vpn_service_stop',
     DHCP_IP_CHANGED: 'dhcp_ip_changed',
     PROXY_CIDRS_UPDATED: 'proxy_cidrs_updated',
+    EVENT_LAGGED: 'event_lagged',
 });
 
 function onSaveConfigs(event: Event<NetworkTypes.NetworkConfig[]>) {
@@ -45,6 +46,12 @@ async function onProxyCidrsUpdated(event: Event<string>) {
     }
 }
 
+async function onEventLagged(event: Event<string>) {
+    if (type() === 'android') {
+        await onNetworkInstanceChange(event.payload);
+    }
+}
+
 export async function listenGlobalEvents() {
     const unlisteners = [
         await listen(EVENTS.SAVE_CONFIGS, onSaveConfigs),
@@ -53,6 +60,7 @@ export async function listenGlobalEvents() {
         await listen(EVENTS.VPN_SERVICE_STOP, onVpnServiceStop),
         await listen(EVENTS.DHCP_IP_CHANGED, onDhcpIpChanged),
         await listen(EVENTS.PROXY_CIDRS_UPDATED, onProxyCidrsUpdated),
+        await listen(EVENTS.EVENT_LAGGED, onEventLagged),
     ];
 
     return () => {

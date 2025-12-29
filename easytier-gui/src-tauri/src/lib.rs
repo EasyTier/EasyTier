@@ -780,7 +780,7 @@ mod manager {
             app: &AppHandle,
             instance_id: &uuid::Uuid,
         ) -> Result<(), String> {
-            #[cfg(target_os = "android")]
+            // #[cfg(target_os = "android")]
             if let Some(instance_manager) = super::INSTANCE_MANAGER.read().await.as_ref() {
                 let instance_uuid = *instance_id;
                 if let Some(instance_ref) = instance_manager
@@ -804,6 +804,7 @@ mod manager {
                                         break;
                                     }
                                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                        let _ = app_clone.emit("event_lagged", instance_id_clone);
                                         event_receiver = event_receiver.resubscribe();
                                     }
                                 }
