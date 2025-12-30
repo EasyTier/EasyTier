@@ -417,12 +417,15 @@ impl Socks5ServerNet {
             ),
         );
 
+        let forward_tasks = Arc::new(std::sync::Mutex::new(forward_tasks));
+        join_joinset_background(forward_tasks.clone(), "Socks5ServerNet".to_string());
+
         Self {
             ipv4_addr,
             auth,
 
             smoltcp_net: Arc::new(net),
-            forward_tasks: Arc::new(std::sync::Mutex::new(forward_tasks)),
+            forward_tasks,
 
             entries,
         }
@@ -481,7 +484,6 @@ pub struct Socks5Server {
     net: Arc<Mutex<Option<Socks5ServerNet>>>,
     entries: Socks5EntrySet,
 
-    tcp_forward_task: Arc<std::sync::Mutex<JoinSet<()>>>,
     udp_client_map: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo>>>,
     udp_forward_task: Arc<DashMap<UdpClientKey, ScopedTask<()>>>,
 
@@ -595,7 +597,6 @@ impl Socks5Server {
             net: Arc::new(Mutex::new(None)),
             entries: Arc::new(DashMap::new()),
 
-            tcp_forward_task: Arc::new(std::sync::Mutex::new(JoinSet::new())),
             udp_client_map: Arc::new(DashMap::new()),
             udp_forward_task: Arc::new(DashMap::new()),
 
@@ -613,7 +614,6 @@ impl Socks5Server {
         let peer_manager = self.peer_manager.clone();
         let packet_recv = self.packet_recv.clone();
         let entries = self.entries.clone();
-        let tcp_forward_task = self.tcp_forward_task.clone();
         let udp_client_map = self.udp_client_map.clone();
         let cancel_tokens = self.cancel_tokens.clone();
         let port_forward_list_change_notifier = self.port_forward_list_change_notifier.clone();
@@ -634,7 +634,6 @@ impl Socks5Server {
                     prev_ipv4 = cur_ipv4;
 
                     entries.clear();
-                    tcp_forward_task.lock().unwrap().abort_all();
                     udp_client_map.clear();
 
                     if let Some(cur_ipv4) = cur_ipv4 {
@@ -804,7 +803,8 @@ impl Socks5Server {
         let net = self.net.clone();
         let entries = self.entries.clone();
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
-        let forward_tasks = tasks.clone();
+        join_joinset_background(tasks.clone(), "tcp port forward".to_string());
+        let forward_tasks = tasks;
         let kcp_endpoint = self.kcp_endpoint.lock().await.clone();
         let peer_mgr = Arc::downgrade(&self.peer_manager.clone());
         let cancel_token = CancellationToken::new();
