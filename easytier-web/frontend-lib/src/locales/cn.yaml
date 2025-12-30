@@ -228,6 +228,7 @@ event:
   DhcpIpv4Changed: DHCP IPv4地址更改
   DhcpIpv4Conflicted: DHCP IPv4地址冲突
   PortForwardAdded: 端口转发添加
+  ProxyCidrsUpdated: 子网代理CIDR更新
 
 web:
   login:

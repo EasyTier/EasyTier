@@ -55,6 +55,8 @@ pub enum GlobalCtxEvent {
     PortForwardAdded(PortForwardConfigPb),
 
     ConfigPatched(InstanceConfigPatch),
+
+    ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;

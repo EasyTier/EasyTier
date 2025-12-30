@@ -13,6 +13,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
+    instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
     peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
     tunnel::{
         common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
@@ -825,6 +826,57 @@ impl NicCtx {
         });
     }
 
+    async fn apply_route_changes(
+        ifcfg: &impl IfConfiguerTrait,
+        ifname: &str,
+        net_ns: &crate::common::netns::NetNS,
+        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
+        added: Vec<cidr::Ipv4Cidr>,
+        removed: Vec<cidr::Ipv4Cidr>,
+    ) {
+        tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
+
+        // Remove routes
+        for cidr in removed {
+            if !cur_proxy_cidrs.contains(&cidr) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .remove_ipv4_route(ifname, cidr.first_address(), cidr.network_length())
+                .await;
+
+            if ret.is_err() {
+                tracing::trace!(
+                    cidr = ?cidr,
+                    err = ?ret,
+                    "remove route failed.",
+                );
+            }
+            cur_proxy_cidrs.remove(&cidr);
+        }
+
+        // Add routes
+        for cidr in added {
+            if cur_proxy_cidrs.contains(&cidr) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .add_ipv4_route(ifname, cidr.first_address(), cidr.network_length(), None)
+                .await;
+
+            if ret.is_err() {
+                tracing::trace!(
+                    cidr = ?cidr,
+                    err = ?ret,
+                    "add route failed.",
+                );
+            }
+            cur_proxy_cidrs.insert(cidr);
+        }
+    }
+
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
         let Some(peer_mgr) = self.peer_mgr.upgrade() else {
             return Err(anyhow::anyhow!("peer manager not available").into());
@@ -834,79 +886,66 @@ impl NicCtx {
         let nic = self.nic.lock().await;
         let ifcfg = nic.get_ifcfg();
         let ifname = nic.ifname().to_owned();
+        let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = BTreeSet::new();
+            let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
+
+            // Initial sync: get current proxy_cidrs state and apply routes
+            let (added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                peer_mgr.as_ref(),
+                &global_ctx,
+                &mut cur_proxy_cidrs,
+            )
+            .await;
+            Self::apply_route_changes(
+                &ifcfg,
+                &ifname,
+                &net_ns,
+                &mut cur_proxy_cidrs,
+                added,
+                removed,
+            )
+            .await;
+
             loop {
-                let mut proxy_cidrs = BTreeSet::new();
-                let routes = peer_mgr.list_routes().await;
-                for r in routes {
-                    for cidr in r.proxy_cidrs {
-                        let Ok(cidr) = cidr.parse::<cidr::Ipv4Cidr>() else {
-                            continue;
-                        };
-                        proxy_cidrs.insert(cidr);
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
+                        break;
                     }
-                }
-                // add vpn portal cidr to proxy_cidrs
-                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
-                    proxy_cidrs.insert(vpn_cfg.client_cidr);
-                }
-
-                if let Some(routes) = global_ctx.config.get_routes() {
-                    // if has manual routes, just override entire proxy_cidrs
-                    proxy_cidrs = routes.into_iter().collect();
-                }
-
-                // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
-                for cidr in cur_proxy_cidrs.iter() {
-                    if proxy_cidrs.contains(cidr) {
-                        continue;
-                    }
-
-                    let _g = net_ns.guard();
-                    let ret = ifcfg
-                        .remove_ipv4_route(
-                            ifname.as_str(),
-                            cidr.first_address(),
-                            cidr.network_length(),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        tracing::warn!(
+                            "event bus lagged in proxy_cidrs route updater, doing full sync"
+                        );
+                        event_receiver = event_receiver.resubscribe();
+                        // Full sync after lagged to recover consistent state
+                        let (added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                            peer_mgr.as_ref(),
+                            &global_ctx,
+                            &mut cur_proxy_cidrs,
                         )
                         .await;
-
-                    if ret.is_err() {
-                        tracing::trace!(
-                            cidr = ?cidr,
-                            err = ?ret,
-                            "remove route failed.",
-                        );
+                        GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
                     }
-                }
+                };
 
-                for cidr in proxy_cidrs.iter() {
-                    if cur_proxy_cidrs.contains(cidr) {
-                        continue;
-                    }
-                    let _g = net_ns.guard();
-                    let ret = ifcfg
-                        .add_ipv4_route(
-                            ifname.as_str(),
-                            cidr.first_address(),
-                            cidr.network_length(),
-                            None,
-                        )
-                        .await;
+                // Only handle ProxyCidrsUpdated events
+                let (added, removed) = match event {
+                    GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => (added, removed),
+                    _ => continue,
+                };
 
-                    if ret.is_err() {
-                        tracing::trace!(
-                            cidr = ?cidr,
-                            err = ?ret,
-                            "add route failed.",
-                        );
-                    }
-                }
-
-                cur_proxy_cidrs = proxy_cidrs;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                Self::apply_route_changes(
+                    &ifcfg,
+                    &ifname,
+                    &net_ns,
+                    &mut cur_proxy_cidrs,
+                    added,
+                    removed,
+                )
+                .await;
             }
         });
 
