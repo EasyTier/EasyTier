@@ -67,7 +67,7 @@ impl ProxyCidrsMonitor {
     pub fn start(self) -> ScopedTask<()> {
         ScopedTask::from(tokio::spawn(async move {
             let mut cur_proxy_cidrs = BTreeSet::new();
-            let mut last_update = Instant::now();
+            let mut last_update = None::<Instant>;
 
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -79,10 +79,10 @@ impl ProxyCidrsMonitor {
 
                 // Check if route info has been updated
                 let last_update_time = peer_mgr.get_route_peer_info_last_update_time().await;
-                if last_update == last_update_time {
+                if last_update == Some(last_update_time) {
                     continue;
                 }
-                last_update = last_update_time;
+                last_update = Some(last_update_time);
 
                 let (added, removed) = Self::diff_proxy_cidrs(
                     peer_mgr.as_ref(),
