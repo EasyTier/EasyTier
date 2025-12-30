@@ -1,16 +1,19 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU16, Ordering};
+use std::time::Instant;
 use std::{
     net::IpAddr,
     sync::{atomic::AtomicBool, Arc},
 };
 
 use arc_swap::ArcSwap;
+use dashmap::DashMap;
 use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::{
     ip::IpNextHeaderProtocols, ipv4::Ipv4Packet, tcp::TcpPacket, udp::UdpPacket, Packet as _,
 };
 
+use crate::common::scoped_task::ScopedTask;
 use crate::proto::acl::{AclStats, Protocol};
 use crate::tunnel::packet_def::PacketType;
 use crate::{
@@ -19,6 +22,37 @@ use crate::{
     tunnel::packet_def::ZCPacket,
 };
 
+#[derive(Debug, Eq, PartialEq, Hash)]
+struct OutboundAllowRecord {
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    src_port: Option<u16>,
+    dst_port: Option<u16>,
+    protocol: Protocol,
+}
+
+impl OutboundAllowRecord {
+    fn new_from_inbound_packet(p: &PacketInfo) -> Self {
+        Self {
+            src_ip: p.src_ip,
+            dst_ip: p.dst_ip,
+            src_port: p.src_port,
+            dst_port: p.dst_port,
+            protocol: p.protocol,
+        }
+    }
+
+    fn new_from_outbound_packet(p: &PacketInfo) -> Self {
+        Self {
+            src_ip: p.dst_ip,
+            dst_ip: p.src_ip,
+            src_port: p.dst_port,
+            dst_port: p.src_port,
+            protocol: p.protocol,
+        }
+    }
+}
+
 /// ACL filter that can be inserted into the packet processing pipeline
 /// Optimized with lock-free hot reloading via atomic processor replacement
 pub struct AclFilter {
@@ -26,6 +60,11 @@ pub struct AclFilter {
     acl_processor: ArcSwap<AclProcessor>,
     acl_enabled: Arc<AtomicBool>,
     quic_udp_port: AtomicU16,
+
+    // Track allowed outbound packets and automatically allow their corresponding inbound response
+    // packets, even if they would normally be dropped by ACL rules
+    outbound_allow_records: Arc<DashMap<OutboundAllowRecord, Instant>>,
+    clean_task: ScopedTask<()>,
 }
 
 impl Default for AclFilter {
@@ -36,10 +75,21 @@ impl Default for AclFilter {
 
 impl AclFilter {
     pub fn new() -> Self {
+        let outbound_allow_records = Arc::new(DashMap::new());
+        let record_clone = outbound_allow_records.clone();
         Self {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
             quic_udp_port: AtomicU16::new(0),
+            outbound_allow_records,
+            clean_task: tokio::spawn(async move {
+                let max_life = std::time::Duration::from_secs(30);
+                loop {
+                    record_clone.retain(|_, v| v.elapsed() < max_life);
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                }
+            })
+            .into(),
         }
     }
 
@@ -336,8 +386,32 @@ impl AclFilter {
 
         // Check if packet should be allowed
         match acl_result.action {
-            Action::Allow | Action::Noop => true,
+            Action::Allow | Action::Noop => {
+                if matches!(chain_type, ChainType::Outbound) {
+                    self.outbound_allow_records.insert(
+                        OutboundAllowRecord::new_from_outbound_packet(&packet_info),
+                        Instant::now(),
+                    );
+                }
+                true
+            }
             Action::Drop => {
+                if is_in {
+                    let record = OutboundAllowRecord::new_from_inbound_packet(&packet_info);
+                    let entry = self.outbound_allow_records.entry(record);
+                    if let dashmap::Entry::Occupied(mut entry) = entry {
+                        entry.insert(Instant::now());
+                        tracing::trace!(
+                            "ACL: Allowing {:?} packet from {} to {} because of existing allow record, chain_type: {:?}",
+                            packet_info.protocol,
+                            packet_info.src_ip,
+                            packet_info.dst_ip,
+                            chain_type,
+                        );
+                        return true;
+                    }
+                }
+
                 tracing::trace!(
                     "ACL: Dropping {:?} packet from {} to {}, chain_type: {:?}",
                     packet_info.protocol,
