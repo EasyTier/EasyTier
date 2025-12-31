@@ -2468,12 +2468,21 @@ pub async fn acl_group_self_test(
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn whitelist_test(#[values("tcp", "udp")] protocol: &str) {
+pub async fn whitelist_test(
+    #[values("tcp", "udp")] protocol: &str,
+    #[values(true, false)] test_outbound_allow_list: bool,
+) {
     let port = 44553;
+    let acl_configured_inst = if test_outbound_allow_list {
+        "inst1"
+    } else {
+        "inst3"
+    };
     let insts = init_three_node_ex(
         protocol,
         move |cfg| {
-            if cfg.get_inst_name() == "inst3" {
+            let port = if test_outbound_allow_list { 0 } else { port };
+            if cfg.get_inst_name() == acl_configured_inst {
                 if protocol == "tcp" {
                     cfg.set_tcp_whitelist(vec![format!("{}", port)]);
                 } else if protocol == "udp" {
@@ -2534,6 +2543,10 @@ pub async fn whitelist_test(#[values("tcp", "udp")] protocol: &str) {
         )
         .await
         .unwrap_or_else(|_| panic!("{} should be allowed", p));
+    }
+
+    if test_outbound_allow_list {
+        return;
     }
 
     // test other port
