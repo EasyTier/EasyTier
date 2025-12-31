@@ -26,8 +26,12 @@ impl ProxyCidrsMonitor {
     pub async fn diff_proxy_cidrs(
         peer_mgr: &PeerManager,
         global_ctx: &ArcGlobalCtx,
-        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
-    ) -> (Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>) {
+        cur_proxy_cidrs: &BTreeSet<cidr::Ipv4Cidr>,
+    ) -> (
+        BTreeSet<cidr::Ipv4Cidr>,
+        Vec<cidr::Ipv4Cidr>,
+        Vec<cidr::Ipv4Cidr>,
+    ) {
         // Collect proxy_cidrs from routes
         let mut proxy_cidrs = BTreeSet::new();
         let routes = peer_mgr.list_routes().await;
@@ -52,15 +56,13 @@ impl ProxyCidrsMonitor {
 
         // Calculate diff
         if cur_proxy_cidrs == &proxy_cidrs {
-            return (Vec::new(), Vec::new());
+            return (proxy_cidrs, Vec::new(), Vec::new());
         }
         let added: Vec<cidr::Ipv4Cidr> = proxy_cidrs.difference(cur_proxy_cidrs).cloned().collect();
         let removed: Vec<cidr::Ipv4Cidr> =
             cur_proxy_cidrs.difference(&proxy_cidrs).cloned().collect();
 
-        *cur_proxy_cidrs = proxy_cidrs;
-
-        (added, removed)
+        (proxy_cidrs, added, removed)
     }
 
     /// Starts monitoring proxy_cidrs changes and emits events with diffs
@@ -84,12 +86,11 @@ impl ProxyCidrsMonitor {
                 }
                 last_update = Some(last_update_time);
 
-                let (added, removed) = Self::diff_proxy_cidrs(
-                    peer_mgr.as_ref(),
-                    &self.global_ctx,
-                    &mut cur_proxy_cidrs,
-                )
-                .await;
+                let (new_proxy_cidrs, added, removed) =
+                    Self::diff_proxy_cidrs(peer_mgr.as_ref(), &self.global_ctx, &cur_proxy_cidrs)
+                        .await;
+
+                cur_proxy_cidrs = new_proxy_cidrs;
 
                 if added.is_empty() && removed.is_empty() {
                     continue;
