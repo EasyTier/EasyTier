@@ -892,10 +892,10 @@ impl NicCtx {
             let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
 
             // Initial sync: get current proxy_cidrs state and apply routes
-            let (added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
                 peer_mgr.as_ref(),
                 &global_ctx,
-                &mut cur_proxy_cidrs,
+                &cur_proxy_cidrs,
             )
             .await;
             Self::apply_route_changes(
@@ -921,10 +921,10 @@ impl NicCtx {
                         );
                         event_receiver = event_receiver.resubscribe();
                         // Full sync after lagged to recover consistent state
-                        let (added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
                             peer_mgr.as_ref(),
                             &global_ctx,
-                            &mut cur_proxy_cidrs,
+                            &cur_proxy_cidrs,
                         )
                         .await;
                         GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
