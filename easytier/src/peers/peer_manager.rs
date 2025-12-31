@@ -1,6 +1,6 @@
 use std::{
     fmt::Debug,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     sync::{atomic::AtomicBool, Arc, Weak},
     time::{Instant, SystemTime},
 };
@@ -416,47 +416,25 @@ impl PeerManager {
         if src.scheme() == "ring" {
             return Ok(());
         }
-        let src_host = match src.socket_addrs(|| Some(1)) {
-            Ok(addrs) => addrs,
-            Err(_) => {
-                // if the tunnel is not rely on ip address, skip check
-                return Ok(());
-            }
+        let Ok(Some(addr)) = src.socket_addrs(|| Some(1)).map(|x| x.first().cloned()) else {
+            // if the tunnel is not rely on ip address, skip check
+            return Ok(());
         };
-        let virtual_ipv4 = self.global_ctx.get_ipv4().map(|ip| ip.network());
-        let virtual_ipv6 = self.global_ctx.get_ipv6().map(|ip| ip.network());
-        tracing::info!(
-            ?virtual_ipv4,
-            ?virtual_ipv6,
-            "check remote addr not from virtual network"
-        );
-        for addr in src_host {
-            // if no-tun is enabled, the src ip of packet in virtual network is converted to loopback address
-            if addr.ip().is_loopback()
-                && !self
-                    .allow_loopback_tunnel
-                    .load(std::sync::atomic::Ordering::Relaxed)
-            {
-                anyhow::bail!("tunnel src host is loopback address");
-            }
 
-            match addr {
-                SocketAddr::V4(addr) => {
-                    if let Some(virtual_ipv4) = virtual_ipv4 {
-                        if virtual_ipv4.contains(addr.ip()) {
-                            anyhow::bail!("tunnel src host is from the virtual network (ignore this error please)");
-                        }
-                    }
-                }
-                SocketAddr::V6(addr) => {
-                    if let Some(virtual_ipv6) = virtual_ipv6 {
-                        if virtual_ipv6.contains(addr.ip()) {
-                            anyhow::bail!("tunnel src host is from the virtual network (ignore this error please)");
-                        }
-                    }
-                }
-            }
+        // if no-tun is enabled, the src ip of packet in virtual network is converted to loopback address
+        // we already filter out the connection in tcp/quic/kcp proxy so no need check here.
+        if addr.ip().is_loopback() {
+            // allow other loopback address, good for conn from cdn/l4 connection
+            return Ok(());
         }
+
+        if self.global_ctx.is_ip_in_same_network(&addr.ip()) {
+            anyhow::bail!(
+                "tunnel src {} is from the same network (ignore this error please)",
+                addr
+            );
+        }
+
         Ok(())
     }
 

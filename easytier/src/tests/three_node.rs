@@ -1481,9 +1481,23 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     drop_insts(insts).await;
 }
 
+#[rstest::rstest]
+#[serial_test::serial]
 #[tokio::test]
-async fn avoid_tunnel_loop_back_to_virtual_network() {
-    let insts = init_three_node("udp").await;
+async fn avoid_tunnel_loop_back_to_virtual_network(#[values(true, false)] no_tun: bool) {
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if matches!(cfg.get_inst_name().as_str(), "inst2" | "inst3") {
+                let mut flags = cfg.get_flags();
+                flags.no_tun = no_tun;
+                cfg.set_flags(flags);
+            }
+            cfg
+        },
+        false,
+    )
+    .await;
 
     let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap());
     insts[0]

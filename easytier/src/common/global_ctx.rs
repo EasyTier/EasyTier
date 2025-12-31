@@ -303,6 +303,18 @@ impl GlobalCtx {
         }
     }
 
+    pub fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
+        let check_proto = |listener_proto: &str| {
+            let listener_is_udp = matches!(listener_proto, "udp" | "wg");
+            listener_is_udp == is_udp
+        };
+        self.running_listeners
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|x| x.port() == Some(port) && check_proto(x.scheme()))
+    }
+
     pub fn get_vpn_portal_cidr(&self) -> Option<cidr::Ipv4Cidr> {
         self.config.get_vpn_portal_config().map(|x| x.client_cidr)
     }

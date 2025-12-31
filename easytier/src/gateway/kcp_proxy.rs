@@ -507,6 +507,15 @@ impl KcpProxyDst {
             Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()));
 
         if send_to_self && global_ctx.no_tun() {
+            if global_ctx.is_port_in_running_listeners(dst_socket.port(), false)
+                && global_ctx.is_ip_in_same_network(&src_ip)
+            {
+                return Err(anyhow::anyhow!(
+                    "dst socket {:?} is in running listeners, ignore it",
+                    dst_socket
+                )
+                .into());
+            }
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
 

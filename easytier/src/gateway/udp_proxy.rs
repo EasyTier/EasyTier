@@ -298,6 +298,30 @@ impl UdpProxy {
             udp::UdpPacket::new(ipv4.payload())?
         };
 
+        // TODO: should it be async.
+        let dst_socket = if Some(ipv4.get_destination())
+            == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address)
+        {
+            if self
+                .global_ctx
+                .is_port_in_running_listeners(udp_packet.get_destination(), true)
+                && self
+                    .global_ctx
+                    .is_ip_in_same_network(&std::net::IpAddr::V4(ipv4.get_source()))
+            {
+                tracing::debug!(
+                    dst_port = udp_packet.get_destination(),
+                    "dst socket is in running listeners, ignore it"
+                );
+                return Some(());
+            }
+            format!("127.0.0.1:{}", udp_packet.get_destination())
+                .parse()
+                .unwrap()
+        } else {
+            SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination())
+        };
+
         tracing::trace!(
             ?packet,
             ?ipv4,
@@ -338,17 +362,6 @@ impl UdpProxy {
         }
 
         nat_entry.mark_active();
-
-        // TODO: should it be async.
-        let dst_socket = if Some(ipv4.get_destination())
-            == self.global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address)
-        {
-            format!("127.0.0.1:{}", udp_packet.get_destination())
-                .parse()
-                .unwrap()
-        } else {
-            SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination())
-        };
 
         let send_ret = {
             let _g = self.global_ctx.net_ns.guard();
