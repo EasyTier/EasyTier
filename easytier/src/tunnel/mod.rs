@@ -207,8 +207,8 @@ fn default_port(scheme: &str) -> Option<u16> {
     match scheme {
         "tcp" => Some(11010),
         "udp" => Some(11010),
-        "ws" => Some(11011),
-        "wss" => Some(11012),
+        "ws" => Some(80),
+        "wss" => Some(443),
         "faketcp" => Some(11013),
         "quic" => Some(11012),
         "wg" => Some(11011),
