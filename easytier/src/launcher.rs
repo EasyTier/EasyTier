@@ -47,7 +47,7 @@ struct EasyTierData {
 impl Default for EasyTierData {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(16);
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::channel(16);
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
