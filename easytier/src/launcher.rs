@@ -401,7 +401,7 @@ impl NetworkInstance {
 
     pub fn set_tun_fd(&mut self, tun_fd: i32) {
         if let Some(launcher) = self.launcher.as_ref() {
-            let _ = launcher.data.tun_fd.0.send(Some(tun_fd));
+            let _ = launcher.data.tun_fd.0.blocking_send(Some(tun_fd));
         }
     }
 
