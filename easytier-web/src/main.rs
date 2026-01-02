@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate rust_i18n;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -76,11 +77,32 @@ struct Cli {
 
     #[arg(
         long,
+        help = t!("cli.config_server_addr_v4").to_string(),
+        default_value = "0.0.0.0",
+    )]
+    config_server_addr_v4: String,
+
+    #[arg(
+        long,
+        help = t!("cli.config_server_addr_v6").to_string(),
+        default_value = "::",
+    )]
+    config_server_addr_v6: String,
+
+    #[arg(
+        long,
         short='a',
         default_value = "11211",
         help = t!("cli.api_server_port").to_string(),
     )]
     api_server_port: u16,
+
+    #[arg(
+        long,
+        help = t!("cli.api_server_addr").to_string(),
+        default_value = "0.0.0.0",
+    )]
+    api_server_addr: String,
 
     #[arg(
         long,
@@ -95,6 +117,13 @@ struct Cli {
         help = t!("cli.web_server_port").to_string(),
     )]
     web_server_port: Option<u16>,
+
+    #[cfg(feature = "embed")]
+    #[arg(
+        long,
+        help = t!("cli.web_server_addr").to_string(),
+    )]
+    web_server_addr: Option<String>,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -141,8 +170,24 @@ pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Erro
     })
 }
 
+fn parse_addr<T: std::str::FromStr>(s: &str) -> T
+where
+    T::Err: std::fmt::Display,
+{
+    s.parse().unwrap_or_else(|e| {
+        panic!(
+            "Failed to parse '{}' as {}: {}",
+            s,
+            std::any::type_name::<T>(),
+            e
+        );
+    })
+}
+
 async fn get_dual_stack_listener(
     protocol: &str,
+    addr_v4: &str,
+    addr_v6: &str,
     port: u16,
 ) -> Result<
     (
@@ -152,17 +197,23 @@ async fn get_dual_stack_listener(
     Error,
 > {
     let is_protocol_support_dual_stack =
-        protocol.trim().to_lowercase() == "tcp" || protocol.trim().to_lowercase() == "udp";
-    let v6_listener = if is_protocol_support_dual_stack && local_ipv6().await.is_ok() {
-        get_listener_by_url(&format!("{}://[::0]:{}", protocol, port).parse().unwrap()).ok()
-    } else {
-        None
-    };
-    let v4_listener = if local_ipv4().await.is_ok() {
-        get_listener_by_url(&format!("{}://0.0.0.0:{}", protocol, port).parse().unwrap()).ok()
-    } else {
-        None
-    };
+        matches!(protocol.trim().to_lowercase().as_str(), "tcp" | "udp");
+    let v6_parsed_url = parse_addr(&format!(
+        "{}://[{}]:{}",
+        protocol,
+        addr_v6.trim_matches(['[', ']']),
+        port
+    ));
+    let v4_parsed_url = parse_addr(&format!("{}://{}:{}", protocol, addr_v4, port));
+
+    let v6_listener = (is_protocol_support_dual_stack && local_ipv6().await.is_ok())
+        .then(|| get_listener_by_url(&v6_parsed_url).ok())
+        .flatten();
+    let v4_listener = local_ipv4()
+        .await
+        .is_ok()
+        .then(|| get_listener_by_url(&v4_parsed_url).ok())
+        .flatten();
     Ok((v6_listener, v4_listener))
 }
 
@@ -178,10 +229,15 @@ async fn main() {
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
     let mut mgr = client_manager::ClientManager::new(db.clone(), cli.geoip_db);
-    let (v6_listener, v4_listener) =
-        get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
-            .await
-            .unwrap();
+
+    let (v6_listener, v4_listener) = get_dual_stack_listener(
+        &cli.config_server_protocol,
+        &cli.config_server_addr_v4,
+        &cli.config_server_addr_v6,
+        cli.config_server_port,
+    )
+    .await
+    .unwrap();
     if v4_listener.is_none() && v6_listener.is_none() {
         panic!("Listen to both IPv4 and IPv6 failed");
     }
@@ -209,7 +265,7 @@ async fn main() {
     let web_router_restful = None;
 
     let _restful_server_tasks = restful::RestfulServer::new(
-        format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
+        SocketAddr::new(parse_addr(&cli.api_server_addr), cli.api_server_port),
         mgr.clone(),
         db,
         web_router_restful,
@@ -224,9 +280,10 @@ async fn main() {
     let _web_server_task = if let Some(web_router) = web_router_static {
         Some(
             web::WebServer::new(
-                format!("0.0.0.0:{}", cli.web_server_port.unwrap_or(0))
-                    .parse()
-                    .unwrap(),
+                SocketAddr::new(
+                    parse_addr(&cli.web_server_addr.unwrap_or(cli.api_server_addr.clone())),
+                    cli.web_server_port.unwrap(),
+                ),
                 web_router,
             )
             .await
