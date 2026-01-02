@@ -276,7 +276,8 @@ impl ManualConnectorManager {
         if dead_url.scheme() == "ring" || dead_url.scheme() == "txt" || dead_url.scheme() == "srv" {
             ip_versions.push(IpVersion::Both);
         } else {
-            let addrs = match socket_addrs(&dead_url, || Some(1000)).await {
+            let converted_dead_url = crate::common::idn::convert_idn_to_ascii(dead_url.clone())?;
+            let addrs = match socket_addrs(&converted_dead_url, || Some(1000)).await {
                 Ok(addrs) => addrs,
                 Err(e) => {
                     data.global_ctx.issue_event(GlobalCtxEvent::ConnectError(
