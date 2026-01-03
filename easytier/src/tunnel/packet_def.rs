@@ -72,6 +72,8 @@ pub enum PacketType {
     ForeignNetworkPacket = 10,
     KcpSrc = 11,
     KcpDst = 12,
+    QuicSrc = 13,
+    QuicDst = 14,
 }
 
 bitflags::bitflags! {
