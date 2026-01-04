@@ -59,36 +59,50 @@ jobs:
             pkg-config curl libgl1-mesa-dev expect
           sudo apt-get clean
 
-      - name: Count commits since last tag on upstream main
+      - name: Resolve easytier version
         run: |
+          set -e
+      
           UPSTREAM_REPO="https://github.com/EasyTier/EasyTier.git"
       
           git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || true
           git fetch upstream --tags --force
-      
-          # 获取 upstream/main 最新提交
           git fetch upstream main
       
-          LAST_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo "")
+          # 读取 cargo 版本
+          CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path easytier/Cargo.toml \
+            | jq -r '.packages[0].version')
       
-          if [ -z "$LAST_TAG" ]; then
+          # 获取 upstream/main 最新 tag
+          LAST_TAG=$(git describe --tags --abbrev=0 upstream/main 2>/dev/null || echo "")
+          LAST_TAG_VERSION="${LAST_TAG#v}"
+      
+          # 语义版本比较
+          version_gt() {
+            [ "$(printf '%s\n' "$1" "$2" | sort -V | tail -n1)" = "$1" ] && [ "$1" != "$2" ]
+          }
+      
+          if [ -z "$LAST_TAG_VERSION" ]; then
+            BASE_VERSION="$CARGO_VERSION"
             DIFF_COUNT=$(git rev-list --count upstream/main)
+          elif version_gt "$CARGO_VERSION" "$LAST_TAG_VERSION"; then
+            BASE_VERSION="$CARGO_VERSION"
+            DIFF_COUNT=0
           else
+            BASE_VERSION="$LAST_TAG_VERSION"
             DIFF_COUNT=$(git rev-list --count "${LAST_TAG}..upstream/main")
           fi
       
-          echo "TAG_COMMIT_DIFF=$DIFF_COUNT"
-          echo "TAG_COMMIT_DIFF=$DIFF_COUNT" >> $GITHUB_ENV
-
-      - name: Get easytier version
-        run: |
-          EASYTIER_CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path easytier/Cargo.toml \
-            | jq -r '.packages[0].version')
-          EASYTIER_VERSION="${EASYTIER_CARGO_VERSION}-${TAG_COMMIT_DIFF}"
-          echo "EASYTIER_VERSION=${EASYTIER_VERSION}" >> $GITHUB_ENV
+          COMMIT_HASH=$(git rev-parse --short upstream/main)
+          EASYTIER_VERSION="${BASE_VERSION}-${DIFF_COUNT}-${COMMIT_HASH}"
+      
+          echo "EASYTIER_VERSION=$EASYTIER_VERSION"
+          echo "EASYTIER_VERSION=$EASYTIER_VERSION" >> $GITHUB_ENV
+      
           cd ./easytier-contrib/easytier-ohrs/package
           jq --arg v "$EASYTIER_VERSION" '.version = $v' oh-package.json5 > oh-package.tmp.json5
           mv oh-package.tmp.json5 oh-package.json5
+
 
       - name: Generate CHANGELOG.md for current commit
         working-directory: ./easytier-contrib/easytier-ohrs/package
