@@ -906,7 +906,7 @@ impl Instance {
         Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
         if !self.global_ctx.config.get_flags().no_tun {
-            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
             {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);

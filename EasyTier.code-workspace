@@ -28,6 +28,10 @@
 			"path": "easytier-contrib/easytier-ohrs"
 		},
 		{
+			"name": "ios",
+			"path": "easytier-contrib/easytier-ios"
+		},
+		{
 			"name": "uptime",
 			"path": "easytier-contrib/easytier-uptime"
 		},
