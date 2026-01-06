@@ -146,6 +146,8 @@ After startup, this node will listen on the following ports by default:
 - WebSocket: 11011
 - WebSocket SSL: 11012
 - WireGuard: 11013
+- QUIC: 11012
+- FakeTCP: 11013
 
 2. Connect Second Node (Node B):
 
