@@ -4,11 +4,11 @@ core_clap:
   config_server:
     en: |+
       config server address, allow format:
-      full url: --config-server udp://127.0.0.1:22020/admin
+      full url: --config-server udp://127.0.0.1:22020/admin , 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
       only user name: --config-server admin, will use official server
     zh-CN: |+
       配置服务器地址。允许格式：
-      完整URL：--config-server udp://127.0.0.1:22020/admin
+      完整URL：--config-server udp://127.0.0.1:22020/admin，udp可以根据配置服务器替换为 tcp，ws，wss(配置服务器ws被代理为wss时)
       仅用户名：--config-server admin，将使用官方的服务器
   machine_id:
     en: |+
@@ -67,12 +67,12 @@ core_clap:
     en: |+
         listeners to accept connections, allow format:
         port number: <11010>. means tcp/udp will listen on 11010, ws/wss will listen on 11010 and 11011, wg will listen on 11011
-        url: <tcp://0.0.0.0:11010>. tcp can be tcp, udp, ring, wg, ws, wss\n
+        url: <tcp://0.0.0.0:11010>. tcp can be tcp, udp, ring, wg, ws, wss, quic, faketcp\n
         proto & port pair: <proto:port>. wg:11011, means listen on 11011 with wireguard protocol url and proto:port can occur multiple times.
     zh-CN: |+
       监听器用于接受连接，允许以下格式：
       端口号：<11010>，意味着tcp/udp将在11010端口监听，ws/wss将在11010和11011端口监听，wg将在11011端口监听。
-      url：<tcp://0.0.0.0:11010>，其中tcp可以是tcp、udp、ring、wg、ws、wss协议。
+      url：<tcp://0.0.0.0:11010>，其中tcp可以是tcp、udp、ring、wg、ws、wss、quic、faketcp协议。
       协议和端口对：<proto:port>，例如wg:11011，表示使用WireGuard协议在11011端口监听。URL 和 协议端口对 可以多次出现。
   no_listener:
     en: "do not listen on any port, only connect to peers"
