@@ -31,6 +31,7 @@ export interface NetworkConfig {
   advanced_settings: boolean
 
   listener_urls: string[]
+  ipv6_listener?: string
   latency_first: boolean
 
   dev_name: string
@@ -41,6 +42,7 @@ export interface NetworkConfig {
   disable_kcp_input?: boolean
   enable_quic_proxy?: boolean
   disable_quic_input?: boolean
+  quic_listen_port?: number
   disable_p2p?: boolean
   p2p_only?: boolean
   bind_device?: boolean
@@ -48,8 +50,10 @@ export interface NetworkConfig {
   enable_exit_node?: boolean
   relay_all_peer_rpc?: boolean
   multi_thread?: boolean
+  multi_thread_count?: number
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
+  encryption_algorithm?: string
   disable_tcp_hole_punching?: boolean
   disable_udp_hole_punching?: boolean
   disable_sym_hole_punching?: boolean
@@ -69,7 +73,21 @@ export interface NetworkConfig {
   mapped_listeners: string[]
 
   enable_magic_dns?: boolean
+  tld_dns_zone?: string
   enable_private_mode?: boolean
+
+  foreign_relay_bps_limit?: number
+  tcp_whitelist: string[]
+  udp_whitelist: string[]
+  disable_relay_kcp?: boolean
+  enable_relay_foreign_network_kcp?: boolean
+
+  compression?: string
+  stun_servers: string[]
+  stun_servers_v6: string[]
+
+  file_log_size_mb?: number
+  file_log_count?: number
 
   port_forwards: PortForwardConfig[]
 }
@@ -102,7 +120,12 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'tcp://0.0.0.0:11010',
       'udp://0.0.0.0:11010',
       'wg://0.0.0.0:11011',
+      'ws://0.0.0.0:11011/',
+      'wss://0.0.0.0:11012/',
+      'quic://0.0.0.0:11012',
+      'faketcp://0.0.0.0:11013',
     ],
+    ipv6_listener: '',
     latency_first: false,
     dev_name: '',
 
@@ -112,6 +135,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     disable_kcp_input: false,
     enable_quic_proxy: false,
     disable_quic_input: false,
+    quic_listen_port: 0,
     disable_p2p: false,
     p2p_only: false,
     bind_device: true,
@@ -119,8 +143,10 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_exit_node: false,
     relay_all_peer_rpc: false,
     multi_thread: true,
+    multi_thread_count: 2,
     proxy_forward_by_system: false,
     disable_encryption: false,
+    encryption_algorithm: 'aes-gcm',
     disable_tcp_hole_punching: false,
     disable_udp_hole_punching: false,
     disable_sym_hole_punching: false,
@@ -134,7 +160,18 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mtu: null,
     mapped_listeners: [],
     enable_magic_dns: false,
+    tld_dns_zone: 'et.net.',
     enable_private_mode: false,
+    foreign_relay_bps_limit: 0,
+    tcp_whitelist: [],
+    udp_whitelist: [],
+    disable_relay_kcp: false,
+    enable_relay_foreign_network_kcp: false,
+    compression: 'none',
+    stun_servers: [],
+    stun_servers_v6: [],
+    file_log_size_mb: 100,
+    file_log_count: 10,
     port_forwards: [],
   }
 }

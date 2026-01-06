@@ -42,6 +42,10 @@ logging_level_trace: Trace
 logging_level_off: Off
 logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
+file_log_size_mb: Single Log File Size (MB)
+file_log_size_mb_help: Per file log size in MB, default is 100MB
+file_log_count: Max Log File Count
+file_log_count_help: Max file log count, default is 10
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 hide_dock_icon: Hide Dock Icon
@@ -102,6 +106,9 @@ enable_quic_proxy_help: Convert TCP traffic to QUIC traffic to reduce latency an
 disable_quic_input: Disable QUIC Input
 disable_quic_input_help: Disable inbound QUIC traffic, while nodes with QUIC proxy enabled continue to connect using TCP.
 
+quic_listen_port: QUIC Listen Port
+quic_listen_port_help: The port to listen for QUIC connections, default is 0 (random port)
+
 disable_p2p: Disable P2P
 disable_p2p_help: Disable P2P mode; route all traffic through a manually specified relay server.
 
@@ -125,11 +132,18 @@ relay_all_peer_rpc_help: |
 multi_thread: Multi Thread
 multi_thread_help: Use multi-thread runtime
 
+multi_thread_count: Thread Count
+multi_thread_count_help: The number of threads to use, default is 2, only effective when multi-thread is enabled, must be greater than 2
+
 proxy_forward_by_system: System Forward
 proxy_forward_by_system_help: Forward packet to proxy networks via system kernel, disable internal nat for network proxy
 
 disable_encryption: Disable Encryption
 disable_encryption_help: Disable encryption for peers communication, default is false, must be same with peers
+
+encryption_algorithm: Encryption Algorithm
+encryption_algorithm_help: "Encryption algorithm to use, supported: 'xor', 'chacha20', 'aes-gcm', 'aes-gcm-256', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20'"
+encryption_algorithm_placeholder: "Choose algorithm"
 
 disable_tcp_hole_punching: Disable TCP Hole Punching
 disable_tcp_hole_punching_help: Disable tcp hole punching
@@ -144,6 +158,9 @@ enable_magic_dns: Enable Magic DNS
 enable_magic_dns_help: |
   Enable magic dns, all nodes in the network can access each other by domain name, e.g.: node1.et.net.
 
+tld_dns_zone: Top-Level Domain Zone
+tld_dns_zone_help: Specify the top-level domain zone for magic DNS. If not provided, defaults to the value from dns_server module (et.net.). Only used when enable_magic_dns is true
+
 enable_private_mode: Enable Private Mode
 enable_private_mode_help: |
   Enable private mode, nodes with different network names or passwords from this network are not allowed to perform handshake or relay through this node.
@@ -153,6 +170,21 @@ relay_network_whitelist_help: |
   Only forward traffic from the whitelist networks, supporting wildcard strings, multiple network names can be separated by spaces.
   If this parameter is empty, forwarding is disabled. By default, all networks are allowed.
   e.g.: '*' (all networks), 'def*' (networks with the prefix 'def'), 'net1 net2' (only allow net1 and net2)
+
+foreign_relay_bps_limit: Foreign Relay BPS Limit
+foreign_relay_bps_limit_help: The maximum bps limit for foreign network relay, default is no limit. unit:\ BPS (bytes per second)
+
+tcp_whitelist: TCP Port Whitelist
+tcp_whitelist_help: TCP port whitelist. Supports single ports (80) and ranges (8000-9000)
+
+udp_whitelist: UDP Port Whitelist
+udp_whitelist_help: UDP port whitelist. Supports single ports (53) and ranges (5000-6000)
+
+disable_relay_kcp: Disable Relay KCP
+disable_relay_kcp_help: If true, disable relay kcp packets. Avoid consuming too many bandwidth.
+
+enable_relay_foreign_network_kcp: Enable Relay Foreign Network KCP
+enable_relay_foreign_network_kcp_help: If true, allow relay kcp packets from foreign network.
 
 manual_routes: Manual Route
 manual_routes_help: |
@@ -181,6 +213,19 @@ mapped_listeners: Map Listeners
 mapped_listeners_help: |
   Manually specify the public address of the listener, other nodes can use this address to connect to this node.
   e.g.: tcp://123.123.123.123:11223, can specify multiple.
+
+compression: Compression Algorithm
+compression_help: Compression algorithm to use, support none, zstd.
+compression_placeholder: "Choose compression"
+
+ipv6_listener: IPv6 Listener
+ipv6_listener_help: The url of the ipv6 listener, e.g. tcp://[::]:11010, if not set, will listen on random udp port
+
+stun_servers: STUN Servers
+stun_servers_help: Override default STUN servers; If configured but empty, STUN servers are not used
+
+stun_servers_v6: IPv6 STUN Servers
+stun_servers_v6_help: Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used
 
 status:
   version: Version
@@ -390,3 +435,18 @@ config-server:
 client:
   not_running: Unable to connect to remote client.
   retry: Retry
+
+check_config: Check Config
+check_config_help: Check config validity without starting the network
+
+machine_id: Machine ID
+machine_id_help: The machine id to identify this machine, used for config recovery after disconnection, must be unique and fixed. Default is from system
+
+config_file_path: Config File Path
+config_file_path_help: "Path to the config file, NOTE: the options set by cmdline args will override options in config file"
+
+config_dir_path: Config Directory
+config_dir_path_help: Load all .toml files in the directory to start network instances, and store the received configurations in this directory
+
+disable_env_parsing: Disable Environment Variable Parsing
+disable_env_parsing_help: Disable environment variable parsing in config file

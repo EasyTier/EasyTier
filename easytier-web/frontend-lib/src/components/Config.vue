@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog, Dropdown } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -32,7 +32,24 @@ const networking_methods = ref([
   { value: NetworkingMethod.Standalone, label: () => t('standalone') },
 ])
 
-const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
+const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012, quic: 11012, faketcp: 11013 }
+
+const encryptionOptions = ref([
+  { label: 'default (aes-gcm)', value: undefined },
+  { label: 'xor', value: 'xor' },
+  { label: 'chacha20', value: 'chacha20' },
+  { label: 'aes-gcm', value: 'aes-gcm' },
+  { label: 'aes-gcm-256', value: 'aes-gcm-256' },
+  { label: 'openssl-aes128-gcm', value: 'openssl-aes128-gcm' },
+  { label: 'openssl-aes256-gcm', value: 'openssl-aes256-gcm' },
+  { label: 'openssl-chacha20', value: 'openssl-chacha20' },
+])
+
+const compressionOptions = ref([
+  { label: 'default (none)', value: undefined },
+  { label: 'none', value: 'none' },
+  { label: 'zstd', value: 'zstd' },
+])
 
 function searchUrlSuggestions(e: { query: string }): string[] {
   const query = e.query
@@ -101,17 +118,20 @@ function searchInetSuggestions(e: { query: string }) {
 
 const listenerSuggestions = ref([''])
 
-function searchListenerSuggestions(e: { query: string }) {
+function searchListenerSuggestionsFactory(e: { query: string }, isIpv6: boolean = false) {
   const ret = []
 
   for (const proto in protos) {
-    let item = `${proto}://0.0.0.0:`
+    let item = `${proto}://${isIpv6? '[::]' : '0.0.0.0'}:`
     // if query is a number, use it as port
     if (e.query.match(/^\d+$/)) {
       item += e.query
     }
     else {
       item += protos[proto]
+    }
+    if (proto === 'ws' || proto === 'wss') {
+      item += '/'
     }
 
     if (item.includes(e.query)) {
@@ -124,6 +144,12 @@ function searchListenerSuggestions(e: { query: string }) {
   }
 
   listenerSuggestions.value = ret
+}
+function searchListenerSuggestions(e: { query: string }) {
+  searchListenerSuggestionsFactory(e, false)
+}
+function searchIpv6ListenerSuggestions(e: { query: string }) {
+  searchListenerSuggestionsFactory(e, true)
 }
 
 
@@ -170,6 +196,8 @@ const bool_flags: BoolFlag[] = [
   { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
+  { field: 'disable_relay_kcp', help: 'disable_relay_kcp_help' },
+  { field: 'enable_relay_foreign_network_kcp', help: 'enable_relay_foreign_network_kcp_help' },
 ]
 
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
@@ -353,6 +381,19 @@ onMounted(() => {
               </div>
 
               <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="ipv6_listener">{{ t('ipv6_listener') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('ipv6_listener_help')"></span>
+                  </div>
+                  <AutoComplete id="ipv6_listener" v-model="curNetwork.ipv6_listener"
+                    :suggestions="listenerSuggestions" class="w-full" dropdown :complete-on-focus="true"
+                    :placeholder="t('chips_placeholder', ['tcp://[::]:11010'])"
+                    @complete="searchIpv6ListenerSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <label for="dev_name">{{ t('dev_name') }}</label>
                   <InputText id="dev_name" v-model="curNetwork.dev_name" aria-describedby="dev_name-help" :format="true"
@@ -374,6 +415,52 @@ onMounted(() => {
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex">
+                    <label for="encryption_algorithm">{{ t('encryption_algorithm') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('encryption_algorithm_help')"></span>
+                  </div>
+                    <Dropdown id="encryption_algorithm" v-model="curNetwork.encryption_algorithm"
+                      :options="encryptionOptions" :default="encryptionOptions[0]" option-label="label" option-value="value" class="w-full"
+                      :placeholder="t('encryption_algorithm_placeholder')" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="multi_thread_count">{{ t('multi_thread_count') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('multi_thread_count_help')"></span>
+                  </div>
+                  <InputNumber id="multi_thread_count" v-model="curNetwork.multi_thread_count" 
+                    aria-describedby="multi_thread_count-help" :format="false" :min="2" :max="32" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="quic_listen_port">{{ t('quic_listen_port') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('quic_listen_port_help')"></span>
+                  </div>
+                  <InputNumber id="quic_listen_port" v-model="curNetwork.quic_listen_port" 
+                    aria-describedby="quic_listen_port-help" :format="false" :min="0" :max="65535" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="compression">{{ t('compression') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('compression_help')"></span>
+                  </div>
+                    <Dropdown id="compression" v-model="curNetwork.compression"
+                      :options="compressionOptions" option-label="label" option-value="value" class="w-full"
+                      :placeholder="t('compression_placeholder')" :default="compressionOptions[0]" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
                     <label for="relay_network_whitelist">{{ t('relay_network_whitelist') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center"
                       v-tooltip="t('relay_network_whitelist_help')"></span>
@@ -387,6 +474,41 @@ onMounted(() => {
                         :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                     </div>
                   </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="foreign_relay_bps_limit">{{ t('foreign_relay_bps_limit') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('foreign_relay_bps_limit_help')"></span>
+                  </div>
+                  <InputNumber id="foreign_relay_bps_limit" v-model="curNetwork.foreign_relay_bps_limit" 
+                    aria-describedby="foreign_relay_bps_limit-help" :format="false" :min="0" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="tcp_whitelist">{{ t('tcp_whitelist') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('tcp_whitelist_help')"></span>
+                  </div>
+                  <AutoComplete id="tcp_whitelist" v-model="curNetwork.tcp_whitelist"
+                    :placeholder="t('chips_placeholder', ['80, 8000-9000'])" class="w-full" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="udp_whitelist">{{ t('udp_whitelist') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('udp_whitelist_help')"></span>
+                  </div>
+                  <AutoComplete id="udp_whitelist" v-model="curNetwork.udp_whitelist"
+                    :placeholder="t('chips_placeholder', ['53, 5000-6000'])" class="w-full" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                 </div>
               </div>
 
@@ -446,6 +568,63 @@ onMounted(() => {
                   <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
                     :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full" multiple fluid
                     :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="stun_servers">{{ t('stun_servers') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('stun_servers_help')"></span>
+                  </div>
+                  <AutoComplete id="stun_servers" v-model="curNetwork.stun_servers"
+                    :placeholder="t('chips_placeholder', ['stun.l.google.com:19302'])" class="w-full" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="stun_servers_v6">{{ t('stun_servers_v6') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('stun_servers_v6_help')"></span>
+                  </div>
+                  <AutoComplete id="stun_servers_v6" v-model="curNetwork.stun_servers_v6"
+                    :placeholder="t('chips_placeholder', ['stun.l.google.com:19302'])" class="w-full" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+              </div>
+
+              <div v-if="curNetwork.enable_magic_dns" class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="tld_dns_zone">{{ t('tld_dns_zone') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('tld_dns_zone_help')"></span>
+                  </div>
+                  <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone" 
+                    aria-describedby="tld_dns_zone-help" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="file_log_size_mb">{{ t('file_log_size_mb') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('file_log_size_mb_help')"></span>
+                  </div>
+                  <InputNumber id="file_log_size_mb" v-model="curNetwork.file_log_size_mb" 
+                    aria-describedby="file_log_size_mb-help" :format="false" :min="1" :max="1000" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="file_log_count">{{ t('file_log_count') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('file_log_count_help')"></span>
+                  </div>
+                  <InputNumber id="file_log_count" v-model="curNetwork.file_log_count" 
+                    aria-describedby="file_log_count-help" :format="false" :min="1" :max="100" fluid />
                 </div>
               </div>
 
