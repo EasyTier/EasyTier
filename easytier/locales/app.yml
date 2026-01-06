@@ -4,7 +4,7 @@ core_clap:
   config_server:
     en: |+
       config server address, allow format:
-      full url: --config-server udp://127.0.0.1:22020/admin , 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
+      full url: --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
       only user name: --config-server admin, will use official server
     zh-CN: |+
       配置服务器地址。允许格式：
