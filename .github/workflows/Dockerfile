@@ -41,5 +41,9 @@ EXPOSE 11011/udp
 EXPOSE 11011/tcp
 # wss
 EXPOSE 11012/tcp
+# quic
+EXPOSE 11012/udp
+# faketcp
+EXPOSE 11013
 
 ENTRYPOINT ["/sbin/tini", "--", "easytier-core"]
