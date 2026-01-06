@@ -81,6 +81,29 @@ fn dump_profile(_cur_allocated: usize) {
     }
 }
 
+#[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
+enum ShellType {
+    Bash,
+    Elvish,
+    Fish,
+    Powershell,
+    Zsh,
+    Nu,
+}
+
+impl ShellType {
+    fn to_shell(&self) -> Option<Shell> {
+        match self {
+            ShellType::Bash => Some(Shell::Bash),
+            ShellType::Elvish => Some(Shell::Elvish),
+            ShellType::Fish => Some(Shell::Fish),
+            ShellType::Powershell => Some(Shell::PowerShell),
+            ShellType::Zsh => Some(Shell::Zsh),
+            ShellType::Nu => None,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "easytier-core", author, version = EASYTIER_VERSION , about, long_about = None)]
 struct Cli {
@@ -126,7 +149,7 @@ struct Cli {
     rpc_portal_options: RpcPortalOptions,
 
     #[clap(long, help = t!("core_clap.generate_completions").to_string())]
-    gen_autocomplete: Option<Shell>,
+    gen_autocomplete: Option<ShellType>,
 
     #[clap(long, help = t!("core_clap.check_config").to_string())]
     check_config: bool,
@@ -1380,7 +1403,12 @@ pub async fn main() -> ExitCode {
 
     if let Some(shell) = cli.gen_autocomplete {
         let mut cmd = Cli::command();
-        crate::print_completions(shell, &mut cmd, "easytier-core");
+        if let Some(shell) = shell.to_shell() {
+            crate::print_completions(shell, &mut cmd, "easytier-core");
+        } else {
+            // Handle Nushell
+            crate::print_nushell_completions(&mut cmd, "easytier-core");
+        }
         return ExitCode::SUCCESS;
     }
 

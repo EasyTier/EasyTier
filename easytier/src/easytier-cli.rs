@@ -63,6 +63,29 @@ use easytier::{
 
 rust_i18n::i18n!("locales", fallback = "en");
 
+#[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
+enum ShellType {
+    Bash,
+    Elvish,
+    Fish,
+    Powershell,
+    Zsh,
+    Nu,
+}
+
+impl ShellType {
+    fn to_shell(&self) -> Option<Shell> {
+        match self {
+            ShellType::Bash => Some(Shell::Bash),
+            ShellType::Elvish => Some(Shell::Elvish),
+            ShellType::Fish => Some(Shell::Fish),
+            ShellType::Powershell => Some(Shell::PowerShell),
+            ShellType::Zsh => Some(Shell::Zsh),
+            ShellType::Nu => None,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
 struct Cli {
@@ -126,7 +149,7 @@ enum SubCommand {
     #[command(about = "manage logger configuration")]
     Logger(LoggerArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
-    GenAutocomplete { shell: Shell },
+    GenAutocomplete { shell: ShellType },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
@@ -1950,7 +1973,12 @@ async fn main() -> Result<(), Error> {
         },
         SubCommand::GenAutocomplete { shell } => {
             let mut cmd = Cli::command();
-            easytier::print_completions(shell, &mut cmd, "easytier-cli");
+            if let Some(shell) = shell.to_shell() {
+                easytier::print_completions(shell, &mut cmd, "easytier-cli");
+            } else {
+                // Handle Nushell
+                easytier::print_nushell_completions(&mut cmd, "easytier-cli");
+            }
         }
     }
 

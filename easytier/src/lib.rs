@@ -33,3 +33,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 pub fn print_completions<G: Generator>(generator: G, cmd: &mut Command, bin_name: &str) {
     clap_complete::generate(generator, cmd, bin_name, &mut io::stdout());
 }
+
+pub fn print_nushell_completions(cmd: &mut Command, bin_name: &str) {
+    clap_complete::generate(clap_complete_nushell::Nushell, cmd, bin_name, &mut io::stdout());
+}

@@ -135,6 +135,7 @@ clap = { version = "4.5.30", features = [
     "env",
 ] }
 clap_complete = { version = "4.5.55" }
+clap_complete_nushell = { version = "4.5.10" }
 
 async-recursion = "1.0.5"
 
