@@ -1,6 +1,6 @@
-import { Event, listen } from "@tauri-apps/api/event";
+import { type Event, listen } from "@tauri-apps/api/event";
 import { type } from "@tauri-apps/plugin-os";
-import { NetworkTypes } from "easytier-frontend-lib"
+import type { NetworkTypes } from "easytier-frontend-lib"
 
 const EVENTS = Object.freeze({
     SAVE_CONFIGS: 'save_configs',

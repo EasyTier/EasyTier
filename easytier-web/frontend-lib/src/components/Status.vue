@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTimeAgo } from '@vueuse/core'
 import { IPv4 } from 'ip-num/IPNumber'
-import { NetworkInstance, type TunnelInfo, type NodeInfo, type PeerRoutePair } from '../types/network'
+import type { NetworkInstance, TunnelInfo, NodeInfo, PeerRoutePair } from '../types/network'
 import { useI18n } from 'vue-i18n';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { ipv4InetToString, ipv4ToString, ipv6ToString } from '../modules/utils';

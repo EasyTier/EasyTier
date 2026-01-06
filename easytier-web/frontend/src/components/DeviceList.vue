@@ -41,7 +41,7 @@ const toast = useToast();
 
 const loadDevices = async () => {
     const resp = await api?.list_machines();
-    let devices: Array<Utils.DeviceInfo> = [];
+    const devices: Array<Utils.DeviceInfo> = [];
     for (const device of (resp || [])) {
         devices.push(Utils.buildDeviceInfo(device));
     }

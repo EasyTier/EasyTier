@@ -6,7 +6,7 @@ import { useToast } from 'primevue/usetoast';
 import { I18nUtils } from 'easytier-frontend-lib';
 import { getInitialApiHost, cleanAndLoadApiHosts, saveApiHost } from "../modules/api-host"
 import { useI18n } from 'vue-i18n'
-import ApiClient, { Credential, RegisterData } from '../modules/api';
+import ApiClient, { type Credential, type RegisterData } from '../modules/api';
 
 const { t } = useI18n()
 
@@ -30,7 +30,7 @@ const onSubmit = async () => {
     // Add your login logic here
     saveApiHost(apiHost.value);
     const credential: Credential = { username: username.value, password: password.value, };
-    let ret = await api.value?.login(credential);
+    const ret = await api.value?.login(credential);
     if (ret.success) {
         localStorage.setItem('apiHost', btoa(apiHost.value));
         router.push({
@@ -46,7 +46,7 @@ const onRegister = async () => {
     saveApiHost(apiHost.value);
     const credential: Credential = { username: registerUsername.value, password: registerPassword.value };
     const registerReq: RegisterData = { credentials: credential, captcha: captcha.value };
-    let ret = await api.value?.register(registerReq);
+    const ret = await api.value?.register(registerReq);
     if (ret.success) {
         toast.add({ severity: 'success', summary: 'Register Success', detail: ret.message, life: 2000 });
         router.push({ name: 'login' });
@@ -59,7 +59,7 @@ const apiHost = ref<string>(getInitialApiHost())
 const apiHostSuggestions = ref<Array<string>>([])
 const apiHostSearch = async (event: { query: string }) => {
     apiHostSuggestions.value = [];
-    let hosts = cleanAndLoadApiHosts();
+    const hosts = cleanAndLoadApiHosts();
     if (event.query) {
         apiHostSuggestions.value.push(event.query);
     }

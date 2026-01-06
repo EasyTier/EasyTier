@@ -97,7 +97,7 @@ const timeLabels = computed(() => {
   const labelCount = 6
   const labelIntervalDuration = totalDuration / (labelCount - 1)
 
-  let labels = []
+  const labels = []
   for (let i = 0; i < labelCount; i++) {
     const time = startTime.add(i * labelIntervalDuration, 'second')
     labels.push(time.format('HH:mm'))

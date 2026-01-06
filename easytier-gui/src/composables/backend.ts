@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
-import { Api, type NetworkTypes } from 'easytier-frontend-lib'
-import { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
+import type { Api, NetworkTypes } from 'easytier-frontend-lib'
+import type { GetNetworkMetasResponse } from 'node_modules/easytier-frontend-lib/dist/modules/api'
 
 
 type NetworkConfig = NetworkTypes.NetworkConfig
@@ -69,7 +69,7 @@ export async function getConfig(instanceId: string) {
 }
 
 export async function sendConfigs(enabledNetworks: string[]) {
-  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
+  const networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
   return await invoke('load_configs', { configs: networkList, enabledNetworks })
 }
 

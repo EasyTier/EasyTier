@@ -11,7 +11,7 @@ const apiHost = ref<string>(getInitialApiHost())
 const apiHostSuggestions = ref<Array<string>>([])
 const apiHostSearch = async (event: { query: string }) => {
   apiHostSuggestions.value = [];
-  let hosts = cleanAndLoadApiHosts();
+  const hosts = cleanAndLoadApiHosts();
   if (event.query) {
     apiHostSuggestions.value.push(event.query);
   }

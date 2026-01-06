@@ -1,4 +1,4 @@
-import { type Api, type NetworkTypes } from "easytier-frontend-lib";
+import type { Api, NetworkTypes } from "easytier-frontend-lib";
 import * as backend from "~/composables/backend";
 
 export class GUIRemoteClient implements Api.RemoteClient {

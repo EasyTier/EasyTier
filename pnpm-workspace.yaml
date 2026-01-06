@@ -1,5 +1,10 @@
 packages:
-  - 'easytier-web/frontend'
-  - 'easytier-web/frontend-lib'
-  - 'easytier-gui'
-  - 'tauri-plugin-vpnservice'
+  - easytier-web/frontend
+  - easytier-web/frontend-lib
+  - easytier-gui
+  - tauri-plugin-vpnservice
+
+onlyBuiltDependencies:
+  - esbuild
+  - unrs-resolver
+  - vue-demi

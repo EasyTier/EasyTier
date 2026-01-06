@@ -60,7 +60,7 @@ const routes = [
     },
     {
         path: '/:pathMatch(.*)*', name: 'notFound', redirect: () => {
-            let apiHost = localStorage.getItem('apiHost');
+            const apiHost = localStorage.getItem('apiHost');
             if (apiHost) {
                 return { name: 'dashboard', params: { apiHost: apiHost } }
             } else {

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { Button, ConfirmPopup, Divider, IftaLabel, Menu, Message, Select, Tag, useConfirm, useToast, type VirtualScrollerLazyEvent } from 'primevue';
-import { computed, onMounted, onUnmounted, Ref, ref, watch } from 'vue';
+import { computed, onMounted, onUnmounted, type Ref, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import * as Api from '../modules/api';
 import * as Utils from '../modules/utils';
 import * as NetworkTypes from '../types/network';
-import { type MenuItem } from 'primevue/menuitem';
+import type { MenuItem } from 'primevue/menuitem';
 
 const { t } = useI18n()
 
@@ -77,8 +77,8 @@ const currentNetworkControl = {
 
 const instanceList = ref<Array<{ uuid: string; meta?: Api.NetworkMeta }>>([]);
 const updateInstanceList = () => {
-    let insts = new Set<string>();
-    let t = listInstanceIdResponse.value;
+    const insts = new Set<string>();
+    const t = listInstanceIdResponse.value;
     if (t) {
         t.running_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
         t.disabled_inst_ids.forEach((u) => insts.add(Utils.UuidToStr(u)));
@@ -164,7 +164,7 @@ const loadCurrentNetworkConfig = async () => {
         return;
     }
 
-    let ret = await props.api.get_network_config(selectedInstanceId.value!.uuid);
+    const ret = await props.api.get_network_config(selectedInstanceId.value!.uuid);
     currentNetworkConfig.value = ret;
 }
 
@@ -212,7 +212,7 @@ const saveAndRunNewNetwork = async () => {
     }
     try {
         await props.api.delete_network(instanceId.value!);
-        let ret = await props.api.run_network(currentNetworkConfig.value, currentNetworkControl.remoteSave.value);
+        const ret = await props.api.run_network(currentNetworkConfig.value, currentNetworkControl.remoteSave.value);
         console.debug("saveAndRunNewNetwork", ret);
 
         delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
@@ -259,7 +259,7 @@ const editNetwork = async () => {
     }
 
     try {
-        let ret = await props.api.get_network_config(instanceId.value!);
+        const ret = await props.api.get_network_config(instanceId.value!);
         console.debug("editNetwork", ret);
         currentNetworkConfig.value = ret;
         isEditingNetwork.value = true; // Switch to editing mode instead
@@ -282,7 +282,7 @@ const loadCurrentNetworkInfo = async () => {
         return;
     }
 
-    let network_info = await props.api.get_network_info(selectedInstanceId.value.uuid);
+    const network_info = await props.api.get_network_info(selectedInstanceId.value.uuid);
 
     curNetworkInfo.value = {
         instance_id: selectedInstanceId.value.uuid,
@@ -300,7 +300,7 @@ const exportConfig = async () => {
 
     try {
         const { instance_id, ...networkConfig } = await props.api.get_network_config(instanceId.value!);
-        let { toml_config: tomlConfig, error } = await props.api.generate_config(networkConfig as NetworkTypes.NetworkConfig);
+        const { toml_config: tomlConfig, error } = await props.api.generate_config(networkConfig as NetworkTypes.NetworkConfig);
         if (error) {
             throw { response: { data: error } };
         }
@@ -323,7 +323,7 @@ const handleFileUpload = (event: Event) => {
     const reader = new FileReader();
     reader.onload = async (e) => {
         try {
-            let tomlConfig = e.target?.result?.toString();
+            const tomlConfig = e.target?.result?.toString();
             if (!tomlConfig) return;
             const resp = await props.api.parse_config(tomlConfig);
             if (resp.error) {
@@ -345,8 +345,8 @@ const handleFileUpload = (event: Event) => {
 }
 
 const exportTomlFile = (context: string, name: string) => {
-    let url = window.URL.createObjectURL(new Blob([context], { type: 'application/toml' }));
-    let link = document.createElement('a');
+    const url = window.URL.createObjectURL(new Blob([context], { type: 'application/toml' }));
+    const link = document.createElement('a');
     link.style.display = 'none';
     link.href = url;
     link.setAttribute('download', name);
@@ -358,7 +358,7 @@ const exportTomlFile = (context: string, name: string) => {
 }
 
 const generateConfig = async (config: NetworkTypes.NetworkConfig): Promise<string> => {
-    let { toml_config: tomlConfig, error } = await props.api.generate_config(config);
+    const { toml_config: tomlConfig, error } = await props.api.generate_config(config);
     if (error) {
         throw error;
     }
@@ -366,7 +366,7 @@ const generateConfig = async (config: NetworkTypes.NetworkConfig): Promise<strin
 }
 
 const syncTomlConfig = async (tomlConfig: string): Promise<void> => {
-    let resp = await props.api.parse_config(tomlConfig);
+    const resp = await props.api.parse_config(tomlConfig);
     if (resp.error) {
         throw resp.error;
     };
@@ -407,7 +407,7 @@ const actionMenu: Ref<MenuItem[]> = ref([
     }
 ]);
 
-let periodFunc = new Utils.PeriodicTask(async () => {
+const periodFunc = new Utils.PeriodicTask(async () => {
     if (props.pauseAutoRefresh) {
         return;
     }

@@ -31,7 +31,7 @@ const userMenuItems = ref([
         icon: 'pi pi-key',
         command: () => {
             console.log('File');
-            let ret = dialog.open(ChangePassword, {
+            const ret = dialog.open(ChangePassword, {
                 props: {
                     modal: true,
                 },

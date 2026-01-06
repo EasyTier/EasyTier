@@ -1,5 +1,5 @@
-import axios, { AxiosError, AxiosInstance, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
-import { type Api, type NetworkTypes, Utils } from 'easytier-frontend-lib';
+import axios, { AxiosError, type AxiosInstance, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
+import type { Api, NetworkTypes, Utils } from 'easytier-frontend-lib';
 import { Md5 } from 'ts-md5';
 
 export interface ValidateConfigResponse {
@@ -82,7 +82,7 @@ export class ApiClient {
             return response.data; // 假设服务器返回的数据都在data属性中
         }, (error: any) => {
             if (error.response) {
-                let response: AxiosResponse = error.response;
+                const response: AxiosResponse = error.response;
                 if (response.status == 401 && this.authFailedCb) {
                     console.error('Unauthorized:', response.data);
                     this.authFailedCb();

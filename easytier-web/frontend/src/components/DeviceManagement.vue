@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { NetworkTypes, Utils, Api, RemoteManagement } from 'easytier-frontend-lib';
+import { NetworkTypes, type Utils, type Api, RemoteManagement } from 'easytier-frontend-lib';
 import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import ApiClient from '../modules/api';
+import type ApiClient from '../modules/api';
 
 
 const props = defineProps<{

@@ -1,13 +1,26 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog, Dropdown } from 'primevue'
+import {
+  SelectButton,
+  Checkbox,
+  InputText,
+  InputNumber,
+  AutoComplete,
+  Panel,
+  Divider,
+  ToggleButton,
+  Button,
+  Password,
+  Dialog,
+  Dropdown,
+} from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
-  NetworkConfig,
+  type NetworkConfig,
   NetworkingMethod,
-  removeRow
+  removeRow,
 } from '../types/network'
 import { defineProps, defineEmits, ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -32,7 +45,15 @@ const networking_methods = ref([
   { value: NetworkingMethod.Standalone, label: () => t('standalone') },
 ])
 
-const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012, quic: 11012, faketcp: 11013 }
+const protos: { [proto: string]: number } = {
+  tcp: 11010,
+  udp: 11010,
+  wg: 11011,
+  ws: 11011,
+  wss: 11012,
+  quic: 11012,
+  faketcp: 11013,
+}
 
 const encryptionOptions = ref([
   { label: 'default (aes-gcm)', value: undefined },
@@ -61,10 +82,8 @@ function searchUrlSuggestions(e: { query: string }): string[] {
       // eslint-disable-next-line no-new
       new URL(query)
       ret.push(query)
-    }
-    catch { }
-  }
-  else {
+    } catch {}
+  } else {
     for (const proto in protos) {
       let item = `${proto}://${query}`
       // if query match ":\d+$", then no port suffix
@@ -81,13 +100,11 @@ function searchUrlSuggestions(e: { query: string }): string[] {
 const publicServerSuggestions = ref([''])
 
 function searchPresetPublicServers(e: { query: string }) {
-  const presetPublicServers = [
-    'tcp://public.easytier.top:11010',
-  ]
+  const presetPublicServers = ['tcp://public.easytier.top:11010']
 
   const query = e.query
   // if query is sub string of presetPublicServers, add to suggestions
-  let ret = presetPublicServers.filter(item => item.includes(query))
+  let ret = presetPublicServers.filter((item) => item.includes(query))
   // add additional suggestions
   if (query.length > 0) {
     ret = ret.concat(searchUrlSuggestions(e))
@@ -118,16 +135,18 @@ function searchInetSuggestions(e: { query: string }) {
 
 const listenerSuggestions = ref([''])
 
-function searchListenerSuggestionsFactory(e: { query: string }, isIpv6: boolean = false) {
+function searchListenerSuggestionsFactory(
+  e: { query: string },
+  isIpv6: boolean = false,
+) {
   const ret = []
 
   for (const proto in protos) {
-    let item = `${proto}://${isIpv6? '[::]' : '0.0.0.0'}:`
+    let item = `${proto}://${isIpv6 ? '[::]' : '0.0.0.0'}:`
     // if query is a number, use it as port
     if (e.query.match(/^\d+$/)) {
       item += e.query
-    }
-    else {
+    } else {
       item += protos[proto]
     }
     if (proto === 'ws' || proto === 'wss') {
@@ -151,7 +170,6 @@ function searchListenerSuggestions(e: { query: string }) {
 function searchIpv6ListenerSuggestions(e: { query: string }) {
   searchListenerSuggestionsFactory(e, true)
 }
-
 
 const exitNodesSuggestions = ref([''])
 
@@ -191,26 +209,40 @@ const bool_flags: BoolFlag[] = [
   { field: 'multi_thread', help: 'multi_thread_help' },
   { field: 'proxy_forward_by_system', help: 'proxy_forward_by_system_help' },
   { field: 'disable_encryption', help: 'disable_encryption_help' },
-  { field: 'disable_tcp_hole_punching', help: 'disable_tcp_hole_punching_help' },
-  { field: 'disable_udp_hole_punching', help: 'disable_udp_hole_punching_help' },
-  { field: 'disable_sym_hole_punching', help: 'disable_sym_hole_punching_help' },
+  {
+    field: 'disable_tcp_hole_punching',
+    help: 'disable_tcp_hole_punching_help',
+  },
+  {
+    field: 'disable_udp_hole_punching',
+    help: 'disable_udp_hole_punching_help',
+  },
+  {
+    field: 'disable_sym_hole_punching',
+    help: 'disable_sym_hole_punching_help',
+  },
   { field: 'enable_magic_dns', help: 'enable_magic_dns_help' },
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
   { field: 'disable_relay_kcp', help: 'disable_relay_kcp_help' },
-  { field: 'enable_relay_foreign_network_kcp', help: 'enable_relay_foreign_network_kcp_help' },
+  {
+    field: 'enable_relay_foreign_network_kcp',
+    help: 'enable_relay_foreign_network_kcp_help',
+  },
 ]
 
-const portForwardProtocolOptions = ref(["tcp", "udp"]);
+const portForwardProtocolOptions = ref(['tcp', 'udp'])
 
-const editingPortForward = ref(false);
-const editingPortForwardIndex = ref(-1);
-const editingPortForwardData = ref();
+const editingPortForward = ref(false)
+const editingPortForwardIndex = ref(-1)
+const editingPortForwardData = ref()
 
 function openPortForwardEditor(index: number) {
-  editingPortForwardIndex.value = index;
+  editingPortForwardIndex.value = index
   // deep copy
-  editingPortForwardData.value = JSON.parse(JSON.stringify(curNetwork.value.port_forwards[index]));
-  editingPortForward.value = true;
+  editingPortForwardData.value = JSON.parse(
+    JSON.stringify(curNetwork.value.port_forwards[index]),
+  )
+  editingPortForward.value = true
 }
 
 function addPortForward() {
@@ -221,30 +253,30 @@ function addPortForward() {
 }
 
 function savePortForward() {
-  curNetwork.value.port_forwards[editingPortForwardIndex.value] = editingPortForwardData.value;
-  editingPortForward.value = false;
+  curNetwork.value.port_forwards[editingPortForwardIndex.value] =
+    editingPortForwardData.value
+  editingPortForward.value = false
 }
 
-const portForwardContainer = ref<HTMLElement | null>(null);
-const isCompact = ref(false);
-
+const portForwardContainer = ref<HTMLElement | null>(null)
+const isCompact = ref(false)
 
 onMounted(() => {
   if (portForwardContainer.value) {
-    let resizeObserver = new ResizeObserver(entries => {
+    const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        isCompact.value = entry.contentRect.width < 540;
+        isCompact.value = entry.contentRect.width < 540
       }
-    });
-    resizeObserver.observe(portForwardContainer.value);
+    })
+    resizeObserver.observe(portForwardContainer.value)
 
     onUnmounted(() => {
       if (resizeObserver && portForwardContainer.value) {
-        resizeObserver.unobserve(portForwardContainer.value);
+        resizeObserver.unobserve(portForwardContainer.value)
       }
-    });
+    })
   }
-});
+})
 </script>
 
 <template>

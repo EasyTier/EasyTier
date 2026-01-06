@@ -3,7 +3,7 @@ interface ApiHost {
     usedAt: number;
 }
 
-let apiMeta: {
+const apiMeta: {
     api_host: string;
 } | undefined = (window as any).apiMeta;
 

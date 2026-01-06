@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Utils } from 'easytier-frontend-lib';
+import type { Utils } from 'easytier-frontend-lib';
 import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()

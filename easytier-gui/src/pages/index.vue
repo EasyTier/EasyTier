@@ -1,21 +1,20 @@
 <script setup lang="ts">
-
-import { type } from '@tauri-apps/plugin-os'
+import type { MenuItem } from 'primevue/menuitem'
 
 import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
-import { open } from '@tauri-apps/plugin-shell'
+import { type } from '@tauri-apps/plugin-os'
 import { exit } from '@tauri-apps/plugin-process'
-import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
-import type { MenuItem } from 'primevue/menuitem'
+import { open } from '@tauri-apps/plugin-shell'
+import { I18nUtils, RemoteManagement, Utils } from 'easytier-frontend-lib'
+import { useConfirm, useToast } from 'primevue'
+import ModeSwitcher from '~/components/ModeSwitcher.vue'
+
+import { getServiceStatus } from '~/composables/backend'
+import { loadLastNetworkInstanceId, saveLastNetworkInstanceId } from '~/composables/config'
+import { loadMode, type Mode, saveMode, type WebClientConfig } from '~/composables/mode'
 import { useTray } from '~/composables/tray'
 import { GUIRemoteClient } from '~/modules/api'
-
-import { useToast, useConfirm } from 'primevue'
-import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
-import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
-import ModeSwitcher from '~/components/ModeSwitcher.vue'
-import { getServiceStatus } from '~/composables/backend'
 
 const { t, locale } = useI18n()
 const confirm = useConfirm()
@@ -36,17 +35,17 @@ async function openModeDialog() {
 
 async function onModeSave() {
   if (isModeSaving.value) {
-    return;
+    return
   }
   isModeSaving.value = true
   try {
-    await initWithMode(editingMode.value);
+    await initWithMode(editingMode.value)
     modeDialogVisible.value = false
   }
   catch (e: any) {
     toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
-    console.error("Error switching mode", e, currentMode.value, editingMode.value)
-    await initWithMode(currentMode.value);
+    console.error('Error switching mode', e, currentMode.value, editingMode.value)
+    await initWithMode(currentMode.value)
   }
   finally {
     isModeSaving.value = false
@@ -61,27 +60,29 @@ async function onUninstallService() {
     rejectProps: {
       label: t('web.common.cancel'),
       severity: 'secondary',
-      outlined: true
+      outlined: true,
     },
     acceptProps: {
       label: t('mode.uninstall_service'),
-      severity: 'danger'
+      severity: 'danger',
     },
     accept: async () => {
       isModeSaving.value = true
       try {
-        await initWithMode({ ...currentMode.value, mode: 'normal' });
+        await initWithMode({ ...currentMode.value, mode: 'normal' })
         await initService(undefined)
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
         modeDialogVisible.value = false
-      } catch (e: any) {
+      }
+      catch (e: any) {
         toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
-        console.error("Error uninstalling service", e)
-      } finally {
+        console.error('Error uninstalling service', e)
+      }
+      finally {
         isModeSaving.value = false
       }
     },
-  });
+  })
 }
 
 async function onStopService() {
@@ -94,7 +95,7 @@ async function onStopService() {
   }
   catch (e: any) {
     toast.add({ severity: 'error', summary: t('error'), detail: e, life: 10000 })
-    console.error("Error stopping service", e)
+    console.error('Error stopping service', e)
   }
   finally {
     isModeSaving.value = false
@@ -106,40 +107,40 @@ async function initWithMode(mode: Mode) {
 
   if (currentMode.value.mode === 'service' && mode.mode !== 'service') {
     let serviceStatus = await getServiceStatus()
-    if (serviceStatus === "Running") {
+    if (serviceStatus === 'Running') {
       manualDisconnect.value = true
       await setServiceStatus(false)
       serviceStatus = await getServiceStatus()
       for (let i = 0; i < 10; i++) { // macOS takes a while to stop the service
-        if (serviceStatus === "Stopped") {
-          break;
+        if (serviceStatus === 'Stopped') {
+          break
         }
         await new Promise(resolve => setTimeout(resolve, 100))
         serviceStatus = await getServiceStatus()
       }
     }
-    if (serviceStatus === "Stopped") {
+    if (serviceStatus === 'Stopped') {
       await initService(undefined)
     }
   }
 
-  let url: string | undefined = undefined
+  let url: string | undefined
   let retrys = 1
   switch (mode.mode) {
     case 'remote':
       if (!mode.remote_rpc_address) {
         toast.add({ severity: 'error', summary: t('error'), detail: t('mode.remote_rpc_address_empty'), life: 10000 })
-        return initWithMode({ ...mode, mode: 'normal' });
+        return initWithMode({ ...mode, mode: 'normal' })
       }
       url = mode.remote_rpc_address
-      break;
-    case 'service':
+      break
+    case 'service': {
       if (!mode.config_dir || !mode.file_log_dir || !mode.file_log_level || !mode.rpc_portal) {
         toast.add({ severity: 'error', summary: t('error'), detail: t('mode.service_config_empty'), life: 10000 })
-        return initWithMode({ ...mode, mode: 'normal' });
+        return initWithMode({ ...mode, mode: 'normal' })
       }
       let serviceStatus = await getServiceStatus()
-      if (serviceStatus === "NotInstalled" || JSON.stringify(mode) !== JSON.stringify(currentMode.value)) {
+      if (serviceStatus === 'NotInstalled' || JSON.stringify(mode) !== JSON.stringify(currentMode.value)) {
         mode.config_server_url = mode.config_server_url || undefined
         await initService({
           config_dir: mode.config_dir,
@@ -150,22 +151,24 @@ async function initWithMode(mode: Mode) {
         })
         serviceStatus = await getServiceStatus()
       }
-      if (serviceStatus === "Stopped") {
+      if (serviceStatus === 'Stopped') {
         await setServiceStatus(true)
       }
-      url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
+      url = `tcp://${mode.rpc_portal.replace('0.0.0.0', '127.0.0.1')}`
       retrys = 5
-      break;
+      break
+    }
   }
   for (let i = 0; i < retrys; i++) {
     try {
       await connectRpcClient(url)
-      break;
-    } catch (e) {
+      break
+    }
+    catch (e) {
       if (i === retrys - 1) {
-        throw e;
+        throw e
       }
-      console.error("Error connecting rpc client, retrying...", e)
+      console.error('Error connecting rpc client, retrying...', e)
       await new Promise(resolve => setTimeout(resolve, 1000))
     }
   }
@@ -181,21 +184,21 @@ async function initWithMode(mode: Mode) {
 
 onMounted(() => {
   currentMode.value = loadMode()
-  initWithMode(currentMode.value);
-});
+  initWithMode(currentMode.value)
+})
 
 useTray(true)
-let toast = useToast();
+const toast = useToast()
 
-const remoteClient = computed(() => new GUIRemoteClient());
-const instanceId = ref<string | undefined>(undefined);
-const clientRunning = ref(false);
+const remoteClient = computed(() => new GUIRemoteClient())
+const instanceId = ref<string | undefined>(undefined)
+const clientRunning = ref(false)
 
 watch(instanceId, (newVal) => {
   if (newVal) {
-    saveLastNetworkInstanceId(newVal);
+    saveLastNetworkInstanceId(newVal)
   }
-});
+})
 
 watch(clientRunning, async (newVal, oldVal) => {
   if (!newVal && oldVal) {
@@ -204,10 +207,11 @@ watch(clientRunning, async (newVal, oldVal) => {
       return
     }
     await reconnectClient()
-  } else if (newVal && !oldVal) {
-    const lastInstanceId = loadLastNetworkInstanceId();
+  }
+  else if (newVal && !oldVal) {
+    const lastInstanceId = loadLastNetworkInstanceId()
     if (lastInstanceId) {
-      instanceId.value = lastInstanceId;
+      instanceId.value = lastInstanceId
     }
   }
 })
@@ -217,9 +221,10 @@ onMounted(async () => {
   const timer = setInterval(async () => {
     try {
       clientRunning.value = await isClientRunning()
-    } catch (e) {
+    }
+    catch (e) {
       clientRunning.value = false
-      console.error("Error checking client running status", e)
+      console.error('Error checking client running status', e)
     }
   }, 1000)
 
@@ -228,7 +233,7 @@ onMounted(async () => {
   })
 })
 async function reconnectClient() {
-  editingMode.value = JSON.parse(JSON.stringify(loadMode()));
+  editingMode.value = JSON.parse(JSON.stringify(loadMode()))
   await onModeSave()
 }
 
@@ -299,16 +304,16 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
     },
   },
   {
-    label: () => `${t('mode.switch_mode')}: ${t('mode.' + currentMode.value.mode)}`,
+    label: () => `${t('mode.switch_mode')}: ${t(`mode.${currentMode.value.mode}`)}`,
     icon: 'pi pi-sync',
     command: openModeDialog,
     visible: () => type() !== 'android',
   },
   {
-    label: () => `${t('config-server.title')}${t('config-server.' + configServerConnectionStatus.value)}`,
+    label: () => `${t('config-server.title')}${t(`config-server.${configServerConnectionStatus.value}`)}`,
     icon: 'pi pi-globe',
     command: openConfigServerDialog,
-    visible: () => ["normal", "service"].includes(currentMode.value.mode),
+    visible: () => ['normal', 'service'].includes(currentMode.value.mode),
   },
   {
     key: 'logging_menu',
@@ -334,16 +339,17 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
 
 async function connectRpcClient(url?: string) {
   await initRpcConnection(url)
-  console.log("easytier rpc connection established")
+  console.log('easytier rpc connection established')
 }
 
 onMounted(async () => {
   if (type() === 'android') {
     try {
       await initMobileVpnService()
-      console.error("easytier init vpn service done")
-    } catch (e: any) {
-      console.error("easytier init vpn service failed", e)
+      console.error('easytier init vpn service done')
+    }
+    catch (e: any) {
+      console.error('easytier init vpn service failed', e)
     }
   }
   const unlisten = await listenGlobalEvents()
@@ -360,7 +366,7 @@ async function openConfigServerDialog() {
 async function onConfigServerSave() {
   if (JSON.stringify(currentMode.value) === JSON.stringify(editingMode.value)) {
     configServerDialogVisible.value = false
-    return;
+    return
   }
   if (editingMode.value.mode === 'service') {
     await new Promise<void>((resolve, reject) => {
@@ -370,7 +376,7 @@ async function onConfigServerSave() {
         rejectProps: {
           label: t('web.common.cancel'),
           severity: 'secondary',
-          outlined: true
+          outlined: true,
         },
         acceptProps: {
           label: t('web.common.confirm'),
@@ -380,19 +386,21 @@ async function onConfigServerSave() {
         },
         reject: () => {
           reject()
-        }
-      });
+        },
+      })
     })
   }
-  console.log("Saving config server url", (editingMode.value as WebClientConfig).config_server_url)
-  await onModeSave();
+  console.log('Saving config server url', (editingMode.value as WebClientConfig).config_server_url)
+  await onModeSave()
   configServerDialogVisible.value = false
 }
 onMounted(() => {
   const timer = setInterval(async () => {
-    if (currentMode.value.mode !== 'normal') return;
-    if (!currentMode.value.config_server_url) return;
-    configServerConnected.value = await isWebClientConnected();
+    if (currentMode.value.mode !== 'normal')
+      return
+    if (!currentMode.value.config_server_url)
+      return
+    configServerConnected.value = await isWebClientConnected()
   }, 1000)
 
   onUnmounted(() => {
@@ -408,7 +416,6 @@ const configServerConnectionStatus = computed(() => {
   }
   return configServerConnected.value ? 'connected' : 'connecting'
 })
-
 </script>
 
 <template>
@@ -419,36 +426,47 @@ const configServerConnectionStatus = computed(() => {
     <Dialog v-model:visible="modeDialogVisible" modal :header="t('mode.switch_mode')" :style="{ width: '50vw' }">
       <ModeSwitcher v-model="editingMode" @uninstall-service="onUninstallService" @stop-service="onStopService" />
       <template #footer>
-        <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="modeDialogVisible = false" text />
-        <Button :label="t('web.common.save')" icon="pi pi-save" @click="onModeSave" autofocus :loading="isModeSaving" />
+        <Button :label="t('web.common.cancel')" icon="pi pi-times" text @click="modeDialogVisible = false" />
+        <Button :label="t('web.common.save')" icon="pi pi-save" autofocus :loading="isModeSaving" @click="onModeSave" />
       </template>
     </Dialog>
 
-    <Dialog v-model:visible="configServerDialogVisible" modal :header="t('config-server.title')"
-      :style="{ width: '50vw' }">
+    <Dialog
+      v-model:visible="configServerDialogVisible" modal :header="t('config-server.title')"
+      :style="{ width: '50vw' }"
+    >
       <div class="flex flex-col gap-3">
         <label for="config-server-address">{{ t('config-server.address') }}</label>
-        <InputText id="config-server-address" v-model="(editingMode as WebClientConfig).config_server_url"
-          :placeholder="t('config-server.address_placeholder')" />
+        <InputText
+          id="config-server-address" v-model="(editingMode as WebClientConfig).config_server_url"
+          :placeholder="t('config-server.address_placeholder')"
+        />
         <small class="p-text-secondary whitespace-pre-wrap">{{ t('config-server.description') }}</small>
       </div>
       <template #footer>
-        <Button :label="t('web.common.cancel')" icon="pi pi-times" @click="configServerDialogVisible = false" text />
-        <Button :label="t('web.common.save')" icon="pi pi-save" @click="onConfigServerSave" autofocus
-          :loading="isModeSaving" />
+        <Button :label="t('web.common.cancel')" icon="pi pi-times" text @click="configServerDialogVisible = false" />
+        <Button
+          :label="t('web.common.save')" icon="pi pi-save" autofocus :loading="isModeSaving"
+          @click="onConfigServerSave"
+        />
       </template>
     </Dialog>
 
     <Menu ref="log_menu" :model="log_menu_items_popup" :popup="true" />
 
-    <RemoteManagement v-if="clientRunning" class="flex-1 overflow-y-auto" :api="remoteClient"
-      :pause-auto-refresh="isModeSaving" v-model:instance-id="instanceId" />
+    <RemoteManagement
+      v-if="clientRunning" v-model:instance-id="instanceId" class="flex-1 overflow-y-auto"
+      :api="remoteClient" :pause-auto-refresh="isModeSaving"
+    />
     <div v-else class="empty-state flex-1 flex flex-col items-center py-12">
-      <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50"></i>
-      <div class="text-xl text-center font-medium mb-3">{{ t('client.not_running') }}
+      <i class="pi pi-server text-5xl text-secondary mb-4 opacity-50" />
+      <div class="text-xl text-center font-medium mb-3">
+        {{ t('client.not_running') }}
       </div>
-      <Button @click="reconnectClient" :loading="isModeSaving" :label="t('client.retry')" icon="pi pi-replay"
-        iconPos="left" />
+      <Button
+        :loading="isModeSaving" :label="t('client.retry')" icon="pi pi-replay" icon-pos="left"
+        @click="reconnectClient"
+      />
     </div>
 
     <Menubar :model="setting_menu_items" breakpoint="795px">
@@ -456,7 +474,7 @@ const configServerConnectionStatus = computed(() => {
         <a v-if="item.key === 'logging_menu'" v-bind="props.action" @click="toggle_log_menu">
           <span :class="item.icon" />
           <span class="p-menubar-item-label">{{ getLabel(item) }}</span>
-          <span class="pi pi-angle-down p-menubar-item-icon text-[9px]"></span>
+          <span class="pi pi-angle-down p-menubar-item-icon text-[9px]" />
         </a>
         <a v-else v-bind="props.action">
           <span :class="item.icon" />

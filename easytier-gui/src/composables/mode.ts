@@ -29,7 +29,7 @@ export function saveMode(mode: Mode) {
 export function loadMode(): Mode {
     const modeStr = localStorage.getItem('app_mode')
     if (modeStr) {
-        let mode = JSON.parse(modeStr) as Mode
+        const mode = JSON.parse(modeStr) as Mode
         if (type() === 'android') {
             return { ...mode, mode: 'normal' }
         }

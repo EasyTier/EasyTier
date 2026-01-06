@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { computed, inject, ref } from 'vue';
 import { Card, Password, Button } from 'primevue';
-import ApiClient from '../modules/api';
+import type ApiClient from '../modules/api';
 
 const dialogRef = inject<any>('dialogRef');
 

@@ -2,7 +2,7 @@
 import { Card, useToast } from 'primevue';
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { Utils } from 'easytier-frontend-lib';
-import ApiClient, { Summary } from '../modules/api';
+import ApiClient, { type Summary } from '../modules/api';
 
 const props = defineProps({
     api: ApiClient,

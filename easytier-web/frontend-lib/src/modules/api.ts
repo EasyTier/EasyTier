@@ -1,5 +1,5 @@
-import { UUID } from './utils';
-import { NetworkConfig, NetworkInstanceRunningInfo } from '../types/network';
+import type { UUID } from './utils';
+import type { NetworkConfig, NetworkInstanceRunningInfo } from '../types/network';
 
 export interface ValidateConfigResponse {
     toml_config: string;

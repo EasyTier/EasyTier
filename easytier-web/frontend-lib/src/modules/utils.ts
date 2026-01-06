@@ -1,5 +1,5 @@
 import { IPv4, IPv6 } from 'ip-num/IPNumber'
-import { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
+import type { Ipv4Addr, Ipv4Inet, Ipv6Addr } from '../types/network'
 
 export function ipv4ToString(ip: Ipv4Addr) {
     return IPv4.fromNumber(ip.addr).toString()
@@ -71,7 +71,7 @@ export interface DeviceInfo {
 }
 
 export function buildDeviceInfo(device: any): DeviceInfo {
-    let dev_info: DeviceInfo = {
+    const dev_info: DeviceInfo = {
         hostname: device.info?.hostname,
         public_ip: device.client_url,
         running_network_instances: device.info?.running_network_instances.map((instance: any) => UuidToStr(instance)),

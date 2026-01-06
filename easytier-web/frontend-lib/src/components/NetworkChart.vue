@@ -103,7 +103,7 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
 
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+  return parseFloat((bytes / k ** i).toFixed(1)) + ' ' + sizes[i]
 }
 
 // 更新数据
@@ -193,7 +193,7 @@ function initChart() {
         },
         tooltip: {
           callbacks: {
-            label: function (context: any) {
+            label: (context: any) => {
               const value = context.parsed.y
               return `${context.dataset.label}: ${formatBytes(value)}/s`
             }
@@ -221,9 +221,7 @@ function initChart() {
             color: 'rgba(0, 0, 0, 0.1)'
           },
           ticks: {
-            callback: function (value: any) {
-              return formatBytes(value as number)
-            },
+            callback: (value: any) => formatBytes(value as number),
             font: {
               size: 8
             },
@@ -246,7 +244,7 @@ onMounted(async () => {
   // add initial point
   const now = new Date();
   for (let i = 0; i < maxDataPoints; i++) {
-    let date = new Date(now.getTime() - (maxDataPoints - i) * 2000)
+    const date = new Date(now.getTime() - (maxDataPoints - i) * 2000)
     const timeStr = date.toLocaleTimeString(navigator.language, {
       hour12: false,
       hour: '2-digit',
