@@ -24,11 +24,11 @@ use crate::{
     tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
     web_client,
+    ShellType,
 };
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
-use clap_complete::Shell;
 use rust_i18n::t;
 use tokio::io::AsyncReadExt;
 
@@ -77,29 +77,6 @@ fn dump_profile(_cur_allocated: usize) {
             name.write(&PROF_DUMP_FILE_NAME[..len + 1])
                 .expect("Should succeed to dump profile");
             println!("dump profile to: {}", file_name_str);
-        }
-    }
-}
-
-#[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
-enum ShellType {
-    Bash,
-    Elvish,
-    Fish,
-    Powershell,
-    Zsh,
-    Nu,
-}
-
-impl ShellType {
-    fn to_shell(&self) -> Option<Shell> {
-        match self {
-            ShellType::Bash => Some(Shell::Bash),
-            ShellType::Elvish => Some(Shell::Elvish),
-            ShellType::Fish => Some(Shell::Fish),
-            ShellType::Powershell => Some(Shell::PowerShell),
-            ShellType::Zsh => Some(Shell::Zsh),
-            ShellType::Nu => None,
         }
     }
 }

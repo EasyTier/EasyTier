@@ -10,8 +10,8 @@ use std::{
 use anyhow::Context;
 use cidr::Ipv4Inet;
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use clap_complete::Shell;
 use dashmap::DashMap;
+use easytier::ShellType;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
@@ -62,29 +62,6 @@ use easytier::{
 };
 
 rust_i18n::i18n!("locales", fallback = "en");
-
-#[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
-enum ShellType {
-    Bash,
-    Elvish,
-    Fish,
-    Powershell,
-    Zsh,
-    Nu,
-}
-
-impl ShellType {
-    fn to_shell(&self) -> Option<Shell> {
-        match self {
-            ShellType::Bash => Some(Shell::Bash),
-            ShellType::Elvish => Some(Shell::Elvish),
-            ShellType::Fish => Some(Shell::Fish),
-            ShellType::Powershell => Some(Shell::PowerShell),
-            ShellType::Zsh => Some(Shell::Zsh),
-            ShellType::Nu => None,
-        }
-    }
-}
 
 #[derive(Parser, Debug)]
 #[command(name = "easytier-cli", author, version = EASYTIER_VERSION, about, long_about = None)]
