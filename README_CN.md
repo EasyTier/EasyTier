@@ -144,7 +144,7 @@ sudo easytier-core -i 10.144.144.1
 - UDP：11010
 - WebSocket：11011
 - WebSocket SSL：11012
-- WireGuard：11013
+- WireGuard：11011
 - QUIC: 11012
 - FakeTCP: 11013
 
