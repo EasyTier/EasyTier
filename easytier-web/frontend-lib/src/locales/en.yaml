@@ -42,10 +42,6 @@ logging_level_trace: Trace
 logging_level_off: Off
 logging_open_dir: Open Log Directory
 logging_copy_dir: Copy Log Path
-file_log_size_mb: Single Log File Size (MB)
-file_log_size_mb_help: Per file log size in MB, default is 100MB
-file_log_count: Max Log File Count
-file_log_count_help: Max file log count, default is 10
 disable_auto_launch: Disable Launch on Reboot
 enable_auto_launch: Enable Launch on Reboot
 hide_dock_icon: Hide Dock Icon
@@ -223,9 +219,6 @@ ipv6_listener_help: The url of the ipv6 listener, e.g. tcp://[::]:11010, if not 
 
 stun_servers: STUN Servers
 stun_servers_help: Override default STUN servers; If configured but empty, STUN servers are not used
-
-stun_servers_v6: IPv6 STUN Servers
-stun_servers_v6_help: Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used
 
 status:
   version: Version

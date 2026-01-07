@@ -84,10 +84,6 @@ export interface NetworkConfig {
 
   compression?: string
   stun_servers: string[]
-  stun_servers_v6: string[]
-
-  file_log_size_mb?: number
-  file_log_count?: number
 
   port_forwards: PortForwardConfig[]
 }
@@ -169,9 +165,6 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     enable_relay_foreign_network_kcp: false,
     compression: 'none',
     stun_servers: [],
-    stun_servers_v6: [],
-    file_log_size_mb: 100,
-    file_log_count: 10,
     port_forwards: [],
   }
 }

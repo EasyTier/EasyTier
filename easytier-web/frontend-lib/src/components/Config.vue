@@ -615,18 +615,6 @@ onMounted(() => {
                 </div>
               </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap w-full">
-                <div class="flex flex-col gap-2 grow p-fluid">
-                  <div class="flex">
-                    <label for="stun_servers_v6">{{ t('stun_servers_v6') }}</label>
-                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('stun_servers_v6_help')"></span>
-                  </div>
-                  <AutoComplete id="stun_servers_v6" v-model="curNetwork.stun_servers_v6"
-                    :placeholder="t('chips_placeholder', ['stun.l.google.com:19302'])" class="w-full" multiple fluid
-                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
-                </div>
-              </div>
-
               <div v-if="curNetwork.enable_magic_dns" class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
                   <div class="flex">
@@ -635,28 +623,6 @@ onMounted(() => {
                   </div>
                   <InputText id="tld_dns_zone" v-model="curNetwork.tld_dns_zone" 
                     aria-describedby="tld_dns_zone-help" />
-                </div>
-              </div>
-
-              <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <div class="flex">
-                    <label for="file_log_size_mb">{{ t('file_log_size_mb') }}</label>
-                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('file_log_size_mb_help')"></span>
-                  </div>
-                  <InputNumber id="file_log_size_mb" v-model="curNetwork.file_log_size_mb" 
-                    aria-describedby="file_log_size_mb-help" :format="false" :min="1" :max="1000" fluid />
-                </div>
-              </div>
-
-              <div class="flex flex-row gap-x-9 flex-wrap">
-                <div class="flex flex-col gap-2 basis-5/12 grow">
-                  <div class="flex">
-                    <label for="file_log_count">{{ t('file_log_count') }}</label>
-                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('file_log_count_help')"></span>
-                  </div>
-                  <InputNumber id="file_log_count" v-model="curNetwork.file_log_count" 
-                    aria-describedby="file_log_count-help" :format="false" :min="1" :max="100" fluid />
                 </div>
               </div>
 

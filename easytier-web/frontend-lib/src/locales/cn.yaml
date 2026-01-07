@@ -42,10 +42,6 @@ logging_level_trace: 跟踪
 logging_level_off: 关闭
 logging_open_dir: 打开日志目录
 logging_copy_dir: 复制日志路径
-file_log_size_mb: 单个日志文件大小(MB)
-file_log_size_mb_help: 单个文件日志大小，单位 MB，默认值为 100MB
-file_log_count: 最大日志文件数量
-file_log_count_help: 最大文件日志数量，默认值为 10
 disable_auto_launch: 关闭开机自启
 enable_auto_launch: 开启开机自启
 hide_dock_icon: 隐藏 Dock 图标
@@ -223,9 +219,6 @@ ipv6_listener_help: IPv6 监听器的URL，例如：tcp://[::]:11010，如果未
 
 stun_servers: STUN服务器列表
 stun_servers_help: 覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表
-
-stun_servers_v6: IPv6 STUN服务器列表
-stun_servers_v6_help: 覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表
 
 status:
   version: 内核版本
