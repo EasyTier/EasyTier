@@ -43,6 +43,7 @@ declare global {
   const isWebClientConnected: typeof import('./composables/backend')['isWebClientConnected']
   const listNetworkInstanceIds: typeof import('./composables/backend')['listNetworkInstanceIds']
   const listenGlobalEvents: typeof import('./composables/event')['listenGlobalEvents']
+  const loadLastNetworkInstanceId: typeof import('./composables/config')['loadLastNetworkInstanceId']
   const loadMode: typeof import('./composables/mode')['loadMode']
   const mapActions: typeof import('pinia')['mapActions']
   const mapGetters: typeof import('pinia')['mapGetters']
@@ -76,6 +77,7 @@ declare global {
   const ref: typeof import('vue')['ref']
   const resolveComponent: typeof import('vue')['resolveComponent']
   const runNetworkInstance: typeof import('./composables/backend')['runNetworkInstance']
+  const saveLastNetworkInstanceId: typeof import('./composables/config')['saveLastNetworkInstanceId']
   const saveMode: typeof import('./composables/mode')['saveMode']
   const saveNetworkConfig: typeof import('./composables/backend')['saveNetworkConfig']
   const sendConfigs: typeof import('./composables/backend')['sendConfigs']
@@ -165,6 +167,7 @@ declare module 'vue' {
     readonly isWebClientConnected: UnwrapRef<typeof import('./composables/backend')['isWebClientConnected']>
     readonly listNetworkInstanceIds: UnwrapRef<typeof import('./composables/backend')['listNetworkInstanceIds']>
     readonly listenGlobalEvents: UnwrapRef<typeof import('./composables/event')['listenGlobalEvents']>
+    readonly loadLastNetworkInstanceId: UnwrapRef<typeof import('./composables/config')['loadLastNetworkInstanceId']>
     readonly loadMode: UnwrapRef<typeof import('./composables/mode')['loadMode']>
     readonly mapActions: UnwrapRef<typeof import('pinia')['mapActions']>
     readonly mapGetters: UnwrapRef<typeof import('pinia')['mapGetters']>
@@ -198,6 +201,7 @@ declare module 'vue' {
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/backend')['runNetworkInstance']>
+    readonly saveLastNetworkInstanceId: UnwrapRef<typeof import('./composables/config')['saveLastNetworkInstanceId']>
     readonly saveMode: UnwrapRef<typeof import('./composables/mode')['saveMode']>
     readonly saveNetworkConfig: UnwrapRef<typeof import('./composables/backend')['saveNetworkConfig']>
     readonly sendConfigs: UnwrapRef<typeof import('./composables/backend')['sendConfigs']>
