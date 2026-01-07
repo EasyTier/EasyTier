@@ -220,6 +220,9 @@ ipv6_listener_help: IPv6 监听器的URL，例如：tcp://[::]:11010，如果未
 stun_servers: STUN服务器列表
 stun_servers_help: 覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表
 
+stun_servers_v6: IPv6 STUN服务器列表
+stun_servers_v6_help: 覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表
+
 status:
   version: 内核版本
   local: 本机

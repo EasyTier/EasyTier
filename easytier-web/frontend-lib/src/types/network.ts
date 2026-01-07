@@ -31,7 +31,7 @@ export interface NetworkConfig {
   advanced_settings: boolean
 
   listener_urls: string[]
-  ipv6_listener?: string
+  // ipv6_listener?: string
   latency_first: boolean
 
   dev_name: string
@@ -69,7 +69,7 @@ export interface NetworkConfig {
   enable_socks5?: boolean
   socks5_port: number
 
-  mtu: number | null
+  mtu?: number
   mapped_listeners: string[]
 
   enable_magic_dns?: boolean
@@ -84,6 +84,7 @@ export interface NetworkConfig {
 
   compression?: string
   stun_servers: string[]
+  stun_servers_v6: string[]
 
   port_forwards: PortForwardConfig[]
 }
@@ -121,7 +122,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
       'quic://0.0.0.0:11012',
       'faketcp://0.0.0.0:11013',
     ],
-    ipv6_listener: '',
+    // ipv6_listener: '',
     latency_first: false,
     dev_name: '',
 
@@ -153,18 +154,19 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     exit_nodes: [],
     enable_socks5: false,
     socks5_port: 1080,
-    mtu: null,
+    mtu: undefined,
     mapped_listeners: [],
     enable_magic_dns: false,
     tld_dns_zone: 'et.net.',
     enable_private_mode: false,
-    foreign_relay_bps_limit: 0,
+    foreign_relay_bps_limit: undefined,
     tcp_whitelist: [],
     udp_whitelist: [],
     disable_relay_kcp: false,
     enable_relay_foreign_network_kcp: false,
     compression: 'none',
     stun_servers: [],
+    stun_servers_v6: [],
     port_forwards: [],
   }
 }

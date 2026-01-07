@@ -13,7 +13,7 @@ import {
   Button,
   Password,
   Dialog,
-  Dropdown,
+  Select,
 } from 'primevue'
 import {
   addRow,
@@ -56,7 +56,7 @@ const protos: { [proto: string]: number } = {
 }
 
 const encryptionOptions = ref([
-  { label: 'default (aes-gcm)', value: undefined },
+  { label: 'default (aes-gcm)', value: 'aes-gcm' },
   { label: 'xor', value: 'xor' },
   { label: 'chacha20', value: 'chacha20' },
   { label: 'aes-gcm', value: 'aes-gcm' },
@@ -167,9 +167,9 @@ function searchListenerSuggestionsFactory(
 function searchListenerSuggestions(e: { query: string }) {
   searchListenerSuggestionsFactory(e, false)
 }
-function searchIpv6ListenerSuggestions(e: { query: string }) {
-  searchListenerSuggestionsFactory(e, true)
-}
+// function searchIpv6ListenerSuggestions(e: { query: string }) {
+//   searchListenerSuggestionsFactory(e, true)
+// }
 
 const exitNodesSuggestions = ref([''])
 
@@ -412,7 +412,7 @@ onMounted(() => {
                 </div>
               </div>
 
-              <div class="flex flex-row gap-x-9 flex-wrap">
+              <!-- <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <div class="flex">
                     <label for="ipv6_listener">{{ t('ipv6_listener') }}</label>
@@ -423,7 +423,7 @@ onMounted(() => {
                     :placeholder="t('chips_placeholder', ['tcp://[::]:11010'])"
                     @complete="searchIpv6ListenerSuggestions" />
                 </div>
-              </div>
+              </div> -->
 
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 basis-5/12 grow">
@@ -450,7 +450,7 @@ onMounted(() => {
                     <label for="encryption_algorithm">{{ t('encryption_algorithm') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('encryption_algorithm_help')"></span>
                   </div>
-                    <Dropdown id="encryption_algorithm" v-model="curNetwork.encryption_algorithm"
+                    <Select id="encryption_algorithm" v-model="curNetwork.encryption_algorithm"
                       :options="encryptionOptions" :default="encryptionOptions[0]" option-label="label" option-value="value" class="w-full"
                       :placeholder="t('encryption_algorithm_placeholder')" />
                 </div>
@@ -484,7 +484,7 @@ onMounted(() => {
                     <label for="compression">{{ t('compression') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('compression_help')"></span>
                   </div>
-                    <Dropdown id="compression" v-model="curNetwork.compression"
+                    <Select id="compression" v-model="curNetwork.compression"
                       :options="compressionOptions" option-label="label" option-value="value" class="w-full"
                       :placeholder="t('compression_placeholder')" :default="compressionOptions[0]" />
                 </div>
@@ -610,6 +610,18 @@ onMounted(() => {
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('stun_servers_help')"></span>
                   </div>
                   <AutoComplete id="stun_servers" v-model="curNetwork.stun_servers"
+                    :placeholder="t('chips_placeholder', ['stun.l.google.com:19302'])" class="w-full" multiple fluid
+                    :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap w-full">
+                <div class="flex flex-col gap-2 grow p-fluid">
+                  <div class="flex">
+                    <label for="stun_servers_v6">{{ t('stun_servers_v6') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('stun_servers_v6_help')"></span>
+                  </div>
+                  <AutoComplete id="stun_servers_v6" v-model="curNetwork.stun_servers_v6"
                     :placeholder="t('chips_placeholder', ['stun.l.google.com:19302'])" class="w-full" multiple fluid
                     :suggestions="whitelistSuggestions" @complete="searchWhitelistSuggestions" />
                 </div>

@@ -220,6 +220,9 @@ ipv6_listener_help: The url of the ipv6 listener, e.g. tcp://[::]:11010, if not 
 stun_servers: STUN Servers
 stun_servers_help: Override default STUN servers; If configured but empty, STUN servers are not used
 
+stun_servers_v6: IPv6 STUN Servers
+stun_servers_v6_help: Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used
+
 status:
   version: Version
   local: Local
