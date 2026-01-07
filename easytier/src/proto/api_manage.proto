@@ -17,6 +17,7 @@ message NetworkConfig {
 
   optional bool dhcp = 2;
   optional string virtual_ipv4 = 3;
+  // optional string virtual_ipv6 = 55;
   optional int32 network_length = 4;
   optional string hostname = 5;
   optional string network_name = 6;
@@ -81,6 +82,16 @@ message NetworkConfig {
   optional common.CompressionAlgoPb data_compress_algo = 52;
   optional string encryption_algorithm = 53;
   optional bool disable_tcp_hole_punching = 54;
+
+  optional int32 multi_thread_count = 56;
+  optional string tld_dns_zone = 57;
+  optional uint64 foreign_relay_bps_limit = 58;
+  repeated string tcp_whitelist = 59;
+  repeated string udp_whitelist = 60;
+  optional bool disable_relay_kcp = 61;
+  optional bool enable_relay_foreign_network_kcp = 62;
+  repeated string stun_servers = 63;
+  repeated string stun_servers_v6 = 64;
 }
 
 message PortForwardConfig {

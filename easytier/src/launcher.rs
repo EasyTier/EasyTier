@@ -789,7 +789,43 @@ impl NetworkConfig {
             }
         }
 
+        if let Some(multi_thread_count) = self.multi_thread_count {
+            flags.multi_thread_count = multi_thread_count as u32;
+        }
+
+        if let Some(tld_dns_zone) = self.tld_dns_zone.clone() {
+            flags.tld_dns_zone = tld_dns_zone;
+        }
+
+        if let Some(foreign_relay_bps_limit) = self.foreign_relay_bps_limit {
+            flags.foreign_relay_bps_limit = foreign_relay_bps_limit as u64;
+        }
+
+        if let Some(disable_relay_kcp) = self.disable_relay_kcp {
+            flags.disable_relay_kcp = disable_relay_kcp;
+        }
+
+        if let Some(enable_relay_foreign_network_kcp) = self.enable_relay_foreign_network_kcp {
+            flags.enable_relay_foreign_network_kcp = enable_relay_foreign_network_kcp;
+        }
+
         cfg.set_flags(flags);
+
+        if !self.tcp_whitelist.is_empty() {
+            cfg.set_tcp_whitelist(self.tcp_whitelist.clone());
+        }
+
+        if !self.udp_whitelist.is_empty() {
+            cfg.set_udp_whitelist(self.udp_whitelist.clone());
+        }
+
+        if !self.stun_servers.is_empty() {
+            cfg.set_stun_servers(Some(self.stun_servers.clone()));
+        }
+
+        if !self.stun_servers_v6.is_empty() {
+            cfg.set_stun_servers_v6(Some(self.stun_servers_v6.clone()));
+        }
         Ok(cfg)
     }
 
@@ -921,6 +957,20 @@ impl NetworkConfig {
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
+        result.multi_thread_count = Some(flags.multi_thread_count as i32);
+        result.tld_dns_zone = Some(flags.tld_dns_zone.clone());
+        result.foreign_relay_bps_limit = Some(flags.foreign_relay_bps_limit);
+        result.disable_relay_kcp = Some(flags.disable_relay_kcp);
+        result.enable_relay_foreign_network_kcp = Some(flags.enable_relay_foreign_network_kcp);
+
+        result.tcp_whitelist = config.get_tcp_whitelist();
+        result.udp_whitelist = config.get_udp_whitelist();
+        if let Some(stun_servers) = config.get_stun_servers() {
+            result.stun_servers = stun_servers;
+        }
+        if let Some(stun_servers_v6) = config.get_stun_servers_v6() {
+            result.stun_servers_v6 = stun_servers_v6;
+        }
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);
