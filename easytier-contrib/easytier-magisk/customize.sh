@@ -1,3 +1,10 @@
+SKIPMOUNT=false
+PROPFILE=true
+POSTFSDATA=true
+LATESTARTSERVICE=true
+
+set_perm_recursive $MODPATH 0 0 0777 0777
+
 ui_print '安装完成'
 ui_print '当前架构为' + $ARCH
 ui_print '当前系统版本为' + $API
