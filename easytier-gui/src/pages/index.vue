@@ -13,6 +13,7 @@ import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
+import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
 import { getServiceStatus } from '~/composables/backend'
 
@@ -190,6 +191,12 @@ const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
 
+watch(instanceId, (newVal) => {
+  if (newVal) {
+    saveLastNetworkInstanceId(newVal);
+  }
+});
+
 watch(clientRunning, async (newVal, oldVal) => {
   if (!newVal && oldVal) {
     if (manualDisconnect.value) {
@@ -197,6 +204,11 @@ watch(clientRunning, async (newVal, oldVal) => {
       return
     }
     await reconnectClient()
+  } else if (newVal && !oldVal) {
+    const lastInstanceId = loadLastNetworkInstanceId();
+    if (lastInstanceId) {
+      instanceId.value = lastInstanceId;
+    }
   }
 })
 
