@@ -53,6 +53,9 @@ const protos: { [proto: string]: number } = {
   wss: 11012,
   quic: 11012,
   faketcp: 11013,
+  http: 0,
+  txt: 0,
+  srv: 0,
 }
 
 const encryptionOptions = ref([
@@ -87,7 +90,7 @@ function searchUrlSuggestions(e: { query: string }): string[] {
     for (const proto in protos) {
       let item = `${proto}://${query}`
       // if query match ":\d+$", then no port suffix
-      if (!query.match(/:\d+$/)) {
+      if (!query.match(/:\d+$/) && !(proto === 'http' || proto === 'txt' || proto === 'srv')) {
         item += `:${protos[proto]}`
       }
       ret.push(item)
@@ -142,7 +145,10 @@ function searchListenerSuggestionsFactory(
   const ret = []
 
   for (const proto in protos) {
-    let item = `${proto}://${isIpv6 ? '[::]' : '0.0.0.0'}:`
+    let item = `${proto}://${isIpv6 ? '[::]' : '0.0.0.0'}`
+    if (proto !== 'http' && proto !== 'txt' && proto !== 'srv') {
+      item += ':'
+    }
     // if query is a number, use it as port
     if (e.query.match(/^\d+$/)) {
       item += e.query
