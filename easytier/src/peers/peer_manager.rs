@@ -941,7 +941,8 @@ impl PeerManager {
         self.get_route().get_foreign_network_summary().await
     }
 
-    async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) {
+    async fn run_nic_packet_process_pipeline(&self, data: &mut ZCPacket) -> bool {
+        // Enforce ACL for outbound (NIC-originated) packets. If ACL denies, stop processing.
         if !self.global_ctx.get_acl_filter().process_packet_with_acl(
             data,
             false,
@@ -949,12 +950,14 @@ impl PeerManager {
             None,
             &self.get_route(),
         ) {
-            return;
+            return false;
         }
 
         for pipeline in self.nic_packet_process_pipeline.read().await.iter().rev() {
             let _ = pipeline.try_process_packet_from_nic(data).await;
         }
+
+        true
     }
 
     pub async fn remove_nic_packet_process_pipeline(&self, id: String) -> Result<(), Error> {
@@ -1161,7 +1164,9 @@ impl PeerManager {
             0,
             tunnel::packet_def::PacketType::Data as u8,
         );
-        self.run_nic_packet_process_pipeline(&mut msg).await;
+        if !self.run_nic_packet_process_pipeline(&mut msg).await {
+            return Ok(());
+        }
         let cur_to_peer_id = msg.peer_manager_header().unwrap().to_peer_id.into();
         if cur_to_peer_id != 0 {
             return Self::send_msg_internal(
