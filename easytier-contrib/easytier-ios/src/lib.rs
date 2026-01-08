@@ -139,6 +139,41 @@ pub extern "C" fn stop_network_instance() -> std::ffi::c_int {
 }
 
 /// # Safety
+/// Register stop callback
+#[no_mangle]
+pub extern "C" fn register_stop_callback(
+    callback: Option<extern "C" fn()>,
+    err_msg: *mut *const std::ffi::c_char,
+) -> std::ffi::c_int {
+    let impl_func = || -> Result<(), String> {
+        let callback = callback.ok_or("callback is null".to_string())?;
+        let inst = INSTANCE.lock().map_err(|e| e.to_string())?;
+        let inst = inst.as_ref().ok_or("no running instance".to_string())?;
+        let stop = inst.get_stop_notifier().ok_or("no stop notifier".to_string())?;
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new();
+            if let Ok(runtime) = runtime {
+                runtime.block_on(stop.notified());
+                callback();
+            }
+        });
+        Ok(())
+    };
+
+    match impl_func() {
+        Ok(_) => 0,
+        Err(e) => {
+            if !err_msg.is_null() {
+                if let Ok(cstr) = CString::new(e) {
+                    unsafe { *err_msg = cstr.into_raw(); }
+                };
+            }
+            -1
+        }
+    }
+}
+
+/// # Safety
 /// Get running info
 #[no_mangle]
 pub extern "C" fn get_running_info(
@@ -157,6 +192,42 @@ pub extern "C" fn get_running_info(
         let cstr = CString::new(info).map_err(|e| e.to_string())?;
         unsafe {
             *json = cstr.into_raw()
+        }
+        Ok(())
+    };
+
+    match impl_func() {
+        Ok(_) => 0,
+        Err(e) => {
+            if !err_msg.is_null() {
+                if let Ok(cstr) = CString::new(e) {
+                    unsafe { *err_msg = cstr.into_raw(); }
+                };
+            }
+            -1
+        }
+    }
+}
+
+/// # Safety
+/// Get latest error message
+#[no_mangle]
+pub extern "C" fn get_latest_error_msg(
+    msg: *mut *const std::ffi::c_char,
+    err_msg: *mut *const std::ffi::c_char,
+) -> std::ffi::c_int {
+    let impl_func = || -> Result<(), String> {
+        if msg.is_null() {
+            return Err("msg is a nullptr".to_string());
+        }
+        let inst = INSTANCE.lock().map_err(|e| e.to_string())?;
+        let inst = inst.as_ref().ok_or("no running instance".to_string())?;
+        let latest = inst.get_latest_error_msg();
+        if let Some(latest) = latest {
+            let cstr = CString::new(latest).map_err(|e| e.to_string())?;
+            unsafe { *msg = cstr.into_raw(); }
+        } else {
+            unsafe { *msg = std::ptr::null(); }
         }
         Ok(())
     };
