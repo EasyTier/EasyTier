@@ -1,7 +1,8 @@
 use std::{ffi::CString, fs::File, sync::{Arc, Mutex}};
 
 use easytier::{
-    common::config::{ConfigFileControl, TomlConfigLoader}, launcher::NetworkInstance,
+    common::{config::{ConfigFileControl, TomlConfigLoader}, global_ctx::GlobalCtxEvent},
+    launcher::NetworkInstance,
 };
 use once_cell::sync::Lazy;
 use tracing_oslog::OsLogger;
@@ -155,6 +156,61 @@ pub extern "C" fn register_stop_callback(
             if let Ok(runtime) = runtime {
                 runtime.block_on(stop.notified());
                 callback();
+            }
+        });
+        Ok(())
+    };
+
+    match impl_func() {
+        Ok(_) => 0,
+        Err(e) => {
+            if !err_msg.is_null() {
+                if let Ok(cstr) = CString::new(e) {
+                    unsafe { *err_msg = cstr.into_raw(); }
+                };
+            }
+            -1
+        }
+    }
+}
+
+/// # Safety
+/// Register running info callback
+#[no_mangle]
+pub extern "C" fn register_running_info_callback(
+    callback: Option<extern "C" fn()>,
+    err_msg: *mut *const std::ffi::c_char,
+) -> std::ffi::c_int {
+    let impl_func = || -> Result<(), String> {
+        let callback = callback.ok_or("callback is null".to_string())?;
+        let inst = INSTANCE.lock().map_err(|e| e.to_string())?;
+        let inst = inst.as_ref().ok_or("no running instance".to_string())?;
+        let mut ev = inst
+            .subscribe_event()
+            .ok_or("no event subscriber".to_string())?;
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new();
+            if let Ok(runtime) = runtime {
+                runtime.block_on(async move {
+                    loop {
+                        match ev.recv().await {
+                            Ok(event) => match event {
+                                GlobalCtxEvent::DhcpIpv4Changed(_, _)
+                                | GlobalCtxEvent::ProxyCidrsUpdated(_, _)
+                                | GlobalCtxEvent::ConfigPatched(_) => {
+                                    callback();
+                                }
+                                _ => {}
+                            },
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                        }
+                    }
+                });
             }
         });
         Ok(())

@@ -20,6 +20,8 @@ int32_t stop_network_instance(void);
 
 int32_t register_stop_callback(void (*callback)(void), const char **err_msg);
 
+int32_t register_running_info_callback(void (*callback)(void), const char **err_msg);
+
 int32_t get_running_info(const char **json, const char **err_msg);
 
 int32_t get_latest_error_msg(const char **msg, const char **err_msg);

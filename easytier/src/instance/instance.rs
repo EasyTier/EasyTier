@@ -772,7 +772,7 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+                    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
@@ -1402,7 +1402,7 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
     pub async fn setup_nic_ctx_for_android(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
