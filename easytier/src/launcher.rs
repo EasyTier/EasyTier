@@ -112,7 +112,7 @@ impl EasyTierLauncher {
                     return;
                 };
                 if Some(tun_fd) != old_tun_fd {
-                    let res = Instance::setup_nic_ctx_for_android(
+                    let res = Instance::setup_nic_ctx_for_mobile(
                         nic_ctx.clone(),
                         global_ctx.clone(),
                         peer_mgr.clone(),
