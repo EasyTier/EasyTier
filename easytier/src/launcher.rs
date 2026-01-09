@@ -111,7 +111,8 @@ impl EasyTierLauncher {
                 let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
                     return;
                 };
-                if Some(tun_fd) != old_tun_fd {
+                // iOS needs to re-setup nic ctx even if the tun fd is the same
+                if Some(tun_fd) != old_tun_fd || cfg!(target_os = "ios") {
                     let res = Instance::setup_nic_ctx_for_mobile(
                         nic_ctx.clone(),
                         global_ctx.clone(),
