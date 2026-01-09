@@ -1410,7 +1410,7 @@ impl Instance {
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
-        println!("setup_nic_ctx_for_mobile, fd: {}", fd);
+        tracing::info!("setup_nic_ctx_for_mobile, fd: {}", fd);
         Self::clear_nic_ctx(nic_ctx.clone(), peer_packet_receiver.clone()).await;
         if fd <= 0 {
             return Ok(());

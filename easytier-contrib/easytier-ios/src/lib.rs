@@ -79,6 +79,12 @@ pub extern "C" fn set_tun_fd(
 }
 
 #[no_mangle]
+/// # Safety
+/// The pointer `s` must have been returned by one of this library's FFI
+/// functions that allocate strings (for example, via `CString::into_raw()`),
+/// and it must not have been freed previously. Passing any other pointer, or
+/// a pointer that has already been freed, results in undefined behavior.
+/// It is allowed to pass a null pointer; in that case this function is a no-op.
 pub extern "C" fn free_string(s: *const std::ffi::c_char) {
     if s.is_null() { return; }
     unsafe {
@@ -124,7 +130,7 @@ pub extern "C" fn run_network_instance(
 }
 
 /// # Safety
-/// Retain the network instance
+/// Stop the network instance
 #[no_mangle]
 pub extern "C" fn stop_network_instance() -> std::ffi::c_int {
     match INSTANCE.lock() {
@@ -156,6 +162,8 @@ pub extern "C" fn register_stop_callback(
             if let Ok(runtime) = runtime {
                 runtime.block_on(stop.notified());
                 callback();
+            } else {
+                tracing::error!("failed to create runtime for stop callback");
             }
         });
         Ok(())
@@ -211,6 +219,8 @@ pub extern "C" fn register_running_info_callback(
                         }
                     }
                 });
+            } else {
+                tracing::error!("failed to create runtime for running info callback");
             }
         });
         Ok(())
@@ -312,6 +322,6 @@ mod tests {
             network = "test_network"
         "#;
         let cstr = std::ffi::CString::new(cfg_str).unwrap();
-        assert_eq!(run_network_instance(cstr.as_ptr(), 0 as *mut *const std::ffi::c_char), 0);
+        assert_eq!(run_network_instance(cstr.as_ptr(), std::ptr::null_mut()), 0);
     }
 }
