@@ -31,7 +31,7 @@ async fn set_bind_addr_for_peer_connector(
     is_ipv4: bool,
     ip_collector: &Arc<IPCollector>,
 ) {
-    if cfg!(any(target_os = "android", target_env = "ohos")) {
+    if cfg!(any(target_os = "android", target_os = "ios", target_env = "ohos")) {
         return;
     }
 
