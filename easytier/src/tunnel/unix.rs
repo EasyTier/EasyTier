@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use async_trait::async_trait;
-use tokio::net::{UnixListener, UnixStream, unix::SocketAddr};
+use tokio::net::{unix::SocketAddr, UnixListener, UnixStream};
 
 use super::TunnelInfo;
 
@@ -143,53 +143,67 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::{
-        common::tests::{_tunnel_bench, _tunnel_pingpong},
-    };
+    use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
 
     use super::*;
 
     #[tokio::test]
     async fn unix_socket_pingpong() {
-        let listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test.sock".parse().unwrap());
-        let connector = UnixSocketTunnelConnector::new("unix:///tmp/easytier-test.sock".parse().unwrap());
+        let listener =
+            UnixSocketTunnelListener::new("unix:///tmp/easytier-test.sock".parse().unwrap());
+        let connector =
+            UnixSocketTunnelConnector::new("unix:///tmp/easytier-test.sock".parse().unwrap());
         _tunnel_pingpong(listener, connector).await
     }
 
     #[tokio::test]
     async fn unix_socket_bench() {
-        let listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-bench.sock".parse().unwrap());
-        let connector = UnixSocketTunnelConnector::new("unix:///tmp/easytier-test-bench.sock".parse().unwrap());
+        let listener =
+            UnixSocketTunnelListener::new("unix:///tmp/easytier-test-bench.sock".parse().unwrap());
+        let connector =
+            UnixSocketTunnelConnector::new("unix:///tmp/easytier-test-bench.sock".parse().unwrap());
         _tunnel_bench(listener, connector).await
     }
 
     #[tokio::test]
     async fn unlink_on_drop() {
-        let listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
-        let connector = UnixSocketTunnelConnector::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let listener =
+            UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let connector = UnixSocketTunnelConnector::new(
+            "unix:///tmp/easytier-test-exists.sock".parse().unwrap(),
+        );
         _tunnel_pingpong(listener, connector).await;
 
-        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let mut listener =
+            UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
         listener.set_unlink_on_drop(false);
-        let connector = UnixSocketTunnelConnector::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let connector = UnixSocketTunnelConnector::new(
+            "unix:///tmp/easytier-test-exists.sock".parse().unwrap(),
+        );
         _tunnel_pingpong(listener, connector).await;
 
-        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let mut listener =
+            UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
         let result = listener.listen().await;
-        assert!(matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse))
+        assert!(
+            matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse)
+        )
     }
 
     #[tokio::test]
     async fn bind_file_exists() {
         use std::fs;
-        
+
         let path = "/tmp/easytier-test-exists.sock";
         fs::File::create(path).unwrap();
-        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let mut listener =
+            UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
         let result = listener.listen().await;
 
         fs::remove_file(path).unwrap();
-        assert!(matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse))
+        assert!(
+            matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse)
+        )
     }
 }
 

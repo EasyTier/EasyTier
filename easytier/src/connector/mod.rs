@@ -7,10 +7,10 @@ use http_connector::HttpTunnelConnector;
 
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelConnector;
-#[cfg(feature = "wireguard")]
-use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 #[cfg(unix)]
 use crate::tunnel::unix::UnixSocketTunnelConnector;
+#[cfg(feature = "wireguard")]
+use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
     tunnel::{
