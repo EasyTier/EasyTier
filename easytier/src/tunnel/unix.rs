@@ -141,6 +141,14 @@ impl super::TunnelConnector for UnixSocketTunnelConnector {
     }
 }
 
+impl Drop for UnixSocketTunnelListener {
+    fn drop(&mut self) {
+        if self.unlink_on_drop {
+            let _ = std::fs::remove_file(self.addr.path());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::tunnel::common::tests::{_tunnel_bench, _tunnel_pingpong};
@@ -204,13 +212,5 @@ mod tests {
         assert!(
             matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse)
         )
-    }
-}
-
-impl Drop for UnixSocketTunnelListener {
-    fn drop(&mut self) {
-        if self.unlink_on_drop {
-            let _ = std::fs::remove_file(self.addr.path());
-        }
     }
 }
