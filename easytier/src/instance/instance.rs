@@ -104,7 +104,11 @@ impl IpProxy {
         self.tcp_proxy.start(true).await?;
         if let Err(e) = self.icmp_proxy.start().await {
             tracing::error!("start icmp proxy failed: {:?}", e);
-            if cfg!(not(any(target_os = "android", target_os = "ios", target_env = "ohos"))) {
+            if cfg!(not(any(
+                target_os = "android",
+                target_os = "ios",
+                target_env = "ohos"
+            ))) {
                 // android, ios and ohos not support icmp proxy
                 return Err(e);
             }
@@ -772,7 +776,11 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+                    #[cfg(not(any(
+                        target_os = "android",
+                        target_os = "ios",
+                        target_env = "ohos"
+                    )))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
