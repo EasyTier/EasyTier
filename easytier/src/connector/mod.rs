@@ -9,12 +9,14 @@ use http_connector::HttpTunnelConnector;
 use crate::tunnel::quic::QUICTunnelConnector;
 #[cfg(feature = "wireguard")]
 use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
+#[cfg(unix)]
+use crate::tunnel::unix::UnixSocketTunnelConnector;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
     tunnel::{
         check_scheme_and_get_socket_addr, fake_tcp::FakeTcpTunnelConnector,
-        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector,
-        unix::UnixSocketTunnelConnector, IpVersion, TunnelConnector,
+        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, IpVersion,
+        TunnelConnector,
     },
 };
 

@@ -1,4 +1,3 @@
-
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -23,6 +22,7 @@ fn url_from_unix_socket_addr(addr: SocketAddr) -> Option<url::Url> {
 pub struct UnixSocketTunnelListener {
     addr: url::Url,
     listener: Option<UnixListener>,
+    unlink_on_drop: bool,
 }
 
 impl UnixSocketTunnelListener {
@@ -30,6 +30,7 @@ impl UnixSocketTunnelListener {
         UnixSocketTunnelListener {
             addr,
             listener: None,
+            unlink_on_drop: true,
         }
     }
 
@@ -51,6 +52,10 @@ impl UnixSocketTunnelListener {
             FramedWriter::new(w),
             Some(info),
         )))
+    }
+
+    fn set_unlink_on_drop(&mut self, unlink: bool) {
+        self.unlink_on_drop = unlink;
     }
 }
 
@@ -159,15 +164,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unlink_on_drop() {
+        let listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let connector = UnixSocketTunnelConnector::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        _tunnel_pingpong(listener, connector).await;
+
+        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        listener.set_unlink_on_drop(false);
+        let connector = UnixSocketTunnelConnector::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        _tunnel_pingpong(listener, connector).await;
+
+        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
+        let result = listener.listen().await;
+        assert!(matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse))
+    }
+
+    #[tokio::test]
     async fn bind_file_exists() {
         use std::fs;
         
         let path = "/tmp/easytier-test-exists.sock";
         fs::File::create(path).unwrap();
-        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-bench.sock".parse().unwrap());
+        let mut listener = UnixSocketTunnelListener::new("unix:///tmp/easytier-test-exists.sock".parse().unwrap());
         let result = listener.listen().await;
 
         fs::remove_file(path).unwrap();
         assert!(matches!(result, Err(TunnelError::IOError(err)) if err.kind() == std::io::ErrorKind::AddrInUse))
+    }
+}
+
+impl Drop for UnixSocketTunnelListener {
+    fn drop(&mut self) {
+        if self.unlink_on_drop {
+            let _ = std::fs::remove_file(self.addr.path());
+        }
     }
 }
