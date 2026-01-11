@@ -442,26 +442,34 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    pub async fn create_dev_for_android(
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<Box<dyn Tunnel>, Error> {
         println!("tun_fd: {}", tun_fd);
         let mut config = Configuration::default();
         config.layer(Layer::L3);
+
+        #[cfg(target_os = "ios")]
+        config.platform_config(|config| {
+            // disable packet information so we can process the header by ourselves, see tun2 impl for more details
+            config.packet_information(false);
+        });
+
         config.raw_fd(tun_fd);
         config.close_fd_on_drop(false);
         config.up();
 
+        let has_packet_info = cfg!(target_os = "ios");
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
-            TunStream::new(a, false),
+            TunStream::new(a, has_packet_info),
             FramedWriter::new_with_converter(
                 TunAsyncWrite { l: b },
-                TunZCPacketToBytes::new(false),
+                TunZCPacketToBytes::new(has_packet_info),
             ),
             None,
         );
@@ -1008,11 +1016,11 @@ impl NicCtx {
         Ok(())
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    pub async fn run_for_android(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
-            match nic.create_dev_for_android(tun_fd).await {
+            match nic.create_dev_for_mobile(tun_fd).await {
                 Ok(ret) => {
                     self.global_ctx
                         .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));

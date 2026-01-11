@@ -526,7 +526,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
         #[cfg(feature = "smoltcp")]
         if self.global_ctx.get_flags().use_smoltcp
             || self.global_ctx.no_tun()
-            || cfg!(any(target_os = "android", target_env = "ohos"))
+            || cfg!(any(
+                target_os = "android",
+                target_os = "ios",
+                target_env = "ohos"
+            ))
         {
             // use smoltcp network stack
 

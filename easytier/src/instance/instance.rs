@@ -104,8 +104,12 @@ impl IpProxy {
         self.tcp_proxy.start(true).await?;
         if let Err(e) = self.icmp_proxy.start().await {
             tracing::error!("start icmp proxy failed: {:?}", e);
-            if cfg!(not(any(target_os = "android", target_env = "ohos"))) {
-                // android and ohos not support icmp proxy
+            if cfg!(not(any(
+                target_os = "android",
+                target_os = "ios",
+                target_env = "ohos"
+            ))) {
+                // android, ios and ohos not support icmp proxy
                 return Err(e);
             }
         }
@@ -772,7 +776,11 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+                    #[cfg(not(any(
+                        target_os = "android",
+                        target_os = "ios",
+                        target_env = "ohos"
+                    )))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
@@ -906,7 +914,7 @@ impl Instance {
         Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
         if !self.global_ctx.config.get_flags().no_tun {
-            #[cfg(not(any(target_os = "android", target_env = "ohos")))]
+            #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
             {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);
@@ -1402,15 +1410,15 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    pub async fn setup_nic_ctx_for_android(
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    pub async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,
         peer_manager: Arc<PeerManager>,
         peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
         fd: i32,
     ) -> Result<(), anyhow::Error> {
-        println!("setup_nic_ctx_for_android, fd: {}", fd);
+        tracing::info!("setup_nic_ctx_for_mobile, fd: {}", fd);
         Self::clear_nic_ctx(nic_ctx.clone(), peer_packet_receiver.clone()).await;
         if fd <= 0 {
             return Ok(());
@@ -1423,7 +1431,7 @@ impl Instance {
             close_notifier.clone(),
         );
         new_nic_ctx
-            .run_for_android(fd)
+            .run_for_mobile(fd)
             .await
             .with_context(|| "add ip failed")?;
 

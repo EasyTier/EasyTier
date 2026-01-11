@@ -93,8 +93,8 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    async fn run_routine_for_android(
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    async fn run_routine_for_mobile(
         instance: &Instance,
         data: &EasyTierData,
         tasks: &mut JoinSet<()>,
@@ -111,8 +111,9 @@ impl EasyTierLauncher {
                 let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
                     return;
                 };
-                if Some(tun_fd) != old_tun_fd {
-                    let res = Instance::setup_nic_ctx_for_android(
+                // iOS needs to re-setup nic ctx even if the tun fd is the same
+                if Some(tun_fd) != old_tun_fd || cfg!(target_os = "ios") {
+                    let res = Instance::setup_nic_ctx_for_mobile(
                         nic_ctx.clone(),
                         global_ctx.clone(),
                         peer_mgr.clone(),
@@ -158,8 +159,8 @@ impl EasyTierLauncher {
             }
         });
 
-        #[cfg(any(target_os = "android", target_env = "ohos"))]
-        Self::run_routine_for_android(&instance, &data, &mut tasks).await;
+        #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+        Self::run_routine_for_mobile(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
 

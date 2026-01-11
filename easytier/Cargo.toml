@@ -194,7 +194,7 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 
 zstd = { version = "0.13" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "71eff18c573a4a71bf99c7fabc6a8b9f211c84c1" }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f" }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
