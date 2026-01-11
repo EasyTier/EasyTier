@@ -23,8 +23,7 @@ use crate::{
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
-    web_client,
-    ShellType,
+    web_client, ShellType,
 };
 use anyhow::Context;
 use cidr::IpCidr;

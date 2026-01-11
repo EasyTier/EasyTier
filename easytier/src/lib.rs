@@ -58,5 +58,10 @@ pub fn print_completions<G: Generator>(generator: G, cmd: &mut Command, bin_name
 }
 
 pub fn print_nushell_completions(cmd: &mut Command, bin_name: &str) {
-    clap_complete::generate(clap_complete_nushell::Nushell, cmd, bin_name, &mut io::stdout());
+    clap_complete::generate(
+        clap_complete_nushell::Nushell,
+        cmd,
+        bin_name,
+        &mut io::stdout(),
+    );
 }
