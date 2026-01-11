@@ -50,6 +50,11 @@ pub fn get_listener_by_url(
             Box::new(WSTunnelListener::new(l.clone()))
         }
         "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),
+        #[cfg(unix)]
+        "unix" => {
+            use crate::tunnel::unix::UnixSocketTunnelListener;
+            Box::new(UnixSocketTunnelListener::new(l.clone()))
+        }
         _ => {
             return Err(Error::InvalidUrl(l.to_string()));
         }

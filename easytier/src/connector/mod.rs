@@ -7,6 +7,8 @@ use http_connector::HttpTunnelConnector;
 
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelConnector;
+#[cfg(unix)]
+use crate::tunnel::unix::UnixSocketTunnelConnector;
 #[cfg(feature = "wireguard")]
 use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
@@ -175,6 +177,11 @@ pub async fn create_connector_by_url(
                 )
                 .await;
             }
+            Box::new(connector)
+        }
+        #[cfg(unix)]
+        "unix" => {
+            let connector = UnixSocketTunnelConnector::new(url);
             Box::new(connector)
         }
         _ => {
