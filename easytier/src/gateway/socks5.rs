@@ -233,7 +233,6 @@ impl AsyncTcpConnector for Socks5KcpConnector {
             kcp_endpoint,
             peer_mgr: self.peer_mgr.clone(),
         };
-        println!("connect to kcp endpoint, addr = {:?}", addr);
         let ret = c
             .connect(self.src_addr, addr)
             .await

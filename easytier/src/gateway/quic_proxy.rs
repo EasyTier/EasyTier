@@ -414,17 +414,16 @@ impl QUICProxyDst {
             route.get_peer_groups_by_ipv4(&dst_ip)
         );
 
-        let send_to_self = Some(*dst_socket.ip()) == ctx.get_ipv4().map(|ip| ip.address());
+        if ctx.should_deny_proxy(&dst_socket.into(), false) {
+            return Err(anyhow::anyhow!(
+                "dst socket {:?} is in running listeners, ignore it",
+                dst_socket
+            )
+            .into());
+        }
+
+        let send_to_self = ctx.is_ip_local_virtual_ip(&dst_ip.into());
         if send_to_self && ctx.no_tun() {
-            if ctx.is_port_in_running_listeners(dst_socket.port(), false)
-                && ctx.is_ip_in_same_network(&src_ip)
-            {
-                return Err(anyhow::anyhow!(
-                    "dst socket {:?} is in running listeners, ignore it",
-                    dst_socket
-                )
-                .into());
-            }
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
 

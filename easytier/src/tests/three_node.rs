@@ -1481,10 +1481,60 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
     drop_insts(insts).await;
 }
 
+async fn assert_try_direct_connect_err<C>(inst: &Instance, connector: C)
+where
+    C: crate::tunnel::TunnelConnector + std::fmt::Debug,
+{
+    let ret = tokio::time::timeout(
+        Duration::from_millis(100),
+        inst.get_peer_manager().try_direct_connect(connector),
+    )
+    .await;
+
+    assert!(matches!(ret, Err(_) | Ok(Err(_))));
+}
+
+use std::fs;
+use std::io;
+
+fn print_all_fds() -> io::Result<()> {
+    let fd_dir = "/proc/self/fd";
+
+    // 读取 /proc/self/fd 目录中的所有条目
+    for entry in fs::read_dir(fd_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let fd_str = file_name.to_string_lossy();
+
+        // 尝试解析为数字（跳过 . 和 ..）
+        if let Ok(fd_num) = fd_str.parse::<i32>() {
+            // 获取文件描述符指向的文件路径（如果可能）
+            let target_path = format!("{}/{}", fd_dir, fd_num);
+            match fs::read_link(&target_path) {
+                Ok(target) => {
+                    println!("FD {}: {}", fd_num, target.to_string_lossy());
+                }
+                Err(e) => {
+                    println!("FD {}: (unreadable: {})", fd_num, e);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[rstest::rstest]
 #[serial_test::serial]
 #[tokio::test]
-async fn avoid_tunnel_loop_back_to_virtual_network(#[values(true, false)] no_tun: bool) {
+async fn avoid_tunnel_loop_back_to_virtual_network(
+    #[values(true, false)] no_tun: bool,
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
+    if enable_kcp_proxy && enable_quic_proxy {
+        return;
+    }
+
     let insts = init_three_node_ex(
         "udp",
         |cfg| {
@@ -1493,27 +1543,52 @@ async fn avoid_tunnel_loop_back_to_virtual_network(#[values(true, false)] no_tun
                 flags.no_tun = no_tun;
                 cfg.set_flags(flags);
             }
+
+            if cfg.get_inst_name().as_str() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.enable_kcp_proxy = enable_kcp_proxy;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                cfg.set_flags(flags);
+            }
+
+            if cfg.get_inst_name().as_str() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+
             cfg
         },
         false,
     )
     .await;
 
-    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap());
-    insts[0]
-        .get_peer_manager()
-        .try_direct_connect(tcp_connector)
-        .await
-        .unwrap_err();
+    assert_try_direct_connect_err(
+        &insts[0],
+        TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap()),
+    )
+    .await;
 
-    let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:11010".parse().unwrap());
-    insts[0]
-        .get_peer_manager()
-        .try_direct_connect(udp_connector)
-        .await
-        .unwrap_err();
+    assert_try_direct_connect_err(
+        &insts[0],
+        UdpTunnelConnector::new("udp://10.144.144.3:11010".parse().unwrap()),
+    )
+    .await;
+
+    assert_try_direct_connect_err(
+        &insts[0],
+        TcpTunnelConnector::new("tcp://10.1.2.3:11010".parse().unwrap()),
+    )
+    .await;
+
+    assert_try_direct_connect_err(
+        &insts[0],
+        UdpTunnelConnector::new("udp://10.1.2.3:11010".parse().unwrap()),
+    )
+    .await;
 
     drop_insts(insts).await;
+
+    let _ = print_all_fds();
 }
 
 #[rstest::rstest]

@@ -734,21 +734,18 @@ impl<C: NatDstConnector> TcpProxy<C> {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        let nat_dst = if Some(nat_entry.real_dst.ip())
-            == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
-        {
-            if global_ctx.is_port_in_running_listeners(nat_entry.real_dst.port(), false)
-                && global_ctx.is_ip_in_same_network(&nat_entry.src.ip())
-            {
-                tracing::error!(
-                    ?nat_entry,
-                    "nat dst port {} is in running listeners, ignore it",
-                    nat_entry.real_dst.port()
-                );
-                nat_entry.state.store(NatDstEntryState::Closed);
-                Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
-                return;
-            }
+        if global_ctx.should_deny_proxy(&nat_entry.real_dst, false) {
+            tracing::error!(
+                ?nat_entry,
+                "nat dst port {} is in running listeners, ignore it",
+                nat_entry.real_dst.port()
+            );
+            nat_entry.state.store(NatDstEntryState::Closed);
+            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            return;
+        }
+
+        let nat_dst = if global_ctx.is_ip_local_virtual_ip(&nat_entry.real_dst.ip()) {
             format!("127.0.0.1:{}", nat_entry.real_dst.port())
                 .parse()
                 .unwrap()

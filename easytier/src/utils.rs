@@ -61,7 +61,6 @@ pub fn init_logger(
             let _ = CURRENT_LOG_LEVEL.set(std::sync::Mutex::new(file_level.to_string()));
 
             std::thread::spawn(move || {
-                println!("Start log filter reloader");
                 while let Ok(lf) = recver.recv() {
                     let e = file_filter_reloader.modify(|f| {
                         if let Ok(nf) = EnvFilter::builder()
