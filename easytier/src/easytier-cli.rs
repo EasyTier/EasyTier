@@ -10,8 +10,8 @@ use std::{
 use anyhow::Context;
 use cidr::Ipv4Inet;
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use clap_complete::Shell;
 use dashmap::DashMap;
+use easytier::ShellType;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
@@ -126,7 +126,7 @@ enum SubCommand {
     #[command(about = "manage logger configuration")]
     Logger(LoggerArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
-    GenAutocomplete { shell: Shell },
+    GenAutocomplete { shell: ShellType },
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
@@ -1950,7 +1950,12 @@ async fn main() -> Result<(), Error> {
         },
         SubCommand::GenAutocomplete { shell } => {
             let mut cmd = Cli::command();
-            easytier::print_completions(shell, &mut cmd, "easytier-cli");
+            if let Some(shell) = shell.to_shell() {
+                easytier::print_completions(shell, &mut cmd, "easytier-cli");
+            } else {
+                // Handle Nushell
+                easytier::print_nushell_completions(&mut cmd, "easytier-cli");
+            }
         }
     }
 

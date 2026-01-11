@@ -23,12 +23,11 @@ use crate::{
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
-    web_client,
+    web_client, ShellType,
 };
 use anyhow::Context;
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
-use clap_complete::Shell;
 use rust_i18n::t;
 use tokio::io::AsyncReadExt;
 
@@ -126,7 +125,7 @@ struct Cli {
     rpc_portal_options: RpcPortalOptions,
 
     #[clap(long, help = t!("core_clap.generate_completions").to_string())]
-    gen_autocomplete: Option<Shell>,
+    gen_autocomplete: Option<ShellType>,
 
     #[clap(long, help = t!("core_clap.check_config").to_string())]
     check_config: bool,
@@ -1380,7 +1379,12 @@ pub async fn main() -> ExitCode {
 
     if let Some(shell) = cli.gen_autocomplete {
         let mut cmd = Cli::command();
-        crate::print_completions(shell, &mut cmd, "easytier-core");
+        if let Some(shell) = shell.to_shell() {
+            crate::print_completions(shell, &mut cmd, "easytier-core");
+        } else {
+            // Handle Nushell
+            crate::print_nushell_completions(&mut cmd, "easytier-core");
+        }
         return ExitCode::SUCCESS;
     }
 
