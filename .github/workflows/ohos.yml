@@ -66,8 +66,8 @@ jobs:
           UPSTREAM_REPO="https://github.com/EasyTier/EasyTier.git"
       
           git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || true
-          git fetch upstream --tags --force
-          git fetch upstream main
+          git fetch --unshallow upstream main || git fetch upstream main
+          git fetch --tags upstream --force
       
           # 读取 cargo 版本
           CARGO_VERSION=$(cargo metadata --format-version 1 --no-deps --manifest-path easytier/Cargo.toml \
