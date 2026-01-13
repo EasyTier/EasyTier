@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, watch, onMounted, ref } from 'vue';
-import type { Mode, ServiceMode, RemoteMode } from '~/composables/mode';
+import type { Mode, ServiceMode, RemoteMode, NormalMode } from '~/composables/mode';
 import { appConfigDir, appLogDir } from '@tauri-apps/api/path';
 import { join } from '@tauri-apps/api/path';
 import { getServiceStatus, type ServiceStatus } from '~/composables/backend';
@@ -25,6 +25,15 @@ const modeOptions = computed(() => [
   { label: t('mode.service'), value: 'service' },
   { label: t('mode.remote'), value: 'remote' },
 ]);
+
+const normalMode = computed({
+  get: () => model.value.mode === 'normal' ? model.value as NormalMode : undefined,
+  set: (value) => {
+    if (value) {
+      model.value = value
+    }
+  }
+})
 
 const serviceMode = computed({
   get: () => model.value.mode === 'service' ? model.value as ServiceMode : undefined,
@@ -71,6 +80,7 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
   if (newMode === 'normal') {
     model.value = {
       ...oldModelValue,
+      rpc_portal: normalMode.value?.rpc_portal || '',
       mode: 'normal',
     }
   }
@@ -111,6 +121,13 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
     </div>
     <div v-else-if="model.mode === 'remote'" class="text-sm text-gray-500">
       {{ t('mode.remote_description') }}
+    </div>
+
+    <div v-if="normalMode" class="flex flex-col gap-2">
+      <div class="flex items-center gap-2">
+        <label for="rpc-portal">{{ t('mode.rpc_portal') }}</label>
+        <InputText id="rpc-portal" v-model="normalMode.rpc_portal" class="flex-1" />
+      </div>
     </div>
 
     <div v-if="serviceMode" class="flex flex-col gap-2">

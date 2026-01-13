@@ -19,11 +19,13 @@ use easytier::{
     launcher::NetworkConfig,
     rpc_service::ApiRpcServer,
     tunnel::ring::RingTunnelListener,
+    tunnel::tcp::TcpTunnelListener,
+    tunnel::TunnelListener,
     utils::{self},
 };
 use std::ops::Deref;
 use std::sync::Arc;
-use tokio::sync::{RwLock, RwLockReadGuard};
+use tokio::sync::{Mutex, RwLock, RwLockReadGuard};
 use uuid::Uuid;
 
 use tauri::{AppHandle, Emitter, Manager as _};
@@ -40,8 +42,17 @@ static RPC_RING_UUID: once_cell::sync::Lazy<uuid::Uuid> =
 static CLIENT_MANAGER: once_cell::sync::Lazy<RwLock<Option<manager::GUIClientManager>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
 
-static RING_RPC_SERVER: once_cell::sync::Lazy<RwLock<Option<ApiRpcServer<RingTunnelListener>>>> =
-    once_cell::sync::Lazy::new(|| RwLock::new(None));
+type BoxedTunnelListener = Box<dyn TunnelListener>;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RpcServerKind {
+    Ring,
+    Tcp,
+}
+
+static RPC_SERVER: once_cell::sync::Lazy<
+    Mutex<Option<(RpcServerKind, ApiRpcServer<BoxedTunnelListener>)>>,
+> = once_cell::sync::Lazy::new(|| Mutex::new(None));
 
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
@@ -322,8 +333,53 @@ fn get_service_status() -> Result<&'static str, String> {
     }
 }
 
+fn normalize_normal_mode_rpc_portal(
+    portal: &str,
+) -> Result<(std::net::SocketAddr, String), String> {
+    let portal = portal.trim();
+    let portal = portal.strip_prefix("tcp://").unwrap_or(portal);
+    if portal.is_empty() {
+        return Err("rpc portal is empty".to_string());
+    }
+
+    let bind_addr = if portal.chars().all(|c| c.is_ascii_digit()) {
+        let port = portal
+            .parse::<u16>()
+            .map_err(|e| format!("invalid rpc portal port: {:#}", e))?;
+        std::net::SocketAddr::from(([0, 0, 0, 0], port))
+    } else {
+        portal
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| format!("invalid rpc portal address: {:#}", e))?
+    };
+
+    if bind_addr.port() == 0 {
+        return Err("rpc portal port cannot be 0".to_string());
+    }
+
+    let connect_ip = if bind_addr.ip().is_unspecified() {
+        if bind_addr.is_ipv4() {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        } else {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+        }
+    } else {
+        bind_addr.ip()
+    };
+    let connect_url = format!(
+        "tcp://{}",
+        std::net::SocketAddr::new(connect_ip, bind_addr.port())
+    );
+
+    Ok((bind_addr, connect_url))
+}
+
 #[tauri::command]
-async fn init_rpc_connection(_app: AppHandle, url: Option<String>) -> Result<(), String> {
+async fn init_rpc_connection(
+    _app: AppHandle,
+    is_normal_mode: bool,
+    url: Option<String>,
+) -> Result<(), String> {
     let mut client_manager_guard =
         tokio::time::timeout(std::time::Duration::from_secs(5), CLIENT_MANAGER.write())
             .await
@@ -331,41 +387,68 @@ async fn init_rpc_connection(_app: AppHandle, url: Option<String>) -> Result<(),
     let mut instance_manager_guard = INSTANCE_MANAGER
         .try_write()
         .map_err(|_| "Failed to acquire write lock for instance manager")?;
-    let mut ring_rpc_server_guard = RING_RPC_SERVER
-        .try_write()
-        .map_err(|_| "Failed to acquire write lock for ring rpc server")?;
+    let mut rpc_server_guard = RPC_SERVER
+        .try_lock()
+        .map_err(|_| "Failed to acquire lock for rpc server")?;
 
-    let normal_mode = url.is_none();
-    if normal_mode {
+    let mut client_url = url.clone();
+    if is_normal_mode {
         let instance_manager = if let Some(im) = instance_manager_guard.take() {
             im
         } else {
             Arc::new(NetworkInstanceManager::new())
         };
-        let rpc_server = if let Some(rpc_server) = ring_rpc_server_guard.take() {
-            rpc_server
+
+        let portal = url.and_then(|s| {
+            let trimmed = s.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        });
+
+        let (desired_kind, bind_addr, connect_url) = if let Some(portal) = portal {
+            let (bind_addr, connect_url) = normalize_normal_mode_rpc_portal(&portal)?;
+            (RpcServerKind::Tcp, Some(bind_addr), Some(connect_url))
         } else {
-            ApiRpcServer::from_tunnel(
-                RingTunnelListener::new(
-                    format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
-                ),
-                instance_manager.clone(),
-            )
-            .with_rx_timeout(None)
-            .serve()
-            .await
-            .map_err(|e| e.to_string())?
+            (RpcServerKind::Ring, None, None)
         };
 
+        let need_restart = rpc_server_guard
+            .as_ref()
+            .map(|(kind, _)| *kind != desired_kind)
+            .unwrap_or(true);
+
+        if need_restart {
+            *rpc_server_guard = None;
+
+            let tunnel: BoxedTunnelListener = match desired_kind {
+                RpcServerKind::Ring => Box::new(RingTunnelListener::new(
+                    format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
+                )),
+                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(
+                    format!("tcp://{}", bind_addr.unwrap()).parse().unwrap(),
+                )),
+            };
+
+            let rpc_server = ApiRpcServer::from_tunnel(tunnel, instance_manager.clone())
+                .with_rx_timeout(None)
+                .serve()
+                .await
+                .map_err(|e| e.to_string())?;
+            *rpc_server_guard = Some((desired_kind, rpc_server));
+        }
+
         *instance_manager_guard = Some(instance_manager);
-        *ring_rpc_server_guard = Some(rpc_server);
+        client_url = connect_url;
     } else {
-        *ring_rpc_server_guard = None;
+        *rpc_server_guard = None;
     }
 
     let client_manager = tokio::time::timeout(
         std::time::Duration::from_millis(1000),
-        manager::GUIClientManager::new(url),
+        manager::GUIClientManager::new(client_url),
     )
     .await
     .map_err(|_| "connect remote rpc timed out".to_string())?
@@ -373,7 +456,7 @@ async fn init_rpc_connection(_app: AppHandle, url: Option<String>) -> Result<(),
     .map_err(|e| format!("{:#}", e))?;
     *client_manager_guard = Some(client_manager);
 
-    if !normal_mode {
+    if !is_normal_mode {
         drop(WEB_CLIENT.write().await.take());
         if let Some(instance_manager) = instance_manager_guard.take() {
             instance_manager
