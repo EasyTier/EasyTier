@@ -74,7 +74,7 @@ impl NetNSGuard {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NetNS {
     name: Option<String>,
 }

@@ -725,8 +725,8 @@ impl PeerManager {
 
                     let mut processed = false;
                     let mut zc_packet = Some(ret);
-                    for (idx, pipeline) in pipe_line.read().await.iter().rev().enumerate() {
-                        tracing::trace!(?zc_packet, ?idx, "try_process_packet_from_peer");
+                    tracing::trace!(?zc_packet, "try_process_packet_from_peer");
+                    for pipeline in pipe_line.read().await.iter().rev() {
                         zc_packet = pipeline
                             .try_process_packet_from_peer(zc_packet.unwrap())
                             .await;

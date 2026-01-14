@@ -538,7 +538,7 @@ impl TcpHolePunchConnector {
             .rpc_server()
             .registry()
             .register(
-                TcpHolePunchRpcServer::new(self.server.clone()),
+                TcpHolePunchRpcServer::new_arc(self.server.clone()),
                 &self.peer_mgr.get_global_ctx().get_network_name(),
             );
         Ok(())

@@ -230,8 +230,10 @@ impl TcpProxyForKcpSrcTrait for TcpProxyForKcpSrc {
     }
 
     async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        self.0
-            .get_peer_manager()
+        let Some(peer_manager) = self.0.get_peer_manager() else {
+            return false;
+        };
+        peer_manager
             .check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip))
             .await
     }
@@ -503,19 +505,16 @@ impl KcpProxyDst {
             route.get_peer_groups_by_ip(&dst_ip)
         );
 
-        let send_to_self =
-            Some(dst_socket.ip()) == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()));
+        if global_ctx.should_deny_proxy(&dst_socket, false) {
+            return Err(anyhow::anyhow!(
+                "dst socket {:?} is in running listeners, ignore it",
+                dst_socket
+            )
+            .into());
+        }
 
+        let send_to_self = global_ctx.is_ip_local_virtual_ip(&dst_ip);
         if send_to_self && global_ctx.no_tun() {
-            if global_ctx.is_port_in_running_listeners(dst_socket.port(), false)
-                && global_ctx.is_ip_in_same_network(&src_ip)
-            {
-                return Err(anyhow::anyhow!(
-                    "dst socket {:?} is in running listeners, ignore it",
-                    dst_socket
-                )
-                .into());
-            }
             dst_socket = format!("127.0.0.1:{}", dst_socket.port()).parse().unwrap();
         }
 

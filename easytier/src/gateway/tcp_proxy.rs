@@ -316,7 +316,7 @@ type AddrConnSockMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
 #[derive(Debug)]
 pub struct TcpProxy<C: NatDstConnector> {
     global_ctx: Arc<GlobalCtx>,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
     local_port: AtomicU16,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
@@ -346,8 +346,10 @@ impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
-            } else if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
-                tracing::error!("send to nic failed: {:?}", e);
+            } else if let Some(peer_manager) = self.get_peer_manager() {
+                if let Err(e) = peer_manager.get_nic_channel().send(packet).await {
+                    tracing::error!("send to nic failed: {:?}", e);
+                }
             }
             return None;
         } else {
@@ -443,7 +445,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         Arc::new(Self {
             global_ctx: global_ctx.clone(),
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
 
             local_port: AtomicU16::new(0),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
@@ -467,6 +469,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
         })
     }
 
+    pub fn get_peer_manager(&self) -> Option<Arc<PeerManager>> {
+        self.peer_manager.upgrade()
+    }
+
     fn update_tcp_packet_checksum(
         tcp_packet: &mut MutableTcpPacket,
         ipv4_src: &Ipv4Addr,
@@ -487,10 +493,13 @@ impl<C: NatDstConnector> TcpProxy<C> {
         self.run_syn_map_cleaner().await?;
         self.run_listener().await?;
         if add_pipeline {
-            self.peer_manager
+            let peer_manager = self
+                .get_peer_manager()
+                .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
+            peer_manager
                 .add_packet_process_pipeline(Box::new(self.clone()))
                 .await;
-            self.peer_manager
+            peer_manager
                 .add_nic_packet_process_pipeline(Box::new(self.clone()))
                 .await;
         }
@@ -569,6 +578,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
                     let dst = ipv4.get_destination();
                     let packet = ZCPacket::new_with_payload(&data);
+                    let Some(peer_mgr) = peer_mgr.upgrade() else {
+                        tracing::warn!("peer manager is gone, smoltcp sender exited");
+                        return;
+                    };
                     if let Err(e) = peer_mgr
                         .send_msg_by_ip(packet, IpAddr::V4(dst), false)
                         .await
@@ -734,21 +747,18 @@ impl<C: NatDstConnector> TcpProxy<C> {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        let nat_dst = if Some(nat_entry.real_dst.ip())
-            == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
-        {
-            if global_ctx.is_port_in_running_listeners(nat_entry.real_dst.port(), false)
-                && global_ctx.is_ip_in_same_network(&nat_entry.src.ip())
-            {
-                tracing::error!(
-                    ?nat_entry,
-                    "nat dst port {} is in running listeners, ignore it",
-                    nat_entry.real_dst.port()
-                );
-                nat_entry.state.store(NatDstEntryState::Closed);
-                Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
-                return;
-            }
+        if global_ctx.should_deny_proxy(&nat_entry.real_dst, false) {
+            tracing::error!(
+                ?nat_entry,
+                "nat dst port {} is in running listeners, ignore it",
+                nat_entry.real_dst.port()
+            );
+            nat_entry.state.store(NatDstEntryState::Closed);
+            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            return;
+        }
+
+        let nat_dst = if global_ctx.is_ip_local_virtual_ip(&nat_entry.real_dst.ip()) {
             format!("127.0.0.1:{}", nat_entry.real_dst.port())
                 .parse()
                 .unwrap()
@@ -831,7 +841,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn get_my_peer_id(&self) -> u32 {
-        self.peer_manager.my_peer_id()
+        self.peer_manager
+            .upgrade()
+            .map(|pm| pm.my_peer_id())
+            .unwrap_or_default()
     }
 
     pub fn get_local_ip(&self) -> Option<Ipv4Addr> {
@@ -950,10 +963,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
         tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
 
         Some(())
-    }
-
-    pub fn get_peer_manager(&self) -> &Arc<PeerManager> {
-        &self.peer_manager
     }
 
     pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {

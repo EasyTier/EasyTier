@@ -1321,7 +1321,10 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 
 #[cfg(test)]
 mod tests {
-    use crate::tunnel::{udp::UdpTunnelListener, TunnelListener};
+    use crate::{
+        common::scoped_task::ScopedTask,
+        tunnel::{udp::UdpTunnelListener, TunnelListener},
+    };
 
     use super::*;
 
@@ -1406,11 +1409,11 @@ mod tests {
         use stun_codec::rfc5389::attributes::XorMappedAddress;
         use tokio::net::TcpListener;
 
-        async fn spawn_tcp_stun_server() -> SocketAddr {
+        async fn spawn_tcp_stun_server() -> (SocketAddr, ScopedTask<()>) {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let server_addr = listener.local_addr().unwrap();
 
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 let (mut stream, peer_addr) = listener.accept().await.unwrap();
 
                 let req = TcpStunClient::tcp_read_stun_message(&mut stream, Duration::from_secs(2))
@@ -1430,11 +1433,11 @@ mod tests {
                 stream.write_all(rsp_buf.as_slice()).await.unwrap();
             });
 
-            server_addr
+            (server_addr, task.into())
         }
 
-        let server1 = spawn_tcp_stun_server().await;
-        let server2 = spawn_tcp_stun_server().await;
+        let (server1, _t1) = spawn_tcp_stun_server().await;
+        let (server2, _t2) = spawn_tcp_stun_server().await;
 
         let stun_servers = vec![server1.to_string(), server2.to_string()];
         let detector = TcpNatTypeDetector::new(stun_servers, 1);
@@ -1469,7 +1472,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server_addr = listener.local_addr().unwrap();
 
-        tokio::spawn(async move {
+        let _t = ScopedTask::from(tokio::spawn(async move {
             for _ in 0..8 {
                 let Ok((mut stream, peer_addr)) = listener.accept().await else {
                     break;
@@ -1491,7 +1494,7 @@ mod tests {
                 let rsp_buf = encoder.encode_into_bytes(resp_msg).unwrap();
                 stream.write_all(rsp_buf.as_slice()).await.unwrap();
             }
-        });
+        }));
 
         let collector = StunInfoCollector::new(vec![], vec![server_addr.to_string()], vec![]);
         collector.set_tcp_stun_servers(vec![server_addr.to_string()]);
