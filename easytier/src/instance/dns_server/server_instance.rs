@@ -518,7 +518,7 @@ impl MagicDnsServerInstance {
 
         rpc_server
             .registry()
-            .register(MagicDnsServerRpcServer::new(data.clone()), "");
+            .register(MagicDnsServerRpcServer::new_arc(data.clone()), "");
         rpc_server.set_hook(data.clone());
 
         peer_mgr

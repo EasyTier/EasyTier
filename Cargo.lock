@@ -2172,7 +2172,7 @@ dependencies = [
  "dbus",
  "defguard_wireguard_rs",
  "derive_builder",
- "easytier-rpc-build 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "easytier-rpc-build",
  "encoding",
  "flume 0.12.0",
  "futures",
@@ -2334,16 +2334,6 @@ dependencies = [
 [[package]]
 name = "easytier-rpc-build"
 version = "0.1.0"
-dependencies = [
- "heck 0.5.0",
- "prost-build",
-]
-
-[[package]]
-name = "easytier-rpc-build"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24829168c28f6a448f57d18116c255dcbd2b8c25e76dbc60f6cd16d68ad2cf07"
 dependencies = [
  "heck 0.5.0",
  "prost-build",

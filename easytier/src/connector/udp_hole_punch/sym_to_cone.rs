@@ -641,6 +641,8 @@ pub mod tests {
     #[tokio::test]
     #[serial_test::serial(hole_punch)]
     async fn hole_punching_symmetric_only_predict(#[values("true", "false")] is_inc: bool) {
+        use crate::common::scoped_task::ScopedTask;
+
         RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
 
         let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
@@ -689,10 +691,12 @@ pub mod tests {
 
         let counter = Arc::new(AtomicU32::new(0));
 
+        let mut tasks: Vec<ScopedTask<()>> = vec![];
+
         // all these sockets should receive hole punching packet
         for udp in udps.iter().map(Arc::clone) {
             let counter = counter.clone();
-            tokio::spawn(async move {
+            tasks.push(ScopedTask::from(tokio::spawn(async move {
                 let mut buf = [0u8; 1024];
                 let (len, addr) = udp.recv_from(&mut buf).await.unwrap();
                 println!(
@@ -702,7 +706,7 @@ pub mod tests {
                     udp.local_addr()
                 );
                 counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            });
+            })));
         }
 
         hole_punching_a.client.run_immediately().await;

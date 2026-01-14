@@ -1,6 +1,6 @@
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-    sync::{atomic::AtomicBool, Arc},
+    sync::{atomic::AtomicBool, Arc, Weak},
     time::Duration,
 };
 
@@ -254,7 +254,7 @@ impl UdpNatEntry {
 #[derive(Debug)]
 pub struct UdpProxy {
     global_ctx: ArcGlobalCtx,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
 
     cidr_set: CidrSet,
 
@@ -337,15 +337,16 @@ impl UdpProxy {
             .entry(nat_key)
             .or_try_insert_with::<Error>(|| {
                 tracing::info!(?packet, ?ipv4, ?udp_packet, "udp nat table entry created");
+                let denied = self.global_ctx.should_deny_proxy(
+                    &SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination()),
+                    true,
+                );
                 let _g = self.global_ctx.net_ns.guard();
                 Ok(Arc::new(UdpNatEntry::new(
                     hdr.from_peer_id.get(),
                     hdr.to_peer_id.get(),
                     nat_key.src_socket,
-                    self.global_ctx.should_deny_proxy(
-                        &SocketAddr::new(real_dst_ip.into(), udp_packet.get_destination()),
-                        true,
-                    ),
+                    denied,
                 )?))
             })
             .ok()?
@@ -419,7 +420,7 @@ impl UdpProxy {
         let (sender, receiver) = channel(1024);
         let ret = Self {
             global_ctx,
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
             cidr_set,
             nat_table: Arc::new(DashMap::new()),
             sender,
@@ -431,7 +432,10 @@ impl UdpProxy {
     }
 
     pub async fn start(self: &Arc<Self>) -> Result<(), Error> {
-        self.peer_manager
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager is gone").into());
+        };
+        peer_manager
             .add_packet_process_pipeline(Box::new(self.clone()))
             .await;
 
@@ -471,7 +475,11 @@ impl UdpProxy {
                 hdr.set_latency_first(is_latency_first);
                 let to_peer_id = hdr.to_peer_id.into();
                 tracing::trace!(?msg, ?to_peer_id, "udp nat packet response send");
-                let ret = peer_manager.send_msg_for_proxy(msg, to_peer_id).await;
+                let Some(pm) = peer_manager.upgrade() else {
+                    tracing::warn!("peer manager is gone, udp proxy send loop exit");
+                    return;
+                };
+                let ret = pm.send_msg_for_proxy(msg, to_peer_id).await;
                 if ret.is_err() {
                     tracing::error!("send icmp packet to peer failed: {:?}", ret);
                 }

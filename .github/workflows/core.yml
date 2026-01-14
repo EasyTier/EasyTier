@@ -239,6 +239,16 @@ jobs:
             mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
             cargo build --release --verbose --target $TARGET --features=mimalloc
 
+            mkdir -p built-bins/$TARGET/release/
+            mv ./target/$TARGET/release/easytier-web-embed ./built-bins/$TARGET/release/easytier-web-embed
+            mv ./target/$TARGET/release/easytier-web ./built-bins/$TARGET/release/easytier-web
+            mv ./target/$TARGET/release/easytier-core ./built-bins/$TARGET/release/easytier-core
+            mv ./target/$TARGET/release/easytier-cli ./built-bins/$TARGET/release/easytier-cli
+
+            # remove dirs to avoid copy many files back
+            rm -rf ./target ~/.cargo
+            mv ./built-bins ./target
+
       - name: Compress
         run: |
           mkdir -p ./artifacts/objects/

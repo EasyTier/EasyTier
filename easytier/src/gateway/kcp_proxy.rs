@@ -230,8 +230,10 @@ impl TcpProxyForKcpSrcTrait for TcpProxyForKcpSrc {
     }
 
     async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
-        self.0
-            .get_peer_manager()
+        let Some(peer_manager) = self.0.get_peer_manager() else {
+            return false;
+        };
+        peer_manager
             .check_allow_kcp_to_dst(&IpAddr::V4(*dst_ip))
             .await
     }
@@ -504,7 +506,6 @@ impl KcpProxyDst {
         );
 
         if global_ctx.should_deny_proxy(&dst_socket, false) {
-            println!("kcp should deny proxy: {:?}", dst_socket);
             return Err(anyhow::anyhow!(
                 "dst socket {:?} is in running listeners, ignore it",
                 dst_socket

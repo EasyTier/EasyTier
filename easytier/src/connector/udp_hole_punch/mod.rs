@@ -547,7 +547,7 @@ impl UdpHolePunchConnector {
             .rpc_server()
             .registry()
             .register(
-                UdpHolePunchRpcServer::new(self.server.clone()),
+                UdpHolePunchRpcServer::new(Arc::downgrade(&self.server)),
                 &self.peer_mgr.get_global_ctx().get_network_name(),
             );
 

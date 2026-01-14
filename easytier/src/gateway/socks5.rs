@@ -354,7 +354,7 @@ impl Socks5ServerNet {
     pub fn new(
         ipv4_addr: cidr::Ipv4Inet,
         auth: Option<SimpleUserPassword>,
-        peer_manager: Arc<PeerManager>,
+        peer_manager: Weak<PeerManager>,
         packet_recv: Arc<Mutex<mpsc::Receiver<ZCPacket>>>,
         entries: Socks5EntrySet,
     ) -> Self {
@@ -389,6 +389,10 @@ impl Socks5ServerNet {
 
                 let dst = ipv4.get_destination();
                 let packet = ZCPacket::new_with_payload(&data);
+                let Some(peer_manager) = peer_manager.upgrade() else {
+                    tracing::warn!("peer manager is gone, smoltcp sender exited");
+                    return;
+                };
                 if let Err(e) = peer_manager
                     .send_msg_by_ip(packet, IpAddr::V4(dst), false)
                     .await
@@ -473,7 +477,7 @@ struct UdpClientKey {
 
 pub struct Socks5Server {
     global_ctx: Arc<GlobalCtx>,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
     auth: Option<SimpleUserPassword>,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
@@ -586,7 +590,7 @@ impl Socks5Server {
         let (packet_sender, packet_recv) = mpsc::channel(1024);
         Arc::new(Self {
             global_ctx,
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
             auth,
 
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
@@ -674,7 +678,7 @@ impl Socks5Server {
             )?;
 
             let entries = self.entries.clone();
-            let peer_manager = Arc::downgrade(&self.peer_manager);
+            let peer_manager = self.peer_manager.clone();
             let net = self.net.clone();
             self.tasks.lock().unwrap().spawn(async move {
                 loop {
@@ -713,7 +717,10 @@ impl Socks5Server {
         let cfgs = self.global_ctx.config.get_port_forwards();
         self.reload_port_forwards(&cfgs).await?;
 
-        self.peer_manager
+        let Some(peer_manager) = self.peer_manager.upgrade() else {
+            return Err(anyhow::anyhow!("peer manager is gone").into());
+        };
+        peer_manager
             .add_packet_process_pipeline(Box::new(self.clone()))
             .await;
 
@@ -805,7 +812,7 @@ impl Socks5Server {
         join_joinset_background(tasks.clone(), "tcp port forward".to_string());
         let forward_tasks = tasks;
         let kcp_endpoint = self.kcp_endpoint.lock().await.clone();
-        let peer_mgr = Arc::downgrade(&self.peer_manager.clone());
+        let peer_mgr = self.peer_manager.clone();
         let cancel_token = CancellationToken::new();
         self.cancel_tokens
             .insert(cfg.clone(), cancel_token.clone().drop_guard());
