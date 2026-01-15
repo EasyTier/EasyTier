@@ -170,7 +170,7 @@ async function initWithMode(mode: Mode) {
         toast.add({
           severity: 'error',
           summary: t('error'),
-          detail: `RPC 连接失败：${errMsg}`,
+          detail: t('mode.rpc_connection_failed', { error: errMsg }),
           life: 1000,
         })
         throw e;

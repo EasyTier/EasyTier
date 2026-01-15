@@ -374,6 +374,7 @@ mode:
   stop_service_success: 服务停止成功
   remote_rpc_address_empty: 远程RPC地址不能为空
   service_config_empty: 服务配置不能为空
+  rpc_connection_failed: "RPC 连接失败：{error}"
 
 config-server:
   title: 配置服务器

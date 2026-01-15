@@ -374,6 +374,7 @@ mode:
   stop_service_success: Service stopped successfully
   remote_rpc_address_empty: Remote RPC Address cannot be empty
   service_config_empty: Service Config cannot be empty
+  rpc_connection_failed: "RPC connection failed: {error}"
 
 config-server:
   title: Config Server
