@@ -50,9 +50,12 @@ enum RpcServerKind {
     Tcp,
 }
 
-static RPC_SERVER: once_cell::sync::Lazy<
-    Mutex<Option<(RpcServerKind, ApiRpcServer<BoxedTunnelListener>)>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(None));
+struct RpcServer {
+    kind: RpcServerKind,
+    _server: ApiRpcServer<BoxedTunnelListener>,
+}
+static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(None));
 
 static WEB_CLIENT: once_cell::sync::Lazy<RwLock<Option<WebClient>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(None));
@@ -389,7 +392,7 @@ async fn init_rpc_connection(
 
         let need_restart = rpc_server_guard
             .as_ref()
-            .map(|(kind, _)| *kind != desired_kind)
+            .map(|x| x.kind != desired_kind)
             .unwrap_or(true);
 
         if need_restart {
@@ -407,7 +410,10 @@ async fn init_rpc_connection(
                 .serve()
                 .await
                 .map_err(|e| e.to_string())?;
-            *rpc_server_guard = Some((desired_kind, rpc_server));
+            *rpc_server_guard = Some(RpcServer {
+                kind: desired_kind,
+                _server: rpc_server,
+            });
         }
 
         *instance_manager_guard = Some(instance_manager);
