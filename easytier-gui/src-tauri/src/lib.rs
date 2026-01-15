@@ -333,45 +333,17 @@ fn get_service_status() -> Result<&'static str, String> {
     }
 }
 
-fn normalize_normal_mode_rpc_portal(
-    portal: &str,
-) -> Result<(std::net::SocketAddr, String), String> {
-    let portal = portal.trim();
-    let portal = portal.strip_prefix("tcp://").unwrap_or(portal);
-    if portal.is_empty() {
-        return Err("rpc portal is empty".to_string());
+fn normalize_normal_mode_rpc_portal(portal: &str) -> Result<(url::Url, url::Url), String> {
+    let portal_url: url::Url = portal
+        .parse()
+        .map_err(|e| format!("invalid rpc portal: {:#}", e))?;
+    let bind_url = portal_url.clone();
+    let mut connect_url = portal_url.clone();
+    // if bind addr is 0.0.0.0, should convert to 127.0.0.1
+    if connect_url.host_str() == Some("0.0.0.0") {
+        connect_url.set_host(Some("127.0.0.1")).unwrap();
     }
-
-    let bind_addr = if portal.chars().all(|c| c.is_ascii_digit()) {
-        let port = portal
-            .parse::<u16>()
-            .map_err(|e| format!("invalid rpc portal port: {:#}", e))?;
-        std::net::SocketAddr::from(([0, 0, 0, 0], port))
-    } else {
-        portal
-            .parse::<std::net::SocketAddr>()
-            .map_err(|e| format!("invalid rpc portal address: {:#}", e))?
-    };
-
-    if bind_addr.port() == 0 {
-        return Err("rpc portal port cannot be 0".to_string());
-    }
-
-    let connect_ip = if bind_addr.ip().is_unspecified() {
-        if bind_addr.is_ipv4() {
-            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-        } else {
-            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
-        }
-    } else {
-        bind_addr.ip()
-    };
-    let connect_url = format!(
-        "tcp://{}",
-        std::net::SocketAddr::new(connect_ip, bind_addr.port())
-    );
-
-    Ok((bind_addr, connect_url))
+    Ok((bind_url, connect_url))
 }
 
 #[tauri::command]
@@ -408,9 +380,9 @@ async fn init_rpc_connection(
             }
         });
 
-        let (desired_kind, bind_addr, connect_url) = if let Some(portal) = portal {
-            let (bind_addr, connect_url) = normalize_normal_mode_rpc_portal(&portal)?;
-            (RpcServerKind::Tcp, Some(bind_addr), Some(connect_url))
+        let (desired_kind, bind_url, connect_url) = if let Some(portal) = portal {
+            let (bind_url, connect_url) = normalize_normal_mode_rpc_portal(&portal)?;
+            (RpcServerKind::Tcp, Some(bind_url), Some(connect_url))
         } else {
             (RpcServerKind::Ring, None, None)
         };
@@ -427,9 +399,7 @@ async fn init_rpc_connection(
                 RpcServerKind::Ring => Box::new(RingTunnelListener::new(
                     format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
                 )),
-                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(
-                    format!("tcp://{}", bind_addr.unwrap()).parse().unwrap(),
-                )),
+                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(bind_url.unwrap())),
             };
 
             let rpc_server = ApiRpcServer::from_tunnel(tunnel, instance_manager.clone())
@@ -441,7 +411,7 @@ async fn init_rpc_connection(
         }
 
         *instance_manager_guard = Some(instance_manager);
-        client_url = connect_url;
+        client_url = connect_url.map(|u| u.to_string());
     } else {
         *rpc_server_guard = None;
     }

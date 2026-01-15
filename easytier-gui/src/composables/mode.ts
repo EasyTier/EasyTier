@@ -8,6 +8,8 @@ export interface NormalMode extends WebClientConfig {
     mode: 'normal'
     // if not provided will use ring tunnel rpc server
     rpc_portal?: string
+    enable_rpc_port_listen?: boolean
+    rpc_listen_port?: number
 }
 
 export interface ServiceMode extends WebClientConfig {

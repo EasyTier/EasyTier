@@ -15,6 +15,14 @@ const defaultLogDir = ref('')
 const serviceStatus = ref<ServiceStatus>('NotInstalled')
 const isServiceStatusLoaded = ref(false)
 
+function normalizeRpcListenPort(port: unknown): number {
+  const defaultPort = 15999
+  const numericPort = typeof port === 'number' ? port : Number.parseInt(String(port ?? ''), 10)
+  if (Number.isNaN(numericPort))
+    return defaultPort
+  return Math.min(65535, Math.max(1, Math.floor(numericPort)))
+}
+
 onMounted(async () => {
   defaultConfigDir.value = await join(await appConfigDir(), 'config.d')
   defaultLogDir.value = await appLogDir()
@@ -33,6 +41,34 @@ const normalMode = computed({
       model.value = value
     }
   }
+})
+
+const rpcListenOptions = computed(() => [
+  { label: t('common.disable'), value: false },
+  { label: t('common.enable'), value: true },
+])
+
+const rpcListenEnabled = computed<boolean>({
+  get: () => !!normalMode.value?.enable_rpc_port_listen,
+  set: (value) => {
+    if (!normalMode.value)
+      return
+    normalMode.value.enable_rpc_port_listen = value
+  },
+})
+
+const rpcListenPort = computed<string>({
+  get: () => String(normalMode.value?.rpc_listen_port ?? 15999),
+  set: (value) => {
+    if (!normalMode.value)
+      return
+    const trimmed = value.trim()
+    if (trimmed === '')
+      return
+    if (!/^\d+$/.test(trimmed))
+      return
+    normalMode.value.rpc_listen_port = Number.parseInt(trimmed, 10)
+  },
 })
 
 const serviceMode = computed({
@@ -66,6 +102,24 @@ const statusColorClass = computed(() => {
   }
 })
 
+watch(() => [normalMode.value?.enable_rpc_port_listen, normalMode.value?.rpc_listen_port], ([enabled, port]) => {
+  if (!normalMode.value)
+    return
+
+  if (!enabled) {
+    normalMode.value.rpc_portal = undefined
+    return
+  }
+
+  const normalizedPort = normalizeRpcListenPort(port)
+  if (normalMode.value.rpc_listen_port !== normalizedPort)
+    normalMode.value.rpc_listen_port = normalizedPort
+
+  const desiredPortal = `tcp://0.0.0.0:${normalizedPort}`
+  if (normalMode.value.rpc_portal !== desiredPortal)
+    normalMode.value.rpc_portal = desiredPortal
+}, { immediate: true })
+
 watch(() => model.value.mode, async (newMode, oldMode) => {
   if (newMode === oldMode)
     return
@@ -78,9 +132,12 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
   const oldModelValue = { ...model.value }
 
   if (newMode === 'normal') {
+    const portal = normalMode.value?.rpc_portal?.trim()
     model.value = {
       ...oldModelValue,
-      rpc_portal: normalMode.value?.rpc_portal || '',
+      rpc_portal: portal,
+      enable_rpc_port_listen: normalMode.value?.enable_rpc_port_listen,
+      rpc_listen_port: normalMode.value?.rpc_listen_port,
       mode: 'normal',
     }
   }
@@ -125,8 +182,15 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
 
     <div v-if="normalMode" class="flex flex-col gap-2">
       <div class="flex items-center gap-2">
-        <label for="rpc-portal">{{ t('mode.rpc_portal') }}</label>
-        <InputText id="rpc-portal" v-model="normalMode.rpc_portal" class="flex-1" />
+        <label for="rpc-listen-toggle">{{ t('mode.enable_rpc_tcp_listen') }}</label>
+        <SelectButton id="rpc-listen-toggle" v-model="rpcListenEnabled" :options="rpcListenOptions" option-label="label"
+          option-value="value" />
+      </div>
+      <div v-if="rpcListenEnabled" class="flex flex-col gap-2">
+        <div class="flex items-center gap-2">
+          <label for="rpc-listen-port">{{ t('mode.rpc_listen_port') }}</label>
+          <InputText id="rpc-listen-port" v-model="rpcListenPort" class="flex-1" inputmode="numeric" />
+        </div>
       </div>
     </div>
 
