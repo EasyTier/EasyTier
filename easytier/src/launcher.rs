@@ -932,6 +932,16 @@ impl NetworkConfig {
             }
         }
 
+        // Read compression algorithm from flags
+        if flags.data_compress_algo != 0 {
+            result.data_compress_algo = Some(flags.data_compress_algo);
+        }
+
+        // Read encryption algorithm from flags
+        if !flags.encryption_algorithm.is_empty() {
+            result.encryption_algorithm = Some(flags.encryption_algorithm.clone());
+        }
+
         Ok(result)
     }
 }
@@ -1201,5 +1211,165 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_data_compress_algo_serialization() {
+        use crate::proto::common::CompressionAlgoPb;
+
+        // Test that data_compress_algo is serialized as string
+        let mut network_config = super::NetworkConfig::default();
+        network_config.instance_id = Some(uuid::Uuid::new_v4().to_string());
+        network_config.data_compress_algo = Some(CompressionAlgoPb::None as i32);
+
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with None compression: {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":"none""#),
+            "data_compress_algo should be serialized as 'none' string, got: {}",
+            json
+        );
+
+        // Test Zstd
+        network_config.data_compress_algo = Some(CompressionAlgoPb::Zstd as i32);
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with Zstd compression: {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":"zstd""#),
+            "data_compress_algo should be serialized as 'zstd' string, got: {}",
+            json
+        );
+
+        // Test LZ4
+        network_config.data_compress_algo = Some(CompressionAlgoPb::Lz4 as i32);
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with Lz4 compression: {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":"lz4""#),
+            "data_compress_algo should be serialized as 'lz4' string, got: {}",
+            json
+        );
+
+        // Test Gzip
+        network_config.data_compress_algo = Some(CompressionAlgoPb::Gzip as i32);
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with Gzip compression: {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":"gzip""#),
+            "data_compress_algo should be serialized as 'gzip' string, got: {}",
+            json
+        );
+
+        // Test Brotli
+        network_config.data_compress_algo = Some(CompressionAlgoPb::Brotli as i32);
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with Brotli compression: {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":"brotli""#),
+            "data_compress_algo should be serialized as 'brotli' string, got: {}",
+            json
+        );
+
+        // Test Lzo
+        network_config.data_compress_algo = Some(CompressionAlgoPb::Lzo as i32);
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with Lzo compression: {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":"lzo""#),
+            "data_compress_algo should be serialized as 'lzo' string, got: {}",
+            json
+        );
+
+        // Test None value (Rust Option::None)
+        network_config.data_compress_algo = None;
+        let json = serde_json::to_string(&network_config).unwrap();
+        println!("NetworkConfig with None (Option): {}", json);
+        assert!(
+            json.contains(r#""data_compress_algo":null"#),
+            "data_compress_algo should be serialized as null when None, got: {}",
+            json
+        );
+    }
+
+    #[test]
+    fn test_data_compress_algo_deserialization() {
+        use crate::proto::common::CompressionAlgoPb;
+
+        // Test deserialization from string
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"none"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo,
+            Some(CompressionAlgoPb::None as i32),
+            "Failed to deserialize 'none' string"
+        );
+
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"zstd"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo,
+            Some(CompressionAlgoPb::Zstd as i32),
+            "Failed to deserialize 'zstd' string"
+        );
+
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"lz4"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo,
+            Some(CompressionAlgoPb::Lz4 as i32),
+            "Failed to deserialize 'lz4' string"
+        );
+
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"gzip"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo,
+            Some(CompressionAlgoPb::Gzip as i32),
+            "Failed to deserialize 'gzip' string"
+        );
+
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"brotli"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo,
+            Some(CompressionAlgoPb::Brotli as i32),
+            "Failed to deserialize 'brotli' string"
+        );
+
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"lzo"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo,
+            Some(CompressionAlgoPb::Lzo as i32),
+            "Failed to deserialize 'lzo' string"
+        );
+
+        // Test deserialization from null
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":null}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo, None,
+            "Failed to deserialize null value"
+        );
+
+        // Test deserialization when field is missing
+        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001"}"#;
+        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.data_compress_algo, None,
+            "Missing field should deserialize as None"
+        );
+
+        // Test round-trip serialization/deserialization
+        let mut original = super::NetworkConfig::default();
+        original.instance_id = Some(uuid::Uuid::new_v4().to_string());
+        original.data_compress_algo = Some(CompressionAlgoPb::Zstd as i32);
+
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: super::NetworkConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            original.data_compress_algo, deserialized.data_compress_algo,
+            "Round-trip serialization failed"
+        );
     }
 }

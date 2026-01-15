@@ -10,9 +10,10 @@ use std::{
 use crate::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
-            ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
-            PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            get_avaliable_encrypt_methods, get_available_compress_methods, load_config_from_file,
+            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
+            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+            VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
     },
@@ -461,6 +462,7 @@ struct NetworkOptions {
         long,
         env = "ET_COMPRESSION",
         help = t!("core_clap.compression").to_string(),
+        value_parser = get_available_compress_methods()
     )]
     compression: Option<String>,
 
@@ -1028,8 +1030,12 @@ impl NetworkOptions {
             f.data_compress_algo = match compression.as_str() {
                 "none" => CompressionAlgoPb::None,
                 "zstd" => CompressionAlgoPb::Zstd,
+                "lz4" => CompressionAlgoPb::Lz4,
+                "gzip" => CompressionAlgoPb::Gzip,
+                "brotli" | "br" => CompressionAlgoPb::Brotli,
+                "lzo" => CompressionAlgoPb::Lzo,
                 _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
+                    "unknown compression algorithm: {}, supported: none, zstd, lz4, gzip, brotli, lzo",
                     compression
                 ),
             }

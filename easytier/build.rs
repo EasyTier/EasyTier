@@ -183,6 +183,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
+        // Support string serialization for compression algorithm in TOML config
+        .field_attribute(
+            ".common.FlagsInConfig.data_compress_algo",
+            "#[serde(with = \"crate::proto::common::compression_algo_serde\")]",
+        )
+        .field_attribute(
+            ".api.manage.NetworkConfig.data_compress_algo",
+            "#[serde(with = \"crate::proto::common::compression_algo_serde_opt\")]",
+        )
         .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
         .btree_map(["."])
         .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);

@@ -176,8 +176,8 @@ core_clap:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
   compression:
-    en: "compression algorithm to use, support none, zstd. default is none"
-    zh-CN: "要使用的压缩算法，支持 none、zstd。默认为 none"
+    en: "compression algorithm to use, support none, zstd, lz4, gzip, brotli, lzo. default is none"
+    zh-CN: "要使用的压缩算法，支持 none、zstd、lz4、gzip、brotli、lzo。默认为 none"
   mapped_listeners:
     en: "manually specify the public address of the listener, other nodes can use this address to connect to this node. e.g.: tcp://123.123.123.123:11223, can specify multiple."
     zh-CN: "手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。例如：tcp://123.123.123.123:11223，可以指定多个。"
