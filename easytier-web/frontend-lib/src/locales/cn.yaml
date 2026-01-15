@@ -177,6 +177,19 @@ mtu_help: |
   TUN设备的MTU，默认为非加密时为1380，加密时为1360。范围：400-1380
 mtu_placeholder: 留空为默认值1380
 
+compression_algo: 压缩算法
+compression_algo_help: |
+  节点间通信的数据压缩算法。压缩可以减少带宽占用，但会增加CPU使用率。
+  支持的算法：none、zstd、lz4、gzip、brotli、lzo。默认为none。
+compression_algo_placeholder: 选择压缩算法
+
+encryption_algo: 加密算法
+encryption_algo_help: |
+  节点间通信的加密算法。不同算法有不同的性能特性。
+  支持的算法：aes-gcm（默认，在大多数CPU上有硬件加速）、chacha20（更适合没有AES-NI的设备）、
+  openssl-aes-gcm、openssl-chacha20（OpenSSL实现）。
+encryption_algo_placeholder: 选择加密算法
+
 mapped_listeners: 监听映射
 mapped_listeners_help: |
   手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。
