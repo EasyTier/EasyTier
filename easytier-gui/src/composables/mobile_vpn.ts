@@ -2,6 +2,7 @@ import type { NetworkTypes } from 'easytier-frontend-lib'
 import { addPluginListener } from '@tauri-apps/api/core'
 import { Utils } from 'easytier-frontend-lib'
 import { prepare_vpn, start_vpn, stop_vpn } from 'tauri-plugin-vpnservice-api'
+import { setTunFd, runNetworkInstance, collectNetworkInfo, getConfig } from './backend'
 
 type Route = NetworkTypes.Route
 
