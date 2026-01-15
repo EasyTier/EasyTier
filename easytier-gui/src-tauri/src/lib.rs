@@ -402,7 +402,9 @@ async fn init_rpc_connection(
                 RpcServerKind::Ring => Box::new(RingTunnelListener::new(
                     format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
                 )),
-                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(bind_url.unwrap())),
+                RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(
+                    bind_url.expect("tcp rpc must have bind url"),
+                )),
             };
 
             let rpc_server = ApiRpcServer::from_tunnel(tunnel, instance_manager.clone())

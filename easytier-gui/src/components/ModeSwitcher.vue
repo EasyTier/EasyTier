@@ -44,8 +44,8 @@ const normalMode = computed({
 })
 
 const rpcListenOptions = computed(() => [
-  { label: t('common.disable'), value: false },
-  { label: t('common.enable'), value: true },
+  { label: t('web.common.disable'), value: false },
+  { label: t('web.common.enable'), value: true },
 ])
 
 const rpcListenEnabled = computed<boolean>({
@@ -135,7 +135,7 @@ watch(() => model.value.mode, async (newMode, oldMode) => {
     const portal = normalMode.value?.rpc_portal?.trim()
     model.value = {
       ...oldModelValue,
-      rpc_portal: portal,
+      rpc_portal: portal || undefined,
       enable_rpc_port_listen: normalMode.value?.enable_rpc_port_listen,
       rpc_listen_port: normalMode.value?.rpc_listen_port,
       mode: 'normal',
