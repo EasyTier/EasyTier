@@ -35,7 +35,7 @@ serde_json = "1"
 
 easytier = { path = "../../easytier" }
 tokio = { version = "1", features = ["full"] }
-rustls = { version = "0.23.0", features = [
+rustls = { version = "0.23.0", default-features = false, features = [
     "ring",
 ] }
 anyhow = "1.0"
