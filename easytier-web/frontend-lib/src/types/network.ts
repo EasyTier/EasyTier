@@ -71,6 +71,9 @@ export interface NetworkConfig {
   enable_magic_dns?: boolean
   enable_private_mode?: boolean
 
+  data_compress_algo?: string
+  encryption_algorithm?: string
+
   port_forwards: PortForwardConfig[]
 }
 
@@ -135,6 +138,8 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     mapped_listeners: [],
     enable_magic_dns: false,
     enable_private_mode: false,
+    data_compress_algo: 'none',
+    encryption_algorithm: 'aes-gcm',
     port_forwards: [],
   }
 }
