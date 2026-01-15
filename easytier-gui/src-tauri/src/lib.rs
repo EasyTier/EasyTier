@@ -53,6 +53,7 @@ enum RpcServerKind {
 struct RpcServer {
     kind: RpcServerKind,
     _server: ApiRpcServer<BoxedTunnelListener>,
+    bind_url: Option<url::Url>,
 }
 static RPC_SERVER: once_cell::sync::Lazy<Mutex<Option<RpcServer>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
@@ -392,7 +393,7 @@ async fn init_rpc_connection(
 
         let need_restart = rpc_server_guard
             .as_ref()
-            .map(|x| x.kind != desired_kind)
+            .map(|x| x.kind != desired_kind || x.bind_url != bind_url)
             .unwrap_or(true);
 
         if need_restart {
@@ -403,7 +404,7 @@ async fn init_rpc_connection(
                     format!("ring://{}", RPC_RING_UUID.deref()).parse().unwrap(),
                 )),
                 RpcServerKind::Tcp => Box::new(TcpTunnelListener::new(
-                    bind_url.expect("tcp rpc must have bind url"),
+                    bind_url.clone().expect("tcp rpc must have bind url"),
                 )),
             };
 
@@ -415,6 +416,7 @@ async fn init_rpc_connection(
             *rpc_server_guard = Some(RpcServer {
                 kind: desired_kind,
                 _server: rpc_server,
+                bind_url,
             });
         }
 
