@@ -43,8 +43,11 @@ const compression_algorithms = ref([
 
 const encryption_algorithms = ref([
   { value: 'aes-gcm', label: 'AES-GCM' },
+  { value: 'aes-256-gcm', label: 'AES-256-GCM' },
   { value: 'chacha20', label: 'ChaCha20' },
+  { value: 'xor', label: 'XOR' },
   { value: 'openssl-aes-gcm', label: 'OpenSSL AES-GCM' },
+  { value: 'openssl-aes-256-gcm', label: 'OpenSSL AES-256-GCM' },
   { value: 'openssl-chacha20', label: 'OpenSSL ChaCha20' },
 ])
 
