@@ -275,6 +275,10 @@ pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>()
 pub enum CompressorAlgo {
     None = 0,
     ZstdDefault = 1,
+    Lz4 = 2,
+    Gzip = 3,
+    Brotli = 4,
+    Lzo = 5,
 }
 
 #[repr(C, packed)]
@@ -288,6 +292,10 @@ impl CompressorTail {
     pub fn get_algo(&self) -> Option<CompressorAlgo> {
         match self.algo {
             1 => Some(CompressorAlgo::ZstdDefault),
+            2 => Some(CompressorAlgo::Lz4),
+            3 => Some(CompressorAlgo::Gzip),
+            4 => Some(CompressorAlgo::Brotli),
+            5 => Some(CompressorAlgo::Lzo),
             _ => None,
         }
     }
