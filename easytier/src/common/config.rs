@@ -135,7 +135,7 @@ pub fn get_avaliable_encrypt_methods() -> Vec<&'static str> {
 }
 
 pub fn get_available_compress_methods() -> Vec<&'static str> {
-    vec!["none", "zstd", "lz4", "gzip", "brotli", "br", "lzo"]
+    vec!["none", "zstd", "lz4", "brotli", "br"]
 }
 
 #[auto_impl::auto_impl(Box, &)]

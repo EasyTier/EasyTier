@@ -291,9 +291,7 @@ pub enum CompressorAlgo {
     #[cfg(feature = "zstd")]
     ZstdDefault = 1,
     Lz4 = 2,
-    Gzip = 3,
-    Brotli = 4,
-    Lzo = 5,
+    Brotli = 3,
 }
 
 #[repr(C, packed)]
@@ -309,9 +307,7 @@ impl CompressorTail {
             #[cfg(feature = "zstd")]
             1 => Some(CompressorAlgo::ZstdDefault),
             2 => Some(CompressorAlgo::Lz4),
-            3 => Some(CompressorAlgo::Gzip),
-            4 => Some(CompressorAlgo::Brotli),
-            5 => Some(CompressorAlgo::Lzo),
+            3 => Some(CompressorAlgo::Brotli),
             _ => None,
         }
     }

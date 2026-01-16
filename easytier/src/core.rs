@@ -1031,11 +1031,9 @@ impl NetworkOptions {
                 "none" => CompressionAlgoPb::None,
                 "zstd" => CompressionAlgoPb::Zstd,
                 "lz4" => CompressionAlgoPb::Lz4,
-                "gzip" => CompressionAlgoPb::Gzip,
                 "brotli" | "br" => CompressionAlgoPb::Brotli,
-                "lzo" => CompressionAlgoPb::Lzo,
                 _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd, lz4, gzip, brotli, lzo",
+                    "unknown compression algorithm: {}, supported: none, zstd, lz4, brotli",
                     compression
                 ),
             }
