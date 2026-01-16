@@ -156,13 +156,23 @@ async function initWithMode(mode: Mode) {
       url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
       retrys = 5
       break;
+    case 'normal':
+      url = mode.rpc_portal;
+      break;
   }
   for (let i = 0; i < retrys; i++) {
     try {
-      await connectRpcClient(url)
+      await connectRpcClient(mode.mode === 'normal', url)
       break;
     } catch (e) {
       if (i === retrys - 1) {
+        const errMsg = e instanceof Error ? e.message : String(e)
+        toast.add({
+          severity: 'error',
+          summary: t('error'),
+          detail: t('mode.rpc_connection_failed', { error: errMsg }),
+          life: 1000,
+        })
         throw e;
       }
       console.error("Error connecting rpc client, retrying...", e)
@@ -332,9 +342,9 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
   },
 ])
 
-async function connectRpcClient(url?: string) {
-  await initRpcConnection(url)
-  console.log("easytier rpc connection established")
+async function connectRpcClient(isNormalMode: boolean, url?: string) {
+  await initRpcConnection(isNormalMode, url)
+  console.log("easytier rpc connection established, isNormalMode: ", isNormalMode)
 }
 
 onMounted(async () => {

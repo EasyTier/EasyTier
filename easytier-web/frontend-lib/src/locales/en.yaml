@@ -334,6 +334,8 @@ web:
     success: Success
     warning: Warning
     info: Info
+    enable: Enable
+    disable: Disable
 
   settings:
     title: Settings
@@ -350,6 +352,8 @@ mode:
   switch_mode: Switch Mode
   config_dir: Config Dir
   rpc_portal: RPC Portal
+  enable_rpc_tcp_listen: Enable RPC port listening (TCP)
+  rpc_listen_port: RPC Listen Port
   log_level: Log Level
   log_dir: Log Dir
   remote_rpc_address: Remote RPC Address
@@ -370,6 +374,7 @@ mode:
   stop_service_success: Service stopped successfully
   remote_rpc_address_empty: Remote RPC Address cannot be empty
   service_config_empty: Service Config cannot be empty
+  rpc_connection_failed: "RPC connection failed: {error}"
 
 config-server:
   title: Config Server

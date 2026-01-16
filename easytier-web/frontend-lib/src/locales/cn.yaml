@@ -334,6 +334,8 @@ web:
     success: 成功
     warning: 警告
     info: 提示
+    enable: 开启
+    disable: 关闭
 
   settings:
     title: 设置
@@ -350,6 +352,8 @@ mode:
   switch_mode: 切换模式
   config_dir: 配置目录
   rpc_portal: RPC端口
+  enable_rpc_tcp_listen: 开启 RPC 端口监听（TCP）
+  rpc_listen_port: RPC 监听端口
   log_level: 日志级别
   log_dir: 日志目录
   remote_rpc_address: 远程RPC地址
@@ -370,6 +374,7 @@ mode:
   stop_service_success: 服务停止成功
   remote_rpc_address_empty: 远程RPC地址不能为空
   service_config_empty: 服务配置不能为空
+  rpc_connection_failed: "RPC 连接失败：{error}"
 
 config-server:
   title: 配置服务器

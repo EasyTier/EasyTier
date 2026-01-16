@@ -89,8 +89,8 @@ export async function getServiceStatus() {
   return await invoke<ServiceStatus>('get_service_status')
 }
 
-export async function initRpcConnection(url?: string) {
-  return await invoke('init_rpc_connection', { url })
+export async function initRpcConnection(isNormalMode: boolean, url?: string) {
+  return await invoke('init_rpc_connection', { isNormalMode, url })
 }
 
 export async function isClientRunning() {
