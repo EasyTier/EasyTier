@@ -41,31 +41,46 @@ const protos: { [proto: string]: number } = {
   quic: 11012,
   faketcp: 11013,
   http: 0,
+  https: 0,
   txt: 0,
   srv: 0,
 }
+const protocolsWithoutDefaultPort = new Set(['http', 'https', 'txt', 'srv'])
 
 function searchUrlSuggestions(e: { query: string }): string[] {
   const query = e.query
-  const ret = []
-  // if query match "^\w+:.*", then no proto prefix
-  if (query.match(/^\w+:.*/)) {
-    // if query is a valid url, then add to suggestions
-    try {
-      // eslint-disable-next-line no-new
-      new URL(query)
-      ret.push(query)
+
+  function URLHandler(url: URL): string {
+    const protocol = url.protocol.slice(0, -1)
+    let item = `${url.protocol}//${url.hostname}`
+
+    // Add port if needed
+    if (!protocolsWithoutDefaultPort.has(protocol)) {
+      item += `:${url.port || protos[protocol]}`
+    } else if (url.port && ((protocol === 'http' && url.port !== '80') || (protocol === 'https' && url.port !== '443'))) {
+      item += `:${url.port}`
     }
-    catch { }
+
+    // Add pathname
+    if (url.pathname && url.pathname !== '/') {
+      item += url.pathname
+    } else if (['ws', 'wss'].includes(protocol)) {
+      item += '/'
+    }
+
+    return item
   }
-  else {
+
+  const ret: string[] = []
+  try {
+    ret.push(URLHandler(new URL(query)))
+  } catch {
     for (const proto in protos) {
-      let item = `${proto}://${query}`
-      // if query match ":\d+$", then no port suffix
-      if (!query.match(/:\d+$/) && !(proto === 'http' || proto === 'txt' || proto === 'srv')) {
-        item += `:${protos[proto]}`
+      try {
+        ret.push(URLHandler(new URL(`${proto}://${query}`)))
+      } catch {
+      // 忽略无效的协议组合
       }
-      ret.push(item)
     }
   }
 
@@ -112,14 +127,12 @@ function searchInetSuggestions(e: { query: string }) {
 
 const listenerSuggestions = ref([''])
 
-function searchListenerSuggestionsFactory(e: { query: string }, isIpv6: boolean = false) {
+function searchListenerSuggestions(e: { query: string }) {
   const ret = []
 
   for (const proto in protos) {
-    let item = `${proto}://${isIpv6 ? '[::]' : '0.0.0.0'}`
-    if (proto !== 'http' && proto !== 'txt' && proto !== 'srv') {
-      item += ':'
-    }
+    if (proto === 'http' || proto === 'https' || proto === 'txt' || proto === 'srv') continue
+    let item = `${proto}://0.0.0.0:`
     // if query is a number, use it as port
     if (e.query.match(/^\d+$/)) {
       item += e.query
@@ -141,9 +154,6 @@ function searchListenerSuggestionsFactory(e: { query: string }, isIpv6: boolean 
   }
 
   listenerSuggestions.value = ret
-}
-function searchListenerSuggestions(e: { query: string }) {
-  searchListenerSuggestionsFactory(e, false)
 }
 
 
