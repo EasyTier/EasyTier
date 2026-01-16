@@ -100,9 +100,7 @@ enum CompressionAlgoPb {
   None = 1;
   Zstd = 2;
   Lz4 = 3;
-  Gzip = 4;
-  Brotli = 5;
-  Lzo = 6;
+  Brotli = 4;
 }
 
 message RpcCompressionInfo {

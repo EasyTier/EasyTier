@@ -212,9 +212,7 @@ zstd = { version = "0.13", optional = true }
 
 # additional compression algorithms
 lz4_flex = "0.11"
-flate2 = "1.0"
 brotli = "7.0"
-minilzo-rs = "0.6"
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
 

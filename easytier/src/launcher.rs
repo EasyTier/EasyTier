@@ -1250,16 +1250,6 @@ mod tests {
             json
         );
 
-        // Test Gzip
-        network_config.data_compress_algo = Some(CompressionAlgoPb::Gzip as i32);
-        let json = serde_json::to_string(&network_config).unwrap();
-        println!("NetworkConfig with Gzip compression: {}", json);
-        assert!(
-            json.contains(r#""data_compress_algo":"gzip""#),
-            "data_compress_algo should be serialized as 'gzip' string, got: {}",
-            json
-        );
-
         // Test Brotli
         network_config.data_compress_algo = Some(CompressionAlgoPb::Brotli as i32);
         let json = serde_json::to_string(&network_config).unwrap();
@@ -1267,16 +1257,6 @@ mod tests {
         assert!(
             json.contains(r#""data_compress_algo":"brotli""#),
             "data_compress_algo should be serialized as 'brotli' string, got: {}",
-            json
-        );
-
-        // Test Lzo
-        network_config.data_compress_algo = Some(CompressionAlgoPb::Lzo as i32);
-        let json = serde_json::to_string(&network_config).unwrap();
-        println!("NetworkConfig with Lzo compression: {}", json);
-        assert!(
-            json.contains(r#""data_compress_algo":"lzo""#),
-            "data_compress_algo should be serialized as 'lzo' string, got: {}",
             json
         );
 
@@ -1320,28 +1300,12 @@ mod tests {
             "Failed to deserialize 'lz4' string"
         );
 
-        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"gzip"}"#;
-        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            config.data_compress_algo,
-            Some(CompressionAlgoPb::Gzip as i32),
-            "Failed to deserialize 'gzip' string"
-        );
-
         let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"brotli"}"#;
         let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
         assert_eq!(
             config.data_compress_algo,
             Some(CompressionAlgoPb::Brotli as i32),
             "Failed to deserialize 'brotli' string"
-        );
-
-        let json = r#"{"instance_id":"00000000-0000-0000-0000-000000000001","data_compress_algo":"lzo"}"#;
-        let config: super::NetworkConfig = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            config.data_compress_algo,
-            Some(CompressionAlgoPb::Lzo as i32),
-            "Failed to deserialize 'lzo' string"
         );
 
         // Test deserialization from null
