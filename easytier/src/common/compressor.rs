@@ -1,7 +1,6 @@
 use anyhow::Context;
 use dashmap::DashMap;
 use std::cell::RefCell;
-use std::io::{Read as IoRead, Write as IoWrite};
 use zstd::bulk;
 
 use zerocopy::{AsBytes as _, FromBytes as _};
@@ -55,23 +54,6 @@ impl DefaultCompressor {
                 Ok(compressed)
             }
 
-            CompressorAlgo::Gzip => {
-                let mut encoder =
-                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                encoder.write_all(data).with_context(|| {
-                    format!(
-                        "Failed to compress data with algorithm: {:?}",
-                        compress_algo
-                    )
-                })?;
-                encoder.finish().with_context(|| {
-                    format!(
-                        "Failed to finish compression with algorithm: {:?}",
-                        compress_algo
-                    )
-                })
-            }
-
             CompressorAlgo::Brotli => {
                 // Use batch API instead of streaming API to ensure errors are properly returned
                 // CompressorWriter's Drop implementation ignores errors, which can cause data loss
@@ -90,18 +72,6 @@ impl DefaultCompressor {
                     })?;
                 Ok(compressed)
             }
-
-            CompressorAlgo::Lzo => LZO_INSTANCE.with(|lzo_cell| {
-                let mut lzo = lzo_cell.borrow_mut();
-                let compressed = lzo
-                    .compress(data)
-                    .map_err(|e| anyhow::anyhow!("Failed to compress with LZO: {:?}", e))?;
-                // Prepend original size for decompression (4 bytes, little-endian)
-                let mut result = Vec::with_capacity(4 + compressed.len());
-                result.extend_from_slice(&(data.len() as u32).to_le_bytes());
-                result.extend_from_slice(&compressed);
-                Ok(result)
-            }),
 
             CompressorAlgo::None => Ok(data.to_vec()),
         }
@@ -141,18 +111,6 @@ impl DefaultCompressor {
                 })
             }
 
-            CompressorAlgo::Gzip => {
-                let mut decoder = flate2::read::GzDecoder::new(data);
-                let mut decompressed = Vec::new();
-                decoder.read_to_end(&mut decompressed).with_context(|| {
-                    format!(
-                        "Failed to decompress data with algorithm: {:?}",
-                        compress_algo
-                    )
-                })?;
-                Ok(decompressed)
-            }
-
             CompressorAlgo::Brotli => {
                 // Use batch API for consistency with compress and proper error handling
                 let mut decompressed = Vec::new();
@@ -165,25 +123,6 @@ impl DefaultCompressor {
                         )
                     })?;
                 Ok(decompressed)
-            }
-
-            CompressorAlgo::Lzo => {
-                if data.len() < 4 {
-                    return Err(anyhow::anyhow!(
-                        "LZO compressed data too short: {} bytes",
-                        data.len()
-                    ));
-                }
-                // Read original size from first 4 bytes
-                let original_size =
-                    u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-                let compressed_data = &data[4..];
-
-                LZO_INSTANCE.with(|lzo_cell| {
-                    let lzo = lzo_cell.borrow();
-                    lzo.decompress_safe(compressed_data, original_size)
-                        .map_err(|e| anyhow::anyhow!("Failed to decompress with LZO: {:?}", e))
-                })
             }
 
             CompressorAlgo::None => Ok(data.to_vec()),
@@ -279,11 +218,6 @@ impl Compressor for DefaultCompressor {
 thread_local! {
     static CTX_MAP: RefCell<DashMap<CompressorAlgo, bulk::Compressor<'static>>> = RefCell::new(DashMap::new());
     static DCTX_MAP: RefCell<DashMap<CompressorAlgo, bulk::Decompressor<'static>>> = RefCell::new(DashMap::new());
-
-    // LZO instance cache - LZO::init() is expensive and should only be called once per thread
-    static LZO_INSTANCE: RefCell<minilzo_rs::LZO> = RefCell::new(
-        minilzo_rs::LZO::init().expect("Failed to initialize LZO")
-    );
 }
 
 #[cfg(test)]
@@ -345,9 +279,7 @@ pub mod tests {
         let algorithms = [
             CompressorAlgo::ZstdDefault,
             CompressorAlgo::Lz4,
-            CompressorAlgo::Gzip,
             CompressorAlgo::Brotli,
-            CompressorAlgo::Lzo,
         ];
 
         let text = b"Hello, this is a test message for compression algorithms! ".repeat(10);
@@ -378,9 +310,7 @@ pub mod tests {
         let algorithms = [
             ("Zstd", CompressorAlgo::ZstdDefault),
             ("LZ4", CompressorAlgo::Lz4),
-            ("Gzip", CompressorAlgo::Gzip),
             ("Brotli", CompressorAlgo::Brotli),
-            ("LZO", CompressorAlgo::Lzo),
         ];
 
         // Generate test data patterns (similar to screen capture / remote desktop data)

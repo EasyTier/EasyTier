@@ -26,12 +26,10 @@ pub mod compression_algo_serde {
             "none" => CompressionAlgoPb::None,
             "zstd" => CompressionAlgoPb::Zstd,
             "lz4" => CompressionAlgoPb::Lz4,
-            "gzip" => CompressionAlgoPb::Gzip,
             "brotli" | "br" => CompressionAlgoPb::Brotli,
-            "lzo" => CompressionAlgoPb::Lzo,
             _ => {
                 return Err(E::custom(format!(
-                    "unknown compression algorithm: {}, supported: none, zstd, lz4, gzip, brotli, lzo",
+                    "unknown compression algorithm: {}, supported: none, zstd, lz4, brotli",
                     s
                 )))
             }
@@ -75,12 +73,10 @@ pub mod compression_algo_serde_opt {
             "none" => CompressionAlgoPb::None,
             "zstd" => CompressionAlgoPb::Zstd,
             "lz4" => CompressionAlgoPb::Lz4,
-            "gzip" => CompressionAlgoPb::Gzip,
             "brotli" | "br" => CompressionAlgoPb::Brotli,
-            "lzo" => CompressionAlgoPb::Lzo,
             _ => {
                 return Err(E::custom(format!(
-                    "unknown compression algorithm: {}, supported: none, zstd, lz4, gzip, brotli, lzo",
+                    "unknown compression algorithm: {}, supported: none, zstd, lz4, brotli",
                     s
                 )))
             }
@@ -437,9 +433,7 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
             CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
             CompressionAlgoPb::None => Ok(CompressorAlgo::None),
             CompressionAlgoPb::Lz4 => Ok(CompressorAlgo::Lz4),
-            CompressionAlgoPb::Gzip => Ok(CompressorAlgo::Gzip),
             CompressionAlgoPb::Brotli => Ok(CompressorAlgo::Brotli),
-            CompressionAlgoPb::Lzo => Ok(CompressorAlgo::Lzo),
             _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
         }
     }
@@ -453,9 +447,7 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
             CompressorAlgo::Lz4 => Ok(CompressionAlgoPb::Lz4),
-            CompressorAlgo::Gzip => Ok(CompressionAlgoPb::Gzip),
             CompressorAlgo::Brotli => Ok(CompressionAlgoPb::Brotli),
-            CompressorAlgo::Lzo => Ok(CompressionAlgoPb::Lzo),
         }
     }
 }
