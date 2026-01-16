@@ -179,15 +179,15 @@ mtu_placeholder: Leave blank as default value 1380
 
 compression_algo: Compression Algorithm
 compression_algo_help: |
-  Data compression algorithm for peer communication. Compression can reduce bandwidth but increases CPU usage.
-  Supported algorithms: none, zstd, lz4, gzip, brotli, lzo. Default is none.
+  Data compression algorithm for inter-node communication. Compression reduces bandwidth usage but increases CPU usage.
+  LZ4: Fastest, suitable for low-performance devices; Zstd: Balanced, suitable for most scenarios; Brotli: High compression ratio. Default is none.
 compression_algo_placeholder: Select compression algorithm
 
 encryption_algo: Encryption Algorithm
 encryption_algo_help: |
-  Encryption algorithm for peer communication. Different algorithms have different performance characteristics.
-  Supported algorithms: aes-gcm (default, hardware accelerated on most CPUs), chacha20 (better for devices without AES-NI),
-  openssl-aes-gcm, openssl-chacha20 (OpenSSL implementations).
+  Encryption algorithm for inter-node communication. Different algorithms have different performance characteristics.
+  AES-GCM/AES-256-GCM: Default, hardware accelerated on most CPUs; ChaCha20: Suitable for devices without AES-NI; XOR: Lightweight obfuscation.
+  Note: OpenSSL-related algorithms require special compiled versions.
 encryption_algo_placeholder: Select encryption algorithm
 
 mapped_listeners: Map Listeners

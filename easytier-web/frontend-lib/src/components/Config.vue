@@ -34,11 +34,9 @@ const networking_methods = ref([
 
 const compression_algorithms = ref([
   { value: 'none', label: 'None' },
-  { value: 'zstd', label: 'Zstd' },
   { value: 'lz4', label: 'LZ4' },
-  { value: 'gzip', label: 'Gzip' },
+  { value: 'zstd', label: 'Zstd' },
   { value: 'brotli', label: 'Brotli' },
-  { value: 'lzo', label: 'LZO' },
 ])
 
 const encryption_algorithms = ref([
@@ -46,9 +44,6 @@ const encryption_algorithms = ref([
   { value: 'aes-256-gcm', label: 'AES-256-GCM' },
   { value: 'chacha20', label: 'ChaCha20' },
   { value: 'xor', label: 'XOR' },
-  { value: 'openssl-aes-gcm', label: 'OpenSSL AES-GCM' },
-  { value: 'openssl-aes-256-gcm', label: 'OpenSSL AES-256-GCM' },
-  { value: 'openssl-chacha20', label: 'OpenSSL ChaCha20' },
 ])
 
 const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
