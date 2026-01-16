@@ -68,6 +68,8 @@ upload: 上传
 download: 下载
 show_vpn_portal_config: 显示VPN门户配置
 vpn_portal_config: VPN门户配置
+copy: 复制
+copied: 已复制
 show_event_log: 显示事件日志
 event_log: 事件日志
 peer_info: 节点信息

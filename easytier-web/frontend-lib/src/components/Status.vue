@@ -319,6 +319,7 @@ onUnmounted(() => {
 const dialogVisible = ref(false)
 const dialogContent = ref<any>('')
 const dialogHeader = ref('event_log')
+const copyButtonLabel = ref('copy')
 
 function showVpnPortalConfig() {
   const my_node_info = myNodeInfo.value
@@ -329,6 +330,19 @@ function showVpnPortalConfig() {
   dialogContent.value = `${my_node_info.vpn_portal_cfg}\n\n # can generate QR code: ${url}`
   dialogHeader.value = 'vpn_portal_config'
   dialogVisible.value = true
+  copyButtonLabel.value = 'copy'
+}
+
+async function copyVpnPortalConfig() {
+  try {
+    await navigator.clipboard.writeText(dialogContent.value)
+    copyButtonLabel.value = 'copied'
+    setTimeout(() => {
+      copyButtonLabel.value = 'copy'
+    }, 2000)
+  } catch (err) {
+    console.error('Failed to copy text: ', err)
+  }
 }
 
 function showEventLogs() {
@@ -358,6 +372,9 @@ function showEventLogs() {
           <HumanEvent :event="slotProps.item.event" />
         </template>
       </Timeline>
+      <template v-if="dialogHeader === 'vpn_portal_config'" #footer>
+        <Button :label="t(copyButtonLabel)" icon="pi pi-copy" @click="copyVpnPortalConfig" />
+      </template>
     </Dialog>
 
     <Card v-if="curNetworkInst?.error_msg">

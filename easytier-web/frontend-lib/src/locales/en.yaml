@@ -67,6 +67,8 @@ upload: Upload
 download: Download
 show_vpn_portal_config: Show VPN Portal Config
 vpn_portal_config: VPN Portal Config
+copy: Copy
+copied: Copied
 show_event_log: Show Event Log
 event_log: Event Log
 peer_info: Peer Info
