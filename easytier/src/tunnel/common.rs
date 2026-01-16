@@ -399,9 +399,20 @@ pub(crate) fn setup_sokcet2_ext(
         target_os = "linux",
         target_env = "ohos"
     ))]
-    if let Some(dev_name) = bind_dev {
-        tracing::trace!(dev_name = ?dev_name, "bind device");
-        socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
+    {
+        // Set bypass fwmark to prevent easytier traffic from entering VPN routing table (loop prevention)
+        #[cfg(target_os = "linux")]
+        {
+            if let Err(e) = crate::common::ifcfg::fwmark::set_socket_bypass_mark(socket2_socket) {
+                // May lack CAP_NET_ADMIN capability, just log it
+                tracing::warn!(?e, "failed to set socket fwmark (may require CAP_NET_ADMIN)");
+            }
+        }
+
+        if let Some(dev_name) = bind_dev {
+            tracing::trace!(dev_name = ?dev_name, "bind device");
+            socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
+        }
     }
 
     Ok(())
