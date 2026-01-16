@@ -101,17 +101,20 @@ function searchInetSuggestions(e: { query: string }) {
 
 const listenerSuggestions = ref([''])
 
-function searchListenerSuggestions(e: { query: string }) {
+function searchListenerSuggestionsFactory(e: { query: string }, isIpv6: boolean = false) {
   const ret = []
 
   for (const proto in protos) {
-    let item = `${proto}://0.0.0.0:`
+    let item = `${proto}://${isIpv6? '[::]' : '0.0.0.0'}:`
     // if query is a number, use it as port
     if (e.query.match(/^\d+$/)) {
       item += e.query
     }
     else {
       item += protos[proto]
+    }
+    if (proto === 'ws' || proto === 'wss') {
+      item += '/'
     }
 
     if (item.includes(e.query)) {
@@ -124,6 +127,9 @@ function searchListenerSuggestions(e: { query: string }) {
   }
 
   listenerSuggestions.value = ret
+}
+function searchListenerSuggestions(e: { query: string }) {
+  searchListenerSuggestionsFactory(e, false)
 }
 
 
