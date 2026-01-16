@@ -3,6 +3,8 @@ mod three_node;
 
 mod ipv6_test;
 
+mod compress_tests;
+
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
 
