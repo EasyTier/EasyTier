@@ -9,7 +9,7 @@ import {
   NetworkingMethod,
   removeRow
 } from '../types/network'
-import { defineProps, defineEmits, ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
