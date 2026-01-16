@@ -32,7 +32,18 @@ const networking_methods = ref([
   { value: NetworkingMethod.Standalone, label: () => t('standalone') },
 ])
 
-const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
+const protos: { [proto: string]: number } = {
+  tcp: 11010,
+  udp: 11010,
+  wg: 11011,
+  ws: 11011,
+  wss: 11012,
+  quic: 11012,
+  faketcp: 11013,
+  http: 0,
+  txt: 0,
+  srv: 0,
+}
 
 function searchUrlSuggestions(e: { query: string }): string[] {
   const query = e.query
@@ -51,7 +62,7 @@ function searchUrlSuggestions(e: { query: string }): string[] {
     for (const proto in protos) {
       let item = `${proto}://${query}`
       // if query match ":\d+$", then no port suffix
-      if (!query.match(/:\d+$/)) {
+      if (!query.match(/:\d+$/) && !(proto === 'http' || proto === 'txt' || proto === 'srv')) {
         item += `:${protos[proto]}`
       }
       ret.push(item)
@@ -105,7 +116,10 @@ function searchListenerSuggestionsFactory(e: { query: string }, isIpv6: boolean 
   const ret = []
 
   for (const proto in protos) {
-    let item = `${proto}://${isIpv6? '[::]' : '0.0.0.0'}:`
+    let item = `${proto}://${isIpv6 ? '[::]' : '0.0.0.0'}`
+    if (proto !== 'http' && proto !== 'txt' && proto !== 'srv') {
+      item += ':'
+    }
     // if query is a number, use it as port
     if (e.query.match(/^\d+$/)) {
       item += e.query
