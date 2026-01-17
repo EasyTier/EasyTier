@@ -64,6 +64,8 @@ message FlagsInConfig {
   bool p2p_only = 32;
 
   bool disable_tcp_hole_punching = 34;
+
+  bool enable_peer_conn_secure_mode = 35;
 }
 
 message RpcDescriptor {

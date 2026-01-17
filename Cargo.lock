@@ -816,7 +816,7 @@ dependencies = [
  "bitflags 2.8.0",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -2234,6 +2234,7 @@ dependencies = [
  "sha2",
  "shellexpand",
  "smoltcp",
+ "snow",
  "socket2 0.5.10",
  "stun_codec",
  "sys-locale",
@@ -7983,6 +7984,22 @@ dependencies = [
  "defmt",
  "heapless",
  "managed",
+]
+
+[[package]]
+name = "snow"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "850948bee068e713b8ab860fe1adc4d109676ab4c3b621fd8147f06b261f2f85"
+dependencies = [
+ "aes-gcm",
+ "blake2",
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "rand_core 0.6.4",
+ "rustc_version",
+ "sha2",
+ "subtle",
 ]
 
 [[package]]

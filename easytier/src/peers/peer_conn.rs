@@ -22,6 +22,8 @@ use tokio::{
 use tracing::Instrument;
 use zerocopy::AsBytes;
 
+use snow::params::NoiseParams;
+
 use crate::{
     common::{
         config::{NetworkIdentity, NetworkSecretDigest},
@@ -37,7 +39,7 @@ use crate::{
         peer_rpc::HandshakeRequest,
     },
     tunnel::{
-        filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelWithFilter},
+        filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelFilterChain, TunnelWithFilter},
         mpsc::{MpscTunnel, MpscTunnelSender},
         packet_def::{PacketType, ZCPacket},
         stats::{Throughput, WindowLatency},
@@ -51,6 +53,104 @@ pub type PeerConnId = uuid::Uuid;
 
 const MAGIC: u32 = 0xd1e1a5e1;
 const VERSION: u32 = 1;
+
+#[derive(Clone)]
+struct NoiseTunnelFilter {
+    enabled: bool,
+    transport: Arc<std::sync::Mutex<Option<snow::TransportState>>>,
+}
+
+impl NoiseTunnelFilter {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            transport: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn set_transport_state(&self, transport: snow::TransportState) {
+        *self.transport.lock().unwrap() = Some(transport);
+    }
+}
+
+impl TunnelFilter for NoiseTunnelFilter {
+    type FilterOutput = ();
+
+    fn before_send(&self, mut data: crate::tunnel::SinkItem) -> Option<crate::tunnel::SinkItem> {
+        if !self.enabled {
+            return Some(data);
+        }
+
+        let Some(hdr) = data.peer_manager_header() else {
+            return Some(data);
+        };
+
+        if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+            return Some(data);
+        }
+
+        let mut guard = self.transport.lock().unwrap();
+        let Some(transport) = guard.as_mut() else {
+            return Some(data);
+        };
+
+        let plaintext = data.payload().to_vec();
+        let mut out = vec![0u8; plaintext.len() + 64];
+        let out_len = transport.write_message(&plaintext, &mut out).ok()?;
+
+        let payload_offset = data.payload_offset();
+        data.mut_inner().truncate(payload_offset);
+        data.mut_inner().extend_from_slice(&out[..out_len]);
+
+        Some(data)
+    }
+
+    fn after_received(
+        &self,
+        data: crate::tunnel::StreamItem,
+    ) -> Option<crate::tunnel::StreamItem> {
+        if !self.enabled {
+            return Some(data);
+        }
+
+        let mut data = match data {
+            Ok(v) => v,
+            Err(e) => return Some(Err(e)),
+        };
+
+        let Some(hdr) = data.peer_manager_header() else {
+            return Some(Ok(data));
+        };
+
+        if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+            return Some(Ok(data));
+        }
+
+        let mut guard = self.transport.lock().unwrap();
+        let Some(transport) = guard.as_mut() else {
+            return Some(Ok(data));
+        };
+
+        let ciphertext = data.payload().to_vec();
+        let mut out = vec![0u8; ciphertext.len() + 64];
+        let out_len = match transport.read_message(&ciphertext, &mut out) {
+            Ok(n) => n,
+            Err(e) => {
+                return Some(Err(TunnelError::InvalidPacket(format!(
+                    "noise decrypt failed: {e:?}"
+                ))))
+            }
+        };
+
+        let payload_offset = data.payload_offset();
+        data.mut_inner().truncate(payload_offset);
+        data.mut_inner().extend_from_slice(&out[..out_len]);
+
+        Some(Ok(data))
+    }
+
+    fn filter_output(&self) {}
+}
 
 pub struct PeerConnCloseNotify {
     conn_id: PeerConnId,
@@ -100,6 +200,9 @@ pub struct PeerConn {
     my_peer_id: PeerId,
     global_ctx: ArcGlobalCtx,
 
+    secure_mode: bool,
+    noise_filter: NoiseTunnelFilter,
+
     tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
     recv: Mutex<Option<Pin<Box<dyn ZCPacketStream>>>>,
@@ -139,9 +242,13 @@ impl PeerConn {
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
+        let secure_mode = global_ctx.get_flags().enable_peer_conn_secure_mode;
+        let noise_filter = NoiseTunnelFilter::new(secure_mode);
+
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
-        let peer_conn_tunnel = TunnelWithFilter::new(tunnel, peer_conn_tunnel_filter);
+        let filter_chain = TunnelFilterChain::new(noise_filter.clone(), peer_conn_tunnel_filter);
+        let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
 
         let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
@@ -153,6 +260,9 @@ impl PeerConn {
 
             my_peer_id,
             global_ctx,
+
+            secure_mode,
+            noise_filter,
 
             tunnel: Arc::new(Mutex::new(Box::new(defer::Defer::new(move || {
                 mpsc_tunnel.close()
@@ -300,6 +410,135 @@ impl PeerConn {
         Ok(())
     }
 
+    async fn do_noise_handshake_as_client(&self) -> Result<snow::TransportState, Error> {
+        let network_name = self.global_ctx.get_network_name();
+        let psk = self.global_ctx.get_256_key();
+        let prologue = format!("easytier-peerconn-noise-v1:{network_name}").into_bytes();
+
+        let params: NoiseParams = "Noise_XXpsk3_25519_ChaChaPoly_SHA256"
+            .parse()
+            .map_err(|e| Error::WaitRespError(format!("parse noise params failed: {e:?}")))?;
+        let mut hs = snow::Builder::new(params)
+            .prologue(&prologue)
+            .psk(3, &psk)
+            .build_initiator()
+            .map_err(|e| Error::WaitRespError(format!("build noise initiator failed: {e:?}")))?;
+
+        timeout(Duration::from_secs(5), async move {
+            let mut msg = vec![0u8; 1024];
+            let msg_len = hs
+                .write_message(&[], &mut msg)
+                .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
+            let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+            pkt.fill_peer_manager_hdr(self.my_peer_id, PeerId::default(), PacketType::NoiseHandshake as u8);
+            self.sink.send(pkt).await?;
+
+            let mut locked = self.recv.lock().await;
+            let recv = locked.as_mut().unwrap();
+
+            let msg2 = loop {
+                let Some(ret) = recv.next().await else {
+                    return Err(Error::WaitRespError(
+                        "conn closed during noise handshake".to_owned(),
+                    ));
+                };
+                let pkt = ret?;
+                let Some(hdr) = pkt.peer_manager_header() else {
+                    continue;
+                };
+                if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+                    break pkt;
+                }
+            };
+
+            let mut out = vec![0u8; 1024];
+            hs.read_message(msg2.payload(), &mut out)
+                .map_err(|e| Error::WaitRespError(format!("noise read msg2 failed: {e:?}")))?;
+
+            let msg_len = hs
+                .write_message(&[], &mut msg)
+                .map_err(|e| Error::WaitRespError(format!("noise write msg3 failed: {e:?}")))?;
+            let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+            pkt.fill_peer_manager_hdr(self.my_peer_id, PeerId::default(), PacketType::NoiseHandshake as u8);
+            self.sink.send(pkt).await?;
+
+            hs.into_transport_mode()
+                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))
+        })
+        .await
+        .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
+    }
+
+    async fn do_noise_handshake_as_server(&self) -> Result<snow::TransportState, Error> {
+        let network_name = self.global_ctx.get_network_name();
+        let psk = self.global_ctx.get_256_key();
+        let prologue = format!("easytier-peerconn-noise-v1:{network_name}").into_bytes();
+
+        let params: NoiseParams = "Noise_XXpsk3_25519_ChaChaPoly_SHA256"
+            .parse()
+            .map_err(|e| Error::WaitRespError(format!("parse noise params failed: {e:?}")))?;
+        let mut hs = snow::Builder::new(params)
+            .prologue(&prologue)
+            .psk(3, &psk)
+            .build_responder()
+            .map_err(|e| Error::WaitRespError(format!("build noise responder failed: {e:?}")))?;
+
+        timeout(Duration::from_secs(5), async move {
+            let mut locked = self.recv.lock().await;
+            let recv = locked.as_mut().unwrap();
+
+            let msg1 = loop {
+                let Some(ret) = recv.next().await else {
+                    return Err(Error::WaitRespError(
+                        "conn closed during noise handshake".to_owned(),
+                    ));
+                };
+                let pkt = ret?;
+                let Some(hdr) = pkt.peer_manager_header() else {
+                    continue;
+                };
+                if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+                    break pkt;
+                }
+            };
+
+            let mut out = vec![0u8; 1024];
+            hs.read_message(msg1.payload(), &mut out)
+                .map_err(|e| Error::WaitRespError(format!("noise read msg1 failed: {e:?}")))?;
+
+            let mut msg = vec![0u8; 1024];
+            let msg_len = hs
+                .write_message(&[], &mut msg)
+                .map_err(|e| Error::WaitRespError(format!("noise write msg2 failed: {e:?}")))?;
+            let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+            pkt.fill_peer_manager_hdr(self.my_peer_id, PeerId::default(), PacketType::NoiseHandshake as u8);
+            self.sink.send(pkt).await?;
+
+            let msg3 = loop {
+                let Some(ret) = recv.next().await else {
+                    return Err(Error::WaitRespError(
+                        "conn closed during noise handshake".to_owned(),
+                    ));
+                };
+                let pkt = ret?;
+                let Some(hdr) = pkt.peer_manager_header() else {
+                    continue;
+                };
+                if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+                    break pkt;
+                }
+            };
+
+            hs.read_message(msg3.payload(), &mut out)
+                .map_err(|e| Error::WaitRespError(format!("noise read msg3 failed: {e:?}")))?;
+
+            hs.into_transport_mode()
+                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))
+        })
+        .await
+        .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
+    }
+
     #[tracing::instrument(skip(handshake_recved))]
     pub async fn do_handshake_as_server_ext<Fn>(
         &mut self,
@@ -308,6 +547,11 @@ impl PeerConn {
     where
         Fn: FnMut(&mut Self, &HandshakeRequest) -> Result<(), Error> + Send,
     {
+        if self.secure_mode {
+            let transport = self.do_noise_handshake_as_server().await?;
+            self.noise_filter.set_transport_state(transport);
+        }
+
         let rsp = self.wait_handshake_loop().await?;
 
         handshake_recved(self, &rsp)?;
@@ -328,6 +572,11 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
+        if self.secure_mode {
+            let transport = self.do_noise_handshake_as_server().await?;
+            self.noise_filter.set_transport_state(transport);
+        }
+
         let rsp = self.wait_handshake_loop().await?;
         tracing::info!("handshake request: {:?}", rsp);
         self.info = Some(rsp);
@@ -347,6 +596,11 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
+        if self.secure_mode {
+            let transport = self.do_noise_handshake_as_client().await?;
+            self.noise_filter.set_transport_state(transport);
+        }
+
         self.send_handshake(true).await?;
         tracing::info!("waiting for handshake request from server");
         let rsp = self.wait_handshake_loop().await?;

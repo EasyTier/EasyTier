@@ -50,6 +50,7 @@ pub fn gen_default_flags() -> Flags {
         enable_relay_foreign_network_kcp: false,
         accept_dns: false,
         private_mode: false,
+        enable_peer_conn_secure_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
         quic_listen_port: 0,
