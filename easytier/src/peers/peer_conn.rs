@@ -105,10 +105,7 @@ impl TunnelFilter for NoiseTunnelFilter {
         Some(data)
     }
 
-    fn after_received(
-        &self,
-        data: crate::tunnel::StreamItem,
-    ) -> Option<crate::tunnel::StreamItem> {
+    fn after_received(&self, data: crate::tunnel::StreamItem) -> Option<crate::tunnel::StreamItem> {
         if !self.enabled {
             return Some(data);
         }
@@ -202,6 +199,8 @@ pub struct PeerConn {
 
     secure_mode: bool,
     noise_filter: NoiseTunnelFilter,
+    noise_local_static_pubkey: Option<Vec<u8>>,
+    noise_remote_static_pubkey: Option<Vec<u8>>,
 
     tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
@@ -263,6 +262,8 @@ impl PeerConn {
 
             secure_mode,
             noise_filter,
+            noise_local_static_pubkey: None,
+            noise_remote_static_pubkey: None,
 
             tunnel: Arc::new(Mutex::new(Box::new(defer::Defer::new(move || {
                 mpsc_tunnel.close()
@@ -410,7 +411,9 @@ impl PeerConn {
         Ok(())
     }
 
-    async fn do_noise_handshake_as_client(&self) -> Result<snow::TransportState, Error> {
+    async fn do_noise_handshake_as_client(
+        &self,
+    ) -> Result<(snow::TransportState, Vec<u8>, Vec<u8>), Error> {
         let network_name = self.global_ctx.get_network_name();
         let psk = self.global_ctx.get_256_key();
         let prologue = format!("easytier-peerconn-noise-v1:{network_name}").into_bytes();
@@ -418,9 +421,16 @@ impl PeerConn {
         let params: NoiseParams = "Noise_XXpsk3_25519_ChaChaPoly_SHA256"
             .parse()
             .map_err(|e| Error::WaitRespError(format!("parse noise params failed: {e:?}")))?;
-        let mut hs = snow::Builder::new(params)
+        let builder = snow::Builder::new(params);
+        let keypair = builder
+            .generate_keypair()
+            .map_err(|e| Error::WaitRespError(format!("generate noise keypair failed: {e:?}")))?;
+        let local_static_pubkey = keypair.public.clone();
+
+        let mut hs = builder
             .prologue(&prologue)
             .psk(3, &psk)
+            .local_private_key(&keypair.private)
             .build_initiator()
             .map_err(|e| Error::WaitRespError(format!("build noise initiator failed: {e:?}")))?;
 
@@ -430,7 +440,11 @@ impl PeerConn {
                 .write_message(&[], &mut msg)
                 .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
             let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-            pkt.fill_peer_manager_hdr(self.my_peer_id, PeerId::default(), PacketType::NoiseHandshake as u8);
+            pkt.fill_peer_manager_hdr(
+                self.my_peer_id,
+                PeerId::default(),
+                PacketType::NoiseHandshake as u8,
+            );
             self.sink.send(pkt).await?;
 
             let mut locked = self.recv.lock().await;
@@ -459,17 +473,31 @@ impl PeerConn {
                 .write_message(&[], &mut msg)
                 .map_err(|e| Error::WaitRespError(format!("noise write msg3 failed: {e:?}")))?;
             let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-            pkt.fill_peer_manager_hdr(self.my_peer_id, PeerId::default(), PacketType::NoiseHandshake as u8);
+            pkt.fill_peer_manager_hdr(
+                self.my_peer_id,
+                PeerId::default(),
+                PacketType::NoiseHandshake as u8,
+            );
             self.sink.send(pkt).await?;
 
-            hs.into_transport_mode()
-                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))
+            let remote_static = hs
+                .get_remote_static()
+                .map(|x: &[u8]| x.to_vec())
+                .unwrap_or_default();
+
+            let transport = hs
+                .into_transport_mode()
+                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))?;
+
+            Ok((transport, local_static_pubkey, remote_static))
         })
         .await
         .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
     }
 
-    async fn do_noise_handshake_as_server(&self) -> Result<snow::TransportState, Error> {
+    async fn do_noise_handshake_as_server(
+        &self,
+    ) -> Result<(snow::TransportState, Vec<u8>, Vec<u8>), Error> {
         let network_name = self.global_ctx.get_network_name();
         let psk = self.global_ctx.get_256_key();
         let prologue = format!("easytier-peerconn-noise-v1:{network_name}").into_bytes();
@@ -477,9 +505,16 @@ impl PeerConn {
         let params: NoiseParams = "Noise_XXpsk3_25519_ChaChaPoly_SHA256"
             .parse()
             .map_err(|e| Error::WaitRespError(format!("parse noise params failed: {e:?}")))?;
-        let mut hs = snow::Builder::new(params)
+        let builder = snow::Builder::new(params);
+        let keypair = builder
+            .generate_keypair()
+            .map_err(|e| Error::WaitRespError(format!("generate noise keypair failed: {e:?}")))?;
+        let local_static_pubkey = keypair.public.clone();
+
+        let mut hs = builder
             .prologue(&prologue)
             .psk(3, &psk)
+            .local_private_key(&keypair.private)
             .build_responder()
             .map_err(|e| Error::WaitRespError(format!("build noise responder failed: {e:?}")))?;
 
@@ -511,7 +546,11 @@ impl PeerConn {
                 .write_message(&[], &mut msg)
                 .map_err(|e| Error::WaitRespError(format!("noise write msg2 failed: {e:?}")))?;
             let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-            pkt.fill_peer_manager_hdr(self.my_peer_id, PeerId::default(), PacketType::NoiseHandshake as u8);
+            pkt.fill_peer_manager_hdr(
+                self.my_peer_id,
+                PeerId::default(),
+                PacketType::NoiseHandshake as u8,
+            );
             self.sink.send(pkt).await?;
 
             let msg3 = loop {
@@ -532,8 +571,16 @@ impl PeerConn {
             hs.read_message(msg3.payload(), &mut out)
                 .map_err(|e| Error::WaitRespError(format!("noise read msg3 failed: {e:?}")))?;
 
-            hs.into_transport_mode()
-                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))
+            let remote_static = hs
+                .get_remote_static()
+                .map(|x: &[u8]| x.to_vec())
+                .unwrap_or_default();
+
+            let transport = hs
+                .into_transport_mode()
+                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))?;
+
+            Ok((transport, local_static_pubkey, remote_static))
         })
         .await
         .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
@@ -548,8 +595,11 @@ impl PeerConn {
         Fn: FnMut(&mut Self, &HandshakeRequest) -> Result<(), Error> + Send,
     {
         if self.secure_mode {
-            let transport = self.do_noise_handshake_as_server().await?;
+            let (transport, local_static, remote_static) =
+                self.do_noise_handshake_as_server().await?;
             self.noise_filter.set_transport_state(transport);
+            self.noise_local_static_pubkey = Some(local_static);
+            self.noise_remote_static_pubkey = Some(remote_static);
         }
 
         let rsp = self.wait_handshake_loop().await?;
@@ -573,8 +623,11 @@ impl PeerConn {
     #[tracing::instrument]
     pub async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
         if self.secure_mode {
-            let transport = self.do_noise_handshake_as_server().await?;
+            let (transport, local_static, remote_static) =
+                self.do_noise_handshake_as_server().await?;
             self.noise_filter.set_transport_state(transport);
+            self.noise_local_static_pubkey = Some(local_static);
+            self.noise_remote_static_pubkey = Some(remote_static);
         }
 
         let rsp = self.wait_handshake_loop().await?;
@@ -597,8 +650,11 @@ impl PeerConn {
     #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
         if self.secure_mode {
-            let transport = self.do_noise_handshake_as_client().await?;
+            let (transport, local_static, remote_static) =
+                self.do_noise_handshake_as_client().await?;
             self.noise_filter.set_transport_state(transport);
+            self.noise_local_static_pubkey = Some(local_static);
+            self.noise_remote_static_pubkey = Some(remote_static);
         }
 
         self.send_handshake(true).await?;
@@ -775,6 +831,8 @@ impl PeerConn {
             is_client: self.is_client.unwrap_or_default(),
             network_name: info.network_name.clone(),
             is_closed: self.close_event_notifier.is_closed(),
+            noise_local_static_pubkey: self.noise_local_static_pubkey.clone().unwrap_or_default(),
+            noise_remote_static_pubkey: self.noise_remote_static_pubkey.clone().unwrap_or_default(),
         }
     }
 

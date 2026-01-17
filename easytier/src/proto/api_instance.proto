@@ -41,6 +41,8 @@ message PeerConnInfo {
   bool is_client = 8;
   string network_name = 9;
   bool is_closed = 10;
+  bytes noise_local_static_pubkey = 11;
+  bytes noise_remote_static_pubkey = 12;
 }
 
 message PeerInfo {
