@@ -864,6 +864,7 @@ mod tests {
     use crate::common::new_peer_id;
     use crate::common::scoped_task::ScopedTask;
     use crate::peers::create_packet_recv_chan;
+    use crate::peers::recv_packet_from_chan;
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
@@ -921,6 +922,132 @@ mod tests {
         assert_eq!(s_peer.get_peer_id(), c_peer_id);
         assert_eq!(c_peer.get_network_identity(), s_peer.get_network_identity());
         assert_eq!(c_peer.get_network_identity(), NetworkIdentity::default());
+    }
+
+    #[tokio::test]
+    async fn peer_conn_secure_mode_pubkey_and_encryption() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_recorder = Arc::new(PacketRecorderTunnelFilter::new());
+        let s_recorder = Arc::new(PacketRecorderTunnelFilter::new());
+
+        let c = TunnelWithFilter::new(c, c_recorder.clone());
+        let s = TunnelWithFilter::new(s, s_recorder.clone());
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_peer_conn_secure_mode = true;
+        c_ctx.set_flags(c_flags);
+        let mut s_flags = s_ctx.get_flags();
+        s_flags.enable_peer_conn_secure_mode = true;
+        s_ctx.set_flags(s_flags);
+
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c));
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s));
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        let c_info = c_peer.get_conn_info();
+        let s_info = s_peer.get_conn_info();
+
+        assert_eq!(c_info.noise_local_static_pubkey.len(), 32);
+        assert_eq!(c_info.noise_remote_static_pubkey.len(), 32);
+        assert_eq!(s_info.noise_local_static_pubkey.len(), 32);
+        assert_eq!(s_info.noise_remote_static_pubkey.len(), 32);
+
+        assert_eq!(
+            c_info.noise_remote_static_pubkey,
+            s_info.noise_local_static_pubkey
+        );
+        assert_eq!(
+            s_info.noise_remote_static_pubkey,
+            c_info.noise_local_static_pubkey
+        );
+
+        let network = c_ctx.get_network_identity();
+        let mut expected = HandshakeRequest {
+            magic: MAGIC,
+            my_peer_id: c_peer_id,
+            version: VERSION,
+            features: Vec::new(),
+            network_name: network.network_name.clone(),
+            ..Default::default()
+        };
+        expected
+            .network_secret_digrest
+            .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
+        let expected_payload = expected.encode_to_vec();
+
+        let wire_hs = c_recorder
+            .received
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| {
+                p.peer_manager_header()
+                    .is_some_and(|h| h.packet_type == PacketType::HandShake as u8)
+            })
+            .unwrap()
+            .clone();
+        assert_ne!(wire_hs.payload(), expected_payload.as_slice());
+    }
+
+    #[tokio::test]
+    async fn peer_conn_secure_mode_data_roundtrip() {
+        let (c, s) = create_ring_tunnel_pair();
+
+        let c_peer_id = new_peer_id();
+        let s_peer_id = new_peer_id();
+
+        let c_ctx = get_mock_global_ctx();
+        let s_ctx = get_mock_global_ctx();
+        let mut c_flags = c_ctx.get_flags();
+        c_flags.enable_peer_conn_secure_mode = true;
+        c_ctx.set_flags(c_flags);
+        let mut s_flags = s_ctx.get_flags();
+        s_flags.enable_peer_conn_secure_mode = true;
+        s_ctx.set_flags(s_flags);
+
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c));
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s));
+
+        let (c_ret, s_ret) = tokio::join!(
+            c_peer.do_handshake_as_client(),
+            s_peer.do_handshake_as_server()
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        let (packet_send, mut packet_recv) = create_packet_recv_chan();
+        s_peer.start_recv_loop(packet_send).await;
+
+        let payload = b"secure-data-123";
+        let mut pkt = ZCPacket::new_with_payload(payload);
+        pkt.fill_peer_manager_hdr(c_peer_id, s_peer_id, PacketType::Data as u8);
+        c_peer.send_msg(pkt).await.unwrap();
+
+        let got = timeout(Duration::from_secs(2), async move {
+            recv_packet_from_chan(&mut packet_recv).await
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(got.payload(), payload);
+        assert_eq!(
+            got.peer_manager_header().unwrap().packet_type,
+            PacketType::Data as u8
+        );
     }
 
     async fn peer_conn_pingpong_test_common(
