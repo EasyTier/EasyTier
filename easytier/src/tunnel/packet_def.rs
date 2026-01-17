@@ -73,6 +73,7 @@ pub enum PacketType {
     KcpSrc = 11,
     KcpDst = 12,
     NoiseHandshake = 13,
+    SecureAuth = 14,
 }
 
 bitflags::bitflags! {
