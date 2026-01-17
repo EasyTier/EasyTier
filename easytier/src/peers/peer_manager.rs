@@ -1463,8 +1463,15 @@ mod tests {
 
     use std::{fmt::Debug, sync::Arc, time::Duration};
 
+    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+    use base64::Engine as _;
+    use snow::params::NoiseParams;
+
     use crate::{
-        common::{config::Flags, global_ctx::tests::get_mock_global_ctx},
+        common::{
+            config::Flags,
+            global_ctx::{tests::get_mock_global_ctx, NetworkIdentity},
+        },
         connector::{
             create_connector_by_url, direct::PeerManagerForDirectConnector,
             udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
@@ -1519,6 +1526,265 @@ mod tests {
         wait_for_condition(
             || async { peer_mgr_a.get_peer_map().list_peers_with_conn().await.len() == 1 },
             std::time::Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn peer_manager_safe_mode_connect_between_peers() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        peer_mgr_b
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+
+        let mut a_flags = peer_mgr_a.get_global_ctx().get_flags();
+        a_flags.enable_peer_conn_secure_mode = true;
+        peer_mgr_a.get_global_ctx().set_flags(a_flags);
+
+        let mut b_flags = peer_mgr_b.get_global_ctx().get_flags();
+        b_flags.enable_peer_conn_secure_mode = true;
+        peer_mgr_b.get_global_ctx().set_flags(b_flags);
+
+        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+
+        let peer_b_id = peer_mgr_b.my_peer_id();
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                async move {
+                    if !peer_mgr_a
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&peer_b_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_a.get_peer_map().list_peer_conns(peer_b_id).await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.len() == 32
+                            && c.noise_remote_static_pubkey.len() == 32
+                            && c.secure_auth_level == "network_secret_confirmed"
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        let peer_a_id = peer_mgr_a.my_peer_id();
+        wait_for_condition(
+            || {
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    if !peer_mgr_b
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&peer_a_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_b.get_peer_map().list_peer_conns(peer_a_id).await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.len() == 32
+                            && c.noise_remote_static_pubkey.len() == 32
+                            && c.secure_auth_level == "network_secret_confirmed"
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn peer_manager_safe_server_accept_legacy_client() {
+        let peer_mgr_client = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_server = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_client
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        peer_mgr_server
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+
+        let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
+        c_flags.enable_peer_conn_secure_mode = false;
+        peer_mgr_client.get_global_ctx().set_flags(c_flags);
+
+        let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
+        s_flags.enable_peer_conn_secure_mode = true;
+        peer_mgr_server.get_global_ctx().set_flags(s_flags);
+
+        connect_peer_manager(peer_mgr_client.clone(), peer_mgr_server.clone()).await;
+
+        let server_id = peer_mgr_server.my_peer_id();
+        wait_for_condition(
+            || {
+                let peer_mgr_client = peer_mgr_client.clone();
+                async move {
+                    if !peer_mgr_client
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&server_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_client
+                        .get_peer_map()
+                        .list_peer_conns(server_id)
+                        .await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.is_empty()
+                            && c.noise_remote_static_pubkey.is_empty()
+                            && c.secure_auth_level == "none"
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        let client_id = peer_mgr_client.my_peer_id();
+        wait_for_condition(
+            || {
+                let peer_mgr_server = peer_mgr_server.clone();
+                async move {
+                    if !peer_mgr_server
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&client_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_server
+                        .get_peer_map()
+                        .list_peer_conns(client_id)
+                        .await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.is_empty()
+                            && c.noise_remote_static_pubkey.is_empty()
+                            && c.secure_auth_level == "none"
+                    })
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn peer_manager_safe_mode_shared_node_pinning_connect() {
+        let peer_mgr_client = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_server = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_client
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("user".to_string(), "sec1".to_string()));
+        peer_mgr_server
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity {
+                network_name: "shared".to_string(),
+                network_secret: None,
+                network_secret_digest: None,
+            });
+
+        let noise_params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256".parse().unwrap();
+        let builder = snow::Builder::new(noise_params);
+        let keypair = builder.generate_keypair().unwrap();
+        let server_priv_b64 = BASE64_STANDARD.encode(keypair.private);
+        let server_pub_b64 = BASE64_STANDARD.encode(keypair.public);
+
+        let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
+        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.peer_conn_pinned_remote_static_pubkey = server_pub_b64.clone();
+        peer_mgr_client.get_global_ctx().set_flags(c_flags);
+
+        let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
+        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.peer_conn_static_private_key = server_priv_b64;
+        s_flags.peer_conn_static_public_key = server_pub_b64;
+        peer_mgr_server.get_global_ctx().set_flags(s_flags);
+
+        connect_peer_manager(peer_mgr_client.clone(), peer_mgr_server.clone()).await;
+
+        wait_for_condition(
+            || {
+                let peer_mgr_client = peer_mgr_client.clone();
+                async move {
+                    let foreign_peer_map =
+                        peer_mgr_client.get_foreign_network_client().get_peer_map();
+                    if foreign_peer_map.list_peers_with_conn().await.len() != 1 {
+                        return false;
+                    }
+                    let Some(peer_id) = foreign_peer_map
+                        .list_peers_with_conn()
+                        .await
+                        .into_iter()
+                        .next()
+                    else {
+                        return false;
+                    };
+                    let Some(conns) = foreign_peer_map.list_peer_conns(peer_id).await else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.secure_auth_level == "shared_node_pubkey_verified"
+                            && c.noise_local_static_pubkey.len() == 32
+                            && c.noise_remote_static_pubkey.len() == 32
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        wait_for_condition(
+            || {
+                let peer_mgr_server = peer_mgr_server.clone();
+                async move {
+                    let foreigns = peer_mgr_server
+                        .get_foreign_network_manager()
+                        .list_foreign_networks()
+                        .await;
+                    let Some(entry) = foreigns.foreign_networks.get("user") else {
+                        return false;
+                    };
+                    entry.peers.iter().any(|p| {
+                        p.conns
+                            .iter()
+                            .any(|c| c.noise_local_static_pubkey.len() == 32)
+                    })
+                }
+            },
+            Duration::from_secs(10),
         )
         .await;
     }
