@@ -536,6 +536,7 @@ impl NetworkConfig {
                     uri: public_server_url.parse().with_context(|| {
                         format!("failed to parse public server uri: {}", public_server_url)
                     })?,
+                    peer_conn_pinned_remote_static_pubkey: None,
                 }]);
             }
             NetworkingMethod::Manual => {
@@ -548,6 +549,7 @@ impl NetworkConfig {
                         uri: peer_url
                             .parse()
                             .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                        peer_conn_pinned_remote_static_pubkey: None,
                     });
                 }
 
@@ -1018,7 +1020,10 @@ mod tests {
                 let uri = format!("{}://127.0.0.1:{}", protocol, port)
                     .parse()
                     .unwrap();
-                peers.push(crate::common::config::PeerConfig { uri });
+                peers.push(crate::common::config::PeerConfig {
+                    uri,
+                    peer_conn_pinned_remote_static_pubkey: None,
+                });
             }
             config.set_peers(peers);
 

@@ -1724,16 +1724,38 @@ mod tests {
 
         let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
         c_flags.enable_peer_conn_secure_mode = true;
-        c_flags.peer_conn_pinned_remote_static_pubkey = server_pub_b64.clone();
         peer_mgr_client.get_global_ctx().set_flags(c_flags);
 
         let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
         s_flags.enable_peer_conn_secure_mode = true;
         s_flags.peer_conn_static_private_key = server_priv_b64;
-        s_flags.peer_conn_static_public_key = server_pub_b64;
+        s_flags.peer_conn_static_public_key = server_pub_b64.clone();
         peer_mgr_server.get_global_ctx().set_flags(s_flags);
 
-        connect_peer_manager(peer_mgr_client.clone(), peer_mgr_server.clone()).await;
+        let (a_ring, b_ring) = create_ring_tunnel_pair();
+        let server_remote_url: url::Url = a_ring
+            .info()
+            .unwrap()
+            .remote_addr
+            .unwrap()
+            .url
+            .parse()
+            .unwrap();
+        peer_mgr_client.get_global_ctx().config.set_peers(vec![
+            crate::common::config::PeerConfig {
+                uri: server_remote_url,
+                peer_conn_pinned_remote_static_pubkey: Some(server_pub_b64.clone()),
+            },
+        ]);
+
+        let a_mgr_copy = peer_mgr_client.clone();
+        tokio::spawn(async move {
+            a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
+        });
+        let b_mgr_copy = peer_mgr_server.clone();
+        tokio::spawn(async move {
+            b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
+        });
 
         wait_for_condition(
             || {

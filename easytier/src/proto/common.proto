@@ -67,8 +67,7 @@ message FlagsInConfig {
 
   bool enable_peer_conn_secure_mode = 35;
 
-  // base64(X25519 public key), used by client to pin a shared node identity
-  string peer_conn_pinned_remote_static_pubkey = 36;
+  reserved 36;
 
   // base64(X25519 private key), used by shared node to present a stable identity
   string peer_conn_static_private_key = 37;

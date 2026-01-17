@@ -760,6 +760,7 @@ impl NetworkOptions {
                     uri: p
                         .parse()
                         .with_context(|| format!("failed to parse peer uri: {}", p))?,
+                    peer_conn_pinned_remote_static_pubkey: None,
                 });
             }
             cfg.set_peers(peers);
@@ -820,6 +821,7 @@ impl NetworkOptions {
                 uri: external_nodes.parse().with_context(|| {
                     format!("failed to parse external node uri: {}", external_nodes)
                 })?,
+                peer_conn_pinned_remote_static_pubkey: None,
             });
             cfg.set_peers(old_peers);
         }

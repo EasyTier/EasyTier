@@ -526,6 +526,22 @@ impl PeerConn {
         Ok(decoded)
     }
 
+    fn get_pinned_remote_static_pubkey_b64(&self) -> Option<String> {
+        let remote_url_str = self
+            .tunnel_info
+            .as_ref()
+            .and_then(|t| t.remote_addr.as_ref())
+            .map(|u| u.url.as_str())?;
+        let remote_url: url::Url = remote_url_str.parse().ok()?;
+
+        self.global_ctx
+            .config
+            .get_peers()
+            .into_iter()
+            .find(|p| p.uri == remote_url)
+            .and_then(|p| p.peer_conn_pinned_remote_static_pubkey)
+    }
+
     async fn do_noise_handshake_as_client(&self) -> Result<NoiseHandshakeResult, Error> {
         let prologue = b"easytier-peerconn-noise-v2".to_vec();
 
@@ -533,14 +549,10 @@ impl PeerConn {
             .parse()
             .map_err(|e| Error::WaitRespError(format!("parse noise params failed: {e:?}")))?;
 
-        let flags = self.global_ctx.get_flags();
-        let pinned_remote_pubkey = if flags.peer_conn_pinned_remote_static_pubkey.is_empty() {
-            None
-        } else {
-            Some(Self::decode_b64_32(
-                &flags.peer_conn_pinned_remote_static_pubkey,
-            )?)
-        };
+        let pinned_remote_pubkey = self
+            .get_pinned_remote_static_pubkey_b64()
+            .map(|v| Self::decode_b64_32(&v))
+            .transpose()?;
 
         let builder = snow::Builder::new(params);
         let keypair = builder
@@ -1254,6 +1266,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+    use crate::common::config::PeerConfig;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
     use crate::common::new_peer_id;
     use crate::common::scoped_task::ScopedTask;
@@ -1612,10 +1625,15 @@ mod tests {
         let server_priv_b64 = BASE64_STANDARD.encode(keypair.private);
         let server_pub_b64 = BASE64_STANDARD.encode(keypair.public.clone());
 
+        let remote_url: url::Url = c.info().unwrap().remote_addr.unwrap().url.parse().unwrap();
+
         let mut c_flags = c_ctx.get_flags();
         c_flags.enable_peer_conn_secure_mode = true;
-        c_flags.peer_conn_pinned_remote_static_pubkey = server_pub_b64.clone();
         c_ctx.set_flags(c_flags);
+        c_ctx.config.set_peers(vec![PeerConfig {
+            uri: remote_url,
+            peer_conn_pinned_remote_static_pubkey: Some(server_pub_b64.clone()),
+        }]);
 
         let mut s_flags = s_ctx.get_flags();
         s_flags.enable_peer_conn_secure_mode = true;
