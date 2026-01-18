@@ -35,10 +35,10 @@ use crate::{
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
-        peer_session::{PeerSession, PeerSessionAction},
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
+    peers::peer_session::PeerSessionStore,
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
@@ -53,7 +53,11 @@ use crate::{
     },
 };
 
-use super::{peer_conn_ping::PeerConnPinger, PacketRecvChan};
+use super::{
+    peer_conn_ping::PeerConnPinger,
+    peer_session::{PeerSession, PeerSessionAction},
+    PacketRecvChan,
+};
 
 pub type PeerConnId = uuid::Uuid;
 
@@ -357,6 +361,8 @@ pub struct PeerConn {
     loss_rate_stats: Arc<AtomicU32>,
 
     counters: ArcSwapOption<PeerConnCounter>,
+
+    peer_session_store: Arc<PeerSessionStore>,
 }
 
 impl Debug for PeerConn {
@@ -370,8 +376,13 @@ impl Debug for PeerConn {
 }
 
 impl PeerConn {
-    pub fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx, tunnel: Box<dyn Tunnel>) -> Self {
-        Self::new_with_peer_id_hint(my_peer_id, global_ctx, tunnel, None)
+    pub fn new(
+        my_peer_id: PeerId,
+        global_ctx: ArcGlobalCtx,
+        tunnel: Box<dyn Tunnel>,
+        peer_session_store: Arc<PeerSessionStore>,
+    ) -> Self {
+        Self::new_with_peer_id_hint(my_peer_id, global_ctx, tunnel, None, peer_session_store)
     }
 
     pub fn new_with_peer_id_hint(
@@ -379,6 +390,7 @@ impl PeerConn {
         global_ctx: ArcGlobalCtx,
         tunnel: Box<dyn Tunnel>,
         peer_id_hint: Option<PeerId>,
+        peer_session_store: Arc<PeerSessionStore>,
     ) -> Self {
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
@@ -437,7 +449,13 @@ impl PeerConn {
             loss_rate_stats: Arc::new(AtomicU32::new(0)),
 
             counters: ArcSwapOption::new(None),
+
+            peer_session_store,
         }
+    }
+
+    fn get_peer_session_store(&self) -> &Arc<PeerSessionStore> {
+        &self.peer_session_store
     }
 
     pub fn get_conn_id(&self) -> PeerConnId {
@@ -662,7 +680,7 @@ impl PeerConn {
         let network = self.global_ctx.get_network_identity();
         let a_session_generation = self
             .peer_id_hint
-            .and_then(|peer_id| self.global_ctx.get_peer_session_store().get(peer_id))
+            .and_then(|peer_id| self.get_peer_session_store().get(peer_id))
             .map(|s| s.session_generation());
 
         let a_conn_id = uuid::Uuid::new_v4();
@@ -814,7 +832,6 @@ impl PeerConn {
                 PeerConnSessionActionPb::Create => PeerSessionAction::Create,
             };
             let session = self
-                .global_ctx
                 .get_peer_session_store()
                 .apply_initiator_action(
                     peer_id,
@@ -932,7 +949,6 @@ impl PeerConn {
 
             let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
             let (session, action, b_session_generation, root_key_32, initial_epoch) = self
-                .global_ctx
                 .get_peer_session_store()
                 .upsert_responder_session(peer_id, msg1_pb.a_session_generation, algo);
 
@@ -1515,12 +1531,13 @@ mod tests {
 
     #[tokio::test]
     async fn peer_conn_handshake_same_id() {
+        let ps = Arc::new(PeerSessionStore::new());
         let (c, s) = create_ring_tunnel_pair();
         let c_peer_id = new_peer_id();
         let s_peer_id = c_peer_id;
 
-        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s));
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1544,9 +1561,11 @@ mod tests {
         let c_peer_id = new_peer_id();
         let s_peer_id = new_peer_id();
 
-        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c));
+        let ps = Arc::new(PeerSessionStore::new());
 
-        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s));
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c), ps.clone());
+
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1590,8 +1609,9 @@ mod tests {
         s_flags.enable_peer_conn_secure_mode = true;
         s_ctx.set_flags(s_flags);
 
-        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx.clone(), Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1673,8 +1693,9 @@ mod tests {
         s_flags.enable_peer_conn_secure_mode = true;
         s_ctx.set_flags(s_flags);
 
-        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1722,8 +1743,9 @@ mod tests {
         s_flags.enable_peer_conn_secure_mode = true;
         s_ctx.set_flags(s_flags);
 
-        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1761,8 +1783,9 @@ mod tests {
         s_flags.enable_peer_conn_secure_mode = true;
         s_ctx.set_flags(s_flags);
 
-        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1817,8 +1840,9 @@ mod tests {
         s_flags.enable_peer_conn_secure_mode = true;
         s_ctx.set_flags(s_flags);
 
-        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1878,8 +1902,9 @@ mod tests {
         s_flags.peer_conn_static_public_key = server_pub_b64;
         s_ctx.set_flags(s_flags);
 
-        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, s_ctx, Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1909,8 +1934,9 @@ mod tests {
         let c_peer_id = new_peer_id();
         let s_peer_id = new_peer_id();
 
-        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c));
-        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s));
+        let ps = Arc::new(PeerSessionStore::new());
+        let mut c_peer = PeerConn::new(c_peer_id, get_mock_global_ctx(), Box::new(c), ps.clone());
+        let mut s_peer = PeerConn::new(s_peer_id, get_mock_global_ctx(), Box::new(s), ps.clone());
 
         let (c_ret, s_ret) = tokio::join!(
             c_peer.do_handshake_as_client(),
@@ -1965,8 +1991,14 @@ mod tests {
 
     #[tokio::test]
     async fn close_tunnel_during_handshake() {
+        let ps = Arc::new(PeerSessionStore::new());
         let (c, s) = create_ring_tunnel_pair();
-        let mut c_peer = PeerConn::new(new_peer_id(), get_mock_global_ctx(), Box::new(c));
+        let mut c_peer = PeerConn::new(
+            new_peer_id(),
+            get_mock_global_ctx(),
+            Box::new(c),
+            ps.clone(),
+        );
         let j = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(1)).await;
             drop(s);

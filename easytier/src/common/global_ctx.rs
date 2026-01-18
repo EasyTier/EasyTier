@@ -20,7 +20,6 @@ use super::{
     config::{ConfigLoader, Flags},
     netns::NetNS,
     network::IPCollector,
-    peer_session::PeerSessionStore,
     stun::{StunInfoCollector, StunInfoCollectorTrait},
     PeerId,
 };
@@ -98,8 +97,6 @@ pub struct GlobalCtx {
     stats_manager: Arc<StatsManager>,
 
     acl_filter: Arc<AclFilter>,
-
-    peer_session_store: Arc<PeerSessionStore>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -189,13 +186,7 @@ impl GlobalCtx {
             stats_manager: Arc::new(StatsManager::new()),
 
             acl_filter: Arc::new(AclFilter::new()),
-
-            peer_session_store: Arc::new(PeerSessionStore::new()),
         }
-    }
-
-    pub fn get_peer_session_store(&self) -> Arc<PeerSessionStore> {
-        self.peer_session_store.clone()
     }
 
     pub fn subscribe(&self) -> EventBusSubscriber {

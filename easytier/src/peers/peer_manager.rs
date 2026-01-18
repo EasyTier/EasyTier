@@ -32,6 +32,7 @@ use crate::{
     peers::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
+        peer_session::PeerSessionStore,
         recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         PeerPacketFilter,
@@ -160,6 +161,8 @@ pub struct PeerManager {
     allow_loopback_tunnel: AtomicBool,
 
     self_tx_counters: SelfTxCounters,
+
+    peer_session_store: Arc<PeerSessionStore>,
 }
 
 impl Debug for PeerManager {
@@ -312,6 +315,8 @@ impl PeerManager {
             allow_loopback_tunnel: AtomicBool::new(true),
 
             self_tx_counters,
+
+            peer_session_store: Arc::new(PeerSessionStore::new()),
         }
     }
 
@@ -378,6 +383,7 @@ impl PeerManager {
             self.global_ctx.clone(),
             tunnel,
             peer_id_hint,
+            self.peer_session_store.clone(),
         );
         peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
@@ -473,7 +479,12 @@ impl PeerManager {
         tracing::info!("add tunnel as server start");
         self.check_remote_addr_not_from_virtual_network(&tunnel)?;
 
-        let mut conn = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
+        let mut conn = PeerConn::new(
+            self.my_peer_id,
+            self.global_ctx.clone(),
+            tunnel,
+            self.peer_session_store.clone(),
+        );
         conn.do_handshake_as_server_ext(|peer, msg| {
             if msg.network_name
                 == self.global_ctx.get_network_identity().network_name
