@@ -792,6 +792,10 @@ impl NetworkConfig {
             }
         }
 
+        if let Some(enable_peer_conn_secure_mode) = self.enable_peer_conn_secure_mode {
+            flags.enable_peer_conn_secure_mode = enable_peer_conn_secure_mode;
+        }
+
         cfg.set_flags(flags);
         Ok(cfg)
     }
@@ -924,6 +928,7 @@ impl NetworkConfig {
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
+        result.enable_peer_conn_secure_mode = Some(flags.enable_peer_conn_secure_mode);
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);
@@ -1169,6 +1174,7 @@ mod tests {
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
+                flags.enable_peer_conn_secure_mode = rng.gen_bool(0.3);
 
                 if rng.gen_bool(0.4) {
                     flags.relay_network_whitelist = (0..rng.gen_range(1..3))

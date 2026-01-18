@@ -600,6 +600,15 @@ struct NetworkOptions {
         num_args = 0..
     )]
     stun_servers_v6: Option<Vec<String>>,
+
+    #[arg(
+        long,
+        env = "ET_SAFE_MODE",
+        help = t!("core_clap.safe_mode").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    safe_mode: Option<bool>,
 }
 
 #[derive(Parser, Debug)]
@@ -977,6 +986,7 @@ impl NetworkOptions {
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();
         }
+        f.enable_peer_conn_secure_mode = self.safe_mode.unwrap_or(f.enable_peer_conn_secure_mode);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {
