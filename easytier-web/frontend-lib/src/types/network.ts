@@ -50,6 +50,7 @@ export interface NetworkConfig {
   multi_thread?: boolean
   proxy_forward_by_system?: boolean
   disable_encryption?: boolean
+  encryption_algorithm?: string
   disable_tcp_hole_punching?: boolean
   disable_udp_hole_punching?: boolean
   disable_sym_hole_punching?: boolean
@@ -121,6 +122,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     multi_thread: true,
     proxy_forward_by_system: false,
     disable_encryption: false,
+    encryption_algorithm: 'aes-gcm',
     disable_tcp_hole_punching: false,
     disable_udp_hole_punching: false,
     disable_sym_hole_punching: false,
