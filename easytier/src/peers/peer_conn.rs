@@ -260,11 +260,7 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         let payload = data.payload().to_vec();
         let plaintext = match session.decrypt_payload(from_peer_id, my_peer_id, &payload) {
             Ok(v) => v,
-            Err(e) => {
-                return Some(Err(TunnelError::InvalidPacket(format!(
-                    "session decrypt failed: {e:?}"
-                ))))
-            }
+            Err(_) => return None,
         };
 
         let payload_offset = data.payload_offset();
