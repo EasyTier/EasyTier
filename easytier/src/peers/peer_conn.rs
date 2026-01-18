@@ -9,6 +9,7 @@ use std::{
 };
 
 use arc_swap::ArcSwapOption;
+use crossbeam::atomic::AtomicCell;
 use futures::{StreamExt, TryFutureExt};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -34,6 +35,7 @@ use crate::{
         defer,
         error::Error,
         global_ctx::ArcGlobalCtx,
+        peer_session::{PeerSession, PeerSessionAction},
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
@@ -86,36 +88,107 @@ impl SecureAuthLevel {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ::prost::Enumeration)]
+#[repr(i32)]
+enum PeerConnSessionActionPb {
+    Join = 0,
+    Sync = 1,
+    Create = 2,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct PeerConnNoiseMsg1Pb {
+    #[prost(uint32, tag = "1")]
+    version: u32,
+    #[prost(string, tag = "2")]
+    a_network_name: String,
+    #[prost(uint32, optional, tag = "3")]
+    a_session_generation: Option<u32>,
+    #[prost(bytes, tag = "4")]
+    a_conn_id: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct PeerConnNoiseMsg2Pb {
+    #[prost(string, tag = "1")]
+    b_network_name: String,
+    #[prost(uint32, tag = "2")]
+    role_hint: u32,
+    #[prost(enumeration = "PeerConnSessionActionPb", tag = "3")]
+    action: i32,
+    #[prost(uint32, tag = "4")]
+    b_session_generation: u32,
+    #[prost(bytes, optional, tag = "5")]
+    root_key_32: Option<Vec<u8>>,
+    #[prost(uint32, tag = "6")]
+    initial_epoch: u32,
+    #[prost(bytes, tag = "7")]
+    b_conn_id: Vec<u8>,
+    #[prost(bytes, tag = "8")]
+    a_conn_id_echo: Vec<u8>,
+}
+
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct PeerConnNoiseMsg3Pb {
+    #[prost(bytes, tag = "1")]
+    a_conn_id_echo: Vec<u8>,
+    #[prost(bytes, tag = "2")]
+    b_conn_id_echo: Vec<u8>,
+    #[prost(bytes, optional, tag = "3")]
+    secret_proof_32: Option<Vec<u8>>,
+}
+
 struct NoiseHandshakeResult {
-    transport: snow::TransportState,
+    peer_id: PeerId,
+    session: Arc<PeerSession>,
     local_static_pubkey: Vec<u8>,
     remote_static_pubkey: Vec<u8>,
     handshake_hash: Vec<u8>,
     secure_auth_level: SecureAuthLevel,
     remote_network_name: Option<String>,
-    peer_handshake_request: Option<HandshakeRequest>,
 }
 
 #[derive(Clone)]
-struct NoiseTunnelFilter {
+struct PeerSessionTunnelFilter {
     enabled: bool,
-    transport: Arc<std::sync::Mutex<Option<snow::TransportState>>>,
+    my_peer_id: Arc<AtomicCell<PeerId>>,
+    peer_id: Arc<AtomicCell<Option<PeerId>>>,
+    session: Arc<std::sync::Mutex<Option<Arc<PeerSession>>>>,
 }
 
-impl NoiseTunnelFilter {
+impl PeerSessionTunnelFilter {
     fn new(enabled: bool) -> Self {
         Self {
             enabled,
-            transport: Arc::new(std::sync::Mutex::new(None)),
+            my_peer_id: Arc::new(AtomicCell::new(PeerId::default())),
+            peer_id: Arc::new(AtomicCell::new(None)),
+            session: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
-    fn set_transport_state(&self, transport: snow::TransportState) {
-        *self.transport.lock().unwrap() = Some(transport);
+    fn new_with_peer(my_peer_id: PeerId, enabled: bool) -> Self {
+        Self {
+            enabled,
+            my_peer_id: Arc::new(AtomicCell::new(my_peer_id)),
+            peer_id: Arc::new(AtomicCell::new(None)),
+            session: Arc::new(std::sync::Mutex::new(None)),
+        }
+    }
+
+    fn set_my_peer_id(&self, my_peer_id: PeerId) {
+        self.my_peer_id.store(my_peer_id);
+    }
+
+    fn set_peer_id(&self, peer_id: PeerId) {
+        self.peer_id.store(Some(peer_id));
+    }
+
+    fn set_session(&self, session: Arc<PeerSession>) {
+        *self.session.lock().unwrap() = Some(session);
     }
 }
 
-impl TunnelFilter for NoiseTunnelFilter {
+impl TunnelFilter for PeerSessionTunnelFilter {
     type FilterOutput = ();
 
     fn before_send(&self, mut data: crate::tunnel::SinkItem) -> Option<crate::tunnel::SinkItem> {
@@ -131,18 +204,25 @@ impl TunnelFilter for NoiseTunnelFilter {
             return Some(data);
         }
 
-        let mut guard = self.transport.lock().unwrap();
-        let Some(transport) = guard.as_mut() else {
+        let Some(peer_id) = self.peer_id.load() else {
             return Some(data);
         };
 
-        let plaintext = data.payload().to_vec();
-        let mut out = vec![0u8; plaintext.len() + 64];
-        let out_len = transport.write_message(&plaintext, &mut out).ok()?;
+        let mut guard = self.session.lock().unwrap();
+        let Some(session) = guard.as_mut() else {
+            return Some(data);
+        };
+
+        let payload = data.payload().to_vec();
+        let my_peer_id = self.my_peer_id.load();
+        let Ok((ciphertext, tail)) = session.encrypt_payload(my_peer_id, peer_id, &payload) else {
+            return Some(data);
+        };
 
         let payload_offset = data.payload_offset();
         data.mut_inner().truncate(payload_offset);
-        data.mut_inner().extend_from_slice(&out[..out_len]);
+        data.mut_inner().extend_from_slice(&ciphertext);
+        data.mut_inner().extend_from_slice(tail.as_bytes());
 
         Some(data)
     }
@@ -165,25 +245,31 @@ impl TunnelFilter for NoiseTunnelFilter {
             return Some(Ok(data));
         }
 
-        let mut guard = self.transport.lock().unwrap();
-        let Some(transport) = guard.as_mut() else {
+        let from_peer_id = hdr.from_peer_id.get();
+        if from_peer_id == 0 {
+            return Some(Ok(data));
+        }
+        self.peer_id.store(Some(from_peer_id));
+
+        let mut guard = self.session.lock().unwrap();
+        let Some(session) = guard.as_mut() else {
             return Some(Ok(data));
         };
 
-        let ciphertext = data.payload().to_vec();
-        let mut out = vec![0u8; ciphertext.len() + 64];
-        let out_len = match transport.read_message(&ciphertext, &mut out) {
-            Ok(n) => n,
+        let my_peer_id = self.my_peer_id.load();
+        let payload = data.payload().to_vec();
+        let plaintext = match session.decrypt_payload(from_peer_id, my_peer_id, &payload) {
+            Ok(v) => v,
             Err(e) => {
                 return Some(Err(TunnelError::InvalidPacket(format!(
-                    "noise decrypt failed: {e:?}"
+                    "session decrypt failed: {e:?}"
                 ))))
             }
         };
 
         let payload_offset = data.payload_offset();
         data.mut_inner().truncate(payload_offset);
-        data.mut_inner().extend_from_slice(&out[..out_len]);
+        data.mut_inner().extend_from_slice(&plaintext);
 
         Some(Ok(data))
     }
@@ -237,10 +323,11 @@ pub struct PeerConn {
     conn_id: PeerConnId,
 
     my_peer_id: PeerId,
+    peer_id_hint: Option<PeerId>,
     global_ctx: ArcGlobalCtx,
 
     secure_mode: bool,
-    noise_filter: NoiseTunnelFilter,
+    session_filter: PeerSessionTunnelFilter,
     noise_local_static_pubkey: Option<Vec<u8>>,
     noise_remote_static_pubkey: Option<Vec<u8>>,
     noise_handshake_hash: Option<Vec<u8>>,
@@ -282,15 +369,24 @@ impl Debug for PeerConn {
 
 impl PeerConn {
     pub fn new(my_peer_id: PeerId, global_ctx: ArcGlobalCtx, tunnel: Box<dyn Tunnel>) -> Self {
+        Self::new_with_peer_id_hint(my_peer_id, global_ctx, tunnel, None)
+    }
+
+    pub fn new_with_peer_id_hint(
+        my_peer_id: PeerId,
+        global_ctx: ArcGlobalCtx,
+        tunnel: Box<dyn Tunnel>,
+        peer_id_hint: Option<PeerId>,
+    ) -> Self {
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
         let secure_mode = global_ctx.get_flags().enable_peer_conn_secure_mode;
-        let noise_filter = NoiseTunnelFilter::new(secure_mode);
+        let session_filter = PeerSessionTunnelFilter::new_with_peer(my_peer_id, secure_mode);
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
-        let filter_chain = TunnelFilterChain::new(noise_filter.clone(), peer_conn_tunnel_filter);
+        let filter_chain = TunnelFilterChain::new(session_filter.clone(), peer_conn_tunnel_filter);
         let peer_conn_tunnel = TunnelWithFilter::new(tunnel, filter_chain);
         let mut mpsc_tunnel = MpscTunnel::new(peer_conn_tunnel, Some(Duration::from_secs(7)));
 
@@ -302,10 +398,11 @@ impl PeerConn {
             conn_id,
 
             my_peer_id,
+            peer_id_hint,
             global_ctx,
 
             secure_mode,
-            noise_filter,
+            session_filter,
             noise_local_static_pubkey: None,
             noise_remote_static_pubkey: None,
             noise_handshake_hash: None,
@@ -543,7 +640,7 @@ impl PeerConn {
     }
 
     async fn do_noise_handshake_as_client(&self) -> Result<NoiseHandshakeResult, Error> {
-        let prologue = b"easytier-peerconn-noise-v2".to_vec();
+        let prologue = b"easytier-peerconn-noise".to_vec();
 
         let params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256"
             .parse()
@@ -561,18 +658,19 @@ impl PeerConn {
         let local_static_pubkey = keypair.public.clone();
 
         let network = self.global_ctx.get_network_identity();
-        let mut hs_req = HandshakeRequest {
-            magic: MAGIC,
-            my_peer_id: self.my_peer_id,
+        let a_session_generation = self
+            .peer_id_hint
+            .and_then(|peer_id| self.global_ctx.get_peer_session_store().get(peer_id))
+            .map(|s| s.session_generation());
+
+        let a_conn_id = uuid::Uuid::new_v4();
+        let msg1_pb = PeerConnNoiseMsg1Pb {
             version: VERSION,
-            features: Vec::new(),
-            network_name: network.network_name.clone(),
-            ..Default::default()
+            a_network_name: network.network_name.clone(),
+            a_session_generation,
+            a_conn_id: a_conn_id.as_bytes().to_vec(),
         };
-        hs_req
-            .network_secret_digrest
-            .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
-        let hs_req_bytes = hs_req.encode_to_vec();
+        let msg1_payload = msg1_pb.encode_to_vec();
 
         let mut hs = builder
             .prologue(&prologue)
@@ -585,7 +683,7 @@ impl PeerConn {
         timeout(Duration::from_secs(5), async move {
             let mut msg = vec![0u8; 4096];
             let msg_len = hs
-                .write_message(&[], &mut msg)
+                .write_message(&msg1_payload, &mut msg)
                 .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
             let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
             pkt.fill_peer_manager_hdr(
@@ -613,19 +711,64 @@ impl PeerConn {
                 }
             };
 
+            let Some(msg2_hdr) = msg2.peer_manager_header() else {
+                return Err(Error::WaitRespError(
+                    "missing peer manager header".to_owned(),
+                ));
+            };
+            let peer_id = msg2_hdr.from_peer_id.get();
+            if peer_id == 0 {
+                return Err(Error::WaitRespError("invalid peer_id".to_owned()));
+            }
+            if let Some(hint) = self.peer_id_hint {
+                if hint != peer_id {
+                    return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
+                }
+            }
+
             let mut out = vec![0u8; 4096];
             let out_len = hs
                 .read_message(msg2.payload(), &mut out)
                 .map_err(|e| Error::WaitRespError(format!("noise read msg2 failed: {e:?}")))?;
 
-            let remote_network_name = if out_len == 0 {
-                None
+            let msg2_pb = PeerConnNoiseMsg2Pb::decode(&out[..out_len]).map_err(|e| {
+                Error::WaitRespError(format!("decode noise msg2 payload failed: {e:?}"))
+            })?;
+            if msg2_pb.a_conn_id_echo != a_conn_id.as_bytes() {
+                return Err(Error::WaitRespError(
+                    "noise msg2 conn_id_echo mismatch".to_owned(),
+                ));
+            }
+            let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
+                .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
+            let remote_network_name = Some(msg2_pb.b_network_name.clone());
+
+            let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
+            let secret_proof_32 = if msg2_pb.role_hint == 1 {
+                self.global_ctx
+                    .get_network_identity()
+                    .network_secret
+                    .as_ref()
+                    .map(|_| {
+                        let key = self.global_ctx.get_256_key();
+                        let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
+                        mac.update(&[1u8]);
+                        mac.update(&handshake_hash_for_proof);
+                        mac.finalize().into_bytes().to_vec()
+                    })
             } else {
-                String::from_utf8(out[..out_len].to_vec()).ok()
+                None
             };
 
+            let msg3_pb = PeerConnNoiseMsg3Pb {
+                a_conn_id_echo: a_conn_id.as_bytes().to_vec(),
+                b_conn_id_echo: msg2_pb.b_conn_id.clone(),
+                secret_proof_32,
+            };
+            let msg3_payload = msg3_pb.encode_to_vec();
+
             let msg_len = hs
-                .write_message(&hs_req_bytes, &mut msg)
+                .write_message(&msg3_payload, &mut msg)
                 .map_err(|e| Error::WaitRespError(format!("noise write msg3 failed: {e:?}")))?;
             let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
             pkt.fill_peer_manager_hdr(
@@ -653,18 +796,42 @@ impl PeerConn {
 
             let handshake_hash = hs.get_handshake_hash().to_vec();
 
-            let transport = hs
-                .into_transport_mode()
-                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))?;
+            let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
+            let root_key = msg2_pb
+                .root_key_32
+                .as_deref()
+                .filter(|v| v.len() == 32)
+                .map(|v| {
+                    let mut key = [0u8; 32];
+                    key.copy_from_slice(v);
+                    key
+                });
+            let session_action = match action {
+                PeerConnSessionActionPb::Join => PeerSessionAction::Join,
+                PeerConnSessionActionPb::Sync => PeerSessionAction::Sync,
+                PeerConnSessionActionPb::Create => PeerSessionAction::Create,
+            };
+            let session = self
+                .global_ctx
+                .get_peer_session_store()
+                .apply_initiator_action(
+                    peer_id,
+                    session_action,
+                    msg2_pb.b_session_generation,
+                    root_key,
+                    msg2_pb.initial_epoch,
+                    algo,
+                )
+                .map_err(|e| Error::WaitRespError(format!("apply session action failed: {e:?}")))?;
 
             Ok(NoiseHandshakeResult {
-                transport,
+                peer_id,
+                session,
                 local_static_pubkey,
                 remote_static_pubkey: remote_static,
                 handshake_hash,
                 secure_auth_level,
                 remote_network_name,
-                peer_handshake_request: None,
             })
         })
         .await
@@ -675,7 +842,7 @@ impl PeerConn {
         &self,
         first_msg1: Option<ZCPacket>,
     ) -> Result<NoiseHandshakeResult, Error> {
-        let prologue = b"easytier-peerconn-noise-v2".to_vec();
+        let prologue = b"easytier-peerconn-noise".to_vec();
 
         let params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256"
             .parse()
@@ -729,14 +896,62 @@ impl PeerConn {
                 }
             };
 
+            let Some(msg1_hdr) = msg1.peer_manager_header() else {
+                return Err(Error::WaitRespError(
+                    "missing peer manager header".to_owned(),
+                ));
+            };
+            let peer_id = msg1_hdr.from_peer_id.get();
+            if peer_id == 0 {
+                return Err(Error::WaitRespError("invalid peer_id".to_owned()));
+            }
+
             let mut out = vec![0u8; 4096];
-            hs.read_message(msg1.payload(), &mut out)
+            let out_len = hs
+                .read_message(msg1.payload(), &mut out)
                 .map_err(|e| Error::WaitRespError(format!("noise read msg1 failed: {e:?}")))?;
+            let msg1_pb = PeerConnNoiseMsg1Pb::decode(&out[..out_len]).map_err(|e| {
+                Error::WaitRespError(format!("decode noise msg1 payload failed: {e:?}"))
+            })?;
+            if msg1_pb.a_conn_id.len() != 16 {
+                return Err(Error::WaitRespError(
+                    "invalid noise msg1 conn_id".to_owned(),
+                ));
+            }
+            let remote_network_name = Some(msg1_pb.a_network_name.clone());
 
             let mut msg = vec![0u8; 4096];
             let server_network_name = self.global_ctx.get_network_name();
+            let role_hint: u32 = if msg1_pb.a_network_name == server_network_name {
+                1
+            } else {
+                2
+            };
+
+            let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
+            let (session, action, b_session_generation, root_key_32, initial_epoch) = self
+                .global_ctx
+                .get_peer_session_store()
+                .upsert_responder_session(peer_id, msg1_pb.a_session_generation, algo);
+
+            let b_conn_id = uuid::Uuid::new_v4();
+            let msg2_pb = PeerConnNoiseMsg2Pb {
+                b_network_name: server_network_name,
+                role_hint,
+                action: match action {
+                    PeerSessionAction::Join => PeerConnSessionActionPb::Join as i32,
+                    PeerSessionAction::Sync => PeerConnSessionActionPb::Sync as i32,
+                    PeerSessionAction::Create => PeerConnSessionActionPb::Create as i32,
+                },
+                b_session_generation,
+                root_key_32: root_key_32.map(|k| k.to_vec()),
+                initial_epoch,
+                b_conn_id: b_conn_id.as_bytes().to_vec(),
+                a_conn_id_echo: msg1_pb.a_conn_id.clone(),
+            };
+            let msg2_payload = msg2_pb.encode_to_vec();
             let msg_len = hs
-                .write_message(server_network_name.as_bytes(), &mut msg)
+                .write_message(&msg2_payload, &mut msg)
                 .map_err(|e| Error::WaitRespError(format!("noise write msg2 failed: {e:?}")))?;
             let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
             pkt.fill_peer_manager_hdr(
@@ -745,6 +960,8 @@ impl PeerConn {
                 PacketType::NoiseHandshake as u8,
             );
             self.sink.send(pkt).await?;
+
+            let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
 
             let msg3 = loop {
                 let Some(ret) = recv.next().await else {
@@ -765,17 +982,45 @@ impl PeerConn {
                 .read_message(msg3.payload(), &mut out)
                 .map_err(|e| Error::WaitRespError(format!("noise read msg3 failed: {e:?}")))?;
 
-            let peer_handshake_request = if out_len == 0 {
-                None
-            } else if let Ok(req) = HandshakeRequest::decode(&out[..out_len]) {
-                if req.network_secret_digrest.len() != std::mem::size_of::<NetworkSecretDigest>() {
-                    None
-                } else {
-                    Some(req)
+            let msg3_pb = PeerConnNoiseMsg3Pb::decode(&out[..out_len]).map_err(|e| {
+                Error::WaitRespError(format!("decode noise msg3 payload failed: {e:?}"))
+            })?;
+            if msg3_pb.a_conn_id_echo != msg1_pb.a_conn_id {
+                return Err(Error::WaitRespError(
+                    "noise msg3 a_conn_id mismatch".to_owned(),
+                ));
+            }
+            if msg3_pb.b_conn_id_echo != b_conn_id.as_bytes() {
+                return Err(Error::WaitRespError(
+                    "noise msg3 b_conn_id mismatch".to_owned(),
+                ));
+            }
+
+            let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
+            if let Some(proof) = msg3_pb.secret_proof_32.as_ref() {
+                if self
+                    .global_ctx
+                    .get_network_identity()
+                    .network_secret
+                    .is_some()
+                {
+                    if proof.len() != 32 {
+                        return Err(Error::WaitRespError(
+                            "invalid secret_proof length".to_owned(),
+                        ));
+                    }
+                    let key = self.global_ctx.get_256_key();
+                    let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
+                    mac.update(&[1u8]);
+                    mac.update(&handshake_hash_for_proof);
+                    if mac.verify_slice(proof).is_ok() {
+                        secure_auth_level =
+                            secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
+                    } else {
+                        return Err(Error::WaitRespError("invalid secret_proof".to_owned()));
+                    }
                 }
-            } else {
-                None
-            };
+            }
 
             let remote_static = hs
                 .get_remote_static()
@@ -784,18 +1029,14 @@ impl PeerConn {
 
             let handshake_hash = hs.get_handshake_hash().to_vec();
 
-            let transport = hs
-                .into_transport_mode()
-                .map_err(|e| Error::WaitRespError(format!("noise into transport failed: {e:?}")))?;
-
             Ok(NoiseHandshakeResult {
-                transport,
+                peer_id,
+                session,
                 local_static_pubkey,
                 remote_static_pubkey: remote_static,
                 handshake_hash,
-                secure_auth_level: SecureAuthLevel::EncryptedUnauthenticated,
-                remote_network_name: None,
-                peer_handshake_request,
+                secure_auth_level,
+                remote_network_name,
             })
         })
         .await
@@ -843,7 +1084,7 @@ impl PeerConn {
             PeerId::default(),
             PacketType::SecureAuth as u8,
         );
-        let _ = self.sink.send(auth_packet).await?;
+        self.sink.send(auth_packet).await?;
 
         let recv_mutex = &self.recv;
         let peer_payload = timeout(Duration::from_millis(200), async {
@@ -923,17 +1164,14 @@ impl PeerConn {
 
         if self.secure_mode {
             let noise = self.do_noise_handshake_as_server(first_pkt).await?;
-            self.noise_filter.set_transport_state(noise.transport);
+            self.session_filter.set_session(noise.session.clone());
+            self.session_filter.set_peer_id(noise.peer_id);
             self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
             self.noise_remote_static_pubkey = Some(noise.remote_static_pubkey);
             self.noise_handshake_hash = Some(noise.handshake_hash);
             self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
 
-            let rsp = if let Some(req) = noise.peer_handshake_request {
-                req
-            } else {
-                self.wait_handshake_loop().await?
-            };
+            let rsp = self.wait_handshake_loop().await?;
 
             handshake_recved(self, &rsp)?;
 
@@ -997,17 +1235,14 @@ impl PeerConn {
 
         if self.secure_mode {
             let noise = self.do_noise_handshake_as_server(first_pkt).await?;
-            self.noise_filter.set_transport_state(noise.transport);
+            self.session_filter.set_session(noise.session.clone());
+            self.session_filter.set_peer_id(noise.peer_id);
             self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
             self.noise_remote_static_pubkey = Some(noise.remote_static_pubkey);
             self.noise_handshake_hash = Some(noise.handshake_hash);
             self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
 
-            let rsp = if let Some(req) = noise.peer_handshake_request {
-                req
-            } else {
-                self.wait_handshake_loop().await?
-            };
+            let rsp = self.wait_handshake_loop().await?;
             tracing::info!("handshake request: {:?}", rsp);
             self.info = Some(rsp);
             self.is_client = Some(false);
@@ -1051,16 +1286,15 @@ impl PeerConn {
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
         if self.secure_mode {
             let noise = self.do_noise_handshake_as_client().await?;
-            self.noise_filter.set_transport_state(noise.transport);
+            self.session_filter.set_session(noise.session);
+            self.session_filter.set_peer_id(noise.peer_id);
             self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
             self.noise_remote_static_pubkey = Some(noise.remote_static_pubkey);
             self.noise_handshake_hash = Some(noise.handshake_hash);
             self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
         }
 
-        if !self.secure_mode {
-            self.send_handshake(true).await?;
-        }
+        self.send_handshake(true).await?;
         tracing::info!("waiting for handshake request from server");
         let rsp = self.wait_handshake_loop().await?;
         tracing::info!("handshake response: {:?}", rsp);
@@ -1247,6 +1481,7 @@ impl PeerConn {
             panic!("set_peer_id should only be called before handshake");
         }
         self.my_peer_id = peer_id;
+        self.session_filter.set_my_peer_id(peer_id);
     }
 
     pub fn get_my_peer_id(&self) -> PeerId {

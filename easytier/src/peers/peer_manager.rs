@@ -363,7 +363,22 @@ impl PeerManager {
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
+        self.add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, None)
+            .await
+    }
+
+    pub async fn add_client_tunnel_with_peer_id_hint(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let mut peer = PeerConn::new_with_peer_id_hint(
+            self.my_peer_id,
+            self.global_ctx.clone(),
+            tunnel,
+            peer_id_hint,
+        );
         peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
@@ -387,9 +402,19 @@ impl PeerManager {
     }
 
     #[tracing::instrument]
-    pub async fn try_direct_connect<C>(
+    pub async fn try_direct_connect<C>(&self, connector: C) -> Result<(PeerId, PeerConnId), Error>
+    where
+        C: TunnelConnector + Debug,
+    {
+        self.try_direct_connect_with_peer_id_hint(connector, None)
+            .await
+    }
+
+    #[tracing::instrument]
+    pub async fn try_direct_connect_with_peer_id_hint<C>(
         &self,
         mut connector: C,
+        peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error>
     where
         C: TunnelConnector + Debug,
@@ -398,7 +423,8 @@ impl PeerManager {
         let t = ns
             .run_async(|| async move { connector.connect().await })
             .await?;
-        self.add_client_tunnel(t, true).await
+        self.add_client_tunnel_with_peer_id_hint(t, true, peer_id_hint)
+            .await
     }
 
     // avoid loop back to virtual network
@@ -1552,9 +1578,14 @@ mod tests {
         b_flags.enable_peer_conn_secure_mode = true;
         peer_mgr_b.get_global_ctx().set_flags(b_flags);
 
-        connect_peer_manager(peer_mgr_a.clone(), peer_mgr_b.clone()).await;
+        let (a_ring, b_ring) = create_ring_tunnel_pair();
+        let (a_ret, b_ret) = tokio::join!(
+            peer_mgr_a.add_client_tunnel(a_ring, false),
+            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+        );
+        let (peer_b_id, _) = a_ret.unwrap();
+        b_ret.unwrap();
 
-        let peer_b_id = peer_mgr_b.my_peer_id();
         wait_for_condition(
             || {
                 let peer_mgr_a = peer_mgr_a.clone();
@@ -1633,9 +1664,14 @@ mod tests {
         s_flags.enable_peer_conn_secure_mode = true;
         peer_mgr_server.get_global_ctx().set_flags(s_flags);
 
-        connect_peer_manager(peer_mgr_client.clone(), peer_mgr_server.clone()).await;
+        let (c_ring, s_ring) = create_ring_tunnel_pair();
+        let (c_ret, s_ret) = tokio::join!(
+            peer_mgr_client.add_client_tunnel(c_ring, false),
+            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+        );
+        let (server_id, _) = c_ret.unwrap();
+        s_ret.unwrap();
 
-        let server_id = peer_mgr_server.my_peer_id();
         wait_for_condition(
             || {
                 let peer_mgr_client = peer_mgr_client.clone();
@@ -1748,14 +1784,12 @@ mod tests {
             },
         ]);
 
-        let a_mgr_copy = peer_mgr_client.clone();
-        tokio::spawn(async move {
-            a_mgr_copy.add_client_tunnel(a_ring, false).await.unwrap();
-        });
-        let b_mgr_copy = peer_mgr_server.clone();
-        tokio::spawn(async move {
-            b_mgr_copy.add_tunnel_as_server(b_ring, true).await.unwrap();
-        });
+        let (c_ret, s_ret) = tokio::join!(
+            peer_mgr_client.add_client_tunnel(a_ring, false),
+            peer_mgr_server.add_tunnel_as_server(b_ring, true)
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
 
         wait_for_condition(
             || {

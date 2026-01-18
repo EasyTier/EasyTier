@@ -23,6 +23,7 @@ pub mod idn;
 pub mod ifcfg;
 pub mod netns;
 pub mod network;
+pub mod peer_session;
 pub mod scoped_task;
 pub mod stats_manager;
 pub mod stun;
