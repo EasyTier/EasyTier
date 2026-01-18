@@ -38,7 +38,7 @@ use crate::{
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
-    peers::peer_session::PeerSessionStore,
+    peers::peer_session::{PeerSessionStore, SessionKey},
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
@@ -680,7 +680,10 @@ impl PeerConn {
         let network = self.global_ctx.get_network_identity();
         let a_session_generation = self
             .peer_id_hint
-            .and_then(|peer_id| self.get_peer_session_store().get(peer_id))
+            .and_then(|peer_id| {
+                self.get_peer_session_store()
+                    .get(&SessionKey::new(network.network_name.clone(), peer_id))
+            })
             .map(|s| s.session_generation());
 
         let a_conn_id = uuid::Uuid::new_v4();
@@ -834,7 +837,7 @@ impl PeerConn {
             let session = self
                 .get_peer_session_store()
                 .apply_initiator_action(
-                    peer_id,
+                    &SessionKey::new(network.network_name.clone(), peer_id),
                     session_action,
                     msg2_pb.b_session_generation,
                     root_key,
@@ -937,7 +940,7 @@ impl PeerConn {
                     "invalid noise msg1 conn_id".to_owned(),
                 ));
             }
-            let remote_network_name = Some(msg1_pb.a_network_name.clone());
+            let remote_network_name = msg1_pb.a_network_name.clone();
 
             let mut msg = vec![0u8; 4096];
             let server_network_name = self.global_ctx.get_network_name();
@@ -948,9 +951,12 @@ impl PeerConn {
             };
 
             let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
-            let (session, action, b_session_generation, root_key_32, initial_epoch) = self
-                .get_peer_session_store()
-                .upsert_responder_session(peer_id, msg1_pb.a_session_generation, algo);
+            let (session, action, b_session_generation, root_key_32, initial_epoch) =
+                self.get_peer_session_store().upsert_responder_session(
+                    &SessionKey::new(remote_network_name.clone(), peer_id),
+                    msg1_pb.a_session_generation,
+                    algo,
+                );
 
             let b_conn_id = uuid::Uuid::new_v4();
             let msg2_pb = PeerConnNoiseMsg2Pb {
@@ -1054,7 +1060,7 @@ impl PeerConn {
                 remote_static_pubkey: remote_static,
                 handshake_hash,
                 secure_auth_level,
-                remote_network_name,
+                remote_network_name: Some(remote_network_name),
             })
         })
         .await
