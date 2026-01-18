@@ -116,6 +116,7 @@ impl PeerSessionStore {
         initial_epoch: u32,
         algorithm: String,
     ) -> Result<Arc<PeerSession>, anyhow::Error> {
+        println!("apply_initiator_action {:?}", action);
         match action {
             PeerSessionAction::Join => {
                 let Some(session) = self.get(peer_id) else {

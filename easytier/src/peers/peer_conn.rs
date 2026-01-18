@@ -186,6 +186,12 @@ impl PeerSessionTunnelFilter {
     fn set_session(&self, session: Arc<PeerSession>) {
         *self.session.lock().unwrap() = Some(session);
     }
+
+    fn should_skip_encrypt(&self, hdr: &crate::tunnel::packet_def::PeerManagerHeader) -> bool {
+        hdr.packet_type == PacketType::NoiseHandshake as u8
+            || hdr.packet_type == PacketType::Ping as u8
+            || hdr.packet_type == PacketType::Pong as u8
+    }
 }
 
 impl TunnelFilter for PeerSessionTunnelFilter {
@@ -200,7 +206,7 @@ impl TunnelFilter for PeerSessionTunnelFilter {
             return Some(data);
         };
 
-        if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+        if self.should_skip_encrypt(hdr) {
             return Some(data);
         }
 
@@ -241,7 +247,7 @@ impl TunnelFilter for PeerSessionTunnelFilter {
             return Some(Ok(data));
         };
 
-        if hdr.packet_type == PacketType::NoiseHandshake as u8 {
+        if self.should_skip_encrypt(hdr) {
             return Some(Ok(data));
         }
 
