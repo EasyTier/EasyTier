@@ -3,6 +3,7 @@ syntax = "proto3";
 import "common.proto";
 import "peer_rpc.proto";
 import "api_instance.proto";
+import "acl.proto";
 
 package api.manage;
 
@@ -83,7 +84,7 @@ message NetworkConfig {
   optional bool disable_tcp_hole_punching = 54;
 
   common.SecureModeConfig secure_mode = 55;
-  reserved 56;
+  optional acl.Acl acl = 56;
   optional string credential_file = 57;
   optional bool lazy_p2p = 58;
   optional bool need_p2p = 59;
