@@ -860,10 +860,14 @@ impl PeerConn {
         .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
     }
 
-    async fn do_noise_handshake_as_server(
-        &self,
+    async fn do_noise_handshake_as_server<Fn>(
+        &mut self,
         first_msg1: Option<ZCPacket>,
-    ) -> Result<NoiseHandshakeResult, Error> {
+        mut handshake_recved: Fn,
+    ) -> Result<NoiseHandshakeResult, Error>
+    where
+        Fn: FnMut(&mut PeerConn, &str) -> Result<(), Error> + Send,
+    {
         let prologue = b"easytier-peerconn-noise".to_vec();
 
         let params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256"
@@ -941,6 +945,12 @@ impl PeerConn {
                 ));
             }
             let remote_network_name = msg1_pb.a_network_name.clone();
+
+            drop(locked);
+            // this may update my peer id
+            handshake_recved(self, &remote_network_name)?;
+            let mut locked = self.recv.lock().await;
+            let recv = locked.as_mut().unwrap();
 
             let mut msg = vec![0u8; 4096];
             let server_network_name = self.global_ctx.get_network_name();
@@ -1166,7 +1176,7 @@ impl PeerConn {
         mut handshake_recved: Fn,
     ) -> Result<(), Error>
     where
-        Fn: FnMut(&mut Self, &HandshakeRequest) -> Result<(), Error> + Send,
+        Fn: FnMut(&mut PeerConn, &str) -> Result<(), Error> + Send,
     {
         let mut first_pkt: Option<ZCPacket> = None;
         if self.secure_mode {
@@ -1187,7 +1197,9 @@ impl PeerConn {
         }
 
         if self.secure_mode {
-            let noise = self.do_noise_handshake_as_server(first_pkt).await?;
+            let noise = self
+                .do_noise_handshake_as_server(first_pkt, handshake_recved)
+                .await?;
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
             self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
@@ -1196,8 +1208,6 @@ impl PeerConn {
             self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
 
             let rsp = self.wait_handshake_loop().await?;
-
-            handshake_recved(self, &rsp)?;
 
             tracing::info!("handshake request: {:?}", rsp);
             self.info = Some(rsp);
@@ -1220,7 +1230,7 @@ impl PeerConn {
                 self.wait_handshake_loop().await?
             };
 
-            handshake_recved(self, &rsp)?;
+            handshake_recved(self, &rsp.network_name)?;
 
             tracing::info!("handshake request: {:?}", rsp);
             self.info = Some(rsp);
@@ -1239,71 +1249,7 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_server(&mut self) -> Result<(), Error> {
-        let mut first_pkt: Option<ZCPacket> = None;
-        if self.secure_mode {
-            let pkt = self.recv_next_peer_manager_packet().await?;
-            let hdr = pkt.peer_manager_header().unwrap();
-            if hdr.packet_type == PacketType::HandShake as u8 {
-                self.secure_mode = false;
-                self.secure_auth_level = SecureAuthLevel::None;
-                first_pkt = Some(pkt);
-            } else if hdr.packet_type == PacketType::NoiseHandshake as u8 {
-                first_pkt = Some(pkt);
-            } else {
-                return Err(Error::WaitRespError(format!(
-                    "unexpected packet type during handshake: {}",
-                    hdr.packet_type
-                )));
-            }
-        }
-
-        if self.secure_mode {
-            let noise = self.do_noise_handshake_as_server(first_pkt).await?;
-            self.session_filter.set_session(noise.session.clone());
-            self.session_filter.set_peer_id(noise.peer_id);
-            self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
-            self.noise_remote_static_pubkey = Some(noise.remote_static_pubkey);
-            self.noise_handshake_hash = Some(noise.handshake_hash);
-            self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
-
-            let rsp = self.wait_handshake_loop().await?;
-            tracing::info!("handshake request: {:?}", rsp);
-            self.info = Some(rsp);
-            self.is_client = Some(false);
-
-            let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
-            self.send_handshake(send_digest).await?;
-
-            let _ = self.maybe_confirm_network_secret().await;
-
-            if self.get_peer_id() == self.my_peer_id {
-                Err(Error::WaitRespError(
-                    "peer id conflict, are you connecting to yourself?".to_owned(),
-                ))
-            } else {
-                Ok(())
-            }
-        } else {
-            let rsp = if let Some(pkt) = first_pkt.as_ref() {
-                Self::decode_handshake_packet(pkt)?
-            } else {
-                self.wait_handshake_loop().await?
-            };
-            tracing::info!("handshake request: {:?}", rsp);
-            self.info = Some(rsp);
-            self.is_client = Some(false);
-
-            let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
-            self.send_handshake(send_digest).await?;
-
-            if self.get_peer_id() == self.my_peer_id {
-                Err(Error::WaitRespError(
-                    "peer id conflict, are you connecting to yourself?".to_owned(),
-                ))
-            } else {
-                Ok(())
-            }
-        }
+        self.do_handshake_as_server_ext(|_, _| Ok(())).await
     }
 
     #[tracing::instrument]

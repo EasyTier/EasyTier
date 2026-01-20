@@ -485,8 +485,8 @@ impl PeerManager {
             tunnel,
             self.peer_session_store.clone(),
         );
-        conn.do_handshake_as_server_ext(|peer, msg| {
-            if msg.network_name
+        conn.do_handshake_as_server_ext(|peer, network_name:&str| {
+            if network_name
                 == self.global_ctx.get_network_identity().network_name
             {
                 return Ok(());
@@ -500,9 +500,9 @@ impl PeerManager {
 
             let mut peer_id = self
                 .foreign_network_manager
-                .get_network_peer_id(&msg.network_name);
+                .get_network_peer_id(&network_name);
             if peer_id.is_none() {
-                peer_id = Some(*self.reserved_my_peer_id_map.entry(msg.network_name.clone()).or_insert_with(|| {
+                peer_id = Some(*self.reserved_my_peer_id_map.entry(network_name.to_string()).or_insert_with(|| {
                     rand::random::<PeerId>()
                 }).value());
             }
@@ -510,7 +510,7 @@ impl PeerManager {
 
             tracing::info!(
                 ?peer_id,
-                ?msg.network_name,
+                ?network_name,
                 "handshake as server with foreign network, new peer id: {}, peer id in foreign manager: {:?}",
                 peer.get_my_peer_id(), peer_id
             );
