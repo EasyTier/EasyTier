@@ -2,6 +2,26 @@ use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/acl.rs"));
 
+impl Acl {
+    pub fn is_empty(&self) -> bool {
+        self.acl_v1.as_ref().map(|v1| v1.is_empty()).unwrap_or(true)
+    }
+}
+
+impl AclV1 {
+    pub fn is_empty(&self) -> bool {
+        let has_chains = !self.chains.is_empty();
+        let has_groups = self.group.as_ref().map(|g| !g.is_empty()).unwrap_or(false);
+        !has_chains && !has_groups
+    }
+}
+
+impl GroupInfo {
+    pub fn is_empty(&self) -> bool {
+        self.declares.is_empty() && self.members.is_empty()
+    }
+}
+
 impl Display for ConnTrackEntry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let src = self
