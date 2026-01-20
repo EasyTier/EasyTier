@@ -3,6 +3,9 @@ name: EasyTier OHOS
 on:
   push:
     branches: ["develop", "main", "releases/**"]
+    tags:
+      - 'v*'
+      - '!*-pre'
   pull_request:
     branches: ["develop", "main"]
   workflow_dispatch:
@@ -142,7 +145,7 @@ jobs:
           EOF
           sudo chmod +x $OHOS_NDK_HOME/native/llvm/aarch64-unknown-linux-ohos-clang.sh
 
-      - name: Build
+      - name: Build latest Har
         working-directory: ./easytier-contrib/easytier-ohrs
         run: |
           sudo apt-get install -y llvm clang lldb lld
@@ -157,13 +160,27 @@ jobs:
           ohrs artifact
           mv package.har easytier-ohrs.har
 
+      - name: Build Release Package
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: ./easytier-contrib/easytier-ohrs
+        run: |
+          echo "🎉 Official Release detected. Building easytier-release..."
+          TAG_NAME="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_NAME#v}"
+          echo "Release Version: $TAG_VERSION"
+          cd package
+          jq --arg v "$TAG_VERSION" '.name = "easytier-release" | .version = $v' oh-package.json5 > oh-package.tmp.json5 && mv oh-package.tmp.json5 oh-package.json5
+          cd ..
+          ohrs build --release --arch aarch
+          ohrs artifact
+          mv package.har easytier-release.har
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: easytier-ohos
           path: |
             ./easytier-contrib/easytier-ohrs/easytier-ohrs.har
-            ./easytier-contrib/easytier-ohrs/dist/arm64-v8a/libeasytier_ohrs.so
           retention-days: 5
           if-no-files-found: error
 
@@ -196,4 +213,9 @@ jobs:
           printf '%s' "${{ secrets.CODEARTS_PRIVATE_OHPM }}" > ~/.ohpm/.ohpmrc
           ohpm config set strict_ssl false
           ohpm publish easytier-ohrs.har
+          if [ -f "easytier-release.har" ]; then
+             echo "🚀 Publishing Release package..."
+             ohpm publish easytier-release.har
+          fi
           curl --header "Content-Type: application/json" --request POST --data "{}" ${{ secrets.CODEARTS_WEBHOOKS }}
+
