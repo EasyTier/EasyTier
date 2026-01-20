@@ -500,7 +500,7 @@ impl PeerManager {
 
             let mut peer_id = self
                 .foreign_network_manager
-                .get_network_peer_id(&network_name);
+                .get_network_peer_id(network_name);
             if peer_id.is_none() {
                 peer_id = Some(*self.reserved_my_peer_id_map.entry(network_name.to_string()).or_insert_with(|| {
                     rand::random::<PeerId>()
@@ -1524,7 +1524,10 @@ mod tests {
                 wait_route_appear_with_cost,
             },
         },
-        proto::common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
+        proto::{
+            common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
+            peer_rpc::SecureAuthLevel,
+        },
         tunnel::{
             common::tests::wait_for_condition,
             filter::{tests::DropSendTunnelFilter, TunnelWithFilter},
@@ -1616,7 +1619,7 @@ mod tests {
                     conns.iter().any(|c| {
                         c.noise_local_static_pubkey.len() == 32
                             && c.noise_remote_static_pubkey.len() == 32
-                            && c.secure_auth_level == "network_secret_confirmed"
+                            && c.secure_auth_level == SecureAuthLevel::NetworkSecretConfirmed as i32
                     })
                 }
             },
@@ -1644,7 +1647,7 @@ mod tests {
                     conns.iter().any(|c| {
                         c.noise_local_static_pubkey.len() == 32
                             && c.noise_remote_static_pubkey.len() == 32
-                            && c.secure_auth_level == "network_secret_confirmed"
+                            && c.secure_auth_level == SecureAuthLevel::NetworkSecretConfirmed as i32
                     })
                 }
             },
@@ -1705,7 +1708,7 @@ mod tests {
                     conns.iter().any(|c| {
                         c.noise_local_static_pubkey.is_empty()
                             && c.noise_remote_static_pubkey.is_empty()
-                            && c.secure_auth_level == "none"
+                            && c.secure_auth_level == SecureAuthLevel::None as i32
                     })
                 }
             },
@@ -1736,7 +1739,7 @@ mod tests {
                     conns.iter().any(|c| {
                         c.noise_local_static_pubkey.is_empty()
                             && c.noise_remote_static_pubkey.is_empty()
-                            && c.secure_auth_level == "none"
+                            && c.secure_auth_level == SecureAuthLevel::None as i32
                     })
                 }
             },
@@ -1823,7 +1826,7 @@ mod tests {
                         return false;
                     };
                     conns.iter().any(|c| {
-                        c.secure_auth_level == "shared_node_pubkey_verified"
+                        c.secure_auth_level == SecureAuthLevel::SharedNodePubkeyVerified as i32
                             && c.noise_local_static_pubkey.len() == 32
                             && c.noise_remote_static_pubkey.len() == 32
                     })

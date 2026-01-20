@@ -43,7 +43,7 @@ message PeerConnInfo {
   bool is_closed = 10;
   bytes noise_local_static_pubkey = 11;
   bytes noise_remote_static_pubkey = 12;
-  string secure_auth_level = 13;
+  peer_rpc.SecureAuthLevel secure_auth_level = 13;
 }
 
 message PeerInfo {

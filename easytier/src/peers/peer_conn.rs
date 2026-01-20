@@ -42,7 +42,10 @@ use crate::{
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
-        peer_rpc::HandshakeRequest,
+        peer_rpc::{
+            HandshakeRequest, PeerConnNoiseMsg1Pb, PeerConnNoiseMsg2Pb, PeerConnNoiseMsg3Pb,
+            PeerConnSessionActionPb, SecureAuthLevel,
+        },
     },
     tunnel::{
         filter::{StatsRecorderTunnelFilter, TunnelFilter, TunnelFilterChain, TunnelWithFilter},
@@ -63,84 +66,6 @@ pub type PeerConnId = uuid::Uuid;
 
 const MAGIC: u32 = 0xd1e1a5e1;
 const VERSION: u32 = 1;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SecureAuthLevel {
-    None,
-    EncryptedUnauthenticated,
-    SharedNodePubkeyVerified,
-    NetworkSecretConfirmed,
-}
-
-impl SecureAuthLevel {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::EncryptedUnauthenticated => "encrypted_unauthenticated",
-            Self::SharedNodePubkeyVerified => "shared_node_pubkey_verified",
-            Self::NetworkSecretConfirmed => "network_secret_confirmed",
-        }
-    }
-
-    fn max(self, other: Self) -> Self {
-        std::cmp::max_by_key(self, other, |v| match v {
-            SecureAuthLevel::None => 0,
-            SecureAuthLevel::EncryptedUnauthenticated => 1,
-            SecureAuthLevel::SharedNodePubkeyVerified => 2,
-            SecureAuthLevel::NetworkSecretConfirmed => 3,
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ::prost::Enumeration)]
-#[repr(i32)]
-enum PeerConnSessionActionPb {
-    Join = 0,
-    Sync = 1,
-    Create = 2,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct PeerConnNoiseMsg1Pb {
-    #[prost(uint32, tag = "1")]
-    version: u32,
-    #[prost(string, tag = "2")]
-    a_network_name: String,
-    #[prost(uint32, optional, tag = "3")]
-    a_session_generation: Option<u32>,
-    #[prost(bytes, tag = "4")]
-    a_conn_id: Vec<u8>,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct PeerConnNoiseMsg2Pb {
-    #[prost(string, tag = "1")]
-    b_network_name: String,
-    #[prost(uint32, tag = "2")]
-    role_hint: u32,
-    #[prost(enumeration = "PeerConnSessionActionPb", tag = "3")]
-    action: i32,
-    #[prost(uint32, tag = "4")]
-    b_session_generation: u32,
-    #[prost(bytes, optional, tag = "5")]
-    root_key_32: Option<Vec<u8>>,
-    #[prost(uint32, tag = "6")]
-    initial_epoch: u32,
-    #[prost(bytes, tag = "7")]
-    b_conn_id: Vec<u8>,
-    #[prost(bytes, tag = "8")]
-    a_conn_id_echo: Vec<u8>,
-}
-
-#[derive(Clone, PartialEq, ::prost::Message)]
-struct PeerConnNoiseMsg3Pb {
-    #[prost(bytes, tag = "1")]
-    a_conn_id_echo: Vec<u8>,
-    #[prost(bytes, tag = "2")]
-    b_conn_id_echo: Vec<u8>,
-    #[prost(bytes, optional, tag = "3")]
-    secret_proof_32: Option<Vec<u8>>,
-}
 
 struct NoiseHandshakeResult {
     peer_id: PeerId,
@@ -1070,7 +995,7 @@ impl PeerConn {
                 remote_static_pubkey: remote_static,
                 handshake_hash,
                 secure_auth_level,
-                remote_network_name: Some(remote_network_name),
+                remote_network_name: Some(remote_network_name.to_string()),
             })
         })
         .await
@@ -1442,7 +1367,7 @@ impl PeerConn {
             is_closed: self.close_event_notifier.is_closed(),
             noise_local_static_pubkey: self.noise_local_static_pubkey.clone().unwrap_or_default(),
             noise_remote_static_pubkey: self.noise_remote_static_pubkey.clone().unwrap_or_default(),
-            secure_auth_level: self.secure_auth_level.as_str().to_string(),
+            secure_auth_level: self.secure_auth_level as i32,
         }
     }
 
@@ -1659,11 +1584,11 @@ mod tests {
 
         assert_eq!(
             c_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::None.as_str()
+            SecureAuthLevel::None as i32,
         );
         assert_eq!(
             s_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::None.as_str()
+            SecureAuthLevel::None as i32,
         );
 
         assert_eq!(c_peer.get_conn_info().network_name, "shared".to_string());
@@ -1708,11 +1633,11 @@ mod tests {
 
         assert_eq!(
             c_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::EncryptedUnauthenticated.as_str()
+            SecureAuthLevel::EncryptedUnauthenticated as i32,
         );
         assert_eq!(
             s_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::EncryptedUnauthenticated.as_str()
+            SecureAuthLevel::EncryptedUnauthenticated as i32,
         );
 
         assert_eq!(c_peer.get_conn_info().network_name, "shared".to_string());
@@ -1805,11 +1730,11 @@ mod tests {
 
         assert_eq!(
             c_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::NetworkSecretConfirmed.as_str()
+            SecureAuthLevel::NetworkSecretConfirmed as i32,
         );
         assert_eq!(
             s_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::NetworkSecretConfirmed.as_str()
+            SecureAuthLevel::NetworkSecretConfirmed as i32,
         );
     }
 
@@ -1867,7 +1792,7 @@ mod tests {
 
         assert_eq!(
             c_peer.get_conn_info().secure_auth_level,
-            SecureAuthLevel::SharedNodePubkeyVerified.as_str()
+            SecureAuthLevel::SharedNodePubkeyVerified as i32,
         );
     }
 
