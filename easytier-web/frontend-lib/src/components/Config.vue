@@ -11,6 +11,8 @@ import {
 } from '../types/network'
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import UrlInput from './UrlInput.vue'
+import UrlListInput from './UrlListInput.vue'
 
 const props = defineProps<{
   configInvalid?: boolean
@@ -34,57 +36,6 @@ const networking_methods = ref([
 
 const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
 
-function searchUrlSuggestions(e: { query: string }): string[] {
-  const query = e.query
-  const ret = []
-  // if query match "^\w+:.*", then no proto prefix
-  if (query.match(/^\w+:.*/)) {
-    // if query is a valid url, then add to suggestions
-    try {
-      // eslint-disable-next-line no-new
-      new URL(query)
-      ret.push(query)
-    }
-    catch { }
-  }
-  else {
-    for (const proto in protos) {
-      let item = `${proto}://${query}`
-      // if query match ":\d+$", then no port suffix
-      if (!query.match(/:\d+$/)) {
-        item += `:${protos[proto]}`
-      }
-      ret.push(item)
-    }
-  }
-
-  return ret
-}
-
-const publicServerSuggestions = ref([''])
-
-function searchPresetPublicServers(e: { query: string }) {
-  const presetPublicServers = [
-    'tcp://public.easytier.top:11010',
-  ]
-
-  const query = e.query
-  // if query is sub string of presetPublicServers, add to suggestions
-  let ret = presetPublicServers.filter(item => item.includes(query))
-  // add additional suggestions
-  if (query.length > 0) {
-    ret = ret.concat(searchUrlSuggestions(e))
-  }
-
-  publicServerSuggestions.value = ret
-}
-
-const peerSuggestions = ref([''])
-
-function searchPeerSuggestions(e: { query: string }) {
-  peerSuggestions.value = searchUrlSuggestions(e)
-}
-
 const inetSuggestions = ref([''])
 
 function searchInetSuggestions(e: { query: string }) {
@@ -98,34 +49,6 @@ function searchInetSuggestions(e: { query: string }) {
     inetSuggestions.value = ret
   }
 }
-
-const listenerSuggestions = ref([''])
-
-function searchListenerSuggestions(e: { query: string }) {
-  const ret = []
-
-  for (const proto in protos) {
-    let item = `${proto}://0.0.0.0:`
-    // if query is a number, use it as port
-    if (e.query.match(/^\d+$/)) {
-      item += e.query
-    }
-    else {
-      item += protos[proto]
-    }
-
-    if (item.includes(e.query)) {
-      ret.push(item)
-    }
-  }
-
-  if (ret.length === 0) {
-    ret.push(e.query)
-  }
-
-  listenerSuggestions.value = ret
-}
-
 
 const exitNodesSuggestions = ref([''])
 
@@ -266,14 +189,12 @@ onMounted(() => {
                   <label for="nm">{{ t('networking_method') }}</label>
                   <SelectButton v-model="curNetwork.networking_method" :options="networking_methods"
                     :option-label="(v) => v.label()" option-value="value" />
-                  <div class="items-center flex flex-row p-fluid gap-x-1">
-                    <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.Manual" id="chips"
-                      v-model="curNetwork.peer_urls" :placeholder="t('chips_placeholder', ['tcp://8.8.8.8:11010'])"
-                      class="grow" multiple fluid :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                  <div class="items-center flex flex-col p-fluid gap-y-2">
+                    <UrlListInput v-if="curNetwork.networking_method === NetworkingMethod.Manual"
+                      v-model="curNetwork.peer_urls" :protos="protos" :add-label="t('add_peer_url')" />
 
-                    <AutoComplete v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
-                      v-model="curNetwork.public_server_url" :suggestions="publicServerSuggestions" class="grow"
-                      dropdown :complete-on-focus="false" @complete="searchPresetPublicServers" />
+                    <UrlInput v-if="curNetwork.networking_method === NetworkingMethod.PublicServer"
+                      v-model="curNetwork.public_server_url" :protos="protos" />
                   </div>
                 </div>
               </div>
@@ -345,10 +266,8 @@ onMounted(() => {
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
-                  <AutoComplete id="listener_urls" v-model="curNetwork.listener_urls" :suggestions="listenerSuggestions"
-                    class="w-full" dropdown :complete-on-focus="true"
-                    :placeholder="t('chips_placeholder', ['tcp://1.1.1.1:11010'])" multiple
-                    @complete="searchListenerSuggestions" />
+                  <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
+                    placeholder="0.0.0.0" />
                 </div>
               </div>
 
@@ -443,9 +362,8 @@ onMounted(() => {
                     <label for="mapped_listeners">{{ t('mapped_listeners') }}</label>
                     <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('mapped_listeners_help')"></span>
                   </div>
-                  <AutoComplete id="mapped_listeners" v-model="curNetwork.mapped_listeners"
-                    :placeholder="t('chips_placeholder', ['tcp://123.123.123.123:11223'])" class="w-full" multiple fluid
-                    :suggestions="peerSuggestions" @complete="searchPeerSuggestions" />
+                  <UrlListInput v-model="curNetwork.mapped_listeners" :protos="protos"
+                    :add-label="t('add_mapped_listener')" />
                 </div>
               </div>
 

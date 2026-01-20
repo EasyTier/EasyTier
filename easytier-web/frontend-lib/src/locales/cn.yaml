@@ -18,12 +18,16 @@ advanced_settings: 高级设置
 basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
+port: 端口
 rpc_portal_whitelists: RPC白名单
 config_network: 配置网络
 running: 运行中
 error_msg: 错误信息
 detail: 详情
 add_new_network: 添加新网络
+add_peer_url: 添加节点
+add_listener_url: 添加监听地址
+add_mapped_listener: 添加监听映射
 del_cur_network: 删除当前网络
 select_network: 选择网络
 network_instances: 网络实例
@@ -336,6 +340,7 @@ web:
     info: 提示
     enable: 开启
     disable: 关闭
+    address: 地址
 
   settings:
     title: 设置
