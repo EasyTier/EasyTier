@@ -183,6 +183,15 @@ const myNodeInfoChips = computed(() => {
   if (!my_node_info)
     return chips
 
+  // peer id
+  const peer_id = props.curNetworkInst.detail?.my_node_info?.peer_id
+  if (peer_id) {
+    chips.push({
+      label: `Peer ID: ${peer_id}`,
+      icon: '',
+    } as Chip)
+  }
+
   // TUN Device Name
   const dev_name = props.curNetworkInst.detail?.dev_name
   if (dev_name) {
