@@ -146,19 +146,26 @@ pub fn add_ip_rules() -> Result<(), Error> {
     // Note: We don't delete existing rules first to avoid a brief period without rules.
     // send_rule_request already ignores EEXIST errors for add operations.
     let rules = get_easytier_rules();
+    let mut last_error: Option<Error> = None;
 
     for rule in &rules {
         // IPv4
         let msg = build_rule_message(rule, AddressFamily::Inet);
         if let Err(e) = send_rule_request(msg, false) {
             tracing::warn!(?e, priority = rule.priority, "failed to add IPv4 rule");
+            last_error = Some(e);
         }
 
         // IPv6
         let msg = build_rule_message(rule, AddressFamily::Inet6);
         if let Err(e) = send_rule_request(msg, false) {
             tracing::warn!(?e, priority = rule.priority, "failed to add IPv6 rule");
+            last_error = Some(e);
         }
+    }
+
+    if let Some(e) = last_error {
+        return Err(e);
     }
 
     tracing::info!("EasyTier IP rules added");
@@ -258,14 +265,103 @@ fn count_alive_instances() -> usize {
     count
 }
 
+/// Flush all routes from EasyTier's routing table.
+pub fn flush_easytier_routes() -> Result<(), Error> {
+    for family in [AddressFamily::Inet, AddressFamily::Inet6] {
+        let mut message = RouteMessage::default();
+        message.header.table = EASYTIER_ROUTE_TABLE;
+        message.header.address_family = family;
+
+        let mut socket = Socket::new(NETLINK_ROUTE)?;
+        socket.bind_auto()?;
+        socket.connect(&SocketAddr::new(0, 0))?;
+
+        let nlmsg = RouteNetlinkMessage::GetRoute(message);
+        let mut req: NetlinkMessage<RouteNetlinkMessage> =
+            NetlinkMessage::new(NetlinkHeader::default(), NetlinkPayload::InnerMessage(nlmsg));
+
+        req.header.flags = NLM_F_REQUEST | netlink_packet_core::NLM_F_DUMP;
+        req.finalize();
+
+        let mut buf = vec![0; req.header.length as usize];
+        req.serialize(&mut buf);
+        socket.send(&buf, 0)?;
+
+        let mut routes_to_delete: Vec<RouteMessage> = Vec::new();
+        let mut resp = Vec::<u8>::new();
+
+        loop {
+            if resp.is_empty() {
+                let (new_resp, _) = socket.recv_from_full()?;
+                resp = new_resp;
+            }
+
+            let ret = match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&resp) {
+                Ok(msg) => msg,
+                Err(_) => break,
+            };
+            resp = resp.split_off(ret.buffer_len());
+
+            match ret.payload {
+                NetlinkPayload::Error(e) => {
+                    let code = e.code.map(|c| c.get()).unwrap_or(0);
+                    if code != 0 {
+                        tracing::debug!(code, "netlink error during route dump");
+                    }
+                }
+                NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewRoute(route_msg)) => {
+                    if route_msg.header.table == EASYTIER_ROUTE_TABLE {
+                        routes_to_delete.push(route_msg);
+                    }
+                }
+                NetlinkPayload::Done(_) => break,
+                _ => {}
+            }
+        }
+
+        for route_msg in routes_to_delete {
+            let mut del_socket = Socket::new(NETLINK_ROUTE)?;
+            del_socket.bind_auto()?;
+            del_socket.connect(&SocketAddr::new(0, 0))?;
+
+            let del_nlmsg = RouteNetlinkMessage::DelRoute(route_msg);
+            let mut del_req: NetlinkMessage<RouteNetlinkMessage> = NetlinkMessage::new(
+                NetlinkHeader::default(),
+                NetlinkPayload::InnerMessage(del_nlmsg),
+            );
+
+            del_req.header.flags = NLM_F_REQUEST | NLM_F_ACK;
+            del_req.finalize();
+
+            let mut del_buf = vec![0; del_req.header.length as usize];
+            del_req.serialize(&mut del_buf);
+
+            if let Err(e) = del_socket.send(&del_buf, 0) {
+                tracing::debug!(?e, "failed to send route delete request");
+                continue;
+            }
+
+            if let Ok((del_resp, _)) = del_socket.recv_from_full() {
+                if let Ok(ret) = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&del_resp) {
+                    if let NetlinkPayload::Error(e) = ret.payload {
+                        let code = e.code.map(|c| c.get()).unwrap_or(0);
+                        if code != 0 && code != -libc::ENOENT {
+                            tracing::debug!(code, "failed to delete route from table 35");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    tracing::info!("flushed EasyTier routing table");
+    Ok(())
+}
+
 /// Delete IP rules only if this is the last instance.
-///
-/// Returns true if rules were deleted, false if other instances are still running.
 pub fn del_ip_rules_if_last() -> bool {
-    // First remove our own PID file
     remove_pid_file();
 
-    // Check if there are other alive instances
     let other_instances = count_alive_instances();
     if other_instances > 0 {
         tracing::info!(
@@ -275,7 +371,10 @@ pub fn del_ip_rules_if_last() -> bool {
         return false;
     }
 
-    // We are the last instance, delete the rules
+    if let Err(e) = flush_easytier_routes() {
+        tracing::warn!(?e, "failed to flush routing table");
+    }
+
     if let Err(e) = del_ip_rules() {
         tracing::warn!(?e, "failed to delete IP rules");
     }
@@ -486,6 +585,7 @@ pub fn add_local_throw_routes(exclude_iface: &str) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error as _;
 
     #[test]
     fn test_rule_lifecycle() {

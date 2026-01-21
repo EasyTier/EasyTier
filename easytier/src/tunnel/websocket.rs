@@ -270,11 +270,15 @@ impl WSTunnelConnector {
 impl TunnelConnector for WSTunnelConnector {
     async fn connect(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
         let addr = SocketAddr::from_url(self.addr.clone(), self.ip_version).await?;
-        if self.bind_addrs.is_empty() || addr.is_ipv6() {
-            self.connect_with_default_bind(addr).await
-        } else {
-            self.connect_with_custom_bind(addr).await
+        if self.bind_addrs.is_empty() {
+            let default_bind: SocketAddr = if addr.is_ipv4() {
+                "0.0.0.0:0".parse().unwrap()
+            } else {
+                "[::]:0".parse().unwrap()
+            };
+            self.bind_addrs.push(default_bind);
         }
+        self.connect_with_custom_bind(addr).await
     }
 
     fn remote_url(&self) -> url::Url {

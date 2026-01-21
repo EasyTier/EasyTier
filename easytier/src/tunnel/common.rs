@@ -372,6 +372,16 @@ pub(crate) fn setup_sokcet2_ext(
     // #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     // socket2_socket.set_reuse_port(true)?;
 
+    // Set bypass fwmark BEFORE checking is_unspecified, so all sockets get the mark
+    // This prevents EasyTier traffic from entering VPN routing table (loop prevention)
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = crate::common::ifcfg::fwmark::set_socket_bypass_mark(socket2_socket) {
+            // May lack CAP_NET_ADMIN capability, just log it
+            tracing::warn!(?e, "failed to set socket fwmark (may require CAP_NET_ADMIN)");
+        }
+    }
+
     if bind_addr.ip().is_unspecified() {
         return Ok(());
     }
@@ -400,15 +410,6 @@ pub(crate) fn setup_sokcet2_ext(
         target_env = "ohos"
     ))]
     {
-        // Set bypass fwmark to prevent easytier traffic from entering VPN routing table (loop prevention)
-        #[cfg(target_os = "linux")]
-        {
-            if let Err(e) = crate::common::ifcfg::fwmark::set_socket_bypass_mark(socket2_socket) {
-                // May lack CAP_NET_ADMIN capability, just log it
-                tracing::warn!(?e, "failed to set socket fwmark (may require CAP_NET_ADMIN)");
-            }
-        }
-
         if let Some(dev_name) = bind_dev {
             tracing::trace!(dev_name = ?dev_name, "bind device");
             socket2_socket.bind_device(Some(dev_name.as_bytes()))?;
@@ -457,6 +458,29 @@ pub fn reserve_buf(buf: &mut BytesMut, min_size: usize, max_size: usize) {
 }
 
 pub mod tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn setup_socket2_sets_fwmark_on_unspecified_bind() {
+        use super::setup_sokcet2;
+        use crate::common::ifcfg::fwmark::{get_socket_mark, ET_BYPASS_MARK};
+        use nix::libc;
+        use socket2::{Domain, Protocol, Socket, Type};
+        use std::net::SocketAddr;
+
+        let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let socket2_socket = Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(Protocol::UDP)).unwrap();
+        setup_sokcet2(&socket2_socket, &bind_addr).unwrap();
+
+        let std_socket: std::net::UdpSocket = socket2_socket.into();
+        match get_socket_mark(&std_socket) {
+            Ok(mark) => assert_eq!(mark, ET_BYPASS_MARK),
+            Err(e) if e.raw_os_error() == Some(libc::EPERM) => {
+                eprintln!("Skipping test: CAP_NET_ADMIN required: {e}")
+            }
+            Err(e) => panic!("Unexpected error: {e:?}"),
+        }
+    }
+
     use atomic_shim::AtomicU64;
     use std::{sync::Arc, time::Instant};
 
