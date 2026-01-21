@@ -259,10 +259,7 @@ pub struct PeerConn {
 
     secure_mode: bool,
     session_filter: PeerSessionTunnelFilter,
-    noise_local_static_pubkey: Option<Vec<u8>>,
-    noise_remote_static_pubkey: Option<Vec<u8>>,
-    noise_handshake_hash: Option<Vec<u8>>,
-    secure_auth_level: SecureAuthLevel,
+    noise_handshake_result: Option<NoiseHandshakeResult>,
 
     tunnel: Arc<Mutex<Box<dyn Any + Send + 'static>>>,
     sink: MpscTunnelSender,
@@ -342,14 +339,7 @@ impl PeerConn {
 
             secure_mode,
             session_filter,
-            noise_local_static_pubkey: None,
-            noise_remote_static_pubkey: None,
-            noise_handshake_hash: None,
-            secure_auth_level: if secure_mode {
-                SecureAuthLevel::EncryptedUnauthenticated
-            } else {
-                SecureAuthLevel::None
-            },
+            noise_handshake_result: None,
 
             tunnel: Arc::new(Mutex::new(Box::new(defer::Defer::new(move || {
                 mpsc_tunnel.close()
@@ -1007,7 +997,11 @@ impl PeerConn {
             return Ok(());
         }
 
-        let Some(handshake_hash) = self.noise_handshake_hash.clone() else {
+        let Some(handshake_hash) = self
+            .noise_handshake_result
+            .as_ref()
+            .map(|x| x.handshake_hash.clone())
+        else {
             return Ok(());
         };
 
@@ -1087,9 +1081,12 @@ impl PeerConn {
         mac.update(&handshake_hash);
 
         if mac.verify_slice(peer_tag).is_ok() {
-            self.secure_auth_level = self
-                .secure_auth_level
-                .max(SecureAuthLevel::NetworkSecretConfirmed);
+            let auth_level = &mut self
+                .noise_handshake_result
+                .as_mut()
+                .expect("noise handshake result should be set")
+                .secure_auth_level;
+            *auth_level = (*auth_level).max(SecureAuthLevel::NetworkSecretConfirmed);
         }
 
         Ok(())
@@ -1109,7 +1106,7 @@ impl PeerConn {
             let hdr = pkt.peer_manager_header().unwrap();
             if hdr.packet_type == PacketType::HandShake as u8 {
                 self.secure_mode = false;
-                self.secure_auth_level = SecureAuthLevel::None;
+                self.noise_handshake_result = None;
                 first_pkt = Some(pkt);
             } else if hdr.packet_type == PacketType::NoiseHandshake as u8 {
                 first_pkt = Some(pkt);
@@ -1127,10 +1124,7 @@ impl PeerConn {
                 .await?;
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
-            self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
-            self.noise_remote_static_pubkey = Some(noise.remote_static_pubkey);
-            self.noise_handshake_hash = Some(noise.handshake_hash);
-            self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
+            self.noise_handshake_result = Some(noise);
 
             let rsp = self.wait_handshake_loop().await?;
 
@@ -1181,12 +1175,9 @@ impl PeerConn {
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
         if self.secure_mode {
             let noise = self.do_noise_handshake_as_client().await?;
-            self.session_filter.set_session(noise.session);
+            self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
-            self.noise_local_static_pubkey = Some(noise.local_static_pubkey);
-            self.noise_remote_static_pubkey = Some(noise.remote_static_pubkey);
-            self.noise_handshake_hash = Some(noise.handshake_hash);
-            self.secure_auth_level = self.secure_auth_level.max(noise.secure_auth_level);
+            self.noise_handshake_result = Some(noise);
         }
 
         self.send_handshake(true).await?;
@@ -1365,9 +1356,21 @@ impl PeerConn {
             is_client: self.is_client.unwrap_or_default(),
             network_name: info.network_name.clone(),
             is_closed: self.close_event_notifier.is_closed(),
-            noise_local_static_pubkey: self.noise_local_static_pubkey.clone().unwrap_or_default(),
-            noise_remote_static_pubkey: self.noise_remote_static_pubkey.clone().unwrap_or_default(),
-            secure_auth_level: self.secure_auth_level as i32,
+            noise_local_static_pubkey: self
+                .noise_handshake_result
+                .as_ref()
+                .map(|x| x.local_static_pubkey.clone())
+                .unwrap_or_default(),
+            noise_remote_static_pubkey: self
+                .noise_handshake_result
+                .as_ref()
+                .map(|x| x.remote_static_pubkey.clone())
+                .unwrap_or_default(),
+            secure_auth_level: self
+                .noise_handshake_result
+                .as_ref()
+                .map(|x| x.secure_auth_level as i32)
+                .unwrap_or_default(),
         }
     }
 
