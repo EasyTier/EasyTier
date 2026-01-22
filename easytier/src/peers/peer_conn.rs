@@ -74,7 +74,7 @@ struct NoiseHandshakeResult {
     remote_static_pubkey: Vec<u8>,
     handshake_hash: Vec<u8>,
     secure_auth_level: SecureAuthLevel,
-    remote_network_name: Option<String>,
+    remote_network_name: String,
 }
 
 #[derive(Clone)]
@@ -679,7 +679,7 @@ impl PeerConn {
             }
             let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
                 .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
-            let remote_network_name = Some(msg2_pb.b_network_name.clone());
+            let remote_network_name = msg2_pb.b_network_name.clone();
 
             let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
             let secret_proof_32 = if msg2_pb.role_hint == 1 {
@@ -985,111 +985,11 @@ impl PeerConn {
                 remote_static_pubkey: remote_static,
                 handshake_hash,
                 secure_auth_level,
-                remote_network_name: Some(remote_network_name.to_string()),
+                remote_network_name,
             })
         })
         .await
         .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
-    }
-
-    async fn maybe_confirm_network_secret(&mut self) -> Result<(), Error> {
-        if !self.secure_mode {
-            return Ok(());
-        }
-
-        let Some(handshake_hash) = self
-            .noise_handshake_result
-            .as_ref()
-            .map(|x| x.handshake_hash.clone())
-        else {
-            return Ok(());
-        };
-
-        if self
-            .global_ctx
-            .get_network_identity()
-            .network_secret
-            .is_none()
-        {
-            return Ok(());
-        }
-
-        let role: u8 = if self.is_client.unwrap_or_default() {
-            1
-        } else {
-            2
-        };
-        let key = self.global_ctx.get_256_key();
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(&key)
-            .map_err(|e| Error::WaitRespError(format!("hmac init failed: {e:?}")))?;
-        mac.update(&[role]);
-        mac.update(&handshake_hash);
-        let tag = mac.finalize().into_bytes();
-
-        let mut payload = Vec::with_capacity(1 + tag.len());
-        payload.push(role);
-        payload.extend_from_slice(&tag);
-
-        let mut auth_packet = ZCPacket::new_with_payload(&payload);
-        auth_packet.fill_peer_manager_hdr(
-            self.my_peer_id,
-            PeerId::default(),
-            PacketType::SecureAuth as u8,
-        );
-        self.sink.send(auth_packet).await?;
-
-        let recv_mutex = &self.recv;
-        let peer_payload = timeout(Duration::from_millis(200), async {
-            let mut locked = recv_mutex.lock().await;
-            let recv = locked.as_mut().unwrap();
-
-            loop {
-                let Some(ret) = recv.next().await else {
-                    return Ok::<Option<Vec<u8>>, Error>(None);
-                };
-                let pkt = ret.map_err(Error::from)?;
-                let Some(hdr) = pkt.peer_manager_header() else {
-                    continue;
-                };
-                if hdr.packet_type == PacketType::SecureAuth as u8 {
-                    return Ok::<Option<Vec<u8>>, Error>(Some(pkt.payload().to_vec()));
-                }
-            }
-        })
-        .await;
-
-        let peer_payload: Result<Option<Vec<u8>>, Error> = match peer_payload {
-            Ok(v) => v,
-            Err(_) => return Ok(()),
-        };
-        let peer_payload = match peer_payload {
-            Ok(Some(v)) => v,
-            _ => return Ok(()),
-        };
-
-        if peer_payload.len() != 33 {
-            return Ok(());
-        }
-
-        let peer_role = peer_payload[0];
-        let peer_tag = &peer_payload[1..];
-
-        let mut mac = Hmac::<Sha256>::new_from_slice(&key)
-            .map_err(|e| Error::WaitRespError(format!("hmac init failed: {e:?}")))?;
-        mac.update(&[peer_role]);
-        mac.update(&handshake_hash);
-
-        if mac.verify_slice(peer_tag).is_ok() {
-            let auth_level = &mut self
-                .noise_handshake_result
-                .as_mut()
-                .expect("noise handshake result should be set")
-                .secure_auth_level;
-            *auth_level = (*auth_level).max(SecureAuthLevel::NetworkSecretConfirmed);
-        }
-
-        Ok(())
     }
 
     #[tracing::instrument(skip(handshake_recved))]
@@ -1122,20 +1022,22 @@ impl PeerConn {
             let noise = self
                 .do_noise_handshake_as_server(first_pkt, handshake_recved)
                 .await?;
+            // construct handshake rsp from noise result for compat.
+            let handshake_rsp = HandshakeRequest {
+                magic: MAGIC,
+                my_peer_id: self.my_peer_id,
+                version: VERSION,
+                network_name: noise.remote_network_name.clone(),
+
+                features: Vec::new(),
+                network_secret_digrest: Vec::new(),
+            };
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
             self.noise_handshake_result = Some(noise);
 
-            let rsp = self.wait_handshake_loop().await?;
-
-            tracing::info!("handshake request: {:?}", rsp);
-            self.info = Some(rsp);
+            self.info = Some(handshake_rsp);
             self.is_client = Some(false);
-
-            let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
-            self.send_handshake(send_digest).await?;
-
-            let _ = self.maybe_confirm_network_secret().await;
 
             if self.get_peer_id() == self.my_peer_id {
                 Err(Error::WaitRespError("peer id conflict".to_owned()))
