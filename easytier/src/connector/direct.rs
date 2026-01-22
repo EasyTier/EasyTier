@@ -38,6 +38,7 @@ use crate::{
 use anyhow::Context;
 use rand::Rng;
 use tokio::{net::UdpSocket, task::JoinSet, time::timeout};
+use crate::common::ifcfg::fwmark::create_bypass_udp_socket_v6;
 use url::Host;
 
 use super::{create_connector_by_url, udp_hole_punch};
@@ -166,7 +167,7 @@ impl DirectConnectorManagerData {
         remote_url: &url::Url,
     ) -> Result<(PeerId, PeerConnId), Error> {
         let local_socket = Arc::new(
-            UdpSocket::bind("[::]:0")
+            create_bypass_udp_socket_v6(0)
                 .await
                 .with_context(|| format!("failed to bind local socket for {}", remote_url))?,
         );

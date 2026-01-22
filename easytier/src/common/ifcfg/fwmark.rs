@@ -96,6 +96,103 @@ pub fn get_socket_mark<S: AsRawFd>(socket: &S) -> std::io::Result<u32> {
     Ok(mark as u32)
 }
 
+// ============================================================================
+// Bypass Socket Factory Functions
+// ============================================================================
+
+use std::net::SocketAddr;
+
+/// Create a UDP socket with bypass fwmark pre-applied.
+///
+/// This is the recommended way to create UDP sockets for external connections
+/// (STUN, hole punching, etc.) to prevent routing loops.
+///
+/// # Arguments
+/// * `bind_addr` - The address to bind to (e.g., "0.0.0.0:0" or "[::]:0")
+///
+/// # Returns
+/// A tokio UdpSocket with SO_MARK set to ET_BYPASS_MARK on Linux.
+pub async fn create_bypass_udp_socket(bind_addr: SocketAddr) -> std::io::Result<tokio::net::UdpSocket> {
+    let socket2_socket = socket2::Socket::new(
+        socket2::Domain::for_address(bind_addr),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+
+    // Set bypass fwmark FIRST, before any other operations
+    if let Err(e) = set_socket_bypass_mark(&socket2_socket) {
+        tracing::warn!(?e, "failed to set socket fwmark (may require CAP_NET_ADMIN)");
+    }
+
+    socket2_socket.set_nonblocking(true)?;
+    socket2_socket.set_reuse_address(true)?;
+
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    {
+        let _ = socket2_socket.set_reuse_port(true);
+    }
+
+    if bind_addr.is_ipv6() {
+        socket2_socket.set_only_v6(true)?;
+    }
+
+    socket2_socket.bind(&socket2::SockAddr::from(bind_addr))?;
+
+    let std_socket: std::net::UdpSocket = socket2_socket.into();
+    tokio::net::UdpSocket::from_std(std_socket)
+}
+
+/// Create an IPv4 UDP socket with bypass fwmark on the specified port.
+///
+/// Convenience wrapper for `create_bypass_udp_socket` with IPv4 wildcard address.
+pub async fn create_bypass_udp_socket_v4(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
+    let bind_addr: SocketAddr = format!("0.0.0.0:{}", port).parse().unwrap();
+    create_bypass_udp_socket(bind_addr).await
+}
+
+/// Create an IPv6 UDP socket with bypass fwmark on the specified port.
+///
+/// Convenience wrapper for `create_bypass_udp_socket` with IPv6 wildcard address.
+pub async fn create_bypass_udp_socket_v6(port: u16) -> std::io::Result<tokio::net::UdpSocket> {
+    let bind_addr: SocketAddr = format!("[::]:{}", port).parse().unwrap();
+    create_bypass_udp_socket(bind_addr).await
+}
+
+/// Create a TCP socket (not connected) with bypass fwmark pre-applied.
+///
+/// # Arguments
+/// * `is_ipv6` - Whether to create an IPv6 socket
+///
+/// # Returns
+/// A socket2::Socket ready for bind() and connect() operations.
+pub fn create_bypass_tcp_socket(is_ipv6: bool) -> std::io::Result<socket2::Socket> {
+    let domain = if is_ipv6 {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+
+    let socket2_socket = socket2::Socket::new(
+        domain,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+
+    // Set bypass fwmark FIRST
+    if let Err(e) = set_socket_bypass_mark(&socket2_socket) {
+        tracing::warn!(?e, "failed to set socket fwmark (may require CAP_NET_ADMIN)");
+    }
+
+    socket2_socket.set_nonblocking(true)?;
+    socket2_socket.set_reuse_address(true)?;
+
+    if is_ipv6 {
+        socket2_socket.set_only_v6(true)?;
+    }
+
+    Ok(socket2_socket)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -12,6 +12,7 @@ use rand::seq::IteratorRandom;
 use socket2::{SockAddr, SockRef};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{lookup_host, UdpSocket};
+use crate::common::ifcfg::fwmark::{create_bypass_udp_socket_v4, create_bypass_udp_socket_v6, set_socket_bypass_mark};
 use tokio::sync::{broadcast, Mutex};
 use tokio::task::JoinSet;
 use tracing::{Instrument, Level};
@@ -608,7 +609,7 @@ impl UdpNatTypeDetector {
         source_port: u16,
         stun_server: SocketAddr,
     ) -> Result<BindRequestResponse, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        let udp = Arc::new(create_bypass_udp_socket_v4(source_port).await?);
         let client_builder = StunClientBuilder::new(udp.clone());
         client_builder
             .new_stun_client(stun_server)
@@ -620,7 +621,7 @@ impl UdpNatTypeDetector {
         &self,
         source_port: u16,
     ) -> Result<StunNatTypeDetectResult, Error> {
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", source_port)).await?);
+        let udp = Arc::new(create_bypass_udp_socket_v4(source_port).await?);
         self.detect_nat_type_with_socket(udp).await
     }
 
@@ -776,6 +777,11 @@ impl TcpStunClient {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
+
+        // Set bypass fwmark for STUN traffic to prevent routing loops
+        if let Err(e) = set_socket_bypass_mark(&socket2_socket) {
+            tracing::warn!(?e, "failed to set socket fwmark for TCP STUN");
+        }
 
         if bind_addr.is_ipv6() {
             socket2_socket.set_only_v6(true)?;
@@ -995,7 +1001,7 @@ impl StunInfoCollectorTrait for StunInfoCollector {
             return Err(Error::NotFound);
         }
 
-        let udp = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", local_port)).await?);
+        let udp = Arc::new(create_bypass_udp_socket_v4(local_port).await?);
         let mut client_builder = StunClientBuilder::new(udp.clone());
 
         for server in stun_servers.iter() {
@@ -1140,7 +1146,7 @@ impl StunInfoCollector {
     async fn get_public_ipv6(servers: &[String]) -> Option<Ipv6Addr> {
         let mut ips = HostResolverIter::new(servers.to_vec(), 10, true);
         while let Some(ip) = ips.next().await {
-            let Ok(udp_socket) = UdpSocket::bind("[::]:0".to_string()).await else {
+            let Ok(udp_socket) = create_bypass_udp_socket_v6(0).await else {
                 break;
             };
             let udp = Arc::new(udp_socket);

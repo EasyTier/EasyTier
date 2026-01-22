@@ -191,7 +191,17 @@ async fn respond_stun_packet(
             .await
             .with_context(|| "send stun response error")?;
     } else {
-        // send from a new udp socket
+        // send from a new udp socket with bypass fwmark to prevent routing loops
+        #[cfg(target_os = "linux")]
+        let socket = {
+            use crate::common::ifcfg::fwmark::{create_bypass_udp_socket_v4, create_bypass_udp_socket_v6};
+            if addr.is_ipv4() {
+                create_bypass_udp_socket_v4(0).await?
+            } else {
+                create_bypass_udp_socket_v6(0).await?
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
         let socket = if addr.is_ipv4() {
             UdpSocket::bind("0.0.0.0:0").await?
         } else {

@@ -8,6 +8,7 @@ use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
 use rand::seq::SliceRandom as _;
 use tokio::{net::UdpSocket, sync::Mutex, task::JoinSet};
+use crate::common::ifcfg::fwmark::create_bypass_udp_socket_v4;
 use tracing::{instrument, Instrument, Level};
 use zerocopy::FromBytes as _;
 
@@ -290,7 +291,7 @@ impl UdpSocketArray {
         while self.sockets.len() < self.max_socket_count {
             let socket = {
                 let _g = self.net_ns.guard();
-                Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+                Arc::new(create_bypass_udp_socket_v4(0).await?)
             };
 
             self.add_new_socket(socket).await?;
@@ -361,7 +362,7 @@ pub(crate) struct UdpHolePunchListener {
 
 impl UdpHolePunchListener {
     async fn get_avail_port() -> Result<u16, Error> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        let socket = create_bypass_udp_socket_v4(0).await?;
         Ok(socket.local_addr()?.port())
     }
 
@@ -604,7 +605,7 @@ async fn check_udp_socket_local_addr(
     global_ctx: ArcGlobalCtx,
     remote_mapped_addr: SocketAddr,
 ) -> Result<(), Error> {
-    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = create_bypass_udp_socket_v4(0).await?;
     socket.connect(remote_mapped_addr).await?;
     if let Ok(local_addr) = socket.local_addr() {
         // local_addr should not be equal to virtual ipv4 or virtual ipv6
