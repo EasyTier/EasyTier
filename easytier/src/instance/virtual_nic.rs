@@ -371,6 +371,111 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
+        // FreeBSD specific: Check and restore TUN interfaces before creating new one
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() {
+                // List all TUN interfaces using ifconfig -g tun
+                let output = tokio::process::Command::new("ifconfig")
+                    .arg("-g")
+                    .arg("tun")
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let tun_interfaces: Vec<String> = stdout
+                        .trim()
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect();
+
+                    tracing::debug!("Found TUN interfaces: {:?}", tun_interfaces);
+
+                    if tun_interfaces.contains(&dev_name) {
+                        tracing::debug!("Desired dev_name {} is in TUN interfaces list, checking if it can be renamed", dev_name);
+
+                        // Get detailed interface information
+                        let ifconfig_output = tokio::process::Command::new("ifconfig")
+                            .arg("-v")
+                            .arg(&dev_name)
+                            .output()
+                            .await?;
+
+                        if ifconfig_output.status.success() {
+                            let ifconfig_stdout = String::from_utf8_lossy(&ifconfig_output.stdout);
+
+                            // Check if interface is not occupied
+                            if !ifconfig_stdout.contains("Opened by PID") {
+                                // Extract original TUN name from drivername field
+                                let original_name = ifconfig_stdout
+                                    .lines()
+                                    .find(|line| line.trim().starts_with("drivername:"))
+                                    .and_then(|line| line.trim().split_whitespace().nth(1))
+                                    .map(|name| name.to_string());
+
+                                if let Some(orig_name) = original_name {
+                                    if orig_name != dev_name {
+                                        tracing::info!(
+                                            "Restoring dev_name {} to original name {}",
+                                            dev_name,
+                                            orig_name
+                                        );
+
+                                        // Rename the interface back to its original name
+                                        let rename_output =
+                                            tokio::process::Command::new("ifconfig")
+                                                .arg(&dev_name)
+                                                .arg("name")
+                                                .arg(&orig_name)
+                                                .output()
+                                                .await?;
+
+                                        if rename_output.status.success() {
+                                            tracing::info!(
+                                                "Successfully renamed interface {} to {}",
+                                                dev_name,
+                                                orig_name
+                                            );
+                                        } else {
+                                            let stderr =
+                                                String::from_utf8_lossy(&rename_output.stderr);
+                                            tracing::warn!(
+                                                "Failed to rename interface {} to {}: {}",
+                                                dev_name,
+                                                orig_name,
+                                                stderr
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "Interface {} is opened by a process, skipping rename",
+                                    dev_name
+                                );
+                            }
+                        } else {
+                            let stderr = String::from_utf8_lossy(&ifconfig_output.stderr);
+                            tracing::warn!(
+                                "Failed to get interface details for {}: {}, continuing anyway",
+                                dev_name,
+                                stderr
+                            );
+                        }
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(
+                        "Failed to list TUN interfaces: {}, continuing anyway",
+                        stderr
+                    );
+                }
+            }
+        }
+
         #[cfg(target_os = "linux")]
         {
             // Check and create TUN device node if necessary (Linux only)
@@ -481,8 +586,46 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
+
+        #[cfg(not(target_os = "freebsd"))]
         let ifname = dev.tun_name()?;
+
+        #[cfg(target_os = "freebsd")]
+        let mut ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        // FreeBSD TUN interface rename functionality
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() && dev_name != ifname {
+                // Use ifconfig to rename the TUN interface
+                let output = tokio::process::Command::new("ifconfig")
+                    .arg(&ifname)
+                    .arg("name")
+                    .arg(&dev_name)
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    tracing::info!(
+                        "Successfully renamed TUN interface from {} to {}",
+                        ifname,
+                        dev_name
+                    );
+                    ifname = dev_name;
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(
+                        "Failed to rename TUN interface from {} to {}: {}",
+                        ifname,
+                        dev_name,
+                        stderr
+                    );
+                }
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
