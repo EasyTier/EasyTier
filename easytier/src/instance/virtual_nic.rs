@@ -367,9 +367,228 @@ impl VirtualNic {
         Ok(())
     }
 
+    /// FreeBSD specific: Rename a TUN interface
+    #[cfg(target_os = "freebsd")]
+    async fn rename_tun_interface(old_name: &str, new_name: &str) -> Result<(), Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg(old_name)
+            .arg("name")
+            .arg(new_name)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            tracing::info!("Successfully renamed interface {} to {}", old_name, new_name);
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("Failed to rename interface {} to {}: {}", old_name, new_name, stderr);
+            // Return Ok even if rename fails, as it's not critical
+            Ok(())
+        }
+    }
+
+    /// FreeBSD specific: List all TUN interface names
+    #[cfg(target_os = "freebsd")]
+    async fn list_tun_names() -> Result<Vec<String>, Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg("-g")
+            .arg("tun")
+            .output()
+            .await?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let tun_names: Vec<String> = stdout
+                .trim()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            tracing::debug!("Found TUN interfaces: {:?}", tun_names);
+            Ok(tun_names)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("Failed to list TUN interfaces: {}", stderr);
+            Ok(Vec::new())
+        }
+    }
+
+    /// FreeBSD specific: Get interface information
+    #[cfg(target_os = "freebsd")]
+    async fn get_interface_info(ifname: &str) -> Result<String, Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg("-v")
+            .arg(ifname)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(anyhow::anyhow!("Failed to get interface details for {}: {}", ifname, stderr).into())
+        }
+    }
+
+    /// FreeBSD specific: Extract original name from interface information
+    #[cfg(target_os = "freebsd")]
+    fn extract_original_name(ifinfo: &str) -> Option<String> {
+        ifinfo
+            .lines()
+            .find(|line| line.trim().starts_with("drivername:"))
+            .and_then(|line| line.trim().split_whitespace().nth(1))
+            .map(|name| name.to_string())
+    }
+
+    /// FreeBSD specific: Check if interface is used by any process
+    #[cfg(target_os = "freebsd")]
+    fn is_interface_used(ifinfo: &str) -> bool {
+        ifinfo.contains("Opened by PID")
+    }
+
+    /// FreeBSD specific: Restore TUN interface name to its original value
+    #[cfg(target_os = "freebsd")]
+    async fn restore_tun_name(dev_name: &str) -> Result<(), Error> {
+        let tun_names = Self::list_tun_names().await?;
+        
+        // Check if desired dev_name is in use
+        if let Some(found_name) = tun_names.iter().find(|&&ref name| name == dev_name) {
+            tracing::debug!("Desired dev_name {} is in TUN interfaces list, checking if it can be renamed", dev_name);
+            
+            let ifinfo = Self::get_interface_info(dev_name).await?;
+            
+            // Check if interface is not occupied
+            if !Self::is_interface_used(&ifinfo) {
+                // Extract original name
+                if let Some(orig_name) = Self::extract_original_name(&ifinfo) {
+                    if orig_name != dev_name {
+                        tracing::info!("Restoring dev_name {} to original name {}", dev_name, orig_name);
+                        // Rename interface
+                        Self::rename_tun_interface(dev_name, &orig_name).await?;
+                    }
+                }
+            } else {
+                tracing::debug!("Interface {} is opened by a process, skipping rename", dev_name);
+            }
+        }
+        
+        Ok(())
+    }
+
     async fn create_tun(&self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
+
+        // FreeBSD specific: Check and restore TUN interfaces before creating new one
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+<<<<<<< HEAD
+            if !dev_name.is_empty() {
+                if let Err(e) = Self::restore_tun_name(&dev_name).await {
+                    tracing::warn!("Failed to restore TUN name: {}, continuing anyway", e);
+=======
+
+            if !dev_name.is_empty() {
+                // List all TUN interfaces using ifconfig -g tun
+                let output = tokio::process::Command::new("ifconfig")
+                    .arg("-g")
+                    .arg("tun")
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let tun_interfaces: Vec<String> = stdout
+                        .trim()
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect();
+
+                    tracing::debug!("Found TUN interfaces: {:?}", tun_interfaces);
+
+                    if tun_interfaces.contains(&dev_name) {
+                        tracing::debug!("Desired dev_name {} is in TUN interfaces list, checking if it can be renamed", dev_name);
+
+                        // Get detailed interface information
+                        let ifconfig_output = tokio::process::Command::new("ifconfig")
+                            .arg("-v")
+                            .arg(&dev_name)
+                            .output()
+                            .await?;
+
+                        if ifconfig_output.status.success() {
+                            let ifconfig_stdout = String::from_utf8_lossy(&ifconfig_output.stdout);
+
+                            // Check if interface is not occupied
+                            if !ifconfig_stdout.contains("Opened by PID") {
+                                // Extract original TUN name from drivername field
+                                let original_name = ifconfig_stdout
+                                    .lines()
+                                    .find(|line| line.trim().starts_with("drivername:"))
+                                    .and_then(|line| line.trim().split_whitespace().nth(1))
+                                    .map(|name| name.to_string());
+
+                                if let Some(orig_name) = original_name {
+                                    if orig_name != dev_name {
+                                        tracing::info!(
+                                            "Restoring dev_name {} to original name {}",
+                                            dev_name,
+                                            orig_name
+                                        );
+
+                                        // Rename the interface back to its original name
+                                        let rename_output =
+                                            tokio::process::Command::new("ifconfig")
+                                                .arg(&dev_name)
+                                                .arg("name")
+                                                .arg(&orig_name)
+                                                .output()
+                                                .await?;
+
+                                        if rename_output.status.success() {
+                                            tracing::info!(
+                                                "Successfully renamed interface {} to {}",
+                                                dev_name,
+                                                orig_name
+                                            );
+                                        } else {
+                                            let stderr =
+                                                String::from_utf8_lossy(&rename_output.stderr);
+                                            tracing::warn!(
+                                                "Failed to rename interface {} to {}: {}",
+                                                dev_name,
+                                                orig_name,
+                                                stderr
+                                            );
+                                        }
+                                    }
+                                }
+                            } else {
+                                tracing::debug!(
+                                    "Interface {} is opened by a process, skipping rename",
+                                    dev_name
+                                );
+                            }
+                        } else {
+                            let stderr = String::from_utf8_lossy(&ifconfig_output.stderr);
+                            tracing::warn!(
+                                "Failed to get interface details for {}: {}, continuing anyway",
+                                dev_name,
+                                stderr
+                            );
+                        }
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(
+                        "Failed to list TUN interfaces: {}, continuing anyway",
+                        stderr
+                    );
+>>>>>>> 6bd4a9df5a53e9386cd9f214463a640770def234
+                }
+            }
+        }
 
         #[cfg(target_os = "linux")]
         {
@@ -481,8 +700,54 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
+
+        #[cfg(not(target_os = "freebsd"))]
         let ifname = dev.tun_name()?;
+
+        #[cfg(target_os = "freebsd")]
+        let mut ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        // FreeBSD TUN interface rename functionality
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() && dev_name != ifname {
+<<<<<<< HEAD
+                // Use the abstract function to rename the TUN interface
+                Self::rename_tun_interface(&ifname, &dev_name).await?;
+                // Update ifname regardless of rename result, as the command might have succeeded
+                // but the output parsing failed, or the rename might succeed later
+                ifname = dev_name;
+=======
+                // Use ifconfig to rename the TUN interface
+                let output = tokio::process::Command::new("ifconfig")
+                    .arg(&ifname)
+                    .arg("name")
+                    .arg(&dev_name)
+                    .output()
+                    .await?;
+
+                if output.status.success() {
+                    tracing::info!(
+                        "Successfully renamed TUN interface from {} to {}",
+                        ifname,
+                        dev_name
+                    );
+                    ifname = dev_name;
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    tracing::warn!(
+                        "Failed to rename TUN interface from {} to {}: {}",
+                        ifname,
+                        dev_name,
+                        stderr
+                    );
+                }
+>>>>>>> 6bd4a9df5a53e9386cd9f214463a640770def234
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
