@@ -99,6 +99,7 @@ message MyNodeInfo {
   common.StunInfo stun_info = 5;
   repeated common.Url listeners = 6;
   optional string vpn_portal_cfg = 7;
+  uint32 peer_id = 8;
 }
 
 message NetworkInstanceRunningInfo {

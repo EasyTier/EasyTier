@@ -377,6 +377,7 @@ impl NetworkInstance {
                     .map(|s| s.parse::<url::Url>().unwrap().into())
                     .collect(),
                 vpn_portal_cfg,
+                peer_id: my_info.peer_id,
             }),
             events: launcher
                 .get_events()
