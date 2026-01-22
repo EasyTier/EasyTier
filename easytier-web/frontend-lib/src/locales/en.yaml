@@ -329,6 +329,7 @@ web:
     delete: Delete
     edit: Edit
     refresh: Refresh
+    add: Add
     loading: Loading...
     error: Error
     success: Success
@@ -395,3 +396,46 @@ config-server:
 client:
   not_running: Unable to connect to remote client.
   retry: Retry
+
+acl:
+  title: Access Control (ACL)
+  help: Access control list to restrict communication between nodes.
+  enabled: Enable ACL
+  default_action: Default Action
+  chains: Rule Chains
+  inbound: Inbound
+  outbound: Outbound
+  forward: Forward
+  rules: Rules
+  add_rule: Add Rule
+  edit_rule: Edit Rule
+  rule:
+    name: Rule Name
+    description: Description
+    enabled: Enabled
+    protocol: Protocol
+    action: Action
+    src_ips: Source IPs
+    dst_ips: Destination IPs
+    src_ports: Source Ports
+    dst_ports: Destination Ports
+    rate_limit: Rate Limit (pps)
+    burst_limit: Burst Limit
+    stateful: Stateful
+    src_groups: Source Groups
+    dst_groups: Destination Groups
+  groups: Groups
+  group:
+    declares: Declared Groups
+    members: Node Memberships
+    name: Group Name
+    secret: Group Secret
+    help: Define group identities in the network to use them in rules.
+  any: Any
+  allow: Allow
+  drop: Drop
+  delete_chain_confirm: Are you sure you want to delete this rule chain and all its rules?
+  chain:
+    name: Name
+    type: Type
+  match: Match
