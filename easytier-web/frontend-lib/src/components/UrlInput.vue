@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button, Dialog, InputNumber, InputText, Select } from 'primevue'
+import { AutoComplete, Button, Dialog, InputNumber, InputText } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -32,15 +32,21 @@ onMounted(() => {
 })
 
 const parseUrl = (val: string | null | undefined) => {
+    const getValidPort = (portStr: string, proto: string) => {
+        const p = parseInt(portStr)
+        return isNaN(p) ? (props.protos[proto] ?? 11010) : p
+    }
+
     if (!val) {
-        return { proto: 'tcp', host: '', port: props.protos['tcp'] || 11010 }
+        return { proto: 'tcp', host: '', port: props.protos['tcp'] ?? 11010 }
     }
     try {
         const urlObj = new URL(val)
+        const proto = urlObj.protocol.replace(':', '')
         return {
-            proto: urlObj.protocol.replace(':', ''),
+            proto: proto,
             host: urlObj.hostname,
-            port: parseInt(urlObj.port) || props.protos[urlObj.protocol.replace(':', '')] || 11010
+            port: getValidPort(urlObj.port, proto)
         }
     } catch (e) {
         // Fallback for incomplete or invalid URLs
@@ -52,7 +58,7 @@ const parseUrl = (val: string | null | undefined) => {
             return {
                 proto,
                 host: portMatch ? rest.slice(0, portMatch.index) : rest,
-                port: portMatch ? parseInt(portMatch[1]) : (props.protos[proto] || 11010)
+                port: portMatch ? parseInt(portMatch[1]) : (props.protos[proto] ?? 11010)
             }
         }
         return { proto: 'tcp', host: '', port: 11010 }
@@ -60,6 +66,10 @@ const parseUrl = (val: string | null | undefined) => {
 }
 
 const internalValue = ref(parseUrl(url.value))
+
+const isNoPortProto = computed(() => {
+    return props.protos[internalValue.value.proto] === 0
+})
 
 // Sync from external
 watch(() => url.value, (newVal) => {
@@ -75,11 +85,30 @@ watch(() => url.value, (newVal) => {
 watch(internalValue, (newVal) => {
     const proto = newVal.proto || 'tcp'
     const host = newVal.host || '0.0.0.0'
-    const port = newVal.port || props.protos[proto] || 11010
-    url.value = `${proto}://${host}:${port}`
+    let port = newVal.port
+    if (isNaN(parseInt(port as any))) {
+        port = props.protos[proto] ?? 11010
+    }
+
+    if (props.protos[proto] === 0) {
+        url.value = `${proto}://${host}`
+    } else {
+        url.value = `${proto}://${host}:${port}`
+    }
 }, { deep: true })
 
 const protoOptions = computed(() => Object.keys(props.protos))
+const filteredProtos = ref<string[]>([])
+
+const searchProtos = (event: { query: string }) => {
+    if (!event.query.trim().length) {
+        filteredProtos.value = [...protoOptions.value]
+    } else {
+        filteredProtos.value = protoOptions.value.filter((proto) => {
+            return proto.toLowerCase().startsWith(event.query.toLowerCase())
+        })
+    }
+}
 
 const onProtoChange = (newProto: string) => {
     const oldProto = internalValue.value.proto
@@ -96,13 +125,17 @@ const onProtoChange = (newProto: string) => {
 <template>
     <div ref="container" class="w-full">
         <InputGroup v-if="!internalCompact" class="w-full">
-            <Select :model-value="internalValue.proto" :options="protoOptions" class="max-w-24"
+            <AutoComplete :model-value="internalValue.proto" :suggestions="filteredProtos" dropdown
+                class="max-w-32 proto-autocomplete-in-group" @complete="searchProtos"
                 @update:model-value="onProtoChange" />
             <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="grow" />
-            <InputGroupAddon>
-                <span style="font-weight: bold">:</span>
-            </InputGroupAddon>
-            <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24" fluid />
+            <template v-if="!isNoPortProto">
+                <InputGroupAddon>
+                    <span style="font-weight: bold">:</span>
+                </InputGroupAddon>
+                <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="max-w-24"
+                    fluid />
+            </template>
             <slot name="actions"></slot>
         </InputGroup>
 
@@ -118,14 +151,14 @@ const onProtoChange = (newProto: string) => {
             <div class="flex flex-col gap-4 py-4">
                 <div class="flex flex-col gap-2">
                     <label>{{ t('tunnel_proto') }}</label>
-                    <Select :model-value="internalValue.proto" :options="protoOptions" class="w-full"
-                        @update:model-value="onProtoChange" />
+                    <AutoComplete :model-value="internalValue.proto" :suggestions="filteredProtos" dropdown fluid
+                        @complete="searchProtos" @update:model-value="onProtoChange" />
                 </div>
                 <div class="flex flex-col gap-2">
                     <label>{{ t('web.common.address') || 'Address' }}</label>
                     <InputText v-model="internalValue.host" :placeholder="placeholder || '0.0.0.0'" class="w-full" />
                 </div>
-                <div class="flex flex-col gap-2">
+                <div v-if="!isNoPortProto" class="flex flex-col gap-2">
                     <label>{{ t('port') }}</label>
                     <InputNumber v-model="internalValue.port" :format="false" :min="1" :max="65535" class="w-full" />
                 </div>
@@ -139,4 +172,14 @@ const onProtoChange = (newProto: string) => {
 </template>
 
 <style scoped>
+.proto-autocomplete-in-group,
+.proto-autocomplete-in-group :deep(.p-autocomplete-input),
+.proto-autocomplete-in-group :deep(.p-autocomplete-dropdown) {
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+}
+
+.proto-autocomplete-in-group :deep(.p-autocomplete-dropdown) {
+    border-right: 0 !important;
+}
 </style>
