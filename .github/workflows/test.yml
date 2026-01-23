@@ -36,11 +36,8 @@ jobs:
 
       - name: Check Cargo cache Status
         id: cache
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo
-            ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           lookup-only: true
 
@@ -53,13 +50,11 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Setup Frontend Environment
-        if: ${{ matrix.web == true || matrix.lint == true }}
         uses: ./.github/actions/prepare-pnpm
         with:
           build_filter: './easytier-web/*'
 
       - name: Install GUI dependencies (Used by clippy)
-        if: ${{ matrix.gui == true || matrix.lint == true }}
         run: |
           bash ./.github/workflows/install_gui_dep.sh
           bash ./.github/workflows/install_rust.sh
@@ -70,11 +65,8 @@ jobs:
           # GitHub repo token to use to avoid rate limiter
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo
-            ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Pre-build dependencies
@@ -146,11 +138,8 @@ jobs:
           sudo ip addr add 2001:db8::2/64 dev lo
 
       - name: Cargo cache
-        uses: actions/cache@v4
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo
-            ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Check formatting
