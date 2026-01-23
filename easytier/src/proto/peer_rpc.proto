@@ -276,7 +276,7 @@ message PeerConnNoiseMsg1Pb {
   uint32 version = 1;
   string a_network_name = 2;
   optional uint32 a_session_generation = 3;
-  bytes a_conn_id = 4;
+  common.UUID a_conn_id = 4;
 }
 
 message PeerConnNoiseMsg2Pb {
@@ -286,12 +286,12 @@ message PeerConnNoiseMsg2Pb {
   uint32 b_session_generation = 4;
   optional bytes root_key_32 = 5;
   uint32 initial_epoch = 6;
-  bytes b_conn_id = 7;
-  bytes a_conn_id_echo = 8;
+  common.UUID b_conn_id = 7;
+  common.UUID a_conn_id_echo = 8;
 }
 
 message PeerConnNoiseMsg3Pb {
-  bytes a_conn_id_echo = 1;
-  bytes b_conn_id_echo = 2;
+  common.UUID a_conn_id_echo = 1;
+  common.UUID b_conn_id_echo = 2;
   optional bytes secret_proof_32 = 3;
 }

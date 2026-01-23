@@ -15,6 +15,8 @@ use crate::proto::api::instance::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 use super::{
     config::{ConfigLoader, Flags},
@@ -266,6 +268,14 @@ impl GlobalCtx {
 
     pub fn get_network_identity(&self) -> NetworkIdentity {
         self.config.get_network_identity()
+    }
+
+    pub fn get_secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
+        let network_secret = self.get_network_identity().network_secret?;
+        let key = network_secret.as_bytes();
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        mac.update(challenge);
+        Some(mac)
     }
 
     pub fn get_network_name(&self) -> String {

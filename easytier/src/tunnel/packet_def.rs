@@ -56,7 +56,7 @@ pub struct WGTunnelHeader {
 }
 pub const WG_TUNNEL_HEADER_SIZE: usize = std::mem::size_of::<WGTunnelHeader>();
 
-#[derive(AsBytes, FromZeroes, Clone, Debug)]
+#[derive(AsBytes, FromZeroes, Copy, Clone, Debug)]
 #[repr(u8)]
 pub enum PacketType {
     Invalid = 0,
@@ -72,8 +72,9 @@ pub enum PacketType {
     ForeignNetworkPacket = 10,
     KcpSrc = 11,
     KcpDst = 12,
-    NoiseHandshake = 13,
-    SecureAuth = 14,
+    NoiseHandshakeMsg1 = 13,
+    NoiseHandshakeMsg2 = 14,
+    NoiseHandshakeMsg3 = 15,
 }
 
 bitflags::bitflags! {

@@ -27,7 +27,7 @@ use tokio::{
 use tracing::Instrument;
 use zerocopy::AsBytes;
 
-use snow::params::NoiseParams;
+use snow::{params::NoiseParams, HandshakeState};
 
 use crate::{
     common::{
@@ -117,7 +117,7 @@ impl PeerSessionTunnelFilter {
     }
 
     fn should_skip_encrypt(&self, hdr: &crate::tunnel::packet_def::PeerManagerHeader) -> bool {
-        hdr.packet_type == PacketType::NoiseHandshake as u8
+        hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8
             || hdr.packet_type == PacketType::Ping as u8
             || hdr.packet_type == PacketType::Pong as u8
     }
@@ -520,7 +520,10 @@ impl PeerConn {
         Ok(rsp)
     }
 
-    async fn recv_next_peer_manager_packet(&self) -> Result<ZCPacket, Error> {
+    async fn recv_next_peer_manager_packet(
+        &self,
+        expected_pkt_type: Option<PacketType>,
+    ) -> Result<ZCPacket, Error> {
         let mut locked = self.recv.lock().await;
         let recv = locked.as_mut().unwrap();
 
@@ -539,7 +542,14 @@ impl PeerConn {
                     )))
                 }
             };
-            if pkt.peer_manager_header().is_some() {
+
+            let Some(peer_mgr_hdr) = pkt.peer_manager_header() else {
+                continue;
+            };
+
+            if expected_pkt_type.is_none()
+                || peer_mgr_hdr.packet_type == *expected_pkt_type.as_ref().unwrap() as u8
+            {
                 return Ok(pkt);
             }
         }
@@ -606,7 +616,7 @@ impl PeerConn {
             version: VERSION,
             a_network_name: network.network_name.clone(),
             a_session_generation,
-            a_conn_id: a_conn_id.as_bytes().to_vec(),
+            a_conn_id: Some(a_conn_id.into()),
         };
         let msg1_payload = msg1_pb.encode_to_vec();
 
@@ -618,166 +628,182 @@ impl PeerConn {
 
         let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
 
-        timeout(Duration::from_secs(5), async move {
-            let mut msg = vec![0u8; 4096];
-            let msg_len = hs
-                .write_message(&msg1_payload, &mut msg)
-                .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
-            let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-            pkt.fill_peer_manager_hdr(
-                self.my_peer_id,
-                PeerId::default(),
-                PacketType::NoiseHandshake as u8,
-            );
-            self.sink.send(pkt).await?;
+        let mut msg = vec![0u8; 4096];
+        let msg_len = hs
+            .write_message(&msg1_payload, &mut msg)
+            .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
+        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+        pkt.fill_peer_manager_hdr(
+            self.my_peer_id,
+            PeerId::default(),
+            PacketType::NoiseHandshakeMsg1 as u8,
+        );
+        self.sink.send(pkt).await?;
 
+        let msg2 = timeout(
+            Duration::from_secs(5),
+            self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg2)),
+        )
+        .await??;
+        let remote_peer_id = msg2.get_src_peer_id().expect("missing src peer id");
+        if let Some(hint) = self.peer_id_hint {
+            if hint != remote_peer_id {
+                return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
+            }
+        }
+        let msg2_pb = Self::decode_handshake_message::<PeerConnNoiseMsg2Pb>(
+            PacketType::NoiseHandshakeMsg2,
+            Some(&mut hs),
+            msg2,
+        )?;
+        if msg2_pb.a_conn_id_echo != Some(a_conn_id.into()) {
+            return Err(Error::WaitRespError(
+                "noise msg2 conn_id_echo mismatch".to_owned(),
+            ));
+        }
+        let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
+            .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
+        let remote_network_name = msg2_pb.b_network_name.clone();
+
+        let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
+        let secret_proof_32 = if msg2_pb.role_hint == 1 {
+            self.global_ctx
+                .get_secret_proof(&handshake_hash_for_proof)
+                .map(|mac| mac.finalize().into_bytes().to_vec())
+        } else {
+            None
+        };
+
+        let msg3_pb = PeerConnNoiseMsg3Pb {
+            a_conn_id_echo: Some(a_conn_id.into()),
+            b_conn_id_echo: msg2_pb.b_conn_id,
+            secret_proof_32,
+        };
+        let msg3_payload = msg3_pb.encode_to_vec();
+
+        let msg_len = hs
+            .write_message(&msg3_payload, &mut msg)
+            .map_err(|e| Error::WaitRespError(format!("noise write msg3 failed: {e:?}")))?;
+        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+        pkt.fill_peer_manager_hdr(
+            self.my_peer_id,
+            remote_peer_id,
+            PacketType::NoiseHandshakeMsg3 as u8,
+        );
+        self.sink.send(pkt).await?;
+
+        let remote_static = hs
+            .get_remote_static()
+            .map(|x: &[u8]| x.to_vec())
+            .unwrap_or_default();
+
+        if let Some(pinned) = pinned_remote_pubkey.as_ref() {
+            if pinned.as_slice() == remote_static.as_slice() {
+                secure_auth_level =
+                    secure_auth_level.max(SecureAuthLevel::SharedNodePubkeyVerified);
+            } else {
+                return Err(Error::WaitRespError(
+                    "pinned remote static pubkey mismatch".to_owned(),
+                ));
+            }
+        }
+
+        let handshake_hash = hs.get_handshake_hash().to_vec();
+
+        let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
+        let root_key = msg2_pb
+            .root_key_32
+            .as_deref()
+            .filter(|v| v.len() == 32)
+            .map(|v| {
+                let mut key = [0u8; 32];
+                key.copy_from_slice(v);
+                key
+            });
+        let session_action = match action {
+            PeerConnSessionActionPb::Join => PeerSessionAction::Join,
+            PeerConnSessionActionPb::Sync => PeerSessionAction::Sync,
+            PeerConnSessionActionPb::Create => PeerSessionAction::Create,
+        };
+        let session = self
+            .get_peer_session_store()
+            .apply_initiator_action(
+                &SessionKey::new(network.network_name.clone(), remote_peer_id),
+                session_action,
+                msg2_pb.b_session_generation,
+                root_key,
+                msg2_pb.initial_epoch,
+                algo,
+            )
+            .map_err(|e| Error::WaitRespError(format!("apply session action failed: {e:?}")))?;
+
+        Ok(NoiseHandshakeResult {
+            peer_id: remote_peer_id,
+            session,
+            local_static_pubkey,
+            remote_static_pubkey: remote_static,
+            handshake_hash,
+            secure_auth_level,
+            remote_network_name,
+        })
+    }
+
+    fn decode_handshake_message<MsgT>(
+        expected_pkt_type: PacketType,
+        hs: Option<&mut HandshakeState>,
+        pkt: ZCPacket,
+    ) -> Result<MsgT, Error>
+    where
+        MsgT: prost::Message + Default,
+    {
+        let Some(hdr) = pkt.peer_manager_header() else {
+            return Err(Error::WaitRespError(
+                "packet without peer manager header".to_owned(),
+            ));
+        };
+
+        if hdr.packet_type != expected_pkt_type as u8 {
+            return Err(Error::WaitRespError(format!(
+                "packet type not {:?}",
+                expected_pkt_type
+            )));
+        }
+
+        let msg = match hs {
+            Some(hs) => {
+                let mut out = vec![0u8; 4096];
+                let out_len = hs
+                    .read_message(pkt.payload(), &mut out)
+                    .map_err(|e| Error::WaitRespError(format!("noise read msg failed: {e:?}")))?;
+                MsgT::decode(&out[..out_len])
+                    .map_err(|e| Error::WaitRespError(format!("decode message failed: {e:?}")))?
+            }
+            None => MsgT::decode(pkt.payload())
+                .map_err(|e| Error::WaitRespError(format!("decode message failed: {e:?}")))?,
+        };
+
+        Ok(msg)
+    }
+
+    async fn read_next_message_with_timeout(
+        &mut self,
+        read_timeout: Duration,
+    ) -> Result<ZCPacket, Error> {
+        timeout(read_timeout, async {
             let mut locked = self.recv.lock().await;
             let recv = locked.as_mut().unwrap();
-
-            let msg2 = loop {
-                let Some(ret) = recv.next().await else {
-                    return Err(Error::WaitRespError(
-                        "conn closed during noise handshake".to_owned(),
-                    ));
-                };
-                let pkt = ret?;
-                let Some(hdr) = pkt.peer_manager_header() else {
-                    continue;
-                };
-                if hdr.packet_type == PacketType::NoiseHandshake as u8 {
-                    break pkt;
-                }
-            };
-
-            let Some(msg2_hdr) = msg2.peer_manager_header() else {
-                return Err(Error::WaitRespError(
-                    "missing peer manager header".to_owned(),
-                ));
-            };
-            let peer_id = msg2_hdr.from_peer_id.get();
-            if peer_id == 0 {
-                return Err(Error::WaitRespError("invalid peer_id".to_owned()));
-            }
-            if let Some(hint) = self.peer_id_hint {
-                if hint != peer_id {
-                    return Err(Error::WaitRespError("peer_id mismatch".to_owned()));
-                }
-            }
-
-            let mut out = vec![0u8; 4096];
-            let out_len = hs
-                .read_message(msg2.payload(), &mut out)
-                .map_err(|e| Error::WaitRespError(format!("noise read msg2 failed: {e:?}")))?;
-
-            let msg2_pb = PeerConnNoiseMsg2Pb::decode(&out[..out_len]).map_err(|e| {
-                Error::WaitRespError(format!("decode noise msg2 payload failed: {e:?}"))
-            })?;
-            if msg2_pb.a_conn_id_echo != a_conn_id.as_bytes() {
-                return Err(Error::WaitRespError(
-                    "noise msg2 conn_id_echo mismatch".to_owned(),
-                ));
-            }
-            let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
-                .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
-            let remote_network_name = msg2_pb.b_network_name.clone();
-
-            let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
-            let secret_proof_32 = if msg2_pb.role_hint == 1 {
-                self.global_ctx
-                    .get_network_identity()
-                    .network_secret
-                    .as_ref()
-                    .map(|_| {
-                        let key = self.global_ctx.get_256_key();
-                        let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
-                        mac.update(&[1u8]);
-                        mac.update(&handshake_hash_for_proof);
-                        mac.finalize().into_bytes().to_vec()
-                    })
-            } else {
-                None
-            };
-
-            let msg3_pb = PeerConnNoiseMsg3Pb {
-                a_conn_id_echo: a_conn_id.as_bytes().to_vec(),
-                b_conn_id_echo: msg2_pb.b_conn_id.clone(),
-                secret_proof_32,
-            };
-            let msg3_payload = msg3_pb.encode_to_vec();
-
-            let msg_len = hs
-                .write_message(&msg3_payload, &mut msg)
-                .map_err(|e| Error::WaitRespError(format!("noise write msg3 failed: {e:?}")))?;
-            let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-            pkt.fill_peer_manager_hdr(
-                self.my_peer_id,
-                PeerId::default(),
-                PacketType::NoiseHandshake as u8,
-            );
-            self.sink.send(pkt).await?;
-
-            let remote_static = hs
-                .get_remote_static()
-                .map(|x: &[u8]| x.to_vec())
-                .unwrap_or_default();
-
-            if let Some(pinned) = pinned_remote_pubkey.as_ref() {
-                if pinned.as_slice() == remote_static.as_slice() {
-                    secure_auth_level =
-                        secure_auth_level.max(SecureAuthLevel::SharedNodePubkeyVerified);
-                } else {
-                    return Err(Error::WaitRespError(
-                        "pinned remote static pubkey mismatch".to_owned(),
-                    ));
-                }
-            }
-
-            let handshake_hash = hs.get_handshake_hash().to_vec();
-
-            let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
-            let root_key = msg2_pb
-                .root_key_32
-                .as_deref()
-                .filter(|v| v.len() == 32)
-                .map(|v| {
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(v);
-                    key
-                });
-            let session_action = match action {
-                PeerConnSessionActionPb::Join => PeerSessionAction::Join,
-                PeerConnSessionActionPb::Sync => PeerSessionAction::Sync,
-                PeerConnSessionActionPb::Create => PeerSessionAction::Create,
-            };
-            let session = self
-                .get_peer_session_store()
-                .apply_initiator_action(
-                    &SessionKey::new(network.network_name.clone(), peer_id),
-                    session_action,
-                    msg2_pb.b_session_generation,
-                    root_key,
-                    msg2_pb.initial_epoch,
-                    algo,
-                )
-                .map_err(|e| Error::WaitRespError(format!("apply session action failed: {e:?}")))?;
-
-            Ok(NoiseHandshakeResult {
-                peer_id,
-                session,
-                local_static_pubkey,
-                remote_static_pubkey: remote_static,
-                handshake_hash,
-                secure_auth_level,
-                remote_network_name,
-            })
+            Ok(recv
+                .next()
+                .await
+                .ok_or(Error::WaitRespError("read next message failed".to_owned()))??)
         })
         .await
-        .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
+        .map_err(|e| Error::WaitRespError(format!("read next message timeout: {e:?}")))?
     }
 
     async fn do_noise_handshake_as_server<Fn>(
         &mut self,
-        first_msg1: Option<ZCPacket>,
+        first_msg1: ZCPacket,
         mut handshake_recved: Fn,
     ) -> Result<NoiseHandshakeResult, Error>
     where
@@ -814,182 +840,134 @@ impl PeerConn {
             .build_responder()
             .map_err(|e| Error::WaitRespError(format!("build noise responder failed: {e:?}")))?;
 
-        timeout(Duration::from_secs(5), async move {
-            let mut locked = self.recv.lock().await;
-            let recv = locked.as_mut().unwrap();
+        let remote_peer_id = first_msg1
+            .get_src_peer_id()
+            .expect("msg1 must have src peer id");
 
-            let msg1 = if let Some(pkt) = first_msg1 {
-                pkt
-            } else {
-                loop {
-                    let Some(ret) = recv.next().await else {
-                        return Err(Error::WaitRespError(
-                            "conn closed during noise handshake".to_owned(),
-                        ));
-                    };
-                    let pkt = ret?;
-                    let Some(hdr) = pkt.peer_manager_header() else {
-                        continue;
-                    };
-                    if hdr.packet_type == PacketType::NoiseHandshake as u8 {
-                        break pkt;
-                    }
-                }
-            };
+        let msg1_pb = Self::decode_handshake_message::<PeerConnNoiseMsg1Pb>(
+            PacketType::NoiseHandshakeMsg1,
+            Some(&mut hs),
+            first_msg1,
+        )?;
+        let remote_network_name = msg1_pb.a_network_name.clone();
 
-            let Some(msg1_hdr) = msg1.peer_manager_header() else {
-                return Err(Error::WaitRespError(
-                    "missing peer manager header".to_owned(),
-                ));
-            };
-            let peer_id = msg1_hdr.from_peer_id.get();
-            if peer_id == 0 {
-                return Err(Error::WaitRespError("invalid peer_id".to_owned()));
-            }
+        // this may update my peer id
+        handshake_recved(self, &remote_network_name)?;
 
-            let mut out = vec![0u8; 4096];
-            let out_len = hs
-                .read_message(msg1.payload(), &mut out)
-                .map_err(|e| Error::WaitRespError(format!("noise read msg1 failed: {e:?}")))?;
-            let msg1_pb = PeerConnNoiseMsg1Pb::decode(&out[..out_len]).map_err(|e| {
-                Error::WaitRespError(format!("decode noise msg1 payload failed: {e:?}"))
-            })?;
-            if msg1_pb.a_conn_id.len() != 16 {
-                return Err(Error::WaitRespError(
-                    "invalid noise msg1 conn_id".to_owned(),
-                ));
-            }
-            let remote_network_name = msg1_pb.a_network_name.clone();
+        let local_peer_id = self.my_peer_id;
 
-            drop(locked);
-            // this may update my peer id
-            handshake_recved(self, &remote_network_name)?;
-            let mut locked = self.recv.lock().await;
-            let recv = locked.as_mut().unwrap();
+        let server_network_name = self.global_ctx.get_network_name();
+        let role_hint: u32 = if msg1_pb.a_network_name == server_network_name {
+            1
+        } else {
+            2
+        };
 
-            let mut msg = vec![0u8; 4096];
-            let server_network_name = self.global_ctx.get_network_name();
-            let role_hint: u32 = if msg1_pb.a_network_name == server_network_name {
-                1
-            } else {
-                2
-            };
-
-            let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
-            let (session, action, b_session_generation, root_key_32, initial_epoch) =
-                self.get_peer_session_store().upsert_responder_session(
-                    &SessionKey::new(remote_network_name.clone(), peer_id),
-                    msg1_pb.a_session_generation,
-                    algo,
-                );
-
-            let b_conn_id = uuid::Uuid::new_v4();
-            let msg2_pb = PeerConnNoiseMsg2Pb {
-                b_network_name: server_network_name,
-                role_hint,
-                action: match action {
-                    PeerSessionAction::Join => PeerConnSessionActionPb::Join as i32,
-                    PeerSessionAction::Sync => PeerConnSessionActionPb::Sync as i32,
-                    PeerSessionAction::Create => PeerConnSessionActionPb::Create as i32,
-                },
-                b_session_generation,
-                root_key_32: root_key_32.map(|k| k.to_vec()),
-                initial_epoch,
-                b_conn_id: b_conn_id.as_bytes().to_vec(),
-                a_conn_id_echo: msg1_pb.a_conn_id.clone(),
-            };
-            let msg2_payload = msg2_pb.encode_to_vec();
-            let msg_len = hs
-                .write_message(&msg2_payload, &mut msg)
-                .map_err(|e| Error::WaitRespError(format!("noise write msg2 failed: {e:?}")))?;
-            let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-            pkt.fill_peer_manager_hdr(
-                self.my_peer_id,
-                PeerId::default(),
-                PacketType::NoiseHandshake as u8,
+        let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
+        let (session, action, b_session_generation, root_key_32, initial_epoch) =
+            self.get_peer_session_store().upsert_responder_session(
+                &SessionKey::new(remote_network_name.clone(), remote_peer_id),
+                msg1_pb.a_session_generation,
+                algo,
             );
-            self.sink.send(pkt).await?;
 
-            let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
+        let b_conn_id = uuid::Uuid::new_v4();
+        let msg2_pb = PeerConnNoiseMsg2Pb {
+            b_network_name: server_network_name,
+            role_hint,
+            action: match action {
+                PeerSessionAction::Join => PeerConnSessionActionPb::Join as i32,
+                PeerSessionAction::Sync => PeerConnSessionActionPb::Sync as i32,
+                PeerSessionAction::Create => PeerConnSessionActionPb::Create as i32,
+            },
+            b_session_generation,
+            root_key_32: root_key_32.map(|k| k.to_vec()),
+            initial_epoch,
+            b_conn_id: Some(b_conn_id.into()),
+            a_conn_id_echo: msg1_pb.a_conn_id.clone(),
+        };
+        let msg2_payload = msg2_pb.encode_to_vec();
+        let mut msg = vec![0u8; 4096];
+        let msg_len = hs
+            .write_message(&msg2_payload, &mut msg)
+            .map_err(|e| Error::WaitRespError(format!("noise write msg2 failed: {e:?}")))?;
+        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+        pkt.fill_peer_manager_hdr(
+            local_peer_id,
+            remote_peer_id,
+            PacketType::NoiseHandshakeMsg2 as u8,
+        );
+        self.sink.send(pkt).await?;
 
-            let msg3 = loop {
-                let Some(ret) = recv.next().await else {
+        let msg3_pkt = timeout(
+            Duration::from_secs(5),
+            self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg3)),
+        )
+        .await??;
+        let msg3_pb = Self::decode_handshake_message::<PeerConnNoiseMsg3Pb>(
+            PacketType::NoiseHandshakeMsg3,
+            Some(&mut hs),
+            msg3_pkt,
+        )?;
+
+        let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
+
+        if msg3_pb.a_conn_id_echo != msg1_pb.a_conn_id {
+            return Err(Error::WaitRespError(
+                "noise msg3 a_conn_id mismatch".to_owned(),
+            ));
+        }
+        if msg3_pb.b_conn_id_echo != Some(b_conn_id.into()) {
+            return Err(Error::WaitRespError(
+                "noise msg3 b_conn_id mismatch".to_owned(),
+            ));
+        }
+
+        let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
+        if let Some(proof) = msg3_pb.secret_proof_32.as_ref() {
+            if let Some(mac) = self.global_ctx.get_secret_proof(&handshake_hash_for_proof) {
+                if proof.len() != 32 {
                     return Err(Error::WaitRespError(
-                        "conn closed during noise handshake".to_owned(),
+                        "invalid secret_proof length".to_owned(),
                     ));
-                };
-                let pkt = ret?;
-                let Some(hdr) = pkt.peer_manager_header() else {
-                    continue;
-                };
-                if hdr.packet_type == PacketType::NoiseHandshake as u8 {
-                    break pkt;
                 }
-            };
-
-            let out_len = hs
-                .read_message(msg3.payload(), &mut out)
-                .map_err(|e| Error::WaitRespError(format!("noise read msg3 failed: {e:?}")))?;
-
-            let msg3_pb = PeerConnNoiseMsg3Pb::decode(&out[..out_len]).map_err(|e| {
-                Error::WaitRespError(format!("decode noise msg3 payload failed: {e:?}"))
-            })?;
-            if msg3_pb.a_conn_id_echo != msg1_pb.a_conn_id {
-                return Err(Error::WaitRespError(
-                    "noise msg3 a_conn_id mismatch".to_owned(),
-                ));
-            }
-            if msg3_pb.b_conn_id_echo != b_conn_id.as_bytes() {
-                return Err(Error::WaitRespError(
-                    "noise msg3 b_conn_id mismatch".to_owned(),
-                ));
-            }
-
-            let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
-            if let Some(proof) = msg3_pb.secret_proof_32.as_ref() {
-                if self
-                    .global_ctx
-                    .get_network_identity()
-                    .network_secret
-                    .is_some()
-                {
-                    if proof.len() != 32 {
-                        return Err(Error::WaitRespError(
-                            "invalid secret_proof length".to_owned(),
-                        ));
-                    }
-                    let key = self.global_ctx.get_256_key();
-                    let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
-                    mac.update(&[1u8]);
-                    mac.update(&handshake_hash_for_proof);
-                    if mac.verify_slice(proof).is_ok() {
-                        secure_auth_level =
-                            secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
-                    } else {
-                        return Err(Error::WaitRespError("invalid secret_proof".to_owned()));
-                    }
+                if mac.verify_slice(proof).is_ok() {
+                    secure_auth_level =
+                        secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
+                } else {
+                    return Err(Error::WaitRespError("invalid secret_proof".to_owned()));
                 }
             }
+        }
 
-            let remote_static = hs
-                .get_remote_static()
-                .map(|x: &[u8]| x.to_vec())
-                .unwrap_or_default();
+        let remote_static = hs
+            .get_remote_static()
+            .map(|x: &[u8]| x.to_vec())
+            .unwrap_or_default();
 
-            let handshake_hash = hs.get_handshake_hash().to_vec();
+        let handshake_hash = hs.get_handshake_hash().to_vec();
 
-            Ok(NoiseHandshakeResult {
-                peer_id,
-                session,
-                local_static_pubkey,
-                remote_static_pubkey: remote_static,
-                handshake_hash,
-                secure_auth_level,
-                remote_network_name,
-            })
+        Ok(NoiseHandshakeResult {
+            peer_id: remote_peer_id,
+            session,
+            local_static_pubkey,
+            remote_static_pubkey: remote_static,
+            handshake_hash,
+            secure_auth_level,
+            remote_network_name,
         })
-        .await
-        .map_err(|e| Error::WaitRespError(format!("noise handshake timeout: {e:?}")))?
+    }
+
+    fn build_handshake_rsp(&self, noise: &NoiseHandshakeResult) -> HandshakeRequest {
+        HandshakeRequest {
+            magic: MAGIC,
+            my_peer_id: self.my_peer_id,
+            version: VERSION,
+            network_name: noise.remote_network_name.clone(),
+
+            features: Vec::new(),
+            network_secret_digrest: Vec::new(),
+        }
     }
 
     #[tracing::instrument(skip(handshake_recved))]
@@ -1000,71 +978,49 @@ impl PeerConn {
     where
         Fn: FnMut(&mut PeerConn, &str) -> Result<(), Error> + Send,
     {
-        let mut first_pkt: Option<ZCPacket> = None;
-        if self.secure_mode {
-            let pkt = self.recv_next_peer_manager_packet().await?;
-            let hdr = pkt.peer_manager_header().unwrap();
-            if hdr.packet_type == PacketType::HandShake as u8 {
-                self.secure_mode = false;
-                self.noise_handshake_result = None;
-                first_pkt = Some(pkt);
-            } else if hdr.packet_type == PacketType::NoiseHandshake as u8 {
-                first_pkt = Some(pkt);
-            } else {
-                return Err(Error::WaitRespError(format!(
-                    "unexpected packet type during handshake: {}",
-                    hdr.packet_type
-                )));
-            }
-        }
+        let first_pkt = timeout(
+            Duration::from_secs(5),
+            self.recv_next_peer_manager_packet(None),
+        )
+        .await??;
+        let Some(hdr) = first_pkt.peer_manager_header() else {
+            return Err(Error::WaitRespError(
+                "first packet must have peer manager header".to_owned(),
+            ));
+        };
 
-        if self.secure_mode {
+        if self.secure_mode && hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8 {
             let noise = self
                 .do_noise_handshake_as_server(first_pkt, handshake_recved)
                 .await?;
             // construct handshake rsp from noise result for compat.
-            let handshake_rsp = HandshakeRequest {
-                magic: MAGIC,
-                my_peer_id: self.my_peer_id,
-                version: VERSION,
-                network_name: noise.remote_network_name.clone(),
-
-                features: Vec::new(),
-                network_secret_digrest: Vec::new(),
-            };
+            let handshake_rsp = self.build_handshake_rsp(&noise);
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
             self.noise_handshake_result = Some(noise);
 
             self.info = Some(handshake_rsp);
             self.is_client = Some(false);
-
-            if self.get_peer_id() == self.my_peer_id {
-                Err(Error::WaitRespError("peer id conflict".to_owned()))
-            } else {
-                Ok(())
-            }
-        } else {
-            let rsp = if let Some(pkt) = first_pkt.as_ref() {
-                Self::decode_handshake_packet(pkt)?
-            } else {
-                self.wait_handshake_loop().await?
-            };
-
+        } else if hdr.packet_type == PacketType::HandShake as u8 {
+            let rsp = Self::decode_handshake_packet(&first_pkt)?;
             handshake_recved(self, &rsp.network_name)?;
-
             tracing::info!("handshake request: {:?}", rsp);
             self.info = Some(rsp);
             self.is_client = Some(false);
 
             let send_digest = self.get_network_identity() == self.global_ctx.get_network_identity();
             self.send_handshake(send_digest).await?;
+        } else {
+            return Err(Error::WaitRespError(format!(
+                "unexpected packet type during handshake: {}",
+                hdr.packet_type
+            )));
+        }
 
-            if self.get_peer_id() == self.my_peer_id {
-                Err(Error::WaitRespError("peer id conflict".to_owned()))
-            } else {
-                Ok(())
-            }
+        if self.get_peer_id() == self.my_peer_id {
+            Err(Error::WaitRespError("peer id conflict".to_owned()))
+        } else {
+            Ok(())
         }
     }
 
@@ -1079,17 +1035,19 @@ impl PeerConn {
             let noise = self.do_noise_handshake_as_client().await?;
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
+
+            let handshake_rsp = self.build_handshake_rsp(&noise);
             self.noise_handshake_result = Some(noise);
+            self.info = Some(handshake_rsp);
+            self.is_client = Some(true);
+        } else {
+            self.send_handshake(true).await?;
+            tracing::info!("waiting for handshake request from server");
+            let rsp = self.wait_handshake_loop().await?;
+            tracing::info!("handshake response: {:?}", rsp);
+            self.info = Some(rsp);
+            self.is_client = Some(true);
         }
-
-        self.send_handshake(true).await?;
-        tracing::info!("waiting for handshake request from server");
-        let rsp = self.wait_handshake_loop().await?;
-        tracing::info!("handshake response: {:?}", rsp);
-        self.info = Some(rsp);
-        self.is_client = Some(true);
-
-        let _ = self.maybe_confirm_network_secret().await;
 
         if self.get_peer_id() == self.my_peer_id {
             Err(Error::WaitRespError(
