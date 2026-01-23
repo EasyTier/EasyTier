@@ -100,7 +100,7 @@ jobs:
     if: |
       !failure() && !cancelled() &&
       needs.pre_job.outputs.should_skip != 'true' &&
-      (needs.cache.result == 'success' || needs.cache.result == 'skipped')
+      (needs.test-cache.result == 'success' || needs.test-cache.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
