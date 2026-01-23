@@ -106,17 +106,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "EasyTier ipv6_test"
-            opts: "--package easytier --lib tests::ipv6_test"
-
           - name: "EasyTier three_node"
-            opts: "--package easytier --lib tests::three_node"
+            opts: "--package easytier --lib tests::three_node -- --skip tests::three_node::subnet_proxy_three_node_test"
 
-          - name: "EasyTier Remaining"
-            opts: "--package easytier -- --skip tests::ipv6_test --skip tests::three_node"
+          - name: "EasyTier three_node::subnet_proxy_three_node_test"
+            opts: "--package easytier --lib tests::three_node::subnet_proxy_three_node_test"
 
-          - name: "Other Packages"
-            opts: "--workspace --exclude easytier"
+          - name: "Other tests"
+            opts: "--workspace -- --skip tests::three_node"
 
     steps:
       - uses: actions/checkout@v3
