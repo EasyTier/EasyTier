@@ -24,7 +24,6 @@ jobs:
     # Map a step output to a job output
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
-      lint-cache-hit: ${{ steps.lint-cache.outputs.cache-hit }}
       test-cache-hit: ${{ steps.test-cache.outputs.cache-hit }}
     steps:
       - id: skip_check
@@ -34,13 +33,6 @@ jobs:
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
-
-      - name: Check Cargo lint cache status
-        id: lint-cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
-          lookup-only: true
 
       - name: Check Cargo test cache Status
         id: test-cache
