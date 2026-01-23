@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TEST_FLAGS: "--no-default-features --features=full --verbose"
 
 defaults:
   run:
@@ -21,6 +22,7 @@ jobs:
     # Map a step output to a job output
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
+      cache-hit: ${{ steps.cache.outputs.cache-hit }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
@@ -29,6 +31,55 @@ jobs:
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
+
+      - name: Check Cargo cache Status
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            ./target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          lookup-only: true
+
+  cache:
+    name: Rebuild Cargo Cache
+    needs: pre_job
+    runs-on: ubuntu-22.04
+    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.cache-hit != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Frontend Environment
+        if: ${{ matrix.web == true || matrix.lint == true }}
+        uses: ./.github/actions/prepare-pnpm
+        with:
+          build_filter: './easytier-web/*'
+
+      - name: Install GUI dependencies (Used by clippy)
+        if: ${{ matrix.gui == true || matrix.lint == true }}
+        run: |
+          bash ./.github/workflows/install_gui_dep.sh
+          bash ./.github/workflows/install_rust.sh
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          # GitHub repo token to use to avoid rate limiter
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo
+            ./target
+          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Pre-build dependencies
+        run: |
+          mkdir -p easytier-gui/dist
+          cargo test --no-run ${{ env.CARGO_TEST_FLAGS }}
+
   test:
     name: Test (${{ matrix.name }})
     needs: pre_job
@@ -55,7 +106,6 @@ jobs:
             lint: true
             web: true
             gui: true
-
     steps:
       - uses: actions/checkout@v3
 
@@ -115,9 +165,13 @@ jobs:
           
           echo "Running tests for: ${{ matrix.name }}"
           OPTS="${{ matrix.opts }}"
-          COMMON_FLAGS="--no-default-features --features=full --verbose"
+          COMMON_FLAGS="${{ env.CARGO_TEST_FLAGS }}"
           EXTRA_FLAGS="--test-threads=1"
           
+          echo "Step 1: Building as non-root..."
+          cargo test $OPTS $COMMON_FLAGS --no-run
+          
+          echo "Step 2: Running tests as root..."
           if [[ "$OPTS" == *" -- "* ]]; then
               CMD="cargo test ${OPTS/ -- / $COMMON_FLAGS -- } $EXTRA_FLAGS"
           else
