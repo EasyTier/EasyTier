@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TEST_FLAGS: "--no-default-features --features=full"
+  RUSTC_WRAPPER: "sccache"
+  SCCACHE_GHA_ENABLED: "true"
 
 defaults:
   run:
@@ -82,7 +84,7 @@ jobs:
 
   test:
     name: Test (${{ matrix.name }})
-    needs: pre_job
+    needs: [ pre_job, cache ]
     if: needs.pre_job.outputs.should_skip != 'true'
     runs-on: ubuntu-22.04
     strategy:
@@ -165,24 +167,17 @@ jobs:
           
           echo "Building tests for: ${{ matrix.name }}"
           OPTS="${{ matrix.opts }}"
-          COMMON_FLAGS="${{ env.CARGO_TEST_FLAGS }}"
           
           echo "Building as non-root..."
-          cargo test $OPTS $COMMON_FLAGS --no-run
+          cargo test --no-run ${{ env.CARGO_TEST_FLAGS }} $OPTS
 
       - name: Run tests
         run: |          
           echo "Running tests for: ${{ matrix.name }}"
           OPTS="${{ matrix.opts }}"
-          COMMON_FLAGS="${{ env.CARGO_TEST_FLAGS }}"
-          EXTRA_FLAGS="--test-threads=1"
+          [[ "$OPTS" != *" -- "* ]] && OPTS="$OPTS --"
           
-          echo "Running tests as root..."
-          if [[ "$OPTS" == *" -- "* ]]; then
-              CMD="cargo test ${OPTS/ -- / $COMMON_FLAGS -- } $EXTRA_FLAGS"
-          else
-              CMD="cargo test $OPTS $COMMON_FLAGS -- $EXTRA_FLAGS"
-          fi
+          CMD="cargo test ${{ env.CARGO_TEST_FLAGS }} $OPTS --test-threads=1"
           
           echo "Executing: sudo -E env PATH=$PATH $CMD"
           sudo -E env "PATH=$PATH" $CMD
