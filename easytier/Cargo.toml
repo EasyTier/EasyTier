@@ -323,6 +323,7 @@ full = [
     "smoltcp",
     "tun",
     "socks5",
+    "quic",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
