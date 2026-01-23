@@ -86,14 +86,17 @@ jobs:
           - name: "EasyTier three_node"
             opts: "--package easytier --lib tests::three_node -- --skip tests::three_node::subnet_proxy_three_node_test"
             web: false
+            gui: false
 
           - name: "EasyTier three_node::subnet_proxy_three_node_test"
             opts: "--package easytier --lib tests::three_node::subnet_proxy_three_node_test"
             web: false
+            gui: false
 
           - name: "Other tests"
             opts: "--workspace -- --skip tests::three_node"
             web: true
+            gui: true
 
     steps:
       - uses: actions/checkout@v3
@@ -103,6 +106,14 @@ jobs:
         uses: ./.github/actions/prepare-pnpm
         with:
           build_filter: './easytier-web/*'
+
+      - name: Install GUI dependencies (Used by clippy)
+        if: ${{ matrix.gui == true }}
+        run: |
+          bash ./.github/workflows/install_gui_dep.sh
+          bash ./.github/workflows/install_rust.sh
+          rustup component add rustfmt
+          rustup component add clippy
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
