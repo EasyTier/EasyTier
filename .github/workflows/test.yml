@@ -29,54 +29,9 @@ jobs:
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
-  lint:
-    runs-on: ubuntu-22.04
-    needs: pre_job
-    if: needs.pre_job.outputs.should_skip != 'true'    
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup Frontend Environment
-        uses: ./.github/actions/prepare-pnpm
-        with:
-          build_filter: './easytier-web/*'
-
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install GUI dependencies (Used by clippy)
-        run: |
-          bash ./.github/workflows/install_gui_dep.sh
-          bash ./.github/workflows/install_rust.sh
-          rustup component add rustfmt
-          rustup component add clippy
-
-      - name: Check formatting
-        if: ${{ !cancelled() }}
-        run: cargo fmt --all -- --check
-
-      - name: Check Clippy
-        if: ${{ !cancelled() }}
-        # NOTE: tauri need `dist` dir in build.rs
-        run: |
-          mkdir -p easytier-gui/dist
-          cargo clippy --all-targets --all-features --all -- -D warnings
-
-
   test:
     name: Test (${{ matrix.name }})
-    needs: [ pre_job, lint ]
+    needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     runs-on: ubuntu-22.04
     strategy:
@@ -85,16 +40,19 @@ jobs:
         include:
           - name: "EasyTier three_node"
             opts: "--package easytier --lib tests::three_node -- --skip tests::three_node::subnet_proxy_three_node_test"
+            lint: false
             web: false
             gui: false
 
           - name: "EasyTier three_node::subnet_proxy_three_node_test"
             opts: "--package easytier --lib tests::three_node::subnet_proxy_three_node_test"
+            lint: false
             web: false
             gui: false
 
-          - name: "Other tests"
+          - name: "Lint & Other tests"
             opts: "--workspace -- --skip tests::three_node"
+            lint: true
             web: true
             gui: true
 
@@ -102,13 +60,13 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Setup Frontend Environment
-        if: ${{ matrix.web == true }}
+        if: ${{ matrix.web == true || matrix.lint == true }}
         uses: ./.github/actions/prepare-pnpm
         with:
           build_filter: './easytier-web/*'
 
       - name: Install GUI dependencies (Used by clippy)
-        if: ${{ matrix.gui == true }}
+        if: ${{ matrix.gui == true || matrix.lint == true }}
         run: |
           bash ./.github/workflows/install_gui_dep.sh
           bash ./.github/workflows/install_rust.sh
@@ -139,6 +97,17 @@ jobs:
             ~/.cargo
             ./target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        if: ${{ !cancelled() && matrix.lint == true }}
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        if: ${{ !cancelled() && matrix.lint == true }}
+        # NOTE: tauri need `dist` dir in build.rs
+        run: |
+          mkdir -p easytier-gui/dist
+          cargo clippy --all-targets --all-features --all -- -D warnings
 
       - name: Run tests
         run: |
