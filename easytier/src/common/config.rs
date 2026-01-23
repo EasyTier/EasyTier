@@ -52,7 +52,8 @@ pub fn gen_default_flags() -> Flags {
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
-        quic_listen_port: 0,
+        disable_relay_quic: false,
+        enable_relay_foreign_network_quic: false,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),
@@ -1570,7 +1571,6 @@ enable_ipv6 = ${ENABLE_IPV6}
     async fn test_numeric_type_env_vars() {
         // 设置数字类型的环境变量
         std::env::set_var("MTU_VALUE", "1400");
-        std::env::set_var("QUIC_PORT", "8080");
         std::env::set_var("THREAD_COUNT", "4");
 
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1583,7 +1583,6 @@ network_secret = "secret"
 
 [flags]
 mtu = ${MTU_VALUE}
-quic_listen_port = ${QUIC_PORT}
 multi_thread_count = ${THREAD_COUNT}
 "#;
         temp_file.write_all(config_content.as_bytes()).unwrap();
@@ -1598,10 +1597,6 @@ multi_thread_count = ${THREAD_COUNT}
         let flags = config.get_flags();
         assert_eq!(flags.mtu, 1400, "mtu should be 1400");
         assert_eq!(
-            flags.quic_listen_port, 8080,
-            "quic_listen_port should be 8080"
-        );
-        assert_eq!(
             flags.multi_thread_count, 4,
             "multi_thread_count should be 4"
         );
@@ -1612,7 +1607,6 @@ multi_thread_count = ${THREAD_COUNT}
 
         // 清理
         std::env::remove_var("MTU_VALUE");
-        std::env::remove_var("QUIC_PORT");
         std::env::remove_var("THREAD_COUNT");
     }
 
