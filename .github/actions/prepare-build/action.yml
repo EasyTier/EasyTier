@@ -26,6 +26,10 @@ runs:
       if: ${{ inputs.gui == 'true' }}
       run: |
         bash ./.github/workflows/install_gui_dep.sh
+      shell: bash
+
+    - name: Install Rust
+      run: |
         bash ./.github/workflows/install_rust.sh
       shell: bash
 
