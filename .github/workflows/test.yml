@@ -36,33 +36,10 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - uses: actions/setup-node@v4
+      - name: Setup Frontend Environment
+        uses: ./.github/actions/prepare-pnpm
         with:
-          node-version: 22
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-          run_install: false
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install frontend dependencies
-        run: |
-          pnpm -r install
-          pnpm -r --filter "./easytier-web/*"  build
+          build_filter: './easytier-web/*'
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
@@ -108,15 +85,24 @@ jobs:
         include:
           - name: "EasyTier three_node"
             opts: "--package easytier --lib tests::three_node -- --skip tests::three_node::subnet_proxy_three_node_test"
+            web: false
 
           - name: "EasyTier three_node::subnet_proxy_three_node_test"
             opts: "--package easytier --lib tests::three_node::subnet_proxy_three_node_test"
+            web: false
 
           - name: "Other tests"
             opts: "--workspace -- --skip tests::three_node"
+            web: true
 
     steps:
       - uses: actions/checkout@v3
+
+      - name: Setup Frontend Environment
+        if: ${{ matrix.web == true }}
+        uses: ./.github/actions/prepare-pnpm
+        with:
+          build_filter: './easytier-web/*'
 
       - name: Setup protoc
         uses: arduino/setup-protoc@v3
