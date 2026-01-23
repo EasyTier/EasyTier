@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TEST_FLAGS: "--no-default-features --features=full --verbose"
+  CARGO_TEST_FLAGS: "--no-default-features --features=full"
 
 defaults:
   run:
