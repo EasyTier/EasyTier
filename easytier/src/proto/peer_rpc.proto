@@ -288,6 +288,7 @@ message PeerConnNoiseMsg2Pb {
   uint32 initial_epoch = 6;
   common.UUID b_conn_id = 7;
   common.UUID a_conn_id_echo = 8;
+  optional bytes secret_proof_32 = 9;
 }
 
 message PeerConnNoiseMsg3Pb {

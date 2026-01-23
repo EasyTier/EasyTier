@@ -271,10 +271,10 @@ impl GlobalCtx {
     }
 
     pub fn get_secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
-        println!("get_secret_proof: {:?}", challenge);
         let network_secret = self.get_network_identity().network_secret?;
         let key = network_secret.as_bytes();
         let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        mac.update(b"easytier secret proof");
         mac.update(challenge);
         Some(mac)
     }

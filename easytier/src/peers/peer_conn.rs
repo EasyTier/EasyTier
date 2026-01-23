@@ -594,9 +594,12 @@ impl PeerConn {
         remote_peer_id: PeerId,
         hs: &mut snow::HandshakeState,
     ) -> Result<(), Error> {
-        println!(
+        tracing::info!(
             "send noise msg: {:?}, packet_type: {:?}, from: {:?}, to: {:?}",
-            pb, packet_type, self.my_peer_id, remote_peer_id
+            pb,
+            packet_type,
+            self.my_peer_id,
+            remote_peer_id
         );
         let payload = pb.encode_to_vec();
         let mut msg = vec![0u8; 4096];
@@ -659,6 +662,8 @@ impl PeerConn {
         )
         .await?;
 
+        let server_handshake_hash = hs.get_handshake_hash().to_vec();
+
         let msg2 = timeout(
             Duration::from_secs(5),
             self.recv_next_peer_manager_packet(Some(PacketType::NoiseHandshakeMsg2)),
@@ -683,6 +688,30 @@ impl PeerConn {
         let action = PeerConnSessionActionPb::try_from(msg2_pb.action)
             .map_err(|_| Error::WaitRespError("invalid session action".to_owned()))?;
         let remote_network_name = msg2_pb.b_network_name.clone();
+
+        if remote_network_name == network.network_name {
+            if msg2_pb.role_hint != 1 {
+                return Err(Error::WaitRespError(
+                    "role_hint must be 1 when network_name is same".to_owned(),
+                ));
+            }
+            let Some(secret_proof_32) = msg2_pb.secret_proof_32 else {
+                return Err(Error::WaitRespError(
+                    "secret_proof_32 must be present when role_hint is 1".to_owned(),
+                ));
+            };
+            let verify_result = self
+                .global_ctx
+                .get_secret_proof(&server_handshake_hash)
+                .map(|mac| mac.verify_slice(&secret_proof_32).is_ok());
+            if verify_result != Some(true) {
+                return Err(Error::WaitRespError(format!(
+                    "secret_proof_32 verify failed: {verify_result:?}"
+                )));
+            }
+
+            secure_auth_level = secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
+        }
 
         let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
         let secret_proof_32 = if msg2_pb.role_hint == 1 {
@@ -770,9 +799,10 @@ impl PeerConn {
     where
         MsgT: prost::Message + Default,
     {
-        println!(
+        tracing::info!(
             "decode_handshake_message: {:?}, expected_pkt_type: {:?}",
-            pkt, expected_pkt_type
+            pkt,
+            expected_pkt_type
         );
         let Some(hdr) = pkt.peer_manager_header() else {
             return Err(Error::WaitRespError(
@@ -873,10 +903,15 @@ impl PeerConn {
         handshake_recved(self, &remote_network_name)?;
 
         let server_network_name = self.global_ctx.get_network_name();
-        let role_hint: u32 = if msg1_pb.a_network_name == server_network_name {
-            1
+        let (role_hint, secret_proof_32) = if msg1_pb.a_network_name == server_network_name {
+            (
+                1,
+                self.global_ctx
+                    .get_secret_proof(hs.get_handshake_hash())
+                    .map(|m| m.finalize().into_bytes().to_vec()),
+            )
         } else {
-            2
+            (2, None)
         };
 
         let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
@@ -901,6 +936,7 @@ impl PeerConn {
             initial_epoch,
             b_conn_id: Some(b_conn_id.into()),
             a_conn_id_echo: msg1_pb.a_conn_id,
+            secret_proof_32,
         };
         self.send_noise_msg(
             msg2_pb,
@@ -935,13 +971,14 @@ impl PeerConn {
         }
 
         let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
-        if let Some(proof) = msg3_pb.secret_proof_32.as_ref() {
+        if role_hint == 1 {
+            let Some(proof) = msg3_pb.secret_proof_32.as_ref() else {
+                return Err(Error::WaitRespError(
+                    "noise msg3 secret_proof_32 is required".to_owned(),
+                ));
+            };
+
             if let Some(mac) = self.global_ctx.get_secret_proof(&handshake_hash_for_proof) {
-                if proof.len() != 32 {
-                    return Err(Error::WaitRespError(
-                        "invalid secret_proof length".to_owned(),
-                    ));
-                }
                 if mac.verify_slice(proof).is_ok() {
                     secure_auth_level =
                         secure_auth_level.max(SecureAuthLevel::NetworkSecretConfirmed);
@@ -970,7 +1007,7 @@ impl PeerConn {
     }
 
     fn build_handshake_rsp(&self, noise: &NoiseHandshakeResult) -> HandshakeRequest {
-        println!("build_handshake_rsp: {:?}", noise);
+        tracing::info!("build_handshake_rsp: {:?}", noise);
         HandshakeRequest {
             magic: MAGIC,
             my_peer_id: noise.peer_id,
