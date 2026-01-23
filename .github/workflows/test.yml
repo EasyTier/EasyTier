@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TEST_FLAGS: "--no-default-features --features=full"
+  CARGO_TEST_FLAGS: "--no-default-features --features=full --workspace"
 #  RUSTC_WRAPPER: "sccache"
 #  SCCACHE_GHA_ENABLED: "true"
 
@@ -24,7 +24,8 @@ jobs:
     # Map a step output to a job output
     outputs:
       should_skip: ${{ steps.skip_check.outputs.should_skip }}
-      cache-hit: ${{ steps.cache.outputs.cache-hit }}
+      lint-cache-hit: ${{ steps.lint-cache.outputs.cache-hit }}
+      test-cache-hit: ${{ steps.test-cache.outputs.cache-hit }}
     steps:
       - id: skip_check
         uses: fkirc/skip-duplicate-actions@v5
@@ -34,97 +35,106 @@ jobs:
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
 
-      - name: Check Cargo cache Status
-        id: cache
+      - name: Check Cargo lint cache status
+        id: lint-cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: ${{ runner.os }}-cargo-lint-${{ hashFiles('**/Cargo.lock') }}
           lookup-only: true
 
-  cache:
-    name: Rebuild Cargo Cache
+      - name: Check Cargo test cache Status
+        id: test-cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          lookup-only: true
+
+  lint:
+    name: Run linters
+    runs-on: ubuntu-latest
     needs: pre_job
-    runs-on: ubuntu-22.04
-    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.cache-hit != 'true'
+    if: needs.pre_job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup Frontend Environment
-        uses: ./.github/actions/prepare-pnpm
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
         with:
-          build_filter: './easytier-web/*'
+          gui: true
+          web: true
 
-      - name: Install GUI dependencies (Used by clippy)
+      - name: Install rustfmt and clippy
         run: |
-          bash ./.github/workflows/install_gui_dep.sh
-          bash ./.github/workflows/install_rust.sh
+          rustup component add rustfmt
+          rustup component add clippy
 
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        run: |
+          cargo clippy --all-targets --all-features --all -- -D warnings
+
+  test-cache:
+    name: Rebuild Cargo test cache
+    runs-on: ubuntu-latest
+    needs: pre_job
+    if: |
+      needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.test-cache-hit != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
         with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          gui: true
+          web: true
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          shared-key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Pre-build dependencies
         run: |
-          mkdir -p easytier-gui/dist
           cargo test --no-run ${{ env.CARGO_TEST_FLAGS }}
 
   test:
     name: Test (${{ matrix.name }})
-    needs: [ pre_job, cache ]
+    runs-on: ubuntu-latest
+    needs: [ pre_job, test-cache ]
     if: |
       !failure() && !cancelled() &&
       needs.pre_job.outputs.should_skip != 'true' &&
       (needs.cache.result == 'success' || needs.cache.result == 'skipped')
-    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: "EasyTier three_node"
-            opts: "--package easytier --lib tests::three_node -- --skip tests::three_node::subnet_proxy_three_node_test"
-            lint: false
+          - name: "tests::three_node"
+            opts: " --lib tests::three_node -- --skip tests::three_node::subnet_proxy_three_node_test"
             web: false
             gui: false
 
-          - name: "EasyTier three_node::subnet_proxy_three_node_test"
-            opts: "--package easytier --lib tests::three_node::subnet_proxy_three_node_test"
-            lint: false
+          - name: "tests::three_node::subnet_proxy_three_node_test"
+            opts: " --lib tests::three_node::subnet_proxy_three_node_test"
             web: false
             gui: false
 
-          - name: "Lint & Other tests"
-            opts: "--workspace -- --skip tests::three_node"
-            lint: true
+          - name: "Other tests"
+            opts: " -- --skip tests::three_node"
             web: true
             gui: true
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup Frontend Environment
-        if: ${{ matrix.web == true || matrix.lint == true }}
-        uses: ./.github/actions/prepare-pnpm
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
         with:
-          build_filter: './easytier-web/*'
-
-      - name: Install GUI dependencies (Used by clippy)
-        if: ${{ matrix.gui == true || matrix.lint == true }}
-        run: |
-          bash ./.github/workflows/install_gui_dep.sh
-          bash ./.github/workflows/install_rust.sh
-          rustup component add rustfmt
-          rustup component add clippy
-
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          gui: ${{ matrix.gui }}
+          web: ${{ matrix.web }}
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
@@ -140,18 +150,7 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Check formatting
-        if: ${{ !cancelled() && matrix.lint == true }}
-        run: cargo fmt --all -- --check
-
-      - name: Check Clippy
-        if: ${{ !cancelled() && matrix.lint == true }}
-        # NOTE: tauri need `dist` dir in build.rs
-        run: |
-          mkdir -p easytier-gui/dist
-          cargo clippy --all-targets --all-features --all -- -D warnings
+          shared-key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build tests
         run: |

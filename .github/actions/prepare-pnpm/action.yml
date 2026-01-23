@@ -1,4 +1,5 @@
 name: 'Setup pnpm'
+author: Luna
 description: 'Setup Node.js, pnpm, and install dependencies'
 
 inputs:
