@@ -9,8 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   CARGO_TEST_FLAGS: "--no-default-features --features=full"
-  RUSTC_WRAPPER: "sccache"
-  SCCACHE_GHA_ENABLED: "true"
+#  RUSTC_WRAPPER: "sccache"
+#  SCCACHE_GHA_ENABLED: "true"
 
 defaults:
   run:
@@ -85,7 +85,10 @@ jobs:
   test:
     name: Test (${{ matrix.name }})
     needs: [ pre_job, cache ]
-    if: needs.pre_job.outputs.should_skip != 'true'
+    if: |
+      !failure() && !cancelled() &&
+      needs.pre_job.outputs.should_skip != 'true' &&
+      (needs.cache.result == 'success' || needs.cache.result == 'skipped')
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
