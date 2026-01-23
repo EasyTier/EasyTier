@@ -159,19 +159,25 @@ jobs:
           mkdir -p easytier-gui/dist
           cargo clippy --all-targets --all-features --all -- -D warnings
 
-      - name: Run tests
+      - name: Build tests
         run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
           
+          echo "Building tests for: ${{ matrix.name }}"
+          OPTS="${{ matrix.opts }}"
+          COMMON_FLAGS="${{ env.CARGO_TEST_FLAGS }}"
+          
+          echo "Building as non-root..."
+          cargo test $OPTS $COMMON_FLAGS --no-run
+
+      - name: Run tests
+        run: |          
           echo "Running tests for: ${{ matrix.name }}"
           OPTS="${{ matrix.opts }}"
           COMMON_FLAGS="${{ env.CARGO_TEST_FLAGS }}"
           EXTRA_FLAGS="--test-threads=1"
           
-          echo "Step 1: Building as non-root..."
-          cargo test $OPTS $COMMON_FLAGS --no-run
-          
-          echo "Step 2: Running tests as root..."
+          echo "Running tests as root..."
           if [[ "$OPTS" == *" -- "* ]]; then
               CMD="cargo test ${OPTS/ -- / $COMMON_FLAGS -- } $EXTRA_FLAGS"
           else
