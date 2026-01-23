@@ -295,4 +295,5 @@ message PeerConnNoiseMsg3Pb {
   common.UUID a_conn_id_echo = 1;
   common.UUID b_conn_id_echo = 2;
   optional bytes secret_proof_32 = 3;
+  bytes secret_digest = 4;
 }

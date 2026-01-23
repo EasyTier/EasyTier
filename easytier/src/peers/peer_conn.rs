@@ -53,6 +53,7 @@ use crate::{
         stats::{Throughput, WindowLatency},
         Tunnel, TunnelError, ZCPacketStream,
     },
+    use_global_var,
 };
 
 use super::{
@@ -66,6 +67,13 @@ pub type PeerConnId = uuid::Uuid;
 const MAGIC: u32 = 0xd1e1a5e1;
 const VERSION: u32 = 1;
 
+/// The proof of client secret.
+#[derive(Debug)]
+struct SecretProof {
+    challenge: Vec<u8>,
+    proof: Vec<u8>,
+}
+
 /// The result of noise handshake.
 #[derive(Debug)]
 struct NoiseHandshakeResult {
@@ -76,6 +84,12 @@ struct NoiseHandshakeResult {
     handshake_hash: Vec<u8>,
     secure_auth_level: SecureAuthLevel,
     remote_network_name: String,
+
+    secret_digest: Vec<u8>,
+
+    // foreign network manager use this to verify peer.
+    // the challenge will be sent to authorized peer and compare the proof against it.
+    client_secret_proof: Option<SecretProof>,
 }
 
 #[derive(Clone)]
@@ -722,10 +736,20 @@ impl PeerConn {
             None
         };
 
+        let secret_digest = if use_global_var!(HMAC_SECRET_DIGEST) {
+            self.global_ctx
+                .get_secret_proof("digest".as_bytes())
+                .map(|mac| mac.finalize().into_bytes().to_vec())
+                .unwrap_or_default()
+        } else {
+            network.network_secret_digest.unwrap_or_default().to_vec()
+        };
+
         let msg3_pb = PeerConnNoiseMsg3Pb {
             a_conn_id_echo: Some(a_conn_id.into()),
             b_conn_id_echo: msg2_pb.b_conn_id,
             secret_proof_32,
+            secret_digest: secret_digest.clone(),
         };
         self.send_noise_msg(
             msg3_pb,
@@ -788,6 +812,9 @@ impl PeerConn {
             handshake_hash,
             secure_auth_level,
             remote_network_name,
+            // we have authorized the peer with noise handshake, so just set secret digest same as us even remote is a shared node.
+            secret_digest,
+            client_secret_proof: None,
         })
     }
 
@@ -971,13 +998,13 @@ impl PeerConn {
         }
 
         let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
-        if role_hint == 1 {
-            let Some(proof) = msg3_pb.secret_proof_32.as_ref() else {
-                return Err(Error::WaitRespError(
-                    "noise msg3 secret_proof_32 is required".to_owned(),
-                ));
-            };
+        let Some(proof) = msg3_pb.secret_proof_32.as_ref() else {
+            return Err(Error::WaitRespError(
+                "noise msg3 secret_proof_32 is required".to_owned(),
+            ));
+        };
 
+        if role_hint == 1 {
             if let Some(mac) = self.global_ctx.get_secret_proof(&handshake_hash_for_proof) {
                 if mac.verify_slice(proof).is_ok() {
                     secure_auth_level =
@@ -1003,6 +1030,11 @@ impl PeerConn {
             handshake_hash,
             secure_auth_level,
             remote_network_name,
+            secret_digest: msg3_pb.secret_digest,
+            client_secret_proof: Some(SecretProof {
+                challenge: handshake_hash_for_proof,
+                proof: proof.clone(),
+            }),
         })
     }
 
@@ -1015,7 +1047,7 @@ impl PeerConn {
             network_name: noise.remote_network_name.clone(),
 
             features: Vec::new(),
-            network_secret_digrest: Vec::new(),
+            network_secret_digrest: noise.secret_digest.clone(),
         }
     }
 
