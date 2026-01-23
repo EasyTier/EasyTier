@@ -14,9 +14,8 @@ use futures::{StreamExt, TryFutureExt};
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
-use hmac::{Hmac, Mac};
+use hmac::Mac;
 use prost::Message;
-use sha2::Sha256;
 
 use tokio::{
     sync::{broadcast, Mutex},
@@ -67,6 +66,8 @@ pub type PeerConnId = uuid::Uuid;
 const MAGIC: u32 = 0xd1e1a5e1;
 const VERSION: u32 = 1;
 
+/// The result of noise handshake.
+#[derive(Debug)]
 struct NoiseHandshakeResult {
     peer_id: PeerId,
     session: Arc<PeerSession>,
@@ -118,6 +119,8 @@ impl PeerSessionTunnelFilter {
 
     fn should_skip_encrypt(&self, hdr: &crate::tunnel::packet_def::PeerManagerHeader) -> bool {
         hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8
+            || hdr.packet_type == PacketType::NoiseHandshakeMsg2 as u8
+            || hdr.packet_type == PacketType::NoiseHandshakeMsg3 as u8
             || hdr.packet_type == PacketType::Ping as u8
             || hdr.packet_type == PacketType::Pong as u8
     }
@@ -584,6 +587,27 @@ impl PeerConn {
             .and_then(|p| p.peer_conn_pinned_remote_static_pubkey)
     }
 
+    async fn send_noise_msg<Msg: prost::Message>(
+        &self,
+        pb: Msg,
+        packet_type: PacketType,
+        remote_peer_id: PeerId,
+        hs: &mut snow::HandshakeState,
+    ) -> Result<(), Error> {
+        println!(
+            "send noise msg: {:?}, packet_type: {:?}, from: {:?}, to: {:?}",
+            pb, packet_type, self.my_peer_id, remote_peer_id
+        );
+        let payload = pb.encode_to_vec();
+        let mut msg = vec![0u8; 4096];
+        let msg_len = hs
+            .write_message(&payload, &mut msg)
+            .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
+        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
+        pkt.fill_peer_manager_hdr(self.my_peer_id, remote_peer_id, packet_type as u8);
+        Ok(self.sink.send(pkt).await?)
+    }
+
     async fn do_noise_handshake_as_client(&self) -> Result<NoiseHandshakeResult, Error> {
         let prologue = b"easytier-peerconn-noise".to_vec();
 
@@ -618,7 +642,6 @@ impl PeerConn {
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
         };
-        let msg1_payload = msg1_pb.encode_to_vec();
 
         let mut hs = builder
             .prologue(&prologue)
@@ -628,17 +651,13 @@ impl PeerConn {
 
         let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
 
-        let mut msg = vec![0u8; 4096];
-        let msg_len = hs
-            .write_message(&msg1_payload, &mut msg)
-            .map_err(|e| Error::WaitRespError(format!("noise write msg1 failed: {e:?}")))?;
-        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-        pkt.fill_peer_manager_hdr(
-            self.my_peer_id,
+        self.send_noise_msg(
+            msg1_pb,
+            PacketType::NoiseHandshakeMsg1,
             PeerId::default(),
-            PacketType::NoiseHandshakeMsg1 as u8,
-        );
-        self.sink.send(pkt).await?;
+            &mut hs,
+        )
+        .await?;
 
         let msg2 = timeout(
             Duration::from_secs(5),
@@ -679,18 +698,13 @@ impl PeerConn {
             b_conn_id_echo: msg2_pb.b_conn_id,
             secret_proof_32,
         };
-        let msg3_payload = msg3_pb.encode_to_vec();
-
-        let msg_len = hs
-            .write_message(&msg3_payload, &mut msg)
-            .map_err(|e| Error::WaitRespError(format!("noise write msg3 failed: {e:?}")))?;
-        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-        pkt.fill_peer_manager_hdr(
-            self.my_peer_id,
+        self.send_noise_msg(
+            msg3_pb,
+            PacketType::NoiseHandshakeMsg3,
             remote_peer_id,
-            PacketType::NoiseHandshakeMsg3 as u8,
-        );
-        self.sink.send(pkt).await?;
+            &mut hs,
+        )
+        .await?;
 
         let remote_static = hs
             .get_remote_static()
@@ -756,6 +770,10 @@ impl PeerConn {
     where
         MsgT: prost::Message + Default,
     {
+        println!(
+            "decode_handshake_message: {:?}, expected_pkt_type: {:?}",
+            pkt, expected_pkt_type
+        );
         let Some(hdr) = pkt.peer_manager_header() else {
             return Err(Error::WaitRespError(
                 "packet without peer manager header".to_owned(),
@@ -854,8 +872,6 @@ impl PeerConn {
         // this may update my peer id
         handshake_recved(self, &remote_network_name)?;
 
-        let local_peer_id = self.my_peer_id;
-
         let server_network_name = self.global_ctx.get_network_name();
         let role_hint: u32 = if msg1_pb.a_network_name == server_network_name {
             1
@@ -884,20 +900,17 @@ impl PeerConn {
             root_key_32: root_key_32.map(|k| k.to_vec()),
             initial_epoch,
             b_conn_id: Some(b_conn_id.into()),
-            a_conn_id_echo: msg1_pb.a_conn_id.clone(),
+            a_conn_id_echo: msg1_pb.a_conn_id,
         };
-        let msg2_payload = msg2_pb.encode_to_vec();
-        let mut msg = vec![0u8; 4096];
-        let msg_len = hs
-            .write_message(&msg2_payload, &mut msg)
-            .map_err(|e| Error::WaitRespError(format!("noise write msg2 failed: {e:?}")))?;
-        let mut pkt = ZCPacket::new_with_payload(&msg[..msg_len]);
-        pkt.fill_peer_manager_hdr(
-            local_peer_id,
+        self.send_noise_msg(
+            msg2_pb,
+            PacketType::NoiseHandshakeMsg2,
             remote_peer_id,
-            PacketType::NoiseHandshakeMsg2 as u8,
-        );
-        self.sink.send(pkt).await?;
+            &mut hs,
+        )
+        .await?;
+
+        let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
 
         let msg3_pkt = timeout(
             Duration::from_secs(5),
@@ -909,8 +922,6 @@ impl PeerConn {
             Some(&mut hs),
             msg3_pkt,
         )?;
-
-        let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
 
         if msg3_pb.a_conn_id_echo != msg1_pb.a_conn_id {
             return Err(Error::WaitRespError(
@@ -959,9 +970,10 @@ impl PeerConn {
     }
 
     fn build_handshake_rsp(&self, noise: &NoiseHandshakeResult) -> HandshakeRequest {
+        println!("build_handshake_rsp: {:?}", noise);
         HandshakeRequest {
             magic: MAGIC,
-            my_peer_id: self.my_peer_id,
+            my_peer_id: noise.peer_id,
             version: VERSION,
             network_name: noise.remote_network_name.clone(),
 
