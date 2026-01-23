@@ -34,57 +34,9 @@ jobs:
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
 
-      - name: Check Cargo cache Status
-        id: cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-          lookup-only: true
-
-  cache:
-    name: Rebuild Cargo Cache
-    needs: pre_job
-    runs-on: ubuntu-22.04
-    if: needs.pre_job.outputs.should_skip != 'true' && needs.pre_job.outputs.cache-hit != 'true'
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup Frontend Environment
-        if: ${{ matrix.web == true || matrix.lint == true }}
-        uses: ./.github/actions/prepare-pnpm
-        with:
-          build_filter: './easytier-web/*'
-
-      - name: Install GUI dependencies (Used by clippy)
-        if: ${{ matrix.gui == true || matrix.lint == true }}
-        run: |
-          bash ./.github/workflows/install_gui_dep.sh
-          bash ./.github/workflows/install_rust.sh
-
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
-        with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Pre-build dependencies
-        run: |
-          mkdir -p easytier-gui/dist
-          cargo test --no-run ${{ env.CARGO_TEST_FLAGS }}
-
   test:
     name: Test (${{ matrix.name }})
-    needs: [ pre_job, cache ]
+    needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
     runs-on: ubuntu-22.04
     strategy:
@@ -142,13 +94,16 @@ jobs:
           sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
           sudo ip addr add 2001:db8::2/64 dev lo
 
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.5
+
       - name: Cargo cache
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
+          path: ~/.cargo
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
 
       - name: Check formatting
         if: ${{ !cancelled() && matrix.lint == true }}
