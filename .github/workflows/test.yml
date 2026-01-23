@@ -125,8 +125,10 @@ jobs:
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
         with:
-          gui: ${{ matrix.gui }}
-          web: ${{ matrix.web }}
+#          gui: ${{ matrix.gui }}
+#          web: ${{ matrix.web }}
+          gui: 'true'
+          web: 'true'
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
