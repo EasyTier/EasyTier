@@ -90,8 +90,8 @@ jobs:
       - name: Prepare build environment
         uses: ./.github/actions/prepare-build
         with:
-          gui: true
-          web: true
+          gui: ${{ matrix.gui }}
+          web: ${{ matrix.web }}
 
       - uses: Swatinem/rust-cache@v2
         with:
