@@ -105,8 +105,10 @@ jobs:
             opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1"
 
           - name: "Other tests"
-            opts: "-E 'not test(tests::three_node)'"
+            opts: "-E 'not test(tests::three_node)' --test-threads 1"
     steps:
+      - uses: actions/checkout@v3
+
       - name: Setup tools for test
         run: sudo apt install bridge-utils
 
