@@ -12,13 +12,15 @@ use crate::tunnel::{
 };
 use anyhow::Context;
 
-use quinn::{congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig, UdpPoller, VarInt};
-
-use super::{
-    check_scheme_and_get_socket_addr,
-    IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
+use quinn::{
+    congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
+    EndpointConfig, ServerConfig, TransportConfig, UdpPoller, VarInt,
 };
 
+use super::{
+    check_scheme_and_get_socket_addr, IpVersion, Tunnel, TunnelConnector, TunnelError,
+    TunnelListener,
+};
 
 pub fn transport_config() -> Arc<TransportConfig> {
     // TODO: subject to change
