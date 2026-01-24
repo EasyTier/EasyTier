@@ -816,7 +816,7 @@ dependencies = [
  "bitflags 2.8.0",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -2217,6 +2217,7 @@ dependencies = [
  "prost-reflect-build",
  "prost-types",
  "quinn",
+ "quinn-plaintext",
  "rand 0.8.5",
  "rcgen",
  "regex",
@@ -6502,6 +6503,18 @@ dependencies = [
  "tokio",
  "tracing",
  "web-time",
+]
+
+[[package]]
+name = "quinn-plaintext"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3e617feaeb6493018fa35fc47ae8b630ac8903d8159e9e747018841b99bad3d"
+dependencies = [
+ "bytes",
+ "quinn-proto",
+ "seahash",
+ "tracing",
 ]
 
 [[package]]

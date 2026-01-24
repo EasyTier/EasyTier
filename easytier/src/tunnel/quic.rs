@@ -12,29 +12,53 @@ use crate::tunnel::{
 };
 use anyhow::Context;
 
-use quinn::{
-    congestion::BbrConfig, crypto::rustls::QuicClientConfig, udp::RecvMeta, AsyncUdpSocket,
-    ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
-};
+use quinn::{congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig, UdpPoller, VarInt};
 
 use super::{
     check_scheme_and_get_socket_addr,
-    insecure_tls::{get_insecure_tls_cert, get_insecure_tls_client_config},
     IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
 };
 
-pub fn configure_client() -> ClientConfig {
-    let client_crypto = QuicClientConfig::try_from(get_insecure_tls_client_config()).unwrap();
-    let mut client_config = ClientConfig::new(Arc::new(client_crypto));
 
-    // // Create a new TransportConfig and set BBR
-    let mut transport_config = TransportConfig::default();
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-    transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
-    // Replace the default TransportConfig with the transport_config() method
-    client_config.transport_config(Arc::new(transport_config));
+pub fn transport_config() -> Arc<TransportConfig> {
+    // TODO: subject to change
+    let mut config = TransportConfig::default();
 
-    client_config
+    config
+        // .qlog_stream(qlog_stream)
+        .stream_receive_window(VarInt::from_u32(64 * 1024 * 1024))
+        .receive_window(VarInt::from_u32(1024 * 1024 * 1024))
+        .send_window(1024 * 1024 * 1024)
+        .max_concurrent_bidi_streams(VarInt::from_u32(1024))
+        .max_concurrent_uni_streams(VarInt::from_u32(0))
+        .keep_alive_interval(Some(Duration::from_secs(5)))
+        .max_idle_timeout(Some(VarInt::from_u32(30_000).into()))
+        .initial_mtu(1200)
+        .min_mtu(1200)
+        .enable_segmentation_offload(true)
+        .congestion_controller_factory(Arc::new(BbrConfig::default()))
+        .datagram_receive_buffer_size(Some(1024 * 1024 * 1024))
+        .datagram_send_buffer_size(1024 * 1024 * 1024);
+
+    Arc::new(config)
+}
+
+pub fn server_config() -> ServerConfig {
+    let mut config = quinn_plaintext::server_config();
+    config.transport_config(transport_config());
+    config
+}
+
+pub fn client_config() -> ClientConfig {
+    let mut config = quinn_plaintext::client_config();
+    config.transport_config(transport_config());
+    config
+}
+
+pub fn endpoint_config() -> EndpointConfig {
+    let mut config = EndpointConfig::default();
+    config.max_udp_payload_size(65527).unwrap();
+    config
 }
 
 #[derive(Clone, Debug)]
@@ -87,8 +111,10 @@ impl AsyncUdpSocket for NoGroAsyncUdpSocket {
 /// - a stream of incoming QUIC connections
 /// - server certificate serialized into DER format
 #[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>), Box<dyn Error>> {
-    let (server_config, server_cert) = configure_server()?;
+pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn Error>> {
+    let server_config = server_config();
+    let client_config = client_config();
+    let endpoint_config = endpoint_config();
 
     let socket2_socket = socket2::Socket::new(
         socket2::Domain::for_address(bind_addr),
@@ -100,32 +126,17 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<(Endpoint, Vec<u8>)
 
     let runtime =
         quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
-    let mut endpoint_config = EndpointConfig::default();
-    endpoint_config.max_udp_payload_size(1200)?;
     let socket: NoGroAsyncUdpSocket = NoGroAsyncUdpSocket {
         inner: runtime.wrap_udp_socket(socket)?,
     };
-    let endpoint = Endpoint::new_with_abstract_socket(
+    let mut endpoint = Endpoint::new_with_abstract_socket(
         endpoint_config,
         Some(server_config),
         Arc::new(socket),
         runtime,
     )?;
-    Ok((endpoint, server_cert))
-}
-
-/// Returns default server configuration along with its certificate.
-pub fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
-    let (certs, key) = get_insecure_tls_cert();
-
-    let mut server_config = ServerConfig::with_single_cert(certs.clone(), key)?;
-    let transport_config = Arc::get_mut(&mut server_config.transport).unwrap();
-    transport_config.max_concurrent_uni_streams(10_u8.into());
-    transport_config.max_concurrent_bidi_streams(10_u8.into());
-    // Setting BBR congestion control
-    transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-
-    Ok((server_config, certs[0].to_vec()))
+    endpoint.set_default_client_config(client_config);
+    Ok(endpoint)
 }
 
 #[allow(unused)]
@@ -193,10 +204,10 @@ impl TunnelListener for QUICTunnelListener {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
                 .await?;
-        let (endpoint, server_cert) = make_server_endpoint(addr)
+        let endpoint = make_server_endpoint(addr)
             .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
         self.endpoint = Some(endpoint);
-        self.server_cert = Some(server_cert);
+        self.server_cert = None;
 
         self.addr
             .set_port(Some(self.endpoint.as_ref().unwrap().local_addr()?.port()))
@@ -251,7 +262,7 @@ impl TunnelConnector for QUICTunnelConnector {
         };
 
         let mut endpoint = Endpoint::client(local_addr.parse().unwrap())?;
-        endpoint.set_default_client_config(configure_client());
+        endpoint.set_default_client_config(client_config());
 
         // connect to server
         let connection = endpoint
