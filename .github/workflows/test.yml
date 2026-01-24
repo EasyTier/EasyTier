@@ -82,22 +82,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - id: "all"
-            opts: "-E 'not package(easytier)' --test-threads 1"
+          - name: "all"
+            opts: "-E 'not package(easytier)' --test-threads 1 --no-fail-fast"
 
-          - id: "easytier"
-            opts: "-E 'package(easytier) and not test(tests::three_node)' --test-threads 1"
+          - name: "easytier"
+            opts: "-E 'package(easytier) and not test(connector::dns_connector::tests) and not test(tests::three_node)' --test-threads 1 --no-fail-fast"
 
-          - id: "easytier::tests::three_node"
-            opts: "-E 'test(tests::three_node) and not test(subnet_proxy_three_node_test)' --test-threads 1"
+          - name: "easytier::connector::dns_connector::tests"
+            opts: "-E 'test(connector::dns_connector::tests)' --test-threads 1 --no-fail-fast"
 
-          - id: "easytier::tests::three_node::subnet_proxy_three_node_test"
-            opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1"
+          - name: "easytier::tests::three_node"
+            opts: "-E 'test(tests::three_node) and not test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
+
+          - name: "easytier::tests::three_node::subnet_proxy_three_node_test"
+            opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
     steps:
       - uses: actions/checkout@v3
 
       - name: Setup Frontend Environment
-        if: ${{ matrix.id == 'all' }}
+        if: ${{ matrix.name == 'all' }}
         uses: ./.github/actions/prepare-pnpm
         with:
           build_filter: './easytier-web/*'
