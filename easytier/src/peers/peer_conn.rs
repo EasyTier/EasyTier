@@ -727,13 +727,10 @@ impl PeerConn {
         }
 
         let handshake_hash_for_proof = hs.get_handshake_hash().to_vec();
-        let secret_proof_32 = if msg2_pb.role_hint == 1 {
-            self.global_ctx
-                .get_secret_proof(&handshake_hash_for_proof)
-                .map(|mac| mac.finalize().into_bytes().to_vec())
-        } else {
-            None
-        };
+        let secret_proof_32 = self
+            .global_ctx
+            .get_secret_proof(&handshake_hash_for_proof)
+            .map(|mac| mac.finalize().into_bytes().to_vec());
 
         let secret_digest = if use_global_var!(HMAC_SECRET_DIGEST) {
             self.global_ctx
@@ -1689,7 +1686,7 @@ mod tests {
 
         c_ctx
             .config
-            .set_network_identity(NetworkIdentity::new("net2".to_string(), "sec2".to_string()));
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec2".to_string()));
         s_ctx.config.set_network_identity(NetworkIdentity {
             network_name: "net2".to_string(),
             network_secret: None,
