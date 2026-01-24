@@ -157,7 +157,6 @@ impl Drop for ConnWrapper {
 pub struct QUICTunnelListener {
     addr: url::Url,
     endpoint: Option<Endpoint>,
-    server_cert: Option<Vec<u8>>,
 }
 
 impl QUICTunnelListener {
@@ -165,7 +164,6 @@ impl QUICTunnelListener {
         QUICTunnelListener {
             addr,
             endpoint: None,
-            server_cert: None,
         }
     }
 
@@ -209,7 +207,6 @@ impl TunnelListener for QUICTunnelListener {
         let endpoint = make_server_endpoint(addr)
             .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
         self.endpoint = Some(endpoint);
-        self.server_cert = None;
 
         self.addr
             .set_port(Some(self.endpoint.as_ref().unwrap().local_addr()?.port()))
