@@ -452,7 +452,7 @@ impl VirtualNic {
         let tun_names = Self::list_tun_names().await?;
         
         // Check if desired dev_name is in use
-        if let Some(found_name) = tun_names.iter().find(|&&ref name| name == dev_name) {
+        if tun_names.iter().any(|name| name == dev_name) {
             tracing::debug!("Desired dev_name {} is in TUN interfaces list, checking if it can be renamed", dev_name);
             
             let ifinfo = Self::get_interface_info(dev_name).await?;
@@ -483,11 +483,6 @@ impl VirtualNic {
         #[cfg(target_os = "freebsd")]
         {
             let dev_name = self.global_ctx.get_flags().dev_name;
-<<<<<<< HEAD
-            if !dev_name.is_empty() {
-                if let Err(e) = Self::restore_tun_name(&dev_name).await {
-                    tracing::warn!("Failed to restore TUN name: {}, continuing anyway", e);
-=======
 
             if !dev_name.is_empty() {
                 // List all TUN interfaces using ifconfig -g tun
@@ -585,7 +580,6 @@ impl VirtualNic {
                         "Failed to list TUN interfaces: {}, continuing anyway",
                         stderr
                     );
->>>>>>> 6bd4a9df5a53e9386cd9f214463a640770def234
                 }
             }
         }
@@ -714,13 +708,6 @@ impl VirtualNic {
             let dev_name = self.global_ctx.get_flags().dev_name;
 
             if !dev_name.is_empty() && dev_name != ifname {
-<<<<<<< HEAD
-                // Use the abstract function to rename the TUN interface
-                Self::rename_tun_interface(&ifname, &dev_name).await?;
-                // Update ifname regardless of rename result, as the command might have succeeded
-                // but the output parsing failed, or the rename might succeed later
-                ifname = dev_name;
-=======
                 // Use ifconfig to rename the TUN interface
                 let output = tokio::process::Command::new("ifconfig")
                     .arg(&ifname)
@@ -745,7 +732,6 @@ impl VirtualNic {
                         stderr
                     );
                 }
->>>>>>> 6bd4a9df5a53e9386cd9f214463a640770def234
             }
         }
 
