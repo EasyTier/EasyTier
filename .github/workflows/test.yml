@@ -128,4 +128,4 @@ jobs:
           name: tests
 
       - name: Run tests
-        run: cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
+        run: sudo -E env "PATH=$PATH" cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
