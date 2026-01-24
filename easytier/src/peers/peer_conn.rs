@@ -90,6 +90,9 @@ struct NoiseHandshakeResult {
     // foreign network manager use this to verify peer.
     // the challenge will be sent to authorized peer and compare the proof against it.
     client_secret_proof: Option<SecretProof>,
+
+    my_encrypt_algo: String,
+    remote_encrypt_algo: String,
 }
 
 #[derive(Clone)]
@@ -302,6 +305,7 @@ pub struct PeerConn {
     counters: ArcSwapOption<PeerConnCounter>,
 
     peer_session_store: Arc<PeerSessionStore>,
+    my_encrypt_algo: String,
 }
 
 impl Debug for PeerConn {
@@ -331,10 +335,11 @@ impl PeerConn {
         peer_id_hint: Option<PeerId>,
         peer_session_store: Arc<PeerSessionStore>,
     ) -> Self {
+        let flags = global_ctx.get_flags();
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
-        let secure_mode = global_ctx.get_flags().enable_peer_conn_secure_mode;
+        let secure_mode = flags.enable_peer_conn_secure_mode;
         let session_filter = PeerSessionTunnelFilter::new_with_peer(my_peer_id, secure_mode);
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
@@ -346,6 +351,7 @@ impl PeerConn {
         let (recv, sink) = (mpsc_tunnel.get_stream(), mpsc_tunnel.get_sink());
 
         let conn_id = PeerConnId::new_v4();
+        let my_encrypt_algo = flags.encryption_algorithm;
 
         PeerConn {
             conn_id,
@@ -383,6 +389,7 @@ impl PeerConn {
             counters: ArcSwapOption::new(None),
 
             peer_session_store,
+            my_encrypt_algo,
         }
     }
 
@@ -658,6 +665,7 @@ impl PeerConn {
             a_network_name: network.network_name.clone(),
             a_session_generation,
             a_conn_id: Some(a_conn_id.into()),
+            client_encryption_algorithm: self.my_encrypt_algo.clone(),
         };
 
         let mut hs = builder
@@ -808,6 +816,9 @@ impl PeerConn {
             // we have authorized the peer with noise handshake, so just set secret digest same as us even remote is a shared node.
             secret_digest,
             client_secret_proof: None,
+
+            my_encrypt_algo: self.my_encrypt_algo.clone(),
+            remote_encrypt_algo: msg2_pb.server_encryption_algorithm.clone(),
         })
     }
 
@@ -938,7 +949,7 @@ impl PeerConn {
             self.get_peer_session_store().upsert_responder_session(
                 &SessionKey::new(remote_network_name.clone(), remote_peer_id),
                 msg1_pb.a_session_generation,
-                algo,
+                algo.clone(),
             );
 
         let b_conn_id = uuid::Uuid::new_v4();
@@ -956,6 +967,7 @@ impl PeerConn {
             b_conn_id: Some(b_conn_id.into()),
             a_conn_id_echo: msg1_pb.a_conn_id,
             secret_proof_32,
+            server_encryption_algorithm: algo,
         };
         self.send_noise_msg(
             msg2_pb,
@@ -1027,6 +1039,9 @@ impl PeerConn {
                 challenge: handshake_hash_for_proof,
                 proof: proof.clone(),
             }),
+
+            my_encrypt_algo: self.my_encrypt_algo.clone(),
+            remote_encrypt_algo: msg1_pb.client_encryption_algorithm.clone(),
         })
     }
 
