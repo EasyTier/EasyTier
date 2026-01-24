@@ -102,8 +102,7 @@ impl AsyncUdpSocket for NoGroAsyncUdpSocket {
 ///
 /// ## Returns
 ///
-/// - a stream of incoming QUIC connections
-/// - server certificate serialized into DER format
+/// - an [`Endpoint`] configured to accept incoming QUIC connections
 #[allow(unused)]
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn Error>> {
     let server_config = server_config();
