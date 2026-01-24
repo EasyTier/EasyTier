@@ -112,12 +112,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup Frontend Environment
-        if: ${{ matrix.name == 'all' }}
-        uses: ./.github/actions/prepare-pnpm
-        with:
-          build_filter: './easytier-web/*'
-
       - name: Setup tools for test
         run: sudo apt install bridge-utils
 
