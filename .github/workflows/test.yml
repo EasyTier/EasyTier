@@ -33,35 +33,8 @@ jobs:
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
 
-  lint:
-    name: Run linters
-    runs-on: ubuntu-latest
-    needs: pre_job
-    if: needs.pre_job.outputs.should_skip != 'true'
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Prepare build environment
-        uses: ./.github/actions/prepare-build
-        with:
-          gui: true
-          web: true
-
-      - name: Install rustfmt and clippy
-        run: |
-          rustup component add rustfmt
-          rustup component add clippy
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check Clippy
-        run: cargo clippy --all-targets --all-features --all -- -D warnings
-
-  build-test:
-    name: Build test
+  pre-test:
+    name: Build test & Check code quality
     runs-on: ubuntu-latest
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
@@ -83,6 +56,17 @@ jobs:
           cargo test --no-run --workspace ${{ env.CARGO_TEST_FLAGS }}
           cargo nextest archive --workspace --archive-file tests.tar.zst ${{ env.CARGO_TEST_FLAGS }}
 
+      - name: Install rustfmt and clippy
+        run: |
+          rustup component add rustfmt
+          rustup component add clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        run: cargo clippy --all-targets --all-features --all -- -D warnings
+
       - uses: actions/upload-artifact@v4
         with:
           name: tests
@@ -92,22 +76,31 @@ jobs:
   test:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
-    needs: [ pre_job, build-test ]
+    needs: [ pre_job, pre-test ]
     if: needs.pre_job.outputs.should_skip != 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: "tests::three_node"
+          - id: "all"
+            opts: "-E 'not package(easytier)' --test-threads 1"
+
+          - id: "easytier"
+            opts: "-E 'package(easytier) and not test(tests::three_node)' --test-threads 1"
+
+          - id: "easytier::tests::three_node"
             opts: "-E 'test(tests::three_node) and not test(subnet_proxy_three_node_test)' --test-threads 1"
 
-          - name: "tests::three_node::subnet_proxy_three_node_test"
+          - id: "easytier::tests::three_node::subnet_proxy_three_node_test"
             opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1"
-
-          - name: "Other tests"
-            opts: "-E 'not test(tests::three_node)' --test-threads 1"
     steps:
       - uses: actions/checkout@v3
+
+      - name: Setup Frontend Environment
+        if: ${{ matrix.id == 'all' }}
+        uses: ./.github/actions/prepare-pnpm
+        with:
+          build_filter: './easytier-web/*'
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
@@ -128,4 +121,4 @@ jobs:
           name: tests
 
       - name: Run tests
-        run: sudo -E env "PATH=$PATH" cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
+        run: sudo -E env "PATH=$PATH" cargo nextest run --no-fail-fast --archive-file tests.tar.zst ${{ matrix.opts }}
