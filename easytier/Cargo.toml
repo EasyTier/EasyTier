@@ -154,7 +154,7 @@ ring = { version = "0.17", optional = true }
 bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
-snow = "0.9"
+snow = "0.10.0"
 
 # for cli
 tabled = "0.16"

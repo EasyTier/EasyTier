@@ -661,10 +661,9 @@ impl PeerConn {
         };
 
         let mut hs = builder
-            .prologue(&prologue)
-            .local_private_key(&keypair.private)
-            .build_initiator()
-            .map_err(|e| Error::WaitRespError(format!("build noise initiator failed: {e:?}")))?;
+            .prologue(&prologue)?
+            .local_private_key(&keypair.private)?
+            .build_initiator()?;
 
         let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
 
@@ -792,17 +791,14 @@ impl PeerConn {
             PeerConnSessionActionPb::Sync => PeerSessionAction::Sync,
             PeerConnSessionActionPb::Create => PeerSessionAction::Create,
         };
-        let session = self
-            .get_peer_session_store()
-            .apply_initiator_action(
-                &SessionKey::new(network.network_name.clone(), remote_peer_id),
-                session_action,
-                msg2_pb.b_session_generation,
-                root_key,
-                msg2_pb.initial_epoch,
-                algo,
-            )
-            .map_err(|e| Error::WaitRespError(format!("apply session action failed: {e:?}")))?;
+        let session = self.get_peer_session_store().apply_initiator_action(
+            &SessionKey::new(network.network_name.clone(), remote_peer_id),
+            session_action,
+            msg2_pb.b_session_generation,
+            root_key,
+            msg2_pb.initial_epoch,
+            algo,
+        )?;
 
         Ok(NoiseHandshakeResult {
             peer_id: remote_peer_id,
@@ -910,10 +906,9 @@ impl PeerConn {
             };
 
         let mut hs = builder
-            .prologue(&prologue)
-            .local_private_key(&local_static_private_key)
-            .build_responder()
-            .map_err(|e| Error::WaitRespError(format!("build noise responder failed: {e:?}")))?;
+            .prologue(&prologue)?
+            .local_private_key(&local_static_private_key)?
+            .build_responder()?;
 
         let remote_peer_id = first_msg1
             .get_src_peer_id()
