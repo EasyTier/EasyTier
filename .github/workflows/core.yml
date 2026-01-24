@@ -1,0 +1,345 @@
+name: EasyTier Core
+
+on:
+  push:
+    branches: ["develop", "main", "releases/**"]
+  pull_request:
+    branches: ["develop", "main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    # necessary for windows
+    shell: bash
+
+jobs:
+  pre_job:
+    # continue-on-error: true # Uncomment once integration is finished
+    runs-on: ubuntu-latest
+    # Map a step output to a job output
+    outputs:
+      # do not skip push on branch starts with releases/
+      should_skip: ${{ steps.skip_check.outputs.should_skip == 'true' && !startsWith(github.ref_name, 'releases/') }}
+    steps:
+      - id: skip_check
+        uses: fkirc/skip-duplicate-actions@v5
+        with:
+          # All of these options are optional, so you can remove them if you are happy with the defaults
+          concurrent_skipping: 'same_content_newer'
+          skip_after_successful_duplicate: 'true'
+          cancel_others: 'true'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/core.yml", ".github/workflows/install_rust.sh", "easytier-web/**"]'
+  build_web:
+    runs-on: ubuntu-latest
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+          run_install: false
+
+      - name: Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install frontend dependencies
+        run: |
+          pnpm -r install
+          pnpm -r --filter "./easytier-web/*"  build
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: |
+            easytier-web/frontend/dist/*
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - TARGET: aarch64-unknown-linux-musl
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-aarch64
+          - TARGET: x86_64-unknown-linux-musl
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-x86_64
+          - TARGET: riscv64gc-unknown-linux-musl
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-riscv64
+          - TARGET: mips-unknown-linux-musl
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-mips
+          - TARGET: mipsel-unknown-linux-musl
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-mipsel
+          - TARGET: armv7-unknown-linux-musleabihf # raspberry pi 2-3-4, not tested
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-armv7hf
+          - TARGET: armv7-unknown-linux-musleabi # raspberry pi 2-3-4, not tested
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-armv7
+          - TARGET: arm-unknown-linux-musleabihf # raspberry pi 0-1, not tested
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-armhf
+          - TARGET: arm-unknown-linux-musleabi # raspberry pi 0-1, not tested
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-arm
+
+          - TARGET: loongarch64-unknown-linux-musl
+            OS: ubuntu-24.04
+            ARTIFACT_NAME: linux-loongarch64
+
+          - TARGET: x86_64-apple-darwin
+            OS: macos-latest
+            ARTIFACT_NAME: macos-x86_64
+          - TARGET: aarch64-apple-darwin
+            OS: macos-latest
+            ARTIFACT_NAME: macos-aarch64
+
+          - TARGET: x86_64-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-x86_64
+          - TARGET: aarch64-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-arm64
+          - TARGET: i686-pc-windows-msvc
+            OS: windows-latest
+            ARTIFACT_NAME: windows-i686
+
+          - TARGET: x86_64-unknown-freebsd
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: freebsd-13.2-x86_64
+            BSD_VERSION: 13.2
+
+    runs-on: ${{ matrix.OS }}
+    env:
+      NAME: easytier
+      TARGET: ${{ matrix.TARGET }}
+      OS: ${{ matrix.OS }}
+      OSS_BUCKET: ${{ secrets.ALIYUN_OSS_BUCKET }}
+    needs:
+      - pre_job
+      - build_web
+    if: needs.pre_job.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set current ref as env variable
+        run: |
+          echo "GIT_DESC=$(git log -1 --format=%cd.%h --date=format:%Y-%m-%d_%H:%M:%S)" >> $GITHUB_ENV
+
+      - name: Download web artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-web-dashboard
+          path: easytier-web/frontend/dist/
+
+      - uses: Swatinem/rust-cache@v2
+        if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          prefix-key: ""
+          cache-targets: "false"
+
+      - name: Setup protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          # GitHub repo token to use to avoid rate limiter
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Core & Cli
+        if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
+        run: |
+          bash ./.github/workflows/install_rust.sh
+
+          # loongarch need llvm-18
+          if [[ $TARGET =~ ^loongarch.*$ ]]; then
+            sudo apt-get install -qq llvm-18 clang-18
+            export LLVM_CONFIG_PATH=/usr/lib/llvm-18/bin/llvm-config
+          fi
+          # we set the sysroot when sysroot is a dir
+          # this dir is a soft link generated by install_rust.sh
+          # kcp-sys need this to gen ffi bindings. without this clang may fail to find some libc headers such as bits/libc-header-start.h
+          if [[ -d "./musl_gcc/sysroot" ]]; then
+            export BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$(readlink -f ./musl_gcc/sysroot)
+          fi
+
+          if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
+            cargo +nightly-2025-09-01 build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
+          else
+            if [[ $OS =~ ^windows.*$ ]]; then
+              SUFFIX=.exe
+              CORE_FEATURES="--features=mimalloc"
+            elif [[ $TARGET =~ ^riscv64.*$ || $TARGET =~ ^loongarch64.*$ || $TARGET =~ ^aarch64.*$ ]]; then
+              CORE_FEATURES="--features=mimalloc"
+            else
+              CORE_FEATURES="--features=jemalloc"
+            fi
+            cargo build --release --target $TARGET --package=easytier-web --features=embed
+            mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
+            cargo build --release --target $TARGET $CORE_FEATURES
+          fi
+
+      # Copied and slightly modified from @lmq8267 (https://github.com/lmq8267)
+      - name: Build Core & Cli (X86_64 FreeBSD)
+        uses: vmactions/freebsd-vm@670398e4236735b8b65805c3da44b7a511fb8b27
+        if: ${{ endsWith(matrix.TARGET, 'freebsd') }}
+        env:
+          TARGET: ${{ matrix.TARGET }}
+        with:
+          envs: TARGET
+          release: ${{ matrix.BSD_VERSION }}
+          arch: x86_64
+          usesh: true
+          mem: 6144
+          cpu: 4
+          run: |
+            uname -a
+            echo $SHELL
+            pwd
+            ls -lah
+            whoami
+            env | sort
+
+            pkg install -y git protobuf llvm-devel sudo curl
+            curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            . $HOME/.cargo/env
+
+            rustup set auto-self-update disable
+
+            rustup install 1.89
+            rustup default 1.89
+
+            export CC=clang
+            export CXX=clang++
+            export CARGO_TERM_COLOR=always
+
+            cargo build --release --verbose --target $TARGET --package=easytier-web --features=embed
+            mv ./target/$TARGET/release/easytier-web ./target/$TARGET/release/easytier-web-embed
+            cargo build --release --verbose --target $TARGET --features=mimalloc
+
+            mkdir -p built-bins/$TARGET/release/
+            mv ./target/$TARGET/release/easytier-web-embed ./built-bins/$TARGET/release/easytier-web-embed
+            mv ./target/$TARGET/release/easytier-web ./built-bins/$TARGET/release/easytier-web
+            mv ./target/$TARGET/release/easytier-core ./built-bins/$TARGET/release/easytier-core
+            mv ./target/$TARGET/release/easytier-cli ./built-bins/$TARGET/release/easytier-cli
+
+            # remove dirs to avoid copy many files back
+            rm -rf ./target ~/.cargo
+            mv ./built-bins ./target
+
+      - name: Compress
+        run: |
+          mkdir -p ./artifacts/objects/
+          # windows is the only OS using a different convention for executable file name
+          if [[ $OS =~ ^windows.*$ && $TARGET =~ ^x86_64.*$ ]]; then
+              SUFFIX=.exe
+              cp easytier/third_party/x86_64/* ./artifacts/objects/
+          elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^i686.*$ ]]; then
+              SUFFIX=.exe
+              cp easytier/third_party/i686/* ./artifacts/objects/
+          elif [[ $OS =~ ^windows.*$ && $TARGET =~ ^aarch64.*$ ]]; then
+              SUFFIX=.exe
+              cp easytier/third_party/arm64/* ./artifacts/objects/
+          fi
+          if [[ $GITHUB_REF_TYPE =~ ^tag$ ]]; then
+            TAG=$GITHUB_REF_NAME
+          else
+            TAG=$GITHUB_SHA
+          fi
+
+          if [[ $OS =~ ^ubuntu.*$ && ! $TARGET =~ ^.*freebsd$ && ! $TARGET =~ ^loongarch.*$ && ! $TARGET =~ ^riscv64.*$ ]]; then
+            UPX_VERSION=4.2.4
+            curl -L https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz -s | tar xJvf -
+            cp upx-${UPX_VERSION}-amd64_linux/upx .
+            ./upx --lzma --best ./target/$TARGET/release/easytier-core"$SUFFIX"
+            ./upx --lzma --best ./target/$TARGET/release/easytier-cli"$SUFFIX"
+          fi
+
+          mv ./target/$TARGET/release/easytier-core"$SUFFIX" ./artifacts/objects/
+          mv ./target/$TARGET/release/easytier-cli"$SUFFIX" ./artifacts/objects/
+          if [[ ! $TARGET =~ ^mips.*$ ]]; then
+            mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./artifacts/objects/
+            mv ./target/$TARGET/release/easytier-web-embed"$SUFFIX" ./artifacts/objects/
+          fi
+
+          mv ./artifacts/objects/* ./artifacts/
+          rm -rf ./artifacts/objects/
+
+      - name: Archive artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-${{ matrix.ARTIFACT_NAME }}
+          path: |
+            ./artifacts/*
+
+  core-result:
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    runs-on: ubuntu-latest
+    needs:
+      - pre_job
+      - build_web
+      - build
+    steps:
+      - name: Mark result as failed
+        if: needs.build.result != 'success'
+        run: exit 1
+
+  magisk_build:
+    needs: 
+      - pre_job
+      - build_web
+      - build
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4  # 必须先检出代码才能获取模块配置
+
+      # 下载二进制文件到独立目录
+      - name: Download Linux aarch64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: easytier-linux-aarch64
+          path: ./downloaded-binaries/  # 独立目录避免冲突
+
+      # 将二进制文件复制到 Magisk 模块目录
+      - name: Prepare binaries
+        run: |
+          mkdir -p ./easytier-contrib/easytier-magisk/
+          cp ./downloaded-binaries/easytier-core ./easytier-contrib/easytier-magisk/
+          cp ./downloaded-binaries/easytier-cli ./easytier-contrib/easytier-magisk/
+          cp ./downloaded-binaries/easytier-web ./easytier-contrib/easytier-magisk/
+
+
+      # 上传生成的模块
+      - name: Upload Magisk Module
+        uses: actions/upload-artifact@v4
+        with:
+          name: Easytier-Magisk
+          path: |
+            ./easytier-contrib/easytier-magisk
+            !./easytier-contrib/easytier-magisk/build.sh
+            !./easytier-contrib/easytier-magisk/magisk_update.json
+          if-no-files-found: error
