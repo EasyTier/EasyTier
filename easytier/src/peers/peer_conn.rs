@@ -37,7 +37,7 @@ use crate::{
         stats_manager::{CounterHandle, LabelSet, LabelType, MetricName},
         PeerId,
     },
-    peers::peer_session::{PeerSessionStore, SessionKey},
+    peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
         common::TunnelInfo,
@@ -168,16 +168,10 @@ impl TunnelFilter for PeerSessionTunnelFilter {
             return Some(data);
         };
 
-        let payload = data.payload().to_vec();
         let my_peer_id = self.my_peer_id.load();
-        let Ok((ciphertext, tail)) = session.encrypt_payload(my_peer_id, peer_id, &payload) else {
-            return Some(data);
-        };
-
-        let payload_offset = data.payload_offset();
-        data.mut_inner().truncate(payload_offset);
-        data.mut_inner().extend_from_slice(&ciphertext);
-        data.mut_inner().extend_from_slice(tail.as_bytes());
+        session
+            .encrypt_payload(my_peer_id, peer_id, &mut data)
+            .ok()?;
 
         Some(data)
     }
@@ -212,15 +206,7 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         };
 
         let my_peer_id = self.my_peer_id.load();
-        let payload = data.payload().to_vec();
-        let plaintext = match session.decrypt_payload(from_peer_id, my_peer_id, &payload) {
-            Ok(v) => v,
-            Err(_) => return None,
-        };
-
-        let payload_offset = data.payload_offset();
-        data.mut_inner().truncate(payload_offset);
-        data.mut_inner().extend_from_slice(&plaintext);
+        let _ = session.decrypt_payload(from_peer_id, my_peer_id, &mut data);
 
         Some(Ok(data))
     }
@@ -803,6 +789,7 @@ impl PeerConn {
             root_key,
             msg2_pb.initial_epoch,
             algo,
+            msg2_pb.server_encryption_algorithm.clone(),
         )?;
 
         Ok(NoiseHandshakeResult {
@@ -945,12 +932,18 @@ impl PeerConn {
         };
 
         let algo = self.global_ctx.get_flags().encryption_algorithm.clone();
-        let (session, action, b_session_generation, root_key_32, initial_epoch) =
-            self.get_peer_session_store().upsert_responder_session(
-                &SessionKey::new(remote_network_name.clone(), remote_peer_id),
-                msg1_pb.a_session_generation,
-                algo.clone(),
-            );
+        let UpsertResponderSessionReturn {
+            session,
+            action,
+            session_generation: b_session_generation,
+            root_key: root_key_32,
+            initial_epoch,
+        } = self.get_peer_session_store().upsert_responder_session(
+            &SessionKey::new(remote_network_name.clone(), remote_peer_id),
+            msg1_pb.a_session_generation,
+            algo.clone(),
+            msg1_pb.client_encryption_algorithm.clone(),
+        )?;
 
         let b_conn_id = uuid::Uuid::new_v4();
         let msg2_pb = PeerConnNoiseMsg2Pb {

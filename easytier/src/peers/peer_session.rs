@@ -12,19 +12,21 @@ use anyhow::anyhow;
 use dashmap::DashMap;
 use hmac::{Hmac, Mac as _};
 use rand::RngCore as _;
-use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use sha2::Sha256;
-use zerocopy::AsBytes;
 
-use crate::common::PeerId;
+use crate::{
+    common::PeerId,
+    peers::encrypt::{create_encryptor, Encryptor},
+    tunnel::packet_def::{AesGcmTail, ZCPacket},
+};
 
 type HmacSha256 = Hmac<Sha256>;
-
-#[repr(C, packed)]
-#[derive(AsBytes, Clone, Copy, Debug, Default)]
-pub struct SessionAeadTail {
-    pub tag: [u8; 16],
-    pub nonce: [u8; 12],
+pub struct UpsertResponderSessionReturn {
+    pub session: Arc<PeerSession>,
+    pub action: PeerSessionAction,
+    pub session_generation: u32,
+    pub root_key: Option<[u8; 32]>,
+    pub initial_epoch: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,14 +77,9 @@ impl PeerSessionStore {
         &self,
         key: &SessionKey,
         a_session_generation: Option<u32>,
-        algorithm: String,
-    ) -> (
-        Arc<PeerSession>,
-        PeerSessionAction,
-        u32,
-        Option<[u8; 32]>,
-        u32,
-    ) {
+        send_algorithm: String,
+        recv_algorithm: String,
+    ) -> Result<UpsertResponderSessionReturn, anyhow::Error> {
         let existing = self.sessions.get(key).map(|v| v.clone());
         match existing {
             None => {
@@ -94,36 +91,45 @@ impl PeerSessionStore {
                     root_key,
                     session_generation,
                     initial_epoch,
-                    algorithm,
+                    send_algorithm,
+                    recv_algorithm,
                 ));
                 self.sessions.insert(key.clone(), session.clone());
-                (
+                Ok(UpsertResponderSessionReturn {
                     session,
-                    PeerSessionAction::Create,
+                    action: PeerSessionAction::Create,
                     session_generation,
-                    Some(root_key),
+                    root_key: Some(root_key),
                     initial_epoch,
-                )
+                })
             }
             Some(session) => {
+                session.check_encrypt_algo_same(&send_algorithm, &recv_algorithm)?;
                 let local_gen = session.session_generation();
                 if a_session_generation.is_some_and(|g| g == local_gen) {
-                    (session, PeerSessionAction::Join, local_gen, None, 0)
+                    Ok(UpsertResponderSessionReturn {
+                        session,
+                        action: PeerSessionAction::Join,
+                        session_generation: local_gen,
+                        root_key: None,
+                        initial_epoch: 0,
+                    })
                 } else {
                     let initial_epoch = session.next_sync_epoch();
                     let root_key = session.root_key();
-                    (
+                    Ok(UpsertResponderSessionReturn {
                         session,
-                        PeerSessionAction::Sync,
-                        local_gen,
-                        Some(root_key),
+                        action: PeerSessionAction::Sync,
+                        session_generation: local_gen,
+                        root_key: Some(root_key),
                         initial_epoch,
-                    )
+                    })
                 }
             }
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_initiator_action(
         &self,
         key: &SessionKey,
@@ -131,18 +137,21 @@ impl PeerSessionStore {
         b_session_generation: u32,
         root_key_32: Option<[u8; 32]>,
         initial_epoch: u32,
-        algorithm: String,
+        send_algorithm: String,
+        recv_algorithm: String,
     ) -> Result<Arc<PeerSession>, anyhow::Error> {
         tracing::info!(
-            "apply_initiator_action {:?}, algorithm: {}",
+            "apply_initiator_action {:?}, send_algorithm: {}, recv_algorithm: {}",
             action,
-            algorithm
+            send_algorithm,
+            recv_algorithm
         );
         match action {
             PeerSessionAction::Join => {
                 let Some(session) = self.get(key) else {
                     return Err(anyhow!("no local session for JOIN"));
                 };
+                session.check_encrypt_algo_same(&send_algorithm, &recv_algorithm)?;
                 if session.session_generation() != b_session_generation {
                     return Err(anyhow!("JOIN generation mismatch"));
                 }
@@ -159,10 +168,12 @@ impl PeerSessionStore {
                             root_key,
                             b_session_generation,
                             initial_epoch,
-                            algorithm.clone(),
+                            send_algorithm.clone(),
+                            recv_algorithm.clone(),
                         ))
                     })
                     .clone();
+                session.check_encrypt_algo_same(&send_algorithm, &recv_algorithm)?;
                 session.sync_root_key(root_key, b_session_generation, initial_epoch);
                 Ok(session)
             }
@@ -170,12 +181,33 @@ impl PeerSessionStore {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct EpochKeySlot {
     epoch: u32,
     generation: u32,
-    key: [u8; 32],
     valid: bool,
+    send_cipher: Option<Arc<dyn Encryptor>>,
+    recv_cipher: Option<Arc<dyn Encryptor>>,
+}
+
+impl std::fmt::Debug for EpochKeySlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EpochKeySlot")
+            .field("epoch", &self.epoch)
+            .field("generation", &self.generation)
+            .field("valid", &self.valid)
+            .finish()
+    }
+}
+
+impl EpochKeySlot {
+    fn get_encryptor(&self, is_send: bool) -> Arc<dyn Encryptor> {
+        if is_send {
+            self.send_cipher.as_ref().unwrap().clone()
+        } else {
+            self.recv_cipher.as_ref().unwrap().clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -282,10 +314,8 @@ impl EpochRxSlot {
     }
 }
 
-#[derive(Debug)]
 pub struct PeerSession {
     peer_id: PeerId,
-    algorithm: String,
     root_key: RwLock<[u8; 32]>,
     session_generation: AtomicU32,
 
@@ -296,6 +326,27 @@ pub struct PeerSession {
 
     rx_slots: Mutex<[[EpochRxSlot; 2]; 2]>,
     key_cache: Mutex<[[EpochKeySlot; 2]; 2]>,
+
+    send_cipher_algorithm: String,
+    recv_cipher_algorithm: String,
+}
+
+impl std::fmt::Debug for PeerSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerSession")
+            .field("peer_id", &self.peer_id)
+            .field("root_key", &self.root_key)
+            .field("session_generation", &self.session_generation)
+            .field("send_epoch", &self.send_epoch)
+            .field("send_seq", &self.send_seq)
+            .field("send_epoch_started_ms", &self.send_epoch_started_ms)
+            .field("send_packets_since_epoch", &self.send_packets_since_epoch)
+            .field("rx_slots", &self.rx_slots)
+            .field("key_cache", &self.key_cache)
+            .field("send_cipher_algorithm", &self.send_cipher_algorithm)
+            .field("recv_cipher_algorithm", &self.recv_cipher_algorithm)
+            .finish()
+    }
 }
 
 impl PeerSession {
@@ -308,8 +359,13 @@ impl PeerSession {
         root_key: [u8; 32],
         session_generation: u32,
         initial_epoch: u32,
-        algorithm: String,
+        send_cipher_algorithm: String,
+        recv_cipher_algorithm: String,
     ) -> Self {
+        // let mut root_key_128 = [0u8; 16];
+        // root_key_128.copy_from_slice(&root_key[..16]);
+        // let send_cipher = create_encryptor(&send_algorithm, root_key_128, root_key);
+        // let recv_cipher = create_encryptor(&recv_algorithm, root_key_128, root_key);
         let rx_slots = [
             [EpochRxSlot::default(), EpochRxSlot::default()],
             [EpochRxSlot::default(), EpochRxSlot::default()],
@@ -321,7 +377,6 @@ impl PeerSession {
         let now_ms = now_ms();
         Self {
             peer_id,
-            algorithm,
             root_key: RwLock::new(root_key),
             session_generation: AtomicU32::new(session_generation),
             send_epoch: AtomicU32::new(initial_epoch),
@@ -330,6 +385,8 @@ impl PeerSession {
             send_packets_since_epoch: AtomicU64::new(0),
             rx_slots: Mutex::new(rx_slots),
             key_cache: Mutex::new(key_cache),
+            send_cipher_algorithm,
+            recv_cipher_algorithm,
         }
     }
 
@@ -366,6 +423,19 @@ impl PeerSession {
             }
         }
         max_epoch.wrapping_add(1)
+    }
+
+    pub fn check_encrypt_algo_same(
+        &self,
+        send_algorithm: &str,
+        recv_algorithm: &str,
+    ) -> Result<(), anyhow::Error> {
+        if self.send_cipher_algorithm != send_algorithm
+            || self.recv_cipher_algorithm != recv_algorithm
+        {
+            return Err(anyhow!("encrypt algorithm not same"));
+        }
+        Ok(())
     }
 
     pub fn sync_root_key(&self, root_key: [u8; 32], session_generation: u32, initial_epoch: u32) {
@@ -431,7 +501,7 @@ impl PeerSession {
         key
     }
 
-    fn get_key(&self, epoch: u32, dir: usize) -> Option<[u8; 32]> {
+    fn get_encryptor(&self, epoch: u32, dir: usize, is_send: bool) -> Option<Arc<dyn Encryptor>> {
         let generation = self.session_generation();
         let rx = self.rx_slots.lock().unwrap();
         let send_epoch = self.send_epoch.load(Ordering::Relaxed);
@@ -445,27 +515,30 @@ impl PeerSession {
         let mut guard = self.key_cache.lock().unwrap();
         for slot in guard[dir].iter_mut() {
             if slot.valid && slot.epoch == epoch && slot.generation == generation {
-                return Some(slot.key);
+                return Some(slot.get_encryptor(is_send));
             }
         }
 
         let key = self.hkdf_traffic_key(epoch, dir);
+        let mut key_128 = [0u8; 16];
+        key_128.copy_from_slice(&key[..16]);
+
+        let slot = EpochKeySlot {
+            epoch,
+            generation,
+            valid: true,
+            send_cipher: Some(create_encryptor(&self.send_cipher_algorithm, key_128, key)),
+            recv_cipher: Some(create_encryptor(&self.recv_cipher_algorithm, key_128, key)),
+        };
+        let ret = slot.get_encryptor(is_send);
+
         if !guard[dir][0].valid || guard[dir][0].epoch == epoch {
-            guard[dir][0] = EpochKeySlot {
-                epoch,
-                generation,
-                key,
-                valid: true,
-            };
+            guard[dir][0] = slot;
         } else {
-            guard[dir][1] = EpochKeySlot {
-                epoch,
-                generation,
-                key,
-                valid: true,
-            };
+            guard[dir][1] = slot;
         }
-        Some(key)
+
+        Some(ret)
     }
 
     fn maybe_rotate_epoch(&self, now_ms: u64) {
@@ -503,23 +576,15 @@ impl PeerSession {
         (epoch, seq, nonce)
     }
 
-    fn parse_tail(payload: &[u8]) -> Option<(usize, [u8; 12])> {
-        if payload.len() < std::mem::size_of::<SessionAeadTail>() {
+    fn parse_tail(payload: &[u8]) -> Option<[u8; 12]> {
+        if payload.len() < std::mem::size_of::<AesGcmTail>() {
             return None;
         }
-        let tail_off = payload.len() - std::mem::size_of::<SessionAeadTail>();
+        let tail_off = payload.len() - std::mem::size_of::<AesGcmTail>();
         let tail = &payload[tail_off..];
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&tail[16..]);
-        Some((tail_off, nonce))
-    }
-
-    fn select_alg(&self) -> &'static aead::Algorithm {
-        match self.algorithm.as_str() {
-            "aes-gcm" | "aes-256-gcm" | "aes-256-gcm-session" => &aead::AES_256_GCM,
-            "chacha20" | "chacha20-session" | "chacha20-poly1305" => &aead::CHACHA20_POLY1305,
-            _ => &aead::AES_256_GCM,
-        }
+        Some(nonce)
     }
 
     fn evict_old_rx_slots(rx: &mut [[EpochRxSlot; 2]; 2], now_ms: u64) {
@@ -595,39 +660,26 @@ impl PeerSession {
         &self,
         sender_peer_id: PeerId,
         receiver_peer_id: PeerId,
-        plaintext: &[u8],
-    ) -> Result<(Vec<u8>, SessionAeadTail), anyhow::Error> {
+        pkt: &mut ZCPacket,
+    ) -> Result<(), anyhow::Error> {
         let dir = Self::dir_for_sender(sender_peer_id, receiver_peer_id);
         let (epoch, _seq, nonce_bytes) = self.next_nonce(dir);
-        let key = self
-            .get_key(epoch, dir)
+        let encryptor = self
+            .get_encryptor(epoch, dir, true)
             .ok_or_else(|| anyhow!("no key for epoch"))?;
-
-        let alg = self.select_alg();
-        let cipher =
-            LessSafeKey::new(UnboundKey::new(alg, &key).map_err(|_| anyhow!("invalid key"))?);
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-
-        let mut out = plaintext.to_vec();
-        let tag = cipher
-            .seal_in_place_separate_tag(nonce, Aad::empty(), &mut out)
-            .map_err(|_| anyhow!("seal failed"))?;
-
-        let mut tail = SessionAeadTail::default();
-        tail.tag.copy_from_slice(tag.as_ref());
-        tail.nonce.copy_from_slice(&nonce_bytes);
-        Ok((out, tail))
+        let _ = encryptor.encrypt_with_nonce(pkt, Some(nonce_bytes.as_slice()));
+        Ok(())
     }
 
     pub fn decrypt_payload(
         &self,
         sender_peer_id: PeerId,
         receiver_peer_id: PeerId,
-        ciphertext_with_tail: &[u8],
-    ) -> Result<Vec<u8>, anyhow::Error> {
+        ciphertext_with_tail: &mut ZCPacket,
+    ) -> Result<(), anyhow::Error> {
         let dir = Self::dir_for_sender(sender_peer_id, receiver_peer_id);
-        let (cipher_len, nonce_bytes) =
-            Self::parse_tail(ciphertext_with_tail).ok_or_else(|| anyhow!("no tail"))?;
+        let nonce_bytes =
+            Self::parse_tail(ciphertext_with_tail.payload()).ok_or_else(|| anyhow!("no tail"))?;
         let epoch = u32::from_be_bytes(nonce_bytes[..4].try_into().unwrap());
         let seq = u64::from_be_bytes(nonce_bytes[4..].try_into().unwrap());
 
@@ -636,24 +688,12 @@ impl PeerSession {
             return Err(anyhow!("replay rejected"));
         }
 
-        let key = self
-            .get_key(epoch, dir)
+        let encryptor = self
+            .get_encryptor(epoch, dir, false)
             .ok_or_else(|| anyhow!("no key for epoch"))?;
+        encryptor.decrypt(ciphertext_with_tail)?;
 
-        let alg = self.select_alg();
-        let cipher =
-            LessSafeKey::new(UnboundKey::new(alg, &key).map_err(|_| anyhow!("invalid key"))?);
-        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
-
-        let text_and_tag_len = cipher_len + 16;
-        if ciphertext_with_tail.len() < text_and_tag_len + 12 {
-            return Err(anyhow!("invalid payload length"));
-        }
-        let mut buf = ciphertext_with_tail[..text_and_tag_len].to_vec();
-        let plain = cipher
-            .open_in_place(nonce, Aad::empty(), &mut buf)
-            .map_err(|_| anyhow!("open failed"))?;
-        Ok(plain.to_vec())
+        Ok(())
     }
 }
 
@@ -662,4 +702,49 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_session_supports_asymmetric_algorithms() {
+        let a: PeerId = 10;
+        let b: PeerId = 20;
+        let root_key = PeerSession::new_root_key();
+        let generation = 1u32;
+        let initial_epoch = 0u32;
+
+        let sa = PeerSession::new(
+            b,
+            root_key,
+            generation,
+            initial_epoch,
+            "aes-256-gcm".to_string(),
+            "chacha20-poly1305".to_string(),
+        );
+        let sb = PeerSession::new(
+            a,
+            root_key,
+            generation,
+            initial_epoch,
+            "chacha20-poly1305".to_string(),
+            "aes-256-gcm".to_string(),
+        );
+
+        let plaintext1 = b"hello from a";
+        let mut pkt1 = ZCPacket::new_with_payload(plaintext1);
+        pkt1.fill_peer_manager_hdr(a as u32, b as u32, 0);
+        sa.encrypt_payload(a, b, &mut pkt1).unwrap();
+        sb.decrypt_payload(a, b, &mut pkt1).unwrap();
+        assert_eq!(pkt1.payload(), plaintext1);
+
+        let plaintext2 = b"hello from b";
+        let mut pkt2 = ZCPacket::new_with_payload(plaintext2);
+        pkt2.fill_peer_manager_hdr(b as u32, a as u32, 0);
+        sb.encrypt_payload(b, a, &mut pkt2).unwrap();
+        sa.decrypt_payload(b, a, &mut pkt2).unwrap();
+        assert_eq!(pkt2.payload(), plaintext2);
+    }
 }
