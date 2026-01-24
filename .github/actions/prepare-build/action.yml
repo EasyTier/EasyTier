@@ -35,6 +35,3 @@ runs:
 
     - name: Setup protoc
       uses: arduino/setup-protoc@v3
-      with:
-        # GitHub repo token to use to avoid rate limiter
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
