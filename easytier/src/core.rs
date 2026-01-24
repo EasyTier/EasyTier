@@ -769,7 +769,7 @@ impl NetworkOptions {
                     uri: p
                         .parse()
                         .with_context(|| format!("failed to parse peer uri: {}", p))?,
-                    peer_conn_pinned_remote_static_pubkey: None,
+                    peer_public_key: None,
                 });
             }
             cfg.set_peers(peers);
@@ -830,7 +830,7 @@ impl NetworkOptions {
                 uri: external_nodes.parse().with_context(|| {
                     format!("failed to parse external node uri: {}", external_nodes)
                 })?,
-                peer_conn_pinned_remote_static_pubkey: None,
+                peer_public_key: None,
             });
             cfg.set_peers(old_peers);
         }
@@ -986,7 +986,7 @@ impl NetworkOptions {
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();
         }
-        f.enable_peer_conn_secure_mode = self.safe_mode.unwrap_or(f.enable_peer_conn_secure_mode);
+        f.secure_mode = self.safe_mode.unwrap_or(f.secure_mode);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

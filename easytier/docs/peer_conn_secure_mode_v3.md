@@ -469,7 +469,7 @@ secret_proof = HMAC-SHA256(
 
 ### 7.6 pinning（共享节点）
 
-- 配置位置：`PeerConfig.peer_conn_pinned_remote_static_pubkey`（base64，32B）。
+- 配置位置：`PeerConfig.peer_public_key`（base64，32B）。
 - 校验时机：Noise 握手结束后，A 读取 `remote_static_pubkey`，若配置了 pinned 则必须匹配，否则断连。
 
 ---

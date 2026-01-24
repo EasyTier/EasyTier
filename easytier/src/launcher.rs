@@ -536,7 +536,7 @@ impl NetworkConfig {
                     uri: public_server_url.parse().with_context(|| {
                         format!("failed to parse public server uri: {}", public_server_url)
                     })?,
-                    peer_conn_pinned_remote_static_pubkey: None,
+                    peer_public_key: None,
                 }]);
             }
             NetworkingMethod::Manual => {
@@ -549,7 +549,7 @@ impl NetworkConfig {
                         uri: peer_url
                             .parse()
                             .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
-                        peer_conn_pinned_remote_static_pubkey: None,
+                        peer_public_key: None,
                     });
                 }
 
@@ -792,8 +792,8 @@ impl NetworkConfig {
             }
         }
 
-        if let Some(enable_peer_conn_secure_mode) = self.enable_peer_conn_secure_mode {
-            flags.enable_peer_conn_secure_mode = enable_peer_conn_secure_mode;
+        if let Some(secure_mode) = self.secure_mode {
+            flags.secure_mode = secure_mode;
         }
 
         cfg.set_flags(flags);
@@ -928,7 +928,7 @@ impl NetworkConfig {
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
-        result.enable_peer_conn_secure_mode = Some(flags.enable_peer_conn_secure_mode);
+        result.secure_mode = Some(flags.secure_mode);
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);
@@ -1027,7 +1027,7 @@ mod tests {
                     .unwrap();
                 peers.push(crate::common::config::PeerConfig {
                     uri,
-                    peer_conn_pinned_remote_static_pubkey: None,
+                    peer_public_key: None,
                 });
             }
             config.set_peers(peers);
@@ -1174,7 +1174,7 @@ mod tests {
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
-                flags.enable_peer_conn_secure_mode = rng.gen_bool(0.3);
+                flags.secure_mode = rng.gen_bool(0.3);
 
                 if rng.gen_bool(0.4) {
                     flags.relay_network_whitelist = (0..rng.gen_range(1..3))

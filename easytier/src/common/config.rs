@@ -50,9 +50,9 @@ pub fn gen_default_flags() -> Flags {
         enable_relay_foreign_network_kcp: false,
         accept_dns: false,
         private_mode: false,
-        enable_peer_conn_secure_mode: false,
-        peer_conn_static_private_key: "".to_string(),
-        peer_conn_static_public_key: "".to_string(),
+        secure_mode: false,
+        local_private_key: "".to_string(),
+        local_public_key: "".to_string(),
         enable_quic_proxy: false,
         disable_quic_input: false,
         quic_listen_port: 0,
@@ -303,7 +303,7 @@ impl Default for NetworkIdentity {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PeerConfig {
     pub uri: url::Url,
-    pub peer_conn_pinned_remote_static_pubkey: Option<String>,
+    pub peer_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

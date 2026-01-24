@@ -65,15 +65,15 @@ message FlagsInConfig {
 
   bool disable_tcp_hole_punching = 34;
 
-  bool enable_peer_conn_secure_mode = 35;
+  bool secure_mode = 35;
 
   reserved 36;
 
   // base64(X25519 private key), used by shared node to present a stable identity
-  string peer_conn_static_private_key = 37;
+  string local_private_key = 37;
 
-  // base64(X25519 public key), required if peer_conn_static_private_key is set
-  string peer_conn_static_public_key = 38;
+  // base64(X25519 public key), required if local_private_key is set
+  string local_public_key = 38;
 }
 
 message RpcDescriptor {

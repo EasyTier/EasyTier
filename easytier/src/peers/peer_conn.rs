@@ -325,7 +325,7 @@ impl PeerConn {
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
-        let secure_mode = flags.enable_peer_conn_secure_mode;
+        let secure_mode = flags.secure_mode;
         let session_filter = PeerSessionTunnelFilter::new_with_peer(my_peer_id, secure_mode);
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
@@ -591,7 +591,7 @@ impl PeerConn {
             .get_peers()
             .into_iter()
             .find(|p| p.uri == remote_url)
-            .and_then(|p| p.peer_conn_pinned_remote_static_pubkey)
+            .and_then(|p| p.peer_public_key)
     }
 
     async fn send_noise_msg<Msg: prost::Message>(
@@ -883,22 +883,22 @@ impl PeerConn {
         let flags = self.global_ctx.get_flags();
         let builder = snow::Builder::new(params);
 
-        let (local_static_private_key, local_static_pubkey) =
-            if flags.peer_conn_static_private_key.is_empty() {
-                let keypair = builder.generate_keypair().map_err(|e| {
-                    Error::WaitRespError(format!("generate noise keypair failed: {e:?}"))
-                })?;
-                (keypair.private, keypair.public)
-            } else {
-                if flags.peer_conn_static_public_key.is_empty() {
-                    return Err(Error::WaitRespError(
-                        "peer_conn_static_public_key is required".to_owned(),
-                    ));
-                }
-                let private = Self::decode_b64_32(&flags.peer_conn_static_private_key)?;
-                let public = Self::decode_b64_32(&flags.peer_conn_static_public_key)?;
-                (private, public)
-            };
+        let (local_static_private_key, local_static_pubkey) = if flags.local_private_key.is_empty()
+        {
+            let keypair = builder.generate_keypair().map_err(|e| {
+                Error::WaitRespError(format!("generate noise keypair failed: {e:?}"))
+            })?;
+            (keypair.private, keypair.public)
+        } else {
+            if flags.local_public_key.is_empty() {
+                return Err(Error::WaitRespError(
+                    "local_public_key is required".to_owned(),
+                ));
+            }
+            let private = Self::decode_b64_32(&flags.local_private_key)?;
+            let public = Self::decode_b64_32(&flags.local_public_key)?;
+            (private, public)
+        };
 
         let mut hs = builder
             .prologue(&prologue)?
@@ -1424,10 +1424,10 @@ mod tests {
         let c_ctx = get_mock_global_ctx();
         let s_ctx = get_mock_global_ctx();
         let mut c_flags = c_ctx.get_flags();
-        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.secure_mode = true;
         c_ctx.set_flags(c_flags);
         let mut s_flags = s_ctx.get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.secure_mode = true;
         s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());
@@ -1507,11 +1507,11 @@ mod tests {
         });
 
         let mut c_flags = c_ctx.get_flags();
-        c_flags.enable_peer_conn_secure_mode = false;
+        c_flags.secure_mode = false;
         c_ctx.set_flags(c_flags);
 
         let mut s_flags = s_ctx.get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.secure_mode = true;
         s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());
@@ -1558,10 +1558,10 @@ mod tests {
         ));
 
         let mut c_flags = c_ctx.get_flags();
-        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.secure_mode = true;
         c_ctx.set_flags(c_flags);
         let mut s_flags = s_ctx.get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.secure_mode = true;
         s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());
@@ -1598,10 +1598,10 @@ mod tests {
         let c_ctx = get_mock_global_ctx();
         let s_ctx = get_mock_global_ctx();
         let mut c_flags = c_ctx.get_flags();
-        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.secure_mode = true;
         c_ctx.set_flags(c_flags);
         let mut s_flags = s_ctx.get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.secure_mode = true;
         s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());
@@ -1655,10 +1655,10 @@ mod tests {
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
         let mut c_flags = c_ctx.get_flags();
-        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.secure_mode = true;
         c_ctx.set_flags(c_flags);
         let mut s_flags = s_ctx.get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.secure_mode = true;
         s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());
@@ -1710,17 +1710,17 @@ mod tests {
         let remote_url: url::Url = c.info().unwrap().remote_addr.unwrap().url.parse().unwrap();
 
         let mut c_flags = c_ctx.get_flags();
-        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.secure_mode = true;
         c_ctx.set_flags(c_flags);
         c_ctx.config.set_peers(vec![PeerConfig {
             uri: remote_url,
-            peer_conn_pinned_remote_static_pubkey: Some(server_pub_b64.clone()),
+            peer_public_key: Some(server_pub_b64.clone()),
         }]);
 
         let mut s_flags = s_ctx.get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
-        s_flags.peer_conn_static_private_key = server_priv_b64;
-        s_flags.peer_conn_static_public_key = server_pub_b64;
+        s_flags.secure_mode = true;
+        s_flags.local_private_key = server_priv_b64;
+        s_flags.local_public_key = server_pub_b64;
         s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());

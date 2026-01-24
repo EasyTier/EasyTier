@@ -1585,11 +1585,11 @@ mod tests {
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
         let mut a_flags = peer_mgr_a.get_global_ctx().get_flags();
-        a_flags.enable_peer_conn_secure_mode = true;
+        a_flags.secure_mode = true;
         peer_mgr_a.get_global_ctx().set_flags(a_flags);
 
         let mut b_flags = peer_mgr_b.get_global_ctx().get_flags();
-        b_flags.enable_peer_conn_secure_mode = true;
+        b_flags.secure_mode = true;
         peer_mgr_b.get_global_ctx().set_flags(b_flags);
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
@@ -1671,11 +1671,11 @@ mod tests {
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
         let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
-        c_flags.enable_peer_conn_secure_mode = false;
+        c_flags.secure_mode = false;
         peer_mgr_client.get_global_ctx().set_flags(c_flags);
 
         let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
+        s_flags.secure_mode = true;
         peer_mgr_server.get_global_ctx().set_flags(s_flags);
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
@@ -1773,13 +1773,13 @@ mod tests {
         let server_pub_b64 = BASE64_STANDARD.encode(keypair.public);
 
         let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
-        c_flags.enable_peer_conn_secure_mode = true;
+        c_flags.secure_mode = true;
         peer_mgr_client.get_global_ctx().set_flags(c_flags);
 
         let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
-        s_flags.enable_peer_conn_secure_mode = true;
-        s_flags.peer_conn_static_private_key = server_priv_b64;
-        s_flags.peer_conn_static_public_key = server_pub_b64.clone();
+        s_flags.secure_mode = true;
+        s_flags.local_private_key = server_priv_b64;
+        s_flags.local_public_key = server_pub_b64.clone();
         peer_mgr_server.get_global_ctx().set_flags(s_flags);
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
@@ -1794,7 +1794,7 @@ mod tests {
         peer_mgr_client.get_global_ctx().config.set_peers(vec![
             crate::common::config::PeerConfig {
                 uri: server_remote_url,
-                peer_conn_pinned_remote_static_pubkey: Some(server_pub_b64.clone()),
+                peer_public_key: Some(server_pub_b64.clone()),
             },
         ]);
 
