@@ -33,8 +33,35 @@ jobs:
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
 
+  lint:
+    name: Check code quality
+    runs-on: ubuntu-latest
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
+        with:
+          gui: true
+          web: true
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install rustfmt and clippy
+        run: |
+          rustup component add rustfmt
+          rustup component add clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        run: cargo clippy --all-targets --all-features --all -- -D warnings
+
   pre-test:
-    name: Build test & Check code quality
+    name: Build test
     runs-on: ubuntu-latest
     needs: pre_job
     if: needs.pre_job.outputs.should_skip != 'true'
@@ -51,21 +78,8 @@ jobs:
 
       - uses: taiki-e/install-action@nextest
 
-      - name: Build test
-        run: |
-          cargo test --no-run --workspace ${{ env.CARGO_TEST_FLAGS }}
-          cargo nextest archive --workspace --archive-file tests.tar.zst ${{ env.CARGO_TEST_FLAGS }}
-
-      - name: Install rustfmt and clippy
-        run: |
-          rustup component add rustfmt
-          rustup component add clippy
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Check Clippy
-        run: cargo clippy --all-targets --all-features --all -- -D warnings
+      - name: Archive test
+        run: cargo nextest archive --archive-file tests.tar.zst --workspace --no-default-features --features=full
 
       - uses: actions/upload-artifact@v4
         with:
