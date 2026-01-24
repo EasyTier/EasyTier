@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TEST_FLAGS: "--no-default-features --features=full"
 #  RUSTC_WRAPPER: "sccache"
 #  SCCACHE_GHA_ENABLED: "true"
 
@@ -138,4 +137,6 @@ jobs:
           name: tests
 
       - name: Run tests
-        run: sudo -E env "PATH=$PATH" cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
+        run: |
+          sudo prlimit --pid $$ --nofile=1048576:1048576
+          sudo -E env "PATH=$PATH" cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
