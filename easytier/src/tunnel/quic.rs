@@ -14,7 +14,7 @@ use anyhow::Context;
 
 use quinn::{
     congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig, UdpPoller, VarInt,
+    EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
 };
 
 use super::{
