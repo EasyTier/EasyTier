@@ -23,24 +23,16 @@ use super::{
 };
 
 pub fn transport_config() -> Arc<TransportConfig> {
-    // TODO: subject to change
     let mut config = TransportConfig::default();
 
     config
-        // .qlog_stream(qlog_stream)
-        .stream_receive_window(VarInt::from_u32(64 * 1024 * 1024))
-        .receive_window(VarInt::from_u32(1024 * 1024 * 1024))
-        .send_window(1024 * 1024 * 1024)
-        .max_concurrent_bidi_streams(VarInt::from_u32(1024))
+        .max_concurrent_bidi_streams(VarInt::from_u32(1 << 20))
         .max_concurrent_uni_streams(VarInt::from_u32(0))
         .keep_alive_interval(Some(Duration::from_secs(5)))
-        .max_idle_timeout(Some(VarInt::from_u32(30_000).into()))
         .initial_mtu(1200)
         .min_mtu(1200)
-        .enable_segmentation_offload(true)
-        .congestion_controller_factory(Arc::new(BbrConfig::default()))
-        .datagram_receive_buffer_size(Some(1024 * 1024 * 1024))
-        .datagram_send_buffer_size(1024 * 1024 * 1024);
+        .enable_segmentation_offload(false)
+        .congestion_controller_factory(Arc::new(BbrConfig::default()));
 
     Arc::new(config)
 }
