@@ -8,7 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_TEST_FLAGS: "--no-default-features --features=full"
+  CARGO_FLAGS: "--workspace --all-targets --all-features --all"
 #  RUSTC_WRAPPER: "sccache"
 #  SCCACHE_GHA_ENABLED: "true"
 
@@ -49,13 +49,6 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - uses: taiki-e/install-action@nextest
-
-      - name: Build test
-        run: |
-          cargo test --no-run --workspace ${{ env.CARGO_TEST_FLAGS }}
-          cargo nextest archive --workspace --archive-file tests.tar.zst ${{ env.CARGO_TEST_FLAGS }}
-
       - name: Install rustfmt and clippy
         run: |
           rustup component add rustfmt
@@ -65,7 +58,12 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check Clippy
-        run: cargo clippy --all-targets --all-features --all -- -D warnings
+        run: cargo clippy ${{ env.CARGO_FLAGS }} -- -D warnings
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Archive test
+        run: cargo nextest archive --archive-file tests.tar.zst ${{ env.CARGO_FLAGS }}
 
       - uses: actions/upload-artifact@v4
         with:
