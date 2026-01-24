@@ -26,8 +26,8 @@ pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
 
     config
-        .max_concurrent_bidi_streams(VarInt::from_u32(1 << 20))
-        .max_concurrent_uni_streams(VarInt::from_u32(0))
+        // .max_concurrent_bidi_streams(VarInt::MAX)
+        .max_concurrent_uni_streams(0u8.into())
         .keep_alive_interval(Some(Duration::from_secs(5)))
         .initial_mtu(1200)
         .min_mtu(1200)
