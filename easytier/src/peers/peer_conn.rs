@@ -40,7 +40,7 @@ use crate::{
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
-        common::TunnelInfo,
+        common::{SecureModeConfig, TunnelInfo},
         peer_rpc::{
             HandshakeRequest, PeerConnNoiseMsg1Pb, PeerConnNoiseMsg2Pb, PeerConnNoiseMsg3Pb,
             PeerConnSessionActionPb, SecureAuthLevel,
@@ -263,7 +263,7 @@ pub struct PeerConn {
     peer_id_hint: Option<PeerId>,
     global_ctx: ArcGlobalCtx,
 
-    secure_mode: bool,
+    secure_mode_cfg: Option<SecureModeConfig>,
     session_filter: PeerSessionTunnelFilter,
     noise_handshake_result: Option<NoiseHandshakeResult>,
 
@@ -325,8 +325,14 @@ impl PeerConn {
         let tunnel_info = tunnel.info();
         let (ctrl_sender, _ctrl_receiver) = broadcast::channel(8);
 
-        let secure_mode = flags.secure_mode;
-        let session_filter = PeerSessionTunnelFilter::new_with_peer(my_peer_id, secure_mode);
+        let secure_mode_cfg = global_ctx.config.get_secure_mode();
+        let session_filter = PeerSessionTunnelFilter::new_with_peer(
+            my_peer_id,
+            secure_mode_cfg
+                .as_ref()
+                .map(|cfg| cfg.enabled)
+                .unwrap_or(false),
+        );
 
         let peer_conn_tunnel_filter = StatsRecorderTunnelFilter::new();
         let throughput = peer_conn_tunnel_filter.filter_output();
@@ -346,7 +352,7 @@ impl PeerConn {
             peer_id_hint,
             global_ctx,
 
-            secure_mode,
+            secure_mode_cfg,
             session_filter,
             noise_handshake_result: None,
 
@@ -381,6 +387,25 @@ impl PeerConn {
 
     fn get_peer_session_store(&self) -> &Arc<PeerSessionStore> {
         &self.peer_session_store
+    }
+
+    pub fn is_secure_mode_enabled(&self) -> bool {
+        self.secure_mode_cfg
+            .as_ref()
+            .map(|cfg| cfg.enabled)
+            .unwrap_or(false)
+    }
+
+    // pri, pub
+    fn get_keypair(&self) -> Result<(Vec<u8>, Vec<u8>), Error> {
+        let cfg = self
+            .secure_mode_cfg
+            .as_ref()
+            .ok_or_else(|| Error::WaitRespError("secure mode config not set".to_owned()))?;
+        Ok((
+            cfg.private_key()?.as_bytes().to_vec(),
+            cfg.public_key()?.as_bytes().to_vec(),
+        ))
     }
 
     pub fn get_conn_id(&self) -> PeerConnId {
@@ -631,10 +656,7 @@ impl PeerConn {
             .transpose()?;
 
         let builder = snow::Builder::new(params);
-        let keypair = builder
-            .generate_keypair()
-            .map_err(|e| Error::WaitRespError(format!("generate noise keypair failed: {e:?}")))?;
-        let local_static_pubkey = keypair.public.clone();
+        let (local_private_key, local_static_pubkey) = self.get_keypair()?;
 
         let network = self.global_ctx.get_network_identity();
         let a_session_generation = self
@@ -656,7 +678,7 @@ impl PeerConn {
 
         let mut hs = builder
             .prologue(&prologue)?
-            .local_private_key(&keypair.private)?
+            .local_private_key(&local_private_key)?
             .build_initiator()?;
 
         let mut secure_auth_level = SecureAuthLevel::EncryptedUnauthenticated;
@@ -795,7 +817,7 @@ impl PeerConn {
         Ok(NoiseHandshakeResult {
             peer_id: remote_peer_id,
             session,
-            local_static_pubkey,
+            local_static_pubkey: local_static_pubkey.to_vec(),
             remote_static_pubkey: remote_static,
             handshake_hash,
             secure_auth_level,
@@ -880,25 +902,9 @@ impl PeerConn {
         let params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256"
             .parse()
             .map_err(|e| Error::WaitRespError(format!("parse noise params failed: {e:?}")))?;
-        let flags = self.global_ctx.get_flags();
         let builder = snow::Builder::new(params);
 
-        let (local_static_private_key, local_static_pubkey) = if flags.local_private_key.is_empty()
-        {
-            let keypair = builder.generate_keypair().map_err(|e| {
-                Error::WaitRespError(format!("generate noise keypair failed: {e:?}"))
-            })?;
-            (keypair.private, keypair.public)
-        } else {
-            if flags.local_public_key.is_empty() {
-                return Err(Error::WaitRespError(
-                    "local_public_key is required".to_owned(),
-                ));
-            }
-            let private = Self::decode_b64_32(&flags.local_private_key)?;
-            let public = Self::decode_b64_32(&flags.local_public_key)?;
-            (private, public)
-        };
+        let (local_static_private_key, local_static_pubkey) = self.get_keypair()?;
 
         let mut hs = builder
             .prologue(&prologue)?
@@ -1022,7 +1028,7 @@ impl PeerConn {
         Ok(NoiseHandshakeResult {
             peer_id: remote_peer_id,
             session,
-            local_static_pubkey,
+            local_static_pubkey: local_static_pubkey.to_vec(),
             remote_static_pubkey: remote_static,
             handshake_hash,
             secure_auth_level,
@@ -1070,7 +1076,8 @@ impl PeerConn {
             ));
         };
 
-        if self.secure_mode && hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8 {
+        if self.is_secure_mode_enabled() && hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8
+        {
             let noise = self
                 .do_noise_handshake_as_server(first_pkt, handshake_recved)
                 .await?;
@@ -1112,7 +1119,7 @@ impl PeerConn {
 
     #[tracing::instrument]
     pub async fn do_handshake_as_client(&mut self) -> Result<(), Error> {
-        if self.secure_mode {
+        if self.is_secure_mode_enabled() {
             let noise = self.do_noise_handshake_as_client().await?;
             self.session_filter.set_session(noise.session.clone());
             self.session_filter.set_peer_id(noise.peer_id);
@@ -1336,12 +1343,15 @@ impl Drop for PeerConn {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::sync::Arc;
+
+    use rand::rngs::OsRng;
 
     use super::*;
     use crate::common::config::PeerConfig;
     use crate::common::global_ctx::tests::get_mock_global_ctx;
+    use crate::common::global_ctx::GlobalCtx;
     use crate::common::new_peer_id;
     use crate::common::scoped_task::ScopedTask;
     use crate::peers::create_packet_recv_chan;
@@ -1349,6 +1359,22 @@ mod tests {
     use crate::tunnel::filter::tests::DropSendTunnelFilter;
     use crate::tunnel::filter::PacketRecorderTunnelFilter;
     use crate::tunnel::ring::create_ring_tunnel_pair;
+
+    pub fn set_secure_mode_cfg(global_ctx: &GlobalCtx, enabled: bool) {
+        if !enabled {
+            global_ctx.config.set_secure_mode(None);
+        } else {
+            // generate x25519 key pair
+            let private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+            let public = x25519_dalek::PublicKey::from(&private);
+
+            global_ctx.config.set_secure_mode(Some(SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+            }));
+        }
+    }
 
     #[tokio::test]
     async fn peer_conn_handshake_same_id() {
@@ -1423,12 +1449,8 @@ mod tests {
 
         let c_ctx = get_mock_global_ctx();
         let s_ctx = get_mock_global_ctx();
-        let mut c_flags = c_ctx.get_flags();
-        c_flags.secure_mode = true;
-        c_ctx.set_flags(c_flags);
-        let mut s_flags = s_ctx.get_flags();
-        s_flags.secure_mode = true;
-        s_ctx.set_flags(s_flags);
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
 
         let ps = Arc::new(PeerSessionStore::new());
         let mut c_peer = PeerConn::new(c_peer_id, c_ctx.clone(), Box::new(c), ps.clone());
@@ -1506,13 +1528,8 @@ mod tests {
             network_secret_digest: None,
         });
 
-        let mut c_flags = c_ctx.get_flags();
-        c_flags.secure_mode = false;
-        c_ctx.set_flags(c_flags);
-
-        let mut s_flags = s_ctx.get_flags();
-        s_flags.secure_mode = true;
-        s_ctx.set_flags(s_flags);
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
 
         let ps = Arc::new(PeerSessionStore::new());
         let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
@@ -1557,12 +1574,8 @@ mod tests {
             "sec2".to_string(),
         ));
 
-        let mut c_flags = c_ctx.get_flags();
-        c_flags.secure_mode = true;
-        c_ctx.set_flags(c_flags);
-        let mut s_flags = s_ctx.get_flags();
-        s_flags.secure_mode = true;
-        s_ctx.set_flags(s_flags);
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
 
         let ps = Arc::new(PeerSessionStore::new());
         let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
@@ -1597,12 +1610,8 @@ mod tests {
 
         let c_ctx = get_mock_global_ctx();
         let s_ctx = get_mock_global_ctx();
-        let mut c_flags = c_ctx.get_flags();
-        c_flags.secure_mode = true;
-        c_ctx.set_flags(c_flags);
-        let mut s_flags = s_ctx.get_flags();
-        s_flags.secure_mode = true;
-        s_ctx.set_flags(s_flags);
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
 
         let ps = Arc::new(PeerSessionStore::new());
         let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
@@ -1654,12 +1663,8 @@ mod tests {
             .config
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
-        let mut c_flags = c_ctx.get_flags();
-        c_flags.secure_mode = true;
-        c_ctx.set_flags(c_flags);
-        let mut s_flags = s_ctx.get_flags();
-        s_flags.secure_mode = true;
-        s_ctx.set_flags(s_flags);
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
 
         let ps = Arc::new(PeerSessionStore::new());
         let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());
@@ -1701,27 +1706,22 @@ mod tests {
             network_secret_digest: None,
         });
 
-        let noise_params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256".parse().unwrap();
-        let builder = snow::Builder::new(noise_params);
-        let keypair = builder.generate_keypair().unwrap();
-        let server_priv_b64 = BASE64_STANDARD.encode(keypair.private);
-        let server_pub_b64 = BASE64_STANDARD.encode(keypair.public.clone());
-
         let remote_url: url::Url = c.info().unwrap().remote_addr.unwrap().url.parse().unwrap();
 
-        let mut c_flags = c_ctx.get_flags();
-        c_flags.secure_mode = true;
-        c_ctx.set_flags(c_flags);
+        set_secure_mode_cfg(&c_ctx, true);
+        set_secure_mode_cfg(&s_ctx, true);
+
         c_ctx.config.set_peers(vec![PeerConfig {
             uri: remote_url,
-            peer_public_key: Some(server_pub_b64.clone()),
+            peer_public_key: Some(
+                s_ctx
+                    .config
+                    .get_secure_mode()
+                    .unwrap()
+                    .local_public_key
+                    .unwrap(),
+            ),
         }]);
-
-        let mut s_flags = s_ctx.get_flags();
-        s_flags.secure_mode = true;
-        s_flags.local_private_key = server_priv_b64;
-        s_flags.local_public_key = server_pub_b64;
-        s_ctx.set_flags(s_flags);
 
         let ps = Arc::new(PeerSessionStore::new());
         let mut c_peer = PeerConn::new(c_peer_id, c_ctx, Box::new(c), ps.clone());

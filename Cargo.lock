@@ -2269,6 +2269,7 @@ dependencies = [
  "windows-service",
  "windows-sys 0.52.0",
  "winreg 0.52.0",
+ "x25519-dalek",
  "zerocopy",
  "zip",
  "zstd",

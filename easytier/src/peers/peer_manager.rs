@@ -1500,8 +1500,6 @@ mod tests {
 
     use std::{fmt::Debug, sync::Arc, time::Duration};
 
-    use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-    use base64::Engine as _;
     use snow::params::NoiseParams;
 
     use crate::{
@@ -1516,6 +1514,7 @@ mod tests {
         instance::listeners::get_listener_by_url,
         peers::{
             create_packet_recv_chan,
+            peer_conn::tests::set_secure_mode_cfg,
             peer_manager::RouteAlgoType,
             peer_rpc::tests::register_service,
             route_trait::NextHopPolicy,
@@ -1584,13 +1583,8 @@ mod tests {
             .config
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
-        let mut a_flags = peer_mgr_a.get_global_ctx().get_flags();
-        a_flags.secure_mode = true;
-        peer_mgr_a.get_global_ctx().set_flags(a_flags);
-
-        let mut b_flags = peer_mgr_b.get_global_ctx().get_flags();
-        b_flags.secure_mode = true;
-        peer_mgr_b.get_global_ctx().set_flags(b_flags);
+        set_secure_mode_cfg(&peer_mgr_a.get_global_ctx(), true);
+        set_secure_mode_cfg(&peer_mgr_b.get_global_ctx(), true);
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let (a_ret, b_ret) = tokio::join!(
@@ -1670,13 +1664,8 @@ mod tests {
             .config
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
-        let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
-        c_flags.secure_mode = false;
-        peer_mgr_client.get_global_ctx().set_flags(c_flags);
-
-        let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
-        s_flags.secure_mode = true;
-        peer_mgr_server.get_global_ctx().set_flags(s_flags);
+        set_secure_mode_cfg(&peer_mgr_client.get_global_ctx(), true);
+        set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
         let (c_ret, s_ret) = tokio::join!(
@@ -1766,21 +1755,16 @@ mod tests {
                 network_secret_digest: None,
             });
 
-        let noise_params: NoiseParams = "Noise_XX_25519_ChaChaPoly_SHA256".parse().unwrap();
-        let builder = snow::Builder::new(noise_params);
-        let keypair = builder.generate_keypair().unwrap();
-        let server_priv_b64 = BASE64_STANDARD.encode(keypair.private);
-        let server_pub_b64 = BASE64_STANDARD.encode(keypair.public);
+        set_secure_mode_cfg(&peer_mgr_client.get_global_ctx(), true);
+        set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
 
-        let mut c_flags = peer_mgr_client.get_global_ctx().get_flags();
-        c_flags.secure_mode = true;
-        peer_mgr_client.get_global_ctx().set_flags(c_flags);
-
-        let mut s_flags = peer_mgr_server.get_global_ctx().get_flags();
-        s_flags.secure_mode = true;
-        s_flags.local_private_key = server_priv_b64;
-        s_flags.local_public_key = server_pub_b64.clone();
-        peer_mgr_server.get_global_ctx().set_flags(s_flags);
+        let server_pub_b64 = peer_mgr_server
+            .get_global_ctx()
+            .config
+            .get_secure_mode()
+            .unwrap()
+            .local_public_key
+            .unwrap();
 
         let (a_ring, b_ring) = create_ring_tunnel_pair();
         let server_remote_url: url::Url = a_ring

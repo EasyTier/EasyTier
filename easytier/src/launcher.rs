@@ -675,6 +675,8 @@ impl NetworkConfig {
             ));
         }
 
+        cfg.set_secure_mode(self.secure_mode.clone());
+
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;
@@ -792,10 +794,6 @@ impl NetworkConfig {
             }
         }
 
-        if let Some(secure_mode) = self.secure_mode {
-            flags.secure_mode = secure_mode;
-        }
-
         cfg.set_flags(flags);
         Ok(cfg)
     }
@@ -903,6 +901,8 @@ impl NetworkConfig {
             result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
         }
 
+        result.secure_mode = config.get_secure_mode();
+
         let flags = config.get_flags();
         result.latency_first = Some(flags.latency_first);
         result.dev_name = Some(flags.dev_name.clone());
@@ -928,7 +928,6 @@ impl NetworkConfig {
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
-        result.secure_mode = Some(flags.secure_mode);
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);
@@ -951,7 +950,7 @@ impl NetworkConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::config::ConfigLoader;
+    use crate::{common::config::ConfigLoader, proto::common::SecureModeConfig};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1150,6 +1149,14 @@ mod tests {
                 config.set_mapped_listeners(Some(mapped_listeners));
             }
 
+            if rng.gen_bool(0.3) {
+                config.set_secure_mode(Some(SecureModeConfig {
+                    enabled: true,
+                    local_private_key: None,
+                    local_public_key: None,
+                }));
+            }
+
             if rng.gen_bool(0.9) {
                 let mut flags = crate::common::config::gen_default_flags();
                 flags.latency_first = rng.gen_bool(0.5);
@@ -1174,7 +1181,6 @@ mod tests {
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
-                flags.secure_mode = rng.gen_bool(0.3);
 
                 if rng.gen_bool(0.4) {
                     flags.relay_network_whitelist = (0..rng.gen_range(1..3))

@@ -19,15 +19,17 @@ use crate::{
     defer,
     instance_manager::NetworkInstanceManager,
     launcher::add_proxy_network_to_config,
-    proto::common::CompressionAlgoPb,
+    proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
     web_client, ShellType,
 };
 use anyhow::Context;
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
+use rand::rngs::OsRng;
 use rust_i18n::t;
 use tokio::io::AsyncReadExt;
 
@@ -603,12 +605,26 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_SAFE_MODE",
-        help = t!("core_clap.safe_mode").to_string(),
+        env = "ET_SECURE_MODE",
+        help = t!("core_clap.secure_mode").to_string(),
         num_args = 0..=1,
         default_missing_value = "true"
     )]
-    safe_mode: Option<bool>,
+    secure_mode: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_LOCAL_PRIVATE_KEY",
+        help = t!("core_clap.local_private_key").to_string()
+    )]
+    local_private_key: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_LOCAL_PUBLIC_KEY",
+        help = t!("core_clap.local_public_key").to_string()
+    )]
+    local_public_key: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -730,6 +746,42 @@ impl NetworkOptions {
             return true;
         }
         false
+    }
+
+    fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
+        if !user_cfg.enabled {
+            return Ok(user_cfg);
+        }
+
+        let private_key = if user_cfg.local_private_key.is_none() {
+            // if no private key, generate random one
+            let private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+            user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
+            private
+        } else {
+            // check if private key is valid
+            user_cfg.private_key()?
+        };
+
+        let public = x25519_dalek::PublicKey::from(&private_key);
+
+        match user_cfg.local_public_key {
+            None => {
+                user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
+            }
+            Some(ref user_pub) => {
+                let public = user_cfg.public_key()?;
+                if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
+                    return Err(anyhow::anyhow!(
+                        "local public key {} does not match generated public key {}",
+                        user_pub,
+                        BASE64_STANDARD.encode(public.as_bytes())
+                    ));
+                }
+            }
+        }
+
+        Ok(user_cfg)
     }
 
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
@@ -913,6 +965,17 @@ impl NetworkOptions {
             cfg.set_port_forwards(old);
         }
 
+        if let Some(secure_mode) = self.secure_mode {
+            if secure_mode {
+                let c = SecureModeConfig {
+                    enabled: secure_mode,
+                    local_private_key: self.local_private_key.clone(),
+                    local_public_key: self.local_public_key.clone(),
+                };
+                cfg.set_secure_mode(Some(Self::process_secure_mode_cfg(c)?));
+            }
+        }
+
         let mut f = cfg.get_flags();
         if let Some(default_protocol) = &self.default_protocol {
             f.default_protocol = default_protocol.clone()
@@ -986,7 +1049,6 @@ impl NetworkOptions {
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
             f.tld_dns_zone = tld_dns_zone.clone();
         }
-        f.secure_mode = self.safe_mode.unwrap_or(f.secure_mode);
         cfg.set_flags(f);
 
         if !self.exit_nodes.is_empty() {

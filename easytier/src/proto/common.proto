@@ -64,16 +64,6 @@ message FlagsInConfig {
   bool p2p_only = 32;
 
   bool disable_tcp_hole_punching = 34;
-
-  bool secure_mode = 35;
-
-  reserved 36;
-
-  // base64(X25519 private key), used by shared node to present a stable identity
-  string local_private_key = 37;
-
-  // base64(X25519 public key), required if local_private_key is set
-  string local_public_key = 38;
 }
 
 message RpcDescriptor {
@@ -239,4 +229,14 @@ message LimiterConfig {
   optional uint64 bps = 2; // default 0 means no limit (unit is B/s)
   optional uint64 fill_duration_ms =
       3; // default 10ms, the period to fill the bucket
+}
+
+message SecureModeConfig {
+  bool enabled = 1; 
+
+  // base64(X25519 private key), used by shared node to present a stable identity
+  optional string local_private_key = 2;
+
+  // base64(X25519 public key), required if local_private_key is set
+  optional string local_public_key = 3;
 }
