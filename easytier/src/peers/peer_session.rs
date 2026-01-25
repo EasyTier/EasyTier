@@ -380,6 +380,7 @@ impl PeerSession {
     /// more aggressive key rotation may increase this value; those with
     /// stricter security requirements may decrease it.
     const ROTATE_AFTER_MS: u64 = 10 * 60 * 1000;
+    const MAX_ACCEPTED_RX_EPOCH_AHEAD: u32 = 3;
 
     pub fn new(
         peer_id: PeerId,
@@ -670,6 +671,19 @@ impl PeerSession {
         }
 
         if rx[dir][0].valid && epoch > rx[dir][0].epoch {
+            let mut baseline_epoch = send_epoch;
+            if rx[dir][0].valid {
+                baseline_epoch = baseline_epoch.max(rx[dir][0].epoch);
+            }
+            if rx[dir][1].valid {
+                baseline_epoch = baseline_epoch.max(rx[dir][1].epoch);
+            }
+            let max_allowed_epoch =
+                baseline_epoch.saturating_add(Self::MAX_ACCEPTED_RX_EPOCH_AHEAD);
+            if epoch > max_allowed_epoch {
+                return false;
+            }
+
             rx[dir][1] = rx[dir][0];
             rx[dir][0] = EpochRxSlot {
                 epoch,
@@ -773,5 +787,31 @@ mod tests {
         sb.encrypt_payload(b, a, &mut pkt2).unwrap();
         sa.decrypt_payload(b, a, &mut pkt2).unwrap();
         assert_eq!(pkt2.payload(), plaintext2);
+    }
+
+    #[test]
+    fn replay_rejects_far_future_epoch_without_poisoning_window() {
+        let peer_id: PeerId = 10;
+        let root_key = PeerSession::new_root_key();
+        let generation = 1u32;
+        let initial_epoch = 0u32;
+        let s = PeerSession::new(
+            peer_id,
+            root_key,
+            generation,
+            initial_epoch,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+        );
+
+        let now = now_ms();
+
+        assert!(s.check_replay(0, 1, 0, now));
+        assert!(s.check_replay(0, 2, 0, now));
+
+        assert!(!s.check_replay(1000, 1, 0, now));
+
+        assert!(s.check_replay(1, 1, 0, now + 1));
+        assert!(s.check_replay(1, 2, 0, now + 2));
     }
 }
