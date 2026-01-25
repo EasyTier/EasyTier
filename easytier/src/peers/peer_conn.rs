@@ -460,7 +460,7 @@ impl PeerConn {
             Error::WaitRespError(format!("decode handshake response error: {:?}", e))
         })?;
 
-        if rsp.network_secret_digrest.len() != std::mem::size_of::<NetworkSecretDigest>() {
+        if rsp.network_secret_digest.len() != std::mem::size_of::<NetworkSecretDigest>() {
             return Err(Error::WaitRespError(
                 "invalid network secret digest".to_owned(),
             ));
@@ -501,11 +501,11 @@ impl PeerConn {
 
         // only send network secret digest if the network is the same
         if send_secret_digest {
-            req.network_secret_digrest
+            req.network_secret_digest
                 .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
         } else {
             // fill zero
-            req.network_secret_digrest
+            req.network_secret_digest
                 .extend_from_slice(&[0u8; std::mem::size_of::<NetworkSecretDigest>()]);
         }
 
@@ -546,7 +546,7 @@ impl PeerConn {
             Error::WaitRespError(format!("decode handshake response error: {:?}", e))
         })?;
 
-        if rsp.network_secret_digrest.len() != std::mem::size_of::<NetworkSecretDigest>() {
+        if rsp.network_secret_digest.len() != std::mem::size_of::<NetworkSecretDigest>() {
             return Err(Error::WaitRespError(
                 "invalid network secret digest".to_owned(),
             ));
@@ -1053,7 +1053,7 @@ impl PeerConn {
             network_name: noise.remote_network_name.clone(),
 
             features: Vec::new(),
-            network_secret_digrest: noise.secret_digest.clone(),
+            network_secret_digest: noise.secret_digest.clone(),
         }
     }
 
@@ -1271,7 +1271,7 @@ impl PeerConn {
         ret.network_secret_digest
             .as_mut()
             .unwrap()
-            .copy_from_slice(&info.network_secret_digrest);
+            .copy_from_slice(&info.network_secret_digest);
         ret
     }
 
@@ -1491,7 +1491,7 @@ pub mod tests {
             ..Default::default()
         };
         expected
-            .network_secret_digrest
+            .network_secret_digest
             .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
         let expected_payload = expected.encode_to_vec();
 

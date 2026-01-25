@@ -350,8 +350,35 @@ impl std::fmt::Debug for PeerSession {
 }
 
 impl PeerSession {
+    /// Idle-eviction timeout for receive slots, in milliseconds.
+    ///
+    /// If no packets are received for this period (~30 seconds), the
+    /// corresponding RX slot is considered idle and may be cleared/reused.
+    /// This helps reclaim state for dead peers or paths while still tolerating
+    /// short network stalls. Environments with very bursty or high-latency
+    /// traffic may want to increase this value; low-latency or tightly
+    /// resource-constrained deployments may lower it.
     const EVICT_IDLE_AFTER_MS: u64 = 30_000;
+
+    /// Maximum number of packets to send in a single epoch before forcing
+    /// a key/epoch rotation.
+    ///
+    /// This bounds the amount of traffic protected under a single set of
+    /// derived keys, which is a common best practice for long-lived secure
+    /// channels. The current value (~1 million packets) is a conservative
+    /// default chosen to balance security (more frequent rotation) and
+    /// performance (avoiding excessive rekeying). Deployments with very high
+    /// or very low packet rates may tune this threshold accordingly.
     const ROTATE_AFTER_PACKETS: u64 = 1_000_000;
+
+    /// Maximum wall-clock lifetime of a send epoch, in milliseconds.
+    ///
+    /// Even if the packet-based limit is not reached, epochs are rotated
+    /// after this duration (~10 minutes) to avoid long-lived keys and keep
+    /// replay windows bounded in time. This also limits the impact of a
+    /// compromised key. Installations that prioritize lower overhead over
+    /// more aggressive key rotation may increase this value; those with
+    /// stricter security requirements may decrease it.
     const ROTATE_AFTER_MS: u64 = 10 * 60 * 1000;
 
     pub fn new(
