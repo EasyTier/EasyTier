@@ -536,6 +536,7 @@ impl NetworkConfig {
                     uri: public_server_url.parse().with_context(|| {
                         format!("failed to parse public server uri: {}", public_server_url)
                     })?,
+                    peer_public_key: None,
                 }]);
             }
             NetworkingMethod::Manual => {
@@ -548,6 +549,7 @@ impl NetworkConfig {
                         uri: peer_url
                             .parse()
                             .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                        peer_public_key: None,
                     });
                 }
 
@@ -672,6 +674,8 @@ impl NetworkConfig {
                     .collect(),
             ));
         }
+
+        cfg.set_secure_mode(self.secure_mode.clone());
 
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
@@ -897,6 +901,8 @@ impl NetworkConfig {
             result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
         }
 
+        result.secure_mode = config.get_secure_mode();
+
         let flags = config.get_flags();
         result.latency_first = Some(flags.latency_first);
         result.dev_name = Some(flags.dev_name.clone());
@@ -944,7 +950,7 @@ impl NetworkConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::config::ConfigLoader;
+    use crate::{common::config::ConfigLoader, proto::common::SecureModeConfig};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1018,7 +1024,10 @@ mod tests {
                 let uri = format!("{}://127.0.0.1:{}", protocol, port)
                     .parse()
                     .unwrap();
-                peers.push(crate::common::config::PeerConfig { uri });
+                peers.push(crate::common::config::PeerConfig {
+                    uri,
+                    peer_public_key: None,
+                });
             }
             config.set_peers(peers);
 
@@ -1138,6 +1147,14 @@ mod tests {
                     mapped_listeners.push(format!("tcp://0.0.0.0:{}", port).parse().unwrap());
                 }
                 config.set_mapped_listeners(Some(mapped_listeners));
+            }
+
+            if rng.gen_bool(0.3) {
+                config.set_secure_mode(Some(SecureModeConfig {
+                    enabled: true,
+                    local_private_key: None,
+                    local_public_key: None,
+                }));
             }
 
             if rng.gen_bool(0.9) {
