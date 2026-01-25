@@ -1495,6 +1495,8 @@ pub mod tests {
             .extend_from_slice(&network.network_secret_digest.unwrap_or_default());
         let expected_payload = expected.encode_to_vec();
 
+        println!("sent: {:?}", c_recorder.sent.lock().unwrap());
+
         let wire_hs = c_recorder
             .sent
             .lock()
@@ -1502,7 +1504,7 @@ pub mod tests {
             .iter()
             .find(|p| {
                 p.peer_manager_header()
-                    .is_some_and(|h| h.packet_type == PacketType::HandShake as u8)
+                    .is_some_and(|h| h.packet_type == PacketType::NoiseHandshakeMsg3 as u8)
             })
             .unwrap()
             .clone();
@@ -1527,8 +1529,6 @@ pub mod tests {
             network_secret: None,
             network_secret_digest: None,
         });
-
-        set_secure_mode_cfg(&c_ctx, true);
         set_secure_mode_cfg(&s_ctx, true);
 
         let ps = Arc::new(PeerSessionStore::new());

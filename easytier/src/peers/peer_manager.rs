@@ -1500,8 +1500,6 @@ mod tests {
 
     use std::{fmt::Debug, sync::Arc, time::Duration};
 
-    use snow::params::NoiseParams;
-
     use crate::{
         common::{
             config::Flags,
@@ -1664,7 +1662,6 @@ mod tests {
             .config
             .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
 
-        set_secure_mode_cfg(&peer_mgr_client.get_global_ctx(), true);
         set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
 
         let (c_ring, s_ring) = create_ring_tunnel_pair();
