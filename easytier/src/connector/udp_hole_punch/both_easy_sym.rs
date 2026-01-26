@@ -346,6 +346,7 @@ pub mod tests {
 
     use tokio::net::UdpSocket;
 
+    use crate::common::stun::MOCK_STUN_BASE_PORT;
     use crate::connector::udp_hole_punch::RUN_TESTING;
     use crate::{
         connector::udp_hole_punch::{
@@ -356,11 +357,35 @@ pub mod tests {
         tunnel::common::tests::wait_for_condition,
     };
 
+    use super::DST_PORT_OFFSET;
+
+    /// Find an available base port for testing
+    async fn find_available_base_port() -> u16 {
+        // Try to find a port where base_port + DST_PORT_OFFSET and base_port - DST_PORT_OFFSET are both available
+        for base in (10000..60000u16).step_by(100) {
+            let port1 = base + DST_PORT_OFFSET;
+            let port2 = base.saturating_sub(DST_PORT_OFFSET);
+            if let (Ok(s1), Ok(s2)) = (
+                UdpSocket::bind(format!("0.0.0.0:{}", port1)).await,
+                UdpSocket::bind(format!("0.0.0.0:{}", port2)).await,
+            ) {
+                drop(s1);
+                drop(s2);
+                return base;
+            }
+        }
+        panic!("Could not find available ports for testing");
+    }
+
     #[rstest::rstest]
     #[tokio::test]
     #[serial_test::serial(hole_punch)]
     async fn hole_punching_easy_sym(#[values("true", "false")] is_inc: bool) {
         RUN_TESTING.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // Find and set available base port
+        let base_port = find_available_base_port().await;
+        MOCK_STUN_BASE_PORT.store(base_port, std::sync::atomic::Ordering::Relaxed);
 
         let p_a = create_mock_peer_manager_with_mock_stun(if is_inc {
             NatType::SymmetricEasyInc
@@ -385,10 +410,10 @@ pub mod tests {
         hole_punching_a.run().await.unwrap();
         hole_punching_c.run().await.unwrap();
 
-        // 144 + DST_PORT_OFFSET = 164
-        let udp1 = Arc::new(UdpSocket::bind("0.0.0.0:40164").await.unwrap());
-        // 144 - DST_PORT_OFFSET = 124
-        let udp2 = Arc::new(UdpSocket::bind("0.0.0.0:40124").await.unwrap());
+        // base_port + DST_PORT_OFFSET
+        let udp1 = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", base_port + DST_PORT_OFFSET)).await.unwrap());
+        // base_port - DST_PORT_OFFSET
+        let udp2 = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", base_port - DST_PORT_OFFSET)).await.unwrap());
         let udps = [udp1, udp2];
 
         let counter = Arc::new(AtomicU32::new(0));
