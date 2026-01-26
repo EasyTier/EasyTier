@@ -27,6 +27,7 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
+#[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
 #[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
@@ -522,7 +523,9 @@ pub struct Instance {
 
     ip_proxy: Option<IpProxy>,
 
+    #[cfg(feature = "kcp")]
     kcp_proxy_src: Option<KcpProxySrc>,
+    #[cfg(feature = "kcp")]
     kcp_proxy_dst: Option<KcpProxyDst>,
 
     #[cfg(feature = "quic")]
@@ -606,7 +609,9 @@ impl Instance {
             tcp_hole_puncher: Arc::new(Mutex::new(tcp_hole_puncher)),
 
             ip_proxy: None,
+            #[cfg(feature = "kcp")]
             kcp_proxy_src: None,
+            #[cfg(feature = "kcp")]
             kcp_proxy_dst: None,
 
             #[cfg(feature = "quic")]
@@ -937,12 +942,14 @@ impl Instance {
             self.check_dhcp_ip_conflict();
         }
 
+        #[cfg(feature = "kcp")]
         if self.global_ctx.get_flags().enable_kcp_proxy {
             let src_proxy = KcpProxySrc::new(self.get_peer_manager()).await;
             src_proxy.start().await;
             self.kcp_proxy_src = Some(src_proxy);
         }
 
+        #[cfg(feature = "kcp")]
         if !self.global_ctx.get_flags().disable_kcp_input {
             let mut dst_proxy = KcpProxyDst::new(self.get_peer_manager()).await;
             dst_proxy.start().await;
@@ -1373,6 +1380,7 @@ impl Instance {
                         Arc::new(TcpProxyRpcService::new(ip_proxy.tcp_proxy.clone())),
                     );
                 }
+                #[cfg(feature = "kcp")]
                 if let Some(kcp_proxy) = self.kcp_proxy_src.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "kcp_src".to_string(),
@@ -1380,6 +1388,7 @@ impl Instance {
                     );
                 }
 
+                #[cfg(feature = "kcp")]
                 if let Some(kcp_proxy) = self.kcp_proxy_dst.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "kcp_dst".to_string(),

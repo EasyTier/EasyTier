@@ -197,7 +197,7 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 
 zstd = { version = "0.13" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f" }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
@@ -328,6 +328,7 @@ full = [
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
+kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
 openssl-crypto = ["dep:openssl"]
