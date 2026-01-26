@@ -253,22 +253,27 @@ mod tests {
 
     use super::*;
 
-    async fn run_http_redirect_server(port: u16, test_type: HttpRedirectType) -> Result<(), Error> {
-        let listener = TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    async fn run_http_redirect_server(
+        listener: TcpListener,
+        test_type: HttpRedirectType,
+        tcp_port: u16,
+    ) -> Result<(), Error> {
         let (mut stream, _) = listener.accept().await?;
 
         match test_type {
             HttpRedirectType::RedirectToQuery => {
-                let resp = "HTTP/1.1 301 Moved Permanently\r\nLocation: http://test.com/?url=tcp://127.0.0.1:25888\r\n\r\n";
+                let resp = format!("HTTP/1.1 301 Moved Permanently\r\nLocation: http://test.com/?url=tcp://127.0.0.1:{}\r\n\r\n", tcp_port);
                 stream.write_all(resp.as_bytes()).await?;
             }
             HttpRedirectType::RedirectToUrl => {
-                let resp =
-                    "HTTP/1.1 301 Moved Permanently\r\nLocation: tcp://127.0.0.1:25888\r\n\r\n";
+                let resp = format!(
+                    "HTTP/1.1 301 Moved Permanently\r\nLocation: tcp://127.0.0.1:{}\r\n\r\n",
+                    tcp_port
+                );
                 stream.write_all(resp.as_bytes()).await?;
             }
             HttpRedirectType::BodyUrls => {
-                let resp = "HTTP/1.1 200 OK\r\n\r\ntcp://127.0.0.1:25888";
+                let resp = format!("HTTP/1.1 200 OK\r\n\r\ntcp://127.0.0.1:{}", tcp_port);
                 stream.write_all(resp.as_bytes()).await?;
             }
             HttpRedirectType::Unknown => {
@@ -280,7 +285,6 @@ mod tests {
     }
 
     #[rstest::rstest]
-    #[serial_test::serial(http_redirect_test)]
     #[tokio::test]
     async fn http_redirect_test(
         // 1. 301 redirect
@@ -292,17 +296,22 @@ mod tests {
         )]
         test_type: HttpRedirectType,
     ) {
-        let http_task = tokio::spawn(run_http_redirect_server(35888, test_type));
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let test_url: url::Url = "http://127.0.0.1:35888".parse().unwrap();
+        // Use port 0 to let the OS assign available ports
+        let mut listener = TcpTunnelListener::new("tcp://0.0.0.0:0".parse().unwrap());
+        listener.listen().await.unwrap();
+        let tcp_port = listener.local_url().port().unwrap();
+
+        let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let http_port = http_listener.local_addr().unwrap().port();
+
+        let http_task = tokio::spawn(run_http_redirect_server(http_listener, test_type, tcp_port));
+
+        let test_url: url::Url = format!("http://127.0.0.1:{}", http_port).parse().unwrap();
         let global_ctx = get_mock_global_ctx();
         let mut flags = global_ctx.config.get_flags();
         flags.bind_device = false;
         global_ctx.config.set_flags(flags);
         let mut connector = HttpTunnelConnector::new(test_url.clone(), global_ctx.clone());
-
-        let mut listener = TcpTunnelListener::new("tcp://0.0.0.0:25888".parse().unwrap());
-        listener.listen().await.unwrap();
 
         let task = tokio::spawn(async move {
             let _conn = listener.accept().await.unwrap();

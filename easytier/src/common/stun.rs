@@ -1287,6 +1287,11 @@ impl StunInfoCollector {
     }
 }
 
+use std::sync::atomic::AtomicU16;
+
+/// Global base port for MockStunInfoCollector. Tests can set this to avoid port conflicts.
+pub static MOCK_STUN_BASE_PORT: AtomicU16 = AtomicU16::new(40144);
+
 pub struct MockStunInfoCollector {
     pub udp_nat_type: NatType,
 }
@@ -1306,14 +1311,14 @@ impl StunInfoCollectorTrait for MockStunInfoCollector {
 
     async fn get_udp_port_mapping(&self, mut port: u16) -> Result<std::net::SocketAddr, Error> {
         if port == 0 {
-            port = 40144;
+            port = MOCK_STUN_BASE_PORT.load(std::sync::atomic::Ordering::Relaxed);
         }
         Ok(format!("127.0.0.1:{}", port).parse().unwrap())
     }
 
     async fn get_tcp_port_mapping(&self, mut port: u16) -> Result<std::net::SocketAddr, Error> {
         if port == 0 {
-            port = 40144;
+            port = MOCK_STUN_BASE_PORT.load(std::sync::atomic::Ordering::Relaxed);
         }
         Ok(format!("127.0.0.1:{}", port).parse().unwrap())
     }
