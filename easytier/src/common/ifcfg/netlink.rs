@@ -601,6 +601,10 @@ mod tests {
 
     const DUMMY_IFACE_NAME: &str = "dummy";
 
+    fn is_root() -> bool {
+        unsafe { libc::geteuid() == 0 }
+    }
+
     fn run_cmd(cmd: &str) -> String {
         let output = std::process::Command::new("sh")
             .arg("-c")
@@ -627,6 +631,10 @@ mod tests {
     #[serial_test::serial]
     #[tokio::test]
     async fn addr_test() {
+        if !is_root() {
+            eprintln!("Skipping addr_test: requires root privileges");
+            return;
+        }
         let _prepare_env = PrepareEnv::new();
         let ifcfg = NetlinkIfConfiger {};
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -668,6 +676,10 @@ mod tests {
     #[serial_test::serial]
     #[tokio::test]
     async fn route_test() {
+        if !is_root() {
+            eprintln!("Skipping route_test: requires root privileges");
+            return;
+        }
         let _prepare_env = PrepareEnv::new();
         let ret = NetlinkIfConfiger::list_routes().unwrap();
 
