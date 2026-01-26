@@ -341,7 +341,7 @@ websocket = [
     "dep:rcgen",
 ]
 smoltcp = ["dep:smoltcp"]
-socks5 = ["dep:smoltcp"]
+socks5 = ["smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]
 tracing = ["tokio/tracing", "dep:console-subscriber"]

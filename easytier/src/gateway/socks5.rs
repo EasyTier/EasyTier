@@ -9,9 +9,12 @@ use std::{
 };
 
 use crossbeam::atomic::AtomicCell;
+#[cfg(feature = "kcp")]
 use kcp_sys::{endpoint::KcpEndpoint, stream::KcpStream};
 use tokio_util::sync::{CancellationToken, DropGuard};
 
+#[cfg(feature = "kcp")]
+use crate::gateway::kcp_proxy::NatDstKcpConnector;
 use crate::{
     common::{
         config::PortForwardConfig, global_ctx::GlobalCtxEvent, join_joinset_background,
@@ -25,7 +28,6 @@ use crate::{
             util::stream::tcp_connect_with_timeout,
         },
         ip_reassembler::IpReassembler,
-        kcp_proxy::NatDstKcpConnector,
         tokio_smoltcp::{channel_device, BufferSize, Net, NetConfig},
     },
     tunnel::{
@@ -52,6 +54,7 @@ use crate::{
     peers::{peer_manager::PeerManager, PeerPacketFilter},
 };
 
+#[cfg(feature = "kcp")]
 use super::tcp_proxy::NatDstConnector as _;
 
 enum SocksUdpSocket {
@@ -78,6 +81,7 @@ impl SocksUdpSocket {
 enum SocksTcpStream {
     Tcp(tokio::net::TcpStream),
     SmolTcp(super::tokio_smoltcp::TcpStream),
+    #[cfg(feature = "kcp")]
     Kcp(KcpStream),
 }
 
@@ -92,6 +96,7 @@ impl AsyncRead for SocksTcpStream {
             SocksTcpStream::SmolTcp(ref mut stream) => {
                 std::pin::Pin::new(stream).poll_read(cx, buf)
             }
+            #[cfg(feature = "kcp")]
             SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
         }
     }
@@ -108,6 +113,7 @@ impl AsyncWrite for SocksTcpStream {
             SocksTcpStream::SmolTcp(ref mut stream) => {
                 std::pin::Pin::new(stream).poll_write(cx, buf)
             }
+            #[cfg(feature = "kcp")]
             SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
         }
     }
@@ -119,6 +125,7 @@ impl AsyncWrite for SocksTcpStream {
         match self.get_mut() {
             SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
             SocksTcpStream::SmolTcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            #[cfg(feature = "kcp")]
             SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_flush(cx),
         }
     }
@@ -130,6 +137,7 @@ impl AsyncWrite for SocksTcpStream {
         match self.get_mut() {
             SocksTcpStream::Tcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
             SocksTcpStream::SmolTcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            #[cfg(feature = "kcp")]
             SocksTcpStream::Kcp(ref mut stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
         }
     }
@@ -211,12 +219,14 @@ impl Drop for SmolTcpConnector {
     }
 }
 
+#[cfg(feature = "kcp")]
 struct Socks5KcpConnector {
     kcp_endpoint: Weak<KcpEndpoint>,
     peer_mgr: Weak<PeerManager>,
     src_addr: SocketAddr,
 }
 
+#[cfg(feature = "kcp")]
 #[async_trait::async_trait]
 impl AsyncTcpConnector for Socks5KcpConnector {
     type S = SocksTcpStream;
@@ -242,6 +252,7 @@ impl AsyncTcpConnector for Socks5KcpConnector {
 }
 
 struct Socks5AutoConnector {
+    #[cfg(feature = "kcp")]
     kcp_endpoint: Option<Weak<KcpEndpoint>>,
     peer_mgr: Weak<PeerManager>,
     entries: Socks5EntrySet,
@@ -288,6 +299,7 @@ impl AsyncTcpConnector for Socks5AutoConnector {
         let dst_allow_kcp = peer_mgr_arc.check_allow_kcp_to_dst(&addr.ip()).await;
         tracing::debug!("dst_allow_kcp: {:?}", dst_allow_kcp);
 
+        #[cfg(feature = "kcp")]
         let connector: Box<dyn AsyncTcpConnector<S = SocksTcpStream> + Send> =
             match (&self.kcp_endpoint, dst_allow_kcp) {
                 (Some(kcp_endpoint), true) => Box::new(Socks5KcpConnector {
@@ -301,6 +313,12 @@ impl AsyncTcpConnector for Socks5AutoConnector {
                     current_entry: std::sync::Mutex::new(None),
                 }),
             };
+        #[cfg(not(feature = "kcp"))]
+        let connector = Box::new(SmolTcpConnector {
+            net: self.smoltcp_net.clone().unwrap(),
+            entries: self.entries.clone(),
+            current_entry: std::sync::Mutex::new(None),
+        });
 
         let ret = connector.tcp_connect(addr, timeout_s).await;
         self.inner_connector.lock().replace(Box::new(connector));
@@ -490,6 +508,7 @@ pub struct Socks5Server {
     udp_client_map: Arc<DashMap<UdpClientKey, Arc<UdpClientInfo>>>,
     udp_forward_task: Arc<DashMap<UdpClientKey, ScopedTask<()>>>,
 
+    #[cfg(feature = "kcp")]
     kcp_endpoint: Mutex<Option<Weak<KcpEndpoint>>>,
 
     socks5_enabled: Arc<AtomicBool>,
@@ -603,6 +622,7 @@ impl Socks5Server {
             udp_client_map: Arc::new(DashMap::new()),
             udp_forward_task: Arc::new(DashMap::new()),
 
+            #[cfg(feature = "kcp")]
             kcp_endpoint: Mutex::new(None),
 
             socks5_enabled: Arc::new(AtomicBool::new(false)),
@@ -662,9 +682,12 @@ impl Socks5Server {
 
     pub async fn run(
         self: &Arc<Self>,
-        kcp_endpoint: Option<Weak<KcpEndpoint>>,
+        #[cfg(feature = "kcp")] kcp_endpoint: Option<Weak<KcpEndpoint>>,
     ) -> Result<(), Error> {
-        *self.kcp_endpoint.lock().await = kcp_endpoint.clone();
+        #[cfg(feature = "kcp")]
+        {
+            *self.kcp_endpoint.lock().await = kcp_endpoint.clone();
+        }
         if let Some(proxy_url) = self.global_ctx.config.get_socks5_portal() {
             let bind_addr = format!(
                 "{}:{}",
@@ -692,6 +715,7 @@ impl Socks5Server {
                                     .as_ref()
                                     .map(|net| net.smoltcp_net.clone()),
                                 entries: entries.clone(),
+                                #[cfg(feature = "kcp")]
                                 kcp_endpoint: kcp_endpoint.clone(),
                                 peer_mgr: peer_manager.clone(),
                                 src_addr: addr,
@@ -811,6 +835,7 @@ impl Socks5Server {
         let tasks = Arc::new(std::sync::Mutex::new(JoinSet::new()));
         join_joinset_background(tasks.clone(), "tcp port forward".to_string());
         let forward_tasks = tasks;
+        #[cfg(feature = "kcp")]
         let kcp_endpoint = self.kcp_endpoint.lock().await.clone();
         let peer_mgr = self.peer_manager.clone();
         let cancel_token = CancellationToken::new();
@@ -843,6 +868,7 @@ impl Socks5Server {
                 );
 
                 let connector = Socks5AutoConnector {
+                    #[cfg(feature = "kcp")]
                     kcp_endpoint: kcp_endpoint.clone(),
                     peer_mgr: peer_mgr.clone(),
                     entries: entries.clone(),

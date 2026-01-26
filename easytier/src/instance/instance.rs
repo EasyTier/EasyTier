@@ -11,9 +11,9 @@ use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 
 use futures::FutureExt;
+use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
-use tokio::sync::{Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::common::acl_processor::AclRuleBuilder;
@@ -36,9 +36,9 @@ use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
-use crate::peers::rpc_service::PeerManagerRpcService;
 #[cfg(feature = "tun")]
 use crate::peers::recv_packet_from_chan;
+use crate::peers::rpc_service::PeerManagerRpcService;
 use crate::peers::{create_packet_recv_chan, PacketRecvChanReceiver};
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
@@ -1009,6 +1009,7 @@ impl Instance {
         #[cfg(feature = "socks5")]
         self.socks5_server
             .run(
+                #[cfg(feature = "kcp")]
                 self.kcp_proxy_src
                     .as_ref()
                     .map(|x| Arc::downgrade(&x.get_kcp_endpoint())),
