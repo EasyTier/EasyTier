@@ -25,6 +25,7 @@ use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
+#[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
@@ -236,6 +237,7 @@ impl RpcServerHook for InstanceRpcServerHook {
 #[derive(Clone)]
 pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
+    #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     peer_manager: Weak<PeerManager>,
     conn_manager: Weak<ManualConnectorManager>,
@@ -313,6 +315,7 @@ impl InstanceConfigPatcher {
         if port_forwards.is_empty() {
             return Ok(());
         }
+        #[cfg(feature = "socks5")]
         let Some(socks5_server) = self.socks5_server.upgrade() else {
             return Err(anyhow::anyhow!("socks5 server not available"));
         };
@@ -326,6 +329,7 @@ impl InstanceConfigPatcher {
         global_ctx
             .config
             .set_port_forwards(current_forwards.clone());
+        #[cfg(feature = "socks5")]
         socks5_server
             .reload_port_forwards(&current_forwards)
             .await
@@ -528,7 +532,9 @@ pub struct Instance {
     kcp_proxy_src: Option<KcpProxySrc>,
     kcp_proxy_dst: Option<KcpProxyDst>,
 
+    #[cfg(feature = "quic")]
     quic_proxy_src: Option<QUICProxySrc>,
+    #[cfg(feature = "quic")]
     quic_proxy_dst: Option<QUICProxyDst>,
 
     peer_center: Arc<PeerCenterInstance>,
@@ -609,7 +615,9 @@ impl Instance {
             kcp_proxy_src: None,
             kcp_proxy_dst: None,
 
+            #[cfg(feature = "quic")]
             quic_proxy_src: None,
+            #[cfg(feature = "quic")]
             quic_proxy_dst: None,
 
             peer_center,
@@ -888,6 +896,7 @@ impl Instance {
         });
     }
 
+    #[cfg(feature = "quic")]
     async fn run_quic_dst(&mut self) -> Result<(), Error> {
         if self.global_ctx.get_flags().disable_quic_input {
             return Ok(());
@@ -938,12 +947,14 @@ impl Instance {
             self.kcp_proxy_dst = Some(dst_proxy);
         }
 
+        #[cfg(feature = "quic")]
         if self.global_ctx.get_flags().enable_quic_proxy {
             let quic_src = QUICProxySrc::new(self.get_peer_manager()).await;
             quic_src.start().await;
             self.quic_proxy_src = Some(quic_src);
         }
 
+        #[cfg(feature = "quic")]
         if !self.global_ctx.get_flags().disable_quic_input {
             if let Err(e) = self.run_quic_dst().await {
                 eprintln!(
@@ -1126,6 +1137,7 @@ impl Instance {
         #[derive(Clone)]
         pub struct PortForwardManagerRpcService {
             global_ctx: Weak<GlobalCtx>,
+            #[cfg(feature = "socks5")]
             socks5_server: Weak<Socks5Server>,
         }
 
@@ -1146,6 +1158,7 @@ impl Instance {
 
         PortForwardManagerRpcService {
             global_ctx: Arc::downgrade(&self.global_ctx),
+            #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
         }
     }
@@ -1209,6 +1222,7 @@ impl Instance {
     pub fn get_config_patcher(&self) -> InstanceConfigPatcher {
         InstanceConfigPatcher {
             global_ctx: Arc::downgrade(&self.global_ctx),
+            #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
             peer_manager: Arc::downgrade(&self.peer_manager),
             conn_manager: Arc::downgrade(&self.conn_manager),
@@ -1371,6 +1385,7 @@ impl Instance {
                     );
                 }
 
+                #[cfg(feature = "quic")]
                 if let Some(quic_proxy) = self.quic_proxy_src.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "quic_src".to_string(),
@@ -1378,6 +1393,7 @@ impl Instance {
                     );
                 }
 
+                #[cfg(feature = "quic")]
                 if let Some(quic_proxy) = self.quic_proxy_dst.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "quic_dst".to_string(),

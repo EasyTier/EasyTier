@@ -931,7 +931,6 @@ impl NetworkOptions {
             ));
         }
 
-        #[cfg(feature = "socks5")]
         for port_forward in self.port_forward.iter() {
             let example_str = ", example: udp://0.0.0.0:12345/10.126.126.1:12345";
 
