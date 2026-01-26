@@ -155,7 +155,7 @@ bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 snow = "0.10.0"
-x25519-dalek = "2.0"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 # for cli
 tabled = "0.16"
@@ -183,7 +183,7 @@ smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a6
     # "socket-tcp-cubic",
     "async",
 ] }
-parking_lot = { version = "0.12.0", optional = true }
+parking_lot = { version = "0.12.0" }
 
 wildmatch = "2.3.4"
 
@@ -339,7 +339,7 @@ websocket = [
     "dep:rustls",
     "dep:rcgen",
 ]
-smoltcp = ["dep:smoltcp", "dep:parking_lot"]
+smoltcp = ["dep:smoltcp"]
 socks5 = ["dep:smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]

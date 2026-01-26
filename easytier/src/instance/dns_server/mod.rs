@@ -7,7 +7,7 @@ pub mod runner;
 pub mod server_instance;
 pub mod system_config;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "tun"))]
 mod tests;
 
 pub static MAGIC_DNS_INSTANCE_ADDR: &str = "tcp://127.0.0.1:49813";
