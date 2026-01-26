@@ -18,7 +18,6 @@ use easytier::{
     },
     utils::{init_logger, setup_panic_handler},
 };
-#[cfg(feature = "websocket")]
 use easytier::tunnel::websocket::WSTunnelListener;
 
 use mimalloc::MiMalloc;
@@ -136,7 +135,6 @@ pub fn get_listener_by_url(l: &url::Url) -> Result<Box<dyn TunnelListener>, Erro
     Ok(match l.scheme() {
         "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
         "udp" => Box::new(UdpTunnelListener::new(l.clone())),
-        #[cfg(feature = "websocket")]
         "ws" => Box::new(WSTunnelListener::new(l.clone())),
         _ => {
             return Err(Error::InvalidUrl(l.to_string()));

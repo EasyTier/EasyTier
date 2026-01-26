@@ -213,7 +213,7 @@ impl TcpProxyForWrappedSrcTrait for TcpProxyForKcpSrc {
         &self.0
     }
 
-    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
+    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
         let Some(peer_manager) = self.0.get_peer_manager() else {
             return false;
         };

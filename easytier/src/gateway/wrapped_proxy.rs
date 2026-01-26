@@ -71,7 +71,7 @@ impl ProxyAclHandler {
 pub(crate) trait TcpProxyForWrappedSrcTrait: Send + Sync + 'static {
     type Connector: NatDstConnector;
     fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>>;
-    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool;
+    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool;
 }
 
 #[async_trait::async_trait]
@@ -100,11 +100,11 @@ impl<C: NatDstConnector, T: TcpProxyForWrappedSrcTrait<Connector = C>> NicPacket
         if is_syn {
             // only check dst feature flag when SYN packet
             if !self
-                .check_dst_allow_kcp_input(&ip_packet.get_destination())
+                .check_dst_allow_wrapped_input(&ip_packet.get_destination())
                 .await
             {
                 tracing::warn!(
-                    "{:?} proxy src: dst {} not allow kcp input",
+                    "{:?} proxy src: dst {} not allow wrapped input",
                     self.get_tcp_proxy().get_transport_type(),
                     ip_packet.get_destination()
                 );
@@ -131,7 +131,7 @@ impl<C: NatDstConnector, T: TcpProxyForWrappedSrcTrait<Connector = C>> NicPacket
                 && !self.get_tcp_proxy().is_smoltcp_enabled()
             {
                 tracing::warn!(
-                    "{:?} nat 2 nat packet, src: {} dst: {} not allow kcp input",
+                    "{:?} nat 2 nat packet, src: {} dst: {} not allow wrapped input",
                     self.get_tcp_proxy().get_transport_type(),
                     ip_packet.get_source(),
                     ip_packet.get_destination()
