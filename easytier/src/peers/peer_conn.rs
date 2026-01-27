@@ -40,7 +40,7 @@ use crate::{
     peers::peer_session::{PeerSessionStore, SessionKey, UpsertResponderSessionReturn},
     proto::{
         api::instance::{PeerConnInfo, PeerConnStats},
-        common::{SecureModeConfig, TunnelInfo},
+        common::{LimiterConfig, SecureModeConfig, TunnelInfo},
         peer_rpc::{
             HandshakeRequest, PeerConnNoiseMsg1Pb, PeerConnNoiseMsg2Pb, PeerConnNoiseMsg3Pb,
             PeerConnSessionActionPb, SecureAuthLevel,
@@ -1171,6 +1171,21 @@ impl PeerConn {
         };
         self.counters.store(Some(Arc::new(counters)));
 
+        let limiter_config = LimiterConfig {
+            burst_rate: Some(1),
+            bps: Some(30 * 1024),
+            fill_duration_ms: None,
+        };
+        let remote_addr = conn_info_for_instrument
+            .clone()
+            .tunnel
+            .and_then(|tunnel| tunnel.remote_addr);
+        let remote_url = url::Url::from(remote_addr.unwrap());
+        let recv_limiter = self
+            .global_ctx
+            .token_bucket_manager()
+            .get_or_create(remote_url.host_str().unwrap(), limiter_config.into());
+
         let counters = self.counters.load_full().unwrap();
 
         self.tasks.spawn(
@@ -1185,8 +1200,9 @@ impl PeerConn {
                     }
 
                     let mut zc_packet = ret.unwrap();
+                    let buf_len = zc_packet.buf_len() as u64;
 
-                    counters.traffic_rx_bytes.add(zc_packet.buf_len() as u64);
+                    counters.traffic_rx_bytes.add(buf_len);
                     counters.traffic_rx_packets.inc();
 
                     let Some(peer_mgr_hdr) = zc_packet.mut_peer_manager_header() else {
@@ -1196,6 +1212,9 @@ impl PeerConn {
                         );
                         continue;
                     };
+                    // let need_throttle = peer_mgr_hdr.packet_type != PacketType::RpcReq as u8
+                    //     && peer_mgr_hdr.packet_type != PacketType::RpcResp as u8;
+                    let need_throttle = true;
 
                     if peer_mgr_hdr.packet_type == PacketType::Ping as u8 {
                         peer_mgr_hdr.packet_type = PacketType::Pong as u8;
@@ -1208,6 +1227,10 @@ impl PeerConn {
                         }
                     } else if sender.send(zc_packet).await.is_err() {
                         break;
+                    }
+
+                    if need_throttle {
+                        recv_limiter.consume(buf_len).await;
                     }
                 }
 

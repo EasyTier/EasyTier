@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 use tokio::time;
 
 use crate::common::scoped_task::ScopedTask;
@@ -15,6 +16,8 @@ pub struct TokenBucket {
     config: BucketConfig,        // Immutable configuration
     refill_task: Mutex<Option<ScopedTask<()>>>, // Background refill task
     start_time: Instant,         // Bucket creation time
+
+    refill_notifer: Arc<Notify>,
 }
 
 #[derive(Clone, Copy)]
@@ -77,6 +80,7 @@ impl TokenBucket {
                     break;
                 };
                 bucket.refill();
+                refill_notifer.notify_waiters();
             }
         });
 
@@ -152,6 +156,13 @@ impl TokenBucket {
                 Ok(_) => return true,
                 Err(actual) => current = actual,
             }
+        }
+    }
+
+    /// Consume tokens, blocking if not available
+    pub async fn consume(&self, tokens: u64) {
+        while !self.try_consume(tokens) {
+            self.refill_notifer.notified().await;
         }
     }
 }
