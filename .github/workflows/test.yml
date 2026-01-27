@@ -112,7 +112,7 @@ jobs:
 
       - name: Check features
         if: ${{ !cancelled() }}
-        run: cargo hack check --each-feature --features aes-gcm --verbose
+        run: cargo hack check --package easytier --each-feature --features aes-gcm --verbose
 
       - name: Run tests
         run: |
