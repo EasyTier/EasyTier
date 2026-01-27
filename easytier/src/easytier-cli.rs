@@ -1500,7 +1500,10 @@ where
 }
 
 fn text_width(text: &str) -> usize {
-    UnicodeWidthStr::width(text)
+    text.split('\n')
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
 }
 
 fn header_indices(headers: &[String], names: &[&str]) -> Vec<usize> {
