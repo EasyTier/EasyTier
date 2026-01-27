@@ -14,6 +14,7 @@ use futures::FutureExt;
 use tokio::sync::{Mutex, Notify};
 #[cfg(feature = "tun")]
 use tokio::{sync::oneshot, task::JoinSet};
+#[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 
 use crate::common::acl_processor::AclRuleBuilder;
@@ -60,8 +61,8 @@ use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
 
-use super::dns_server::runner::DnsRunner;
-use super::dns_server::MAGIC_DNS_FAKE_IP;
+#[cfg(feature = "magic-dns")]
+use super::dns_server::{runner::DnsRunner, MAGIC_DNS_FAKE_IP};
 use super::listeners::ListenerManager;
 
 #[cfg(feature = "socks5")]
@@ -128,6 +129,7 @@ impl IpProxy {
 #[cfg(feature = "tun")]
 type NicCtx = super::virtual_nic::NicCtx;
 
+#[cfg(feature = "magic-dns")]
 struct MagicDnsContainer {
     dns_runner_task: ScopedTask<()>,
     dns_runner_cancel_token: CancellationToken,
@@ -137,11 +139,20 @@ struct MagicDnsContainer {
 #[cfg(feature = "tun")]
 pub struct NicCtxContainer {
     nic_ctx: Option<Box<dyn Any + 'static + Send>>,
+    #[cfg(feature = "magic-dns")]
     magic_dns: Option<MagicDnsContainer>,
 }
 
 #[cfg(feature = "tun")]
 impl NicCtxContainer {
+    #[cfg(not(feature = "magic-dns"))]
+    fn new(nic_ctx: NicCtx) -> Self {
+        Self {
+            nic_ctx: Some(Box::new(nic_ctx)),
+        }
+    }
+
+    #[cfg(feature = "magic-dns")]
     fn new(nic_ctx: NicCtx, dns_runner: Option<DnsRunner>) -> Self {
         if let Some(mut dns_runner) = dns_runner {
             let token = CancellationToken::new();
@@ -167,6 +178,7 @@ impl NicCtxContainer {
     fn new_with_any<T: 'static + Send>(ctx: T) -> Self {
         Self {
             nic_ctx: Some(Box::new(ctx)),
+            #[cfg(feature = "magic-dns")]
             magic_dns: None,
         }
     }
@@ -651,6 +663,7 @@ impl Instance {
         arc_nic_ctx: ArcNicCtx,
         packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
     ) {
+        #[cfg(feature = "magic-dns")]
         if let Some(old_ctx) = arc_nic_ctx.lock().await.take() {
             if let Some(dns_runner) = old_ctx.magic_dns {
                 dns_runner.dns_runner_cancel_token.cancel();
@@ -675,6 +688,7 @@ impl Instance {
         tracing::debug!("nic ctx cleared.");
     }
 
+    #[cfg(feature = "magic-dns")]
     fn create_magic_dns_runner(
         peer_mgr: Arc<PeerManager>,
         tun_dev: Option<String>,
@@ -698,10 +712,14 @@ impl Instance {
     async fn use_new_nic_ctx(
         arc_nic_ctx: ArcNicCtx,
         nic_ctx: NicCtx,
-        magic_dns: Option<DnsRunner>,
+        #[cfg(feature = "magic-dns")] magic_dns: Option<DnsRunner>,
     ) {
         let mut g = arc_nic_ctx.lock().await;
-        *g = Some(NicCtxContainer::new(nic_ctx, magic_dns));
+        *g = Some(NicCtxContainer::new(
+            nic_ctx,
+            #[cfg(feature = "magic-dns")]
+            magic_dns,
+        ));
         tracing::debug!("nic ctx updated.");
     }
 
@@ -808,10 +826,12 @@ impl Instance {
                             global_ctx_c.set_ipv4(None);
                             continue;
                         }
+                        #[cfg(feature = "magic-dns")]
                         let ifname = new_nic_ctx.ifname().await;
                         Self::use_new_nic_ctx(
                             nic_ctx.clone(),
                             new_nic_ctx,
+                            #[cfg(feature = "magic-dns")]
                             Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
                         )
                         .await;
@@ -876,15 +896,20 @@ impl Instance {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                let ifname = new_nic_ctx.ifname().await;
 
                 // Create Magic DNS runner only if we have IPv4
-                let dns_runner = if let Some(ipv4) = ipv4_addr {
-                    Self::create_magic_dns_runner(peer_manager, ifname, ipv4)
-                } else {
-                    None
-                };
-                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                #[cfg(feature = "magic-dns")]
+                {
+                    let ifname = new_nic_ctx.ifname().await;
+                    let dns_runner = if let Some(ipv4) = ipv4_addr {
+                        Self::create_magic_dns_runner(peer_manager, ifname, ipv4)
+                    } else {
+                        None
+                    };
+                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                }
+                #[cfg(not(feature = "magic-dns"))]
+                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
 
                 if let Some(output_tx) = output_tx.take() {
                     let _ = output_tx.send(Ok(()));
