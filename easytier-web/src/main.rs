@@ -6,6 +6,7 @@ extern crate rust_i18n;
 use std::sync::Arc;
 
 use clap::Parser;
+use easytier::tunnel::websocket::WSTunnelListener;
 use easytier::{
     common::{
         config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
@@ -13,12 +14,9 @@ use easytier::{
         error::Error,
         network::{local_ipv4, local_ipv6},
     },
-    tunnel::{
-        tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener,
-    },
+    tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener},
     utils::{init_logger, setup_panic_handler},
 };
-use easytier::tunnel::websocket::WSTunnelListener;
 
 use mimalloc::MiMalloc;
 
