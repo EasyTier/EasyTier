@@ -3,6 +3,9 @@ mod three_node;
 
 mod ipv6_test;
 
+mod encrypt_tests;
+mod tunnel_tests;
+
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
 
