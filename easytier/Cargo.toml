@@ -155,7 +155,7 @@ bitflags = "2.5"
 aes-gcm = { version = "0.10.3", optional = true }
 openssl = { version = "0.10", optional = true, features = ["vendored"] }
 snow = "0.10.0"
-x25519-dalek = "2.0"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 # for cli
 tabled = "0.16"
@@ -185,7 +185,7 @@ smoltcp = { git = "https://github.com/smoltcp-rs/smoltcp.git", rev = "0a926767a6
     # "socket-tcp-cubic",
     "async",
 ] }
-parking_lot = { version = "0.12.0", optional = true }
+parking_lot = { version = "0.12.0" }
 
 wildmatch = "2.3.4"
 
@@ -199,7 +199,7 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 
 zstd = { version = "0.13" }
 
-kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f" }
+kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
     "derive",
@@ -215,8 +215,9 @@ hickory-resolver = "0.25.2"
 hickory-proto = "0.25.2"
 
 # for magic dns
-hickory-client = "0.25.2"
-hickory-server = { version = "0.25.2", features = ["resolver"] }
+hickory-client = { version = "0.25.2", optional = true }
+hickory-server = { version = "0.25.2", features = ["resolver"], optional = true }
+
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
 multimap = "0.10.1"
@@ -318,7 +319,7 @@ tokio-socks = "0.5.2"
 
 
 [features]
-default = ["wireguard", "websocket", "smoltcp", "tun", "socks5", "quic"]
+default = ["wireguard", "websocket", "smoltcp", "tun", "socks5", "kcp", "quic", "magic-dns"]
 full = [
     "websocket",
     "wireguard",
@@ -327,9 +328,11 @@ full = [
     "smoltcp",
     "tun",
     "socks5",
+    "magic-dns",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
+kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
 openssl-crypto = ["dep:openssl"]
@@ -341,8 +344,9 @@ websocket = [
     "dep:rustls",
     "dep:rcgen",
 ]
-smoltcp = ["dep:smoltcp", "dep:parking_lot"]
-socks5 = ["dep:smoltcp"]
+smoltcp = ["dep:smoltcp"]
+socks5 = ["smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
 jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
+magic-dns = ["dep:hickory-client", "dep:hickory-server"]
