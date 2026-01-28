@@ -1171,20 +1171,22 @@ impl PeerConn {
         };
         self.counters.store(Some(Arc::new(counters)));
 
-        let limiter_config = LimiterConfig {
-            burst_rate: Some(1),
-            bps: Some(30 * 1024),
-            fill_duration_ms: None,
+        let is_foreign_network = conn_info_for_instrument.network_name
+            != self.global_ctx.get_network_identity().network_name;
+        let recv_limiter = if is_foreign_network {
+            let relay_network_bps_limit = self.global_ctx.get_flags().foreign_relay_bps_limit;
+            let limiter_config = LimiterConfig {
+                burst_rate: None,
+                bps: Some(relay_network_bps_limit),
+                fill_duration_ms: None,
+            };
+            Some(self.global_ctx.token_bucket_manager().get_or_create(
+                &format!("{}:recv", conn_info_for_instrument.network_name),
+                limiter_config.into(),
+            ))
+        } else {
+            None
         };
-        let remote_addr = conn_info_for_instrument
-            .clone()
-            .tunnel
-            .and_then(|tunnel| tunnel.remote_addr);
-        let remote_url = url::Url::from(remote_addr.unwrap());
-        let recv_limiter = self
-            .global_ctx
-            .token_bucket_manager()
-            .get_or_create(remote_url.host_str().unwrap(), limiter_config.into());
 
         let counters = self.counters.load_full().unwrap();
 
@@ -1210,11 +1212,8 @@ impl PeerConn {
                             "unexpected packet: {:?}, cannot decode peer manager hdr",
                             zc_packet
                         );
-                        continue;
+                        break;
                     };
-                    // let need_throttle = peer_mgr_hdr.packet_type != PacketType::RpcReq as u8
-                    //     && peer_mgr_hdr.packet_type != PacketType::RpcResp as u8;
-                    let need_throttle = true;
 
                     if peer_mgr_hdr.packet_type == PacketType::Ping as u8 {
                         peer_mgr_hdr.packet_type = PacketType::Pong as u8;
@@ -1229,8 +1228,8 @@ impl PeerConn {
                         break;
                     }
 
-                    if need_throttle {
-                        recv_limiter.consume(buf_len).await;
+                    if let Some(limiter) = recv_limiter.as_ref() {
+                        limiter.consume(buf_len).await;
                     }
                 }
 
