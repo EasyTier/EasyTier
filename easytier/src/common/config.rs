@@ -130,6 +130,10 @@ pub fn get_avaliable_encrypt_methods() -> Vec<&'static str> {
     r
 }
 
+pub fn get_available_compress_methods() -> Vec<&'static str> {
+    vec!["none", "zstd", "lz4", "brotli", "br"]
+}
+
 #[auto_impl::auto_impl(Box, &)]
 pub trait ConfigLoader: Send + Sync {
     fn get_id(&self) -> uuid::Uuid;

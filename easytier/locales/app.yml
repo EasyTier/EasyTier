@@ -102,8 +102,8 @@ core_clap:
     en: "disable encryption for peers communication, default is false, must be same with peers"
     zh-CN: "禁用对等节点通信的加密，默认为false，必须与对等节点相同"
   encryption_algorithm:
-    en: "encryption algorithm to use, supported: '', 'xor', 'chacha20', 'aes-gcm', 'aes-gcm-256', 'openssl-aes128-gcm', 'openssl-aes256-gcm', 'openssl-chacha20'. Empty string means default (aes-gcm)"
-    zh-CN: "要使用的加密算法，支持：''（默认aes-gcm）、'xor'、'chacha20'、'aes-gcm'、'aes-gcm-256'、'openssl-aes128-gcm'、'openssl-aes256-gcm'、'openssl-chacha20'"
+    en: "encryption algorithm to use. Default available: 'aes-gcm', 'aes-256-gcm', 'chacha20', 'xor'. OpenSSL algorithms (openssl-aes-gcm, openssl-aes-256-gcm, openssl-chacha20) require specially compiled builds. Empty string means default (aes-gcm)"
+    zh-CN: "要使用的加密算法。默认可用：'aes-gcm'、'aes-256-gcm'、'chacha20'、'xor'。OpenSSL算法（openssl-aes-gcm、openssl-aes-256-gcm、openssl-chacha20）需要特殊编译版本。空字符串表示默认（aes-gcm）"
   multi_thread:
     en: "use multi-thread runtime, default is single-thread"
     zh-CN: "使用多线程运行时，默认为单线程"
@@ -176,8 +176,8 @@ core_clap:
     en: "the url of the ipv6 listener, e.g.: tcp://[::]:11010, if not set, will listen on random udp port"
     zh-CN: "IPv6 监听器的URL，例如：tcp://[::]:11010，如果未设置，将在随机UDP端口上监听"
   compression:
-    en: "compression algorithm to use, support none, zstd. default is none"
-    zh-CN: "要使用的压缩算法，支持 none、zstd。默认为 none"
+    en: "compression algorithm to use. LZ4: fastest, for low-performance devices; zstd: balanced; brotli: high compression ratio. Default is none"
+    zh-CN: "要使用的压缩算法。LZ4：最快，适合低性能设备；zstd：平衡；brotli：高压缩率。默认为 none"
   mapped_listeners:
     en: "manually specify the public address of the listener, other nodes can use this address to connect to this node. e.g.: tcp://123.123.123.123:11223, can specify multiple."
     zh-CN: "手动指定监听器的公网地址，其他节点可以使用该地址连接到本节点。例如：tcp://123.123.123.123:11223，可以指定多个。"
