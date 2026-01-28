@@ -30,7 +30,7 @@ use crate::proto::common::ProxyDstInfo;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::PeerManagerHeader;
-use crate::tunnel::quic::{configure_client, make_server_endpoint};
+use crate::tunnel::quic::{client_config, make_server_endpoint};
 
 pub struct QUICStream {
     endpoint: Option<quinn::Endpoint>,
@@ -115,7 +115,7 @@ impl NatDstConnector for NatDstQUICConnector {
 
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
             .with_context(|| format!("failed to create QUIC endpoint for src: {}", src))?;
-        endpoint.set_default_client_config(configure_client());
+        endpoint.set_default_client_config(client_config());
 
         // connect to server
         let connection = {
@@ -263,7 +263,7 @@ impl QUICProxyDst {
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<Self> {
         let _g = global_ctx.net_ns.guard();
-        let (endpoint, _) = make_server_endpoint(
+        let endpoint = make_server_endpoint(
             format!("0.0.0.0:{}", global_ctx.config.get_flags().quic_listen_port)
                 .parse()
                 .unwrap(),
