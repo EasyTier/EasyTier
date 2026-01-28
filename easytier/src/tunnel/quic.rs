@@ -37,6 +37,31 @@ pub fn configure_client() -> ClientConfig {
     client_config
 }
 
+fn make_client_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn Error>> {
+    let socket2_socket = socket2::Socket::new(
+        socket2::Domain::for_address(bind_addr),
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    setup_sokcet2(&socket2_socket, &bind_addr)?;
+    let socket = std::net::UdpSocket::from(socket2_socket);
+
+    let runtime =
+        quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+    let mut endpoint_config = EndpointConfig::default();
+    endpoint_config.max_udp_payload_size(1200)?;
+    let socket: NoGroAsyncUdpSocket = NoGroAsyncUdpSocket {
+        inner: runtime.wrap_udp_socket(socket)?,
+    };
+    let endpoint = Endpoint::new_with_abstract_socket(
+        endpoint_config,
+        None,
+        Arc::new(socket),
+        runtime,
+    )?;
+    Ok(endpoint)
+}
+
 #[derive(Clone, Debug)]
 struct NoGroAsyncUdpSocket {
     inner: Arc<dyn AsyncUdpSocket>,
@@ -244,13 +269,14 @@ impl TunnelConnector for QUICTunnelConnector {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
                 .await?;
-        let local_addr = if addr.is_ipv4() {
-            "0.0.0.0:0"
+        let bind_addr: SocketAddr = if addr.is_ipv4() {
+            "0.0.0.0:0".parse().unwrap()
         } else {
-            "[::]:0"
+            "[::]:0".parse().unwrap()
         };
 
-        let mut endpoint = Endpoint::client(local_addr.parse().unwrap())?;
+        let mut endpoint = make_client_endpoint(bind_addr)
+            .map_err(|e| anyhow::anyhow!("make client endpoint error: {:?}", e))?;
         endpoint.set_default_client_config(configure_client());
 
         // connect to server

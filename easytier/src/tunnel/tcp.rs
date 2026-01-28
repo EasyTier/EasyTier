@@ -194,10 +194,14 @@ impl super::TunnelConnector for TcpTunnelConnector {
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "tcp", self.ip_version)
                 .await?;
         if self.bind_addrs.is_empty() {
-            self.connect_with_default_bind(addr).await
-        } else {
-            self.connect_with_custom_bind(addr).await
+            let default_bind: SocketAddr = if addr.is_ipv4() {
+                "0.0.0.0:0".parse().unwrap()
+            } else {
+                "[::]:0".parse().unwrap()
+            };
+            self.bind_addrs.push(default_bind);
         }
+        self.connect_with_custom_bind(addr).await
     }
 
     fn remote_url(&self) -> url::Url {

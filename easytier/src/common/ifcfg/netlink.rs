@@ -380,7 +380,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
     ) -> Result<(), Error> {
         let mut message = RouteMessage::default();
 
-        message.header.table = RouteHeader::RT_TABLE_MAIN;
+        message.header.table = super::fwmark::EASYTIER_ROUTE_TABLE;
         message.header.protocol = RouteProtocol::Static;
         message.header.scope = RouteScope::Universe;
         message.header.kind = RouteType::Unicast;
@@ -415,6 +415,10 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
         for msg in routes {
             let other_route: Route = msg.clone().into();
+            // Only delete routes from EasyTier's routing table
+            if other_route.table != super::fwmark::EASYTIER_ROUTE_TABLE {
+                continue;
+            }
             if other_route.destination == std::net::IpAddr::V4(address)
                 && other_route.prefix == cidr_prefix
                 && other_route.ifindex == Some(ifidx)
@@ -546,7 +550,7 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
         message.header.address_family = AddressFamily::Inet6;
         message.header.destination_prefix_length = cidr_prefix;
-        message.header.table = RouteHeader::RT_TABLE_MAIN;
+        message.header.table = super::fwmark::EASYTIER_ROUTE_TABLE;
         message.header.protocol = RouteProtocol::Static;
         message.header.scope = RouteScope::Universe;
         message.header.kind = RouteType::Unicast;
@@ -582,6 +586,10 @@ impl IfConfiguerTrait for NetlinkIfConfiger {
 
         for msg in routes {
             let other_route: Route = msg.clone().into();
+            // Only delete routes from EasyTier's routing table
+            if other_route.table != super::fwmark::EASYTIER_ROUTE_TABLE {
+                continue;
+            }
             if other_route.destination == std::net::IpAddr::V6(address)
                 && other_route.prefix == cidr_prefix
                 && other_route.ifindex == Some(ifidx)

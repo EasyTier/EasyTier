@@ -10,7 +10,8 @@ use std::{
 
 use anyhow::Context;
 use rand::{seq::SliceRandom, Rng};
-use tokio::{net::UdpSocket, sync::RwLock};
+use tokio::sync::RwLock;
+use crate::common::ifcfg::fwmark::create_bypass_udp_socket_v4;
 use tracing::Level;
 
 use crate::{
@@ -447,7 +448,7 @@ impl PunchSymToConeHoleClient {
         if self.try_direct_connect.load(Ordering::Relaxed) {
             if let Ok(tunnel) = try_connect_with_socket(
                 global_ctx.clone(),
-                Arc::new(UdpSocket::bind("0.0.0.0:0").await?),
+                Arc::new(create_bypass_udp_socket_v4(0).await?),
                 remote_mapped_addr.into(),
             )
             .await

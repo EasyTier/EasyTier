@@ -7,6 +7,11 @@ mod win;
 #[cfg(target_os = "windows")]
 mod windows;
 
+#[cfg(target_os = "linux")]
+pub mod fwmark;
+#[cfg(target_os = "linux")]
+pub mod policy_route;
+
 mod route;
 
 use std::net::{Ipv4Addr, Ipv6Addr};

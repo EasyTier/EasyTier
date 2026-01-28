@@ -257,6 +257,12 @@ impl Drop for VirtualNic {
                 }
             }
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            // Clean up policy routing rules only if this is the last instance
+            crate::common::ifcfg::policy_route::del_ip_rules_if_last();
+        }
     }
 }
 
@@ -375,6 +381,16 @@ impl VirtualNic {
         {
             // Check and create TUN device node if necessary (Linux only)
             Self::ensure_tun_device_node().await;
+
+            // Set up policy routing rules
+            if let Err(e) = crate::common::ifcfg::policy_route::add_ip_rules() {
+                tracing::warn!(?e, "Failed to add IP rules, policy routing may not work");
+            }
+
+            // Register this instance with a PID file for multi-instance support
+            if let Err(e) = crate::common::ifcfg::policy_route::create_pid_file() {
+                tracing::warn!(?e, "Failed to create PID file");
+            }
 
             let dev_name = self.global_ctx.get_flags().dev_name;
             if !dev_name.is_empty() {
@@ -533,6 +549,18 @@ impl VirtualNic {
         );
 
         self.ifname = Some(ifname.to_owned());
+
+        #[cfg(target_os = "linux")]
+        {
+            // Add throw routes for local subnets to prevent VPN routing conflicts
+            if self.global_ctx.get_flags().local_throw_routes {
+                if let Err(e) =
+                    crate::common::ifcfg::policy_route::add_local_throw_routes(&ifname)
+                {
+                    tracing::warn!(?e, "Failed to add local throw routes");
+                }
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
