@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package file_transfer;
+
+message TransferFileMetadata {
+    string file_name = 1;
+    uint64 file_size = 2;
+    string file_hash = 3; // using sha256 or blake3 for integrity check
+    bool is_dir = 4;
+}
+
+message TransferOfferRequest {
+    string transfer_id = 1; // context_id / session_id
+    uint32 sender_peer_id = 2;
+    TransferFileMetadata metadata = 3;
+}
+
+message TransferOfferResponse {
+    enum Status {
+        ACCEPTED = 0;
+        REJECTED = 1;
+        BUSY = 2;
+    }
+    Status status = 1;
+    uint64 start_offset = 2; // for resumable download, telling sender where to start
+    string message = 3;
+}
+
+message TransferChunkRequest {
+    string transfer_id = 1;
+    uint64 offset = 2;
+    uint32 length = 3;
+}
+
+message TransferChunkResponse {
+    bytes data = 1;
+}
+
+service FileTransferRpc {
+    // 1. 发送方请求发送 (握手, 协商续传位置)
+    rpc OfferFile(TransferOfferRequest) returns (TransferOfferResponse);
+    
+    // 2. 接收方主动拉取数据流 (Pull Mode)
+    // 相比 Push 模式，Pull 模式更容易控制流速和背压 (Backpressure)
+    rpc PullChunk(TransferChunkRequest) returns (TransferChunkResponse);
+}

@@ -58,6 +58,8 @@ use crate::proto::rpc_impl::standalone::RpcServerHook;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::rpc_service::InstanceRpcService;
+use crate::file_transfer::FileTransferService;
+use crate::proto::file_transfer::FileTransferRpcServer;
 use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
 
@@ -554,6 +556,8 @@ pub struct Instance {
 
     proxy_cidrs_monitor: Option<ScopedTask<()>>,
 
+    file_transfer_service: Arc<FileTransferService>,
+
     global_ctx: ArcGlobalCtx,
 }
 
@@ -605,6 +609,8 @@ impl Instance {
         #[cfg(feature = "socks5")]
         let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
+        let file_transfer_service = Arc::new(FileTransferService::new());
+
         Instance {
             inst_name: global_ctx.inst_name.clone(),
             id,
@@ -639,6 +645,8 @@ impl Instance {
             socks5_server,
 
             proxy_cidrs_monitor: None,
+
+            file_transfer_service,
 
             global_ctx,
         }
@@ -1030,6 +1038,11 @@ impl Instance {
         if self.global_ctx.get_vpn_portal_cidr().is_some() {
             self.run_vpn_portal().await?;
         }
+
+        self.peer_manager.get_peer_rpc_mgr().rpc_server().registry().register(
+            FileTransferRpcServer::new(self.file_transfer_service.clone()),
+            "file_transfer",
+        );
 
         #[cfg(feature = "socks5")]
         self.socks5_server

@@ -12,6 +12,7 @@ mod peer_center;
 mod vpn_portal;
 
 pub mod common;
+pub mod file_transfer;
 pub mod connector;
 pub mod core;
 pub mod instance_manager;
