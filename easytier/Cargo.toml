@@ -315,7 +315,7 @@ maplit = "1.0.2"
 tempfile = "3.22.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-defguard_wireguard_rs = "0.4.2"
+defguard_wireguard_rs = "0.9.0"
 tokio-socks = "0.5.2"
 
 
