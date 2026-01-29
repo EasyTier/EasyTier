@@ -221,7 +221,7 @@ impl ForeignNetworkEntry {
 
             async fn recv(&self) -> Result<ZCPacket, Error> {
                 if let Some(o) = self.packet_recv.lock().await.recv().await {
-                    tracing::info!("recv rpc packet in foreign network manager rpc transport");
+                    tracing::trace!("recv rpc packet in foreign network manager rpc transport");
                     Ok(o)
                 } else {
                     Err(Error::Unknown)
@@ -335,7 +335,7 @@ impl ForeignNetworkEntry {
                     tracing::warn!("invalid packet, skip");
                     continue;
                 };
-                tracing::info!(?hdr, "recv packet in foreign network manager");
+                tracing::trace!(?hdr, "recv packet in foreign network manager");
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id == my_node_id {
                     if hdr.packet_type == PacketType::TaRpc as u8

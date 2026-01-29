@@ -1476,7 +1476,12 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
 
     let bps = bps as u64 / 1024;
     // allow 50kb jitter
-    assert!(bps >= bps_limit - 50 && bps <= bps_limit + 50);
+    assert!(
+        bps >= bps_limit - 50 && bps <= bps_limit + 50,
+        "bps: {}, bps_limit: {}",
+        bps,
+        bps_limit
+    );
 
     drop_insts(insts).await;
 }

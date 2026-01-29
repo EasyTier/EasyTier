@@ -530,7 +530,7 @@ impl SyncedRouteInfo {
         for (peer_idx, peer_id_version) in conn_bitmap.peer_ids.iter().enumerate() {
             let connceted_peers = conn_bitmap.get_connected_peers(peer_idx);
             self.fill_empty_peer_info(&connceted_peers);
-            need_inc_version = self.update_conn_info_one_peer(peer_id_version, connceted_peers);
+            need_inc_version |= self.update_conn_info_one_peer(peer_id_version, connceted_peers);
         }
         if need_inc_version {
             self.version.inc();
@@ -548,7 +548,7 @@ impl SyncedRouteInfo {
                 peer_conn_info.connected_peer_ids.iter().copied().collect();
 
             self.fill_empty_peer_info(&connected_peers);
-            need_inc_version = self.update_conn_info_one_peer(&peer_id_version, connected_peers);
+            need_inc_version |= self.update_conn_info_one_peer(&peer_id_version, connected_peers);
         }
         if need_inc_version {
             self.version.inc();
