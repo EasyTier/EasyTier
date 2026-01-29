@@ -9,6 +9,7 @@ use tokio::{
 use crate::proto::peer_rpc::GetIpListResponse;
 
 use super::{netns::NetNS, stun::StunInfoCollectorTrait};
+use crate::common::ifcfg::fwmark::{create_bypass_udp_socket_v4, create_bypass_udp_socket_v6};
 
 pub const CACHED_IP_LIST_TIMEOUT_SEC: u64 = 60;
 
@@ -157,7 +158,7 @@ impl InterfaceFilter {
 }
 
 pub async fn local_ipv4() -> std::io::Result<std::net::Ipv4Addr> {
-    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let socket = create_bypass_udp_socket_v4(0).await?;
     socket.connect("8.8.8.8:80").await?;
     let addr = socket.local_addr()?;
     match addr.ip() {
@@ -170,7 +171,7 @@ pub async fn local_ipv4() -> std::io::Result<std::net::Ipv4Addr> {
 }
 
 pub async fn local_ipv6() -> std::io::Result<std::net::Ipv6Addr> {
-    let socket = tokio::net::UdpSocket::bind("[::]:0").await?;
+    let socket = create_bypass_udp_socket_v6(0).await?;
     socket
         .connect("[2001:4860:4860:0000:0000:0000:0000:8888]:80")
         .await?;
