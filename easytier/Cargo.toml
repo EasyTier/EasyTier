@@ -334,8 +334,6 @@ full = [
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-plaintext", "dep:rustls", "dep:rcgen"]
-wireguard = ["dep:boringtun", "dep:ring"]
-quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
