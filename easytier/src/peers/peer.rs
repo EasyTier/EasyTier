@@ -238,12 +238,12 @@ impl Drop for Peer {
 
 #[cfg(test)]
 mod tests {
-
+    use std::sync::Arc;
     use tokio::time::timeout;
 
     use crate::{
         common::{global_ctx::tests::get_mock_global_ctx, new_peer_id},
-        peers::{create_packet_recv_chan, peer_conn::PeerConn},
+        peers::{create_packet_recv_chan, peer_conn::PeerConn, peer_session::PeerSessionStore},
         tunnel::ring::create_ring_tunnel_pair,
     };
 
@@ -257,11 +257,20 @@ mod tests {
         let local_peer = Peer::new(new_peer_id(), local_packet_send, global_ctx.clone());
         let remote_peer = Peer::new(new_peer_id(), remote_packet_send, global_ctx.clone());
 
+        let ps = Arc::new(PeerSessionStore::new());
         let (local_tunnel, remote_tunnel) = create_ring_tunnel_pair();
-        let mut local_peer_conn =
-            PeerConn::new(local_peer.peer_node_id, global_ctx.clone(), local_tunnel);
-        let mut remote_peer_conn =
-            PeerConn::new(remote_peer.peer_node_id, global_ctx.clone(), remote_tunnel);
+        let mut local_peer_conn = PeerConn::new(
+            local_peer.peer_node_id,
+            global_ctx.clone(),
+            local_tunnel,
+            ps.clone(),
+        );
+        let mut remote_peer_conn = PeerConn::new(
+            remote_peer.peer_node_id,
+            global_ctx.clone(),
+            remote_tunnel,
+            ps.clone(),
+        );
 
         assert!(!local_peer_conn.handshake_done());
         assert!(!remote_peer_conn.handshake_done());

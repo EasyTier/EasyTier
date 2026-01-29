@@ -48,6 +48,9 @@ pub enum Error {
 
     #[error("secret key error: {0}")]
     SecretKeyError(String),
+
+    #[error("noise protocol error: {0}")]
+    NoiseError(#[from] snow::Error),
 }
 
 pub type Result<T> = result::Result<T, Error>;

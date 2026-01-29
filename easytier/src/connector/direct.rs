@@ -186,7 +186,9 @@ impl DirectConnectorManagerData {
             .await?;
 
         // NOTICE: must add as directly connected tunnel
-        self.peer_manager.add_client_tunnel(ret, true).await
+        self.peer_manager
+            .add_client_tunnel_with_peer_id_hint(ret, true, Some(dst_peer_id))
+            .await
     }
 
     async fn do_try_connect_to_ip(&self, dst_peer_id: PeerId, addr: String) -> Result<(), Error> {
@@ -199,7 +201,8 @@ impl DirectConnectorManagerData {
             } else {
                 timeout(
                     std::time::Duration::from_secs(3),
-                    self.peer_manager.try_direct_connect(connector),
+                    self.peer_manager
+                        .try_direct_connect_with_peer_id_hint(connector, Some(dst_peer_id)),
                 )
                 .await??
             };

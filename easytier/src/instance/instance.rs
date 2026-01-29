@@ -1,16 +1,20 @@
+#[cfg(feature = "tun")]
 use std::any::Any;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
+#[cfg(feature = "tun")]
 use std::time::Duration;
 
 use anyhow::Context;
 use cidr::{IpCidr, Ipv4Inet};
 
 use futures::FutureExt;
-use tokio::sync::{oneshot, Notify};
-use tokio::{sync::Mutex, task::JoinSet};
+use tokio::sync::{Mutex, Notify};
+#[cfg(feature = "tun")]
+use tokio::{sync::oneshot, task::JoinSet};
+#[cfg(feature = "magic-dns")]
 use tokio_util::sync::CancellationToken;
 
 use crate::common::acl_processor::AclRuleBuilder;
@@ -24,15 +28,19 @@ use crate::connector::manual::{ConnectorManagerRpcService, ManualConnectorManage
 use crate::connector::tcp_hole_punch::TcpHolePunchConnector;
 use crate::connector::udp_hole_punch::UdpHolePunchConnector;
 use crate::gateway::icmp_proxy::IcmpProxy;
+#[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
+#[cfg(feature = "quic")]
 use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
+#[cfg(feature = "tun")]
+use crate::peers::recv_packet_from_chan;
 use crate::peers::rpc_service::PeerManagerRpcService;
-use crate::peers::{create_packet_recv_chan, recv_packet_from_chan, PacketRecvChanReceiver};
+use crate::peers::{create_packet_recv_chan, PacketRecvChanReceiver};
 use crate::proto::api::config::{
     ConfigPatchAction, ConfigRpc, GetConfigRequest, GetConfigResponse, PatchConfigRequest,
     PatchConfigResponse, PortForwardPatch,
@@ -53,8 +61,8 @@ use crate::rpc_service::InstanceRpcService;
 use crate::utils::weak_upgrade;
 use crate::vpn_portal::{self, VpnPortal};
 
-use super::dns_server::runner::DnsRunner;
-use super::dns_server::MAGIC_DNS_FAKE_IP;
+#[cfg(feature = "magic-dns")]
+use super::dns_server::{runner::DnsRunner, MAGIC_DNS_FAKE_IP};
 use super::listeners::ListenerManager;
 
 #[cfg(feature = "socks5")]
@@ -120,35 +128,31 @@ impl IpProxy {
 
 #[cfg(feature = "tun")]
 type NicCtx = super::virtual_nic::NicCtx;
-#[cfg(not(feature = "tun"))]
-struct NicCtx;
-#[cfg(not(feature = "tun"))]
-impl NicCtx {
-    pub fn new(
-        _global_ctx: ArcGlobalCtx,
-        _peer_manager: &Arc<PeerManager>,
-        _peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
-    ) -> Self {
-        Self
-    }
 
-    pub async fn run(&mut self, _ipv4_addr: Ipv4Addr) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
+#[cfg(feature = "magic-dns")]
 struct MagicDnsContainer {
     dns_runner_task: ScopedTask<()>,
     dns_runner_cancel_token: CancellationToken,
 }
 
 // nic container will be cleared when dhcp ip changed
+#[cfg(feature = "tun")]
 pub struct NicCtxContainer {
     nic_ctx: Option<Box<dyn Any + 'static + Send>>,
+    #[cfg(feature = "magic-dns")]
     magic_dns: Option<MagicDnsContainer>,
 }
 
+#[cfg(feature = "tun")]
 impl NicCtxContainer {
+    #[cfg(not(feature = "magic-dns"))]
+    fn new(nic_ctx: NicCtx) -> Self {
+        Self {
+            nic_ctx: Some(Box::new(nic_ctx)),
+        }
+    }
+
+    #[cfg(feature = "magic-dns")]
     fn new(nic_ctx: NicCtx, dns_runner: Option<DnsRunner>) -> Self {
         if let Some(mut dns_runner) = dns_runner {
             let token = CancellationToken::new();
@@ -174,11 +178,13 @@ impl NicCtxContainer {
     fn new_with_any<T: 'static + Send>(ctx: T) -> Self {
         Self {
             nic_ctx: Some(Box::new(ctx)),
+            #[cfg(feature = "magic-dns")]
             magic_dns: None,
         }
     }
 }
 
+#[cfg(feature = "tun")]
 type ArcNicCtx = Arc<Mutex<Option<NicCtxContainer>>>;
 
 pub struct InstanceRpcServerHook {
@@ -236,6 +242,7 @@ impl RpcServerHook for InstanceRpcServerHook {
 #[derive(Clone)]
 pub struct InstanceConfigPatcher {
     global_ctx: Weak<GlobalCtx>,
+    #[cfg(feature = "socks5")]
     socks5_server: Weak<Socks5Server>,
     peer_manager: Weak<PeerManager>,
     conn_manager: Weak<ManualConnectorManager>,
@@ -313,6 +320,7 @@ impl InstanceConfigPatcher {
         if port_forwards.is_empty() {
             return Ok(());
         }
+        #[cfg(feature = "socks5")]
         let Some(socks5_server) = self.socks5_server.upgrade() else {
             return Err(anyhow::anyhow!("socks5 server not available"));
         };
@@ -326,6 +334,7 @@ impl InstanceConfigPatcher {
         global_ctx
             .config
             .set_port_forwards(current_forwards.clone());
+        #[cfg(feature = "socks5")]
         socks5_server
             .reload_port_forwards(&current_forwards)
             .await
@@ -513,6 +522,7 @@ pub struct Instance {
 
     id: uuid::Uuid,
 
+    #[cfg(feature = "tun")]
     nic_ctx: ArcNicCtx,
 
     peer_packet_receiver: Arc<Mutex<PacketRecvChanReceiver>>,
@@ -525,10 +535,14 @@ pub struct Instance {
 
     ip_proxy: Option<IpProxy>,
 
+    #[cfg(feature = "kcp")]
     kcp_proxy_src: Option<KcpProxySrc>,
+    #[cfg(feature = "kcp")]
     kcp_proxy_dst: Option<KcpProxyDst>,
 
+    #[cfg(feature = "quic")]
     quic_proxy_src: Option<QUICProxySrc>,
+    #[cfg(feature = "quic")]
     quic_proxy_dst: Option<QUICProxyDst>,
 
     peer_center: Arc<PeerCenterInstance>,
@@ -596,6 +610,7 @@ impl Instance {
             id,
 
             peer_packet_receiver: Arc::new(Mutex::new(peer_packet_receiver)),
+            #[cfg(feature = "tun")]
             nic_ctx: Arc::new(Mutex::new(None)),
 
             peer_manager,
@@ -606,10 +621,14 @@ impl Instance {
             tcp_hole_puncher: Arc::new(Mutex::new(tcp_hole_puncher)),
 
             ip_proxy: None,
+            #[cfg(feature = "kcp")]
             kcp_proxy_src: None,
+            #[cfg(feature = "kcp")]
             kcp_proxy_dst: None,
 
+            #[cfg(feature = "quic")]
             quic_proxy_src: None,
+            #[cfg(feature = "quic")]
             quic_proxy_dst: None,
 
             peer_center,
@@ -639,10 +658,12 @@ impl Instance {
     }
 
     // use a mock nic ctx to consume packets.
+    #[cfg(feature = "tun")]
     async fn clear_nic_ctx(
         arc_nic_ctx: ArcNicCtx,
         packet_recv: Arc<Mutex<PacketRecvChanReceiver>>,
     ) {
+        #[cfg(feature = "magic-dns")]
         if let Some(old_ctx) = arc_nic_ctx.lock().await.take() {
             if let Some(dns_runner) = old_ctx.magic_dns {
                 dns_runner.dns_runner_cancel_token.cancel();
@@ -667,6 +688,7 @@ impl Instance {
         tracing::debug!("nic ctx cleared.");
     }
 
+    #[cfg(feature = "magic-dns")]
     fn create_magic_dns_runner(
         peer_mgr: Arc<PeerManager>,
         tun_dev: Option<String>,
@@ -686,13 +708,18 @@ impl Instance {
         Some(runner)
     }
 
+    #[cfg(feature = "tun")]
     async fn use_new_nic_ctx(
         arc_nic_ctx: ArcNicCtx,
         nic_ctx: NicCtx,
-        magic_dns: Option<DnsRunner>,
+        #[cfg(feature = "magic-dns")] magic_dns: Option<DnsRunner>,
     ) {
         let mut g = arc_nic_ctx.lock().await;
-        *g = Some(NicCtxContainer::new(nic_ctx, magic_dns));
+        *g = Some(NicCtxContainer::new(
+            nic_ctx,
+            #[cfg(feature = "magic-dns")]
+            magic_dns,
+        ));
         tracing::debug!("nic ctx updated.");
     }
 
@@ -701,6 +728,7 @@ impl Instance {
         use rand::Rng;
         let peer_manager_c = Arc::downgrade(&self.peer_manager.clone());
         let global_ctx_c = self.get_global_ctx();
+        #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         let _peer_packet_receiver = self.peer_packet_receiver.clone();
         tokio::spawn(async move {
@@ -765,6 +793,7 @@ impl Instance {
                     "dhcp start changing ip"
                 );
 
+                #[cfg(feature = "tun")]
                 Self::clear_nic_ctx(nic_ctx.clone(), _peer_packet_receiver.clone()).await;
 
                 if let Some(ip) = candidate_ipv4_addr {
@@ -776,11 +805,10 @@ impl Instance {
                         continue;
                     }
 
-                    #[cfg(not(any(
-                        target_os = "android",
-                        target_os = "ios",
-                        target_env = "ohos"
-                    )))]
+                    #[cfg(all(
+                        not(any(target_os = "android", target_os = "ios", target_env = "ohos")),
+                        feature = "tun"
+                    ))]
                     {
                         let mut new_nic_ctx = NicCtx::new(
                             global_ctx_c.clone(),
@@ -798,10 +826,12 @@ impl Instance {
                             global_ctx_c.set_ipv4(None);
                             continue;
                         }
+                        #[cfg(feature = "magic-dns")]
                         let ifname = new_nic_ctx.ifname().await;
                         Self::use_new_nic_ctx(
                             nic_ctx.clone(),
                             new_nic_ctx,
+                            #[cfg(feature = "magic-dns")]
                             Self::create_magic_dns_runner(peer_manager_c.clone(), ifname, ip),
                         )
                         .await;
@@ -819,6 +849,10 @@ impl Instance {
         });
     }
 
+    #[cfg(all(
+        not(any(target_os = "android", target_os = "ios", target_env = "ohos")),
+        feature = "tun"
+    ))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
         let ipv4_addr = self.global_ctx.get_ipv4();
         let ipv6_addr = self.global_ctx.get_ipv6();
@@ -862,15 +896,20 @@ impl Instance {
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
-                let ifname = new_nic_ctx.ifname().await;
 
                 // Create Magic DNS runner only if we have IPv4
-                let dns_runner = if let Some(ipv4) = ipv4_addr {
-                    Self::create_magic_dns_runner(peer_manager, ifname, ipv4)
-                } else {
-                    None
-                };
-                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                #[cfg(feature = "magic-dns")]
+                {
+                    let ifname = new_nic_ctx.ifname().await;
+                    let dns_runner = if let Some(ipv4) = ipv4_addr {
+                        Self::create_magic_dns_runner(peer_manager, ifname, ipv4)
+                    } else {
+                        None
+                    };
+                    Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx, dns_runner).await;
+                }
+                #[cfg(not(feature = "magic-dns"))]
+                Self::use_new_nic_ctx(nic_ctx.clone(), new_nic_ctx).await;
 
                 if let Some(output_tx) = output_tx.take() {
                     let _ = output_tx.send(Ok(()));
@@ -888,6 +927,7 @@ impl Instance {
         });
     }
 
+    #[cfg(feature = "quic")]
     async fn run_quic_dst(&mut self) -> Result<(), Error> {
         if self.global_ctx.get_flags().disable_quic_input {
             return Ok(());
@@ -911,11 +951,12 @@ impl Instance {
         self.listener_manager.lock().await.run().await?;
         self.peer_manager.run().await?;
 
-        Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
+        #[cfg(feature = "tun")]
+        {
+            Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
-        if !self.global_ctx.config.get_flags().no_tun {
             #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
-            {
+            if !self.global_ctx.config.get_flags().no_tun {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);
                 output_rx.await.unwrap()?;
@@ -926,24 +967,28 @@ impl Instance {
             self.check_dhcp_ip_conflict();
         }
 
+        #[cfg(feature = "kcp")]
         if self.global_ctx.get_flags().enable_kcp_proxy {
             let src_proxy = KcpProxySrc::new(self.get_peer_manager()).await;
             src_proxy.start().await;
             self.kcp_proxy_src = Some(src_proxy);
         }
 
+        #[cfg(feature = "kcp")]
         if !self.global_ctx.get_flags().disable_kcp_input {
             let mut dst_proxy = KcpProxyDst::new(self.get_peer_manager()).await;
             dst_proxy.start().await;
             self.kcp_proxy_dst = Some(dst_proxy);
         }
 
+        #[cfg(feature = "quic")]
         if self.global_ctx.get_flags().enable_quic_proxy {
             let quic_src = QUICProxySrc::new(self.get_peer_manager()).await;
             quic_src.start().await;
             self.quic_proxy_src = Some(quic_src);
         }
 
+        #[cfg(feature = "quic")]
         if !self.global_ctx.get_flags().disable_quic_input {
             if let Err(e) = self.run_quic_dst().await {
                 eprintln!(
@@ -989,6 +1034,7 @@ impl Instance {
         #[cfg(feature = "socks5")]
         self.socks5_server
             .run(
+                #[cfg(feature = "kcp")]
                 self.kcp_proxy_src
                     .as_ref()
                     .map(|x| Arc::downgrade(&x.get_kcp_endpoint())),
@@ -1126,6 +1172,7 @@ impl Instance {
         #[derive(Clone)]
         pub struct PortForwardManagerRpcService {
             global_ctx: Weak<GlobalCtx>,
+            #[cfg(feature = "socks5")]
             socks5_server: Weak<Socks5Server>,
         }
 
@@ -1146,6 +1193,7 @@ impl Instance {
 
         PortForwardManagerRpcService {
             global_ctx: Arc::downgrade(&self.global_ctx),
+            #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
         }
     }
@@ -1209,6 +1257,7 @@ impl Instance {
     pub fn get_config_patcher(&self) -> InstanceConfigPatcher {
         InstanceConfigPatcher {
             global_ctx: Arc::downgrade(&self.global_ctx),
+            #[cfg(feature = "socks5")]
             socks5_server: Arc::downgrade(&self.socks5_server),
             peer_manager: Arc::downgrade(&self.peer_manager),
             conn_manager: Arc::downgrade(&self.conn_manager),
@@ -1357,6 +1406,7 @@ impl Instance {
                         Arc::new(TcpProxyRpcService::new(ip_proxy.tcp_proxy.clone())),
                     );
                 }
+                #[cfg(feature = "kcp")]
                 if let Some(kcp_proxy) = self.kcp_proxy_src.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "kcp_src".to_string(),
@@ -1364,6 +1414,7 @@ impl Instance {
                     );
                 }
 
+                #[cfg(feature = "kcp")]
                 if let Some(kcp_proxy) = self.kcp_proxy_dst.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "kcp_dst".to_string(),
@@ -1371,6 +1422,7 @@ impl Instance {
                     );
                 }
 
+                #[cfg(feature = "quic")]
                 if let Some(quic_proxy) = self.quic_proxy_src.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "quic_src".to_string(),
@@ -1378,6 +1430,7 @@ impl Instance {
                     );
                 }
 
+                #[cfg(feature = "quic")]
                 if let Some(quic_proxy) = self.quic_proxy_dst.as_ref() {
                     tcp_proxy_rpc_services.insert(
                         "quic_dst".to_string(),
@@ -1402,6 +1455,7 @@ impl Instance {
         self.vpn_portal.clone()
     }
 
+    #[cfg(feature = "tun")]
     pub fn get_nic_ctx(&self) -> ArcNicCtx {
         self.nic_ctx.clone()
     }
@@ -1446,6 +1500,7 @@ impl Instance {
 
     pub async fn clear_resources(&mut self) {
         self.peer_manager.clear_resources().await;
+        #[cfg(feature = "tun")]
         let _ = self.nic_ctx.lock().await.take();
     }
 }
@@ -1454,8 +1509,10 @@ impl Drop for Instance {
     fn drop(&mut self) {
         let my_peer_id = self.peer_manager.my_peer_id();
         let pm = Arc::downgrade(&self.peer_manager);
+        #[cfg(feature = "tun")]
         let nic_ctx = self.nic_ctx.clone();
         tokio::spawn(async move {
+            #[cfg(feature = "tun")]
             nic_ctx.lock().await.take();
             if let Some(pm) = pm.upgrade() {
                 pm.clear_resources().await;

@@ -142,6 +142,14 @@ impl Encryptor for OpenSslCipher {
     }
 
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
+        self.encrypt_with_nonce(zc_packet, None)
+    }
+
+    fn encrypt_with_nonce(
+        &self,
+        zc_packet: &mut ZCPacket,
+        nonce: Option<&[u8]>,
+    ) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if pm_header.is_encrypted() {
             tracing::warn!(?zc_packet, "packet is already encrypted");
@@ -153,7 +161,14 @@ impl Encryptor for OpenSslCipher {
         let nonce_size = self.get_nonce_size();
 
         let mut tail = OpenSslTail::default();
-        rand::thread_rng().fill_bytes(&mut tail.nonce[..nonce_size]);
+        if let Some(nonce) = nonce {
+            if nonce.len() != nonce_size {
+                return Err(Error::EncryptionFailed);
+            }
+            tail.nonce[..nonce_size].copy_from_slice(nonce);
+        } else {
+            rand::thread_rng().fill_bytes(&mut tail.nonce[..nonce_size]);
+        }
 
         let mut encrypter =
             Crypter::new(cipher, Mode::Encrypt, key, Some(&tail.nonce[..nonce_size]))
@@ -198,6 +213,7 @@ mod tests {
         peers::encrypt::{openssl_cipher::OpenSslCipher, Encryptor},
         tunnel::packet_def::ZCPacket,
     };
+    use zerocopy::FromBytes;
 
     use super::OPENSSL_ENCRYPTION_RESERVED;
 
@@ -218,6 +234,37 @@ mod tests {
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
         assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+    }
+
+    #[test]
+    fn test_openssl_aes128_gcm_with_nonce() {
+        let key = [7u8; 16];
+        let cipher = OpenSslCipher::new_aes128_gcm(key);
+        let text = b"Hello";
+        let nonce = [3u8; 12];
+
+        let mut packet1 = ZCPacket::new_with_payload(text);
+        packet1.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet1, Some(&nonce))
+            .unwrap();
+
+        let mut packet2 = ZCPacket::new_with_payload(text);
+        packet2.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet2, Some(&nonce))
+            .unwrap();
+
+        assert_eq!(packet1.payload(), packet2.payload());
+        assert!(packet1.payload().len() > text.len() + OPENSSL_ENCRYPTION_RESERVED);
+
+        let tail = super::OpenSslTail::ref_from_suffix(packet1.payload())
+            .unwrap()
+            .clone();
+        assert_eq!(&tail.nonce[..nonce.len()], nonce);
+
+        cipher.decrypt(&mut packet1).unwrap();
+        assert_eq!(packet1.payload(), text);
     }
 
     #[test]

@@ -29,6 +29,9 @@ define_global_var!(MAX_DIRECT_CONNS_PER_PEER_IN_FOREIGN_NETWORK, u32, 3);
 
 define_global_var!(DIRECT_CONNECT_TO_PUBLIC_SERVER, bool, true);
 
+// must make it true in future.
+define_global_var!(HMAC_SECRET_DIGEST, bool, false);
+
 pub const UDP_HOLE_PUNCH_CONNECTOR_SERVICE_ID: u32 = 2;
 
 pub const WIN_SERVICE_WORK_DIR_REG_KEY: &str = "SOFTWARE\\EasyTier\\Service\\WorkDir";

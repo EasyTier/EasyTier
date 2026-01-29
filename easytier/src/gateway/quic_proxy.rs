@@ -17,8 +17,8 @@ use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
 use crate::defer;
-use crate::gateway::kcp_proxy::{ProxyAclHandler, TcpProxyForKcpSrcTrait};
 use crate::gateway::tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy};
+use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
 use crate::gateway::CidrSet;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::acl::{ChainType, Protocol};
@@ -184,14 +184,14 @@ impl NatDstConnector for NatDstQUICConnector {
 struct TcpProxyForQUICSrc(Arc<TcpProxy<NatDstQUICConnector>>);
 
 #[async_trait::async_trait]
-impl TcpProxyForKcpSrcTrait for TcpProxyForQUICSrc {
+impl TcpProxyForWrappedSrcTrait for TcpProxyForQUICSrc {
     type Connector = NatDstQUICConnector;
 
     fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>> {
         &self.0
     }
 
-    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
+    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
         let Some(peer_manager) = self.0.get_peer_manager() else {
             return false;
         };

@@ -232,6 +232,15 @@ core_clap:
   stun_servers_v6:
     en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
     zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
+  secure_mode:
+    en: "if true, enable secure mode. default is false"
+    zh-CN: "如果为true，则启用安全模式。默认值为false"
+  local_private_key:
+    en: "local private key for secure mode. if not provided, a random key will be generated"
+    zh-CN: "安全模式下的本地私钥。如果未提供，则会随机生成一个密钥"
+  local_public_key:
+    en: "local public key for secure mode. if not provided, a random key will be generated, or use local private key to derive public key"
+    zh-CN: "安全模式下的本地公钥。如果未提供，则会随机生成一个密钥，或者使用本地私钥派生公钥"
   check_config:
     en: Check config validity without starting the network
     zh-CN: 检查配置文件的有效性并退出
