@@ -85,7 +85,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Archive test
-        run: cargo nextest archive --archive-file tests.tar.zst --workspace --no-default-features --features=full
+        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --all-features
 
       - uses: actions/upload-artifact@v4
         with:
@@ -102,11 +102,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: "all"
-            opts: "-E 'not package(easytier)' --test-threads 1 --no-fail-fast"
-
           - name: "easytier"
-            opts: "-E 'package(easytier) and not test(connector::dns_connector::tests) and not test(tests::three_node)' --test-threads 1 --no-fail-fast"
+            opts: "-E 'not test(connector::dns_connector::tests) and not test(tests::three_node)' --test-threads 1 --no-fail-fast"
 
           - name: "easytier::connector::dns_connector::tests"
             opts: "-E 'test(connector::dns_connector::tests)' --test-threads 1 --no-fail-fast"
