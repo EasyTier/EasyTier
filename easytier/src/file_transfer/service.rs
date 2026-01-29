@@ -13,7 +13,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    peers::peer_rpc::PeerRpcManager,
+    peers::{peer_rpc::PeerRpcManager, peer_manager::PeerManager},
     common::PeerId,
 };
 use tokio::sync::OnceCell;
@@ -31,15 +31,17 @@ pub struct FileTransferService {
     // Let's use Weak or Arc<PeerRpcManager> initialized via a method.
     peer_rpc_mgr: OnceCell<Arc<PeerRpcManager>>,
     my_peer_id: PeerId,
+    peer_manager: Arc<PeerManager>,
 }
 
 impl FileTransferService {
-    pub fn new(my_peer_id: PeerId) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>, my_peer_id: PeerId) -> Self {
         Self {
             sending_files: DashMap::new(),
             receiving_tasks: DashMap::new(),
             peer_rpc_mgr: OnceCell::new(),
             my_peer_id,
+            peer_manager,
         }
     }
 
@@ -61,6 +63,39 @@ impl FileTransferRpc for FileTransferService {
         _controller: BaseController,
         request: TransferOfferRequest,
     ) -> Result<TransferOfferResponse, rpc_types::error::Error> {
+        // 1. Check enable_file_transfer flag
+        if !self.peer_manager.get_global_ctx().config.get_flags().enable_file_transfer {
+            tracing::warn!("Rejecting file transfer from {}: file transfer disabled", request.sender_peer_id);
+            return Ok(TransferOfferResponse {
+                status: OfferStatus::Rejected.into(),
+                start_offset: 0,
+                message: "File transfer is disabled on this node. Enable with --enable-file-transfer".to_string(),
+            });
+        }
+
+        // 2. Strict Identity Verification
+        let sender_peer_id = request.sender_peer_id;
+        let my_identity = self.peer_manager.get_global_ctx().get_network_identity();
+        
+        let trusted_peers = self.peer_manager.get_peer_map().list_peers_own_foreign_network(&my_identity).await;
+        
+        // Also check if sender is directly connected and trusted (optimization/fallback) 
+        // But list_peers_own_foreign_network should cover it if routed properly.
+        // For strictness, if it's not in the trusted list, we reject.
+        // Note: list_peers_own_foreign_network relies on routing info. 
+        // If a peer is directly connected but not yet in routing table (unlikely if handshake done), might fail.
+        // However, we can also check direct peer map if needed, but PeerMap doesn't easily expose identity.
+        // We assume routing table is up to date for file transfer.
+        
+        if !trusted_peers.contains(&sender_peer_id) && sender_peer_id != self.my_peer_id {
+            tracing::warn!("Rejecting file transfer from {}: remote identity mismatch or unknown", request.sender_peer_id);
+            return Ok(TransferOfferResponse {
+                status: OfferStatus::Rejected.into(),
+                start_offset: 0,
+                message: "Security violation: Peer identity mismatch.".to_string(),
+            });
+        }
+
         tracing::info!("Received OfferFile request: {:?}", request);
 
         // Auto-accept logic

@@ -64,6 +64,7 @@ message FlagsInConfig {
   bool p2p_only = 32;
 
   bool disable_tcp_hole_punching = 34;
+  bool enable_file_transfer = 35;
 }
 
 message RpcDescriptor {

@@ -250,6 +250,9 @@ core_clap:
   file_log_count:
     en: "max file log count, default is 10"
     zh-CN: "最大文件日志数量，默认值为 10"
+  enable_file_transfer:
+    en: "enable file transfer service. allow other peers in the same network to pull/push files from/to this node. default is false"
+    zh-CN: "启用文件传输服务。允许同一网络中的其他对等节点从/向此节点拉取/推送文件。默认为false"
 
 core_app:
   panic_backtrace_save:

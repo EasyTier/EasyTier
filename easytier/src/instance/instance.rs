@@ -609,7 +609,7 @@ impl Instance {
         #[cfg(feature = "socks5")]
         let socks5_server = Socks5Server::new(global_ctx.clone(), peer_manager.clone(), None);
 
-        let file_transfer_service = Arc::new(FileTransferService::new(peer_manager.my_peer_id()));
+        let file_transfer_service = Arc::new(FileTransferService::new(peer_manager.clone(), peer_manager.my_peer_id()));
         file_transfer_service.set_peer_rpc_mgr(peer_manager.get_peer_rpc_mgr());
 
         Instance {

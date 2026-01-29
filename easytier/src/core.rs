@@ -625,6 +625,15 @@ struct NetworkOptions {
         help = t!("core_clap.local_public_key").to_string()
     )]
     local_public_key: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_ENABLE_FILE_TRANSFER",
+        help = t!("core_clap.enable_file_transfer").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_file_transfer: Option<bool>,
 }
 
 #[derive(Parser, Debug)]
@@ -1006,6 +1015,9 @@ impl NetworkOptions {
         }
         f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
         f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
+        if let Some(enable_file_transfer) = self.enable_file_transfer {
+            f.enable_file_transfer = enable_file_transfer;
+        }
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching
             .unwrap_or(f.disable_tcp_hole_punching);
