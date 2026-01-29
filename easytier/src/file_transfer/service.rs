@@ -63,24 +63,37 @@ impl FileTransferRpc for FileTransferService {
     ) -> Result<TransferOfferResponse, rpc_types::error::Error> {
         tracing::info!("Received OfferFile request: {:?}", request);
 
-        // TODO: Validate transfer_id and metadata.
-        // TODO: Check if we are already receiving this transfer_id?
-        
-        // Resilience logic: Check for partial file (.et_part) to determine start_offset.
-        // let temp_path = get_temp_path(&request.metadata.file_name);
-        // let start_offset = if temp_path.exists() { temp_path.len() } else { 0 };
-
         // Auto-accept logic
         let transfer_id = request.transfer_id.clone();
         let metadata = request.metadata.ok_or_else(|| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Missing metadata")))?;
         
         let mut start_offset = 0;
         let partial_path = PathBuf::from(&metadata.file_name).with_extension("download");
-        if partial_path.exists() {
-             if let Ok(m) = tokio::fs::metadata(&partial_path).await {
-                 start_offset = m.len();
-                 tracing::info!("Found partial file, resuming from offset {}", start_offset);
-             }
+        let meta_path = PathBuf::from(&metadata.file_name).with_extension("meta");
+
+        // Check for resumable verified transfer
+        let mut should_resume = false;
+        if partial_path.exists() && meta_path.exists() {
+            if let Ok(content) = tokio::fs::read_to_string(&meta_path).await {
+                // Meta format: "transfer_id|hash"
+                let parts: Vec<&str> = content.split('|').collect();
+                if parts.len() == 2 && parts[1] == metadata.file_hash {
+                    if let Ok(m) = tokio::fs::metadata(&partial_path).await {
+                        start_offset = m.len();
+                        should_resume = true;
+                        tracing::info!("Found valid partial file and matching hash, resuming from offset {}", start_offset);
+                    }
+                }
+            }
+        }
+
+        if !should_resume {
+            start_offset = 0;
+            // Write new meta file
+            let meta_content = format!("{}|{}", transfer_id, metadata.file_hash);
+            if let Err(e) = tokio::fs::write(&meta_path, meta_content).await {
+                 tracing::error!("Failed to write meta file: {:?}", e);
+            }
         }
 
         // Spawn download task
@@ -158,6 +171,10 @@ impl FileTransferRpc for FileTransferService {
         
         let transfer_id = uuid::Uuid::new_v4().to_string();
         
+        // Calculate hash
+        let file_hash = Self::calculate_file_hash(&file_path).await
+            .map_err(|e| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Hash Error: {}", e)))?;
+
         // Register file
         self.register_file_for_sending(transfer_id.clone(), file_path.clone());
         
@@ -176,7 +193,7 @@ impl FileTransferRpc for FileTransferService {
             metadata: Some(TransferFileMetadata {
                 file_name,
                 file_size,
-                file_hash: "TODO_HASH".to_string(), // MVP skip hash
+                file_hash, 
                 is_dir: false,
             }),
         };
@@ -214,7 +231,13 @@ impl FileTransferService {
         let mut path = PathBuf::from(&file_name);
         path.set_extension("download");
         
-        let mut file = File::options().create(true).write(true).open(&path).await?;
+        // Open file in append mode if resuming, otherwise create new
+        let mut file = if start_offset > 0 {
+            File::options().write(true).open(&path).await?
+        } else {
+            File::options().create(true).write(true).truncate(true).open(&path).await?
+        };
+
         file.seek(tokio::io::SeekFrom::Start(start_offset)).await?;
 
         let mut offset = start_offset;
@@ -243,8 +266,29 @@ impl FileTransferService {
         let final_path = PathBuf::from(&file_name);
         tokio::fs::rename(&path, &final_path).await?;
         
+        // Clean up .meta file
+        let mut meta_path = PathBuf::from(&file_name);
+        meta_path.set_extension("meta");
+        let _ = tokio::fs::remove_file(meta_path).await;
+
         tracing::info!("Download completed: {:?}", final_path);
         Ok(())
+    }
+
+    async fn calculate_file_hash(path: &PathBuf) -> anyhow::Result<String> {
+        use sha2::{Sha256, Digest};
+        let mut file = File::open(path).await?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0; 1024 * 1024]; // 1MB buffer
+
+        loop {
+            let count = file.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+        Ok(format!("{:x}", hasher.finalize()))
     }
 }
 
