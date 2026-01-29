@@ -818,6 +818,11 @@ impl TcpProxyForWrappedSrcTrait for TcpProxyForQuicSrc {
     }
 
     #[inline]
+    fn set_src_modified(hdr: &mut PeerManagerHeader, modified: bool) -> &mut PeerManagerHeader {
+        hdr.set_quic_src_modified(modified)
+    }
+
+    #[inline]
     async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
         let Some(peer_manager) = self.0.get_peer_manager() else {
             return false;
