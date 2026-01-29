@@ -24,8 +24,8 @@ message TransferOfferResponse {
         BUSY = 2;
     }
     Status status = 1;
-    uint64 start_offset = 2; // for resumable download, telling sender where to start
-    string message = 3;
+    string message = 2;
+    uint64 start_offset = 3; // for resumable download, telling sender where to start
 }
 
 message TransferChunkRequest {
@@ -38,6 +38,8 @@ message TransferChunkResponse {
     bytes data = 1;
 }
 
+import "api_instance.proto";
+
 service FileTransferRpc {
     // 1. 发送方请求发送 (握手, 协商续传位置)
     rpc OfferFile(TransferOfferRequest) returns (TransferOfferResponse);
@@ -45,4 +47,17 @@ service FileTransferRpc {
     // 2. 接收方主动拉取数据流 (Pull Mode)
     // 相比 Push 模式，Pull 模式更容易控制流速和背压 (Backpressure)
     rpc PullChunk(TransferChunkRequest) returns (TransferChunkResponse);
+
+    // 3. Local Control: CLI tells Core to start a transfer
+    rpc StartTransfer(StartTransferRequest) returns (StartTransferResponse);
+}
+
+message StartTransferRequest {
+    api.instance.InstanceIdentifier instance = 1;
+    uint32 peer_id = 2;
+    string file_path = 3;
+}
+
+message StartTransferResponse {
+    string transfer_id = 1;
 }

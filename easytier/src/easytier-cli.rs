@@ -58,6 +58,7 @@ use easytier::{
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
+        file_transfer::{FileTransferRpc, FileTransferRpcClientFactory, StartTransferRequest},
     },
     tunnel::tcp::TcpTunnelConnector,
     utils::{cost_to_str, PeerRoutePair},
@@ -136,6 +137,8 @@ enum SubCommand {
     Logger(LoggerArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: ShellType },
+    #[command(about = "file transfer")]
+    File(FileArgs),
 }
 
 #[derive(clap::ValueEnum, Debug, Clone, PartialEq)]
@@ -341,6 +344,23 @@ enum LoggerSubCommand {
 }
 
 #[derive(Args, Debug)]
+struct FileArgs {
+    #[command(subcommand)]
+    sub_command: FileSubCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum FileSubCommand {
+   #[command(about = "send file to peer")]
+    Send {
+        #[arg(help = "Peer ID or Hostname or IP")]
+        peer: String,
+        #[arg(help = "File path")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Args, Debug)]
 struct ServiceArgs {
     #[arg(short, long, default_value = env!("CARGO_PKG_NAME"), help = "service name")]
     name: String,
@@ -536,6 +556,43 @@ impl CommandHandler<'_> {
             .await
             .with_context(|| "failed to get config client")?)
     }
+
+    async fn get_file_transfer_client(
+        &self,
+    ) -> Result<Box<dyn FileTransferRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<FileTransferRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get file transfer client")?)
+    }
+
+    async fn handle_file_send(&self, peer: &str, path: &PathBuf) -> Result<(), Error> {
+        let peer_id = if let Ok(id) = peer.parse::<u32>() {
+            id
+        } else {
+             return Err(anyhow::anyhow!("Invalid peer id: {}, only integer peer id is supported currently", peer));
+        };
+
+        if !path.exists() {
+            return Err(anyhow::anyhow!("File not found: {:?}", path));
+        }
+
+        let path = std::fs::canonicalize(path).map_err(|e| anyhow::anyhow!("Failed to canonicalize path: {}", e))?;
+
+        let client = self.get_file_transfer_client().await?;
+        let resp = client.start_transfer(BaseController::default(), StartTransferRequest {
+            instance: Some(self.instance_selector.clone()),
+            peer_id,
+            file_path: path.to_string_lossy().to_string(),
+        }).await?;
+
+        println!("Transfer started with ID: {}", resp.transfer_id);
+        Ok(())
+    }
+
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
         let client = self.get_peer_manager_client().await?;
@@ -2200,6 +2257,11 @@ async fn main() -> Result<(), Error> {
             } else {
                 // Handle Nushell
                 easytier::print_nushell_completions(&mut cmd, "easytier-cli");
+            }
+        }
+        SubCommand::File(file_args) => match file_args.sub_command {
+            FileSubCommand::Send { peer, path } => {
+                handler.handle_file_send(&peer, &path).await?;
             }
         }
     }

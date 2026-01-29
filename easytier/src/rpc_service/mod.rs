@@ -8,6 +8,7 @@ mod port_forward_manage;
 mod proxy;
 mod stats;
 mod vpn_portal;
+mod file_transfer_manage;
 
 pub mod instance_manage;
 pub mod logger;
@@ -65,6 +66,11 @@ pub trait InstanceRpcService: Sync + Send {
     fn get_config_service(
         &self,
     ) -> &dyn crate::proto::api::config::ConfigRpc<
+        Controller = crate::proto::rpc_types::controller::BaseController,
+    >;
+    fn get_file_transfer_service(
+        &self,
+    ) -> &dyn crate::proto::file_transfer::FileTransferRpc<
         Controller = crate::proto::rpc_types::controller::BaseController,
     >;
 }

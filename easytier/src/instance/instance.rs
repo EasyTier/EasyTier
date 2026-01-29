@@ -1323,9 +1323,10 @@ impl Instance {
 
     pub fn get_api_rpc_service(&self) -> impl InstanceRpcService {
         use crate::proto::api::instance::*;
+        use crate::proto::file_transfer::FileTransferRpc;
 
         #[derive(Clone)]
-        struct ApiRpcServiceImpl<A, B, C, D, E, F, G, H> {
+        struct ApiRpcServiceImpl<A, B, C, D, E, F, G, H, I> {
             peer_mgr_rpc_service: A,
             connector_mgr_rpc_service: B,
             mapped_listener_mgr_rpc_service: C,
@@ -1338,6 +1339,7 @@ impl Instance {
             port_forward_manage_rpc_service: F,
             stats_rpc_service: G,
             config_rpc_service: H,
+            file_transfer_rpc_service: I,
         }
 
         #[async_trait::async_trait]
@@ -1350,7 +1352,8 @@ impl Instance {
                 F: PortForwardManageRpc<Controller = BaseController> + Send + Sync,
                 G: StatsRpc<Controller = BaseController> + Send + Sync,
                 H: ConfigRpc<Controller = BaseController> + Send + Sync,
-            > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H>
+                I: FileTransferRpc<Controller = BaseController> + Send + Sync,
+            > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H, I>
         {
             fn get_peer_manage_service(&self) -> &dyn PeerManageRpc<Controller = BaseController> {
                 &self.peer_mgr_rpc_service
@@ -1398,6 +1401,12 @@ impl Instance {
 
             fn get_config_service(&self) -> &dyn ConfigRpc<Controller = BaseController> {
                 &self.config_rpc_service
+            }
+
+            fn get_file_transfer_service(
+                &self,
+            ) -> &dyn FileTransferRpc<Controller = BaseController> {
+                &self.file_transfer_rpc_service
             }
         }
 
@@ -1458,6 +1467,7 @@ impl Instance {
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
+            file_transfer_rpc_service: self.file_transfer_service.clone(),
         }
     }
 

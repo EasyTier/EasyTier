@@ -58,27 +58,14 @@ impl DefaultCompressor {
         compress_algo: CompressorAlgo,
     ) -> Result<Vec<u8>, Error> {
         match compress_algo {
-            CompressorAlgo::ZstdDefault => DCTX_MAP.with(|map_cell| {
-                let map = map_cell.borrow();
-                let mut ctx_entry = map.entry(compress_algo).or_default();
-                for i in 1..=5 {
-                    let mut len = data.len() * 2usize.pow(i);
-                    if i == 5 && len < 64 * 1024 {
-                        len = 64 * 1024; // Ensure a minimum buffer size
-                    }
-                    match ctx_entry.decompress(data, len) {
-                        Ok(buf) => return Ok(buf),
-                        Err(e) if e.to_string().contains("buffer is too small") => {
-                            continue; // Try with a larger buffer
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-                Err(anyhow::anyhow!(
-                    "Failed to decompress data after multiple attempts with algorithm: {:?}",
-                    compress_algo
-                ))
-            }),
+            CompressorAlgo::ZstdDefault => {
+                zstd::decode_all(data).with_context(|| {
+                    format!(
+                        "Failed to decompress data with algorithm: {:?}",
+                        compress_algo
+                    )
+                })
+            }
             CompressorAlgo::None => Ok(data.to_vec()),
         }
     }
@@ -171,7 +158,6 @@ impl Compressor for DefaultCompressor {
 
 thread_local! {
     static CTX_MAP: RefCell<DashMap<CompressorAlgo, bulk::Compressor<'static>>> = RefCell::new(DashMap::new());
-    static DCTX_MAP: RefCell<DashMap<CompressorAlgo, bulk::Decompressor<'static>>> = RefCell::new(DashMap::new());
 }
 
 #[cfg(test)]

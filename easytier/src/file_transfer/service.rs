@@ -8,7 +8,7 @@ use crate::{
     proto::{
         file_transfer::{
             FileTransferRpc, FileTransferRpcClientFactory, TransferChunkRequest, TransferChunkResponse,
-            TransferOfferRequest, TransferOfferResponse,
+            TransferOfferRequest, TransferOfferResponse, StartTransferRequest, StartTransferResponse, TransferFileMetadata,
             transfer_offer_response::Status as OfferStatus,
         },
         rpc_types::{self, controller::BaseController},
@@ -74,7 +74,14 @@ impl FileTransferRpc for FileTransferService {
         let transfer_id = request.transfer_id.clone();
         let metadata = request.metadata.ok_or_else(|| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Missing metadata")))?;
         
-        let start_offset = 0; // TODO: Implement resumability check
+        let mut start_offset = 0;
+        let partial_path = PathBuf::from(&metadata.file_name).with_extension("download");
+        if partial_path.exists() {
+             if let Ok(m) = tokio::fs::metadata(&partial_path).await {
+                 start_offset = m.len();
+                 tracing::info!("Found partial file, resuming from offset {}", start_offset);
+             }
+        }
 
         // Spawn download task
         let rpc_mgr = self.peer_rpc_mgr.get().cloned().ok_or_else(|| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("PeerRpcManager not initialized")))?;
@@ -109,9 +116,6 @@ impl FileTransferRpc for FileTransferService {
         let path = self.sending_files.get(&request.transfer_id)
             .ok_or_else(|| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Transfer ID not found")))?;
         
-        // Security check: ensure path is valid/accessible? 
-        // Assuming registered paths are safe.
-        
         let mut file = File::open(path.as_path()).await
             .map_err(|e| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("IO Error: {}", e)))?;
             
@@ -126,6 +130,66 @@ impl FileTransferRpc for FileTransferService {
         
         Ok(TransferChunkResponse {
             data: buf,
+        })
+    }
+
+    async fn start_transfer(
+        &self,
+        _controller: BaseController,
+        request: StartTransferRequest,
+    ) -> Result<StartTransferResponse, rpc_types::error::Error> {
+        let peer_id = request.peer_id;
+        let file_path = PathBuf::from(request.file_path);
+        
+        if !file_path.exists() {
+             return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!("File not found")));
+        }
+        
+        let metadata = tokio::fs::metadata(&file_path).await
+            .map_err(|e| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Metadata Error: {}", e)))?;
+            
+        if !metadata.is_file() {
+             return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Not a file")));
+        }
+
+        let file_name = file_path.file_name().ok_or_else(|| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Invalid file name")))?
+            .to_string_lossy().to_string();
+        let file_size = metadata.len();
+        
+        let transfer_id = uuid::Uuid::new_v4().to_string();
+        
+        // Register file
+        self.register_file_for_sending(transfer_id.clone(), file_path.clone());
+        
+        // Initiate OfferFile to remote
+        let rpc_mgr = self.peer_rpc_mgr.get().cloned().ok_or_else(|| rpc_types::error::Error::ExecutionError(anyhow::anyhow!("PeerRpcManager not initialized")))?;
+        
+        let client = rpc_mgr.rpc_client().scoped_client::<FileTransferRpcClientFactory<BaseController>>(
+            self.my_peer_id,
+            peer_id,
+            "file_transfer".to_string(),
+        );
+
+        let offer_req = TransferOfferRequest {
+            transfer_id: transfer_id.clone(),
+            sender_peer_id: self.my_peer_id,
+            metadata: Some(TransferFileMetadata {
+                file_name,
+                file_size,
+                file_hash: "TODO_HASH".to_string(), // MVP skip hash
+                is_dir: false,
+            }),
+        };
+
+        let resp = client.offer_file(BaseController::default(), offer_req).await?;
+        
+        if resp.status != OfferStatus::Accepted as i32 {
+             self.sending_files.remove(&transfer_id);
+             return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Transfer rejected by peer: {}", resp.message)));
+        }
+
+        Ok(StartTransferResponse {
+            transfer_id,
         })
     }
 }

@@ -17,6 +17,7 @@ use crate::{
             logger::LoggerRpcServer,
             manage::WebClientServiceServer,
         },
+        file_transfer::FileTransferRpcServer,
         rpc_impl::{service_registry::ServiceRegistry, standalone::StandAloneServer},
         rpc_types::error::Error,
     },
@@ -26,6 +27,7 @@ use crate::{
         logger::LoggerRpcService, mapped_listener_manage::MappedListenerManageRpcService,
         peer_manage::PeerManageRpcService, port_forward_manage::PortForwardManageRpcService,
         proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
+        file_transfer_manage::FileTransferManageRpcService,
     },
     tunnel::{tcp::TcpTunnelListener, TunnelListener},
     web_client::DefaultHooks,
@@ -147,6 +149,11 @@ fn register_api_rpc_service(
             instance_manager.clone(),
             Arc::new(DefaultHooks),
         )),
+        "",
+    );
+
+    registry.register(
+        FileTransferRpcServer::new(FileTransferManageRpcService::new(instance_manager.clone())),
         "",
     );
 }
