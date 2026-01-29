@@ -92,8 +92,6 @@ pub struct GlobalCtx {
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
 
-    quic_proxy_port: AtomicCell<Option<u16>>,
-
     token_bucket_manager: TokenBucketManager,
 
     stats_manager: Arc<StatsManager>,
@@ -149,6 +147,8 @@ impl GlobalCtx {
             kcp_input: !config_fs.get_flags().disable_kcp_input,
             no_relay_kcp: config_fs.get_flags().disable_relay_kcp,
             support_conn_list_sync: true, // Enable selective peer list sync by default
+            quic_input: !config_fs.get_flags().disable_quic_input,
+            no_relay_quic: config_fs.get_flags().disable_relay_quic,
             ..Default::default()
         };
 
@@ -181,7 +181,6 @@ impl GlobalCtx {
             p2p_only,
 
             feature_flags: AtomicCell::new(feature_flags),
-            quic_proxy_port: AtomicCell::new(None),
 
             token_bucket_manager: TokenBucketManager::new(),
 
@@ -391,15 +390,6 @@ impl GlobalCtx {
 
     pub fn set_feature_flags(&self, flags: PeerFeatureFlag) {
         self.feature_flags.store(flags);
-    }
-
-    pub fn get_quic_proxy_port(&self) -> Option<u16> {
-        self.quic_proxy_port.load()
-    }
-
-    pub fn set_quic_proxy_port(&self, port: Option<u16>) {
-        self.acl_filter.set_quic_udp_port(port.unwrap_or(0));
-        self.quic_proxy_port.store(port);
     }
 
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {

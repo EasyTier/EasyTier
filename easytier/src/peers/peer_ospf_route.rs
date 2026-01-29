@@ -141,9 +141,10 @@ impl RoutePeerInfo {
             feature_flag: None,
             peer_route_id: 0,
             network_length: 24,
-            quic_port: None,
             ipv6_addr: None,
             groups: Vec::new(),
+
+            ..Default::default()
         }
     }
 
@@ -191,10 +192,11 @@ impl RoutePeerInfo {
                 .map(|x| x.network_length() as u32)
                 .unwrap_or(24),
 
-            quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
+
+            ..Default::default()
         }
     }
 
