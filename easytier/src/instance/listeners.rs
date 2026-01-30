@@ -9,6 +9,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
+#[cfg(feature = "faketcp")]
+use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelListener;
 #[cfg(feature = "wireguard")]
@@ -21,8 +23,8 @@ use crate::{
     },
     peers::peer_manager::PeerManager,
     tunnel::{
-        fake_tcp::FakeTcpTunnelListener, ring::RingTunnelListener, tcp::TcpTunnelListener,
-        udp::UdpTunnelListener, Tunnel, TunnelListener,
+        ring::RingTunnelListener, tcp::TcpTunnelListener, udp::UdpTunnelListener, Tunnel,
+        TunnelListener,
     },
 };
 
@@ -49,6 +51,7 @@ pub fn get_listener_by_url(
             use crate::tunnel::websocket::WSTunnelListener;
             Box::new(WSTunnelListener::new(l.clone()))
         }
+        #[cfg(feature = "faketcp")]
         "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),
         #[cfg(unix)]
         "unix" => {

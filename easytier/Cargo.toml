@@ -94,7 +94,13 @@ tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", 
     "async",
 ], optional = true }
 # for net ns
-nix = { version = "0.29.0", features = ["sched", "socket", "ioctl", "net", "fs"] }
+nix = { version = "0.29.0", features = [
+    "sched",
+    "socket",
+    "ioctl",
+    "net",
+    "fs",
+] }
 
 uuid = { version = "1.5.0", features = [
     "v4",
@@ -221,7 +227,9 @@ hickory-proto = "0.25.2"
 
 # for magic dns
 hickory-client = { version = "0.25.2", optional = true }
-hickory-server = { version = "0.25.2", features = ["resolver"], optional = true }
+hickory-server = { version = "0.25.2", features = [
+    "resolver",
+], optional = true }
 
 derive_builder = "0.20.2"
 humantime-serde = "1.1.1"
@@ -232,7 +240,7 @@ sha2 = "0.10.8"
 shellexpand = "3.1.1"
 
 # for fake tcp
-flume = "0.12"
+flume = { version = "0.12", optional = true }
 cfg-if = "1.0"
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", target_os = "freebsd"))'.dependencies]
@@ -249,7 +257,9 @@ dbus = { version = "0.9.7", features = ["vendored"] }
 which = "7.0.3"
 
 [target.'cfg(all(windows, any(target_arch = "x86_64", target_arch = "x86")))'.dependencies]
-windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adcc56d1550f7b5377ec2b3429f413ee24a77375", features = ["static"] }
+windivert = { git = "https://github.com/EasyTier/windivert-rust.git", rev = "adcc56d1550f7b5377ec2b3429f413ee24a77375", features = [
+    "static",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.52.0", features = [
@@ -269,16 +279,16 @@ windows-sys = { version = "0.52", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
-    "Win32_Foundation"
+    "Win32_Foundation",
 ] }
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]
 jemallocator = { package = "tikv-jemallocator", version = "0.6.0", optional = true, features = [
-    "unprefixed_malloc_on_supported_platforms"
+    "unprefixed_malloc_on_supported_platforms",
 ] }
 jemalloc-ctl = { package = "tikv-jemalloc-ctl", version = "0.6.0", optional = true, features = [
-    "use_std"
+    "use_std",
 ] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
@@ -296,7 +306,9 @@ tonic-build = "0.12"
 globwalk = "0.8.1"
 regex = "1"
 prost-build = "0.13.2"
-easytier-rpc-build = { path = "../easytier-rpc-build",  features = [ "internal-namespace" ] }
+easytier-rpc-build = { path = "../easytier-rpc-build", features = [
+    "internal-namespace",
+] }
 prost-reflect-build = { version = "0.14.0" }
 
 [target.'cfg(windows)'.build-dependencies]
@@ -305,10 +317,14 @@ zip = "4.0.0"
 
 # enable thunk-rs when compiling for x86_64 or i686 windows
 [target.x86_64-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = ["win7"] }
+thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+    "win7",
+] }
 
 [target.i686-pc-windows-msvc.build-dependencies]
-thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = ["win7"] }
+thunk-rs = { git = "https://github.com/easytier/thunk.git", default-features = false, features = [
+    "win7",
+] }
 
 
 [dev-dependencies]
@@ -324,7 +340,17 @@ tokio-socks = "0.5.2"
 
 
 [features]
-default = ["wireguard", "websocket", "smoltcp", "tun", "socks5", "kcp", "quic", "magic-dns"]
+default = [
+    "wireguard",
+    "websocket",
+    "smoltcp",
+    "tun",
+    "socks5",
+    "kcp",
+    "quic",
+    "faketcp",
+    "magic-dns",
+]
 full = [
     "websocket",
     "wireguard",
@@ -333,7 +359,9 @@ full = [
     "smoltcp",
     "tun",
     "socks5",
+    "kcp",
     "quic",
+    "faketcp",
     "magic-dns",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
@@ -353,6 +381,13 @@ websocket = [
 smoltcp = ["dep:smoltcp"]
 socks5 = ["smoltcp"]
 jemalloc = ["dep:jemallocator", "dep:jemalloc-sys"]
-jemalloc-prof = ["jemalloc", "dep:jemalloc-ctl", "jemalloc-ctl/stats", "jemalloc-sys/profiling", "jemalloc-sys/stats"]
+jemalloc-prof = [
+    "jemalloc",
+    "dep:jemalloc-ctl",
+    "jemalloc-ctl/stats",
+    "jemalloc-sys/profiling",
+    "jemalloc-sys/stats",
+]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
+faketcp = ["dep:flume"]
