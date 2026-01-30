@@ -95,7 +95,7 @@ jobs:
           path: tests.tar.zst
           retention-days: 1
 
-  test-matrix:
+  test_matrix:
     name: Test (${{ matrix.name }})
     runs-on: ubuntu-latest
     needs: [ pre_job, pre-test ]
@@ -143,9 +143,9 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    needs: [ pre_job, test-matrix ]
+    needs: [ pre_job, test_matrix ]
     if: needs.pre_job.outputs.should_skip != 'true' && always()
     steps:
       - name: Mark result as failed
-        if: needs.test-matrix.result != 'success'
+        if: needs.test_matrix.result != 'success'
         run: exit 1
