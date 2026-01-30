@@ -624,7 +624,7 @@ pub async fn subnet_proxy_three_node_test(
     )
     .await;
 
-    for target_ip in ["10.144.144.3", "10.1.3.4", "10.1.2.4"] {
+    for target_ip in ["10.1.3.4", "10.1.2.4", "10.144.144.3"] {
         subnet_proxy_test_icmp(target_ip).await;
         let listen_ip = if target_ip == "10.144.144.3" {
             "0.0.0.0"
@@ -954,7 +954,7 @@ pub async fn foreign_network_forward_nic_data() {
 use std::{net::SocketAddr, str::FromStr};
 
 use defguard_wireguard_rs::{
-    key::Key, net::IpAddrMask, peer::Peer, InterfaceConfiguration, WGApi, WireguardInterfaceApi,
+    host::Peer, key::Key, net::IpAddrMask, InterfaceConfiguration, WGApi, WireguardInterfaceApi,
 };
 
 fn run_wireguard_client(
@@ -970,7 +970,7 @@ fn run_wireguard_client(
     } else {
         "utun3".into()
     };
-    let mut wgapi: WGApi = WGApi::new(ifname.clone())?;
+    let wgapi = WGApi::new(ifname.clone(), false)?;
 
     // create interface
     wgapi.create_interface()?;
@@ -990,11 +990,9 @@ fn run_wireguard_client(
     let interface_config = InterfaceConfiguration {
         name: ifname.clone(),
         prvkey: client_private_key.to_string(),
-        addresses: vec![client_ip.parse()?],
+        address: client_ip,
         port: 12345,
         peers: vec![peer],
-        mtu: None,
-        fwmark: None,
     };
 
     #[cfg(not(windows))]
