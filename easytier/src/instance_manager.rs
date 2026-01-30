@@ -1,7 +1,3 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-
-use dashmap::DashMap;
-
 use crate::{
     common::{
         config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
@@ -12,6 +8,9 @@ use crate::{
     proto::{self},
     rpc_service::InstanceRpcService,
 };
+use dashmap::DashMap;
+use std::collections::HashMap;
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 pub(crate) struct DaemonGuard {
     guard: Option<Arc<()>>,
@@ -267,6 +266,7 @@ fn handle_event(
     mut events: EventBusSubscriber,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        let mut connecting = HashMap::<String, usize>::new();
         loop {
             if let Ok(e) = events.recv().await {
                 match e {
@@ -279,6 +279,10 @@ fn handle_event(
                     }
 
                     GlobalCtxEvent::PeerConnAdded(p) => {
+                        if let Some(addr) = &p.tunnel.as_ref().and_then(|t| t.remote_addr.as_ref())
+                        {
+                            connecting.remove(addr.url.as_str());
+                        }
                         print_event(
                             instance_id,
                             format!(
@@ -348,17 +352,28 @@ fn handle_event(
                     }
 
                     GlobalCtxEvent::Connecting(dst) => {
-                        print_event(instance_id, format!("connecting to peer. dst: {}", dst));
+                        let msg = "connecting to peer";
+                        let dst = dst.to_string();
+                        let retries = connecting.entry(dst.clone()).or_default();
+                        if *retries == 0 {
+                            print_event(instance_id, format!("{msg}. dst: {dst}"));
+                        } else {
+                            tracing::info!(%dst, %retries, msg);
+                        }
+                        *retries += 1;
                     }
 
                     GlobalCtxEvent::ConnectError(dst, ip_version, err) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "connect to peer error. dst: {}, ip_version: {}, err: {}",
-                                dst, ip_version, err
-                            ),
-                        );
+                        let msg = "connect to peer error";
+                        let retries = connecting.entry(dst.clone()).or_default();
+                        if *retries == 0 {
+                            print_event(
+                                instance_id,
+                                format!("{msg}. dst: {dst}, ip_version: {ip_version}, err: {err}"),
+                            );
+                        } else {
+                            tracing::info!(%dst, %ip_version, %err, %retries, msg);
+                        }
                     }
 
                     GlobalCtxEvent::VpnPortalStarted(portal) => {
