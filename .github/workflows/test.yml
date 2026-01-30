@@ -45,6 +45,7 @@ jobs:
         with:
           gui: true
           web: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
 
@@ -79,6 +80,7 @@ jobs:
         with:
           gui: true
           web: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: Swatinem/rust-cache@v2
 
