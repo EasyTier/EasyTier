@@ -1,0 +1,43 @@
+name: prepare-build
+author: Luna
+description: Prepare build environment
+inputs:
+  web:
+    description: 'Whether to prepare the web build environment'
+    required: true
+    default: 'true'
+  gui:
+    description: 'Whether to prepare the GUI build environment'
+    required: true
+    default: 'true'
+  token:
+    description: 'GitHub token, used by setup-protoc action'
+    required: false
+runs:
+  using: 'composite'
+  steps:
+    - run: mkdir -p easytier-gui/dist
+      shell: bash
+
+    - name: Setup Frontend Environment
+      if: ${{ inputs.web == 'true' }}
+      uses: ./.github/actions/prepare-pnpm
+      with:
+        build_filter: './easytier-web/*'
+
+    - name: Install GUI dependencies (Used by clippy)
+      if: ${{ inputs.gui == 'true' }}
+      run: |
+        bash ./.github/workflows/install_gui_dep.sh
+      shell: bash
+
+    - name: Install Rust
+      run: |
+        bash ./.github/workflows/install_rust.sh
+      shell: bash
+
+    - name: Setup protoc
+      uses: arduino/setup-protoc@v3
+      with:
+        # GitHub repo token to use to avoid rate limiter
+        repo-token: ${{ inputs.token }}
