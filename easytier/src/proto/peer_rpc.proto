@@ -251,10 +251,51 @@ message HandshakeRequest {
   uint32 version = 3;
   repeated string features = 4;
   string network_name = 5;
-  bytes network_secret_digrest = 6;
+  bytes network_secret_digest = 6;
 }
 
 message KcpConnData {
   common.SocketAddr src = 1;
   common.SocketAddr dst = 4;
+}
+
+enum SecureAuthLevel {
+  None = 0;
+  EncryptedUnauthenticated = 1;
+  SharedNodePubkeyVerified = 2;
+  NetworkSecretConfirmed = 3;
+}
+
+enum PeerConnSessionActionPb {
+  Join = 0;
+  Sync = 1;
+  Create = 2;
+}
+
+message PeerConnNoiseMsg1Pb {
+  uint32 version = 1;
+  string a_network_name = 2;
+  optional uint32 a_session_generation = 3;
+  common.UUID a_conn_id = 4;
+  string client_encryption_algorithm = 5;
+}
+
+message PeerConnNoiseMsg2Pb {
+  string b_network_name = 1;
+  uint32 role_hint = 2;
+  PeerConnSessionActionPb action = 3;
+  uint32 b_session_generation = 4;
+  optional bytes root_key_32 = 5;
+  uint32 initial_epoch = 6;
+  common.UUID b_conn_id = 7;
+  common.UUID a_conn_id_echo = 8;
+  optional bytes secret_proof_32 = 9;
+  string server_encryption_algorithm = 10;
+}
+
+message PeerConnNoiseMsg3Pb {
+  common.UUID a_conn_id_echo = 1;
+  common.UUID b_conn_id_echo = 2;
+  optional bytes secret_proof_32 = 3;
+  bytes secret_digest = 4;
 }

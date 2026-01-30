@@ -220,14 +220,14 @@ impl TunnelFilter for PacketRecorderTunnelFilter {
     type FilterOutput = (Vec<ZCPacket>, Vec<ZCPacket>);
 
     fn before_send(&self, data: SinkItem) -> Option<SinkItem> {
-        self.received.lock().unwrap().push(data.clone());
+        self.sent.lock().unwrap().push(data.clone());
         Some(data)
     }
 
     fn after_received(&self, data: StreamItem) -> Option<StreamItem> {
         match data {
             Ok(v) => {
-                self.sent.lock().unwrap().push(v.clone());
+                self.received.lock().unwrap().push(v.clone());
                 Some(Ok(v))
             }
             Err(e) => Some(Err(e)),
@@ -236,8 +236,8 @@ impl TunnelFilter for PacketRecorderTunnelFilter {
 
     fn filter_output(&self) -> Self::FilterOutput {
         (
-            self.received.lock().unwrap().clone(),
             self.sent.lock().unwrap().clone(),
+            self.received.lock().unwrap().clone(),
         )
     }
 }

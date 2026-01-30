@@ -4,6 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 
 use crate::tunnel::packet_def::CompressorAlgo;
 
@@ -358,5 +359,39 @@ impl fmt::Debug for Ipv6Addr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let std_ipv6_addr = std::net::Ipv6Addr::from(*self);
         write!(f, "{}", std_ipv6_addr)
+    }
+}
+
+impl SecureModeConfig {
+    pub fn private_key(&self) -> anyhow::Result<x25519_dalek::StaticSecret> {
+        let local_private_key = self
+            .local_private_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("local private key is not set"))?;
+        let k = BASE64_STANDARD
+            .decode(local_private_key)
+            .with_context(|| format!("failed to decode private key: {}", local_private_key))?;
+        // convert vec to 32b array
+        let len = k.len();
+        let k: [u8; 32] = k
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid private key length: {}", len))?;
+        Ok(x25519_dalek::StaticSecret::from(k))
+    }
+
+    pub fn public_key(&self) -> anyhow::Result<x25519_dalek::PublicKey> {
+        let local_public_key = self
+            .local_public_key
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("local public key is not set"))?;
+        let k = BASE64_STANDARD
+            .decode(local_public_key)
+            .with_context(|| format!("failed to decode public key: {}", local_public_key))?;
+        // convert vec to 32b array
+        let len = k.len();
+        let k: [u8; 32] = k
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid public key length: {}", len))?;
+        Ok(x25519_dalek::PublicKey::from(k))
     }
 }

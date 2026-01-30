@@ -17,8 +17,8 @@ use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
 use crate::defer;
-use crate::gateway::kcp_proxy::{ProxyAclHandler, TcpProxyForKcpSrcTrait};
 use crate::gateway::tcp_proxy::{NatDstConnector, NatDstTcpConnector, TcpProxy};
+use crate::gateway::wrapped_proxy::{ProxyAclHandler, TcpProxyForWrappedSrcTrait};
 use crate::gateway::CidrSet;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::acl::{ChainType, Protocol};
@@ -30,7 +30,7 @@ use crate::proto::common::ProxyDstInfo;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::PeerManagerHeader;
-use crate::tunnel::quic::{configure_client, make_server_endpoint};
+use crate::tunnel::quic::{client_config, make_server_endpoint};
 
 pub struct QUICStream {
     endpoint: Option<quinn::Endpoint>,
@@ -115,7 +115,7 @@ impl NatDstConnector for NatDstQUICConnector {
 
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
             .with_context(|| format!("failed to create QUIC endpoint for src: {}", src))?;
-        endpoint.set_default_client_config(configure_client());
+        endpoint.set_default_client_config(client_config());
 
         // connect to server
         let connection = {
@@ -184,14 +184,14 @@ impl NatDstConnector for NatDstQUICConnector {
 struct TcpProxyForQUICSrc(Arc<TcpProxy<NatDstQUICConnector>>);
 
 #[async_trait::async_trait]
-impl TcpProxyForKcpSrcTrait for TcpProxyForQUICSrc {
+impl TcpProxyForWrappedSrcTrait for TcpProxyForQUICSrc {
     type Connector = NatDstQUICConnector;
 
     fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>> {
         &self.0
     }
 
-    async fn check_dst_allow_kcp_input(&self, dst_ip: &Ipv4Addr) -> bool {
+    async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
         let Some(peer_manager) = self.0.get_peer_manager() else {
             return false;
         };
@@ -263,7 +263,7 @@ impl QUICProxyDst {
         route: Arc<dyn crate::peers::route_trait::Route + Send + Sync + 'static>,
     ) -> Result<Self> {
         let _g = global_ctx.net_ns.guard();
-        let (endpoint, _) = make_server_endpoint(
+        let endpoint = make_server_endpoint(
             format!("0.0.0.0:{}", global_ctx.config.get_flags().quic_listen_port)
                 .parse()
                 .unwrap(),

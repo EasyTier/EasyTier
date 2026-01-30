@@ -201,6 +201,7 @@ impl ProxyTcpStream {
     }
 }
 
+#[cfg(feature = "smoltcp")]
 type SmolTcpAcceptResult = Result<(tokio_smoltcp::TcpStream, SocketAddr)>;
 #[cfg(feature = "smoltcp")]
 struct SmolTcpListener {
@@ -331,6 +332,7 @@ pub struct TcpProxy<C: NatDstConnector> {
     smoltcp_stack_receiver: Arc<Mutex<Option<mpsc::Receiver<ZCPacket>>>>,
     #[cfg(feature = "smoltcp")]
     smoltcp_net: Arc<Mutex<Option<Net>>>,
+    #[cfg(feature = "smoltcp")]
     smoltcp_listener_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<SmolTcpAcceptResult>>>,
     enable_smoltcp: Arc<AtomicBool>,
 
@@ -461,6 +463,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
             #[cfg(feature = "smoltcp")]
             smoltcp_net: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "smoltcp")]
             smoltcp_listener_tx: std::sync::Mutex::new(None),
 
             enable_smoltcp: Arc::new(AtomicBool::new(true)),
@@ -930,6 +933,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             tracing::info!(src = ?src, ?real_dst, ?mapped_dst, old_entry = ?old_val, "tcp syn received");
 
             // if smoltcp is enabled, add the listener to the net
+            #[cfg(feature = "smoltcp")]
             if self.is_smoltcp_enabled() {
                 let smoltcp_listener_tx = self.smoltcp_listener_tx.lock().unwrap().clone().unwrap();
                 SmolTcpListener::add_listener(

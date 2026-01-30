@@ -204,6 +204,7 @@ export interface NodeInfo {
   stun_info: StunInfo
   listeners: Url[]
   vpn_portal_cfg?: string
+  peer_id: number
 }
 
 export interface StunInfo {

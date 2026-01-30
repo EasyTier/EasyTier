@@ -81,6 +81,8 @@ message NetworkConfig {
   optional common.CompressionAlgoPb data_compress_algo = 52;
   optional string encryption_algorithm = 53;
   optional bool disable_tcp_hole_punching = 54;
+
+  common.SecureModeConfig secure_mode = 55;
 }
 
 message PortForwardConfig {
@@ -99,6 +101,7 @@ message MyNodeInfo {
   common.StunInfo stun_info = 5;
   repeated common.Url listeners = 6;
   optional string vpn_portal_cfg = 7;
+  uint32 peer_id = 8;
 }
 
 message NetworkInstanceRunningInfo {

@@ -95,6 +95,9 @@ jobs:
           bash ./.github/workflows/install_rust.sh
           rustup component add rustfmt
           rustup component add clippy
+      
+      - name: Install cargo-hack
+        run: cargo install cargo-hack --locked
 
       - name: Check formatting
         if: ${{ !cancelled() }}
@@ -106,6 +109,10 @@ jobs:
         run: |
           mkdir -p easytier-gui/dist
           cargo clippy --all-targets --all-features --all -- -D warnings
+
+      - name: Check features
+        if: ${{ !cancelled() }}
+        run: cargo hack check --package easytier --each-feature --features aes-gcm --verbose
 
       - name: Run tests
         run: |

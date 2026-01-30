@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::Notify;
 use tokio::time;
 
 use crate::common::scoped_task::ScopedTask;
@@ -15,6 +16,8 @@ pub struct TokenBucket {
     config: BucketConfig,        // Immutable configuration
     refill_task: Mutex<Option<ScopedTask<()>>>, // Background refill task
     start_time: Instant,         // Bucket creation time
+
+    refill_notifier: Arc<Notify>,
 }
 
 #[derive(Clone, Copy)]
@@ -64,11 +67,13 @@ impl TokenBucket {
             config,
             refill_task: Mutex::new(None),
             start_time: std::time::Instant::now(),
+            refill_notifier: Arc::new(Notify::new()),
         });
 
         // Start background refill task
         let weak_bucket = Arc::downgrade(&arc_self);
         let refill_interval = arc_self.config.refill_interval;
+        let refill_notifer = arc_self.refill_notifier.clone();
         let refill_task = tokio::spawn(async move {
             let mut interval = time::interval(refill_interval);
             loop {
@@ -77,6 +82,7 @@ impl TokenBucket {
                     break;
                 };
                 bucket.refill();
+                refill_notifer.notify_waiters();
             }
         });
 
@@ -154,6 +160,13 @@ impl TokenBucket {
             }
         }
     }
+
+    /// Consume tokens, blocking if not available
+    pub async fn consume(&self, tokens: u64) {
+        while !self.try_consume(tokens) {
+            self.refill_notifier.notified().await;
+        }
+    }
 }
 
 pub struct TokenBucketManager {
@@ -177,10 +190,16 @@ impl TokenBucketManager {
         let retain_task = tokio::spawn(async move {
             loop {
                 // Retain only buckets that are still in use
+                let old_len = buckets_clone.len();
                 buckets_clone.retain(|_, bucket| Arc::<TokenBucket>::strong_count(bucket) > 1);
                 buckets_clone.shrink_to_fit();
                 // Sleep for a while before next retention check
                 tokio::time::sleep(Duration::from_secs(5)).await;
+                tracing::info!(
+                    "Retained buckets: {} ({} dropped)",
+                    buckets_clone.len(),
+                    old_len.saturating_sub(buckets_clone.len())
+                );
             }
         });
 
