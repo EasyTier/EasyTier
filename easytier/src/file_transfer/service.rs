@@ -96,6 +96,67 @@ impl FileTransferRpc for FileTransferService {
             });
         }
 
+        // 3. Relay Policy Verification
+        if !is_p2p {
+            let flags = peer_manager.get_global_ctx().get_flags();
+            if flags.disable_file_transfer_relay {
+                return Ok(TransferOfferResponse {
+                    status: OfferStatus::Rejected.into(),
+                    start_offset: 0,
+                    message: "Transfer rejected: File transfer via relay is disabled.".to_string(),
+                });
+            }
+
+            let limit = flags.file_transfer_relay_size_limit;
+            let file_size = request.metadata.as_ref().map(|m| m.file_size).unwrap_or(0);
+            if limit > 0 && file_size > limit {
+                return Ok(TransferOfferResponse {
+                    status: OfferStatus::Rejected.into(),
+                    start_offset: 0,
+                    message: format!(
+                        "Transfer rejected: File size {} exceeds relay limit {}",
+                        file_size, limit
+                    ),
+                });
+            }
+
+            // Check if relay is foreign (Public/Shared)
+            // If gateway peer ID != sender peer ID, it is a relay.
+            // Check if relay is foreign (Public/Shared)
+            // If gateway peer ID != sender peer ID, it is a relay.
+            // We need to check the identity of the gateway peer.
+            if let Some(gateway_id) = peer_manager
+                .get_peer_map()
+                .get_gateway_peer_id(request.sender_peer_id, NextHopPolicy::LeastHop)
+                .await
+            {
+                if gateway_id != request.sender_peer_id {
+                    let mut is_foreign_relay = true; // Assume foreign if not found in our PeerMap
+
+                    // PeerMap only contains peers valid in our network (same identity).
+                    // If the gateway is in PeerMap, it is a Private Relay.
+                    if peer_manager.get_peer_map().has_peer(gateway_id) {
+                        is_foreign_relay = false;
+                    }
+
+                    if is_foreign_relay {
+                        let limit = flags.file_transfer_foreign_network_relay_limit;
+                        let file_size = request.metadata.as_ref().map(|m| m.file_size).unwrap_or(0);
+
+                        if limit > 0 && file_size > limit {
+                            return Ok(TransferOfferResponse {
+                                status: OfferStatus::Rejected.into(),
+                                start_offset: 0,
+                                message: format!(
+                                    "Transfer rejected: File size {} exceeds foreign relay limit {}. To transfer large files via public relay, increase --file-transfer-foreign-network-relay-limit",
+                                    file_size, limit
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        }
         tracing::info!("Received OfferFile request: {:?}", request);
 
         // Auto-accept logic
