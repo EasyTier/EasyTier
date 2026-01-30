@@ -3289,7 +3289,6 @@ mod tests {
                 routable_peer
                     .get_peer_map()
                     .list_peers()
-                    .await
                     .into_iter()
                     .collect::<BTreeSet<PeerId>>()
             );

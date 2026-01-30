@@ -266,7 +266,7 @@ impl PeerMap {
         self.peer_map.is_empty()
     }
 
-    pub async fn list_peers(&self) -> Vec<PeerId> {
+    pub fn list_peers(&self) -> Vec<PeerId> {
         let mut ret = Vec::new();
         for item in self.peer_map.iter() {
             let peer_id = item.key();
@@ -277,7 +277,7 @@ impl PeerMap {
 
     pub async fn list_peers_with_conn(&self) -> Vec<PeerId> {
         let mut ret = Vec::new();
-        let peers = self.list_peers().await;
+        let peers = self.list_peers();
         for peer_id in peers.iter() {
             let Some(peer) = self.get_peer_by_id(*peer_id) else {
                 continue;
@@ -337,7 +337,7 @@ impl PeerMap {
     pub async fn clean_peer_without_conn(&self) {
         let mut to_remove = vec![];
 
-        for peer_id in self.list_peers().await {
+        for peer_id in self.list_peers() {
             let conns = self.list_peer_conns(peer_id).await;
             if conns.is_none() || conns.as_ref().unwrap().is_empty() {
                 to_remove.push(peer_id);
