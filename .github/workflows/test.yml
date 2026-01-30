@@ -2,12 +2,14 @@ name: EasyTier Test
 
 on:
   push:
-    branches: ["develop", "main"]
+    branches: [ "develop", "main" ]
   pull_request:
-    branches: ["develop", "main"]
+    branches: [ "develop", "main" ]
 
 env:
   CARGO_TERM_COLOR: always
+#  RUSTC_WRAPPER: "sccache"
+#  SCCACHE_GHA_ENABLED: "true"
 
 defaults:
   run:
@@ -29,18 +31,92 @@ jobs:
           concurrent_skipping: 'never'
           skip_after_successful_duplicate: 'true'
           paths: '["Cargo.toml", "Cargo.lock", "easytier/**", ".github/workflows/test.yml", ".github/workflows/install_gui_dep.sh", ".github/workflows/install_rust.sh"]'
-  test:
-    runs-on: ubuntu-22.04
+
+  check:
+    name: Run linters & check
+    runs-on: ubuntu-latest
     needs: pre_job
-    if: needs.pre_job.outputs.should_skip != 'true'    
+    if: needs.pre_job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v3
 
-      - name: Setup protoc
-        uses: arduino/setup-protoc@v3
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
         with:
-          # GitHub repo token to use to avoid rate limiter
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          gui: true
+          web: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install rustfmt and clippy
+        run: |
+          rustup component add rustfmt
+          rustup component add clippy
+
+      - name: Install cargo-hack
+        run: cargo install cargo-hack --locked
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check Clippy
+        run: cargo clippy --all-targets --all-features --all -- -D warnings
+
+      - name: Check features
+        if: ${{ !cancelled() }}
+        run: cargo hack check --package easytier --each-feature --features aes-gcm --verbose
+
+  pre-test:
+    name: Build test
+    runs-on: ubuntu-latest
+    needs: pre_job
+    if: needs.pre_job.outputs.should_skip != 'true'
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Prepare build environment
+        uses: ./.github/actions/prepare-build
+        with:
+          gui: true
+          web: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@nextest
+
+      - name: Archive test
+        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --all-features
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tests
+          path: tests.tar.zst
+          retention-days: 1
+
+  test_matrix:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    needs: [ pre_job, pre-test ]
+    if: needs.pre_job.outputs.should_skip != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "easytier"
+            opts: "-E 'not test(connector::dns_connector::tests) and not test(tests::three_node)' --test-threads 1 --no-fail-fast"
+
+          - name: "easytier::connector::dns_connector::tests"
+            opts: "-E 'test(connector::dns_connector::tests)' --test-threads 1 --no-fail-fast"
+
+          - name: "easytier::tests::three_node"
+            opts: "-E 'test(tests::three_node) and not test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
+
+          - name: "easytier::tests::three_node::subnet_proxy_three_node_test"
+            opts: "-E 'test(subnet_proxy_three_node_test)' --test-threads 1 --no-fail-fast"
+    steps:
+      - uses: actions/checkout@v3
 
       - name: Setup tools for test
         run: sudo apt install bridge-utils
@@ -53,70 +129,23 @@ jobs:
           sudo sysctl net.ipv6.conf.lo.disable_ipv6=0
           sudo ip addr add 2001:db8::2/64 dev lo
 
-      - uses: actions/setup-node@v4
+      - uses: taiki-e/install-action@nextest
+
+      - name: Download tests
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10
-          run_install: false
-
-      - name: Get pnpm store directory
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
-
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
-
-      - name: Install frontend dependencies
-        run: |
-          pnpm -r install
-          pnpm -r --filter "./easytier-web/*"  build
-
-      - name: Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo
-            ./target
-          key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install GUI dependencies (Used by clippy)
-        run: |
-          bash ./.github/workflows/install_gui_dep.sh
-          bash ./.github/workflows/install_rust.sh
-          rustup component add rustfmt
-          rustup component add clippy
-      
-      - name: Install cargo-hack
-        run: cargo install cargo-hack --locked
-
-      - name: Check formatting
-        if: ${{ !cancelled() }}
-        run: cargo fmt --all -- --check
-
-      - name: Check Clippy
-        if: ${{ !cancelled() }}
-        # NOTE: tauri need `dist` dir in build.rs
-        run: |
-          mkdir -p easytier-gui/dist
-          cargo clippy --all-targets --all-features --all -- -D warnings
-
-      - name: Check features
-        if: ${{ !cancelled() }}
-        run: cargo hack check --package easytier --each-feature --features aes-gcm --verbose
+          name: tests
 
       - name: Run tests
         run: |
           sudo prlimit --pid $$ --nofile=1048576:1048576
-          sudo -E env "PATH=$PATH" cargo test --no-default-features --features=full --verbose -- --test-threads=1
-          sudo chown -R $USER:$USER ./target
-          sudo chown -R $USER:$USER ~/.cargo
+          sudo -E env "PATH=$PATH" cargo nextest run --archive-file tests.tar.zst ${{ matrix.opts }}
+
+  test:
+    runs-on: ubuntu-latest
+    needs: [ pre_job, test_matrix ]
+    if: needs.pre_job.outputs.should_skip != 'true' && always()
+    steps:
+      - name: Mark result as failed
+        if: needs.test_matrix.result != 'success'
+        run: exit 1
