@@ -325,6 +325,14 @@ impl PeerManager {
             .store(allow_loopback_tunnel, std::sync::atomic::Ordering::Relaxed);
     }
 
+    pub fn foreign_network_manager(&self) -> &Arc<ForeignNetworkManager> {
+        &self.foreign_network_manager
+    }
+
+    pub fn foreign_network_client(&self) -> &Arc<ForeignNetworkClient> {
+        &self.foreign_network_client
+    }
+
     fn build_foreign_network_manager_accessor(
         peer_map: &Arc<PeerMap>,
     ) -> Box<dyn GlobalForeignNetworkAccessor> {

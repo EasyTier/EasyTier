@@ -648,6 +648,15 @@ struct NetworkOptions {
 
     #[arg(long, help = t!("core_clap.file_transfer_foreign_network_relay_limit").to_string())]
     file_transfer_foreign_network_relay_limit: Option<u64>,
+
+    #[arg(
+        long,
+        env = "ET_ENABLE_FILE_TRANSFER_RELAY_FORWARD",
+        help = t!("core_clap.enable_file_transfer_relay_forward").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_file_transfer_relay_forward: Option<bool>,
 }
 
 #[derive(Parser, Debug)]
@@ -1040,6 +1049,9 @@ impl NetworkOptions {
         }
         if let Some(limit) = self.file_transfer_foreign_network_relay_limit {
             f.file_transfer_foreign_network_relay_limit = limit;
+        }
+        if let Some(enable) = self.enable_file_transfer_relay_forward {
+            f.enable_file_transfer_relay_forward = enable;
         }
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching

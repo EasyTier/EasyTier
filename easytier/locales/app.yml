@@ -262,6 +262,9 @@ core_clap:
   file_transfer_foreign_network_relay_limit:
     en: "maximum file size allowed when relay is in a foreign/public network (bytes), 0 means no limit"
     zh-CN: "当中继在外部/公共网络时允许的最大文件大小（字节），0 表示不限制"
+  enable_file_transfer_relay_forward:
+    en: "allow this node to relay file transfer RPC for foreign/public networks (default false)"
+    zh-CN: "允许本节点为外部/公共网络转发文件传输 RPC（默认关闭）"
 
 core_app:
   panic_backtrace_save:

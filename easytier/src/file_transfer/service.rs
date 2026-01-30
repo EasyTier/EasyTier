@@ -121,25 +121,32 @@ impl FileTransferRpc for FileTransferService {
 
             // Check if relay is foreign (Public/Shared)
             // If gateway peer ID != sender peer ID, it is a relay.
-            // Check if relay is foreign (Public/Shared)
-            // If gateway peer ID != sender peer ID, it is a relay.
             // We need to check the identity of the gateway peer.
             if let Some(gateway_id) = gateway_id {
                 if gateway_id != request.sender_peer_id {
-                    let mut is_foreign_relay = true; // Assume foreign if not found in our PeerMap
-
-                    // PeerMap only contains peers valid in our network (same identity).
-                    // If the gateway is in PeerMap, it is a Private Relay.
-                    if self.peer_manager.get_peer_map().has_peer(gateway_id) {
-                        is_foreign_relay = false;
+                    let is_foreign_relay; 
+                    
+                    // A relay is foreign if it is managed by ForeignNetworkManager (implies different network identity)
+                    // OR if it is in ForeignNetworkClient's peer map (Outgoing connection to foreign network/public relay).
+                    if self.peer_manager.foreign_network_manager().is_foreign_peer(gateway_id) 
+                       || self.peer_manager.foreign_network_client().get_peer_map().has_peer(gateway_id) {
+                         is_foreign_relay = true;
+                    } else {
+                         // If it's not in either foreign manager, it's likely a private peer (PeerMap)
+                         // or temporarily disconnected. We treat it as PRIVATE (not foreign).
+                         is_foreign_relay = false;
                     }
 
                     if is_foreign_relay {
                         let limit = flags.file_transfer_foreign_network_relay_limit;
-                        let file_size = request.metadata.as_ref().map(|m| m.file_size).unwrap_or(0);
-
+                        // effective limit is min(relay_limit, foreign_limit) if both set?
+                        // The documentation says:
+                        // 4) If both limits apply (foreign/public relay), smaller limit wins
+                        // Check logic: we already checked generic limit above.
+                        // So we just need to check if we exceed foreign limit here.
+                        
                         if limit > 0 && file_size > limit {
-                            return Ok(TransferOfferResponse {
+                             return Ok(TransferOfferResponse {
                                 status: OfferStatus::Rejected.into(),
                                 start_offset: 0,
                                 message: format!(
