@@ -359,6 +359,7 @@ impl HealthChecker {
             )
             .parse()
             .with_context(|| "failed to parse peer uri")?,
+            peer_public_key: None,
         }]);
 
         let inst_id = inst_id.unwrap_or(uuid::Uuid::new_v4());

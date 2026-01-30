@@ -84,6 +84,14 @@ impl Encryptor for AesGcmCipher {
     }
 
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
+        self.encrypt_with_nonce(zc_packet, None)
+    }
+
+    fn encrypt_with_nonce(
+        &self,
+        zc_packet: &mut ZCPacket,
+        nonce: Option<&[u8]>,
+    ) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if pm_header.is_encrypted() {
             tracing::warn!(?zc_packet, "packet is already encrypted");
@@ -91,16 +99,28 @@ impl Encryptor for AesGcmCipher {
         }
 
         let mut tail = AesGcmTail::default();
+        if let Some(nonce) = nonce {
+            if nonce.len() != tail.nonce.len() {
+                return Err(Error::EncryptionFailed);
+            }
+            tail.nonce.copy_from_slice(nonce);
+        }
         let rs = match &self.cipher {
             AesGcmEnum::AES128GCM(aes_gcm) => {
-                let nonce = Aes128Gcm::generate_nonce(&mut OsRng);
-                tail.nonce.copy_from_slice(nonce.as_slice());
-                aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload())
+                if nonce.is_none() {
+                    let nonce = Aes128Gcm::generate_nonce(&mut OsRng);
+                    tail.nonce.copy_from_slice(nonce.as_slice());
+                }
+                let nonce = Nonce::from_slice(&tail.nonce);
+                aes_gcm.encrypt_in_place_detached(nonce, &[], zc_packet.mut_payload())
             }
             AesGcmEnum::AES256GCM(aes_gcm) => {
-                let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-                tail.nonce.copy_from_slice(nonce.as_slice());
-                aes_gcm.encrypt_in_place_detached(&nonce, &[], zc_packet.mut_payload())
+                if nonce.is_none() {
+                    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+                    tail.nonce.copy_from_slice(nonce.as_slice());
+                }
+                let nonce = Nonce::from_slice(&tail.nonce);
+                aes_gcm.encrypt_in_place_detached(nonce, &[], zc_packet.mut_payload())
             }
         };
 
@@ -122,8 +142,9 @@ impl Encryptor for AesGcmCipher {
 mod tests {
     use crate::{
         peers::encrypt::{aes_gcm::AesGcmCipher, Encryptor},
-        tunnel::packet_def::{ZCPacket, AES_GCM_ENCRYPTION_RESERVED},
+        tunnel::packet_def::{AesGcmTail, ZCPacket, AES_GCM_ENCRYPTION_RESERVED},
     };
+    use zerocopy::FromBytes;
 
     #[test]
     fn test_aes_gcm_cipher() {
@@ -142,5 +163,33 @@ mod tests {
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
         assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+    }
+
+    #[test]
+    fn test_aes_gcm_cipher_with_nonce() {
+        let key = [7u8; 16];
+        let cipher = AesGcmCipher::new_128(key);
+        let text = b"Hello";
+        let nonce = [3u8; 12];
+
+        let mut packet1 = ZCPacket::new_with_payload(text);
+        packet1.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet1, Some(&nonce))
+            .unwrap();
+
+        let mut packet2 = ZCPacket::new_with_payload(text);
+        packet2.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet2, Some(&nonce))
+            .unwrap();
+
+        assert_eq!(packet1.payload(), packet2.payload());
+
+        let tail = AesGcmTail::ref_from_suffix(packet1.payload()).unwrap();
+        assert_eq!(tail.nonce, nonce);
+
+        cipher.decrypt(&mut packet1).unwrap();
+        assert_eq!(packet1.payload(), text);
     }
 }

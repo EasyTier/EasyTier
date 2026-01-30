@@ -816,7 +816,7 @@ dependencies = [
  "bitflags 2.8.0",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.12.1",
  "proc-macro2",
  "quote",
  "regex",
@@ -2217,6 +2217,7 @@ dependencies = [
  "prost-reflect-build",
  "prost-types",
  "quinn",
+ "quinn-plaintext",
  "rand 0.8.5",
  "rcgen",
  "regex",
@@ -2234,11 +2235,13 @@ dependencies = [
  "sha2",
  "shellexpand",
  "smoltcp",
+ "snow",
  "socket2 0.5.10",
  "stun_codec",
  "sys-locale",
  "tabled",
  "tempfile",
+ "terminal_size",
  "thiserror 1.0.63",
  "thunk-rs",
  "tikv-jemalloc-ctl",
@@ -2257,6 +2260,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tun-easytier",
+ "unicode-width 0.1.11",
  "url",
  "uuid",
  "version-compare",
@@ -2268,6 +2272,7 @@ dependencies = [
  "windows-service",
  "windows-sys 0.52.0",
  "winreg 0.52.0",
+ "x25519-dalek",
  "zerocopy",
  "zip",
  "zstd",
@@ -6505,6 +6510,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quinn-plaintext"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3e617feaeb6493018fa35fc47ae8b630ac8903d8159e9e747018841b99bad3d"
+dependencies = [
+ "bytes",
+ "quinn-proto",
+ "seahash",
+ "tracing",
+]
+
+[[package]]
 name = "quinn-proto"
 version = "0.11.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6879,15 +6896,14 @@ checksum = "fc7c8f7f733062b66dc1c63f9db168ac0b97a9210e247fa90fdc9ad08f51b302"
 
 [[package]]
 name = "ring"
-version = "0.17.8"
+version = "0.17.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c17fa4cb658e3583423e915b9f3acc01cceaee1860e33d59ebae66adc3a2dc0d"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
 dependencies = [
  "cc",
  "cfg-if",
  "getrandom 0.2.15",
  "libc",
- "spin",
  "untrusted",
  "windows-sys 0.52.0",
 ]
@@ -7983,6 +7999,23 @@ dependencies = [
  "defmt",
  "heapless",
  "managed",
+]
+
+[[package]]
+name = "snow"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "599b506ccc4aff8cf7844bc42cf783009a434c1e26c964432560fb6d6ad02d82"
+dependencies = [
+ "aes-gcm",
+ "blake2",
+ "chacha20poly1305",
+ "curve25519-dalek",
+ "getrandom 0.3.2",
+ "ring",
+ "rustc_version",
+ "sha2",
+ "subtle",
 ]
 
 [[package]]

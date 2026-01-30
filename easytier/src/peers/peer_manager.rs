@@ -32,6 +32,7 @@ use crate::{
     peers::{
         peer_conn::PeerConn,
         peer_rpc::PeerRpcManagerTransport,
+        peer_session::PeerSessionStore,
         recv_packet_from_chan,
         route_trait::{ForeignNetworkRouteInfoMap, MockRoute, NextHopPolicy, RouteInterface},
         PeerPacketFilter,
@@ -160,6 +161,8 @@ pub struct PeerManager {
     allow_loopback_tunnel: AtomicBool,
 
     self_tx_counters: SelfTxCounters,
+
+    peer_session_store: Arc<PeerSessionStore>,
 }
 
 impl Debug for PeerManager {
@@ -312,6 +315,8 @@ impl PeerManager {
             allow_loopback_tunnel: AtomicBool::new(true),
 
             self_tx_counters,
+
+            peer_session_store: Arc::new(PeerSessionStore::new()),
         }
     }
 
@@ -363,7 +368,23 @@ impl PeerManager {
         tunnel: Box<dyn Tunnel>,
         is_directly_connected: bool,
     ) -> Result<(PeerId, PeerConnId), Error> {
-        let mut peer = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
+        self.add_client_tunnel_with_peer_id_hint(tunnel, is_directly_connected, None)
+            .await
+    }
+
+    pub async fn add_client_tunnel_with_peer_id_hint(
+        &self,
+        tunnel: Box<dyn Tunnel>,
+        is_directly_connected: bool,
+        peer_id_hint: Option<PeerId>,
+    ) -> Result<(PeerId, PeerConnId), Error> {
+        let mut peer = PeerConn::new_with_peer_id_hint(
+            self.my_peer_id,
+            self.global_ctx.clone(),
+            tunnel,
+            peer_id_hint,
+            self.peer_session_store.clone(),
+        );
         peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
@@ -387,9 +408,19 @@ impl PeerManager {
     }
 
     #[tracing::instrument]
-    pub async fn try_direct_connect<C>(
+    pub async fn try_direct_connect<C>(&self, connector: C) -> Result<(PeerId, PeerConnId), Error>
+    where
+        C: TunnelConnector + Debug,
+    {
+        self.try_direct_connect_with_peer_id_hint(connector, None)
+            .await
+    }
+
+    #[tracing::instrument]
+    pub async fn try_direct_connect_with_peer_id_hint<C>(
         &self,
         mut connector: C,
+        peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error>
     where
         C: TunnelConnector + Debug,
@@ -398,7 +429,8 @@ impl PeerManager {
         let t = ns
             .run_async(|| async move { connector.connect().await })
             .await?;
-        self.add_client_tunnel(t, true).await
+        self.add_client_tunnel_with_peer_id_hint(t, true, peer_id_hint)
+            .await
     }
 
     // avoid loop back to virtual network
@@ -447,9 +479,14 @@ impl PeerManager {
         tracing::info!("add tunnel as server start");
         self.check_remote_addr_not_from_virtual_network(&tunnel)?;
 
-        let mut conn = PeerConn::new(self.my_peer_id, self.global_ctx.clone(), tunnel);
-        conn.do_handshake_as_server_ext(|peer, msg| {
-            if msg.network_name
+        let mut conn = PeerConn::new(
+            self.my_peer_id,
+            self.global_ctx.clone(),
+            tunnel,
+            self.peer_session_store.clone(),
+        );
+        conn.do_handshake_as_server_ext(|peer, network_name:&str| {
+            if network_name
                 == self.global_ctx.get_network_identity().network_name
             {
                 return Ok(());
@@ -463,9 +500,9 @@ impl PeerManager {
 
             let mut peer_id = self
                 .foreign_network_manager
-                .get_network_peer_id(&msg.network_name);
+                .get_network_peer_id(network_name);
             if peer_id.is_none() {
-                peer_id = Some(*self.reserved_my_peer_id_map.entry(msg.network_name.clone()).or_insert_with(|| {
+                peer_id = Some(*self.reserved_my_peer_id_map.entry(network_name.to_string()).or_insert_with(|| {
                     rand::random::<PeerId>()
                 }).value());
             }
@@ -473,7 +510,7 @@ impl PeerManager {
 
             tracing::info!(
                 ?peer_id,
-                ?msg.network_name,
+                ?network_name,
                 "handshake as server with foreign network, new peer id: {}, peer id in foreign manager: {:?}",
                 peer.get_my_peer_id(), peer_id
             );
@@ -1464,7 +1501,10 @@ mod tests {
     use std::{fmt::Debug, sync::Arc, time::Duration};
 
     use crate::{
-        common::{config::Flags, global_ctx::tests::get_mock_global_ctx},
+        common::{
+            config::Flags,
+            global_ctx::{tests::get_mock_global_ctx, NetworkIdentity},
+        },
         connector::{
             create_connector_by_url, direct::PeerManagerForDirectConnector,
             udp_hole_punch::tests::create_mock_peer_manager_with_mock_stun,
@@ -1472,6 +1512,7 @@ mod tests {
         instance::listeners::get_listener_by_url,
         peers::{
             create_packet_recv_chan,
+            peer_conn::tests::set_secure_mode_cfg,
             peer_manager::RouteAlgoType,
             peer_rpc::tests::register_service,
             route_trait::NextHopPolicy,
@@ -1480,7 +1521,10 @@ mod tests {
                 wait_route_appear_with_cost,
             },
         },
-        proto::common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
+        proto::{
+            common::{CompressionAlgoPb, NatType, PeerFeatureFlag},
+            peer_rpc::SecureAuthLevel,
+        },
         tunnel::{
             common::tests::wait_for_condition,
             filter::{tests::DropSendTunnelFilter, TunnelWithFilter},
@@ -1519,6 +1563,279 @@ mod tests {
         wait_for_condition(
             || async { peer_mgr_a.get_peer_map().list_peers_with_conn().await.len() == 1 },
             std::time::Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn peer_manager_safe_mode_connect_between_peers() {
+        let peer_mgr_a = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_b = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_a
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        peer_mgr_b
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+
+        set_secure_mode_cfg(&peer_mgr_a.get_global_ctx(), true);
+        set_secure_mode_cfg(&peer_mgr_b.get_global_ctx(), true);
+
+        let (a_ring, b_ring) = create_ring_tunnel_pair();
+        let (a_ret, b_ret) = tokio::join!(
+            peer_mgr_a.add_client_tunnel(a_ring, false),
+            peer_mgr_b.add_tunnel_as_server(b_ring, true)
+        );
+        let (peer_b_id, _) = a_ret.unwrap();
+        b_ret.unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_a = peer_mgr_a.clone();
+                async move {
+                    if !peer_mgr_a
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&peer_b_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_a.get_peer_map().list_peer_conns(peer_b_id).await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.len() == 32
+                            && c.noise_remote_static_pubkey.len() == 32
+                            && c.secure_auth_level == SecureAuthLevel::NetworkSecretConfirmed as i32
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        let peer_a_id = peer_mgr_a.my_peer_id();
+        wait_for_condition(
+            || {
+                let peer_mgr_b = peer_mgr_b.clone();
+                async move {
+                    if !peer_mgr_b
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&peer_a_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_b.get_peer_map().list_peer_conns(peer_a_id).await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.len() == 32
+                            && c.noise_remote_static_pubkey.len() == 32
+                            && c.secure_auth_level == SecureAuthLevel::NetworkSecretConfirmed as i32
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn peer_manager_safe_server_accept_legacy_client() {
+        let peer_mgr_client = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_server = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_client
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        peer_mgr_server
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+
+        set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
+
+        let (c_ring, s_ring) = create_ring_tunnel_pair();
+        let (c_ret, s_ret) = tokio::join!(
+            peer_mgr_client.add_client_tunnel(c_ring, false),
+            peer_mgr_server.add_tunnel_as_server(s_ring, true)
+        );
+        let (server_id, _) = c_ret.unwrap();
+        s_ret.unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_client = peer_mgr_client.clone();
+                async move {
+                    if !peer_mgr_client
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&server_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_client
+                        .get_peer_map()
+                        .list_peer_conns(server_id)
+                        .await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.is_empty()
+                            && c.noise_remote_static_pubkey.is_empty()
+                            && c.secure_auth_level == SecureAuthLevel::None as i32
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        let client_id = peer_mgr_client.my_peer_id();
+        wait_for_condition(
+            || {
+                let peer_mgr_server = peer_mgr_server.clone();
+                async move {
+                    if !peer_mgr_server
+                        .get_peer_map()
+                        .list_peers_with_conn()
+                        .await
+                        .contains(&client_id)
+                    {
+                        return false;
+                    }
+                    let Some(conns) = peer_mgr_server
+                        .get_peer_map()
+                        .list_peer_conns(client_id)
+                        .await
+                    else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.noise_local_static_pubkey.is_empty()
+                            && c.noise_remote_static_pubkey.is_empty()
+                            && c.secure_auth_level == SecureAuthLevel::None as i32
+                    })
+                }
+            },
+            Duration::from_secs(5),
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn peer_manager_safe_mode_shared_node_pinning_connect() {
+        let peer_mgr_client = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+        let peer_mgr_server = create_mock_peer_manager_with_mock_stun(NatType::Unknown).await;
+
+        peer_mgr_client
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity::new("user".to_string(), "sec1".to_string()));
+        peer_mgr_server
+            .get_global_ctx()
+            .config
+            .set_network_identity(NetworkIdentity {
+                network_name: "shared".to_string(),
+                network_secret: None,
+                network_secret_digest: None,
+            });
+
+        set_secure_mode_cfg(&peer_mgr_client.get_global_ctx(), true);
+        set_secure_mode_cfg(&peer_mgr_server.get_global_ctx(), true);
+
+        let server_pub_b64 = peer_mgr_server
+            .get_global_ctx()
+            .config
+            .get_secure_mode()
+            .unwrap()
+            .local_public_key
+            .unwrap();
+
+        let (a_ring, b_ring) = create_ring_tunnel_pair();
+        let server_remote_url: url::Url = a_ring
+            .info()
+            .unwrap()
+            .remote_addr
+            .unwrap()
+            .url
+            .parse()
+            .unwrap();
+        peer_mgr_client.get_global_ctx().config.set_peers(vec![
+            crate::common::config::PeerConfig {
+                uri: server_remote_url,
+                peer_public_key: Some(server_pub_b64.clone()),
+            },
+        ]);
+
+        let (c_ret, s_ret) = tokio::join!(
+            peer_mgr_client.add_client_tunnel(a_ring, false),
+            peer_mgr_server.add_tunnel_as_server(b_ring, true)
+        );
+        c_ret.unwrap();
+        s_ret.unwrap();
+
+        wait_for_condition(
+            || {
+                let peer_mgr_client = peer_mgr_client.clone();
+                async move {
+                    let foreign_peer_map =
+                        peer_mgr_client.get_foreign_network_client().get_peer_map();
+                    if foreign_peer_map.list_peers_with_conn().await.len() != 1 {
+                        return false;
+                    }
+                    let Some(peer_id) = foreign_peer_map
+                        .list_peers_with_conn()
+                        .await
+                        .into_iter()
+                        .next()
+                    else {
+                        return false;
+                    };
+                    let Some(conns) = foreign_peer_map.list_peer_conns(peer_id).await else {
+                        return false;
+                    };
+                    conns.iter().any(|c| {
+                        c.secure_auth_level == SecureAuthLevel::SharedNodePubkeyVerified as i32
+                            && c.noise_local_static_pubkey.len() == 32
+                            && c.noise_remote_static_pubkey.len() == 32
+                    })
+                }
+            },
+            Duration::from_secs(10),
+        )
+        .await;
+
+        wait_for_condition(
+            || {
+                let peer_mgr_server = peer_mgr_server.clone();
+                async move {
+                    let foreigns = peer_mgr_server
+                        .get_foreign_network_manager()
+                        .list_foreign_networks()
+                        .await;
+                    let Some(entry) = foreigns.foreign_networks.get("user") else {
+                        return false;
+                    };
+                    entry.peers.iter().any(|p| {
+                        p.conns
+                            .iter()
+                            .any(|c| c.noise_local_static_pubkey.len() == 32)
+                    })
+                }
+            },
+            Duration::from_secs(10),
         )
         .await;
     }
