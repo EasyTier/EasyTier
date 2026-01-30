@@ -598,7 +598,7 @@ impl ForeignNetworkManager {
         {
             if new_added {
                 self.data
-                    .remove_network(&entry.network.network_name.clone());
+                    .remove_peer(peer_conn.get_peer_id(), &entry.network.network_name.clone());
             }
             let err = if entry.my_peer_id != peer_conn.get_my_peer_id() {
                 anyhow::anyhow!(

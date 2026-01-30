@@ -65,6 +65,7 @@ bytes = "1.5.0"
 pin-project-lite = "0.2.13"
 
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
+quinn-plaintext = { version = "0.3.0", optional = true}
 
 rustls = { version = "0.23.0", features = [
     "ring",
@@ -328,10 +329,11 @@ full = [
     "smoltcp",
     "tun",
     "socks5",
+    "quic",
     "magic-dns",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
-quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
+quic = ["dep:quinn", "dep:quinn-plaintext", "dep:rustls", "dep:rcgen"]
 kcp = ["dep:kcp-sys"]
 mimalloc = ["dep:mimalloc"]
 aes-gcm = ["dep:aes-gcm"]
