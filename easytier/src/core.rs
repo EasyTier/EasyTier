@@ -634,6 +634,20 @@ struct NetworkOptions {
         default_missing_value = "true"
     )]
     enable_file_transfer: Option<bool>,
+
+    #[arg(
+        long,
+        help = t!("core_clap.disable_file_transfer_relay").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_file_transfer_relay: Option<bool>,
+
+    #[arg(long, help = t!("core_clap.file_transfer_relay_size_limit").to_string())]
+    file_transfer_relay_size_limit: Option<u64>,
+
+    #[arg(long, help = t!("core_clap.file_transfer_foreign_network_relay_limit").to_string())]
+    file_transfer_foreign_network_relay_limit: Option<u64>,
 }
 
 #[derive(Parser, Debug)]
@@ -1017,6 +1031,15 @@ impl NetworkOptions {
         f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
         if let Some(enable_file_transfer) = self.enable_file_transfer {
             f.enable_file_transfer = enable_file_transfer;
+        }
+        if let Some(disable_file_transfer_relay) = self.disable_file_transfer_relay {
+            f.disable_file_transfer_relay = disable_file_transfer_relay;
+        }
+        if let Some(limit) = self.file_transfer_relay_size_limit {
+            f.file_transfer_relay_size_limit = limit;
+        }
+        if let Some(limit) = self.file_transfer_foreign_network_relay_limit {
+            f.file_transfer_foreign_network_relay_limit = limit;
         }
         f.disable_tcp_hole_punching = self
             .disable_tcp_hole_punching

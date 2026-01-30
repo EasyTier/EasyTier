@@ -13,7 +13,7 @@ use crate::{
         },
         rpc_types::{self, controller::BaseController},
     },
-    peers::{peer_rpc::PeerRpcManager, peer_manager::PeerManager},
+    peers::{peer_rpc::PeerRpcManager, peer_manager::PeerManager, route_trait::NextHopPolicy},
     common::PeerId,
 };
 use tokio::sync::OnceCell;
@@ -73,32 +73,31 @@ impl FileTransferRpc for FileTransferService {
             });
         }
 
-        // 2. Strict Identity Verification
+        // 2. Private-mode gate: only allow transfers on private-mode nodes.
         let sender_peer_id = request.sender_peer_id;
-        let my_identity = self.peer_manager.get_global_ctx().get_network_identity();
-        
-        let trusted_peers = self.peer_manager.get_peer_map().list_peers_own_foreign_network(&my_identity).await;
-        
-        // Also check if sender is directly connected and trusted (optimization/fallback) 
-        // But list_peers_own_foreign_network should cover it if routed properly.
-        // For strictness, if it's not in the trusted list, we reject.
-        // Note: list_peers_own_foreign_network relies on routing info. 
-        // If a peer is directly connected but not yet in routing table (unlikely if handshake done), might fail.
-        // However, we can also check direct peer map if needed, but PeerMap doesn't easily expose identity.
-        // We assume routing table is up to date for file transfer.
-        
-        if !trusted_peers.contains(&sender_peer_id) && sender_peer_id != self.my_peer_id {
-            tracing::warn!("Rejecting file transfer from {}: remote identity mismatch or unknown", request.sender_peer_id);
+        let flags = self.peer_manager.get_global_ctx().get_flags();
+        if !flags.private_mode {
+            tracing::warn!(
+                "Rejecting file transfer from {}: private mode is required",
+                request.sender_peer_id
+            );
             return Ok(TransferOfferResponse {
                 status: OfferStatus::Rejected.into(),
                 start_offset: 0,
-                message: "Security violation: Peer identity mismatch.".to_string(),
+                message: "File transfer is only allowed when private mode is enabled.".to_string(),
             });
         }
 
+        // Determine whether this is a direct P2P connection (route to sender is the sender itself).
+        let gateway_id = self
+            .peer_manager
+            .get_peer_map()
+            .get_gateway_peer_id(sender_peer_id, NextHopPolicy::LeastHop)
+            .await;
+        let is_p2p = matches!(gateway_id, Some(id) if id == sender_peer_id);
+
         // 3. Relay Policy Verification
         if !is_p2p {
-            let flags = peer_manager.get_global_ctx().get_flags();
             if flags.disable_file_transfer_relay {
                 return Ok(TransferOfferResponse {
                     status: OfferStatus::Rejected.into(),
@@ -125,17 +124,13 @@ impl FileTransferRpc for FileTransferService {
             // Check if relay is foreign (Public/Shared)
             // If gateway peer ID != sender peer ID, it is a relay.
             // We need to check the identity of the gateway peer.
-            if let Some(gateway_id) = peer_manager
-                .get_peer_map()
-                .get_gateway_peer_id(request.sender_peer_id, NextHopPolicy::LeastHop)
-                .await
-            {
+            if let Some(gateway_id) = gateway_id {
                 if gateway_id != request.sender_peer_id {
                     let mut is_foreign_relay = true; // Assume foreign if not found in our PeerMap
 
                     // PeerMap only contains peers valid in our network (same identity).
                     // If the gateway is in PeerMap, it is a Private Relay.
-                    if peer_manager.get_peer_map().has_peer(gateway_id) {
+                    if self.peer_manager.get_peer_map().has_peer(gateway_id) {
                         is_foreign_relay = false;
                     }
 
@@ -375,7 +370,7 @@ impl FileTransferService {
         use sha2::{Sha256, Digest};
         let mut file = File::open(path).await?;
         let mut hasher = Sha256::new();
-        let mut buffer = [0; 1024 * 1024]; // 1MB buffer
+        let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer on heap
 
         loop {
             let count = file.read(&mut buffer).await?;

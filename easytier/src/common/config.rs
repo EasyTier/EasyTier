@@ -59,6 +59,9 @@ pub fn gen_default_flags() -> Flags {
         disable_sym_hole_punching: false,
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
         enable_file_transfer: false,
+        disable_file_transfer_relay: false,
+        file_transfer_relay_size_limit: 0,
+        file_transfer_foreign_network_relay_limit: 4 * 1024 * 1024,
     }
 }
 
