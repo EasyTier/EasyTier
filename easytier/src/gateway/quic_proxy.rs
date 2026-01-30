@@ -15,6 +15,7 @@ use crate::proto::peer_rpc::KcpConnData as QuicConnData;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::packet_def::{PacketType, PeerManagerHeader, ZCPacket, ZCPacketType};
+use crate::tunnel::quic::{client_config, endpoint_config, server_config};
 use anyhow::{anyhow, Context, Error};
 use atomic_refcell::AtomicRefCell;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -23,11 +24,8 @@ use derivative::Derivative;
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
 use pnet::packet::ipv4::Ipv4Packet;
 use prost::Message;
-use quinn::congestion::CubicConfig;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
-use quinn::{AsyncUdpSocket, Endpoint, RecvStream, SendStream, TokioRuntime, UdpPoller};
-use quinn::{ClientConfig, EndpointConfig, ServerConfig, StreamId, TransportConfig, VarInt};
-use quinn_plaintext::{client_config, server_config};
+use quinn::{AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, TokioRuntime, UdpPoller};
 use std::future::Future;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -210,12 +208,6 @@ impl AsyncUdpSocket for QuicSocket {
 mod tests {
     use super::*;
     use bytes::Buf;
-    use quinn::congestion::BbrConfig;
-    use quinn::{ClientConfig, Endpoint, EndpointConfig, ServerConfig};
-    use quinn_plaintext::{client_config, server_config};
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tracing::info;
 
     fn init() {
         let _ = tracing_subscriber::fmt()
@@ -259,46 +251,10 @@ mod tests {
         (socket_a, socket_b)
     }
 
-    fn config() -> (EndpointConfig, ServerConfig, ClientConfig) {
-        let mut transport_config = TransportConfig::default();
-
-        transport_config.initial_mtu(65535);
-        transport_config.min_mtu(65535);
-
-        transport_config.stream_receive_window(VarInt::from_u32(64 * 1024 * 1024));
-        transport_config.receive_window(VarInt::from_u32(64 * 1024 * 1024));
-        transport_config.send_window(64 * 1024 * 1024);
-
-        transport_config.max_concurrent_bidi_streams(VarInt::from_u32(1024));
-        transport_config.max_concurrent_uni_streams(VarInt::from_u32(1024));
-
-        transport_config.datagram_receive_buffer_size(None);
-
-        transport_config.congestion_controller_factory(Arc::new(BbrConfig::default()));
-
-        transport_config.keep_alive_interval(Some(Duration::from_secs(15)));
-        transport_config.max_idle_timeout(Some(VarInt::from_u32(3_000).into()));
-
-        transport_config.enable_segmentation_offload(false);
-
-        transport_config.mtu_discovery_config(None);
-
-        let transport_config = Arc::new(transport_config);
-
-        let mut server_config = server_config();
-        server_config.transport = transport_config.clone();
-
-        let mut client_config = client_config();
-        client_config.transport_config(transport_config.clone());
-
-        let mut endpoint_config = EndpointConfig::default();
-        endpoint_config.max_udp_payload_size(65507).unwrap();
-
-        (endpoint_config, server_config, client_config)
-    }
-
     fn endpoint() -> (Endpoint, Endpoint) {
-        let (endpoint_config, server_config, client_config) = config();
+        let endpoint_config = endpoint_config();
+        let server_config = server_config();
+        let client_config = client_config();
 
         // 1. 创建内存 Socket 对
         let (socket_client, socket_server) = make_socket_pair();
@@ -1174,41 +1130,6 @@ impl QuicProxy {
         }
     }
 
-    fn new_config() -> (EndpointConfig, ServerConfig, ClientConfig) {
-        let mut transport_config = TransportConfig::default();
-
-        // TODO: subject to change, PR #1831
-        transport_config.stream_receive_window(VarInt::from_u32(2 * 1024 * 1024));
-        transport_config.receive_window(VarInt::from_u32(256 * 1024 * 1024));
-        transport_config.send_window(256 * 1024 * 1024);
-
-        transport_config.max_concurrent_bidi_streams(VarInt::from_u32(1024));
-        transport_config.max_concurrent_uni_streams(VarInt::from_u32(0));
-
-        transport_config.datagram_receive_buffer_size(None);
-
-        transport_config.keep_alive_interval(Some(Duration::from_secs(5)));
-        transport_config.max_idle_timeout(Some(VarInt::from_u32(30_000).into()));
-
-        transport_config.initial_mtu(1200);
-        transport_config.min_mtu(1200);
-
-        transport_config.congestion_controller_factory(Arc::new(CubicConfig::default()));
-
-        let transport_config = Arc::new(transport_config);
-
-        let mut server_config = server_config();
-        server_config.transport = transport_config.clone();
-
-        let mut client_config = client_config();
-        client_config.transport_config(transport_config.clone());
-
-        let mut endpoint_config = EndpointConfig::default();
-        endpoint_config.max_udp_payload_size(1500).unwrap();
-
-        (endpoint_config, server_config, client_config)
-    }
-
     pub async fn run(&mut self, src: bool, dst: bool) {
         trace!("quic proxy starting");
 
@@ -1238,15 +1159,14 @@ impl QuicProxy {
             margins: (header.len(), 0).into(),
         };
 
-        let (endpoint_config, server_config, client_config) = Self::new_config();
         let mut endpoint = Endpoint::new_with_abstract_socket(
-            endpoint_config,
-            Some(server_config),
+            endpoint_config(),
+            Some(server_config()),
             Arc::new(socket),
             Arc::new(TokioRuntime),
         )
         .unwrap();
-        endpoint.set_default_client_config(client_config);
+        endpoint.set_default_client_config(client_config());
         self.endpoint = Some(endpoint.clone());
 
         let peer_mgr = self.peer_mgr.clone();
