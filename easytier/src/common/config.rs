@@ -24,6 +24,7 @@ use super::env_parser;
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub fn gen_default_flags() -> Flags {
+    #[allow(deprecated)]
     Flags {
         default_protocol: "tcp".to_string(),
         dev_name: "".to_string(),
@@ -60,7 +61,7 @@ pub fn gen_default_flags() -> Flags {
         disable_sym_hole_punching: false,
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
 
-        ..Default::default()
+        quic_listen_port: u32::MAX,
     }
 }
 

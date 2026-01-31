@@ -123,6 +123,7 @@ fn is_foreign_network_info_newer(
 }
 
 impl RoutePeerInfo {
+    #[allow(deprecated)]
     pub fn new() -> Self {
         Self {
             peer_id: 0,
@@ -144,7 +145,7 @@ impl RoutePeerInfo {
             ipv6_addr: None,
             groups: Vec::new(),
 
-            ..Default::default()
+            quic_port: None,
         }
     }
 
