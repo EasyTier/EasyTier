@@ -6,6 +6,7 @@ use crate::{
         file_transfer::{
             FileTransferRpc, StartTransferRequest, StartTransferResponse, TransferChunkRequest,
             TransferChunkResponse, TransferOfferRequest, TransferOfferResponse,
+            ListTransfersRequest, ListTransfersResponse,
         },
         rpc_types::controller::BaseController,
     },
@@ -46,6 +47,17 @@ impl FileTransferRpc for FileTransferManageRpcService {
     ) -> crate::proto::rpc_types::error::Result<TransferChunkResponse> {
         // Similarly, likely not used via Manage API
         Err(crate::proto::rpc_types::error::Error::ExecutionError(anyhow::anyhow!("Not implemented for Manage API")))
+    }
+
+    async fn list_transfers(
+        &self,
+        ctrl: Self::Controller,
+        req: ListTransfersRequest,
+    ) -> crate::proto::rpc_types::error::Result<ListTransfersResponse> {
+        super::get_instance_service(&self.instance_manager, &req.instance)?
+            .get_file_transfer_service()
+            .list_transfers(ctrl, req)
+            .await
     }
 
     async fn start_transfer(

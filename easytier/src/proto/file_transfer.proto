@@ -50,6 +50,37 @@ service FileTransferRpc {
 
     // 3. Local Control: CLI tells Core to start a transfer
     rpc StartTransfer(StartTransferRequest) returns (StartTransferResponse);
+
+    // 4. Local Control: List active transfers
+    rpc ListTransfers(ListTransfersRequest) returns (ListTransfersResponse);
+}
+
+enum TransferState {
+    QUEUED = 0;
+    IN_PROGRESS = 1;
+    COMPLETED = 2;
+    FAILED = 3;
+}
+
+message TransferInfo {
+    string transfer_id = 1;
+    string file_name = 2;
+    uint64 file_size = 3;
+    uint64 transferred_bytes = 4;
+    uint64 speed = 5; // bytes per second
+    TransferState status = 6;
+    string error_message = 7;
+    bool is_sender = 8;
+    string peer_id = 9; // Peer ID of the other side (sender or receiver)
+    uint64 start_time = 10;
+}
+
+message ListTransfersRequest {
+    api.instance.InstanceIdentifier instance = 1;
+}
+
+message ListTransfersResponse {
+    repeated TransferInfo transfers = 1;
 }
 
 message StartTransferRequest {

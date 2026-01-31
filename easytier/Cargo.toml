@@ -165,6 +165,8 @@ terminal_size = "0.4"
 unicode-width = "0.1"
 
 base64 = "0.22"
+indicatif = "0.17"
+
 
 mimalloc = { version = "*", optional = true }
 

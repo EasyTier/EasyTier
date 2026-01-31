@@ -611,6 +611,7 @@ impl Instance {
 
         let file_transfer_service = Arc::new(FileTransferService::new(peer_manager.clone(), peer_manager.my_peer_id()));
         file_transfer_service.set_peer_rpc_mgr(peer_manager.get_peer_rpc_mgr());
+        file_transfer_service.set_self_ref(Arc::downgrade(&file_transfer_service));
 
         Instance {
             inst_name: global_ctx.inst_name.clone(),

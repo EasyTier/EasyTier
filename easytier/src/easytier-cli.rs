@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::PathBuf,
     str::FromStr,
-    time::Duration,
+    time::{Duration, Instant},
     vec,
 };
 
@@ -58,11 +58,15 @@ use easytier::{
         peer_rpc::{GetGlobalPeerMapRequest, PeerCenterRpc, PeerCenterRpcClientFactory},
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
-        file_transfer::{FileTransferRpc, FileTransferRpcClientFactory, StartTransferRequest},
+        file_transfer::{
+            FileTransferRpc, FileTransferRpcClientFactory, StartTransferRequest, ListTransfersRequest, TransferState,
+        },
     },
     tunnel::tcp::TcpTunnelConnector,
     utils::{cost_to_str, PeerRoutePair},
 };
+use indicatif::{ProgressBar, ProgressStyle};
+
 
 rust_i18n::i18n!("locales", fallback = "en");
 
@@ -358,6 +362,8 @@ enum FileSubCommand {
         #[arg(help = "File path")]
         path: PathBuf,
     },
+    #[command(about = "list active file transfers")]
+    List,
 }
 
 #[derive(Args, Debug)]
@@ -590,6 +596,125 @@ impl CommandHandler<'_> {
         }).await?;
 
         println!("Transfer started with ID: {}", resp.transfer_id);
+        
+        // Polling loop for progress
+        let pb = ProgressBar::new(0);
+        pb.set_style(ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+
+        let mut first_update = true;
+        let mut last_progress = Instant::now();
+        let mut last_transferred = 0u64;
+        let mut last_status = TransferState::InProgress as i32;
+
+        loop {
+            let req = ListTransfersRequest {
+                instance: Some(self.instance_selector.clone()),
+            };
+            let list_resp = client.list_transfers(BaseController::default(), req).await?;
+            
+            if let Some(transfer) = list_resp.transfers.iter().find(|t| t.transfer_id == resp.transfer_id) {
+                if first_update {
+                    pb.set_length(transfer.file_size);
+                    println!("Sending file: {}", transfer.file_name);
+                    first_update = false;
+                }
+                
+                pb.set_position(transfer.transferred_bytes);
+
+                if transfer.transferred_bytes != last_transferred
+                    || transfer.status != last_status
+                {
+                    last_progress = Instant::now();
+                    last_transferred = transfer.transferred_bytes;
+                    last_status = transfer.status;
+                } else if last_progress.elapsed() > Duration::from_secs(30) {
+                    pb.finish_with_message("Transfer stalled (no progress for 30s)");
+                    return Err(anyhow::anyhow!(
+                        "Transfer stalled: no progress for 30s"
+                    ));
+                }
+
+                if transfer.status == TransferState::Completed as i32 {
+                    pb.finish_with_message("Transfer completed");
+                    break;
+                } else if transfer.status == TransferState::Failed as i32 {
+                    pb.finish_with_message(format!("Transfer failed: {}", transfer.error_message));
+                    break;
+                }
+            } else {
+                pb.finish_with_message("Transfer not found (maybe completed or rejected?)");
+                break;
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_file_list(&self) -> Result<(), Error> {
+        let client = self.get_file_transfer_client().await?;
+        let req = ListTransfersRequest {
+            instance: Some(self.instance_selector.clone()),
+        };
+        let resp = client.list_transfers(BaseController::default(), req).await?;
+
+        if resp.transfers.is_empty() {
+            println!("No active transfers.");
+            return Ok(());
+        }
+
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct TransferItem {
+            id: String,
+            file: String,
+            role: String,
+            peer: String,
+            size: String,
+            progress: String,
+            speed: String,
+            status: String,
+            message: String,
+        }
+
+        let items: Vec<TransferItem> = resp.transfers.iter().map(|t| {
+            let role = if t.is_sender { "Sender" } else { "Receiver" };
+            let status = match TransferState::try_from(t.status).unwrap_or(TransferState::Queued) {
+                TransferState::Queued => "Queued",
+                TransferState::InProgress => "InProgress",
+                TransferState::Completed => "Completed",
+                TransferState::Failed => "Failed",
+            };
+            let progress = if t.file_size > 0 {
+                format!("{:.1}%", (t.transferred_bytes as f64 / t.file_size as f64) * 100.0)
+            } else {
+                "0%".to_string()
+            };
+
+            TransferItem {
+                id: t.transfer_id.clone(),
+                file: t.file_name.clone(),
+                role: role.to_string(),
+                peer: t.peer_id.clone(),
+                size: format_size(t.file_size, humansize::DECIMAL),
+                progress,
+                speed: format!("{}/s", format_size(t.speed, humansize::DECIMAL)),
+                status: status.to_string(),
+                message: t.error_message.clone(),
+            }
+        }).collect();
+
+        print_output(
+            &items,
+            self.output_format,
+            &[],
+            &[],
+            self.no_trunc,
+        )?;
+
         Ok(())
     }
 
@@ -2262,6 +2387,9 @@ async fn main() -> Result<(), Error> {
         SubCommand::File(file_args) => match file_args.sub_command {
             FileSubCommand::Send { peer, path } => {
                 handler.handle_file_send(&peer, &path).await?;
+            }
+            FileSubCommand::List => {
+                handler.handle_file_list().await?;
             }
         }
     }
