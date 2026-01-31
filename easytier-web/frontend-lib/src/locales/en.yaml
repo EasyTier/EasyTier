@@ -177,6 +177,19 @@ mtu_help: |
   MTU of the TUN device, default is 1380 for non-encryption, 1360 for encryption. Range:400-1380
 mtu_placeholder: Leave blank as default value 1380
 
+compression_algo: Compression Algorithm
+compression_algo_help: |
+  Data compression algorithm for inter-node communication. Compression reduces bandwidth usage but increases CPU usage.
+  LZ4: Fastest, suitable for low-performance devices; Zstd: Balanced, suitable for most scenarios; Brotli: High compression ratio. Default is none.
+compression_algo_placeholder: Select compression algorithm
+
+encryption_algo: Encryption Algorithm
+encryption_algo_help: |
+  Encryption algorithm for inter-node communication. Different algorithms have different performance characteristics.
+  AES-GCM/AES-256-GCM: Default, hardware accelerated on most CPUs; ChaCha20: Suitable for devices without AES-NI; XOR: Lightweight obfuscation.
+  Note: OpenSSL-related algorithms require special compiled versions.
+encryption_algo_placeholder: Select encryption algorithm
+
 mapped_listeners: Map Listeners
 mapped_listeners_help: |
   Manually specify the public address of the listener, other nodes can use this address to connect to this node.
