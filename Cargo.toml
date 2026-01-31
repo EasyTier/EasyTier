@@ -1,17 +1,15 @@
 [workspace]
 resolver = "2"
-members = [
-    "easytier",
+members = ["easytier"]
+default-members = ["easytier"]
+exclude = [
+    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
     "easytier-gui/src-tauri",
     "easytier-rpc-build",
     "easytier-web",
     "easytier-contrib/easytier-ffi",
     "easytier-contrib/easytier-uptime",
     "easytier-contrib/easytier-android-jni",
-]
-default-members = ["easytier", "easytier-web"]
-exclude = [
-    "easytier-contrib/easytier-ohrs", # it needs ohrs sdk
 ]
 
 [profile.dev]
