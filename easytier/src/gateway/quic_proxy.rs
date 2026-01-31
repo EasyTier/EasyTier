@@ -40,7 +40,7 @@ use tokio::io::{join, AsyncReadExt, Join};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::task::JoinSet;
-use tokio::time::Instant;
+use tokio::time::{timeout, Instant};
 use tokio::{join, pin, select};
 use tokio_util::sync::PollSender;
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -609,13 +609,24 @@ impl QuicStreamReceiver {
     }
 
     async fn read_stream_header(stream: &mut QuicStream) -> Result<Bytes, Error> {
-        let len = stream.read_u16().await?;
+        const STREAM_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+        const STREAM_HEADER_LIMIT: u16 = 512;
+        let len = timeout(STREAM_HEADER_READ_TIMEOUT, stream.read_u16())
+            .await
+            .context("timeout reading header length")??;
+        if len > STREAM_HEADER_LIMIT {
+            return Err(anyhow::anyhow!("stream header too long"));
+        }
         let mut header = Vec::with_capacity(len as usize);
-        stream
-            .reader_mut()
-            .take(len as u64)
-            .read_to_end(&mut header)
-            .await?;
+        timeout(
+            STREAM_HEADER_READ_TIMEOUT,
+            stream
+                .reader_mut()
+                .take(len as u64)
+                .read_to_end(&mut header),
+        )
+        .await
+        .context("timeout reading header")??;
         Ok(header.into())
     }
 
