@@ -442,7 +442,7 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
         // TODO: currently latency between public server cannot be calculated because one public-server pair
         // has no connection between them. (hard to get latency from peer manager because it's hard to transfrom the peer id)
         // but it's fine because we don't want to too much traffic between public servers.
-        let peers = self.peer_map.list_peers().await;
+        let peers = self.peer_map.list_peers();
         let mut ret = PeerInfoForGlobalMap::default();
         for peer in peers {
             if let Some(conns) = self.peer_map.list_peer_conns(peer).await {

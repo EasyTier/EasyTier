@@ -115,7 +115,7 @@ async fn foreign_mgr_stress_test() {
                 i,
                 p.list_routes().await,
                 p.list_global_foreign_network().await.foreign_networks.len(),
-                p.get_peer_map().list_peers().await
+                p.get_peer_map().list_peers()
             );
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;

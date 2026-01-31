@@ -501,11 +501,15 @@ impl ForeignNetworkManagerData {
 
     fn remove_network(&self, network_name: &String) {
         let _l = self.lock.lock().unwrap();
-        self.peer_network_map.iter().for_each(|v| {
-            v.value().remove(network_name);
-        });
-        self.peer_network_map.retain(|_, v| !v.is_empty());
-        self.network_peer_maps.remove(network_name);
+        if let Some(old) = self.network_peer_maps.remove(network_name) {
+            let to_remove_peers = old.1.peer_map.list_peers();
+            for p in to_remove_peers {
+                self.peer_network_map.remove_if(&p, |_, v| {
+                    v.remove(network_name);
+                    v.is_empty()
+                });
+            }
+        }
         self.network_peer_last_update.remove(network_name);
     }
 
@@ -734,7 +738,7 @@ impl ForeignNetworkManager {
                 my_peer_id_for_this_network: item.my_peer_id,
                 peers: Default::default(),
             };
-            for peer in item.peer_map.list_peers().await {
+            for peer in item.peer_map.list_peers() {
                 let peer_info = PeerInfo {
                     peer_id: peer,
                     conns: item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]),
@@ -960,7 +964,6 @@ pub mod tests {
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
-                .await
         );
         assert_eq!(
             vec![pm_center
@@ -971,7 +974,6 @@ pub mod tests {
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
-                .await
         );
 
         assert_eq!(2, pma_net1.list_routes().await.len());

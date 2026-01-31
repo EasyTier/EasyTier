@@ -122,7 +122,7 @@ impl GlobalCtx {
         let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = config_fs.get_hostname();
 
-        let (event_bus, _) = tokio::sync::broadcast::channel(8);
+        let (event_bus, _) = tokio::sync::broadcast::channel(16);
 
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
 
