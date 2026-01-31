@@ -14,7 +14,7 @@ use anyhow::Context;
 
 use quinn::{
     congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig, UdpPoller, VarInt,
+    EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
 };
 
 use super::{
@@ -26,7 +26,7 @@ pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
 
     config
-        .max_concurrent_bidi_streams(VarInt::MAX)
+        .max_concurrent_bidi_streams(u8::MAX.into())
         .max_concurrent_uni_streams(0u8.into())
         .keep_alive_interval(Some(Duration::from_secs(5)))
         .initial_mtu(1200)
