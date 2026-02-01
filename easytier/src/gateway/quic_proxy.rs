@@ -28,6 +28,7 @@ use pnet::packet::ipv4::Ipv4Packet;
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
 use quinn::{AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, TokioRuntime, UdpPoller};
+use std::cmp::min;
 use std::future::Future;
 use std::io::IoSliceMut;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -117,14 +118,16 @@ impl AsyncUdpSocket for QuicSocket {
 
                 let mut payload = BytesMut::with_capacity(chunks.len() * segment);
 
+                // The length of the last chunk could be smaller than segment_size
                 for chunk in chunks {
+                    let len = chunk.len();
                     unsafe {
                         copy_nonoverlapping(
                             chunk.as_ptr(),
                             payload.as_mut_ptr().add(self.margins.header),
-                            segment_size,
+                            len,
                         );
-                        payload.advance_mut(segment);
+                        payload.advance_mut(len + self.margins.len());
                     }
                 }
 
@@ -494,9 +497,10 @@ impl QuicPacketSender {
                 .expect("segment size must be set for outgoing quic packet");
 
             while !payload.is_empty() {
-                let mut payload = payload.split_to(segment);
+                let len = min(payload.len(), segment);
+                let mut payload = payload.split_to(len);
                 payload[..self.margins.header].copy_from_slice(&self.header);
-                payload.truncate(segment - self.margins.trailer);
+                payload.truncate(len - self.margins.trailer);
                 let mut packet = ZCPacket::new_from_buf(payload, self.zc_packet_type);
 
                 packet.fill_peer_manager_hdr(
