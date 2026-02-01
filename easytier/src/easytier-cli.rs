@@ -659,8 +659,10 @@ impl CommandHandler<'_> {
 
                 if transfer.status == TransferState::Completed as i32 {
                     if let Some(ref progress_bar) = pb {
-                        progress_bar.finish_with_message("Transfer completed");
+                        let size_str = humansize::format_size(transfer.file_size, humansize::DECIMAL);
+                        progress_bar.finish_with_message(format!("✓ Transfer completed successfully! ({} total)", size_str));
                     }
+                    println!("\n✓ File '{}' has been sent successfully!", transfer.file_name);
                     break;
                 } else if transfer.status == TransferState::Failed as i32 {
                     if let Some(ref progress_bar) = pb {
