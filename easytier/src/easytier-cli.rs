@@ -598,12 +598,7 @@ impl CommandHandler<'_> {
         println!("Transfer started with ID: {}", resp.transfer_id);
         
         // Polling loop for progress
-        let pb = ProgressBar::new(0);
-        pb.set_style(ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
-            .unwrap()
-            .progress_chars("#>-"));
-
+        let mut pb: Option<ProgressBar> = None;
         let mut first_update = true;
         let mut last_progress = Instant::now();
         let mut last_transferred = 0u64;
@@ -617,12 +612,35 @@ impl CommandHandler<'_> {
             
             if let Some(transfer) = list_resp.transfers.iter().find(|t| t.transfer_id == resp.transfer_id) {
                 if first_update {
-                    pb.set_length(transfer.file_size);
                     println!("Sending file: {}", transfer.file_name);
+                    
+                    // Check if this is a resumed transfer
+                    if transfer.transferred_bytes > 0 {
+                        let percentage = if transfer.file_size > 0 {
+                            (transfer.transferred_bytes as f64 / transfer.file_size as f64) * 100.0
+                        } else {
+                            0.0
+                        };
+                        println!("Resuming from {} ({:.1}%)", 
+                            format_size(transfer.transferred_bytes, humansize::DECIMAL),
+                            percentage
+                        );
+                    }
+                    
+                    // Create progress bar only after we have metadata
+                    let progress_bar = ProgressBar::new(transfer.file_size);
+                    progress_bar.set_style(ProgressStyle::default_bar()
+                        .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+                        .unwrap()
+                        .progress_chars("#>-"));
+                    progress_bar.set_position(transfer.transferred_bytes);
+                    pb = Some(progress_bar);
                     first_update = false;
                 }
                 
-                pb.set_position(transfer.transferred_bytes);
+                if let Some(ref progress_bar) = pb {
+                    progress_bar.set_position(transfer.transferred_bytes);
+                }
 
                 if transfer.transferred_bytes != last_transferred
                     || transfer.status != last_status
@@ -631,21 +649,29 @@ impl CommandHandler<'_> {
                     last_transferred = transfer.transferred_bytes;
                     last_status = transfer.status;
                 } else if last_progress.elapsed() > Duration::from_secs(30) {
-                    pb.finish_with_message("Transfer stalled (no progress for 30s)");
+                    if let Some(ref progress_bar) = pb {
+                        progress_bar.finish_with_message("Transfer stalled (no progress for 30s)");
+                    }
                     return Err(anyhow::anyhow!(
                         "Transfer stalled: no progress for 30s"
                     ));
                 }
 
                 if transfer.status == TransferState::Completed as i32 {
-                    pb.finish_with_message("Transfer completed");
+                    if let Some(ref progress_bar) = pb {
+                        progress_bar.finish_with_message("Transfer completed");
+                    }
                     break;
                 } else if transfer.status == TransferState::Failed as i32 {
-                    pb.finish_with_message(format!("Transfer failed: {}", transfer.error_message));
+                    if let Some(ref progress_bar) = pb {
+                        progress_bar.finish_with_message(format!("Transfer failed: {}", transfer.error_message));
+                    }
                     break;
                 }
             } else {
-                pb.finish_with_message("Transfer not found (maybe completed or rejected?)");
+                if let Some(ref progress_bar) = pb {
+                    progress_bar.finish_with_message("Transfer not found (maybe completed or rejected?)");
+                }
                 break;
             }
 
