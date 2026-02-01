@@ -40,6 +40,7 @@ derivative = "2.2.0"
 derive_more = {version = "2.1.1", features = ["full"]}
 console-subscriber = { version = "0.4.1", optional = true }
 regex = "1.8"
+paste = "1.0"
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"

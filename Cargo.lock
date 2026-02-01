@@ -2258,6 +2258,7 @@ dependencies = [
  "openssl",
  "ordered_hash_map",
  "parking_lot",
+ "paste",
  "percent-encoding",
  "petgraph 0.8.1",
  "pin-project-lite",
