@@ -11,7 +11,7 @@ use api::routes::create_routes;
 use clap::Parser;
 use config::AppConfig;
 use db::{operations::NodeOperations, Db};
-use easytier::utils::init_logger;
+use easytier::common::log;
 use health_checker::HealthChecker;
 use health_checker_manager::HealthCheckerManager;
 use std::env;
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     let config = AppConfig::default();
 
     // 初始化日志
-    let _ = init_logger(&config.logging, false);
+    let _ = log::init(&config.logging, false);
 
     // 解析命令行参数
     let args = Args::parse();

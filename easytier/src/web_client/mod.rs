@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     common::{
-        config::TomlConfigLoader, global_ctx::GlobalCtx, scoped_task::ScopedTask,
+        config::TomlConfigLoader, global_ctx::GlobalCtx, log, scoped_task::ScopedTask,
         set_default_machine_id, stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
@@ -87,18 +87,16 @@ impl WebClient {
         loop {
             let conn = match connector.connect().await {
                 Ok(conn) => conn,
-                Err(e) => {
-                    println!(
-                        "Failed to connect to the server ({}), retrying in 5 seconds...",
-                        e
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                Err(error) => {
+                    let wait = 1;
+                    log::warn!(%error, "Failed to connect to the server, retrying in {} seconds...", wait);
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     continue;
                 }
             };
 
             connected.store(true, Ordering::Release);
-            println!("Successfully connected to {:?}", conn.info());
+            log::info!("Successfully connected to {:?}", conn.info());
 
             let mut session = session::Session::new(conn, controller.clone());
             session.wait().await;

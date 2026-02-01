@@ -12,10 +12,11 @@ use easytier::{
         config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
         constants::EASYTIER_VERSION,
         error::Error,
+        log,
         network::{local_ipv4, local_ipv6},
     },
     tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener},
-    utils::{init_logger, setup_panic_handler},
+    utils::setup_panic_handler,
 };
 
 use mimalloc::MiMalloc;
@@ -179,7 +180,7 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    init_logger(&cli, false).unwrap();
+    log::init(&cli, false).unwrap();
 
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();

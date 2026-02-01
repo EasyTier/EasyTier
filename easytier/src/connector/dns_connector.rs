@@ -5,6 +5,7 @@ use crate::{
         dns::{resolve_txt_record, RESOLVER},
         error::Error,
         global_ctx::ArcGlobalCtx,
+        log,
     },
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, PROTO_PORT_OFFSET},
 };
@@ -131,7 +132,7 @@ impl DNSTunnelConnector {
                         let parsed_record = Self::handle_one_srv_record(record, protocol);
                         tracing::info!(?parsed_record, ?srv_domain, "parsed_record");
                         if let Err(e) = &parsed_record {
-                            eprintln!("got invalid srv record {:?}", e);
+                            log::warn!("got invalid srv record {:?}", e);
                             continue;
                         }
                         responses.insert(parsed_record.unwrap());

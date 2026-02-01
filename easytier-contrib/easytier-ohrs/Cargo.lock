@@ -1130,6 +1130,7 @@ dependencies = [
  "humansize",
  "humantime-serde",
  "idna",
+ "indoc",
  "kcp-sys",
  "machine-uid",
  "multimap",
@@ -1142,6 +1143,7 @@ dependencies = [
  "once_cell",
  "ordered_hash_map",
  "parking_lot",
+ "paste",
  "percent-encoding",
  "petgraph 0.8.2",
  "pin-project-lite",
@@ -2195,6 +2197,15 @@ checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.0",
+]
+
+[[package]]
+name = "indoc"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
