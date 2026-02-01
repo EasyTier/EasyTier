@@ -965,14 +965,14 @@ mod tests {
             .try_init();
     }
 
-    /// 辅助函数：创建一对相互连接的 QuicSocket
-    /// socket_a 发送的数据会进入 socket_b 的 rx，反之亦然。
+    /// Helper function: Create a pair of interconnected QuicSockets.
+    /// Data sent by socket_a will enter socket_b's rx, and vice versa.
     fn make_socket_pair() -> (QuicSocket, QuicSocket) {
         let addr_a: SocketAddr = "127.0.0.1:5000".parse().unwrap();
         let addr_b: SocketAddr = "127.0.0.1:5001".parse().unwrap();
 
-        // 两个方向的通道：A->B 和 B->A
-        // 容量给够，防止高并发时丢包
+        // Bidirectional channels: A->B and B->A
+        // Sufficient capacity to prevent packet loss during high concurrency
         let (tx_a_out, rx_a_out) = channel::<QuicPacket>(50_000);
         let (tx_b_in, rx_b_in) = channel::<QuicPacket>(50_000);
 
@@ -1006,12 +1006,12 @@ mod tests {
         let server_config = server_config();
         let client_config = client_config();
 
-        // 1. 创建内存 Socket 对
+        // 1. Create an in-memory Socket pair
         let (socket_client, socket_server) = make_socket_pair();
         let socket_client = Arc::new(socket_client);
         let socket_server = Arc::new(socket_server);
 
-        // 3. 配置 Client Endpoint
+        // 3. Configure Client Endpoint
         let mut client_endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config.clone(),
             Some(server_config.clone()),
@@ -1021,7 +1021,7 @@ mod tests {
         .unwrap();
         client_endpoint.set_default_client_config(client_config.clone());
 
-        // 2. 配置 Server Endpoint
+        // 2. Configure Server Endpoint
         let mut server_endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config.clone(),
             Some(server_config.clone()),
@@ -1042,25 +1042,25 @@ mod tests {
     ) {
         const BATCH_SIZE: usize = 128;
         tokio::spawn(async move {
-            // 关键优化：使用 buffer 批量处理
+            // Key optimization: use buffer for batch processing
             let mut buffer = Vec::with_capacity(BATCH_SIZE);
 
-            // recv_many 会在有数据时唤醒，一次最多拿 100 个包
-            // 这比每次拿 1 个包减少了 99 次上下文切换开销
+            // recv_many wakes up when data is available, taking up to 100 packets at a time
+            // This reduces context switch overhead by 99 times compared to taking 1 packet at a time
             while rx.recv_many(&mut buffer, BATCH_SIZE).await > 0 {
                 for packet in buffer.iter_mut() {
-                    // 【过滤逻辑】：在此处修改地址
+                    // [Filter Logic]: Modify address here
                     packet.addr = addr;
                     packet.payload.advance(margins.header);
                     packet
                         .payload
                         .truncate(packet.payload.len() - margins.trailer);
                 }
-                // 批量转发
+                // Batch forward
                 for packet in buffer.drain(..) {
                     if let Err(e) = tx.send(packet).await {
                         info!("{:?}", e);
-                        return; // 通道已关闭
+                        return; // Channel closed
                     }
                 }
             }
@@ -1072,7 +1072,7 @@ mod tests {
         let (client_endpoint, server_endpoint) = endpoint();
         let server_addr = server_endpoint.local_addr()?;
 
-        // 4. Server 接收任务
+        // 4. Server receive task
         let server_handle = tokio::spawn(async move {
             println!("Server: Waiting for connection...");
             if let Some(conn) = server_endpoint.accept().await {
@@ -1082,16 +1082,16 @@ mod tests {
                     connection.remote_address()
                 );
 
-                // 接收双向流
+                // Accept bidirectional stream
                 let (mut send, mut recv) = connection.accept_bi().await.unwrap();
 
-                // 读取数据
+                // Read data
                 let mut buf = vec![0u8; 10];
                 recv.read_exact(&mut buf).await.unwrap();
                 assert_eq!(&buf, b"ping______");
                 println!("Server: Received 'ping______'");
 
-                // 发送回复
+                // Send reply
                 send.write_all(b"pong______").await.unwrap();
                 send.finish().unwrap();
 
@@ -1099,26 +1099,26 @@ mod tests {
             }
         });
 
-        // 5. Client 发起连接
-        // 注意：这里的 connect 地址必须是 V4，因为你的 try_send 限制了 SocketAddr::V4
+        // 5. Client initiates connection
+        // Note: The connect address here must be V4, because try_send is limited to SocketAddr::V4
         println!("Client: Connecting...");
         let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
         println!("Client: Connected!");
 
-        // 打开流并发送数据
+        // Open a stream and send data
         let (mut send, mut recv) = connection.open_bi().await?;
         send.write_all(b"ping______").await?;
         send.finish()?;
 
-        // 读取回复
+        // Read reply
         let mut buf = vec![0u8; 10];
         recv.read_exact(&mut buf).await?;
         assert_eq!(&buf, b"pong______");
         println!("Client: Received 'pong______'");
 
-        // 6. 清理
+        // 6. Cleanup
         connection.close(0u32.into(), b"done");
-        // 等待 Server 结束
+        // Wait for Server to finish
         let _ = tokio::time::timeout(Duration::from_secs(2), server_handle).await;
 
         Ok(())
@@ -1127,27 +1127,27 @@ mod tests {
     #[tokio::test]
     #[ignore = "consumes massive memory (~16GB)"]
     async fn test_bandwidth() -> anyhow::Result<()> {
-        // --- 3. 定义测试数据量 ---
-        // 测试总量: 512 MB
+        // --- 3. Define test data volume ---
+        // Total test size: 512 MB
         const TOTAL_SIZE: usize = 32768 * 1024 * 1024;
-        // 每次写入块大小: 1 MB (模拟大块写入)
+        // Write chunk size: 1 MB (simulate large chunk write)
         const CHUNK_SIZE: usize = 1024 * 1024;
 
         let (client_endpoint, server_endpoint) = endpoint();
         let server_addr = server_endpoint.local_addr()?;
 
-        // --- 4. Server 端 (接收并计时) ---
+        // --- 4. Server side (receive and timing) ---
         let server_handle = tokio::spawn(async move {
             if let Some(conn) = server_endpoint.accept().await {
                 let connection = conn.await.unwrap();
-                // 接收单向流
+                // Accept unidirectional stream
                 let mut recv = connection.accept_uni().await.unwrap();
 
                 let start = std::time::Instant::now();
                 let mut received = 0;
 
-                // 循环读取直到流结束
-                // read_chunk 比 read_exact 性能稍好，因为它减少了内部 buffer拷贝
+                // Loop read until the stream ends
+                // read_chunk performs slightly better than read_exact because it reduces internal buffer copying
                 while let Some(chunk) = recv.read_chunk(usize::MAX, true).await.unwrap() {
                     received += chunk.bytes.len();
                 }
@@ -1166,40 +1166,40 @@ mod tests {
                 println!("  Throughput: {:.2} Gbps ({:.2} Mbps)", gbps, mbps);
                 println!("--------------------------------------------------");
 
-                // 保持连接直到 Client 断开
+                // Keep connection until the Client disconnects
                 let _ = connection.closed().await;
             }
         });
 
-        // --- 5. Client 端 (发送) ---
+        // --- 5. Client side (send) ---
         let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
         let mut send = connection.open_uni().await?;
 
-        // 构造一个 1MB 的数据块
+        // Construct a 1MB data chunk
         let data_chunk = vec![0u8; CHUNK_SIZE];
-        let bytes_data = Bytes::from(data_chunk); // 使用 Bytes 避免重复分配
+        let bytes_data = Bytes::from(data_chunk); // Use Bytes to avoid repeated allocation
 
         println!("Client: Start sending {} MB...", TOTAL_SIZE / 1024 / 1024);
         let start_send = std::time::Instant::now();
 
         let chunks = TOTAL_SIZE / CHUNK_SIZE;
         for _ in 0..chunks {
-            // write_chunk 配合 Bytes 使用效率最高
+            // write_chunk is most efficient when used with Bytes
             send.write_chunk(bytes_data.clone()).await?;
         }
 
-        // 告诉对端发送完毕
+        // Tell peer sending is finished
         send.finish()?;
-        // 等待流彻底关闭（确保对方收到了 FIN）
+        // Wait for the stream to close completely (ensure peer received FIN)
         send.stopped().await?;
 
         let send_duration = start_send.elapsed();
         println!("Client: Send finished in {:.2?}", send_duration);
 
-        // 关闭连接
+        // Close connection
         connection.close(0u32.into(), b"done");
 
-        // 等待 Server 打印结果
+        // Wait for Server to print results
         let _ = tokio::time::timeout(Duration::from_secs(5), server_handle).await;
 
         Ok(())
@@ -1208,14 +1208,14 @@ mod tests {
     #[tokio::test]
     #[ignore = "consumes massive memory (~16GB)"]
     async fn test_bandwidth_parallel() -> anyhow::Result<()> {
-        // --- 1. 配置参数 ---
-        const STREAM_COUNT: usize = 16; // 并发流数量
-        const STREAM_SIZE: usize = 1024 * 1024 * 1024; // 每个流发送 256KB
+        // --- 1. Configuration parameters ---
+        const STREAM_COUNT: usize = 16; // Number of concurrent streams
+        const STREAM_SIZE: usize = 1024 * 1024 * 1024; // Each stream sends 1GB
 
         let (client_endpoint, server_endpoint) = endpoint();
         let server_addr = server_endpoint.local_addr()?;
 
-        // --- 3. Server 端 (并发接收器) ---
+        // --- 3. Server side (concurrent receiver) ---
         let server_handle = tokio::spawn(async move {
             if let Some(conn) = server_endpoint.accept().await {
                 let connection = conn.await.unwrap();
@@ -1224,31 +1224,31 @@ mod tests {
                 let mut stream_handles = Vec::new();
                 let start = std::time::Instant::now();
 
-                // 接收预期数量的流
+                // Accept an expected number of streams
                 for i in 0..STREAM_COUNT {
                     match connection.accept_uni().await {
                         Ok(mut recv) => {
-                            // 为每个流启动一个独立的处理任务
+                            // Start an independent processing task for each stream
                             let handle = tokio::spawn(async move {
-                                // 读取所有数据
+                                // Read all data
                                 match recv.read_to_end(usize::MAX).await {
                                     Ok(data) => {
-                                        // 校验长度
+                                        // Verify length
                                         assert_eq!(
                                             data.len(),
                                             STREAM_SIZE,
                                             "Stream {} length mismatch",
                                             i
                                         );
-                                        // 校验数据内容 (验证数据隔离性)
-                                        // 我们约定数据的第一个字节是 (stream_index % 255)
-                                        // 这样可以确保流的数据没串
-                                        let expected_byte = data[0] as usize; // 获取实际收到的标记
-                                                                              // 这里只是简单校验首尾，实际生产可以使用 CRC
+                                        // Verify data content (verify data isolation)
+                                        // We agree that the first byte of data is (stream_index % 255)
+                                        // This ensures stream data is not mixed
+                                        let expected_byte = data[0] as usize; // Get the actual received marker
+                                                                              // Simple check of head and tail here, CRC can be used in production
                                         if data[data.len() - 1] != data[0] {
                                             panic!("Stream data corruption");
                                         }
-                                        expected_byte // 返回标记用于统计
+                                        expected_byte // Return marker for statistics
                                     }
                                     Err(e) => panic!("Stream read error: {}", e),
                                 }
@@ -1259,7 +1259,7 @@ mod tests {
                     }
                 }
 
-                // 等待所有流处理完毕
+                // Wait for all streams to finish processing
                 let results = futures::future::join_all(stream_handles).await;
                 let duration = start.elapsed();
 
@@ -1280,12 +1280,12 @@ mod tests {
                 );
                 println!("--------------------------------------------------");
 
-                // 保持连接直到 Client 断开
+                // Keep connection until the Client disconnects
                 let _ = connection.closed().await;
             }
         });
 
-        // --- 4. Client 端 (并发发送器) ---
+        // --- 4. Client side (concurrent sender) ---
         let connection = client_endpoint.connect(server_addr, "localhost")?.await?;
         println!(
             "Client: Connected, starting {} parallel streams...",
@@ -1295,36 +1295,36 @@ mod tests {
         let start_send = std::time::Instant::now();
         let mut client_tasks = Vec::new();
 
-        // 并发启动发送任务
+        // Start sending tasks concurrently
         for i in 0..STREAM_COUNT {
             let conn = connection.clone();
             client_tasks.push(tokio::spawn(async move {
-                // 打开单向流
+                // Open unidirectional stream
                 let mut send = conn.open_uni().await.expect("Failed to open stream");
 
-                // 构造数据：为了验证隔离性，我们用 i 作为填充标记
-                // 所有的字节都填成 (i % 255)
+                // Construct data: use i as the padding marker to verify isolation
+                // All bytes are filled with (i % 255)
                 let fill_byte = (i % 255) as u8;
                 let data = vec![fill_byte; STREAM_SIZE];
                 let bytes_data = Bytes::from(data);
 
                 send.write_chunk(bytes_data).await.expect("Write failed");
                 send.finish().expect("Finish failed");
-                // 等待 Server 确认收到 FIN
+                // Wait for Server to acknowledge receipt of FIN
                 send.stopped().await.expect("Stopped failed");
             }));
         }
 
-        // 等待所有发送任务完成
+        // Wait for all sending tasks to complete
         futures::future::join_all(client_tasks).await;
 
         let send_duration = start_send.elapsed();
         println!("Client: All streams sent in {:.2?}", send_duration);
 
-        // 关闭连接
+        // Close connection
         connection.close(0u32.into(), b"done");
 
-        // 等待 Server 结束
+        // Wait for Server to finish
         let _ = tokio::time::timeout(Duration::from_secs(10), server_handle).await;
 
         Ok(())
