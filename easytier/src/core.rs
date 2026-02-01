@@ -15,6 +15,7 @@ use crate::{
             PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
+        log,
     },
     defer,
     instance_manager::NetworkInstanceManager,
@@ -22,7 +23,7 @@ use crate::{
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
-    utils::{init_logger, setup_panic_handler},
+    utils::setup_panic_handler,
     web_client, ShellType,
 };
 use anyhow::Context;
@@ -1231,7 +1232,7 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
-    init_logger(&cli.logging_options, true)?;
+    log::init(&cli.logging_options, true)?;
 
     let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
 
