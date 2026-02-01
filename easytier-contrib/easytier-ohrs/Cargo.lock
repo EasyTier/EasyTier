@@ -1078,6 +1078,7 @@ dependencies = [
  "humansize",
  "humantime-serde",
  "idna",
+ "indoc",
  "kcp-sys",
  "machine-uid",
  "multimap",
@@ -1090,6 +1091,7 @@ dependencies = [
  "once_cell",
  "ordered_hash_map",
  "parking_lot",
+ "paste",
  "percent-encoding",
  "petgraph 0.8.2",
  "pin-project-lite",
@@ -1101,6 +1103,7 @@ dependencies = [
  "prost-reflect-build",
  "prost-types",
  "quinn",
+ "quinn-plaintext",
  "rand 0.8.5",
  "rcgen",
  "regex",
@@ -1121,6 +1124,7 @@ dependencies = [
  "stun_codec",
  "sys-locale",
  "tabled",
+ "terminal_size",
  "thiserror 1.0.69",
  "thunk-rs",
  "time",
@@ -1135,6 +1139,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tun-easytier",
+ "unicode-width 0.1.11",
  "url",
  "uuid",
  "version-compare",
@@ -2140,6 +2145,15 @@ checksum = "4b0f83760fb341a774ed326568e19f5a863af4a952def8c39f9ab92fd95b88e5"
 dependencies = [
  "equivalent",
  "hashbrown 0.16.0",
+]
+
+[[package]]
+name = "indoc"
+version = "2.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
+dependencies = [
+ "rustversion",
 ]
 
 [[package]]
@@ -3369,11 +3383,23 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.0",
  "thiserror 2.0.16",
  "tokio",
  "tracing",
  "web-time",
+]
+
+[[package]]
+name = "quinn-plaintext"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3e617feaeb6493018fa35fc47ae8b630ac8903d8159e9e747018841b99bad3d"
+dependencies = [
+ "bytes",
+ "quinn-proto",
+ "seahash",
+ "tracing",
 ]
 
 [[package]]
@@ -3408,9 +3434,9 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.0",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3795,7 +3821,7 @@ dependencies = [
  "security-framework 3.5.1",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -3856,6 +3882,12 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "seahash"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
 
 [[package]]
 name = "security-framework"

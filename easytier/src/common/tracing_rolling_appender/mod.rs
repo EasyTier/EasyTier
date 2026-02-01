@@ -146,12 +146,12 @@ where
     /// Writes data using the given datetime to calculate the rolling condition
     pub fn write_with_datetime(&mut self, buf: &[u8], now: &DateTime<Local>) -> io::Result<usize> {
         if self.condition.should_rollover(now, self.current_filesize) {
-            if let Err(e) = self.rollover() {
+            if let Err(error) = self.rollover() {
                 // If we can't rollover, just try to continue writing anyway
                 // (better than missing data).
                 // This will likely used to implement logging, so
                 // avoid using log::warn and log to stderr directly
-                eprintln!("WARNING: Failed to rotate logfile {}: {}", self.filename, e);
+                tracing::warn!(%error, "failed to rotate logfile {}", self.filename);
             }
         }
         self.open_writer_if_needed()?;

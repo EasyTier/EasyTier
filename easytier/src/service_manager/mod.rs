@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use service_manager::ServiceManager as _;
 
+use crate::common::log;
+
 #[derive(Debug)]
 pub struct ServiceInstallOptions {
     pub program: PathBuf,
@@ -69,7 +71,7 @@ impl Service {
 
         let kind = service_manager::ServiceManagerKind::native()?;
 
-        println!("service manager kind: {:?}", kind);
+        log::info!("service manager kind: {:?}", kind);
 
         Ok(Self {
             label: name.parse()?,
@@ -95,7 +97,7 @@ impl Service {
             self.service_manager
                 .update(ctx)
                 .map_err(|e| anyhow::anyhow!("failed to update service: {:?}", e))?;
-            println!("Service updated successfully! Service Name: {}", self.label);
+            log::info!("Service updated successfully! Service Name: {}", self.label);
             return Ok(());
         }
 
@@ -103,7 +105,7 @@ impl Service {
             .install(ctx)
             .map_err(|e| anyhow::anyhow!("failed to install service: {:?}", e))?;
 
-        println!(
+        log::info!(
             "Service installed successfully! Service Name: {}",
             self.label
         );

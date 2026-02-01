@@ -86,9 +86,9 @@ impl NetworkInstanceManager {
                     .map(|event| ScopedTask::from(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
                 if let Some(instance) = instance_map.get(&instance_id) {
-                    if let Some(e) = instance.get_latest_error_msg() {
-                        log::error!("instance {} stopped with error: {}", instance_id, e);
-                        instance_error_messages.insert(instance_id, e);
+                    if let Some(error) = instance.get_latest_error_msg() {
+                        log::error!(%error, "instance {} stopped", instance_id);
+                        instance_error_messages.insert(instance_id, error);
                     }
                 }
                 stop_check_notifier.notify_one();
