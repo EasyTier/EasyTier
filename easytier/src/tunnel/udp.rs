@@ -191,7 +191,17 @@ async fn respond_stun_packet(
             .await
             .with_context(|| "send stun response error")?;
     } else {
-        // send from a new udp socket
+        // send from a new udp socket with bypass fwmark to prevent routing loops
+        #[cfg(target_os = "linux")]
+        let socket = {
+            use crate::common::ifcfg::fwmark::{create_bypass_udp_socket_v4, create_bypass_udp_socket_v6};
+            if addr.is_ipv4() {
+                create_bypass_udp_socket_v4(0).await?
+            } else {
+                create_bypass_udp_socket_v6(0).await?
+            }
+        };
+        #[cfg(not(target_os = "linux"))]
         let socket = if addr.is_ipv4() {
             UdpSocket::bind("0.0.0.0:0").await?
         } else {
@@ -858,11 +868,15 @@ impl super::TunnelConnector for UdpTunnelConnector {
             self.ip_version,
         )
         .await?;
-        if self.bind_addrs.is_empty() || addr.is_ipv6() {
-            self.connect_with_default_bind(addr).await
-        } else {
-            self.connect_with_custom_bind(addr).await
+        if self.bind_addrs.is_empty() {
+            let default_bind: SocketAddr = if addr.is_ipv4() {
+                "0.0.0.0:0".parse().unwrap()
+            } else {
+                "[::]:0".parse().unwrap()
+            };
+            self.bind_addrs.push(default_bind);
         }
+        self.connect_with_custom_bind(addr).await
     }
 
     fn remote_url(&self) -> url::Url {

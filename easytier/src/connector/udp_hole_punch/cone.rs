@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Context;
-use tokio::net::UdpSocket;
+use crate::common::ifcfg::fwmark::create_bypass_udp_socket_v4;
 
 use crate::{
     common::{scoped_task::ScopedTask, stun::StunInfoCollectorTrait, PeerId},
@@ -116,7 +116,7 @@ impl PunchConeHoleClient {
         let udp_array = UdpSocketArray::new(1, global_ctx.net_ns.clone());
         let local_socket = {
             let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind("0.0.0.0:0").await?)
+            Arc::new(create_bypass_udp_socket_v4(0).await?)
         };
 
         let local_addr = local_socket
@@ -133,7 +133,7 @@ impl PunchConeHoleClient {
 
         let local_socket = {
             let _g = self.peer_mgr.get_global_ctx().net_ns.guard();
-            Arc::new(UdpSocket::bind(local_addr).await?)
+            Arc::new(create_bypass_udp_socket_v4(local_addr.port()).await?)
         };
 
         // client -> server: tell server the mapped port, server will return the mapped address of listening port.

@@ -48,6 +48,9 @@ async fn set_bind_addr_for_peer_connector(
             let socket_addr = SocketAddrV4::new(ipv4.into(), 0).into();
             bind_addrs.push(socket_addr);
         }
+        if bind_addrs.is_empty() {
+            bind_addrs.push("0.0.0.0:0".parse().unwrap());
+        }
         connector.set_bind_addrs(bind_addrs);
     } else {
         let mut bind_addrs = vec![];
@@ -55,9 +58,25 @@ async fn set_bind_addr_for_peer_connector(
             let socket_addr = SocketAddrV6::new(std::net::Ipv6Addr::from(*ipv6), 0, 0, 0).into();
             bind_addrs.push(socket_addr);
         }
+        if bind_addrs.is_empty() {
+            bind_addrs.push("[::]:0".parse().unwrap());
+        }
         connector.set_bind_addrs(bind_addrs);
     }
     let _ = connector;
+}
+
+fn set_default_bind_addr(connector: &mut (impl TunnelConnector + ?Sized), is_ipv4: bool) {
+    #[cfg(target_os = "linux")]
+    {
+        let bind_addr: SocketAddr = if is_ipv4 {
+            "0.0.0.0:0".parse().unwrap()
+        } else {
+            "[::]:0".parse().unwrap()
+        };
+        connector.set_bind_addrs(vec![bind_addr]);
+    }
+    let _ = (connector, is_ipv4);
 }
 
 pub async fn create_connector_by_url(
@@ -79,6 +98,8 @@ pub async fn create_connector_by_url(
                     &global_ctx.get_ip_collector(),
                 )
                 .await;
+            } else {
+                set_default_bind_addr(&mut connector, dst_addr.is_ipv4());
             }
             Box::new(connector)
         }
@@ -93,6 +114,8 @@ pub async fn create_connector_by_url(
                     &global_ctx.get_ip_collector(),
                 )
                 .await;
+            } else {
+                set_default_bind_addr(&mut connector, dst_addr.is_ipv4());
             }
             Box::new(connector)
         }
@@ -117,6 +140,8 @@ pub async fn create_connector_by_url(
                     &global_ctx.get_ip_collector(),
                 )
                 .await;
+            } else {
+                set_default_bind_addr(&mut connector, dst_addr.is_ipv4());
             }
             Box::new(connector)
         }
@@ -137,6 +162,8 @@ pub async fn create_connector_by_url(
                     &global_ctx.get_ip_collector(),
                 )
                 .await;
+            } else {
+                set_default_bind_addr(&mut connector, dst_addr.is_ipv4());
             }
             Box::new(connector)
         }
@@ -152,6 +179,8 @@ pub async fn create_connector_by_url(
                     &global_ctx.get_ip_collector(),
                 )
                 .await;
+            } else {
+                set_default_bind_addr(&mut connector, dst_addr.is_ipv4());
             }
             Box::new(connector)
         }
