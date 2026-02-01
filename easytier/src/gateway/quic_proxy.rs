@@ -791,9 +791,8 @@ impl QuicProxy {
 
         let margins = (header.len(), TAIL_RESERVED_SIZE).into();
 
-        // TODO: subject to change
-        let (in_tx, in_rx) = channel(1 << 20);
-        let (out_tx, out_rx) = channel(1 << 20);
+        let (in_tx, in_rx) = channel(1024);
+        let (out_tx, out_rx) = channel(1024);
 
         let socket = QuicSocket {
             addr: SocketAddr::new(Ipv4Addr::from(self.peer_mgr.my_peer_id()).into(), 0),
