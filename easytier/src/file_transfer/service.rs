@@ -205,7 +205,7 @@ impl FileTransferRpc for FileTransferService {
                                 status: OfferStatus::Rejected.into(),
                                 start_offset: 0,
                                 message: format!(
-                                    "Transfer rejected: File size {} exceeds foreign relay limit {}. To transfer large files via public relay, increase --file-transfer-foreign-network-relay-limit",
+                                    "Transfer rejected: File size {} exceeds foreign relay limit {}. To transfer large files via public relay, increase --file-foreign-limit",
                                     file_size, limit
                                 ),
                             });

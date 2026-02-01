@@ -256,13 +256,13 @@ core_clap:
   disable_file_transfer_relay:
     en: "reject file transfers when traffic goes through relay"
     zh-CN: "当文件传输经过中继时拒绝该传输"
-  file_transfer_relay_size_limit:
+  file_relay_limit:
     en: "maximum file size allowed for relay transfer (bytes), 0 means no limit"
     zh-CN: "中继传输允许的最大文件大小（字节），0 表示不限制"
-  file_transfer_foreign_network_relay_limit:
+  file_foreign_limit:
     en: "maximum file size allowed when relay is in a foreign/public network (bytes), 0 means no limit"
     zh-CN: "当中继在外部/公共网络时允许的最大文件大小（字节），0 表示不限制"
-  enable_file_transfer_relay_forward:
+  enable_file_relay:
     en: "allow this node to relay file transfer RPC for foreign/public networks (default false)"
     zh-CN: "允许本节点为外部/公共网络转发文件传输 RPC（默认关闭）"
 
