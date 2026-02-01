@@ -72,6 +72,8 @@ pub enum PacketType {
     ForeignNetworkPacket = 10,
     KcpSrc = 11,
     KcpDst = 12,
+    QuicSrc = 16,
+    QuicDst = 17,
     NoiseHandshakeMsg1 = 13,
     NoiseHandshakeMsg2 = 14,
     NoiseHandshakeMsg3 = 15,
@@ -85,6 +87,7 @@ bitflags::bitflags! {
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
         const KCP_SRC_MODIFIED = 0b0010_0000;
+        const QUIC_SRC_MODIFIED = 0b1000_0000;
         const NOT_SEND_TO_TUN = 0b0100_0000;
 
         const _ = !0;
@@ -204,6 +207,23 @@ impl PeerManagerHeader {
         PeerManagerHeaderFlags::from_bits(self.flags)
             .unwrap()
             .contains(PeerManagerHeaderFlags::KCP_SRC_MODIFIED)
+    }
+
+    pub fn set_quic_src_modified(&mut self, modified: bool) -> &mut Self {
+        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
+        if modified {
+            flags.insert(PeerManagerHeaderFlags::QUIC_SRC_MODIFIED);
+        } else {
+            flags.remove(PeerManagerHeaderFlags::QUIC_SRC_MODIFIED);
+        }
+        self.flags = flags.bits();
+        self
+    }
+
+    pub fn is_quic_src_modified(&self) -> bool {
+        PeerManagerHeaderFlags::from_bits(self.flags)
+            .unwrap()
+            .contains(PeerManagerHeaderFlags::QUIC_SRC_MODIFIED)
     }
 
     pub fn set_not_send_to_tun(&mut self, not_send_to_tun: bool) -> &mut Self {

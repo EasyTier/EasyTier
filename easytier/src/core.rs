@@ -509,14 +509,6 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_QUIC_LISTEN_PORT",
-        help = t!("core_clap.quic_listen_port").to_string(),
-        num_args = 0..=1,
-    )]
-    quic_listen_port: Option<u16>,
-
-    #[arg(
-        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -578,12 +570,30 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_DISABLE_RELAY_QUIC",
+        help = t!("core_clap.disable_relay_quic").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_relay_quic: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_KCP",
         help = t!("core_clap.enable_relay_foreign_network_kcp").to_string(),
         num_args = 0..=1,
         default_missing_value = "true"
     )]
     enable_relay_foreign_network_kcp: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_QUIC",
+        help = t!("core_clap.enable_relay_foreign_network_quic").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_relay_foreign_network_quic: Option<bool>,
 
     #[arg(
         long,
@@ -1030,9 +1040,6 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
-        if let Some(quic_listen_port) = self.quic_listen_port {
-            f.quic_listen_port = quic_listen_port as u32;
-        }
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
@@ -1040,9 +1047,13 @@ impl NetworkOptions {
             .unwrap_or(f.foreign_relay_bps_limit);
         f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
         f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
+        f.disable_relay_quic = self.disable_relay_quic.unwrap_or(f.disable_relay_quic);
         f.enable_relay_foreign_network_kcp = self
             .enable_relay_foreign_network_kcp
             .unwrap_or(f.enable_relay_foreign_network_kcp);
+        f.enable_relay_foreign_network_quic = self
+            .enable_relay_foreign_network_quic
+            .unwrap_or(f.enable_relay_foreign_network_quic);
         f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
         // Configure tld_dns_zone: use provided value if set
         if let Some(tld_dns_zone) = &self.tld_dns_zone {

@@ -634,22 +634,7 @@ pub async fn subnet_proxy_three_node_test(
         subnet_proxy_test_tcp(listen_ip, target_ip).await;
         subnet_proxy_test_udp(listen_ip, target_ip).await;
     }
-
-    if enable_kcp_proxy && !disable_kcp_input {
-        let metrics = insts[0]
-            .get_global_ctx()
-            .stats_manager()
-            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
-        assert_eq!(metrics.len(), 3);
-        for metric in metrics {
-            assert_eq!(1, metric.value);
-            assert!(metric.labels.labels().iter().any(|l| {
-                let t =
-                    LabelType::Protocol(TcpProxyEntryTransportType::Kcp.as_str_name().to_string());
-                t.key() == l.key && t.value() == l.value
-            }));
-        }
-    } else if enable_quic_proxy && !disable_quic_input {
+    if enable_quic_proxy && !disable_quic_input {
         let metrics = insts[0]
             .get_global_ctx()
             .stats_manager()
@@ -660,6 +645,20 @@ pub async fn subnet_proxy_three_node_test(
             assert!(metric.labels.labels().iter().any(|l| {
                 let t =
                     LabelType::Protocol(TcpProxyEntryTransportType::Quic.as_str_name().to_string());
+                t.key() == l.key && t.value() == l.value
+            }));
+        }
+    } else if enable_kcp_proxy && !disable_kcp_input {
+        let metrics = insts[0]
+            .get_global_ctx()
+            .stats_manager()
+            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        assert_eq!(metrics.len(), 3);
+        for metric in metrics {
+            assert_eq!(1, metric.value);
+            assert!(metric.labels.labels().iter().any(|l| {
+                let t =
+                    LabelType::Protocol(TcpProxyEntryTransportType::Kcp.as_str_name().to_string());
                 t.key() == l.key && t.value() == l.value
             }));
         }
