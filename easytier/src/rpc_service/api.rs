@@ -17,7 +17,7 @@ use crate::{
             logger::LoggerRpcServer,
             manage::WebClientServiceServer,
         },
-        file_transfer::FileTransferRpcServer,
+        file_transfer::FileTransferManageRpcServer,
         rpc_impl::{service_registry::ServiceRegistry, standalone::StandAloneServer},
         rpc_types::error::Error,
     },
@@ -153,7 +153,7 @@ fn register_api_rpc_service(
     );
 
     registry.register(
-        FileTransferRpcServer::new(FileTransferManageRpcService::new(instance_manager.clone())),
+        FileTransferManageRpcServer::new(FileTransferManageRpcService::new(instance_manager.clone())),
         "",
     );
 }

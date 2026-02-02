@@ -47,7 +47,9 @@ service FileTransferRpc {
     // 2. 接收方主动拉取数据流 (Pull Mode)
     // 相比 Push 模式，Pull 模式更容易控制流速和背压 (Backpressure)
     rpc PullChunk(TransferChunkRequest) returns (TransferChunkResponse);
+}
 
+service FileTransferManageRpc {
     // 3. Local Control: CLI tells Core to start a transfer
     rpc StartTransfer(StartTransferRequest) returns (StartTransferResponse);
 

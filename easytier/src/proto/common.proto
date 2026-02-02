@@ -75,6 +75,7 @@ message FlagsInConfig {
   bool disable_file_from_relay = 41;
   uint64 file_transfer_relay_size_limit = 42;
   uint64 file_transfer_foreign_network_relay_limit = 43;
+  string file_transfer_dir = 44;
   reserved 39;
 }
 

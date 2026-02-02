@@ -1299,10 +1299,10 @@ impl Instance {
 
     pub fn get_api_rpc_service(&self) -> impl InstanceRpcService {
         use crate::proto::api::instance::*;
-        use crate::proto::file_transfer::FileTransferRpc;
+        use crate::proto::file_transfer::{FileTransferManageRpc, FileTransferRpc};
 
         #[derive(Clone)]
-        struct ApiRpcServiceImpl<A, B, C, D, E, F, G, H, I> {
+        struct ApiRpcServiceImpl<A, B, C, D, E, F, G, H, I, J> {
             peer_mgr_rpc_service: A,
             connector_mgr_rpc_service: B,
             mapped_listener_mgr_rpc_service: C,
@@ -1316,6 +1316,7 @@ impl Instance {
             stats_rpc_service: G,
             config_rpc_service: H,
             file_transfer_rpc_service: I,
+            file_transfer_manage_rpc_service: J,
         }
 
         #[async_trait::async_trait]
@@ -1329,7 +1330,8 @@ impl Instance {
                 G: StatsRpc<Controller = BaseController> + Send + Sync,
                 H: ConfigRpc<Controller = BaseController> + Send + Sync,
                 I: FileTransferRpc<Controller = BaseController> + Send + Sync,
-            > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H, I>
+                J: FileTransferManageRpc<Controller = BaseController> + Send + Sync,
+            > InstanceRpcService for ApiRpcServiceImpl<A, B, C, D, E, F, G, H, I, J>
         {
             fn get_peer_manage_service(&self) -> &dyn PeerManageRpc<Controller = BaseController> {
                 &self.peer_mgr_rpc_service
@@ -1383,6 +1385,12 @@ impl Instance {
                 &self,
             ) -> &dyn FileTransferRpc<Controller = BaseController> {
                 &self.file_transfer_rpc_service
+            }
+
+            fn get_file_transfer_manage_service(
+                &self,
+            ) -> &dyn FileTransferManageRpc<Controller = BaseController> {
+                &self.file_transfer_manage_rpc_service
             }
         }
 
@@ -1445,7 +1453,16 @@ impl Instance {
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
             file_transfer_rpc_service: self.file_transfer_service.clone(),
+            file_transfer_manage_rpc_service: self.file_transfer_service.clone(),
         }
+    }
+
+    fn get_file_transfer_manage_service(
+        &self,
+    ) -> &dyn crate::proto::file_transfer::FileTransferManageRpc<
+        Controller = crate::proto::rpc_types::controller::BaseController,
+    > {
+        self.file_transfer_service.as_ref()
     }
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {

@@ -73,6 +73,11 @@ pub trait InstanceRpcService: Sync + Send {
     ) -> &dyn crate::proto::file_transfer::FileTransferRpc<
         Controller = crate::proto::rpc_types::controller::BaseController,
     >;
+    fn get_file_transfer_manage_service(
+        &self,
+    ) -> &dyn crate::proto::file_transfer::FileTransferManageRpc<
+        Controller = crate::proto::rpc_types::controller::BaseController,
+    >;
 }
 
 fn get_instance_service(

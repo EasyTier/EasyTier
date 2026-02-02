@@ -65,6 +65,7 @@ pub fn gen_default_flags() -> Flags {
         disable_file_from_relay: false,
         file_transfer_relay_size_limit: 0,
         file_transfer_foreign_network_relay_limit: 4 * 1024 * 1024,
+        file_transfer_dir: "downloads/".to_string(),
     }
 }
 

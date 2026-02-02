@@ -59,7 +59,7 @@ use easytier::{
         rpc_impl::standalone::StandAloneClient,
         rpc_types::controller::BaseController,
         file_transfer::{
-            FileTransferRpc, FileTransferRpcClientFactory, StartTransferRequest, ListTransfersRequest, TransferState,
+            FileTransferManageRpc, FileTransferManageRpcClientFactory, StartTransferRequest, ListTransfersRequest, TransferState,
         },
     },
     tunnel::tcp::TcpTunnelConnector,
@@ -565,12 +565,12 @@ impl CommandHandler<'_> {
 
     async fn get_file_transfer_client(
         &self,
-    ) -> Result<Box<dyn FileTransferRpc<Controller = BaseController>>, Error> {
+    ) -> Result<Box<dyn FileTransferManageRpc<Controller = BaseController>>, Error> {
         Ok(self
             .client
             .lock()
             .await
-            .scoped_client::<FileTransferRpcClientFactory<BaseController>>("".to_string())
+            .scoped_client::<FileTransferManageRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get file transfer client")?)
     }
