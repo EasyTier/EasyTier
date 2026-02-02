@@ -106,25 +106,18 @@ impl EasyTierLauncher {
         let mut tun_fd_receiver = data.tun_fd.1.lock().unwrap().take().unwrap();
 
         tasks.spawn(async move {
-            let mut old_tun_fd = None;
             loop {
                 let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
                     return;
                 };
-                // iOS needs to re-setup nic ctx even if the tun fd is the same
-                if Some(tun_fd) != old_tun_fd || cfg!(target_os = "ios") {
-                    let res = Instance::setup_nic_ctx_for_mobile(
-                        nic_ctx.clone(),
-                        global_ctx.clone(),
-                        peer_mgr.clone(),
-                        peer_packet_receiver.clone(),
-                        tun_fd,
-                    )
-                    .await;
-                    if res.is_ok() {
-                        old_tun_fd = Some(tun_fd);
-                    }
-                }
+                let res = Instance::setup_nic_ctx_for_mobile(
+                    nic_ctx.clone(),
+                    global_ctx.clone(),
+                    peer_mgr.clone(),
+                    peer_packet_receiver.clone(),
+                    tun_fd,
+                )
+                .await;
             }
         });
     }
