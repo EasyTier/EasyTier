@@ -77,6 +77,10 @@ pub enum PacketType {
     NoiseHandshakeMsg1 = 13,
     NoiseHandshakeMsg2 = 14,
     NoiseHandshakeMsg3 = 15,
+
+    // used internally,
+    DataWithKcpSrcModified = 18,
+    DataWithQuicSrcModified = 19,
 }
 
 bitflags::bitflags! {
@@ -86,8 +90,9 @@ bitflags::bitflags! {
         const EXIT_NODE = 0b0000_0100;
         const NO_PROXY = 0b0000_1000;
         const COMPRESSED = 0b0001_0000;
-        const KCP_SRC_MODIFIED = 0b0010_0000;
-        const QUIC_SRC_MODIFIED = 0b1000_0000;
+        // deprecated flags, can be reused.
+        // const KCP_SRC_MODIFIED = 0b0010_0000;
+        // const QUIC_SRC_MODIFIED = 0b1000_0000;
         const NOT_SEND_TO_TUN = 0b0100_0000;
 
         const _ = !0;
@@ -192,38 +197,24 @@ impl PeerManagerHeader {
         self
     }
 
-    pub fn set_kcp_src_modified(&mut self, modified: bool) -> &mut Self {
-        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
-        if modified {
-            flags.insert(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
-        } else {
-            flags.remove(PeerManagerHeaderFlags::KCP_SRC_MODIFIED);
-        }
-        self.flags = flags.bits();
+    pub fn mark_kcp_src_modified(&mut self) -> &mut Self {
+        assert_eq!(self.packet_type, PacketType::Data as u8);
+        self.packet_type = PacketType::DataWithKcpSrcModified as u8;
         self
     }
 
     pub fn is_kcp_src_modified(&self) -> bool {
-        PeerManagerHeaderFlags::from_bits(self.flags)
-            .unwrap()
-            .contains(PeerManagerHeaderFlags::KCP_SRC_MODIFIED)
+        self.packet_type == PacketType::DataWithKcpSrcModified as u8
     }
 
-    pub fn set_quic_src_modified(&mut self, modified: bool) -> &mut Self {
-        let mut flags = PeerManagerHeaderFlags::from_bits(self.flags).unwrap();
-        if modified {
-            flags.insert(PeerManagerHeaderFlags::QUIC_SRC_MODIFIED);
-        } else {
-            flags.remove(PeerManagerHeaderFlags::QUIC_SRC_MODIFIED);
-        }
-        self.flags = flags.bits();
+    pub fn mark_quic_src_modified(&mut self) -> &mut Self {
+        assert_eq!(self.packet_type, PacketType::Data as u8);
+        self.packet_type = PacketType::DataWithQuicSrcModified as u8;
         self
     }
 
     pub fn is_quic_src_modified(&self) -> bool {
-        PeerManagerHeaderFlags::from_bits(self.flags)
-            .unwrap()
-            .contains(PeerManagerHeaderFlags::QUIC_SRC_MODIFIED)
+        self.packet_type == PacketType::DataWithQuicSrcModified as u8
     }
 
     pub fn set_not_send_to_tun(&mut self, not_send_to_tun: bool) -> &mut Self {
