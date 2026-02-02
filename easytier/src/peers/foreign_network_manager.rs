@@ -34,7 +34,7 @@ use crate::{
     peers::route_trait::{Route, RouteInterface},
     proto::{
         api::instance::{ForeignNetworkEntryPb, ListForeignNetworkResponse, PeerInfo},
-        common::{LimiterConfig, RpcPacket},
+        common::LimiterConfig,
         peer_rpc::DirectConnectorRpcServer,
     },
     tunnel::packet_def::{PacketType, ZCPacket},
@@ -80,8 +80,6 @@ struct ForeignNetworkEntry {
     stats_mgr: Arc<StatsManager>,
 
     tasks: Mutex<JoinSet<()>>,
-
-    blocked_file_transfer_tx: DashMap<(PeerId, PeerId, i64), SystemTime>,
 
     pub lock: Mutex<()>,
 }
@@ -151,8 +149,6 @@ impl ForeignNetworkEntry {
             stats_mgr,
 
             tasks: Mutex::new(JoinSet::new()),
-
-            blocked_file_transfer_tx: DashMap::new(),
 
             peer_center,
 
@@ -317,9 +313,6 @@ impl ForeignNetworkEntry {
         let pm_sender = self.pm_packet_sender.lock().await.take().unwrap();
         let network_name = self.network.network_name.clone();
         let bps_limiter = self.bps_limiter.clone();
-        let allow_file_relay = self.global_ctx.get_flags().enable_file_transfer_relay_forward;
-        let blocked_file_transfer_tx = self.blocked_file_transfer_tx.clone();
-
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(network_name.clone()));
         let forward_bytes = self
@@ -356,34 +349,6 @@ impl ForeignNetworkEntry {
                     }
                     tracing::trace!(?hdr, "ignore packet in foreign network");
                 } else {
-                    if hdr.packet_type == PacketType::TaRpc as u8
-                        || hdr.packet_type == PacketType::RpcReq as u8
-                        || hdr.packet_type == PacketType::RpcResp as u8
-                    {
-                        if !allow_file_relay {
-                            if let Ok(rpc_packet) = RpcPacket::decode(zc_packet.payload()) {
-                                if let Some(desc) = rpc_packet.descriptor.as_ref() {
-                                    if desc.proto_name == "file_transfer" {
-                                        // Block this transaction in both directions.
-                                        let key_a = (rpc_packet.from_peer, rpc_packet.to_peer, rpc_packet.transaction_id);
-                                        let key_b = (rpc_packet.to_peer, rpc_packet.from_peer, rpc_packet.transaction_id);
-                                        blocked_file_transfer_tx.insert(key_a, SystemTime::now());
-                                        blocked_file_transfer_tx.insert(key_b, SystemTime::now());
-                                        if blocked_file_transfer_tx.len() > 2048 {
-                                            blocked_file_transfer_tx.clear();
-                                        }
-                                        continue;
-                                    }
-                                } else {
-                                    // Descriptor missing (non-first piece). Drop if transaction is blocked.
-                                    let key = (rpc_packet.from_peer, rpc_packet.to_peer, rpc_packet.transaction_id);
-                                    if blocked_file_transfer_tx.contains_key(&key) {
-                                        continue;
-                                    }
-                                }
-                            }
-                        }
-                    }
                     if hdr.packet_type == PacketType::Data as u8
                         || hdr.packet_type == PacketType::KcpSrc as u8
                         || hdr.packet_type == PacketType::KcpDst as u8

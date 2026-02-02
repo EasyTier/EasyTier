@@ -253,18 +253,15 @@ core_clap:
   enable_file_transfer:
     en: "enable file transfer service. allow other peers in the same network to pull/push files from/to this node. default is false"
     zh-CN: "启用文件传输服务。允许同一网络中的其他对等节点从/向此节点拉取/推送文件。默认为false"
-  disable_file_transfer_relay:
-    en: "reject file transfers when traffic goes through relay"
-    zh-CN: "当文件传输经过中继时拒绝该传输"
+  disable_file_from_relay:
+    en: "reject file transfer offers that arrive via relay (only accept P2P transfers)"
+    zh-CN: "拒绝通过中继到达的文件传输（仅接受 P2P 传输）"
   file_relay_limit:
     en: "maximum file size allowed for relay transfer (bytes), 0 means no limit"
     zh-CN: "中继传输允许的最大文件大小（字节），0 表示不限制"
   file_foreign_limit:
     en: "maximum file size allowed when relay is in a foreign/public network (bytes), 0 means no limit"
     zh-CN: "当中继在外部/公共网络时允许的最大文件大小（字节），0 表示不限制"
-  enable_file_relay:
-    en: "allow this node to relay file transfer RPC for foreign/public networks (default false)"
-    zh-CN: "允许本节点为外部/公共网络转发文件传输 RPC（默认关闭）"
 
 core_app:
   panic_backtrace_save:

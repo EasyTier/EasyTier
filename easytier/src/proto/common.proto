@@ -65,10 +65,11 @@ message FlagsInConfig {
 
   bool disable_tcp_hole_punching = 34;
   bool enable_file_transfer = 35;
+  // Receiver: reject file transfer offers that arrive via relay (not P2P)
   bool disable_file_transfer_relay = 36;
   uint64 file_transfer_relay_size_limit = 37;
   uint64 file_transfer_foreign_network_relay_limit = 38;
-  bool enable_file_transfer_relay_forward = 39;
+  reserved 39;
 }
 
 message RpcDescriptor {
