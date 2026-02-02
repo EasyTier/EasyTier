@@ -330,6 +330,7 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
 
     fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
         match value {
+            #[cfg(feature = "zstd")]
             CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
             CompressionAlgoPb::None => Ok(CompressorAlgo::None),
             _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
@@ -342,6 +343,7 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
 
     fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
         match value {
+            #[cfg(feature = "zstd")]
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
         }

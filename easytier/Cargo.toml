@@ -208,7 +208,7 @@ async-ringbuf = "0.3.1"
 
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
 
-zstd = { version = "0.13" }
+zstd = { version = "0.13", optional = true }
 
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
 
@@ -350,6 +350,7 @@ default = [
     "quic",
     "faketcp",
     "magic-dns",
+    "zstd",
 ]
 full = [
     "websocket",
@@ -363,6 +364,7 @@ full = [
     "quic",
     "faketcp",
     "magic-dns",
+    "zstd",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-plaintext", "dep:rustls", "dep:rcgen"]
@@ -391,3 +393,4 @@ jemalloc-prof = [
 tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
+zstd = ["dep:zstd"]
