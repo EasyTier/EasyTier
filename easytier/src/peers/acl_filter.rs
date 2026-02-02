@@ -1,5 +1,5 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 use std::{
     net::IpAddr,
@@ -59,7 +59,6 @@ pub struct AclFilter {
     // Use ArcSwap for lock-free atomic replacement during hot reload
     acl_processor: ArcSwap<AclProcessor>,
     acl_enabled: Arc<AtomicBool>,
-    quic_udp_port: AtomicU16,
 
     // Track allowed outbound packets and automatically allow their corresponding inbound response
     // packets, even if they would normally be dropped by ACL rules
@@ -80,7 +79,6 @@ impl AclFilter {
         Self {
             acl_processor: ArcSwap::from(Arc::new(AclProcessor::new(Acl::default()))),
             acl_enabled: Arc::new(AtomicBool::new(false)),
-            quic_udp_port: AtomicU16::new(0),
             outbound_allow_records,
             clean_task: tokio::spawn(async move {
                 let max_life = std::time::Duration::from_secs(30);
@@ -295,40 +293,6 @@ impl AclFilter {
         processor.increment_stat(AclStatKey::PacketsTotal);
     }
 
-    fn check_is_quic_packet(
-        &self,
-        packet_info: &PacketInfo,
-        my_ipv4: &Option<Ipv4Addr>,
-        my_ipv6: &Option<Ipv6Addr>,
-    ) -> bool {
-        if packet_info.protocol != Protocol::Udp {
-            return false;
-        }
-
-        let quic_port = self.get_quic_udp_port();
-        if quic_port == 0 {
-            return false;
-        }
-
-        // quic input
-        if packet_info.dst_port == Some(quic_port)
-            && (packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
-                || packet_info.dst_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED))
-        {
-            return true;
-        }
-
-        // quic output
-        if packet_info.src_port == Some(quic_port)
-            && (packet_info.src_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
-                || packet_info.src_ip == my_ipv6.unwrap_or(Ipv6Addr::UNSPECIFIED))
-        {
-            return true;
-        }
-
-        false
-    }
-
     /// Common ACL processing logic
     pub fn process_packet_with_acl(
         &self,
@@ -359,10 +323,6 @@ impl AclFilter {
                 return true;
             }
         };
-
-        if self.check_is_quic_packet(&packet_info, &my_ipv4, &my_ipv6) {
-            return true;
-        }
 
         let chain_type = if is_in {
             if packet_info.dst_ip == my_ipv4.unwrap_or(Ipv4Addr::UNSPECIFIED)
@@ -423,13 +383,5 @@ impl AclFilter {
                 false
             }
         }
-    }
-
-    pub fn get_quic_udp_port(&self) -> u16 {
-        self.quic_udp_port.load(Ordering::Relaxed)
-    }
-
-    pub fn set_quic_udp_port(&self, port: u16) {
-        self.quic_udp_port.store(port, Ordering::Relaxed);
     }
 }
