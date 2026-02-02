@@ -1039,7 +1039,7 @@ impl stack::Tun for MacosBpfTun {
             Ok(())
         };
 
-        let mut out_len = 0usize;
+        let mut out_len: usize;
         let res = match self.link_type {
             LinkType::En10Mb => {
                 out_len = packet.len();
