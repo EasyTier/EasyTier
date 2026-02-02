@@ -716,7 +716,7 @@ fn open_bpf_device() -> io::Result<OwnedFd> {
 
 fn set_ifreq_name(ifr: &mut libc::ifreq, interface_name: &str) -> io::Result<()> {
     let bytes = interface_name.as_bytes();
-    let ifnamsiz = libc::IFNAMSIZ as usize;
+    let ifnamsiz = libc::IFNAMSIZ;
     if bytes.len() >= ifnamsiz {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -932,7 +932,7 @@ impl MacosBpfTun {
 
                     let pkt_start = off + pkt_range.start;
                     let pkt_end = off + pkt_range.end;
-                    let shift = (pkt_range.start as usize).saturating_sub(hdr_len as usize);
+                    let shift = pkt_range.start.saturating_sub(hdr_len as usize);
                     if shift != 0 && shifted_record_logs_left > 0 {
                         shifted_record_logs_left -= 1;
                         warn!(
