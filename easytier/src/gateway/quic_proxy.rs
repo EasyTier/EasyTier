@@ -37,8 +37,9 @@ use std::sync::{Arc, Weak};
 use std::task::Poll;
 use std::time::Duration;
 use tokio::io::{join, AsyncReadExt, Join};
-use tokio::sync::mpsc::error::TrySendError;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{
+    channel, unbounded_channel, Receiver, Sender, UnboundedReceiver, UnboundedSender,
+};
 use tokio::task::JoinSet;
 use tokio::time::{timeout, Instant};
 use tokio::{join, pin, select};
@@ -67,10 +68,19 @@ impl PacketMargins {
 }
 //endregion
 
+#[derive(Debug)]
+struct PollSenderWrapper {
+    poll_sender: PollSender<QuicPacket>,
+    reserved: bool,
+}
+
+type PollSenderArc = Arc<parking_lot::Mutex<PollSenderWrapper>>;
+
 //region socket
 #[derive(Debug)]
 struct QuicSocketPoller {
-    tx: PollSender<QuicPacket>,
+    tx: PollSenderArc,
+    permit_sender: UnboundedSender<PollSenderArc>,
 }
 
 impl UdpPoller for QuicSocketPoller {
@@ -78,10 +88,32 @@ impl UdpPoller for QuicSocketPoller {
         self: Pin<&mut Self>,
         cx: &mut std::task::Context,
     ) -> Poll<std::io::Result<()>> {
-        self.get_mut()
-            .tx
-            .poll_reserve(cx)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))
+        let s = self.get_mut();
+        let mut g = s.tx.lock();
+        if g.reserved {
+            // this poller is already in permit queue
+            Poll::Ready(Ok(()))
+        } else {
+            match g.poll_sender.poll_reserve(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(())) => {
+                    g.reserved = true;
+                    if let Err(e) = s.permit_sender.send(s.tx.clone()) {
+                        error!("send poll sender to permit queue failed: {:?}", e);
+                        g.reserved = false;
+                        g.poll_sender.abort_send();
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            e,
+                        )));
+                    }
+                    Poll::Ready(Ok(()))
+                }
+                Poll::Ready(Err(e)) => {
+                    Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e)))
+                }
+            }
+        }
     }
 }
 
@@ -90,26 +122,73 @@ pub struct QuicSocket {
     addr: SocketAddr,
     rx: AtomicRefCell<Receiver<QuicPacket>>,
     tx: Sender<QuicPacket>,
+    permit_sender: UnboundedSender<PollSenderArc>,
+    permit_receiver: parking_lot::Mutex<UnboundedReceiver<PollSenderArc>>,
     margins: PacketMargins,
+}
+
+impl QuicSocket {
+    fn new(
+        addr: SocketAddr,
+        rx: Receiver<QuicPacket>,
+        tx: Sender<QuicPacket>,
+        margins: PacketMargins,
+    ) -> Self {
+        let (permit_sender, permit_receiver) = unbounded_channel();
+        Self {
+            addr,
+            rx: AtomicRefCell::new(rx),
+            tx,
+            margins,
+            permit_sender,
+            permit_receiver: parking_lot::Mutex::new(permit_receiver),
+        }
+    }
 }
 
 impl AsyncUdpSocket for QuicSocket {
     fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
         Box::into_pin(Box::new(QuicSocketPoller {
-            tx: PollSender::new(self.tx.clone()),
+            permit_sender: self.permit_sender.clone(),
+            tx: Arc::new(parking_lot::Mutex::new(PollSenderWrapper {
+                poll_sender: PollSender::new(self.tx.clone()),
+                reserved: false,
+            })),
         }))
     }
 
     fn try_send(&self, transmit: &Transmit) -> std::io::Result<()> {
+        let poll_sender = {
+            let mut g = self.permit_receiver.lock();
+            match g.try_recv() {
+                Ok(poll_sender) => poll_sender,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WouldBlock,
+                        "no permits available",
+                    ));
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::BrokenPipe,
+                        "permit channel closed",
+                    ));
+                }
+            }
+        };
+
+        let mut locked_poll_sender = poll_sender.lock();
+        if !locked_poll_sender.reserved {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "poll sender is not reserved",
+            ));
+        }
+
         match transmit.destination {
             SocketAddr::V4(addr) => {
                 let len = transmit.contents.len();
                 trace!("{:?} sending {:?} bytes to {:?}", self.addr, len, addr);
-
-                let permit = self.tx.try_reserve().map_err(|e| match e {
-                    TrySendError::Full(_) => std::io::ErrorKind::WouldBlock,
-                    TrySendError::Closed(_) => std::io::ErrorKind::BrokenPipe,
-                })?;
 
                 let segment_size = transmit.segment_size.unwrap_or(len);
                 let chunks = transmit.contents.chunks(segment_size);
@@ -130,12 +209,16 @@ impl AsyncUdpSocket for QuicSocket {
                     }
                 }
 
-                permit.send(QuicPacket {
-                    addr: transmit.destination,
-                    payload,
-                    segment: Some(segment),
-                    ecn: transmit.ecn,
-                });
+                locked_poll_sender.reserved = false;
+                locked_poll_sender
+                    .poll_sender
+                    .send_item(QuicPacket {
+                        addr: transmit.destination,
+                        payload,
+                        segment: Some(segment),
+                        ecn: transmit.ecn,
+                    })
+                    .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
 
                 Ok(())
             }
@@ -793,12 +876,12 @@ impl QuicProxy {
         let (in_tx, in_rx) = channel(1024);
         let (out_tx, out_rx) = channel(1024);
 
-        let socket = QuicSocket {
-            addr: SocketAddr::new(Ipv4Addr::from(self.peer_mgr.my_peer_id()).into(), 0),
-            rx: AtomicRefCell::new(in_rx),
-            tx: out_tx,
+        let socket = QuicSocket::new(
+            SocketAddr::new(Ipv4Addr::from(self.peer_mgr.my_peer_id()).into(), 0),
+            in_rx,
+            out_tx,
             margins,
-        };
+        );
 
         let mut endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
@@ -959,7 +1042,9 @@ impl TcpProxyRpc for QuicProxyDstRpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bytes::Buf;
+    use bytes::{Buf, BytesMut};
+    use futures::task::noop_waker;
+    use std::task::{Context, Poll};
 
     fn init() {
         let _ = tracing_subscriber::fmt()
@@ -986,19 +1071,9 @@ mod tests {
         forward(rx_a_out, tx_b_in, addr_a, margins);
         forward(rx_b_out, tx_a_in, addr_b, margins);
 
-        let socket_a = QuicSocket {
-            addr: addr_a,
-            rx: AtomicRefCell::new(rx_a_in),
-            tx: tx_a_out,
-            margins,
-        };
+        let socket_a = QuicSocket::new(addr_a, rx_a_in, tx_a_out, margins);
 
-        let socket_b = QuicSocket {
-            addr: addr_b,
-            rx: AtomicRefCell::new(rx_b_in),
-            tx: tx_b_out,
-            margins,
-        };
+        let socket_b = QuicSocket::new(addr_b, rx_b_in, tx_b_out, margins);
 
         (socket_a, socket_b)
     }
@@ -1067,6 +1142,134 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[tokio::test]
+    async fn test_quic_socket_permit_queue_single_wake_allows_single_send() {
+        let addr: SocketAddr = "127.0.0.1:6000".parse().unwrap();
+        let (tx_out, mut rx_out) = channel::<QuicPacket>(1);
+        let (_tx_in, rx_in) = channel::<QuicPacket>(1);
+        let margins = (0, 0).into();
+
+        let socket = Arc::new(QuicSocket::new(addr, rx_in, tx_out, margins));
+        let mut poller = socket.clone().create_io_poller();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            poller.as_mut().poll_writable(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            poller.as_mut().poll_writable(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+
+        let contents = b"hello";
+        let transmit = Transmit {
+            destination: addr,
+            contents,
+            ecn: None,
+            segment_size: None,
+            src_ip: None,
+        };
+        assert!(socket.try_send(&transmit).is_ok());
+        let err = socket.try_send(&transmit).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        let _ = rx_out.recv().await;
+    }
+
+    #[tokio::test]
+    async fn test_quic_socket_permit_poll_writable_pending_when_channel_full() {
+        let addr: SocketAddr = "127.0.0.1:6001".parse().unwrap();
+        let (tx_out, mut rx_out) = channel::<QuicPacket>(1);
+        let tx_out_fill = tx_out.clone();
+        let (_tx_in, rx_in) = channel::<QuicPacket>(1);
+        let margins = (0, 0).into();
+
+        let socket = Arc::new(QuicSocket::new(addr, rx_in, tx_out, margins));
+        tx_out_fill
+            .try_send(QuicPacket {
+                addr,
+                payload: BytesMut::from(&b"x"[..]),
+                segment: None,
+                ecn: None,
+            })
+            .unwrap();
+
+        let mut poller = socket.clone().create_io_poller();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(
+            poller.as_mut().poll_writable(&mut cx),
+            Poll::Pending
+        ));
+
+        rx_out.recv().await.unwrap();
+
+        assert!(matches!(
+            poller.as_mut().poll_writable(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+        assert!(matches!(
+            poller.as_mut().poll_writable(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_quic_socket_permit_try_send_when_permit_channel_closed() {
+        let addr: SocketAddr = "127.0.0.1:6002".parse().unwrap();
+        let (tx_out, _rx_out) = channel::<QuicPacket>(1);
+        let (_tx_in, rx_in) = channel::<QuicPacket>(1);
+        let margins = (0, 0).into();
+
+        let mut socket = QuicSocket::new(addr, rx_in, tx_out, margins);
+        let (new_sender, _new_receiver) = unbounded_channel();
+        let old_sender = std::mem::replace(&mut socket.permit_sender, new_sender);
+        drop(old_sender);
+
+        let socket = Arc::new(socket);
+        let contents = b"hello";
+        let transmit = Transmit {
+            destination: addr,
+            contents,
+            ecn: None,
+            segment_size: None,
+            src_ip: None,
+        };
+        let err = socket.try_send(&transmit).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn test_quic_socket_permit_poll_writable_when_permit_receiver_closed() {
+        let addr: SocketAddr = "127.0.0.1:6003".parse().unwrap();
+        let (tx_out, _rx_out) = channel::<QuicPacket>(1);
+        let (_tx_in, rx_in) = channel::<QuicPacket>(1);
+        let margins = (0, 0).into();
+
+        let mut socket = QuicSocket::new(addr, rx_in, tx_out, margins);
+        let (_new_sender, new_receiver) = unbounded_channel();
+        let old_receiver = std::mem::replace(
+            &mut socket.permit_receiver,
+            parking_lot::Mutex::new(new_receiver),
+        );
+        drop(old_receiver);
+
+        let socket = Arc::new(socket);
+        let mut poller = socket.create_io_poller();
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        let res = poller.as_mut().poll_writable(&mut cx);
+        match res {
+            Poll::Ready(Err(e)) => {
+                assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe);
+            }
+            _ => panic!("unexpected poll_writable result: {:?}", res),
+        }
     }
 
     #[tokio::test]
