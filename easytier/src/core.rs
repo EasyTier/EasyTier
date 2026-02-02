@@ -1045,7 +1045,7 @@ impl NetworkOptions {
             f.enable_file_transfer = enable_file_transfer;
         }
         if let Some(disable_file_from_relay) = self.disable_file_from_relay {
-            f.disable_file_transfer_relay = disable_file_from_relay;
+            f.disable_file_from_relay = disable_file_from_relay;
         }
         if let Some(limit) = self.file_relay_limit {
             f.file_transfer_relay_size_limit = limit;

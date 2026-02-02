@@ -154,7 +154,7 @@ impl FileTransferRpc for FileTransferService {
         // 3. Relay Policy Verification
         if !is_p2p {
             // Receiver rejects transfers arriving via relay (not direct P2P).
-            if flags.disable_file_transfer_relay {
+            if flags.disable_file_from_relay {
                 return Ok(TransferOfferResponse {
                     status: OfferStatus::Rejected.into(),
                     start_offset: 0,

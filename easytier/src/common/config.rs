@@ -62,7 +62,7 @@ pub fn gen_default_flags() -> Flags {
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
         quic_listen_port: u32::MAX,
         enable_file_transfer: false,
-        disable_file_transfer_relay: false,
+        disable_file_from_relay: false,
         file_transfer_relay_size_limit: 0,
         file_transfer_foreign_network_relay_limit: 4 * 1024 * 1024,
     }
