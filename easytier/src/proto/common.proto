@@ -41,8 +41,11 @@ message FlagsInConfig {
   bool enable_quic_proxy = 24;
   // does this peer allow quic input
   bool disable_quic_input = 25;
+  // disable relay local network quic packets
+  bool disable_relay_quic = 35;
+
   // quic listen port
-  uint32 quic_listen_port = 33;
+  uint32 quic_listen_port = 33 [deprecated = true];
 
   // a global relay limit, only work for foreign network
   uint64 foreign_relay_bps_limit = 26;
@@ -51,6 +54,9 @@ message FlagsInConfig {
 
   // enable relay foreign network kcp packets
   bool enable_relay_foreign_network_kcp = 28;
+
+  // enable relay foreign network quic packets
+  bool enable_relay_foreign_network_quic = 36;
 
   // encryption algorithm to use, empty string means default (aes-gcm)
   string encryption_algorithm = 29;
@@ -214,6 +220,8 @@ message PeerFeatureFlag {
   bool kcp_input = 3;
   bool no_relay_kcp = 4;
   bool support_conn_list_sync = 5;
+  bool quic_input = 6;
+  bool no_relay_quic = 7;
 }
 
 enum SocketType {

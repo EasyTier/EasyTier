@@ -170,6 +170,7 @@ impl ForeignNetworkEntry {
 
         let mut flags = config.get_flags();
         flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
+        flags.disable_relay_quic = !global_ctx.get_flags().enable_relay_foreign_network_quic;
         config.set_flags(flags);
 
         config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));

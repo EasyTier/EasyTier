@@ -710,10 +710,6 @@ impl NetworkConfig {
             flags.disable_quic_input = disable_quic_input;
         }
 
-        if let Some(quic_listen_port) = self.quic_listen_port {
-            flags.quic_listen_port = quic_listen_port as u32;
-        }
-
         if let Some(disable_p2p) = self.disable_p2p {
             flags.disable_p2p = disable_p2p;
         }
@@ -912,7 +908,6 @@ impl NetworkConfig {
         result.disable_kcp_input = Some(flags.disable_kcp_input);
         result.enable_quic_proxy = Some(flags.enable_quic_proxy);
         result.disable_quic_input = Some(flags.disable_quic_input);
-        result.quic_listen_port = Some(flags.quic_listen_port as i32);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
         result.bind_device = Some(flags.bind_device);

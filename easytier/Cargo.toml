@@ -36,6 +36,8 @@ tracing-subscriber = { version = "0.3", features = [
     "local-time",
     "time",
 ] }
+derivative = "2.2.0"
+derive_more = {version = "2.1.1", features = ["full"]}
 console-subscriber = { version = "0.4.1", optional = true }
 thiserror = "1.0"
 auto_impl = "1.1.0"
@@ -64,8 +66,10 @@ zerocopy = { version = "0.7.32", features = ["derive", "simd"] }
 bytes = "1.5.0"
 pin-project-lite = "0.2.13"
 
+atomic_refcell = "0.1.13"
+
 quinn = { version = "0.11.8", optional = true, features = ["ring"] }
-quinn-plaintext = { version = "0.3.0", optional = true}
+quinn-plaintext = { version = "0.3.0", optional = true }
 
 rustls = { version = "0.23.0", features = [
     "ring",
@@ -86,7 +90,7 @@ http = { version = "1", default-features = false, features = [
 tokio-rustls = { version = "0.26", default-features = false, optional = true }
 
 # for tap device
-tun = { package = "tun-easytier", git="https://github.com/EasyTier/rust-tun", features = [
+tun = { package = "tun-easytier", git = "https://github.com/EasyTier/rust-tun", features = [
     "async",
 ], optional = true }
 # for net ns
@@ -265,10 +269,10 @@ winreg = "0.52"
 windows-service = "0.7.0"
 windows-sys = { version = "0.52", features = [
     "Win32_NetworkManagement_IpHelper",
-    "Win32_NetworkManagement_Ndis", 
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_Foundation"
-]}
+] }
 winapi = { version = "0.3.9", features = ["impl-default"] }
 
 [target.'cfg(not(windows))'.dependencies]
