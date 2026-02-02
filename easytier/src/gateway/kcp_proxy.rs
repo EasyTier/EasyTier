@@ -13,7 +13,6 @@ use kcp_sys::{
     packet_def::KcpPacket,
     stream::KcpStream,
 };
-use pnet::packet::ipv4::Ipv4Packet;
 use prost::Message;
 use tokio::{select, task::JoinSet};
 
@@ -191,7 +190,7 @@ impl NatDstConnector for NatDstKcpConnector {
         _cidr_set: &CidrSet,
         _global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
-        _ipv4: &Ipv4Packet,
+        _ipv4: &Ipv4Addr,
         _real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
         hdr.from_peer_id == hdr.to_peer_id && hdr.is_kcp_src_modified()
@@ -213,8 +212,8 @@ impl TcpProxyForWrappedSrcTrait for TcpProxyForKcpSrc {
         &self.0
     }
 
-    fn set_src_modified(hdr: &mut PeerManagerHeader, modified: bool) -> &mut PeerManagerHeader {
-        hdr.set_kcp_src_modified(modified)
+    fn mark_src_modified(hdr: &mut PeerManagerHeader) -> &mut PeerManagerHeader {
+        hdr.mark_kcp_src_modified()
     }
 
     async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool {
