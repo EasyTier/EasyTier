@@ -6,7 +6,7 @@ use anyhow::Context;
 use paste::paste;
 use regex::Regex;
 use tracing::level_filters::LevelFilter;
-use tracing::Metadata;
+use tracing::{Level, Metadata};
 use tracing_subscriber::filter::{filter_fn, FilterExt};
 use tracing_subscriber::fmt::layer;
 use tracing_subscriber::layer::SubscriberExt;
@@ -64,18 +64,22 @@ fn is_log(meta: &Metadata) -> bool {
 }
 
 pub type NewFilterSender = std::sync::mpsc::Sender<String>;
-macro_rules! layers {
-    ($layer:expr) => {{
-        vec![
-            $layer.with_filter(filter_fn(is_log).not()).boxed(),
-            $layer
-                .with_file(false)
-                .with_line_number(false)
-                .with_ansi(true)
-                .with_filter(filter_fn(is_log))
-                .boxed(),
-        ]
-    }};
+
+macro_rules! tracing_layer {
+    ($layer:expr) => {
+        $layer.with_filter(filter_fn(is_log).not()).boxed()
+    };
+}
+
+macro_rules! log_layer {
+    ($layer:expr) => {
+        $layer
+            .with_file(false)
+            .with_line_number(false)
+            .with_ansi(true)
+            .with_filter(filter_fn(is_log))
+            .boxed()
+    };
 }
 
 pub fn init(
@@ -122,9 +126,12 @@ pub fn init(
         };
 
         layers.push(
-            layers!(layer(wrapper.clone()))
-                .with_filter(file_filter)
-                .boxed(),
+            vec![
+                tracing_layer!(layer(wrapper.clone())),
+                log_layer!(layer(wrapper.clone())),
+            ]
+            .with_filter(file_filter)
+            .boxed(),
         );
 
         if need_reload {
@@ -173,7 +180,17 @@ pub fn init(
             .with_writer(std::io::stderr)
     };
 
-    layers.push(layers!(layer()).with_filter(console_filter).boxed());
+    layers.push(
+        vec![
+            tracing_layer!(layer()),
+            log_layer!(layer()).with_filter(LevelFilter::WARN).boxed(),
+            log_layer!(layer().with_writer(std::io::stdout))
+                .with_filter(filter_fn(|metadata| *metadata.level() > Level::WARN))
+                .boxed(),
+        ]
+        .with_filter(console_filter)
+        .boxed(),
+    );
 
     #[cfg(feature = "tracing")]
     {
