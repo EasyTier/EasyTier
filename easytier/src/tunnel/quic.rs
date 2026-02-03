@@ -12,12 +12,16 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
+use derive_more::{Deref, DerefMut};
+use parking_lot::{RwLock, RwLockReadGuard};
 use quinn::{
     congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
     EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::{OnceLock, RwLock};
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::AtomicBool;
+use std::sync::OnceLock;
 use std::{
     error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
 };
@@ -224,10 +228,50 @@ impl TunnelListener for QUICTunnelListener {
     }
 }
 
+#[derive(Debug, Deref, DerefMut)]
+struct RwPool<Item> {
+    #[deref]
+    #[deref_mut]
+    pool: RwLock<Vec<Item>>,
+    capacity: usize,
+}
+
+impl<Item> RwPool<Item> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            pool: RwLock::new(Vec::with_capacity(capacity)),
+            capacity,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.read().len() >= self.capacity
+    }
+
+    fn try_push(&self, item: Item) -> Option<Item> {
+        let mut pool = self.write();
+        if pool.len() < self.capacity {
+            pool.push(item);
+            return None;
+        }
+        Some(item)
+    }
+
+    fn resize(&self) {
+        if self.read().capacity() != self.capacity {
+            let mut pool = self.write();
+            pool.reserve_exact(self.capacity);
+            pool.truncate(self.capacity);
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct QuicEndpointPool {
-    ipv4: RwLock<Vec<Arc<Endpoint>>>,
-    ipv6: RwLock<Vec<Arc<Endpoint>>>,
+    ipv4: RwPool<Arc<Endpoint>>,
+    ipv6: RwPool<Arc<Endpoint>>,
+    both: RwPool<Arc<Endpoint>>,
+    dual_stack: AtomicBool,
 }
 
 static QUIC_ENDPOINT_POOL: OnceLock<QuicEndpointPool> = OnceLock::new();
@@ -235,8 +279,10 @@ static QUIC_ENDPOINT_POOL: OnceLock<QuicEndpointPool> = OnceLock::new();
 impl QuicEndpointPool {
     fn new(capacity: usize) -> Self {
         Self {
-            ipv4: RwLock::new(Vec::with_capacity(capacity)),
-            ipv6: RwLock::new(Vec::with_capacity(capacity)),
+            ipv4: RwPool::new(capacity.div_ceil(2)),
+            ipv6: RwPool::new(capacity.div_ceil(2)),
+            both: RwPool::new(capacity),
+            dual_stack: AtomicBool::new(false),
         }
     }
 
@@ -248,18 +294,13 @@ impl QuicEndpointPool {
             .then(std::thread::available_parallelism)
             .and_then(|r| r.ok())
             .map(|n| n.get())
-            .unwrap_or(1)
-            .div_ceil(2);
+            .unwrap_or(1);
 
         let pool = QUIC_ENDPOINT_POOL.get();
         match pool {
             Some(pool) => {
-                for pool in [&pool.ipv4, &pool.ipv6] {
-                    if pool.read().unwrap().capacity() != capacity {
-                        let mut pool = pool.write().unwrap();
-                        pool.reserve_exact(capacity);
-                        pool.truncate(capacity);
-                    }
+                for pool in [&pool.ipv4, &pool.ipv6, &pool.both] {
+                    pool.resize();
                 }
             }
 
@@ -287,20 +328,12 @@ impl QuicEndpointPool {
             IpVersion::V4 => &pool.ipv4,
             _ => &pool.ipv6,
         };
-
-        let res = {
-            let pool = pool.read().unwrap();
-            pool.len() < pool.capacity()
-        };
-        if res {
-            let mut pool = pool.write().unwrap();
-            if pool.len() < pool.capacity() {
-                pool.push(Arc::new(Self::create(ip_version)?));
-            }
+        if !pool.is_full() {
+            pool.try_push(Arc::new(Self::create(ip_version)?));
         }
 
-        let pool = pool.read().unwrap();
         Ok(pool
+            .read()
             .iter()
             .min_by_key(|e| e.open_connections())
             .unwrap()
