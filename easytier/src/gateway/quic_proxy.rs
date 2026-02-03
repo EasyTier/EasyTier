@@ -78,10 +78,14 @@ impl UdpPoller for QuicSocketPoller {
         self: Pin<&mut Self>,
         cx: &mut std::task::Context,
     ) -> Poll<std::io::Result<()>> {
-        self.get_mut()
-            .tx
-            .poll_reserve(cx)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))
+        let tx = &mut self.get_mut().tx;
+
+        let poll = tx.poll_reserve(cx);
+        if let Poll::Ready(Ok(_)) = poll {
+            tx.abort_send();
+        }
+
+        poll.map_err(|e| std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))
     }
 }
 
