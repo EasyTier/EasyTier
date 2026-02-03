@@ -48,6 +48,8 @@ jobs:
   build-ohos:
     runs-on: ubuntu-latest
     needs: pre_job
+    env:
+      OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
     if: needs.pre_job.outputs.should_skip != 'true'
     steps:
       - uses: actions/checkout@v4
@@ -185,12 +187,11 @@ jobs:
           if-no-files-found: error
 
       - name: Publish To Center Ohpm
-        if: github.event_name == 'push'
         working-directory: ./easytier-contrib/easytier-ohrs
         env:
-          OHPM_PUBLISH_CODE: ${{ secrets.OHPM_PUBLISH_CODE }}
           OHPM_PRIVATE_KEY: ${{ secrets.OHPM_PRIVATE_KEY }}
           OHPM_KEY_PASSPHRASE: ${{ secrets.OHPM_KEY_PASSPHRASE }}
+        if: ${{ env.OHPM_PUBLISH_CODE != '' && github.event_name == 'push' }}
         run: |
           ohpm config set publish_id "$OHPM_PUBLISH_CODE"
           ohpm config set publish_registry https://ohpm.openharmony.cn/ohpm
@@ -207,8 +208,8 @@ jobs:
           ohpm publish easytier-ohrs.har
           
       - name: Publish To Private Ohpm
-        if: github.event_name == 'push'
         working-directory: ./easytier-contrib/easytier-ohrs
+        if: ${{ env.OHPM_PUBLISH_CODE != '' && github.event_name == 'push' }}
         run: |
           printf '%s' "${{ secrets.CODEARTS_PRIVATE_OHPM }}" > ~/.ohpm/.ohpmrc
           ohpm config set strict_ssl false
