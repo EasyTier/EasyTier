@@ -15,15 +15,13 @@ use anyhow::Context;
 use derive_more::Deref;
 use parking_lot::RwLock;
 use quinn::{
-    congestion::BbrConfig, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig,
+    congestion::BbrConfig, AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig,
+    ServerConfig, TransportConfig,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
-use std::{
-    net::SocketAddr, sync::Arc, time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn transport_config() -> Arc<TransportConfig> {
@@ -298,6 +296,22 @@ impl QuicEndpointPool {
             .unwrap()
             .clone())
     }
+
+    async fn connect(global_ctx: &ArcGlobalCtx, addr: SocketAddr) -> std::io::Result<(Arc<Endpoint>, Connection)> {
+        let ip_version = if addr.ip().is_ipv4() {
+            IpVersion::V4
+        } else {
+            IpVersion::V6
+        };
+        let endpoint = Self::get(global_ctx, ip_version)?;
+        let connection = endpoint
+            .connect(addr, "localhost")
+            .unwrap()
+            .await
+            .map_err(std::io::Error::other)?;
+
+        Ok((endpoint, connection))
+    }
 }
 
 pub struct QUICTunnelConnector {
@@ -322,21 +336,7 @@ impl TunnelConnector for QUICTunnelConnector {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
                 .await?;
-
-        let ip_version = if addr.ip().is_ipv4() {
-            IpVersion::V4
-        } else {
-            IpVersion::V6
-        };
-        let endpoint = QuicEndpointPool::get(&self.global_ctx, ip_version)?;
-
-        // connect to server
-        let connection = endpoint
-            .connect(addr, "localhost")
-            .unwrap()
-            .await
-            .with_context(|| "connect failed")?;
-        tracing::info!("[client] connected: addr={}", connection.remote_address());
+        let (endpoint, connection) = QuicEndpointPool::connect(&self.global_ctx, addr).await?;
 
         let local_addr = endpoint.local_addr()?;
 
