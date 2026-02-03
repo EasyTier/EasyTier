@@ -106,25 +106,18 @@ impl EasyTierLauncher {
         let mut tun_fd_receiver = data.tun_fd.1.lock().unwrap().take().unwrap();
 
         tasks.spawn(async move {
-            let mut old_tun_fd = None;
             loop {
                 let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
                     return;
                 };
-                // iOS needs to re-setup nic ctx even if the tun fd is the same
-                if Some(tun_fd) != old_tun_fd || cfg!(target_os = "ios") {
-                    let res = Instance::setup_nic_ctx_for_mobile(
-                        nic_ctx.clone(),
-                        global_ctx.clone(),
-                        peer_mgr.clone(),
-                        peer_packet_receiver.clone(),
-                        tun_fd,
-                    )
-                    .await;
-                    if res.is_ok() {
-                        old_tun_fd = Some(tun_fd);
-                    }
-                }
+                let res = Instance::setup_nic_ctx_for_mobile(
+                    nic_ctx.clone(),
+                    global_ctx.clone(),
+                    peer_mgr.clone(),
+                    peer_packet_receiver.clone(),
+                    tun_fd,
+                )
+                .await;
             }
         });
     }
@@ -710,10 +703,6 @@ impl NetworkConfig {
             flags.disable_quic_input = disable_quic_input;
         }
 
-        if let Some(quic_listen_port) = self.quic_listen_port {
-            flags.quic_listen_port = quic_listen_port as u32;
-        }
-
         if let Some(disable_p2p) = self.disable_p2p {
             flags.disable_p2p = disable_p2p;
         }
@@ -912,7 +901,6 @@ impl NetworkConfig {
         result.disable_kcp_input = Some(flags.disable_kcp_input);
         result.enable_quic_proxy = Some(flags.enable_quic_proxy);
         result.disable_quic_input = Some(flags.disable_quic_input);
-        result.quic_listen_port = Some(flags.quic_listen_port as i32);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
         result.bind_device = Some(flags.bind_device);

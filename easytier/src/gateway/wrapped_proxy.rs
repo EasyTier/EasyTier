@@ -12,14 +12,12 @@ use pnet::packet::{
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncWrite};
 use tokio_util::io::InspectReader;
 
+use crate::tunnel::packet_def::{PacketType, PeerManagerHeader};
 use crate::{
     common::{acl_processor::PacketInfo, error::Result},
     gateway::tcp_proxy::{NatDstConnector, TcpProxy},
     peers::{acl_filter::AclFilter, NicPacketFilter},
-    proto::{
-        acl::{Action, ChainType},
-        api::instance::TcpProxyEntryTransportType,
-    },
+    proto::acl::{Action, ChainType},
     tunnel::packet_def::ZCPacket,
 };
 
@@ -71,6 +69,7 @@ impl ProxyAclHandler {
 pub(crate) trait TcpProxyForWrappedSrcTrait: Send + Sync + 'static {
     type Connector: NatDstConnector;
     fn get_tcp_proxy(&self) -> &Arc<TcpProxy<Self::Connector>>;
+    fn mark_src_modified(hdr: &mut PeerManagerHeader) -> &mut PeerManagerHeader;
     async fn check_dst_allow_wrapped_input(&self, dst_ip: &Ipv4Addr) -> bool;
 }
 
@@ -83,6 +82,12 @@ impl<C: NatDstConnector, T: TcpProxyForWrappedSrcTrait<Connector = C>> NicPacket
             .await;
         if ret {
             return true;
+        }
+
+        let hdr = zc_packet.mut_peer_manager_header().unwrap();
+        if hdr.packet_type != PacketType::Data as u8 {
+            // already handled by other proxy
+            return false;
         }
 
         let data = zc_packet.payload();
@@ -142,9 +147,7 @@ impl<C: NatDstConnector, T: TcpProxyForWrappedSrcTrait<Connector = C>> NicPacket
 
         let hdr = zc_packet.mut_peer_manager_header().unwrap();
         hdr.to_peer_id = self.get_tcp_proxy().get_my_peer_id().into();
-        if self.get_tcp_proxy().get_transport_type() == TcpProxyEntryTransportType::Kcp {
-            hdr.set_kcp_src_modified(true);
-        }
+        Self::mark_src_modified(hdr);
         true
     }
 }

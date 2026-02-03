@@ -15,7 +15,6 @@ use self::packet_def::ZCPacket;
 
 pub mod buf;
 pub mod common;
-pub mod fake_tcp;
 pub mod filter;
 pub mod mpsc;
 pub mod packet_def;
@@ -32,6 +31,9 @@ pub const PROTO_PORT_OFFSET: &[(&str, u16)] = &[
     ("wss", 2),
     ("faketcp", 3),
 ];
+
+#[cfg(feature = "faketcp")]
+pub mod fake_tcp;
 
 #[cfg(feature = "wireguard")]
 pub mod wireguard;

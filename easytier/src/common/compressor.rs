@@ -1,6 +1,10 @@
+#[cfg(feature = "zstd")]
 use anyhow::Context;
+#[cfg(feature = "zstd")]
 use dashmap::DashMap;
+#[cfg(feature = "zstd")]
 use std::cell::RefCell;
+#[cfg(feature = "zstd")]
 use zstd::bulk;
 
 use zerocopy::{AsBytes as _, FromBytes as _};
@@ -38,6 +42,7 @@ impl DefaultCompressor {
         compress_algo: CompressorAlgo,
     ) -> Result<Vec<u8>, Error> {
         match compress_algo {
+            #[cfg(feature = "zstd")]
             CompressorAlgo::ZstdDefault => CTX_MAP.with(|map_cell| {
                 let map = map_cell.borrow();
                 let mut ctx_entry = map.entry(compress_algo).or_default();
@@ -58,6 +63,7 @@ impl DefaultCompressor {
         compress_algo: CompressorAlgo,
     ) -> Result<Vec<u8>, Error> {
         match compress_algo {
+            #[cfg(feature = "zstd")]
             CompressorAlgo::ZstdDefault => DCTX_MAP.with(|map_cell| {
                 let map = map_cell.borrow();
                 let mut ctx_entry = map.entry(compress_algo).or_default();
@@ -169,12 +175,13 @@ impl Compressor for DefaultCompressor {
     }
 }
 
+#[cfg(feature = "zstd")]
 thread_local! {
     static CTX_MAP: RefCell<DashMap<CompressorAlgo, bulk::Compressor<'static>>> = RefCell::new(DashMap::new());
     static DCTX_MAP: RefCell<DashMap<CompressorAlgo, bulk::Decompressor<'static>>> = RefCell::new(DashMap::new());
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "zstd"))]
 pub mod tests {
     use super::*;
 

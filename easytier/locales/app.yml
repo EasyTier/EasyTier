@@ -196,9 +196,6 @@ core_clap:
   disable_quic_input:
     en: "do not allow other nodes to use QUIC to proxy tcp streams to this node. when a node with QUIC proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 QUIC 代理 TCP 流到此节点。开启 QUIC 代理的节点访问此节点时，依然使用原始 TCP 连接。"
-  quic_listen_port:
-    en: "the port to listen for quic connections, default is 0 (random port)"
-    zh-CN: "监听 QUIC 连接的端口，默认值为0（随机端口）。"
   port_forward:
     en: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
     zh-CN: "将本地端口转发到虚拟网络中的远程端口。例如：udp://0.0.0.0:12345/10.126.126.1:23456，表示将本地UDP端口12345转发到虚拟网络中的10.126.126.1:23456。可以指定多个。"
@@ -223,9 +220,15 @@ core_clap:
   disable_relay_kcp:
     en: "if true, disable relay kcp packets. avoid consuming too many bandwidth. default is false"
     zh-CN: "如果为true，则禁止节点转发 KCP 数据包，防止过度消耗流量。默认值为false"
+  disable_relay_quic:
+    en: "if true, disable relay quic packets. avoid consuming too many bandwidth. default is false"
+    zh-CN: "如果为true，则禁止节点转发 QUIC 数据包，防止过度消耗流量。默认值为false"
   enable_relay_foreign_network_kcp:
     en: "if true, allow relay kcp packets from foreign network. default is false (not forward foreign network kcp packets)"
     zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 KCP 数据包。默认值为false（不转发）"
+  enable_relay_foreign_network_quic:
+    en: "if true, allow relay quic packets from foreign network. default is false (not forward foreign network quic packets)"
+    zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 QUIC 数据包。默认值为false（不转发）"
   stun_servers:
     en: "Override default STUN servers; If configured but empty, STUN servers are not used"
     zh-CN: "覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表"

@@ -26,12 +26,12 @@ pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
 
     config
-        // .max_concurrent_bidi_streams(VarInt::MAX)
+        .max_concurrent_bidi_streams(u8::MAX.into())
         .max_concurrent_uni_streams(0u8.into())
         .keep_alive_interval(Some(Duration::from_secs(5)))
         .initial_mtu(1200)
         .min_mtu(1200)
-        .enable_segmentation_offload(false)
+        .enable_segmentation_offload(true)
         .congestion_controller_factory(Arc::new(BbrConfig::default()));
 
     Arc::new(config)
