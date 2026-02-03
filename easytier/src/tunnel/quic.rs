@@ -12,14 +12,14 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
-use derive_more::Deref;
+use derivative::Derivative;
+use derive_more::{Deref, DerefMut};
 use parking_lot::RwLock;
 use quinn::{
     congestion::BbrConfig, default_runtime, ClientConfig, Connection, Endpoint, EndpointConfig,
     ServerConfig, TransportConfig,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
@@ -144,25 +144,47 @@ impl TunnelListener for QUICTunnelListener {
     }
 }
 
+#[derive(Derivative)]
+#[derivative(Default(bound = ""))]
+#[derive(Debug, Deref, DerefMut)]
+struct RwPoolInner<Item> {
+    #[deref]
+    #[deref_mut]
+    pool: Vec<Item>,
+    enabled: bool,
+}
+
 #[derive(Debug, Deref)]
 struct RwPool<Item> {
     #[deref]
-    pool: RwLock<Vec<Item>>,
-    enabled: AtomicBool,
+    inner: RwLock<RwPoolInner<Item>>,
     capacity: usize,
 }
 
 impl<Item> RwPool<Item> {
     fn new(capacity: usize) -> Self {
         Self {
-            pool: RwLock::new(Vec::new()),
-            enabled: AtomicBool::new(true),
+            inner: RwLock::new(RwPoolInner::default()),
             capacity,
         }
     }
 
     fn is_full(&self) -> bool {
         self.read().len() >= self.capacity
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.read().enabled
+    }
+
+    fn enable(&self) {
+        self.write().enabled = true;
+        self.resize();
+    }
+
+    fn disable(&self) {
+        self.write().enabled = false;
+        self.resize();
     }
 
     fn try_push(&self, item: Item) -> Option<Item> {
@@ -175,9 +197,14 @@ impl<Item> RwPool<Item> {
     }
 
     fn resize(&self) {
-        let capacity = self.capacity * self.enabled.load(Ordering::Relaxed) as usize;
-        if self.read().capacity() != capacity {
+        let resize = {
+            let inner = self.read();
+            let capacity = self.capacity * inner.enabled as usize;
+            inner.capacity() != capacity
+        };
+        if resize {
             let mut pool = self.write();
+            let capacity = self.capacity * pool.enabled as usize;
             pool.reserve_exact(capacity);
             pool.truncate(capacity);
         }
@@ -220,14 +247,10 @@ impl QuicEndpointManager {
 impl QuicEndpointManager {
     fn new(capacity: usize) -> Self {
         let ipv4 = RwPool::new(capacity.div_ceil(2));
-        ipv4.enabled.store(false, Ordering::Relaxed);
         let ipv6 = RwPool::new(capacity.div_ceil(2));
-        ipv6.enabled.store(false, Ordering::Relaxed);
-        Self {
-            ipv4,
-            ipv6,
-            both: RwPool::new(capacity),
-        }
+        let both = RwPool::new(capacity);
+        both.enable();
+        Self { ipv4, ipv6, both }
     }
 
     fn load(global_ctx: &ArcGlobalCtx) -> &Self {
@@ -259,7 +282,7 @@ impl QuicEndpointManager {
         let mgr = Self::load(global_ctx);
 
         let pool = loop {
-            let dual_stack = mgr.both.enabled.load(Ordering::Relaxed);
+            let dual_stack = mgr.both.is_enabled();
             let (pool, addr) = match ip_version {
                 IpVersion::V4 if !dual_stack => (&mgr.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
                 _ => {
@@ -274,9 +297,9 @@ impl QuicEndpointManager {
             if let Err(e) = endpoint.as_ref() {
                 if dual_stack {
                     tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
-                    mgr.both.enabled.store(false, Ordering::Relaxed);
-                    mgr.ipv4.enabled.store(true, Ordering::Relaxed);
-                    mgr.ipv6.enabled.store(true, Ordering::Relaxed);
+                    mgr.both.disable();
+                    mgr.ipv4.enable();
+                    mgr.ipv6.enable();
                     continue;
                 }
             }
