@@ -15,14 +15,14 @@ use anyhow::Context;
 use derive_more::Deref;
 use parking_lot::RwLock;
 use quinn::{
-    congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
+    congestion::BbrConfig, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
+    EndpointConfig, ServerConfig, TransportConfig,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::{
-    error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
+    net::SocketAddr, sync::Arc, time::Duration,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -57,83 +57,6 @@ pub fn endpoint_config() -> EndpointConfig {
     let mut config = EndpointConfig::default();
     config.max_udp_payload_size(65527).unwrap();
     config
-}
-
-#[derive(Clone, Debug)]
-struct NoGroAsyncUdpSocket {
-    inner: Arc<dyn AsyncUdpSocket>,
-}
-
-impl AsyncUdpSocket for NoGroAsyncUdpSocket {
-    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
-        self.inner.clone().create_io_poller()
-    }
-
-    fn try_send(&self, transmit: &quinn::udp::Transmit) -> std::io::Result<()> {
-        self.inner.try_send(transmit)
-    }
-
-    /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future
-    fn poll_recv(
-        &self,
-        cx: &mut std::task::Context,
-        bufs: &mut [IoSliceMut<'_>],
-        meta: &mut [RecvMeta],
-    ) -> Poll<std::io::Result<usize>> {
-        self.inner.poll_recv(cx, bufs, meta)
-    }
-
-    /// Look up the local IP address and port used by this socket
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.inner.local_addr()
-    }
-
-    fn may_fragment(&self) -> bool {
-        self.inner.may_fragment()
-    }
-
-    fn max_transmit_segments(&self) -> usize {
-        self.inner.max_transmit_segments()
-    }
-
-    fn max_receive_segments(&self) -> usize {
-        1
-    }
-}
-
-/// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
-/// and port.
-///
-/// ## Returns
-///
-/// - an [`Endpoint`] configured to accept incoming QUIC connections
-#[allow(unused)]
-pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn Error>> {
-    let server_config = server_config();
-    let client_config = client_config();
-    let endpoint_config = endpoint_config();
-
-    let socket2_socket = socket2::Socket::new(
-        socket2::Domain::for_address(bind_addr),
-        socket2::Type::DGRAM,
-        Some(socket2::Protocol::UDP),
-    )?;
-    setup_sokcet2(&socket2_socket, &bind_addr)?;
-    let socket = std::net::UdpSocket::from(socket2_socket);
-
-    let runtime =
-        quinn::default_runtime().ok_or_else(|| std::io::Error::other("no async runtime found"))?;
-    let socket: NoGroAsyncUdpSocket = NoGroAsyncUdpSocket {
-        inner: runtime.wrap_udp_socket(socket)?,
-    };
-    let mut endpoint = Endpoint::new_with_abstract_socket(
-        endpoint_config,
-        Some(server_config),
-        Arc::new(socket),
-        runtime,
-    )?;
-    endpoint.set_default_client_config(client_config);
-    Ok(endpoint)
 }
 
 #[allow(unused)]
@@ -199,8 +122,8 @@ impl TunnelListener for QUICTunnelListener {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
                 .await?;
-        let endpoint = make_server_endpoint(addr)
-            .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
+        let endpoint = QuicEndpointPool::create(addr, false)?;
+        endpoint.set_server_config(Some(server_config()));
         self.endpoint = Some(endpoint);
 
         self.addr
@@ -323,7 +246,7 @@ impl QuicEndpointPool {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        setup_sokcet2(&socket, &addr).map_err(|e| std::io::Error::other(e))?;
+        setup_sokcet2(&socket, &addr).map_err(std::io::Error::other)?;
         if dual_stack {
             socket.set_only_v6(false)?;
         }
