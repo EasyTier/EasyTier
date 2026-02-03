@@ -187,9 +187,9 @@ impl<Item> RwPool<Item> {
 
 #[derive(Debug)]
 pub struct QuicEndpointPool {
-    ipv4: RwPool<Arc<Endpoint>>,
-    ipv6: RwPool<Arc<Endpoint>>,
-    both: RwPool<Arc<Endpoint>>,
+    ipv4: RwPool<Endpoint>,
+    ipv6: RwPool<Endpoint>,
+    both: RwPool<Endpoint>,
     dual_stack: AtomicBool,
 }
 
@@ -260,7 +260,7 @@ impl QuicEndpointPool {
         QUIC_ENDPOINT_POOL.get().unwrap()
     }
 
-    fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Arc<Endpoint>> {
+    fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Endpoint> {
         let pools = Self::load(global_ctx);
 
         let pool = loop {
@@ -285,7 +285,7 @@ impl QuicEndpointPool {
                     continue;
                 }
             }
-            pool.try_push(Arc::new(endpoint?));
+            pool.try_push(endpoint?);
             break pool;
         };
 
@@ -297,7 +297,10 @@ impl QuicEndpointPool {
             .clone())
     }
 
-    async fn connect(global_ctx: &ArcGlobalCtx, addr: SocketAddr) -> std::io::Result<(Arc<Endpoint>, Connection)> {
+    async fn connect(
+        global_ctx: &ArcGlobalCtx,
+        addr: SocketAddr,
+    ) -> std::io::Result<(Endpoint, Connection)> {
         let ip_version = if addr.ip().is_ipv4() {
             IpVersion::V4
         } else {
