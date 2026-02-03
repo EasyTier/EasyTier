@@ -12,15 +12,14 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
-use derive_more::{Deref, DerefMut};
-use parking_lot::{RwLock, RwLockReadGuard};
+use derive_more::Deref;
+use parking_lot::RwLock;
 use quinn::{
     congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
     EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
-use std::ops::{Deref, DerefMut};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::{
     error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
@@ -228,18 +227,19 @@ impl TunnelListener for QUICTunnelListener {
     }
 }
 
-#[derive(Debug, Deref, DerefMut)]
+#[derive(Debug, Deref)]
 struct RwPool<Item> {
     #[deref]
-    #[deref_mut]
     pool: RwLock<Vec<Item>>,
+    enabled: AtomicBool,
     capacity: usize,
 }
 
 impl<Item> RwPool<Item> {
     fn new(capacity: usize) -> Self {
         Self {
-            pool: RwLock::new(Vec::with_capacity(capacity)),
+            pool: RwLock::new(Vec::new()),
+            enabled: AtomicBool::new(true),
             capacity,
         }
     }
@@ -258,10 +258,11 @@ impl<Item> RwPool<Item> {
     }
 
     fn resize(&self) {
-        if self.read().capacity() != self.capacity {
+        let capacity = self.capacity * self.enabled.load(Ordering::Relaxed) as usize;
+        if self.read().capacity() != capacity {
             let mut pool = self.write();
-            pool.reserve_exact(self.capacity);
-            pool.truncate(self.capacity);
+            pool.reserve_exact(capacity);
+            pool.truncate(capacity);
         }
     }
 }
@@ -278,11 +279,15 @@ static QUIC_ENDPOINT_POOL: OnceLock<QuicEndpointPool> = OnceLock::new();
 
 impl QuicEndpointPool {
     fn new(capacity: usize) -> Self {
+        let ipv4 = RwPool::new(capacity.div_ceil(2));
+        ipv4.enabled.store(false, Ordering::Relaxed);
+        let ipv6 = RwPool::new(capacity.div_ceil(2));
+        ipv6.enabled.store(false, Ordering::Relaxed);
         Self {
-            ipv4: RwPool::new(capacity.div_ceil(2)),
-            ipv6: RwPool::new(capacity.div_ceil(2)),
+            ipv4,
+            ipv6,
             both: RwPool::new(capacity),
-            dual_stack: AtomicBool::new(false),
+            dual_stack: AtomicBool::new(true),
         }
     }
 
@@ -312,25 +317,57 @@ impl QuicEndpointPool {
         QUIC_ENDPOINT_POOL.get().unwrap()
     }
 
-    fn create(ip_version: IpVersion) -> std::io::Result<Endpoint> {
-        let addr = match ip_version {
-            IpVersion::V4 => (Ipv4Addr::UNSPECIFIED, 0).into(),
-            _ => (Ipv6Addr::UNSPECIFIED, 0).into(),
-        };
-        let mut endpoint = Endpoint::client(addr)?;
+    fn create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        setup_sokcet2(&socket, &addr).map_err(|e| std::io::Error::other(e))?;
+        if dual_stack {
+            socket.set_only_v6(false)?;
+        }
+        let socket = std::net::UdpSocket::from(socket);
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+        let mut endpoint = Endpoint::new_with_abstract_socket(
+            endpoint_config(),
+            None,
+            runtime.wrap_udp_socket(socket)?,
+            runtime,
+        )?;
         endpoint.set_default_client_config(client_config());
         Ok(endpoint)
     }
 
     pub fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Arc<Endpoint>> {
-        let pool = Self::load(global_ctx);
-        let pool = match ip_version {
-            IpVersion::V4 => &pool.ipv4,
-            _ => &pool.ipv6,
+        let pools = Self::load(global_ctx);
+
+        let pool = loop {
+            let dual_stack = pools.both.enabled.load(Ordering::Relaxed);
+            let (pool, addr) = match ip_version {
+                IpVersion::V4 if !dual_stack => (&pools.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
+                _ => {
+                    let pool = if dual_stack { &pools.both } else { &pools.ipv6 };
+                    (pool, (Ipv6Addr::UNSPECIFIED, 0).into())
+                }
+            };
+            if pool.is_full() {
+                break pool;
+            }
+            let endpoint = Self::create(addr, dual_stack);
+            if let Err(e) = endpoint.as_ref() {
+                if dual_stack {
+                    tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
+                    pools.both.enabled.store(false, Ordering::Relaxed);
+                    pools.ipv4.enabled.store(true, Ordering::Relaxed);
+                    pools.ipv6.enabled.store(true, Ordering::Relaxed);
+                    continue;
+                }
+            }
+            pool.try_push(Arc::new(endpoint?));
+            break pool;
         };
-        if !pool.is_full() {
-            pool.try_push(Arc::new(Self::create(ip_version)?));
-        }
 
         Ok(pool
             .read()
