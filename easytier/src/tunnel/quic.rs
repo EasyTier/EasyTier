@@ -59,9 +59,6 @@ pub fn endpoint_config() -> EndpointConfig {
     config
 }
 
-#[allow(unused)]
-pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
-
 struct ConnWrapper {
     conn: Connection,
 }
