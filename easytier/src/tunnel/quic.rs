@@ -15,14 +15,13 @@ use anyhow::Context;
 use derive_more::Deref;
 use parking_lot::RwLock;
 use quinn::{
-    congestion::BbrConfig, AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig,
-    ServerConfig, TransportConfig,
+    congestion::BbrConfig, ClientConfig, Connection, Endpoint,
+    EndpointConfig, ServerConfig, TransportConfig,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
@@ -117,7 +116,7 @@ impl TunnelListener for QUICTunnelListener {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
                 .await?;
-        let endpoint = QuicEndpointPool::create(addr, false)?;
+        let endpoint = QuicEndpointManager::create(addr, false)?;
         endpoint.set_server_config(Some(server_config()));
         self.endpoint = Some(endpoint);
 
@@ -186,16 +185,16 @@ impl<Item> RwPool<Item> {
 }
 
 #[derive(Debug)]
-pub struct QuicEndpointPool {
+pub struct QuicEndpointManager {
     ipv4: RwPool<Endpoint>,
     ipv6: RwPool<Endpoint>,
     both: RwPool<Endpoint>,
     dual_stack: AtomicBool,
 }
 
-static QUIC_ENDPOINT_POOL: OnceLock<QuicEndpointPool> = OnceLock::new();
+static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
 
-impl QuicEndpointPool {
+impl QuicEndpointManager {
     fn create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
         let socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
@@ -220,7 +219,7 @@ impl QuicEndpointPool {
     }
 }
 
-impl QuicEndpointPool {
+impl QuicEndpointManager {
     fn new(capacity: usize) -> Self {
         let ipv4 = RwPool::new(capacity.div_ceil(2));
         ipv4.enabled.store(false, Ordering::Relaxed);
@@ -244,31 +243,30 @@ impl QuicEndpointPool {
             .map(|n| n.get())
             .unwrap_or(1);
 
-        let pool = QUIC_ENDPOINT_POOL.get();
-        match pool {
-            Some(pool) => {
-                for pool in [&pool.ipv4, &pool.ipv6, &pool.both] {
+        let mgr = QUIC_ENDPOINT_MANAGER.get();
+        match mgr {
+            Some(mgr) => {
+                for pool in [&mgr.ipv4, &mgr.ipv6, &mgr.both] {
                     pool.resize();
                 }
             }
-
             None => {
-                let _ = QUIC_ENDPOINT_POOL.set(Self::new(capacity));
+                let _ = QUIC_ENDPOINT_MANAGER.set(Self::new(capacity));
             }
         }
 
-        QUIC_ENDPOINT_POOL.get().unwrap()
+        QUIC_ENDPOINT_MANAGER.get().unwrap()
     }
 
     fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Endpoint> {
-        let pools = Self::load(global_ctx);
+        let mgr = Self::load(global_ctx);
 
         let pool = loop {
-            let dual_stack = pools.both.enabled.load(Ordering::Relaxed);
+            let dual_stack = mgr.both.enabled.load(Ordering::Relaxed);
             let (pool, addr) = match ip_version {
-                IpVersion::V4 if !dual_stack => (&pools.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
+                IpVersion::V4 if !dual_stack => (&mgr.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
                 _ => {
-                    let pool = if dual_stack { &pools.both } else { &pools.ipv6 };
+                    let pool = if dual_stack { &mgr.both } else { &mgr.ipv6 };
                     (pool, (Ipv6Addr::UNSPECIFIED, 0).into())
                 }
             };
@@ -279,9 +277,9 @@ impl QuicEndpointPool {
             if let Err(e) = endpoint.as_ref() {
                 if dual_stack {
                     tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
-                    pools.both.enabled.store(false, Ordering::Relaxed);
-                    pools.ipv4.enabled.store(true, Ordering::Relaxed);
-                    pools.ipv6.enabled.store(true, Ordering::Relaxed);
+                    mgr.both.enabled.store(false, Ordering::Relaxed);
+                    mgr.ipv4.enabled.store(true, Ordering::Relaxed);
+                    mgr.ipv6.enabled.store(true, Ordering::Relaxed);
                     continue;
                 }
             }
@@ -339,7 +337,7 @@ impl TunnelConnector for QUICTunnelConnector {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
                 .await?;
-        let (endpoint, connection) = QuicEndpointPool::connect(&self.global_ctx, addr).await?;
+        let (endpoint, connection) = QuicEndpointManager::connect(&self.global_ctx, addr).await?;
 
         let local_addr = endpoint.local_addr()?;
 
