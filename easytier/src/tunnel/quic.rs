@@ -189,7 +189,6 @@ pub struct QuicEndpointManager {
     ipv4: RwPool<Endpoint>,
     ipv6: RwPool<Endpoint>,
     both: RwPool<Endpoint>,
-    dual_stack: AtomicBool,
 }
 
 static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
@@ -228,7 +227,6 @@ impl QuicEndpointManager {
             ipv4,
             ipv6,
             both: RwPool::new(capacity),
-            dual_stack: AtomicBool::new(true),
         }
     }
 
