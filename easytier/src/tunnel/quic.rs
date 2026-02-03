@@ -198,6 +198,31 @@ pub struct QuicEndpointPool {
 static QUIC_ENDPOINT_POOL: OnceLock<QuicEndpointPool> = OnceLock::new();
 
 impl QuicEndpointPool {
+    fn create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        setup_sokcet2(&socket, &addr).map_err(std::io::Error::other)?;
+        if dual_stack {
+            socket.set_only_v6(false)?;
+        }
+        let socket = std::net::UdpSocket::from(socket);
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+        let mut endpoint = Endpoint::new_with_abstract_socket(
+            endpoint_config(),
+            None,
+            runtime.wrap_udp_socket(socket)?,
+            runtime,
+        )?;
+        endpoint.set_default_client_config(client_config());
+        Ok(endpoint)
+    }
+}
+
+impl QuicEndpointPool {
     fn new(capacity: usize) -> Self {
         let ipv4 = RwPool::new(capacity.div_ceil(2));
         ipv4.enabled.store(false, Ordering::Relaxed);
@@ -211,7 +236,7 @@ impl QuicEndpointPool {
         }
     }
 
-    pub fn load(global_ctx: &ArcGlobalCtx) -> &Self {
+    fn load(global_ctx: &ArcGlobalCtx) -> &Self {
         let capacity = global_ctx
             .config
             .get_flags()
@@ -237,30 +262,7 @@ impl QuicEndpointPool {
         QUIC_ENDPOINT_POOL.get().unwrap()
     }
 
-    fn create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
-        let socket = socket2::Socket::new(
-            socket2::Domain::for_address(addr),
-            socket2::Type::DGRAM,
-            Some(socket2::Protocol::UDP),
-        )?;
-        setup_sokcet2(&socket, &addr).map_err(std::io::Error::other)?;
-        if dual_stack {
-            socket.set_only_v6(false)?;
-        }
-        let socket = std::net::UdpSocket::from(socket);
-        let runtime = quinn::default_runtime()
-            .ok_or_else(|| std::io::Error::other("no async runtime found"))?;
-        let mut endpoint = Endpoint::new_with_abstract_socket(
-            endpoint_config(),
-            None,
-            runtime.wrap_udp_socket(socket)?,
-            runtime,
-        )?;
-        endpoint.set_default_client_config(client_config());
-        Ok(endpoint)
-    }
-
-    pub fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Arc<Endpoint>> {
+    fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Arc<Endpoint>> {
         let pools = Self::load(global_ctx);
 
         let pool = loop {
