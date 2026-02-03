@@ -15,8 +15,8 @@ use anyhow::Context;
 use derive_more::Deref;
 use parking_lot::RwLock;
 use quinn::{
-    congestion::BbrConfig, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig,
+    congestion::BbrConfig, default_runtime, ClientConfig, Connection, Endpoint, EndpointConfig,
+    ServerConfig, TransportConfig,
 };
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -206,8 +206,7 @@ impl QuicEndpointManager {
             socket.set_only_v6(false)?;
         }
         let socket = std::net::UdpSocket::from(socket);
-        let runtime = quinn::default_runtime()
-            .ok_or_else(|| std::io::Error::other("no async runtime found"))?;
+        let runtime = default_runtime().ok_or(std::io::Error::other("no async runtime found"))?;
         let mut endpoint = Endpoint::new_with_abstract_socket(
             endpoint_config(),
             None,
