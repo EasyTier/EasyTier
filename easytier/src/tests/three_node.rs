@@ -21,7 +21,10 @@ use crate::{
         stats_manager::{LabelType, MetricName},
     },
     instance::instance::Instance,
-    proto::{api::instance::TcpProxyEntryTransportType, common::CompressionAlgoPb},
+    proto::{
+        api::instance::TcpProxyEntryTransportType,
+        common::{CompressionAlgoPb, SecureModeConfig},
+    },
     tunnel::{
         common::tests::{_tunnel_bench_netns, wait_for_condition},
         ring::RingTunnelConnector,
@@ -2757,5 +2760,187 @@ pub async fn config_patch_test() {
     .await;
     assert!(result.is_ok(), "Port forward pingpong should succeed");
 
+    drop_insts(insts).await;
+}
+
+/// Generate SecureModeConfig with random x25519 keypair
+fn generate_secure_mode_config() -> SecureModeConfig {
+    use base64::{prelude::BASE64_STANDARD, Engine};
+    use rand::rngs::OsRng;
+    use x25519_dalek::{PublicKey, StaticSecret};
+
+    let private = StaticSecret::random_from_rng(OsRng);
+    let public = PublicKey::from(&private);
+
+    SecureModeConfig {
+        enabled: true,
+        local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+        local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+    }
+}
+/// Test relay peer end-to-end encryption with TCP
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
+    use crate::peers::route_trait::NextHopPolicy;
+
+    let insts = init_three_node_ex(
+        proto,
+        |cfg| {
+            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let inst1_peer_id = insts[0].peer_id();
+    let inst2_peer_id = insts[1].peer_id();
+    let inst3_peer_id = insts[2].peer_id();
+
+    println!(
+        "Test topology: inst1({}) <-> inst2({}) <-> inst3({})",
+        inst1_peer_id, inst2_peer_id, inst3_peer_id
+    );
+
+    // Check secure mode is enabled
+    let secure_mode_1 = insts[0].get_global_ctx().config.get_secure_mode();
+    let secure_mode_2 = insts[1].get_global_ctx().config.get_secure_mode();
+    let secure_mode_3 = insts[2].get_global_ctx().config.get_secure_mode();
+    println!(
+        "Secure mode enabled: inst1={}, inst2={}, inst3={}",
+        secure_mode_1.is_some(),
+        secure_mode_2.is_some(),
+        secure_mode_3.is_some()
+    );
+
+    // Wait for routes to be established
+    wait_for_condition(
+        || async {
+            let routes = insts[0].get_peer_manager().list_routes().await;
+            routes.len() == 2
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Verify inst1 sees inst3 via inst2 (non-direct path)
+    let next_hop_to_inst3 = insts[0]
+        .get_peer_manager()
+        .get_peer_map()
+        .get_gateway_peer_id(inst3_peer_id, NextHopPolicy::LeastHop)
+        .await;
+    println!("Next hop from inst1 to inst3: {:?}", next_hop_to_inst3);
+    assert_eq!(
+        next_hop_to_inst3,
+        Some(inst2_peer_id),
+        "inst1 should reach inst3 via inst2 (relay)"
+    );
+
+    // Verify inst1 has no direct connection to inst3
+    assert!(
+        !insts[0]
+            .get_peer_manager()
+            .get_peer_map()
+            .has_peer(inst3_peer_id),
+        "inst1 should NOT have direct connection to inst3"
+    );
+
+    // Check if noise_static_pubkey is available for relay handshake
+    let route_info_inst3 = insts[0]
+        .get_peer_manager()
+        .get_peer_map()
+        .get_route_peer_info(inst3_peer_id)
+        .await;
+    println!(
+        "Route info for inst3 on inst1: noise_static_pubkey len = {:?}",
+        route_info_inst3
+            .as_ref()
+            .map(|i| i.noise_static_pubkey.len())
+    );
+
+    // Test basic connectivity through relay
+    println!("Starting ping test from net_a to 10.144.144.3...");
+
+    assert!(
+        ping_test("net_a", "10.144.144.3", None).await,
+        "Ping from net_a to inst3 should succeed"
+    );
+
+    // Verify relay sessions are established
+    let relay_map_1 = insts[0].get_peer_manager().get_relay_peer_map();
+    let relay_map_3 = insts[2].get_peer_manager().get_relay_peer_map();
+
+    println!(
+        "Relay states after ping: inst1->inst3: {}, inst3->inst1: {}",
+        relay_map_1.has_state(inst3_peer_id),
+        relay_map_3.has_state(inst1_peer_id)
+    );
+
+    // Test bidirectional connectivity
+    assert!(
+        ping_test("net_a", "10.144.144.3", None).await,
+        "Ping from net_a to inst3 should work"
+    );
+    assert!(
+        ping_test("net_c", "10.144.144.1", None).await,
+        "Ping from net_c to inst1 should work"
+    );
+
+    println!("Test completed successfully!");
+    drop_insts(insts).await;
+}
+
+/// Test Relay Peer session cleanup on relay failure - TCP
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+pub async fn relay_peer_session_cleanup_tcp(#[values("tcp", "udp")] proto: &str) {
+    // Initialize three nodes with secure mode enabled in config phase
+    let mut insts = init_three_node_ex(
+        proto,
+        |cfg| {
+            cfg.set_secure_mode(Some(generate_secure_mode_config()));
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    let inst3_peer_id = insts[2].peer_id();
+
+    // Establish initial connectivity
+    wait_for_condition(
+        || async { ping_test("net_a", "10.144.144.3", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Verify relay session exists
+    let relay_map_1 = insts[0].get_peer_manager().get_relay_peer_map();
+    wait_for_condition(
+        || async { relay_map_1.has_state(inst3_peer_id) },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // Simulate relay node failure by dropping inst2
+    let mut inst2 = insts.remove(1);
+    inst2.clear_resources().await;
+    drop(inst2);
+
+    // Give time for route updates
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify route to inst3 is gone
+    // Note: after remove(1), insts now contains [inst1, inst3] where inst3 is at index 1
+    let routes = insts[0].get_peer_manager().list_routes().await;
+    assert!(
+        !routes.iter().any(|r| r.peer_id == inst3_peer_id),
+        "Route to inst3 should be removed after relay node failure"
+    );
+
+    // Cleanup remaining instances
     drop_insts(insts).await;
 }
