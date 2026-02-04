@@ -1100,6 +1100,9 @@ impl StunInfoCollector {
     }
 
     pub fn get_default_servers() -> Vec<String> {
+        if cfg!(test) {
+            return Vec::new();
+        }
         // NOTICE: we may need to choose stun server based on geolocation
         // stun server cross nation may return an external ip address with high latency and loss rate
         [
@@ -1114,6 +1117,11 @@ impl StunInfoCollector {
     }
 
     pub fn get_default_tcp_servers() -> Vec<String> {
+        // if test, return empty vector
+        if cfg!(test) {
+            return Vec::new();
+        }
+
         [
             "stun.hot-chilli.net",
             "stun.fitauto.ru",
@@ -1129,6 +1137,10 @@ impl StunInfoCollector {
     }
 
     pub fn get_default_servers_v6() -> Vec<String> {
+        if cfg!(test) {
+            return Vec::new();
+        }
+
         ["txt:stun-v6.easytier.cn"]
             .iter()
             .map(|x| x.to_string())

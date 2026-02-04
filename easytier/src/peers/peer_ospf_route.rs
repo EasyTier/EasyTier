@@ -10,6 +10,8 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
@@ -146,6 +148,7 @@ impl RoutePeerInfo {
             groups: Vec::new(),
 
             quic_port: None,
+            noise_static_pubkey: Vec::new(),
         }
     }
 
@@ -164,6 +167,12 @@ impl RoutePeerInfo {
         global_ctx: &ArcGlobalCtx,
     ) -> Self {
         let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
+        let noise_static_pubkey = global_ctx
+            .config
+            .get_secure_mode()
+            .and_then(|cfg| cfg.local_public_key)
+            .and_then(|key| BASE64_STANDARD.decode(key).ok())
+            .unwrap_or_default();
         Self {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
@@ -196,6 +205,8 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
+
+            noise_static_pubkey,
 
             ..Default::default()
         }
@@ -1842,15 +1853,6 @@ impl PeerRouteServiceImpl {
             if let Some(last_update) = peer_info.last_update {
                 let last_update = TryInto::<SystemTime>::try_into(last_update).unwrap();
                 if last_sync_succ_timestamp.is_some_and(|t| last_update < t) {
-                    tracing::debug!(
-                        "ignore peer_info {:?} because last_update: {:?} is older than last_sync_succ_timestamp: {:?}, peer_infos_count: {}, my_peer_id: {:?}, session: {:?}",
-                        peer_info,
-                        last_update,
-                        last_sync_succ_timestamp,
-                        peer_infos.len(),
-                        self.my_peer_id,
-                        session
-                    );
                     break;
                 }
             }
@@ -2556,6 +2558,7 @@ impl RouteSessionManager {
                     continue;
                 };
                 session.update_initiator_flag(true);
+                self.sync_now("update_initiator_flag");
             }
 
             // clear sessions that are neither dst_initiator or we_are_initiator.

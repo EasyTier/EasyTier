@@ -138,6 +138,8 @@ impl PeerSessionTunnelFilter {
         hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8
             || hdr.packet_type == PacketType::NoiseHandshakeMsg2 as u8
             || hdr.packet_type == PacketType::NoiseHandshakeMsg3 as u8
+            || hdr.packet_type == PacketType::RelayHandshake as u8
+            || hdr.packet_type == PacketType::RelayHandshakeAck as u8
             || hdr.packet_type == PacketType::Ping as u8
             || hdr.packet_type == PacketType::Pong as u8
     }
@@ -169,9 +171,19 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         };
 
         let my_peer_id = self.my_peer_id.load();
-        session
-            .encrypt_payload(my_peer_id, peer_id, &mut data)
-            .ok()?;
+        if my_peer_id != hdr.from_peer_id.get() {
+            return Some(data);
+        }
+
+        if let Err(e) = session.encrypt_payload(my_peer_id, peer_id, &mut data) {
+            tracing::warn!(
+                ?my_peer_id,
+                ?peer_id,
+                ?e,
+                "PeerSessionTunnelFilter: encrypt failed, dropping packet"
+            );
+            return None;
+        }
 
         Some(data)
     }
@@ -198,7 +210,14 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         if from_peer_id == 0 {
             return Some(Ok(data));
         }
-        self.peer_id.store(Some(from_peer_id));
+
+        let Some(peer_id) = self.peer_id.load() else {
+            return Some(Ok(data));
+        };
+
+        if from_peer_id != peer_id {
+            return Some(Ok(data));
+        }
 
         let mut guard = self.session.lock().unwrap();
         let Some(session) = guard.as_mut() else {
@@ -206,7 +225,22 @@ impl TunnelFilter for PeerSessionTunnelFilter {
         };
 
         let my_peer_id = self.my_peer_id.load();
-        let _ = session.decrypt_payload(from_peer_id, my_peer_id, &mut data);
+        if hdr.to_peer_id.get() != my_peer_id {
+            return Some(Ok(data));
+        }
+
+        if let Err(e) = session.decrypt_payload(from_peer_id, my_peer_id, &mut data) {
+            if !session.is_valid() {
+                // Session auto-invalidated after too many consecutive failures.
+                // Close the connection to trigger reconnection with a fresh handshake.
+                tracing::error!(?e, "session invalidated, closing connection");
+                return Some(Err(TunnelError::InternalError(
+                    "session invalidated due to consecutive decrypt failures".to_string(),
+                )));
+            }
+            // Transient failure, drop this packet but keep the connection alive.
+            return None;
+        }
 
         Some(Ok(data))
     }
@@ -775,6 +809,13 @@ impl PeerConn {
             .get_remote_static()
             .map(|x: &[u8]| x.to_vec())
             .unwrap_or_default();
+        let remote_static_key = if remote_static.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&remote_static);
+            Some(key)
+        } else {
+            None
+        };
 
         if let Some(pinned) = pinned_remote_pubkey.as_ref() {
             if pinned.as_slice() == remote_static.as_slice() {
@@ -812,6 +853,7 @@ impl PeerConn {
             msg2_pb.initial_epoch,
             algo,
             msg2_pb.server_encryption_algorithm.clone(),
+            remote_static_key,
         )?;
 
         Ok(NoiseHandshakeResult {
@@ -949,6 +991,7 @@ impl PeerConn {
             msg1_pb.a_session_generation,
             algo.clone(),
             msg1_pb.client_encryption_algorithm.clone(),
+            None,
         )?;
 
         let b_conn_id = uuid::Uuid::new_v4();
@@ -1022,6 +1065,14 @@ impl PeerConn {
             .get_remote_static()
             .map(|x: &[u8]| x.to_vec())
             .unwrap_or_default();
+        let remote_static_key = if remote_static.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&remote_static);
+            Some(key)
+        } else {
+            None
+        };
+        session.check_or_set_peer_static_pubkey(remote_static_key)?;
 
         let handshake_hash = hs.get_handshake_hash().to_vec();
 

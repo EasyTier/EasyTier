@@ -77,6 +77,8 @@ pub enum PacketType {
     NoiseHandshakeMsg1 = 13,
     NoiseHandshakeMsg2 = 14,
     NoiseHandshakeMsg3 = 15,
+    RelayHandshake = 20,
+    RelayHandshakeAck = 21,
 
     // used internally,
     DataWithKcpSrcModified = 18,
