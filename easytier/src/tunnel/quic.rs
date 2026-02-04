@@ -509,8 +509,7 @@ mod tests {
         RUNTIME.block_on(impl_test_quic_pingpong())
     }
     async fn impl_test_quic_pingpong() {
-        let listener =
-            QUICTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap(), global_ctx());
+        let listener = QUICTunnelListener::new("quic://[::]:21011".parse().unwrap(), global_ctx());
         let connector =
             QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
@@ -521,8 +520,7 @@ mod tests {
         RUNTIME.block_on(impl_test_quic_bench())
     }
     async fn impl_test_quic_bench() {
-        let listener =
-            QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap(), global_ctx());
+        let listener = QUICTunnelListener::new("quic://[::]:21012".parse().unwrap(), global_ctx());
         let connector =
             QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap(), global_ctx());
         _tunnel_bench(listener, connector).await
