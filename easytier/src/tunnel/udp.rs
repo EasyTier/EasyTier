@@ -548,9 +548,9 @@ impl TunnelListener for UdpTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
+            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev), true)?;
         } else {
-            setup_sokcet2(&socket2_socket, &addr)?;
+            setup_sokcet2(&socket2_socket, &addr, true)?;
         }
 
         self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
@@ -838,7 +838,7 @@ impl UdpTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr, true) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }
@@ -1047,7 +1047,7 @@ mod tests {
                 Some(socket2::Protocol::UDP),
             )
             .unwrap();
-            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
+            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone(), true).unwrap();
         }
     }
 
