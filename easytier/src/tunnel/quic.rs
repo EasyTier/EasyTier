@@ -68,13 +68,15 @@ impl Drop for ConnWrapper {
 
 pub struct QUICTunnelListener {
     addr: url::Url,
+    global_ctx: ArcGlobalCtx,
     endpoint: Option<Endpoint>,
 }
 
 impl QUICTunnelListener {
-    pub fn new(addr: url::Url) -> Self {
+    pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
         QUICTunnelListener {
             addr,
+            global_ctx,
             endpoint: None,
         }
     }
@@ -116,13 +118,11 @@ impl TunnelListener for QUICTunnelListener {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
                 .await?;
-        let endpoint = QuicEndpointManager::try_create(addr, false)?;
-        endpoint.set_server_config(Some(server_config()));
-        self.endpoint = Some(endpoint);
-
+        let endpoint = QuicEndpointManager::server(&self.global_ctx, addr)?;
         self.addr
-            .set_port(Some(self.endpoint.as_ref().unwrap().local_addr()?.port()))
+            .set_port(Some(endpoint.local_addr()?.port()))
             .unwrap();
+        self.endpoint = Some(endpoint);
 
         Ok(())
     }
@@ -489,52 +489,52 @@ mod tests {
 
     use super::*;
 
+    fn global_ctx() -> ArcGlobalCtx {
+        let identity = crate::common::config::NetworkIdentity::default();
+        get_mock_global_ctx_with_network(Some(identity))
+    }
+
     #[tokio::test]
     async fn quic_pingpong() {
-        let listener = QUICTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap());
-        let identity = crate::common::config::NetworkIdentity::default();
-        let global_ctx = get_mock_global_ctx_with_network(Some(identity));
+        let listener =
+            QUICTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap(), global_ctx());
         let connector =
-            QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx);
+            QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
     }
 
     #[tokio::test]
     async fn quic_bench() {
-        let listener = QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap());
-        let identity = crate::common::config::NetworkIdentity::default();
-        let global_ctx = get_mock_global_ctx_with_network(Some(identity));
+        let listener =
+            QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap(), global_ctx());
         let connector =
-            QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap(), global_ctx);
+            QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap(), global_ctx());
         _tunnel_bench(listener, connector).await
     }
 
     #[tokio::test]
     async fn ipv6_pingpong() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap());
-        let identity = crate::common::config::NetworkIdentity::default();
-        let global_ctx = get_mock_global_ctx_with_network(Some(identity));
-        let connector = QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap(), global_ctx);
+        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
+        let connector =
+            QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
     }
 
     #[tokio::test]
     async fn ipv6_domain_pingpong() {
-        let identity = crate::common::config::NetworkIdentity::default();
-        let global_ctx = get_mock_global_ctx_with_network(Some(identity));
-
-        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap());
+        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap(), global_ctx());
         let mut connector = QUICTunnelConnector::new(
             "quic://test.easytier.top:31016".parse().unwrap(),
-            global_ctx.clone(),
+            global_ctx(),
         );
         connector.set_ip_version(IpVersion::V6);
         _tunnel_pingpong(listener, connector).await;
 
-        let listener = QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap());
+        let listener =
+            QUICTunnelListener::new("quic://127.0.0.1:31016".parse().unwrap(), global_ctx());
         let mut connector = QUICTunnelConnector::new(
             "quic://test.easytier.top:31016".parse().unwrap(),
-            global_ctx.clone(),
+            global_ctx(),
         );
         connector.set_ip_version(IpVersion::V4);
         _tunnel_pingpong(listener, connector).await;
@@ -543,13 +543,14 @@ mod tests {
     #[tokio::test]
     async fn test_alloc_port() {
         // v4
-        let mut listener = QUICTunnelListener::new("quic://0.0.0.0:0".parse().unwrap());
+        let mut listener =
+            QUICTunnelListener::new("quic://0.0.0.0:0".parse().unwrap(), global_ctx());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
 
         // v6
-        let mut listener = QUICTunnelListener::new("quic://[::]:0".parse().unwrap());
+        let mut listener = QUICTunnelListener::new("quic://[::]:0".parse().unwrap(), global_ctx());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
