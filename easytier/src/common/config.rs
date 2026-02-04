@@ -636,12 +636,13 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn get_id(&self) -> uuid::Uuid {
         let mut locked_config = self.config.lock().unwrap();
-        if locked_config.instance_id.is_none() {
-            let id = uuid::Uuid::new_v4();
-            locked_config.instance_id = Some(id);
-            id
-        } else {
-            *locked_config.instance_id.as_ref().unwrap()
+        match locked_config.instance_id {
+            Some(id) => id,
+            None => {
+                let id = uuid::Uuid::new_v4();
+                locked_config.instance_id = Some(id);
+                id
+            }
         }
     }
 

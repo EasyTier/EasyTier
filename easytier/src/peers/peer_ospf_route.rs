@@ -2214,54 +2214,55 @@ impl PeerRouteServiceImpl {
             ret, sync_route_info_req, session, self.global_ctx.network, next_last_sync_succ_timestamp
         );
 
-        if let Err(e) = &ret {
-            tracing::error!(
-                ?ret,
-                ?my_peer_id,
-                ?dst_peer_id,
-                ?e,
-                "sync_route_info failed"
-            );
-            session
-                .need_sync_initiator_info
-                .store(true, Ordering::Relaxed);
-        } else {
-            let resp = ret.as_ref().unwrap();
-            if resp.error.is_some() {
-                let err = resp.error.unwrap();
-                if err == Error::DuplicatePeerId as i32 {
-                    if !self.global_ctx.get_feature_flags().is_public_server {
-                        panic!("duplicate peer id");
+        match ret.as_ref() {
+            Err(e) => {
+                tracing::error!(
+                    ?ret,
+                    ?my_peer_id,
+                    ?dst_peer_id,
+                    ?e,
+                    "sync_route_info failed"
+                );
+                session
+                    .need_sync_initiator_info
+                    .store(true, Ordering::Relaxed);
+            }
+            Ok(resp) => {
+                if let Some(err) = resp.error {
+                    if err == Error::DuplicatePeerId as i32 {
+                        if !self.global_ctx.get_feature_flags().is_public_server {
+                            panic!("duplicate peer id");
+                        }
+                    } else {
+                        tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
+                        session
+                            .need_sync_initiator_info
+                            .store(true, Ordering::Relaxed);
                     }
                 } else {
-                    tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
+                    session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
+
                     session
-                        .need_sync_initiator_info
-                        .store(true, Ordering::Relaxed);
+                        .dst_is_initiator
+                        .store(resp.is_initiator, Ordering::Relaxed);
+
+                    session.update_dst_session_id(resp.session_id);
+
+                    if let Some(peer_infos) = &peer_infos {
+                        session.update_dst_saved_peer_info_version(peer_infos, dst_peer_id);
+                    }
+
+                    if let Some(conn_info) = &conn_info {
+                        session.update_dst_saved_conn_info_version(conn_info, dst_peer_id);
+                    }
+
+                    if let Some(foreign_network) = &foreign_network {
+                        session
+                            .update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
+                    }
+
+                    session.update_last_sync_succ_timestamp(next_last_sync_succ_timestamp);
                 }
-            } else {
-                session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
-
-                session
-                    .dst_is_initiator
-                    .store(resp.is_initiator, Ordering::Relaxed);
-
-                session.update_dst_session_id(resp.session_id);
-
-                if let Some(peer_infos) = &peer_infos {
-                    session.update_dst_saved_peer_info_version(peer_infos, dst_peer_id);
-                }
-
-                // Update session saved versions based on the connection info format used
-                if let Some(conn_info) = &conn_info {
-                    session.update_dst_saved_conn_info_version(conn_info, dst_peer_id);
-                }
-
-                if let Some(foreign_network) = &foreign_network {
-                    session.update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
-                }
-
-                session.update_last_sync_succ_timestamp(next_last_sync_succ_timestamp);
             }
         }
         false

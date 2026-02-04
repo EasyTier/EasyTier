@@ -1377,12 +1377,9 @@ impl PeerManager {
                 .config
                 .get_proxy_cidrs()
                 .into_iter()
-                .map(|x| {
-                    if x.mapped_cidr.is_none() {
-                        x.cidr.to_string()
-                    } else {
-                        format!("{}->{}", x.cidr, x.mapped_cidr.unwrap())
-                    }
+                .map(|x| match x.mapped_cidr {
+                    None => x.cidr.to_string(),
+                    Some(mapped) => format!("{}->{}", x.cidr, mapped),
                 })
                 .collect(),
             hostname: self.global_ctx.get_hostname(),
