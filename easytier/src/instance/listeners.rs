@@ -30,14 +30,14 @@ use crate::{
 
 pub fn get_listener_by_url(
     l: &url::Url,
-    _ctx: ArcGlobalCtx,
+    global_ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
     Ok(match l.scheme() {
         "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
         "udp" => Box::new(UdpTunnelListener::new(l.clone())),
         #[cfg(feature = "wireguard")]
         "wg" => {
-            let nid = _ctx.get_network_identity();
+            let nid = global_ctx.get_network_identity();
             let wg_config = WgConfig::new_from_network_identity(
                 &nid.network_name,
                 &nid.network_secret.unwrap_or_default(),
@@ -45,7 +45,7 @@ pub fn get_listener_by_url(
             Box::new(WgTunnelListener::new(l.clone(), wg_config))
         }
         #[cfg(feature = "quic")]
-        "quic" => Box::new(QUICTunnelListener::new(l.clone())),
+        "quic" => Box::new(QUICTunnelListener::new(l.clone(), global_ctx.clone())),
         #[cfg(feature = "websocket")]
         "ws" | "wss" => {
             use crate::tunnel::websocket::WSTunnelListener;

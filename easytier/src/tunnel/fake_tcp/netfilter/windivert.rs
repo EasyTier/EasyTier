@@ -94,8 +94,7 @@ impl WinDivertTun {
         // Layer: Network (0)
         // Priority: 0
         let flags = WinDivertFlags::default().set_sniff();
-        let reader = WinDivert::network(&filter, 0, flags)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        let reader = WinDivert::network(&filter, 0, flags).map_err(|e| io::Error::other(e))?;
         let reader = Arc::new(WinDivertReader::new(reader));
         let reader_clone = reader.clone();
 
@@ -109,7 +108,7 @@ impl WinDivertTun {
 
                         let mut eth_data = vec![0u8; 14 + data.len()];
                         // Set EtherType
-                        if data.len() > 0 && data[0] >> 4 == 4 {
+                        if !data.is_empty() && data[0] >> 4 == 4 {
                             eth_data[12] = 0x08;
                             eth_data[13] = 0x00;
                         } else {
@@ -118,7 +117,7 @@ impl WinDivertTun {
                         }
                         eth_data[14..].copy_from_slice(data);
 
-                        if let Err(_) = tx.blocking_send(eth_data) {
+                        if tx.blocking_send(eth_data).is_err() {
                             break;
                         }
                     }
@@ -134,7 +133,7 @@ impl WinDivertTun {
         // Use "false" to avoid capturing anything.
         // Flags: 0
         let sender = WinDivert::network("false", 0, WinDivertFlags::default())
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(|e| io::Error::other(e))?;
 
         Ok(Self {
             recv_queue: Mutex::new(rx),
@@ -171,21 +170,15 @@ impl stack::Tun for WinDivertTun {
         let ip_data = &packet[14..];
 
         let Ok(sender) = self.sender.try_lock() else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "WinDivert sender lock failed",
-            ));
+            return Err(std::io::Error::other("WinDivert sender lock failed"));
         };
 
         let mut pkt = unsafe { WinDivertPacket::<layer::NetworkLayer>::new(ip_data.to_vec()) };
         pkt.address.set_outbound(true);
 
-        sender.send(&pkt).map_err(|e| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("WinDivert send failed: {}", e),
-            )
-        })?;
+        sender
+            .send(&pkt)
+            .map_err(|e| std::io::Error::other(format!("WinDivert send failed: {}", e)))?;
 
         Ok(())
     }
