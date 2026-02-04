@@ -23,6 +23,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+// region config
 pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
 
@@ -55,95 +56,9 @@ pub fn endpoint_config() -> EndpointConfig {
     config.max_udp_payload_size(65527).unwrap();
     config
 }
+//endregion
 
-struct ConnWrapper {
-    conn: Connection,
-}
-
-impl Drop for ConnWrapper {
-    fn drop(&mut self) {
-        self.conn.close(0u32.into(), b"done");
-    }
-}
-
-pub struct QUICTunnelListener {
-    addr: url::Url,
-    global_ctx: ArcGlobalCtx,
-    endpoint: Option<Endpoint>,
-}
-
-impl QUICTunnelListener {
-    pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
-        QUICTunnelListener {
-            addr,
-            global_ctx,
-            endpoint: None,
-        }
-    }
-
-    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        // accept a single connection
-        let conn = self
-            .endpoint
-            .as_ref()
-            .unwrap()
-            .accept()
-            .await
-            .ok_or_else(|| anyhow::anyhow!("accept failed, no incoming"))?;
-        let conn = conn.await.with_context(|| "accept connection failed")?;
-        let remote_addr = conn.remote_address();
-        let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
-
-        let arc_conn = Arc::new(ConnWrapper { conn });
-
-        let info = TunnelInfo {
-            tunnel_type: "quic".to_owned(),
-            local_addr: Some(self.local_url().into()),
-            remote_addr: Some(
-                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
-            ),
-        };
-
-        Ok(Box::new(TunnelWrapper::new(
-            FramedReader::new_with_associate_data(r, 2000, Some(Box::new(arc_conn.clone()))),
-            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
-            Some(info),
-        )))
-    }
-}
-
-#[async_trait::async_trait]
-impl TunnelListener for QUICTunnelListener {
-    async fn listen(&mut self) -> Result<(), TunnelError> {
-        let addr =
-            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
-                .await?;
-        let endpoint = QuicEndpointManager::server(&self.global_ctx, addr)?;
-        self.addr
-            .set_port(Some(endpoint.local_addr()?.port()))
-            .unwrap();
-        self.endpoint = Some(endpoint);
-
-        Ok(())
-    }
-
-    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
-        loop {
-            match self.do_accept().await {
-                Ok(ret) => return Ok(ret),
-                Err(e) => {
-                    tracing::warn!(?e, "accept fail");
-                    tokio::time::sleep(Duration::from_millis(1)).await;
-                }
-            }
-        }
-    }
-
-    fn local_url(&self) -> url::Url {
-        self.addr.clone()
-    }
-}
-
+//region rw pool
 #[derive(Derivative)]
 #[derivative(Default(bound = ""))]
 #[derive(Debug, Deref, DerefMut)]
@@ -254,7 +169,9 @@ impl<Item> RwPool<Item> {
         f(&mut persistent.iter().chain(ephemeral.iter()))
     }
 }
+//endregion
 
+//region endpoint manager
 #[derive(Debug)]
 pub struct QuicEndpointManager {
     ipv4: RwPool<Endpoint>,
@@ -422,6 +339,95 @@ impl QuicEndpointManager {
         Ok((endpoint, connection))
     }
 }
+//endregion
+
+struct ConnWrapper {
+    conn: Connection,
+}
+
+impl Drop for ConnWrapper {
+    fn drop(&mut self) {
+        self.conn.close(0u32.into(), b"done");
+    }
+}
+
+pub struct QUICTunnelListener {
+    addr: url::Url,
+    global_ctx: ArcGlobalCtx,
+    endpoint: Option<Endpoint>,
+}
+
+impl QUICTunnelListener {
+    pub fn new(addr: url::Url, global_ctx: ArcGlobalCtx) -> Self {
+        QUICTunnelListener {
+            addr,
+            global_ctx,
+            endpoint: None,
+        }
+    }
+
+    async fn do_accept(&self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+        // accept a single connection
+        let conn = self
+            .endpoint
+            .as_ref()
+            .unwrap()
+            .accept()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("accept failed, no incoming"))?;
+        let conn = conn.await.with_context(|| "accept connection failed")?;
+        let remote_addr = conn.remote_address();
+        let (w, r) = conn.accept_bi().await.with_context(|| "accept_bi failed")?;
+
+        let arc_conn = Arc::new(ConnWrapper { conn });
+
+        let info = TunnelInfo {
+            tunnel_type: "quic".to_owned(),
+            local_addr: Some(self.local_url().into()),
+            remote_addr: Some(
+                super::build_url_from_socket_addr(&remote_addr.to_string(), "quic").into(),
+            ),
+        };
+
+        Ok(Box::new(TunnelWrapper::new(
+            FramedReader::new_with_associate_data(r, 2000, Some(Box::new(arc_conn.clone()))),
+            FramedWriter::new_with_associate_data(w, Some(Box::new(arc_conn))),
+            Some(info),
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl TunnelListener for QUICTunnelListener {
+    async fn listen(&mut self) -> Result<(), TunnelError> {
+        let addr =
+            check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
+                .await?;
+        let endpoint = QuicEndpointManager::server(&self.global_ctx, addr)?;
+        self.addr
+            .set_port(Some(endpoint.local_addr()?.port()))
+            .unwrap();
+        self.endpoint = Some(endpoint);
+
+        Ok(())
+    }
+
+    async fn accept(&mut self) -> Result<Box<dyn Tunnel>, super::TunnelError> {
+        loop {
+            match self.do_accept().await {
+                Ok(ret) => return Ok(ret),
+                Err(e) => {
+                    tracing::warn!(?e, "accept fail");
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        }
+    }
+
+    fn local_url(&self) -> url::Url {
+        self.addr.clone()
+    }
+}
 
 pub struct QUICTunnelConnector {
     addr: url::Url,
@@ -492,12 +498,8 @@ mod tests {
     use super::*;
 
     // Shared runtime for all tests to avoid endpoint invalidation across runtimes
-    static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
-        Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-    });
+    static RUNTIME: LazyLock<Runtime> =
+        LazyLock::new(|| Builder::new_multi_thread().enable_all().build().unwrap());
 
     fn global_ctx() -> ArcGlobalCtx {
         let identity = crate::common::config::NetworkIdentity::default();
@@ -531,8 +533,7 @@ mod tests {
         RUNTIME.block_on(impl_test_ipv6_pingpong())
     }
     async fn impl_test_ipv6_pingpong() {
-        let listener =
-            QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
+        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
         let connector =
             QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
@@ -543,8 +544,7 @@ mod tests {
         RUNTIME.block_on(impl_test_ipv6_domain_pingpong())
     }
     async fn impl_test_ipv6_domain_pingpong() {
-        let listener =
-            QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap(), global_ctx());
+        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap(), global_ctx());
         let mut connector = QUICTunnelConnector::new(
             "quic://test.easytier.top:31016".parse().unwrap(),
             global_ctx(),
@@ -575,8 +575,7 @@ mod tests {
         assert!(port > 0);
 
         // v6
-        let mut listener =
-            QUICTunnelListener::new("quic://[::]:0".parse().unwrap(), global_ctx());
+        let mut listener = QUICTunnelListener::new("quic://[::]:0".parse().unwrap(), global_ctx());
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
