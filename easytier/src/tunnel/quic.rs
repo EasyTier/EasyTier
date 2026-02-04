@@ -8,7 +8,7 @@ use super::{
 };
 use crate::common::global_ctx::ArcGlobalCtx;
 use crate::tunnel::{
-    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
+    common::{setup_socket2, FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
@@ -188,7 +188,7 @@ impl QuicEndpointManager {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        setup_sokcet2(&socket, &addr, addr.is_ipv6() && !dual_stack)
+        setup_socket2(&socket, &addr, addr.is_ipv6() && !dual_stack)
             .map_err(std::io::Error::other)?;
         let socket = std::net::UdpSocket::from(socket);
         let runtime = default_runtime().ok_or(std::io::Error::other("no async runtime found"))?;

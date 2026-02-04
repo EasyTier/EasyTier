@@ -33,7 +33,7 @@ use crate::{
 };
 
 use super::{
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    common::{setup_socket2, setup_socket2_ext, wait_for_connect_futures},
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
     ring::{RingSink, RingStream},
     IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
@@ -548,9 +548,9 @@ impl TunnelListener for UdpTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev), true)?;
+            setup_socket2_ext(&socket2_socket, &addr, Some(bind_dev), true)?;
         } else {
-            setup_sokcet2(&socket2_socket, &addr, true)?;
+            setup_socket2(&socket2_socket, &addr, true)?;
         }
 
         self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
@@ -838,7 +838,7 @@ impl UdpTunnelConnector {
                 socket2::Type::DGRAM,
                 Some(socket2::Protocol::UDP),
             )?;
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr, true) {
+            if let Err(e) = setup_socket2(&socket2_socket, bind_addr, true) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }
@@ -1047,7 +1047,7 @@ mod tests {
                 Some(socket2::Protocol::UDP),
             )
             .unwrap();
-            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone(), true).unwrap();
+            setup_socket2_ext(&socket2_socket, &addr, bind_dev.clone(), true).unwrap();
         }
     }
 
