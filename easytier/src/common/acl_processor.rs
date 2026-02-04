@@ -1203,6 +1203,7 @@ impl AclRuleBuilder {
                     declares: vec![],
                     members: vec![],
                 }),
+                route_distance: None,
             });
         }
 
@@ -1233,11 +1234,187 @@ pub enum AclStatType {
     Noop,
 }
 
+#[derive(Debug, Clone)]
+pub struct PeerDistanceInfo {
+    pub ipv4_addr: Option<std::net::Ipv4Addr>,
+    pub ipv6_addr: Option<std::net::Ipv6Addr>,
+    pub verified_groups: Vec<String>,
+    pub is_public_server: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FastDistanceRule {
+    pub name: String,
+    pub priority: u32,
+    pub enabled: bool,
+    pub distance: u32,
+    pub destination_ip_cidrs: Vec<cidr::IpCidr>,
+    pub destination_groups: HashSet<String>,
+    pub foreign_node: Option<bool>,
+}
+
+impl FastDistanceRule {
+    pub fn matches_ip(&self, peer: &PeerDistanceInfo) -> bool {
+        if self.destination_ip_cidrs.is_empty() {
+            return true;
+        }
+
+        let ipv4_match = peer.ipv4_addr.is_some_and(|ipv4| {
+            self.destination_ip_cidrs.iter().any(|cidr| match cidr {
+                cidr::IpCidr::V4(v4_cidr) => v4_cidr.contains(&ipv4),
+                cidr::IpCidr::V6(_) => false,
+            })
+        });
+
+        let ipv6_match = peer.ipv6_addr.is_some_and(|ipv6| {
+            self.destination_ip_cidrs.iter().any(|cidr| match cidr {
+                cidr::IpCidr::V4(_) => false,
+                cidr::IpCidr::V6(v6_cidr) => v6_cidr.contains(&ipv6),
+            })
+        });
+
+        ipv4_match || ipv6_match
+    }
+
+    pub fn matches_groups(&self, peer: &PeerDistanceInfo) -> bool {
+        if self.destination_groups.is_empty() {
+            return true;
+        }
+        peer.verified_groups
+            .iter()
+            .any(|g| self.destination_groups.contains(g))
+    }
+
+    pub fn matches_foreign(&self, peer: &PeerDistanceInfo) -> bool {
+        match self.foreign_node {
+            None => true,
+            Some(required) => peer.is_public_server == required,
+        }
+    }
+
+    pub fn matches(&self, peer: &PeerDistanceInfo) -> bool {
+        self.enabled
+            && self.matches_ip(peer)
+            && self.matches_groups(peer)
+            && self.matches_foreign(peer)
+    }
+}
+
+pub struct RouteDistanceProcessor {
+    rules: Vec<FastDistanceRule>,
+    default_distance: u32,
+}
+
+impl RouteDistanceProcessor {
+    fn validate_distance(distance: u32, rule_name: &str) -> u32 {
+        if distance == 0 {
+            tracing::warn!(
+                "RouteDistanceRule '{}': distance=0 is invalid, correcting to 1",
+                rule_name
+            );
+            return 1;
+        }
+        let max_distance = i32::MAX as u32;
+        if distance > max_distance {
+            tracing::warn!(
+                "RouteDistanceRule '{}': distance={} exceeds i32::MAX, capping to {}",
+                rule_name,
+                distance,
+                max_distance
+            );
+            return max_distance;
+        }
+        distance
+    }
+
+    pub fn new(config: &RouteDistanceConfig) -> Self {
+        let mut rules: Vec<FastDistanceRule> = config
+            .rules
+            .iter()
+            .map(|rule| {
+                let destination_ip_cidrs = rule
+                    .destination_ips
+                    .iter()
+                    .filter_map(|s| cidr::IpCidr::from_str(s).ok())
+                    .collect();
+                let destination_groups: HashSet<String> =
+                    rule.destination_groups.iter().cloned().collect();
+                let validated_distance = Self::validate_distance(rule.distance, &rule.name);
+
+                FastDistanceRule {
+                    name: rule.name.clone(),
+                    priority: rule.priority,
+                    enabled: rule.enabled,
+                    distance: validated_distance,
+                    destination_ip_cidrs,
+                    destination_groups,
+                    foreign_node: rule.foreign_node,
+                }
+            })
+            .collect();
+
+        rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+
+        let default_distance = if config.default_distance == 0 {
+            tracing::warn!("RouteDistanceConfig: default_distance=0 is invalid, correcting to 1");
+            1
+        } else if config.default_distance > i32::MAX as u32 {
+            tracing::warn!(
+                "RouteDistanceConfig: default_distance={} exceeds i32::MAX, capping to {}",
+                config.default_distance,
+                i32::MAX as u32
+            );
+            i32::MAX as u32
+        } else {
+            config.default_distance
+        };
+
+        tracing::info!(
+            "RouteDistanceProcessor initialized: {} rules, default_distance={}",
+            rules.len(),
+            default_distance
+        );
+
+        Self {
+            rules,
+            default_distance,
+        }
+    }
+
+    pub fn calculate_distance(&self, peer: &PeerDistanceInfo) -> u32 {
+        for rule in &self.rules {
+            if rule.matches(peer) {
+                tracing::debug!(
+                    "RouteDistanceProcessor: peer matched rule '{}' with distance={}",
+                    rule.name,
+                    rule.distance
+                );
+                return rule.distance;
+            }
+        }
+
+        tracing::debug!(
+            "RouteDistanceProcessor: no rule matched, using default_distance={}",
+            self.default_distance
+        );
+        self.default_distance
+    }
+
+    pub fn default_distance(&self) -> u32 {
+        self.default_distance
+    }
+
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::hash::{Hash, Hasher};
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[tokio::test]
     async fn test_group_based_acl_rules() {
@@ -1684,5 +1861,262 @@ mod tests {
             result2.log_context,
             Some(AclLogContext::RateLimitDrop)
         ));
+    }
+
+    fn create_test_peer_info() -> PeerDistanceInfo {
+        PeerDistanceInfo {
+            ipv4_addr: Some(Ipv4Addr::new(192, 168, 1, 100)),
+            ipv6_addr: None,
+            verified_groups: vec!["group_a".to_string(), "group_b".to_string()],
+            is_public_server: false,
+        }
+    }
+
+    fn create_test_route_distance_config() -> RouteDistanceConfig {
+        RouteDistanceConfig {
+            rules: vec![
+                RouteDistanceRule {
+                    name: "high_priority_rule".to_string(),
+                    priority: 100,
+                    enabled: true,
+                    distance: 10,
+                    destination_ips: vec!["192.168.1.0/24".to_string()],
+                    destination_groups: vec![],
+                    foreign_node: None,
+                },
+                RouteDistanceRule {
+                    name: "medium_priority_rule".to_string(),
+                    priority: 50,
+                    enabled: true,
+                    distance: 20,
+                    destination_ips: vec![],
+                    destination_groups: vec!["group_a".to_string()],
+                    foreign_node: None,
+                },
+                RouteDistanceRule {
+                    name: "low_priority_rule".to_string(),
+                    priority: 10,
+                    enabled: true,
+                    distance: 30,
+                    destination_ips: vec![],
+                    destination_groups: vec![],
+                    foreign_node: Some(true),
+                },
+            ],
+            default_distance: 1,
+        }
+    }
+
+    #[rstest]
+    #[case::empty_cidrs(vec![], Some(Ipv4Addr::new(192, 168, 1, 100)), None, true)]
+    #[case::with_match(vec!["192.168.1.0/24"], Some(Ipv4Addr::new(192, 168, 1, 100)), None, true)]
+    #[case::no_match(vec!["10.0.0.0/8"], Some(Ipv4Addr::new(192, 168, 1, 100)), None, false)]
+    #[case::no_ipv4(vec!["192.168.1.0/24"], None, None, false)]
+    #[case::ipv6_match(vec!["fd00::/8"], None, Some(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)), true)]
+    #[case::ipv6_no_match(vec!["fe80::/10"], None, Some(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)), false)]
+    #[case::no_ipv6_with_v6_cidr(vec!["fd00::/8"], None, None, false)]
+    #[case::mixed_ipv4_match(vec!["192.168.1.0/24", "fd00::/8"], Some(Ipv4Addr::new(192, 168, 1, 100)), None, true)]
+    #[case::mixed_ipv6_match(vec!["192.168.1.0/24", "fd00::/8"], None, Some(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)), true)]
+    #[case::mixed_no_match(vec!["10.0.0.0/8", "fe80::/10"], Some(Ipv4Addr::new(192, 168, 1, 1)), Some(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)), false)]
+    fn test_fast_distance_rule_matches_ip(
+        #[case] cidrs: Vec<&str>,
+        #[case] peer_ipv4: Option<Ipv4Addr>,
+        #[case] peer_ipv6: Option<Ipv6Addr>,
+        #[case] expected: bool,
+    ) {
+        let rule = FastDistanceRule {
+            name: "test".to_string(),
+            priority: 100,
+            enabled: true,
+            distance: 10,
+            destination_ip_cidrs: cidrs
+                .iter()
+                .map(|s| cidr::IpCidr::from_str(s).unwrap())
+                .collect(),
+            destination_groups: HashSet::new(),
+            foreign_node: None,
+        };
+        let peer = PeerDistanceInfo {
+            ipv4_addr: peer_ipv4,
+            ipv6_addr: peer_ipv6,
+            verified_groups: vec!["group_a".to_string(), "group_b".to_string()],
+            is_public_server: false,
+        };
+        assert_eq!(rule.matches_ip(&peer), expected);
+    }
+
+    #[rstest]
+    #[case::empty_groups(vec![], vec!["group_a", "group_b"], true)]
+    #[case::with_match(vec!["group_a"], vec!["group_a", "group_b"], true)]
+    #[case::no_match(vec!["group_x"], vec!["group_a", "group_b"], false)]
+    fn test_fast_distance_rule_matches_groups(
+        #[case] rule_groups: Vec<&str>,
+        #[case] peer_groups: Vec<&str>,
+        #[case] expected: bool,
+    ) {
+        let rule = FastDistanceRule {
+            name: "test".to_string(),
+            priority: 100,
+            enabled: true,
+            distance: 10,
+            destination_ip_cidrs: vec![],
+            destination_groups: rule_groups.iter().map(|s| s.to_string()).collect(),
+            foreign_node: None,
+        };
+        let peer = PeerDistanceInfo {
+            ipv4_addr: Some(Ipv4Addr::new(192, 168, 1, 100)),
+            ipv6_addr: None,
+            verified_groups: peer_groups.iter().map(|s| s.to_string()).collect(),
+            is_public_server: false,
+        };
+        assert_eq!(rule.matches_groups(&peer), expected);
+    }
+
+    // ==================== FastDistanceRule Foreign 节点匹配测试 ====================
+    #[rstest]
+    #[case::none_public(None, true, true)]
+    #[case::none_private(None, false, true)]
+    #[case::true_public(Some(true), true, true)]
+    #[case::true_private(Some(true), false, false)]
+    #[case::false_public(Some(false), true, false)]
+    #[case::false_private(Some(false), false, true)]
+    fn test_fast_distance_rule_matches_foreign(
+        #[case] foreign_node: Option<bool>,
+        #[case] is_public_server: bool,
+        #[case] expected: bool,
+    ) {
+        let rule = FastDistanceRule {
+            name: "test".to_string(),
+            priority: 100,
+            enabled: true,
+            distance: 10,
+            destination_ip_cidrs: vec![],
+            destination_groups: HashSet::new(),
+            foreign_node,
+        };
+        let peer = PeerDistanceInfo {
+            ipv4_addr: Some(Ipv4Addr::new(1, 2, 3, 4)),
+            ipv6_addr: None,
+            verified_groups: vec![],
+            is_public_server,
+        };
+        assert_eq!(rule.matches_foreign(&peer), expected);
+    }
+
+    #[rstest]
+    #[case::combined_match(true, vec!["192.168.1.0/24"], vec!["group_a"], Some(false), true)]
+    #[case::disabled(false, vec![], vec![], None, false)]
+    fn test_fast_distance_rule_matches(
+        #[case] enabled: bool,
+        #[case] cidrs: Vec<&str>,
+        #[case] groups: Vec<&str>,
+        #[case] foreign_node: Option<bool>,
+        #[case] expected: bool,
+    ) {
+        let rule = FastDistanceRule {
+            name: "test".to_string(),
+            priority: 100,
+            enabled,
+            distance: 10,
+            destination_ip_cidrs: cidrs
+                .iter()
+                .map(|s| cidr::IpCidr::from_str(s).unwrap())
+                .collect(),
+            destination_groups: groups.iter().map(|s| s.to_string()).collect(),
+            foreign_node,
+        };
+        let peer = create_test_peer_info();
+        assert_eq!(rule.matches(&peer), expected);
+    }
+
+    #[test]
+    fn test_route_distance_processor_new_priority_sorting() {
+        let config = create_test_route_distance_config();
+        let processor = RouteDistanceProcessor::new(&config);
+
+        assert_eq!(processor.rule_count(), 3);
+        assert_eq!(processor.default_distance(), 1);
+    }
+
+    #[rstest]
+    #[case::ip_match(Some(Ipv4Addr::new(192, 168, 1, 50)), vec![], false, 10)]
+    #[case::group_match(Some(Ipv4Addr::new(10, 0, 0, 1)), vec!["group_a"], false, 20)]
+    #[case::foreign_match(Some(Ipv4Addr::new(10, 0, 0, 1)), vec![], true, 30)]
+    #[case::no_match(Some(Ipv4Addr::new(10, 0, 0, 1)), vec![], false, 1)]
+    fn test_route_distance_processor_calculate_distance(
+        #[case] ipv4_addr: Option<Ipv4Addr>,
+        #[case] groups: Vec<&str>,
+        #[case] is_public_server: bool,
+        #[case] expected_distance: u32,
+    ) {
+        let config = create_test_route_distance_config();
+        let processor = RouteDistanceProcessor::new(&config);
+
+        let peer = PeerDistanceInfo {
+            ipv4_addr,
+            ipv6_addr: None,
+            verified_groups: groups.iter().map(|s| s.to_string()).collect(),
+            is_public_server,
+        };
+        assert_eq!(processor.calculate_distance(&peer), expected_distance);
+    }
+
+    #[rstest]
+    #[case::zero_distance(0, 0, 1, 1)]
+    #[case::overflow_distance(u32::MAX, u32::MAX, i32::MAX as u32, i32::MAX as u32)]
+    fn test_route_distance_processor_distance_validation(
+        #[case] rule_distance: u32,
+        #[case] default_distance: u32,
+        #[case] expected_calc_distance: u32,
+        #[case] expected_default_distance: u32,
+    ) {
+        let config = RouteDistanceConfig {
+            rules: vec![RouteDistanceRule {
+                name: "test_distance".to_string(),
+                priority: 100,
+                enabled: true,
+                distance: rule_distance,
+                destination_ips: vec![],
+                destination_groups: vec![],
+                foreign_node: None,
+            }],
+            default_distance,
+        };
+        let processor = RouteDistanceProcessor::new(&config);
+
+        let peer = create_test_peer_info();
+        assert_eq!(processor.calculate_distance(&peer), expected_calc_distance);
+        assert_eq!(processor.default_distance(), expected_default_distance);
+    }
+
+    #[test]
+    fn test_route_distance_processor_priority_order() {
+        let config = RouteDistanceConfig {
+            rules: vec![
+                RouteDistanceRule {
+                    name: "low".to_string(),
+                    priority: 10,
+                    enabled: true,
+                    distance: 100,
+                    destination_ips: vec![],
+                    destination_groups: vec![],
+                    foreign_node: None,
+                },
+                RouteDistanceRule {
+                    name: "high".to_string(),
+                    priority: 100,
+                    enabled: true,
+                    distance: 5,
+                    destination_ips: vec![],
+                    destination_groups: vec![],
+                    foreign_node: None,
+                },
+            ],
+            default_distance: 1,
+        };
+        let processor = RouteDistanceProcessor::new(&config);
+
+        let peer = create_test_peer_info();
+        assert_eq!(processor.calculate_distance(&peer), 5);
     }
 }

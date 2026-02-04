@@ -3,12 +3,11 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::{
     hash::Hasher,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arc_swap::ArcSwap;
-
+use crate::common::acl_processor::RouteDistanceProcessor;
 use crate::common::config::ProxyNetworkConfig;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
@@ -19,6 +18,7 @@ use crate::proto::api::config::InstanceConfigPatch;
 use crate::proto::api::instance::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crate::proto::peer_rpc::PeerGroupInfo;
+use arc_swap::ArcSwap;
 use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -140,6 +140,8 @@ pub struct GlobalCtx {
     /// OSPF propagated trusted keys (peer pubkeys and admin credentials)
     /// Stored in ArcSwap for lock-free reads and atomic batch updates
     trusted_keys: ArcSwap<HashMap<Vec<u8>, TrustedKeyMetadata>>,
+
+    route_distance_processor: RwLock<Option<(u64, Arc<RouteDistanceProcessor>)>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -237,6 +239,8 @@ impl GlobalCtx {
             credential_manager,
 
             trusted_keys: ArcSwap::new(Arc::new(HashMap::new())),
+
+            route_distance_processor: RwLock::new(None),
         }
     }
 
@@ -477,6 +481,46 @@ impl GlobalCtx {
     /// Called by OSPF route layer after each route update
     pub fn update_trusted_keys(&self, keys: HashMap<Vec<u8>, TrustedKeyMetadata>) {
         self.trusted_keys.store(Arc::new(keys));
+    }
+
+    pub fn get_route_distance_processor(&self) -> Arc<RouteDistanceProcessor> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let acl = self.config.get_acl();
+        let route_distance_config = acl
+            .as_ref()
+            .and_then(|a| a.acl_v1.as_ref())
+            .and_then(|v1| v1.route_distance.as_ref());
+
+        let mut hasher = DefaultHasher::new();
+        route_distance_config.hash(&mut hasher);
+        let config_digest = hasher.finish();
+
+        {
+            let cache = self.route_distance_processor.read().unwrap();
+            if let Some((digest, proc)) = &*cache {
+                if *digest == config_digest {
+                    return proc.clone();
+                }
+            }
+        }
+
+        let mut cache = self.route_distance_processor.write().unwrap();
+        if let Some((digest, proc)) = &*cache {
+            if *digest == config_digest {
+                return proc.clone();
+            }
+        }
+
+        let proc = Arc::new(if let Some(config) = route_distance_config {
+            RouteDistanceProcessor::new(config)
+        } else {
+            RouteDistanceProcessor::new(&Default::default())
+        });
+
+        *cache = Some((config_digest, proc.clone()));
+        proc
     }
 
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {
