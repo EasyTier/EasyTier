@@ -51,6 +51,7 @@ message PeerInfo {
   repeated PeerConnInfo conns = 2;
   common.UUID default_conn_id = 3;
   repeated common.UUID directly_connected_conns = 4;
+  uint32 distance = 5;
 }
 
 message ListPeerRequest { InstanceIdentifier instance = 1; }
@@ -80,6 +81,7 @@ message Route {
   optional int32 path_latency_latency_first = 14;
 
   common.Ipv6Inet ipv6_addr = 15;
+  int32 distance = 16;
 }
 
 message PeerRoutePair {

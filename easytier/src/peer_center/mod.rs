@@ -40,6 +40,7 @@ impl From<Vec<PeerInfo>> for PeerInfoForGlobalMap {
 
             let dp_info = DirectConnectedPeerInfo {
                 latency_ms: std::cmp::max(1, (min_lat as u32 / 1000) as i32),
+                distance: peer.distance,
             };
 
             // sort conn info so hash result is stable

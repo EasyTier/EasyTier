@@ -17,7 +17,7 @@ use crate::{
         peer_manager::PeerManager,
         peer_map::PeerMap,
         peer_rpc::PeerRpcManager,
-        route_trait::{RouteCostCalculator, RouteCostCalculatorInterface},
+        route_trait::{NextHopPolicy, RouteCostCalculator, RouteCostCalculatorInterface},
         rpc_service::PeerManagerRpcService,
     },
     proto::{
@@ -354,6 +354,18 @@ impl PeerCenterInstance {
         }
     }
 
+    /// Get the outbound distance from src_peer_id to dst_peer_id (A→B).
+    /// This queries dst_peer_id's (B's) reported data for its configured inbound distance from src_peer_id (A).
+    /// Returns None if the data is not available in the GlobalPeerMap.
+    pub fn get_outbound_distance(&self, src_peer_id: PeerId, dst_peer_id: PeerId) -> Option<u32> {
+        let global_peer_map = self.global_peer_map.read().unwrap();
+        global_peer_map
+            .map
+            .get(&dst_peer_id)
+            .and_then(|dst_peer_info| dst_peer_info.direct_peers.get(&src_peer_id))
+            .map(|info| info.distance)
+    }
+
     pub fn get_cost_calculator(&self) -> RouteCostCalculator {
         struct RouteCostCalculatorImpl {
             global_peer_map: Arc<RwLock<GlobalPeerMap>>,
@@ -362,24 +374,45 @@ impl PeerCenterInstance {
 
             last_update_time: AtomicCell<Instant>,
             global_peer_map_update_time: Arc<AtomicCell<Instant>>,
+
+            default_distance: u32,
         }
 
         impl RouteCostCalculatorImpl {
-            fn directed_cost(&self, src: PeerId, dst: PeerId) -> Option<i32> {
+            fn directed_latency(&self, src: PeerId, dst: PeerId) -> Option<i32> {
                 self.global_peer_map_clone
                     .map
                     .get(&src)
                     .and_then(|src_peer_info| src_peer_info.direct_peers.get(&dst))
                     .map(|info| info.latency_ms)
             }
+
+            // Query A→B distance from B's reported data (B configures inbound distance)
+            fn directed_distance(&self, src: PeerId, dst: PeerId) -> Option<u32> {
+                self.global_peer_map_clone
+                    .map
+                    .get(&dst)
+                    .and_then(|dst_peer_info| dst_peer_info.direct_peers.get(&src))
+                    .map(|info| info.distance)
+            }
         }
 
         impl RouteCostCalculatorInterface for RouteCostCalculatorImpl {
-            fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
-                if let Some(cost) = self.directed_cost(src, dst) {
-                    return cost;
+            fn calculate_cost(&self, src: PeerId, dst: PeerId, policy: NextHopPolicy) -> i32 {
+                match policy {
+                    // LeastCost: use latency as cost
+                    NextHopPolicy::LeastCost => {
+                        if let Some(latency) = self.directed_latency(src, dst) {
+                            return latency;
+                        }
+                        self.directed_latency(dst, src).unwrap_or(500)
+                    }
+                    // LeastHop: use distance as cost
+                    NextHopPolicy::LeastHop => match self.directed_distance(src, dst) {
+                        Some(distance) if distance > 0 => distance as i32,
+                        _ => self.default_distance as i32,
+                    },
                 }
-                self.directed_cost(dst, src).unwrap_or(500)
             }
 
             fn begin_update(&mut self) {
@@ -397,6 +430,10 @@ impl PeerCenterInstance {
             }
         }
 
+        let global_ctx = self.peer_mgr.get_global_ctx();
+
+        let default_distance = global_ctx.get_route_distance_processor().default_distance();
+
         Box::new(RouteCostCalculatorImpl {
             global_peer_map: self.global_peer_map.clone(),
             global_peer_map_clone: GlobalPeerMap::default(),
@@ -404,6 +441,7 @@ impl PeerCenterInstance {
                 self.global_peer_map_update_time.load() - Duration::from_secs(1),
             ),
             global_peer_map_update_time: self.global_peer_map_update_time.clone(),
+            default_distance,
         })
     }
 }
@@ -411,7 +449,7 @@ impl PeerCenterInstance {
 #[async_trait::async_trait]
 impl PeerCenterPeerManagerTrait for PeerManager {
     async fn list_peers(&self) -> PeerInfoForGlobalMap {
-        PeerManagerRpcService::list_peers(self).await.into()
+        PeerManagerRpcService::list_peers(self, None).await.into()
     }
 
     fn my_peer_id(&self) -> PeerId {
@@ -454,10 +492,13 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
                     continue;
                 };
 
+                let distance = self.peer_map.get_peer_distance(peer).await;
+
                 ret.direct_peers.insert(
                     peer,
                     DirectConnectedPeerInfo {
                         latency_ms: std::cmp::max(1, (min_lat as u32 / 1000) as i32),
+                        distance,
                     },
                 );
             }
@@ -558,22 +599,46 @@ mod tests {
 
             route_cost.begin_update();
             assert!(
-                route_cost.calculate_cost(peer_mgr_a.my_peer_id(), peer_mgr_b.my_peer_id()) < 30
+                route_cost.calculate_cost(
+                    peer_mgr_a.my_peer_id(),
+                    peer_mgr_b.my_peer_id(),
+                    NextHopPolicy::LeastCost
+                ) < 30
             );
             assert!(
-                route_cost.calculate_cost(peer_mgr_b.my_peer_id(), peer_mgr_a.my_peer_id()) < 30
+                route_cost.calculate_cost(
+                    peer_mgr_b.my_peer_id(),
+                    peer_mgr_a.my_peer_id(),
+                    NextHopPolicy::LeastCost
+                ) < 30
             );
             assert!(
-                route_cost.calculate_cost(peer_mgr_b.my_peer_id(), peer_mgr_c.my_peer_id()) < 30
+                route_cost.calculate_cost(
+                    peer_mgr_b.my_peer_id(),
+                    peer_mgr_c.my_peer_id(),
+                    NextHopPolicy::LeastCost
+                ) < 30
             );
             assert!(
-                route_cost.calculate_cost(peer_mgr_c.my_peer_id(), peer_mgr_b.my_peer_id()) < 30
+                route_cost.calculate_cost(
+                    peer_mgr_c.my_peer_id(),
+                    peer_mgr_b.my_peer_id(),
+                    NextHopPolicy::LeastCost
+                ) < 30
             );
             assert!(
-                route_cost.calculate_cost(peer_mgr_c.my_peer_id(), peer_mgr_a.my_peer_id()) > 50
+                route_cost.calculate_cost(
+                    peer_mgr_c.my_peer_id(),
+                    peer_mgr_a.my_peer_id(),
+                    NextHopPolicy::LeastCost
+                ) > 50
             );
             assert!(
-                route_cost.calculate_cost(peer_mgr_a.my_peer_id(), peer_mgr_c.my_peer_id()) > 50
+                route_cost.calculate_cost(
+                    peer_mgr_a.my_peer_id(),
+                    peer_mgr_c.my_peer_id(),
+                    NextHopPolicy::LeastCost
+                ) > 50
             );
             route_cost.end_update();
             assert!(!route_cost.need_update());

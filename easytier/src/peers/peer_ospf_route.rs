@@ -250,6 +250,7 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
             next_hop_peer_id: 0, // next_hop_peer_id is calculated in RouteTable.
             cost: 0,             // cost is calculated in RouteTable.
             path_latency: 0,     // path_latency is calculated in RouteTable.
+            distance: 0,         // distance is calculated in RouteTable.
             proxy_cidrs: val.proxy_cidrs.clone(),
             hostname: val.hostname.unwrap_or_default(),
             stun_info: {
@@ -823,13 +824,20 @@ impl SyncedRouteInfo {
     }
 }
 
-type PeerGraph = Graph<PeerId, usize, Directed>;
+#[derive(Debug, Clone, Copy)]
+struct RouteEdge {
+    distance: usize,
+    cost: usize,
+}
+
+type PeerGraph = Graph<PeerId, RouteEdge, Directed>;
 type PeerIdToNodexIdxMap = DashMap<PeerId, NodeIndex>;
 #[derive(Debug, Clone, Copy)]
 struct NextHopInfo {
     next_hop_peer_id: PeerId,
     path_latency: i32,
-    path_len: usize, // path includes src and dst.
+    path_distance: i32, // Accumulated distance from ACL rules (LeastHop mode)
+    path_len: usize,    // path includes src and dst.
     version: Version,
 }
 // dst_peer_id -> (next_hop_peer_id, cost, path_len)
@@ -925,12 +933,18 @@ impl RouteTable {
                     continue;
                 };
 
-                let mut cost = cost_calc.calculate_cost(*src_peer_id, *dst_peer_id) as usize;
+                let mut distance =
+                    cost_calc.calculate_cost(*src_peer_id, *dst_peer_id, NextHopPolicy::LeastHop)
+                        as usize;
+                let mut cost =
+                    cost_calc.calculate_cost(*src_peer_id, *dst_peer_id, NextHopPolicy::LeastCost)
+                        as usize;
                 if peer_avoid_relay_data {
+                    distance += AVOID_RELAY_COST;
                     cost += AVOID_RELAY_COST;
                 }
 
-                graph.add_edge(*src_node_idx, *dst_node_idx, cost);
+                graph.add_edge(*src_node_idx, *dst_node_idx, RouteEdge { distance, cost });
             }
         }
 
@@ -968,15 +982,15 @@ impl RouteTable {
         start_node: &NodeIndex,
         version: Version,
     ) {
-        let normalize_edge_cost = |e: petgraph::graph::EdgeReference<usize>| {
-            if *e.weight() >= AVOID_RELAY_COST {
+        let normalize_edge_distance = |e: petgraph::graph::EdgeReference<RouteEdge>| {
+            if e.weight().distance >= AVOID_RELAY_COST {
                 AVOID_RELAY_COST + 1
             } else {
-                1
+                e.weight().distance
             }
         };
-        // Step 1: 第一次 Dijkstra - 计算最短跳数
-        let path_len_map = dijkstra(&graph, *start_node, None, normalize_edge_cost);
+        // Step 1: 第一次 Dijkstra - 计算最短距离
+        let path_distance_map = dijkstra(&graph, *start_node, None, normalize_edge_distance);
 
         // Step 2: 构建最短跳数子图（只保留属于最短路径和 AVOID RELAY 的边）
         let mut subgraph: PeerGraph = PeerGraph::new();
@@ -990,19 +1004,24 @@ impl RouteTable {
 
         for edge in graph.edge_references() {
             let (src, tgt) = graph.edge_endpoints(edge.id()).unwrap();
-            let Some(src_path_len) = path_len_map.get(&src) else {
+            let Some(src_path_len) = path_distance_map.get(&src) else {
                 continue;
             };
-            let Some(tgt_path_len) = path_len_map.get(&tgt) else {
+            let Some(tgt_path_len) = path_distance_map.get(&tgt) else {
                 continue;
             };
-            if *src_path_len + normalize_edge_cost(edge) == *tgt_path_len {
+            if *src_path_len + normalize_edge_distance(edge) == *tgt_path_len {
                 subgraph.add_edge(src, tgt, *edge.weight());
             }
         }
 
         // Step 3: 第二次 Dijkstra - 在子图上找代价最小的路径
-        self.gen_next_hop_map_with_least_cost(&subgraph, &start_node_idx.unwrap(), version);
+        self.gen_next_hop_map_with_least_cost(
+            &subgraph,
+            &start_node_idx.unwrap(),
+            version,
+            Some(&path_distance_map),
+        );
     }
 
     fn gen_next_hop_map_with_least_cost(
@@ -1010,13 +1029,20 @@ impl RouteTable {
         graph: &PeerGraph,
         start_node: &NodeIndex,
         version: Version,
+        path_distance_map: Option<&hashbrown::HashMap<NodeIndex, usize>>,
     ) {
-        let (costs, next_hops) = dijkstra_with_first_hop(&graph, *start_node, |e| *e.weight());
+        let (costs, next_hops) = dijkstra_with_first_hop(&graph, *start_node, |e| e.weight().cost);
 
         for (dst, (next_hop, path_len)) in next_hops.iter() {
+            let path_distance = path_distance_map
+                .and_then(|m| m.get(dst))
+                .map(|d| (*d % AVOID_RELAY_COST) as i32)
+                .unwrap_or(0);
+
             let info = NextHopInfo {
                 next_hop_peer_id: *graph.node_weight(*next_hop).unwrap(),
                 path_latency: (*costs.get(dst).unwrap() % AVOID_RELAY_COST) as i32,
+                path_distance,
                 path_len: { *path_len },
                 version,
             };
@@ -1055,7 +1081,7 @@ impl RouteTable {
         if matches!(policy, NextHopPolicy::LeastHop) {
             self.gen_next_hop_map_with_least_hop(&graph, &start_node, version);
         } else {
-            self.gen_next_hop_map_with_least_cost(&graph, &start_node, version);
+            self.gen_next_hop_map_with_least_cost(&graph, &start_node, version, None);
         };
 
         let mut new_cidr_prefix_trie = PrefixMap::new();
@@ -1693,6 +1719,7 @@ impl PeerRouteServiceImpl {
 
         let calc_locked = self.cost_calculator.read().unwrap();
 
+        // Use LeastHop for route_table, cost calculator handles policy internally
         self.route_table.build_from_synced_info(
             self.my_peer_id,
             &self.synced_route_info,
@@ -2885,6 +2912,12 @@ impl Route for PeerRoute {
             route.cost_latency_first = next_hop_peer_latency_first.map(|x| x.path_len as i32);
             route.path_latency_latency_first = next_hop_peer_latency_first.map(|x| x.path_latency);
 
+            route.distance = if self.global_ctx.latency_first() {
+                0
+            } else {
+                next_hop_peer.path_distance
+            };
+
             route.feature_flag = item.feature_flag;
 
             routes.push(route);
@@ -3439,7 +3472,11 @@ mod tests {
         }
 
         impl RouteCostCalculatorInterface for TestCostCalculator {
-            fn calculate_cost(&self, src: PeerId, dst: PeerId) -> i32 {
+            fn calculate_cost(&self, src: PeerId, dst: PeerId, policy: NextHopPolicy) -> i32 {
+                if matches!(policy, NextHopPolicy::LeastHop) {
+                    return 1;
+                }
+                // Test calculator always returns the configured cost regardless of policy
                 if src == self.p_d_peer_id && dst == self.p_b_peer_id {
                     return 100;
                 }

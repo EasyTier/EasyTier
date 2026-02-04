@@ -170,10 +170,6 @@ impl PeerMap {
             return Some(dst_peer_id);
         }
 
-        if self.has_peer(dst_peer_id) && matches!(policy, NextHopPolicy::LeastHop) {
-            return Some(dst_peer_id);
-        }
-
         // get route info
         for route in self.routes.read().await.iter() {
             if let Some(gateway_peer_id) = route
@@ -183,6 +179,10 @@ impl PeerMap {
                 // NOTIC: for foreign network, gateway_peer_id may not connect to me
                 return Some(gateway_peer_id);
             }
+        }
+
+        if self.has_peer(dst_peer_id) {
+            return Some(dst_peer_id);
         }
 
         None
@@ -366,6 +366,17 @@ impl PeerMap {
         vec![]
     }
 
+    /// Get verified groups for a peer (from group_trust_map_cache)
+    pub async fn get_peer_groups(&self, peer_id: PeerId) -> std::sync::Arc<Vec<String>> {
+        for route in self.routes.read().await.iter() {
+            let groups = route.get_peer_groups(peer_id);
+            if !groups.is_empty() {
+                return groups;
+            }
+        }
+        std::sync::Arc::new(Vec::new())
+    }
+
     pub async fn need_relay_by_foreign_network(&self, dst_peer_id: PeerId) -> Result<bool, Error> {
         // if gateway_peer_id is not connected to me, means need relay by foreign network
         let gateway_id = self
@@ -385,6 +396,43 @@ impl PeerMap {
 
     pub fn get_global_ctx(&self) -> ArcGlobalCtx {
         self.global_ctx.clone()
+    }
+
+    /// Calculate distance for a peer based on RouteDistanceConfig.
+    /// Returns the configured inbound distance (peer → self), or default (1).
+    pub async fn get_peer_distance(&self, peer_id: PeerId) -> u32 {
+        use crate::common::acl_processor::PeerDistanceInfo;
+
+        let processor = self.global_ctx.get_route_distance_processor();
+
+        let peer_info = self.get_route_peer_info(peer_id).await;
+
+        let ipv4_addr = peer_info
+            .as_ref()
+            .and_then(|info| info.ipv4_addr)
+            .map(|ipv4| ipv4.into());
+
+        let ipv6_addr = peer_info
+            .as_ref()
+            .and_then(|info| info.ipv6_addr.as_ref())
+            .and_then(|ipv6| ipv6.address)
+            .map(|ipv6| ipv6.into());
+
+        let verified_groups = self.get_peer_groups(peer_id).await.to_vec();
+
+        let is_public_server = peer_info
+            .and_then(|info| info.feature_flag)
+            .map(|flag| flag.is_public_server)
+            .unwrap_or(false);
+
+        let distance_info = PeerDistanceInfo {
+            ipv4_addr,
+            ipv6_addr,
+            verified_groups,
+            is_public_server,
+        };
+
+        processor.calculate_distance(&distance_info)
     }
 }
 
