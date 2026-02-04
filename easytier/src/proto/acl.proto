@@ -98,9 +98,28 @@ message GroupIdentity {
   string group_secret = 2;
 }
 
+// Route distance rule: "peer → this_node" unidirectional distance.
+// Multiple conditions use AND logic; empty lists mean "no restriction".
+message RouteDistanceRule {
+  string name = 1;
+  uint32 priority = 2; // higher = higher priority
+  bool enabled = 3;
+  uint32 distance = 4; // range: 1 ~ i32::MAX, default: 1
+
+  repeated string destination_ips = 5; // CIDR list
+  repeated string destination_groups = 6; // ACL group names
+  optional bool foreign_node = 7;          // true: public server only
+}
+
+message RouteDistanceConfig {
+  repeated RouteDistanceRule rules = 1;
+  uint32 default_distance = 2; // default: 1
+}
+
 message AclV1 { 
   repeated Chain chains = 1;
   GroupInfo group = 2;
+  RouteDistanceConfig route_distance = 3;
 }
 
 enum ConnState {

@@ -1393,7 +1393,10 @@ impl Instance {
         }
 
         ApiRpcServiceImpl {
-            peer_mgr_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
+            peer_mgr_rpc_service: PeerManagerRpcService::new(
+                self.peer_manager.clone(),
+                self.peer_center.clone(),
+            ),
             connector_mgr_rpc_service: ConnectorManagerRpcService(Arc::downgrade(
                 &self.conn_manager,
             )),
@@ -1446,12 +1449,18 @@ impl Instance {
 
                 tcp_proxy_rpc_services
             },
-            acl_manage_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
+            acl_manage_rpc_service: PeerManagerRpcService::new(
+                self.peer_manager.clone(),
+                self.peer_center.clone(),
+            ),
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
             peer_center_rpc_service: Arc::new(self.peer_center.get_rpc_service()),
-            credential_manage_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
+            credential_manage_rpc_service: PeerManagerRpcService::new(
+                self.peer_manager.clone(),
+                self.peer_center.clone(),
+            ),
         }
     }
 
