@@ -155,42 +155,77 @@ struct RwPoolInner<Item> {
     enabled: bool,
 }
 
-#[derive(Debug, Deref)]
+#[derive(Debug)]
 struct RwPool<Item> {
-    #[deref]
-    inner: RwLock<RwPoolInner<Item>>,
+    ephemeral: RwLock<RwPoolInner<Item>>,
+    persistent: RwLock<RwPoolInner<Item>>,
     capacity: usize,
 }
 
 impl<Item> RwPool<Item> {
     fn new(capacity: usize) -> Self {
         Self {
-            inner: RwLock::new(RwPoolInner::default()),
+            ephemeral: RwLock::new(RwPoolInner::default()),
+            persistent: RwLock::new(RwPoolInner::default()),
             capacity,
         }
     }
 
+    /// return the capacity of the ephemeral pool;
+    /// if `ephemeral` or `persistent` is None, read lock `self`'s pool
+    fn capacity(
+        &self,
+        ephemeral: Option<&RwPoolInner<Item>>,
+        persistent: Option<&RwPoolInner<Item>>,
+    ) -> usize {
+        let guard;
+        let ephemeral = if let Some(ephemeral) = ephemeral {
+            ephemeral
+        } else {
+            guard = self.ephemeral.read();
+            &guard
+        };
+
+        let guard;
+        let persistent = if let Some(persistent) = persistent {
+            persistent
+        } else {
+            guard = self.persistent.read();
+            &guard
+        };
+
+        (self.capacity * ephemeral.enabled as usize).saturating_sub(persistent.len())
+    }
+
     fn is_full(&self) -> bool {
-        self.read().len() >= self.capacity
+        let pool = self.ephemeral.read();
+        pool.len() >= self.capacity(Some(&pool), None)
     }
 
     fn is_enabled(&self) -> bool {
-        self.read().enabled
+        self.ephemeral.read().enabled
     }
 
     fn enable(&self) {
-        self.write().enabled = true;
+        self.ephemeral.write().enabled = true;
         self.resize();
     }
 
     fn disable(&self) {
-        self.write().enabled = false;
+        self.ephemeral.write().enabled = false;
         self.resize();
     }
 
+    /// push an item to the persistent pool
+    fn push(&self, item: Item) {
+        self.persistent.write().push(item);
+        self.resize();
+    }
+
+    /// try to push an item to the ephemeral pool, return the item if full
     fn try_push(&self, item: Item) -> Option<Item> {
-        let mut pool = self.write();
-        if pool.len() < self.capacity {
+        let mut pool = self.ephemeral.write();
+        if pool.len() < self.capacity(Some(&pool), None) {
             pool.push(item);
             return None;
         }
@@ -199,16 +234,25 @@ impl<Item> RwPool<Item> {
 
     fn resize(&self) {
         let resize = {
-            let inner = self.read();
-            let capacity = self.capacity * inner.enabled as usize;
-            inner.capacity() != capacity
+            let pool = self.ephemeral.read();
+            pool.capacity() != self.capacity(Some(&pool), None)
         };
         if resize {
-            let mut pool = self.write();
-            let capacity = self.capacity * pool.enabled as usize;
+            let mut pool = self.ephemeral.write();
+            let capacity = self.capacity(Some(&pool), None);
             pool.reserve_exact(capacity);
             pool.truncate(capacity);
+            pool.shrink_to(capacity);
         }
+    }
+
+    fn with_iter<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut dyn Iterator<Item = &Item>) -> R,
+    {
+        let ephemeral = self.ephemeral.read();
+        let persistent = self.persistent.read();
+        f(&mut persistent.iter().chain(ephemeral.iter()))
     }
 }
 
@@ -308,12 +352,7 @@ impl QuicEndpointManager {
             break pool;
         };
 
-        Ok(pool
-            .read()
-            .iter()
-            .min_by_key(|e| e.open_connections())
-            .unwrap()
-            .clone())
+        Ok(pool.with_iter(|iter| iter.min_by_key(|e| e.open_connections()).unwrap().clone()))
     }
 
     async fn connect(
