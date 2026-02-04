@@ -1226,6 +1226,8 @@ impl<'a> CommandHandler<'a> {
             lat_ms: String,
             #[tabled(rename = "loss")]
             loss_rate: String,
+            #[tabled(rename = "dist")]
+            dist: String,
             #[tabled(rename = "rx")]
             rx_bytes: String,
             #[tabled(rename = "tx")]
@@ -1258,6 +1260,13 @@ impl<'a> CommandHandler<'a> {
                     cost: cost_to_str(route.cost),
                     lat_ms: format!("{:.2}", lat_ms),
                     loss_rate: format!("{:.1}%", p.get_loss_rate().unwrap_or(0.0) * 100.0),
+                    dist: p
+                        .peer
+                        .as_ref()
+                        .map(|p| p.distance)
+                        .filter(|d| *d != 0)
+                        .map(|d| d.to_string())
+                        .unwrap_or("-".to_string()),
                     rx_bytes: format_size(p.get_rx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tx_bytes: format_size(p.get_tx_bytes().unwrap_or(0), humansize::DECIMAL),
                     tunnel_proto: p.get_conn_protos().unwrap_or_default().join(","),
@@ -1283,6 +1292,7 @@ impl<'a> CommandHandler<'a> {
                     cost: "Local".to_string(),
                     lat_ms: "-".to_string(),
                     loss_rate: "-".to_string(),
+                    dist: "-".to_string(),
                     rx_bytes: "-".to_string(),
                     tx_bytes: "-".to_string(),
                     tunnel_proto: "-".to_string(),
@@ -1361,7 +1371,9 @@ impl<'a> CommandHandler<'a> {
                 &items,
                 self.output_format,
                 &["tunnel", "version"],
-                &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
+                &[
+                    "version", "tunnel", "nat", "tx", "rx", "dist", "loss", "lat(ms)",
+                ],
                 self.no_trunc,
             )
         })
@@ -1473,6 +1485,7 @@ impl<'a> CommandHandler<'a> {
             next_hop_hostname: String,
             next_hop_lat: f64,
             path_len: i32,
+            dist: i32,
             path_latency: i32,
 
             next_hop_ipv4_lat_first: String,
@@ -1492,6 +1505,7 @@ impl<'a> CommandHandler<'a> {
                 next_hop_hostname: "Local".to_string(),
                 next_hop_lat: 0.0,
                 path_len: 0,
+                dist: 0,
                 path_latency: 0,
                 next_hop_ipv4_lat_first: "-".to_string(),
                 next_hop_hostname_lat_first: "Local".to_string(),
@@ -1540,6 +1554,7 @@ impl<'a> CommandHandler<'a> {
                     },
                     next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
                     path_len: route.cost,
+                    dist: route.distance,
                     path_latency: route.path_latency,
                     next_hop_ipv4_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
                         "DIRECT".to_string()

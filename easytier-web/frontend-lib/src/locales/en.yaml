@@ -466,3 +466,16 @@ acl:
     name: Name
     type: Type
   match: Match
+  route_distance:
+    title: Route Distance
+    help: Set per-destination route distance rules for peer routing decisions.
+    enabled: Enable Route Distance
+    add_rule: Add Distance Rule
+    edit_rule: Edit Distance Rule
+    default_distance: Default Distance
+    distance: Distance
+    priority: Priority
+    dst_ips: Destination IPs
+    dst_groups: Destination Groups
+    foreign_node: Foreign Node Only
+    foreign_node_hint: Only match public/shared nodes when enabled.
