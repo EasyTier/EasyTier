@@ -188,10 +188,7 @@ impl QuicEndpointManager {
             socket2::Type::DGRAM,
             Some(socket2::Protocol::UDP),
         )?;
-        setup_sokcet2(&socket, &addr).map_err(std::io::Error::other)?;
-        if dual_stack {
-            socket.set_only_v6(false)?;
-        }
+        setup_sokcet2(&socket, &addr, !dual_stack).map_err(std::io::Error::other)?;
         let socket = std::net::UdpSocket::from(socket);
         let runtime = default_runtime().ok_or(std::io::Error::other("no async runtime found"))?;
         let mut endpoint = Endpoint::new_with_abstract_socket(
