@@ -127,7 +127,7 @@ impl TunnelListener for WSTunnelListener {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+        setup_sokcet2(&socket2_socket, &addr, true)?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         self.addr
@@ -249,7 +249,7 @@ impl WSTunnelConnector {
                 Some(socket2::Protocol::TCP),
             )?;
 
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr, true) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }

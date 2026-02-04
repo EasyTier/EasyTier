@@ -72,7 +72,7 @@ impl UdpNatEntry {
                 Some(socket2::Protocol::UDP),
             )?;
             let dst_socket_addr = "0.0.0.0:0".parse().unwrap();
-            setup_sokcet2(&socket2_socket, &dst_socket_addr)?;
+            setup_sokcet2(&socket2_socket, &dst_socket_addr, true)?;
             Some(UdpSocket::from_std(socket2_socket.into())?)
         };
 
