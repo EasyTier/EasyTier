@@ -130,7 +130,7 @@ proxy_forward_by_system: 系统转发
 proxy_forward_by_system_help: 通过系统内核转发子网代理数据包，禁用内置NAT
 
 disable_encryption: 禁用加密
-disable_encryption_help: 禁用对等节点通信的加密，默认为false，必须与对等节点相同
+disable_encryption_help: 禁用对等节点通信的加密。注意：默认启用加密，若勾选此项则关闭，必须与对等节点设置一致。
 
 disable_tcp_hole_punching: 禁用TCP打洞
 disable_tcp_hole_punching_help: 禁用TCP打洞功能
