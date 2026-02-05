@@ -11,6 +11,7 @@ use tokio::io::AsyncReadExt as _;
 
 use crate::{
     common::stun::StunInfoCollector,
+    dns::config::DnsConfig,
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
@@ -216,6 +217,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_secure_mode(&self) -> Option<SecureModeConfig>;
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
 
+    fn get_dns(&self) -> DnsConfig;
+    fn set_dns(&self, dns: DnsConfig);
+
     fn dump(&self) -> String;
 }
 
@@ -406,6 +410,8 @@ struct Config {
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
+
+    dns: Option<DnsConfig>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -819,6 +825,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) {
         self.config.lock().unwrap().secure_mode = secure_mode;
+    }
+
+    fn get_dns(&self) -> DnsConfig {
+        self.config.lock().unwrap().dns.clone().unwrap_or_default()
+    }
+
+    fn set_dns(&self, dns: DnsConfig) {
+        self.config.lock().unwrap().dns = Some(dns);
     }
 
     fn dump(&self) -> String {

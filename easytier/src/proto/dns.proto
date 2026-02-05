@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package dns;
+
+enum DnsConfigKind {
+  LOCAL = 0;
+  REMOTE = 1;
+}
+
+message DnsConfigPb {
+  DnsConfigKind kind = 1;
+  repeated ZoneConfigPb zones = 2;
+  string name = 3;
+  string domain = 4;
+  repeated common.SocketAddr addresses = 5;
+  repeated string listeners = 6;
+}
+
+message ZoneConfigPb {
+  string origin = 1;
+  uint32 ttl = 2;
+  repeated string records = 3;
+  repeated string forwarders = 4;
+}
