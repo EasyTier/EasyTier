@@ -6,12 +6,12 @@ use clap::Command;
 use clap_complete::{Generator, Shell};
 
 mod arch;
+#[cfg(feature = "magic-dns")]
+mod dns;
 mod gateway;
 pub mod instance;
 mod peer_center;
 mod vpn_portal;
-#[cfg(feature = "magic-dns")]
-mod dns;
 
 pub mod common;
 pub mod connector;
