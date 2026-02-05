@@ -47,7 +47,7 @@ time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
-gethostname = "0.5.0"
+gethostname = "1.1.0"
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
 
@@ -137,6 +137,7 @@ rand = "0.8.5"
 serde = { version = "1.0", features = ["derive"] }
 pnet = { version = "0.35.0", features = ["serde"] }
 serde_json = "1"
+serde_with = "3"
 
 clap = { version = "4.5.30", features = [
     "string",
