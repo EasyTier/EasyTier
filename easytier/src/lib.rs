@@ -10,6 +10,8 @@ mod gateway;
 pub mod instance;
 mod peer_center;
 mod vpn_portal;
+#[cfg(feature = "magic-dns")]
+mod dns;
 
 pub mod common;
 pub mod connector;
