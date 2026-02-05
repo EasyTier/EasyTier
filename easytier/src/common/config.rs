@@ -12,6 +12,7 @@ use tokio::io::AsyncReadExt as _;
 
 use crate::{
     common::stun::StunInfoCollector,
+    dns::config::DnsConfig,
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
@@ -223,6 +224,9 @@ pub trait ConfigLoader: Send + Sync {
         None
     }
     fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
+
+    fn get_dns(&self) -> DnsConfig;
+    fn set_dns(&self, dns: DnsConfig);
 
     fn dump(&self) -> String;
 }
@@ -460,6 +464,8 @@ struct Config {
 
     peer: Option<Vec<PeerConfig>>,
     proxy_network: Option<Vec<ProxyNetworkConfig>>,
+
+    dns: Option<DnsConfig>,
 
     vpn_portal_config: Option<VpnPortalConfig>,
 
@@ -883,6 +889,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_credential_file(&self, path: Option<PathBuf>) {
         self.config.lock().unwrap().credential_file = path;
+    }
+
+    fn get_dns(&self) -> DnsConfig {
+        self.config.lock().unwrap().dns.clone().unwrap_or_default()
+    }
+
+    fn set_dns(&self, dns: DnsConfig) {
+        self.config.lock().unwrap().dns = Some(dns);
     }
 
     fn dump(&self) -> String {
