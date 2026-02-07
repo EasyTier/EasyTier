@@ -25,6 +25,16 @@ export async function generateNetworkConfig(tomlConfig: string) {
 }
 
 export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
+  if (save) {
+    let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
+    const index = networkList.findIndex(c => c.instance_id === cfg.instance_id);
+    if (index !== -1) {
+      networkList[index] = cfg;
+    } else {
+      networkList.push(cfg);
+    }
+    localStorage.setItem('networkList', JSON.stringify(networkList));
+  }
   return invoke('run_network_instance', { cfg, save })
 }
 
@@ -49,6 +59,9 @@ export async function listNetworkInstanceIds() {
 }
 
 export async function deleteNetworkInstance(instanceId: string) {
+  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
+  networkList = networkList.filter(c => c.instance_id !== instanceId);
+  localStorage.setItem('networkList', JSON.stringify(networkList));
   return await invoke('remove_network_instance', { instanceId })
 }
 
@@ -57,6 +70,14 @@ export async function updateNetworkConfigState(instanceId: string, disabled: boo
 }
 
 export async function saveNetworkConfig(cfg: NetworkConfig) {
+  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
+  const index = networkList.findIndex(c => c.instance_id === cfg.instance_id);
+  if (index !== -1) {
+    networkList[index] = cfg;
+  } else {
+    networkList.push(cfg);
+  }
+  localStorage.setItem('networkList', JSON.stringify(networkList));
   return await invoke('save_network_config', { cfg })
 }
 
