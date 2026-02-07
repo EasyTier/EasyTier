@@ -1,6 +1,7 @@
 import { Event, listen } from "@tauri-apps/api/event";
 import { type } from "@tauri-apps/plugin-os";
 import { NetworkTypes } from "easytier-frontend-lib"
+import { upsertNetworkConfigInLocalStorage } from "./backend";
 
 const EVENTS = Object.freeze({
     SAVE_CONFIGS: 'save_configs',
@@ -12,9 +13,18 @@ const EVENTS = Object.freeze({
     EVENT_LAGGED: 'event_lagged',
 });
 
-function onSaveConfigs(event: Event<NetworkTypes.NetworkConfig[]>) {
+function onSaveConfigs(event: Event<string>) {
     console.log(`Received event '${EVENTS.SAVE_CONFIGS}': ${event.payload}`);
-    // localStorage.setItem('networkList', JSON.stringify(event.payload));
+    try {
+        const configs = JSON.parse(event.payload) as NetworkTypes.NetworkConfig[];
+        if (Array.isArray(configs)) {
+            configs.forEach(cfg => {
+                upsertNetworkConfigInLocalStorage(cfg);
+            });
+        }
+    } catch (e) {
+        console.error("Failed to parse save_configs event payload", e);
+    }
 }
 
 async function onPreRunNetworkInstance(event: Event<string>) {

@@ -24,16 +24,36 @@ export async function generateNetworkConfig(tomlConfig: string) {
   return invoke<NetworkConfig>('generate_network_config', { tomlConfig })
 }
 
+export function getStoredNetworkList(): NetworkConfig[] {
+  try {
+    const list = JSON.parse(localStorage.getItem('networkList') || '[]');
+    if (Array.isArray(list)) {
+      return list;
+    }
+  } catch (e) {
+    console.error("Failed to parse networkList from localStorage", e);
+  }
+  return [];
+}
+
+export function saveStoredNetworkList(list: NetworkConfig[]) {
+  localStorage.setItem('networkList', JSON.stringify(list));
+}
+
+export function upsertNetworkConfigInLocalStorage(cfg: NetworkConfig) {
+  const networkList = getStoredNetworkList();
+  const index = networkList.findIndex(c => c.instance_id === cfg.instance_id);
+  if (index !== -1) {
+    networkList[index] = cfg;
+  } else {
+    networkList.push(cfg);
+  }
+  saveStoredNetworkList(networkList);
+}
+
 export async function runNetworkInstance(cfg: NetworkConfig, save: boolean) {
   if (save) {
-    let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
-    const index = networkList.findIndex(c => c.instance_id === cfg.instance_id);
-    if (index !== -1) {
-      networkList[index] = cfg;
-    } else {
-      networkList.push(cfg);
-    }
-    localStorage.setItem('networkList', JSON.stringify(networkList));
+    upsertNetworkConfigInLocalStorage(cfg);
   }
   return invoke('run_network_instance', { cfg, save })
 }
@@ -59,10 +79,10 @@ export async function listNetworkInstanceIds() {
 }
 
 export async function deleteNetworkInstance(instanceId: string) {
-  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
-  networkList = networkList.filter(c => c.instance_id !== instanceId);
-  localStorage.setItem('networkList', JSON.stringify(networkList));
-  return await invoke('remove_network_instance', { instanceId })
+  const ret = await invoke('remove_network_instance', { instanceId })
+  const networkList = getStoredNetworkList().filter(c => c.instance_id !== instanceId);
+  saveStoredNetworkList(networkList);
+  return ret;
 }
 
 export async function updateNetworkConfigState(instanceId: string, disabled: boolean) {
@@ -70,14 +90,7 @@ export async function updateNetworkConfigState(instanceId: string, disabled: boo
 }
 
 export async function saveNetworkConfig(cfg: NetworkConfig) {
-  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
-  const index = networkList.findIndex(c => c.instance_id === cfg.instance_id);
-  if (index !== -1) {
-    networkList[index] = cfg;
-  } else {
-    networkList.push(cfg);
-  }
-  localStorage.setItem('networkList', JSON.stringify(networkList));
+  upsertNetworkConfigInLocalStorage(cfg);
   return await invoke('save_network_config', { cfg })
 }
 
@@ -90,7 +103,7 @@ export async function getConfig(instanceId: string) {
 }
 
 export async function sendConfigs(enabledNetworks: string[]) {
-  let networkList: NetworkConfig[] = JSON.parse(localStorage.getItem('networkList') || '[]');
+  const networkList = getStoredNetworkList();
   return await invoke('load_configs', { configs: networkList, enabledNetworks })
 }
 
