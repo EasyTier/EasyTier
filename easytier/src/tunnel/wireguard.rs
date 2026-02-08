@@ -33,8 +33,9 @@ use crate::{
 use super::{
     check_scheme_and_get_socket_addr,
     common::{
-        setup_sokcet2, setup_sokcet2_ext, setup_sokcet2_ext_with_auto_resolve,
-        setup_sokcet2_with_auto_resolve, wait_for_connect_futures,
+        setup_sokcet2, setup_sokcet2_ext,
+        setup_sokcet2_ext_with_auto_resolve_and_listener_protocol,
+        setup_sokcet2_with_auto_resolve_and_listener_protocol, wait_for_connect_futures,
     },
     generate_digest_from_str,
     packet_def::{ZCPacketType, PEER_MANAGER_HEADER_SIZE},
@@ -575,17 +576,19 @@ impl TunnelListener for WgTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext_with_auto_resolve(
+            setup_sokcet2_ext_with_auto_resolve_and_listener_protocol(
                 &socket2_socket,
                 &addr,
                 Some(bind_dev),
                 self.auto_resolve_port_conflict,
+                Some("wg"),
             )?;
         } else {
-            setup_sokcet2_with_auto_resolve(
+            setup_sokcet2_with_auto_resolve_and_listener_protocol(
                 &socket2_socket,
                 &addr,
                 self.auto_resolve_port_conflict,
+                Some("wg"),
             )?;
         }
 

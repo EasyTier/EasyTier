@@ -283,6 +283,8 @@ windows-sys = { version = "0.52", features = [
 ] }
 winapi = { version = "0.3.9", features = [
     "impl-default",
+    "handleapi",
+    "minwindef",
     "processthreadsapi",
     "securitybaseapi",
     "winnt",

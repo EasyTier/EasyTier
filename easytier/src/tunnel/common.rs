@@ -350,6 +350,22 @@ pub(crate) fn setup_sokcet2_ext_with_auto_resolve(
     #[allow(unused_variables)] bind_dev: Option<String>,
     #[allow(unused_variables)] auto_resolve_port_conflict: bool,
 ) -> Result<(), TunnelError> {
+    setup_sokcet2_ext_with_auto_resolve_and_listener_protocol(
+        socket2_socket,
+        bind_addr,
+        bind_dev,
+        auto_resolve_port_conflict,
+        None,
+    )
+}
+
+pub(crate) fn setup_sokcet2_ext_with_auto_resolve_and_listener_protocol(
+    socket2_socket: &socket2::Socket,
+    bind_addr: &SocketAddr,
+    #[allow(unused_variables)] bind_dev: Option<String>,
+    #[allow(unused_variables)] auto_resolve_port_conflict: bool,
+    #[allow(unused_variables)] listener_protocol: Option<&str>,
+) -> Result<(), TunnelError> {
     #[cfg(target_os = "windows")]
     {
         let is_udp = matches!(socket2_socket.r#type()?, socket2::Type::DGRAM);
@@ -367,20 +383,28 @@ pub(crate) fn setup_sokcet2_ext_with_auto_resolve(
         {
             // Check for Windows access denied (10013/WSAEACCES) which indicates Hyper-V port reservation
             if e.raw_os_error() == Some(10013) {
-                let protocol = if matches!(socket2_socket.r#type()?, socket2::Type::DGRAM) {
+                let transport_protocol = if matches!(socket2_socket.r#type()?, socket2::Type::DGRAM)
+                {
                     "udp"
                 } else {
                     "tcp"
                 };
+                let listener_protocol = listener_protocol.unwrap_or(transport_protocol);
 
-                if let Some(mut conflict_info) =
-                    crate::arch::windows::check_port_conflict(bind_addr.port(), protocol)
-                {
+                if let Some(mut conflict_info) = crate::arch::windows::check_port_conflict(
+                    bind_addr.port(),
+                    transport_protocol,
+                    bind_addr.is_ipv6(),
+                    listener_protocol,
+                    bind_addr.ip(),
+                ) {
                     let mut auto_fix_attempted = false;
                     if auto_resolve_port_conflict {
                         auto_fix_attempted = true;
                         if crate::arch::windows::is_elevated() {
-                            match crate::arch::windows::auto_fix_port_range(40000, 5000) {
+                            let ip_family = if bind_addr.is_ipv6() { "ipv6" } else { "ipv4" };
+                            match crate::arch::windows::auto_fix_port_range(ip_family, 40000, 5000)
+                            {
                                 Ok(()) => {
                                     if socket2_socket
                                         .bind(&socket2::SockAddr::from(*bind_addr))
@@ -399,9 +423,13 @@ pub(crate) fn setup_sokcet2_ext_with_auto_resolve(
                             );
                         }
 
-                        if let Some(updated_info) =
-                            crate::arch::windows::check_port_conflict(bind_addr.port(), protocol)
-                        {
+                        if let Some(updated_info) = crate::arch::windows::check_port_conflict(
+                            bind_addr.port(),
+                            transport_protocol,
+                            bind_addr.is_ipv6(),
+                            listener_protocol,
+                            bind_addr.ip(),
+                        ) {
                             conflict_info = updated_info;
                         }
                     }
@@ -502,11 +530,26 @@ pub(crate) fn setup_sokcet2_with_auto_resolve(
     bind_addr: &SocketAddr,
     auto_resolve_port_conflict: bool,
 ) -> Result<(), TunnelError> {
-    setup_sokcet2_ext_with_auto_resolve(
+    setup_sokcet2_with_auto_resolve_and_listener_protocol(
+        socket2_socket,
+        bind_addr,
+        auto_resolve_port_conflict,
+        None,
+    )
+}
+
+pub(crate) fn setup_sokcet2_with_auto_resolve_and_listener_protocol(
+    socket2_socket: &socket2::Socket,
+    bind_addr: &SocketAddr,
+    auto_resolve_port_conflict: bool,
+    listener_protocol: Option<&str>,
+) -> Result<(), TunnelError> {
+    setup_sokcet2_ext_with_auto_resolve_and_listener_protocol(
         socket2_socket,
         bind_addr,
         super::common::get_interface_name_by_ip(&bind_addr.ip()),
         auto_resolve_port_conflict,
+        listener_protocol,
     )
 }
 

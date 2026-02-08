@@ -34,8 +34,8 @@ use crate::{
 
 use super::{
     common::{
-        setup_sokcet2, setup_sokcet2_ext_with_auto_resolve, setup_sokcet2_with_auto_resolve,
-        wait_for_connect_futures,
+        setup_sokcet2, setup_sokcet2_ext_with_auto_resolve_and_listener_protocol,
+        setup_sokcet2_with_auto_resolve_and_listener_protocol, wait_for_connect_futures,
     },
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
     ring::{RingSink, RingStream},
@@ -560,17 +560,19 @@ impl TunnelListener for UdpTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext_with_auto_resolve(
+            setup_sokcet2_ext_with_auto_resolve_and_listener_protocol(
                 &socket2_socket,
                 &addr,
                 Some(bind_dev),
                 self.auto_resolve_port_conflict,
+                Some("udp"),
             )?;
         } else {
-            setup_sokcet2_with_auto_resolve(
+            setup_sokcet2_with_auto_resolve_and_listener_protocol(
                 &socket2_socket,
                 &addr,
                 self.auto_resolve_port_conflict,
+                Some("udp"),
             )?;
         }
 

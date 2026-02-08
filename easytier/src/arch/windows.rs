@@ -1,4 +1,9 @@
-use std::{io, mem::ManuallyDrop, net::SocketAddr, os::windows::io::AsRawSocket};
+use std::{
+    io,
+    mem::ManuallyDrop,
+    net::{IpAddr, SocketAddr},
+    os::windows::io::AsRawSocket,
+};
 
 use anyhow::Context;
 use network_interface::NetworkInterfaceConfig;
@@ -466,6 +471,14 @@ const TCPIP_PARAMS_KEY: &str = r"SYSTEM\CurrentControlSet\Services\Tcpip\Paramet
 const DEFAULT_START_PORT: u16 = 49152;
 const DEFAULT_NUM_PORTS: u16 = 16384; // 49152-65535
 
+fn calc_dynamic_port_range_bounds(start_port: u32, num_ports: u32) -> (u16, u16) {
+    let start_u32 = start_port.min(u16::MAX as u32);
+    let end_u32 = start_u32
+        .saturating_add(num_ports.saturating_sub(1))
+        .min(u16::MAX as u32);
+    (start_u32 as u16, end_u32 as u16)
+}
+
 /// Type of port conflict
 #[derive(Debug, Clone, PartialEq)]
 pub enum PortConflictType {
@@ -480,6 +493,8 @@ pub enum PortConflictType {
 pub struct PortConflictInfo {
     pub port: u16,
     pub protocol: String,
+    pub bind_host: String,
+    pub netsh_ip_family: &'static str,
     pub conflict_type: PortConflictType,
     pub range_start: u16,
     pub range_end: u16,
@@ -500,33 +515,90 @@ pub fn get_dynamic_port_range() -> io::Result<(u16, u16)> {
             // Try to read configured values
             let start_port: u32 = key
                 .get_value("DynamicPortRangeStartPort")
-                .unwrap_or(DEFAULT_START_PORT as u32);
+                .unwrap_or(u32::from(DEFAULT_START_PORT));
             let num_ports: u32 = key
                 .get_value("DynamicPortRangeNumberOfPorts")
-                .unwrap_or(DEFAULT_NUM_PORTS as u32);
+                .unwrap_or(u32::from(DEFAULT_NUM_PORTS));
 
-            let start = start_port as u16;
-            let end = start.saturating_add(num_ports as u16).saturating_sub(1);
-            Ok((start, end))
+            Ok(calc_dynamic_port_range_bounds(start_port, num_ports))
         }
         Err(_) => {
             // Use Windows default if registry key doesn't exist
-            Ok((
-                DEFAULT_START_PORT,
-                DEFAULT_START_PORT + DEFAULT_NUM_PORTS - 1,
+            Ok(calc_dynamic_port_range_bounds(
+                u32::from(DEFAULT_START_PORT),
+                u32::from(DEFAULT_NUM_PORTS),
             ))
         }
     }
 }
 
+fn parse_dynamic_port_range_output(stdout: &str) -> Option<(u16, u16)> {
+    let mut values = Vec::new();
+    for line in stdout.lines() {
+        let Some((_, value)) = line.split_once(':') else {
+            continue;
+        };
+        if let Ok(v) = value.trim().parse::<u32>() {
+            values.push(v);
+        }
+    }
+
+    if values.len() < 2 {
+        return None;
+    }
+
+    Some(calc_dynamic_port_range_bounds(values[0], values[1]))
+}
+
+/// Get Windows dynamic port range for specific IP family and protocol from netsh.
+/// Falls back to registry/default range when command output cannot be parsed.
+pub fn get_dynamic_port_range_for(protocol: &str, is_ipv6: bool) -> io::Result<(u16, u16)> {
+    use std::process::Command;
+    let ip_family = if is_ipv6 { "ipv6" } else { "ipv4" };
+
+    let output = Command::new("netsh")
+        .args(["int", ip_family, "show", "dynamicport", protocol])
+        .output()?;
+
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(range) = parse_dynamic_port_range_output(&stdout) {
+            return Ok(range);
+        }
+    }
+
+    get_dynamic_port_range()
+}
+
 /// Get Windows excluded port ranges from netsh command
 /// Parses output of: netsh int ipv4 show excludedportrange tcp/udp
 /// Returns a list of (start_port, end_port) tuples
-pub fn get_excluded_port_ranges(protocol: &str) -> io::Result<Vec<(u16, u16)>> {
+fn parse_excluded_port_ranges_output(stdout: &str) -> Vec<(u16, u16)> {
+    let mut ranges = Vec::new();
+
+    for line in stdout.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(start) = parts.next().and_then(|v| v.parse::<u16>().ok()) else {
+            continue;
+        };
+        let Some(end) = parts.next().and_then(|v| v.parse::<u16>().ok()) else {
+            continue;
+        };
+
+        if start <= end {
+            ranges.push((start, end));
+        }
+    }
+
+    ranges
+}
+
+pub fn get_excluded_port_ranges(protocol: &str, is_ipv6: bool) -> io::Result<Vec<(u16, u16)>> {
     use std::process::Command;
+    let ip_family = if is_ipv6 { "ipv6" } else { "ipv4" };
 
     let output = Command::new("netsh")
-        .args(["int", "ipv4", "show", "excludedportrange", protocol])
+        .args(["int", ip_family, "show", "excludedportrange", protocol])
         .output()?;
 
     if !output.status.success() {
@@ -534,40 +606,16 @@ pub fn get_excluded_port_ranges(protocol: &str) -> io::Result<Vec<(u16, u16)>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut ranges = Vec::new();
-
-    // Parse output format:
-    // Start Port    End Port
-    // ----------    --------
-    //      10000       10099
-    //      50000       50059
-    //       *
-    for line in stdout.lines() {
-        let line = line.trim();
-        // Skip header lines and empty lines
-        if line.is_empty()
-            || line.starts_with("Start")
-            || line.starts_with('-')
-            || line.contains('*')
-        {
-            continue;
-        }
-
-        // Parse "start_port    end_port" format
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            if let (Ok(start), Ok(end)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
-                ranges.push((start, end));
-            }
-        }
-    }
-
-    Ok(ranges)
+    Ok(parse_excluded_port_ranges_output(&stdout))
 }
 
 /// Check if port is in an excluded port range
-pub fn check_port_in_excluded_ranges(port: u16, protocol: &str) -> Option<(u16, u16)> {
-    let ranges = get_excluded_port_ranges(protocol).ok()?;
+pub fn check_port_in_excluded_ranges(
+    port: u16,
+    protocol: &str,
+    is_ipv6: bool,
+) -> Option<(u16, u16)> {
+    let ranges = get_excluded_port_ranges(protocol, is_ipv6).ok()?;
     for (start, end) in ranges {
         if port >= start && port <= end {
             return Some((start, end));
@@ -576,14 +624,32 @@ pub fn check_port_in_excluded_ranges(port: u16, protocol: &str) -> Option<(u16, 
     None
 }
 
+fn format_bind_host(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => format!("[{}]", v6),
+    }
+}
+
 /// Check if port is in dynamic range or excluded range and return conflict info
-pub fn check_port_conflict(port: u16, protocol: &str) -> Option<PortConflictInfo> {
+pub fn check_port_conflict(
+    port: u16,
+    transport_protocol: &str,
+    is_ipv6: bool,
+    listener_protocol: &str,
+    bind_ip: IpAddr,
+) -> Option<PortConflictInfo> {
+    let netsh_ip_family = if is_ipv6 { "ipv6" } else { "ipv4" };
+    let bind_host = format_bind_host(bind_ip);
+
     // First check excluded port ranges (more specific, Hyper-V reservations)
-    if let Some((start, end)) = check_port_in_excluded_ranges(port, protocol) {
-        let suggested = find_available_port(port, protocol);
+    if let Some((start, end)) = check_port_in_excluded_ranges(port, transport_protocol, is_ipv6) {
+        let suggested = find_available_port(port, transport_protocol, is_ipv6);
         return Some(PortConflictInfo {
             port,
-            protocol: protocol.to_string(),
+            protocol: listener_protocol.to_string(),
+            bind_host: bind_host.clone(),
+            netsh_ip_family,
             conflict_type: PortConflictType::ExcludedRange,
             range_start: start,
             range_end: end,
@@ -592,11 +658,13 @@ pub fn check_port_conflict(port: u16, protocol: &str) -> Option<PortConflictInfo
     }
 
     // Then check dynamic port range
-    let (dyn_start, dyn_end) = get_dynamic_port_range().ok()?;
+    let (dyn_start, dyn_end) = get_dynamic_port_range_for(transport_protocol, is_ipv6).ok()?;
     if port >= dyn_start && port <= dyn_end {
         return Some(PortConflictInfo {
             port,
-            protocol: protocol.to_string(),
+            protocol: listener_protocol.to_string(),
+            bind_host,
+            netsh_ip_family,
             conflict_type: PortConflictType::DynamicRange,
             range_start: dyn_start,
             range_end: dyn_end,
@@ -608,9 +676,10 @@ pub fn check_port_conflict(port: u16, protocol: &str) -> Option<PortConflictInfo
 }
 
 /// Find an available port that's not in any excluded range
-fn find_available_port(original_port: u16, protocol: &str) -> u16 {
-    let excluded_ranges = get_excluded_port_ranges(protocol).unwrap_or_default();
-    let (dyn_start, _) = get_dynamic_port_range().unwrap_or((DEFAULT_START_PORT, 65535));
+fn find_available_port(original_port: u16, protocol: &str, is_ipv6: bool) -> u16 {
+    let excluded_ranges = get_excluded_port_ranges(protocol, is_ipv6).unwrap_or_default();
+    let (dyn_start, _) =
+        get_dynamic_port_range_for(protocol, is_ipv6).unwrap_or((DEFAULT_START_PORT, 65535));
 
     // Try ports below dynamic range start, avoiding excluded ranges
     let mut candidate = original_port;
@@ -679,14 +748,21 @@ pub fn is_elevated() -> bool {
 
 /// Attempt to automatically fix port range (requires admin)
 /// Returns Ok(()) if successful, Err with message if failed
-pub fn auto_fix_port_range(new_start: u16, num_ports: u16) -> io::Result<()> {
+pub fn auto_fix_port_range(ip_family: &str, new_start: u16, num_ports: u16) -> io::Result<()> {
     use std::process::Command;
+
+    if ip_family != "ipv4" && ip_family != "ipv6" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ip_family must be ipv4 or ipv6",
+        ));
+    }
 
     // Set TCP dynamic port range
     let tcp_result = Command::new("netsh")
         .args([
             "int",
-            "ipv4",
+            ip_family,
             "set",
             "dynamicport",
             "tcp",
@@ -706,7 +782,7 @@ pub fn auto_fix_port_range(new_start: u16, num_ports: u16) -> io::Result<()> {
     let udp_result = Command::new("netsh")
         .args([
             "int",
-            "ipv4",
+            ip_family,
             "set",
             "dynamicport",
             "udp",
@@ -755,21 +831,26 @@ pub fn format_port_conflict_message(
     msg.push_str(&format!(
         "\nSolutions:\n\
         1. Use a different port:\n\
-           --listeners tcp://0.0.0.0:{}\n\n\
+           --listeners {}://{}:{}\n\n\
         2. Modify Windows dynamic port range (requires admin):\n\
-           netsh int ipv4 set dynamicport tcp start=40000 num=5000\n\
-           netsh int ipv4 set dynamicport udp start=40000 num=5000\n\
+           netsh int {} set dynamicport tcp start=40000 num=5000\n\
+           netsh int {} set dynamicport udp start=40000 num=5000\n\
            net stop winnat && net start winnat\n",
-        info.suggested_port
+        info.protocol,
+        info.bind_host,
+        info.suggested_port,
+        info.netsh_ip_family,
+        info.netsh_ip_family
     ));
 
     // Add diagnostic commands
-    msg.push_str(
+    msg.push_str(&format!(
         "\nDiagnostic commands:\n\
-           netsh int ipv4 show excludedportrange tcp\n\
-           netsh int ipv4 show excludedportrange udp\n\
-           netsh int ipv4 show dynamicport tcp\n",
-    );
+           netsh int {} show excludedportrange tcp\n\
+           netsh int {} show excludedportrange udp\n\
+           netsh int {} show dynamicport tcp\n",
+        info.netsh_ip_family, info.netsh_ip_family, info.netsh_ip_family
+    ));
 
     // Suggest enabling auto_resolve if not already enabled
     if !auto_resolve_enabled {
@@ -791,6 +872,55 @@ pub fn format_port_conflict_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_excluded_port_ranges_including_administered_rows() {
+        let output = r"
+Protocol tcp Port Exclusion Ranges
+
+Start Port    End Port
+----------    --------
+     10000       10099
+     50000       50059     *
+          *
+";
+
+        let ranges = parse_excluded_port_ranges_output(output);
+        assert_eq!(ranges, vec![(10000, 10099), (50000, 50059)]);
+    }
+
+    #[test]
+    fn test_parse_dynamic_port_range_output() {
+        let output = r"
+Protocol tcp Dynamic Port Range
+---------------------------------
+Start Port      : 49152
+Number of Ports : 16384
+";
+
+        let range = parse_dynamic_port_range_output(output);
+        assert_eq!(range, Some((49152, 65535)));
+    }
+
+    #[test]
+    fn test_format_port_conflict_message_uses_listener_protocol_and_host() {
+        let info = PortConflictInfo {
+            port: 10000,
+            protocol: "quic".to_string(),
+            bind_host: "[::]".to_string(),
+            netsh_ip_family: "ipv6",
+            conflict_type: PortConflictType::ExcludedRange,
+            range_start: 10000,
+            range_end: 10099,
+            suggested_port: 9999,
+        };
+        let msg = format_port_conflict_message(&info, false, false);
+
+        assert!(msg.contains("--listeners quic://[::]:9999"));
+        assert!(msg.contains("netsh int ipv6 set dynamicport tcp start=40000 num=5000"));
+        assert!(msg.contains("netsh int ipv6 show excludedportrange tcp"));
+        assert!(msg.contains("netsh int ipv6 show dynamicport tcp"));
+    }
 
     #[test]
     fn test_add_self_to_firewall_allowlist() {

@@ -7,7 +7,10 @@ use std::{
 };
 
 use crate::tunnel::{
-    common::{setup_sokcet2_with_auto_resolve, FramedReader, FramedWriter, TunnelWrapper},
+    common::{
+        setup_sokcet2_with_auto_resolve_and_listener_protocol, FramedReader, FramedWriter,
+        TunnelWrapper,
+    },
     TunnelInfo,
 };
 use anyhow::Context;
@@ -121,7 +124,12 @@ pub fn make_server_endpoint_with_auto_resolve(
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )?;
-    setup_sokcet2_with_auto_resolve(&socket2_socket, &bind_addr, auto_resolve_port_conflict)?;
+    setup_sokcet2_with_auto_resolve_and_listener_protocol(
+        &socket2_socket,
+        &bind_addr,
+        auto_resolve_port_conflict,
+        Some("quic"),
+    )?;
     let socket = std::net::UdpSocket::from(socket2_socket);
 
     let runtime =

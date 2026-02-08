@@ -16,7 +16,8 @@ use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
 
 use super::{
     common::{
-        setup_sokcet2, setup_sokcet2_with_auto_resolve, wait_for_connect_futures, TunnelWrapper,
+        setup_sokcet2, setup_sokcet2_with_auto_resolve_and_listener_protocol,
+        wait_for_connect_futures, TunnelWrapper,
     },
     insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
@@ -138,7 +139,12 @@ impl TunnelListener for WSTunnelListener {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
-        setup_sokcet2_with_auto_resolve(&socket2_socket, &addr, self.auto_resolve_port_conflict)?;
+        setup_sokcet2_with_auto_resolve_and_listener_protocol(
+            &socket2_socket,
+            &addr,
+            self.auto_resolve_port_conflict,
+            Some(self.addr.scheme()),
+        )?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         self.addr
