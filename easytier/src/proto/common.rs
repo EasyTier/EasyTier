@@ -10,6 +10,107 @@ use crate::tunnel::packet_def::CompressorAlgo;
 
 include!(concat!(env!("OUT_DIR"), "/common.rs"));
 
+/// Serde module for CompressionAlgoPb to support string serialization in TOML config
+pub mod compression_algo_serde {
+    use super::CompressionAlgoPb;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrInt {
+        String(String),
+        Int(i32),
+    }
+
+    fn str_to_algo<E: serde::de::Error>(s: &str) -> Result<i32, E> {
+        let algo = match s.to_lowercase().as_str() {
+            "none" => CompressionAlgoPb::None,
+            "zstd" => CompressionAlgoPb::Zstd,
+            "lz4" => CompressionAlgoPb::Lz4,
+            "brotli" | "br" => CompressionAlgoPb::Brotli,
+            _ => {
+                return Err(E::custom(format!(
+                    "unknown compression algorithm: {}, supported: none, zstd, lz4, brotli",
+                    s
+                )))
+            }
+        };
+        Ok(algo as i32)
+    }
+
+    pub fn serialize<S>(value: &i32, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let algo = CompressionAlgoPb::try_from(*value).unwrap_or(CompressionAlgoPb::None);
+        serializer.serialize_str(algo.as_str_name().to_lowercase().as_str())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<i32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match StringOrInt::deserialize(deserializer)? {
+            StringOrInt::Int(i) => Ok(i),
+            StringOrInt::String(s) => str_to_algo(&s),
+        }
+    }
+}
+
+/// Serde module for optional CompressionAlgoPb fields
+pub mod compression_algo_serde_opt {
+    use super::CompressionAlgoPb;
+    use serde::{self, Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrInt {
+        String(String),
+        Int(i32),
+    }
+
+    fn str_to_algo<E: serde::de::Error>(s: &str) -> Result<i32, E> {
+        let algo = match s.to_lowercase().as_str() {
+            "none" => CompressionAlgoPb::None,
+            "zstd" => CompressionAlgoPb::Zstd,
+            "lz4" => CompressionAlgoPb::Lz4,
+            "brotli" | "br" => CompressionAlgoPb::Brotli,
+            _ => {
+                return Err(E::custom(format!(
+                    "unknown compression algorithm: {}, supported: none, zstd, lz4, brotli",
+                    s
+                )))
+            }
+        };
+        Ok(algo as i32)
+    }
+
+    pub fn serialize<S>(value: &Option<i32>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match value {
+            Some(v) => {
+                let algo = CompressionAlgoPb::try_from(*v).unwrap_or(CompressionAlgoPb::None);
+                serializer.serialize_some(&algo.as_str_name().to_lowercase())
+            }
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<i32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let opt = Option::<StringOrInt>::deserialize(deserializer)?;
+        match opt {
+            Some(StringOrInt::Int(i)) => Ok(Some(i)),
+            Some(StringOrInt::String(s)) => str_to_algo(&s).map(Some),
+            None => Ok(None),
+        }
+    }
+}
+
 impl From<uuid::Uuid> for Uuid {
     fn from(uuid: uuid::Uuid) -> Self {
         let (high, low) = uuid.as_u64_pair();
@@ -333,6 +434,8 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
             #[cfg(feature = "zstd")]
             CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
             CompressionAlgoPb::None => Ok(CompressorAlgo::None),
+            CompressionAlgoPb::Lz4 => Ok(CompressorAlgo::Lz4),
+            CompressionAlgoPb::Brotli => Ok(CompressorAlgo::Brotli),
             _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
         }
     }
@@ -346,6 +449,8 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
             #[cfg(feature = "zstd")]
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
             CompressorAlgo::None => Ok(CompressionAlgoPb::None),
+            CompressorAlgo::Lz4 => Ok(CompressionAlgoPb::Lz4),
+            CompressorAlgo::Brotli => Ok(CompressionAlgoPb::Brotli),
         }
     }
 }

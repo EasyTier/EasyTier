@@ -290,6 +290,8 @@ pub enum CompressorAlgo {
     None = 0,
     #[cfg(feature = "zstd")]
     ZstdDefault = 1,
+    Lz4 = 2,
+    Brotli = 3,
 }
 
 #[repr(C, packed)]
@@ -304,6 +306,8 @@ impl CompressorTail {
         match self.algo {
             #[cfg(feature = "zstd")]
             1 => Some(CompressorAlgo::ZstdDefault),
+            2 => Some(CompressorAlgo::Lz4),
+            3 => Some(CompressorAlgo::Brotli),
             _ => None,
         }
     }
