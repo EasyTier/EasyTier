@@ -33,7 +33,10 @@ use crate::{
 };
 
 use super::{
-    common::{setup_sokcet2, setup_sokcet2_ext, wait_for_connect_futures},
+    common::{
+        setup_sokcet2, setup_sokcet2_ext_with_auto_resolve, setup_sokcet2_with_auto_resolve,
+        wait_for_connect_futures,
+    },
     packet_def::{UDPTunnelHeader, UDP_TUNNEL_HEADER_SIZE},
     ring::{RingSink, RingStream},
     IpVersion, Tunnel, TunnelConnCounter, TunnelError, TunnelListener, TunnelUrl,
@@ -504,6 +507,7 @@ impl UdpTunnelListenerData {
 pub struct UdpTunnelListener {
     addr: url::Url,
     socket: Option<Arc<UdpSocket>>,
+    auto_resolve_port_conflict: bool,
 
     conn_recv: Receiver<Box<dyn Tunnel>>,
     data: UdpTunnelListenerData,
@@ -513,11 +517,19 @@ pub struct UdpTunnelListener {
 
 impl UdpTunnelListener {
     pub fn new(addr: url::Url) -> Self {
+        Self::new_with_auto_resolve_port_conflict(addr, false)
+    }
+
+    pub fn new_with_auto_resolve_port_conflict(
+        addr: url::Url,
+        auto_resolve_port_conflict: bool,
+    ) -> Self {
         let (close_event_send, close_event_recv) = tokio::sync::mpsc::unbounded_channel();
         let (conn_send, conn_recv) = tokio::sync::mpsc::channel(100);
         Self {
             addr: addr.clone(),
             socket: None,
+            auto_resolve_port_conflict,
             conn_recv,
             data: UdpTunnelListenerData::new(addr, conn_send, close_event_send),
             forward_tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
@@ -548,9 +560,18 @@ impl TunnelListener for UdpTunnelListener {
 
         let tunnel_url: TunnelUrl = self.addr.clone().into();
         if let Some(bind_dev) = tunnel_url.bind_dev() {
-            setup_sokcet2_ext(&socket2_socket, &addr, Some(bind_dev))?;
+            setup_sokcet2_ext_with_auto_resolve(
+                &socket2_socket,
+                &addr,
+                Some(bind_dev),
+                self.auto_resolve_port_conflict,
+            )?;
         } else {
-            setup_sokcet2(&socket2_socket, &addr)?;
+            setup_sokcet2_with_auto_resolve(
+                &socket2_socket,
+                &addr,
+                self.auto_resolve_port_conflict,
+            )?;
         }
 
         self.socket = Some(Arc::new(UdpSocket::from_std(socket2_socket.into())?));
@@ -1047,7 +1068,8 @@ mod tests {
                 Some(socket2::Protocol::UDP),
             )
             .unwrap();
-            setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone()).unwrap();
+            crate::tunnel::common::setup_sokcet2_ext(&socket2_socket, &addr, bind_dev.clone())
+                .unwrap();
         }
     }
 

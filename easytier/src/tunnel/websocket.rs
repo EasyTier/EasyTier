@@ -15,7 +15,9 @@ use super::TunnelInfo;
 use crate::tunnel::insecure_tls::get_insecure_tls_client_config;
 
 use super::{
-    common::{setup_sokcet2, wait_for_connect_futures, TunnelWrapper},
+    common::{
+        setup_sokcet2, setup_sokcet2_with_auto_resolve, wait_for_connect_futures, TunnelWrapper,
+    },
     insecure_tls::{get_insecure_tls_cert, init_crypto_provider},
     packet_def::{ZCPacket, ZCPacketType},
     FromUrl, IpVersion, Tunnel, TunnelConnector, TunnelError, TunnelListener,
@@ -63,13 +65,22 @@ async fn map_from_ws_message(
 pub struct WSTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
+    auto_resolve_port_conflict: bool,
 }
 
 impl WSTunnelListener {
     pub fn new(addr: url::Url) -> Self {
+        Self::new_with_auto_resolve_port_conflict(addr, false)
+    }
+
+    pub fn new_with_auto_resolve_port_conflict(
+        addr: url::Url,
+        auto_resolve_port_conflict: bool,
+    ) -> Self {
         WSTunnelListener {
             addr,
             listener: None,
+            auto_resolve_port_conflict,
         }
     }
 
@@ -127,7 +138,7 @@ impl TunnelListener for WSTunnelListener {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+        setup_sokcet2_with_auto_resolve(&socket2_socket, &addr, self.auto_resolve_port_conflict)?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         self.addr

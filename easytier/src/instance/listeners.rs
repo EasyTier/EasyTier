@@ -32,9 +32,16 @@ pub fn get_listener_by_url(
     l: &url::Url,
     _ctx: ArcGlobalCtx,
 ) -> Result<Box<dyn TunnelListener>, Error> {
+    let auto_resolve_port_conflict = _ctx.config.get_flags().auto_resolve_port_conflict;
     Ok(match l.scheme() {
-        "tcp" => Box::new(TcpTunnelListener::new(l.clone())),
-        "udp" => Box::new(UdpTunnelListener::new(l.clone())),
+        "tcp" => Box::new(TcpTunnelListener::new_with_auto_resolve_port_conflict(
+            l.clone(),
+            auto_resolve_port_conflict,
+        )),
+        "udp" => Box::new(UdpTunnelListener::new_with_auto_resolve_port_conflict(
+            l.clone(),
+            auto_resolve_port_conflict,
+        )),
         #[cfg(feature = "wireguard")]
         "wg" => {
             let nid = _ctx.get_network_identity();
@@ -42,14 +49,24 @@ pub fn get_listener_by_url(
                 &nid.network_name,
                 &nid.network_secret.unwrap_or_default(),
             );
-            Box::new(WgTunnelListener::new(l.clone(), wg_config))
+            Box::new(WgTunnelListener::new_with_auto_resolve_port_conflict(
+                l.clone(),
+                wg_config,
+                auto_resolve_port_conflict,
+            ))
         }
         #[cfg(feature = "quic")]
-        "quic" => Box::new(QUICTunnelListener::new(l.clone())),
+        "quic" => Box::new(QUICTunnelListener::new_with_auto_resolve_port_conflict(
+            l.clone(),
+            auto_resolve_port_conflict,
+        )),
         #[cfg(feature = "websocket")]
         "ws" | "wss" => {
             use crate::tunnel::websocket::WSTunnelListener;
-            Box::new(WSTunnelListener::new(l.clone()))
+            Box::new(WSTunnelListener::new_with_auto_resolve_port_conflict(
+                l.clone(),
+                auto_resolve_port_conflict,
+            ))
         }
         #[cfg(feature = "faketcp")]
         "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),

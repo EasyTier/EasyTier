@@ -424,6 +424,33 @@ fn handle_event(
                             ),
                         );
                     }
+
+                    GlobalCtxEvent::PortConflictDetected {
+                        port,
+                        protocol,
+                        conflict_type,
+                        range_start,
+                        range_end,
+                        auto_fixed,
+                    } => {
+                        if auto_fixed {
+                            print_event(
+                                instance_id,
+                                format!(
+                                    "port conflict auto-fixed. port: {}, protocol: {}, type: {}, range: {}-{}",
+                                    port, protocol, conflict_type, range_start, range_end
+                                ),
+                            );
+                        } else {
+                            print_event(
+                                instance_id,
+                                format!(
+                                    "port conflict detected. port: {}, protocol: {}, type: {}, range: {}-{}",
+                                    port, protocol, conflict_type, range_start, range_end
+                                ),
+                            );
+                        }
+                    }
                 }
             } else {
                 events = events.resubscribe();

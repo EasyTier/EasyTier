@@ -22,6 +22,8 @@ use windows::{
         System::Variant::{VARENUM, VARIANT, VT_ARRAY, VT_BSTR, VT_VARIANT},
     },
 };
+use winreg::enums::*;
+use winreg::RegKey;
 
 pub fn disable_connection_reset<S: AsRawSocket>(socket: &S) -> io::Result<()> {
     let handle = SOCKET(socket.as_raw_socket() as usize);
@@ -451,6 +453,339 @@ fn check_rule_exists(
             Err(_) => Ok(false),
         }
     }
+}
+
+// ============ Port Conflict Diagnostics ============
+
+pub const GITHUB_ISSUE_URL: &str = "https://github.com/EasyTier/EasyTier/issues/1263";
+
+// Registry path for TCP/IP parameters
+const TCPIP_PARAMS_KEY: &str = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters";
+
+// Default dynamic port range for Windows Vista+ when not configured in registry
+const DEFAULT_START_PORT: u16 = 49152;
+const DEFAULT_NUM_PORTS: u16 = 16384; // 49152-65535
+
+/// Type of port conflict
+#[derive(Debug, Clone, PartialEq)]
+pub enum PortConflictType {
+    /// Port is in Windows dynamic port range
+    DynamicRange,
+    /// Port is in Windows excluded port range (reserved by Hyper-V, etc.)
+    ExcludedRange,
+}
+
+/// Result of port conflict diagnosis
+#[derive(Debug, Clone)]
+pub struct PortConflictInfo {
+    pub port: u16,
+    pub protocol: String,
+    pub conflict_type: PortConflictType,
+    pub range_start: u16,
+    pub range_end: u16,
+    pub suggested_port: u16,
+}
+
+/// Get Windows dynamic port range from registry
+/// Registry values (if configured):
+///   HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters
+///     - DynamicPortRangeStartPort (DWORD)
+///     - DynamicPortRangeNumberOfPorts (DWORD)
+/// If not set, Windows uses default: 49152-65535
+pub fn get_dynamic_port_range() -> io::Result<(u16, u16)> {
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+
+    match hklm.open_subkey(TCPIP_PARAMS_KEY) {
+        Ok(key) => {
+            // Try to read configured values
+            let start_port: u32 = key
+                .get_value("DynamicPortRangeStartPort")
+                .unwrap_or(DEFAULT_START_PORT as u32);
+            let num_ports: u32 = key
+                .get_value("DynamicPortRangeNumberOfPorts")
+                .unwrap_or(DEFAULT_NUM_PORTS as u32);
+
+            let start = start_port as u16;
+            let end = start.saturating_add(num_ports as u16).saturating_sub(1);
+            Ok((start, end))
+        }
+        Err(_) => {
+            // Use Windows default if registry key doesn't exist
+            Ok((
+                DEFAULT_START_PORT,
+                DEFAULT_START_PORT + DEFAULT_NUM_PORTS - 1,
+            ))
+        }
+    }
+}
+
+/// Get Windows excluded port ranges from netsh command
+/// Parses output of: netsh int ipv4 show excludedportrange tcp/udp
+/// Returns a list of (start_port, end_port) tuples
+pub fn get_excluded_port_ranges(protocol: &str) -> io::Result<Vec<(u16, u16)>> {
+    use std::process::Command;
+
+    let output = Command::new("netsh")
+        .args(["int", "ipv4", "show", "excludedportrange", protocol])
+        .output()?;
+
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut ranges = Vec::new();
+
+    // Parse output format:
+    // Start Port    End Port
+    // ----------    --------
+    //      10000       10099
+    //      50000       50059
+    //       *
+    for line in stdout.lines() {
+        let line = line.trim();
+        // Skip header lines and empty lines
+        if line.is_empty()
+            || line.starts_with("Start")
+            || line.starts_with('-')
+            || line.contains('*')
+        {
+            continue;
+        }
+
+        // Parse "start_port    end_port" format
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            if let (Ok(start), Ok(end)) = (parts[0].parse::<u16>(), parts[1].parse::<u16>()) {
+                ranges.push((start, end));
+            }
+        }
+    }
+
+    Ok(ranges)
+}
+
+/// Check if port is in an excluded port range
+pub fn check_port_in_excluded_ranges(port: u16, protocol: &str) -> Option<(u16, u16)> {
+    let ranges = get_excluded_port_ranges(protocol).ok()?;
+    for (start, end) in ranges {
+        if port >= start && port <= end {
+            return Some((start, end));
+        }
+    }
+    None
+}
+
+/// Check if port is in dynamic range or excluded range and return conflict info
+pub fn check_port_conflict(port: u16, protocol: &str) -> Option<PortConflictInfo> {
+    // First check excluded port ranges (more specific, Hyper-V reservations)
+    if let Some((start, end)) = check_port_in_excluded_ranges(port, protocol) {
+        let suggested = find_available_port(port, protocol);
+        return Some(PortConflictInfo {
+            port,
+            protocol: protocol.to_string(),
+            conflict_type: PortConflictType::ExcludedRange,
+            range_start: start,
+            range_end: end,
+            suggested_port: suggested,
+        });
+    }
+
+    // Then check dynamic port range
+    let (dyn_start, dyn_end) = get_dynamic_port_range().ok()?;
+    if port >= dyn_start && port <= dyn_end {
+        return Some(PortConflictInfo {
+            port,
+            protocol: protocol.to_string(),
+            conflict_type: PortConflictType::DynamicRange,
+            range_start: dyn_start,
+            range_end: dyn_end,
+            suggested_port: dyn_start.saturating_sub(1).max(1024),
+        });
+    }
+
+    None
+}
+
+/// Find an available port that's not in any excluded range
+fn find_available_port(original_port: u16, protocol: &str) -> u16 {
+    let excluded_ranges = get_excluded_port_ranges(protocol).unwrap_or_default();
+    let (dyn_start, _) = get_dynamic_port_range().unwrap_or((DEFAULT_START_PORT, 65535));
+
+    // Try ports below dynamic range start, avoiding excluded ranges
+    let mut candidate = original_port;
+    if candidate >= dyn_start {
+        candidate = dyn_start.saturating_sub(1);
+    }
+
+    // Search downward from candidate
+    while candidate > 1024 {
+        let in_excluded = excluded_ranges
+            .iter()
+            .any(|(start, end)| candidate >= *start && candidate <= *end);
+        if !in_excluded {
+            return candidate;
+        }
+        candidate = candidate.saturating_sub(1);
+    }
+
+    // Fallback: try common alternative ports
+    for alt_port in [9999, 8080, 8443, 7070, 5000] {
+        let in_excluded = excluded_ranges
+            .iter()
+            .any(|(start, end)| alt_port >= *start && alt_port <= *end);
+        if !in_excluded && alt_port < dyn_start {
+            return alt_port;
+        }
+    }
+
+    // Last resort
+    9999
+}
+
+/// Check if current process has administrator privileges
+pub fn is_elevated() -> bool {
+    use std::mem;
+    use winapi::shared::minwindef::DWORD;
+    use winapi::um::handleapi::CloseHandle;
+    use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
+    use winapi::um::securitybaseapi::GetTokenInformation;
+    use winapi::um::winnt::{TokenElevation, HANDLE, TOKEN_ELEVATION, TOKEN_QUERY};
+
+    unsafe {
+        let mut current_token_ptr: HANDLE = mem::zeroed();
+        let mut token_elevation: TOKEN_ELEVATION = mem::zeroed();
+        let token_elevation_type_ptr: *mut TOKEN_ELEVATION = &mut token_elevation;
+        let mut size: DWORD = 0;
+
+        let open_result =
+            OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut current_token_ptr);
+
+        if open_result != 0 {
+            let query_result = GetTokenInformation(
+                current_token_ptr,
+                TokenElevation,
+                token_elevation_type_ptr as *mut _,
+                mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut size,
+            );
+            let elevated = query_result != 0 && token_elevation.TokenIsElevated != 0;
+            let _ = CloseHandle(current_token_ptr);
+            return elevated;
+        }
+    }
+    false
+}
+
+/// Attempt to automatically fix port range (requires admin)
+/// Returns Ok(()) if successful, Err with message if failed
+pub fn auto_fix_port_range(new_start: u16, num_ports: u16) -> io::Result<()> {
+    use std::process::Command;
+
+    // Set TCP dynamic port range
+    let tcp_result = Command::new("netsh")
+        .args([
+            "int",
+            "ipv4",
+            "set",
+            "dynamicport",
+            "tcp",
+            &format!("start={}", new_start),
+            &format!("num={}", num_ports),
+        ])
+        .output()?;
+
+    if !tcp_result.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Failed to set TCP dynamic port range",
+        ));
+    }
+
+    // Set UDP dynamic port range
+    let udp_result = Command::new("netsh")
+        .args([
+            "int",
+            "ipv4",
+            "set",
+            "dynamicport",
+            "udp",
+            &format!("start={}", new_start),
+            &format!("num={}", num_ports),
+        ])
+        .output()?;
+
+    if !udp_result.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Failed to set UDP dynamic port range",
+        ));
+    }
+
+    // Restart WinNAT service to apply changes
+    let _ = Command::new("net").args(["stop", "winnat"]).output();
+    let _ = Command::new("net").args(["start", "winnat"]).output();
+
+    Ok(())
+}
+
+/// Generate error message with solutions (English only)
+pub fn format_port_conflict_message(
+    info: &PortConflictInfo,
+    auto_fix_attempted: bool,
+    auto_resolve_enabled: bool,
+) -> String {
+    let conflict_desc = match info.conflict_type {
+        PortConflictType::ExcludedRange => format!(
+            "Port {} is in Windows excluded port range ({}-{}), likely reserved by Hyper-V.\n",
+            info.port, info.range_start, info.range_end
+        ),
+        PortConflictType::DynamicRange => format!(
+            "Port {} is in Windows dynamic port range ({}-{}).\n",
+            info.port, info.range_start, info.range_end
+        ),
+    };
+
+    let mut msg = conflict_desc;
+
+    if auto_fix_attempted {
+        msg.push_str("\nAutomatic fix failed (requires administrator privileges).\n");
+    }
+
+    msg.push_str(&format!(
+        "\nSolutions:\n\
+        1. Use a different port:\n\
+           --listeners tcp://0.0.0.0:{}\n\n\
+        2. Modify Windows dynamic port range (requires admin):\n\
+           netsh int ipv4 set dynamicport tcp start=40000 num=5000\n\
+           netsh int ipv4 set dynamicport udp start=40000 num=5000\n\
+           net stop winnat && net start winnat\n",
+        info.suggested_port
+    ));
+
+    // Add diagnostic commands
+    msg.push_str(
+        "\nDiagnostic commands:\n\
+           netsh int ipv4 show excludedportrange tcp\n\
+           netsh int ipv4 show excludedportrange udp\n\
+           netsh int ipv4 show dynamicport tcp\n",
+    );
+
+    // Suggest enabling auto_resolve if not already enabled
+    if !auto_resolve_enabled {
+        msg.push_str(
+            "\n3. Enable automatic fix (run as admin):\n\
+               Set 'auto_resolve_port_conflict = true' in config file,\n\
+               then run EasyTier as administrator.\n",
+        );
+    }
+
+    msg.push_str(&format!(
+        "\nFor more information, see: {}",
+        GITHUB_ISSUE_URL
+    ));
+
+    msg
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::tunnel::{
-    common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
+    common::{setup_sokcet2_with_auto_resolve, FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
 };
 use anyhow::Context;
@@ -105,6 +105,13 @@ impl AsyncUdpSocket for NoGroAsyncUdpSocket {
 /// - an [`Endpoint`] configured to accept incoming QUIC connections
 #[allow(unused)]
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn Error>> {
+    make_server_endpoint_with_auto_resolve(bind_addr, false)
+}
+
+pub fn make_server_endpoint_with_auto_resolve(
+    bind_addr: SocketAddr,
+    auto_resolve_port_conflict: bool,
+) -> Result<Endpoint, Box<dyn Error>> {
     let server_config = server_config();
     let client_config = client_config();
     let endpoint_config = endpoint_config();
@@ -114,7 +121,7 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<Endpoint, Box<dyn E
         socket2::Type::DGRAM,
         Some(socket2::Protocol::UDP),
     )?;
-    setup_sokcet2(&socket2_socket, &bind_addr)?;
+    setup_sokcet2_with_auto_resolve(&socket2_socket, &bind_addr, auto_resolve_port_conflict)?;
     let socket = std::net::UdpSocket::from(socket2_socket);
 
     let runtime =
@@ -148,13 +155,22 @@ impl Drop for ConnWrapper {
 pub struct QUICTunnelListener {
     addr: url::Url,
     endpoint: Option<Endpoint>,
+    auto_resolve_port_conflict: bool,
 }
 
 impl QUICTunnelListener {
     pub fn new(addr: url::Url) -> Self {
+        Self::new_with_auto_resolve_port_conflict(addr, false)
+    }
+
+    pub fn new_with_auto_resolve_port_conflict(
+        addr: url::Url,
+        auto_resolve_port_conflict: bool,
+    ) -> Self {
         QUICTunnelListener {
             addr,
             endpoint: None,
+            auto_resolve_port_conflict,
         }
     }
 
@@ -195,8 +211,9 @@ impl TunnelListener for QUICTunnelListener {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", IpVersion::Both)
                 .await?;
-        let endpoint = make_server_endpoint(addr)
-            .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
+        let endpoint =
+            make_server_endpoint_with_auto_resolve(addr, self.auto_resolve_port_conflict)
+                .map_err(|e| anyhow::anyhow!("make server endpoint error: {:?}", e))?;
         self.endpoint = Some(endpoint);
 
         self.addr

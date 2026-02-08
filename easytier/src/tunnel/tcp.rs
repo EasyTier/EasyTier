@@ -5,7 +5,7 @@ use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use super::TunnelInfo;
-use crate::tunnel::common::setup_sokcet2;
+use crate::tunnel::common::{setup_sokcet2, setup_sokcet2_with_auto_resolve};
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -19,13 +19,22 @@ const TCP_MTU_BYTES: usize = 2000;
 pub struct TcpTunnelListener {
     addr: url::Url,
     listener: Option<TcpListener>,
+    auto_resolve_port_conflict: bool,
 }
 
 impl TcpTunnelListener {
     pub fn new(addr: url::Url) -> Self {
+        Self::new_with_auto_resolve_port_conflict(addr, false)
+    }
+
+    pub fn new_with_auto_resolve_port_conflict(
+        addr: url::Url,
+        auto_resolve_port_conflict: bool,
+    ) -> Self {
         TcpTunnelListener {
             addr,
             listener: None,
+            auto_resolve_port_conflict,
         }
     }
 
@@ -67,7 +76,7 @@ impl TunnelListener for TcpTunnelListener {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+        setup_sokcet2_with_auto_resolve(&socket2_socket, &addr, self.auto_resolve_port_conflict)?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         if let Err(e) = socket.set_nodelay(true) {

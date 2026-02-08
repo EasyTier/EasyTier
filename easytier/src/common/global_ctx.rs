@@ -59,6 +59,16 @@ pub enum GlobalCtxEvent {
     ConfigPatched(InstanceConfigPatch),
 
     ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
+
+    /// Windows port conflict detected (Hyper-V dynamic/excluded port range)
+    PortConflictDetected {
+        port: u16,
+        protocol: String,
+        conflict_type: String, // "dynamic" or "excluded"
+        range_start: u16,
+        range_end: u16,
+        auto_fixed: bool,
+    },
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;

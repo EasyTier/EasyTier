@@ -62,6 +62,8 @@ pub fn gen_default_flags() -> Flags {
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
 
         quic_listen_port: u32::MAX,
+
+        auto_resolve_port_conflict: false,
     }
 }
 
