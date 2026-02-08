@@ -34,3 +34,6 @@ cli:
   geoip_db:
     en: "The path to the GeoIP2 database file, used to lookup the location of the client, default is the embedded file (only country information) , recommend https://github.com/P3TERX/GeoLite.mmdb"
     zh-CN: "GeoIP2 数据库文件路径，用于查找客户端的位置，默认为嵌入文件（仅国家信息），推荐 https://github.com/P3TERX/GeoLite.mmdb"
+  disable_registration:
+    en: "Disable user registration"
+    zh-CN: "禁用用户注册"
