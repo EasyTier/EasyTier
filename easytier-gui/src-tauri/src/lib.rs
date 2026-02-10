@@ -517,8 +517,10 @@ fn toggle_window_visibility(app: &tauri::AppHandle) {
             if window.is_minimized().unwrap_or_default() {
                 let _ = window.unminimize();
                 false
-            } else {
+            } else if window.is_focused().unwrap_or_default() {
                 true
+            } else {
+                false
             }
         } else {
             let _ = window.show();
