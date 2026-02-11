@@ -1,4 +1,4 @@
-#[cfg(feature = "zstd")]
+#[cfg(any(feature = "zstd", feature = "brotli"))]
 use anyhow::Context;
 #[cfg(feature = "zstd")]
 use dashmap::DashMap;
@@ -54,11 +54,13 @@ impl DefaultCompressor {
                 })
             }),
 
+            #[cfg(feature = "lz4")]
             CompressorAlgo::Lz4 => {
                 let compressed = lz4_flex::compress_prepend_size(data);
                 Ok(compressed)
             }
 
+            #[cfg(feature = "brotli")]
             CompressorAlgo::Brotli => {
                 // Use batch API instead of streaming API to ensure errors are properly returned
                 // CompressorWriter's Drop implementation ignores errors, which can cause data loss
@@ -111,12 +113,14 @@ impl DefaultCompressor {
                 ))
             }),
 
+            #[cfg(feature = "lz4")]
             CompressorAlgo::Lz4 => {
                 lz4_flex::decompress_size_prepended(data).map_err(|e| {
                     anyhow::anyhow!("Failed to decompress with LZ4: {:?}", e)
                 })
             }
 
+            #[cfg(feature = "brotli")]
             CompressorAlgo::Brotli => {
                 // Use batch API for consistency with compress and proper error handling
                 let mut decompressed = Vec::new();
@@ -283,9 +287,11 @@ pub mod tests {
 
     #[tokio::test]
     async fn test_all_algorithms_roundtrip() {
-        let algorithms = [
+        let algorithms = vec![
             CompressorAlgo::ZstdDefault,
+            #[cfg(feature = "lz4")]
             CompressorAlgo::Lz4,
+            #[cfg(feature = "brotli")]
             CompressorAlgo::Brotli,
         ];
 
@@ -314,9 +320,11 @@ pub mod tests {
         use tokio::sync::mpsc;
         use tokio::time::{Duration, Instant};
 
-        let algorithms = [
+        let algorithms = vec![
             ("Zstd", CompressorAlgo::ZstdDefault),
+            #[cfg(feature = "lz4")]
             ("LZ4", CompressorAlgo::Lz4),
+            #[cfg(feature = "brotli")]
             ("Brotli", CompressorAlgo::Brotli),
         ];
 

@@ -17,10 +17,11 @@ use crate::common::{
 };
 use crate::defer;
 use crate::proto::common::{
-    CompressionAlgoPb, RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
+    RpcCompressionInfo, RpcDescriptor, RpcPacket, RpcRequest, RpcResponse,
 };
 use crate::proto::rpc_impl::packet::{
-    build_rpc_packet, compress_packet, decompress_packet, BuildRpcPacketArgs,
+    build_rpc_packet, compress_packet, decompress_packet, get_best_compression_algo,
+    BuildRpcPacketArgs,
 };
 use crate::proto::rpc_types::controller::Controller;
 use crate::proto::rpc_types::descriptor::MethodDescriptor;
@@ -303,7 +304,7 @@ impl Client {
                     trace_id: ctrl.trace_id(),
                     compression_info: RpcCompressionInfo {
                         algo: c_algo.into(),
-                        accepted_algo: CompressionAlgoPb::Zstd.into(),
+                        accepted_algo: get_best_compression_algo().into(),
                     },
                 });
 

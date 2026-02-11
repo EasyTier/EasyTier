@@ -17,7 +17,7 @@ use crate::{
     },
     proto::{
         common::{
-            self, CompressionAlgoPb, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
+            self, RpcCompressionInfo, RpcPacket, RpcRequest, RpcResponse,
             TunnelInfo,
         },
         rpc_impl::packet::BuildRpcPacketArgs,
@@ -31,7 +31,10 @@ use crate::{
 };
 
 use super::{
-    packet::{build_rpc_packet, compress_packet, decompress_packet, PacketMerger},
+    packet::{
+        build_rpc_packet, compress_packet, decompress_packet, get_best_compression_algo,
+        PacketMerger,
+    },
     service_registry::ServiceRegistry,
     RpcController, Transport,
 };
@@ -298,7 +301,7 @@ impl Server {
             trace_id,
             compression_info: RpcCompressionInfo {
                 algo: algo.into(),
-                accepted_algo: CompressionAlgoPb::Zstd.into(),
+                accepted_algo: get_best_compression_algo().into(),
             },
         });
 

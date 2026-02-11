@@ -431,12 +431,14 @@ impl TryFrom<CompressionAlgoPb> for CompressorAlgo {
 
     fn try_from(value: CompressionAlgoPb) -> Result<Self, Self::Error> {
         match value {
+            CompressionAlgoPb::None => Ok(CompressorAlgo::None),
             #[cfg(feature = "zstd")]
             CompressionAlgoPb::Zstd => Ok(CompressorAlgo::ZstdDefault),
-            CompressionAlgoPb::None => Ok(CompressorAlgo::None),
+            #[cfg(feature = "lz4")]
             CompressionAlgoPb::Lz4 => Ok(CompressorAlgo::Lz4),
+            #[cfg(feature = "brotli")]
             CompressionAlgoPb::Brotli => Ok(CompressorAlgo::Brotli),
-            _ => Err(anyhow::anyhow!("Invalid CompressionAlgoPb")),
+            _ => Err(anyhow::anyhow!("Unsupported CompressionAlgoPb: {:?}", value)),
         }
     }
 }
@@ -446,10 +448,12 @@ impl TryFrom<CompressorAlgo> for CompressionAlgoPb {
 
     fn try_from(value: CompressorAlgo) -> Result<Self, Self::Error> {
         match value {
+            CompressorAlgo::None => Ok(CompressionAlgoPb::None),
             #[cfg(feature = "zstd")]
             CompressorAlgo::ZstdDefault => Ok(CompressionAlgoPb::Zstd),
-            CompressorAlgo::None => Ok(CompressionAlgoPb::None),
+            #[cfg(feature = "lz4")]
             CompressorAlgo::Lz4 => Ok(CompressionAlgoPb::Lz4),
+            #[cfg(feature = "brotli")]
             CompressorAlgo::Brotli => Ok(CompressionAlgoPb::Brotli),
         }
     }

@@ -47,12 +47,14 @@ pub fn get_all_compress_algos() -> Vec<CompressAlgoConfig> {
             compresses: true,
             perf_testable: true,
         },
+        #[cfg(feature = "lz4")]
         CompressAlgoConfig {
             name: "Lz4",
             algo: CompressorAlgo::Lz4,
             compresses: true,
             perf_testable: true,
         },
+        #[cfg(feature = "brotli")]
         CompressAlgoConfig {
             name: "Brotli",
             algo: CompressorAlgo::Brotli,
@@ -1908,9 +1910,11 @@ mod network_simulation_tests {
         let compressor = DefaultCompressor::new();
 
         // All algorithm pairs to test
-        let algorithms = [
+        let algorithms = vec![
             CompressorAlgo::ZstdDefault,
+            #[cfg(feature = "lz4")]
             CompressorAlgo::Lz4,
+            #[cfg(feature = "brotli")]
             CompressorAlgo::Brotli,
         ];
 
@@ -1972,6 +1976,7 @@ mod network_simulation_tests {
 
     /// Extended test: Simulate real peer-to-peer scenario with different compression settings
     /// PeerA sends with Lz4, PeerB sends with Brotli, both should communicate correctly
+    #[cfg(all(feature = "lz4", feature = "brotli"))]
     #[tokio::test]
     async fn peer_to_peer_different_algos() {
         println!("\n╔══════════════════════════════════════════════════════════════════════════════════════════════╗");

@@ -13,6 +13,19 @@ use super::RpcTransactId;
 
 const RPC_PACKET_CONTENT_MTU: usize = 1300;
 
+/// Returns the best locally supported compression algorithm for RPC negotiation.
+/// Priority: Zstd > Lz4 > Brotli > None
+pub fn get_best_compression_algo() -> CompressionAlgoPb {
+    #[cfg(feature = "zstd")]
+    return CompressionAlgoPb::Zstd;
+    #[cfg(all(not(feature = "zstd"), feature = "lz4"))]
+    return CompressionAlgoPb::Lz4;
+    #[cfg(all(not(feature = "zstd"), not(feature = "lz4"), feature = "brotli"))]
+    return CompressionAlgoPb::Brotli;
+    #[cfg(not(any(feature = "zstd", feature = "lz4", feature = "brotli")))]
+    return CompressionAlgoPb::None;
+}
+
 pub async fn compress_packet(
     accepted_compression_algo: CompressionAlgoPb,
     content: &[u8],
@@ -34,7 +47,11 @@ pub async fn decompress_packet(
     content: &[u8],
 ) -> Result<Vec<u8>, Error> {
     let compressor = DefaultCompressor::new();
-    let algo = compression_algo.try_into()?;
+    // If the algorithm is not supported locally, return error instead of silently failing
+    let algo: CompressorAlgo = compression_algo.try_into().map_err(|e| {
+        tracing::warn!(?compression_algo, ?e, "unsupported compression algo for decompression, data cannot be decoded");
+        e
+    })?;
     let decompressed = compressor.decompress_raw(content, algo).await?;
     Ok(decompressed)
 }

@@ -135,7 +135,18 @@ pub fn get_avaliable_encrypt_methods() -> Vec<&'static str> {
 }
 
 pub fn get_available_compress_methods() -> Vec<&'static str> {
-    vec!["none", "zstd", "lz4", "brotli", "br"]
+    #[allow(unused_mut)]
+    let mut methods = vec!["none"];
+    #[cfg(feature = "zstd")]
+    methods.push("zstd");
+    #[cfg(feature = "lz4")]
+    methods.push("lz4");
+    #[cfg(feature = "brotli")]
+    {
+        methods.push("brotli");
+        methods.push("br");
+    }
+    methods
 }
 
 #[auto_impl::auto_impl(Box, &)]
