@@ -12,6 +12,7 @@ use url::Url;
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx},
     tunnel::{IpVersion, Tunnel, TunnelConnector, TunnelError, ZCPacketSink, ZCPacketStream},
+    VERSION,
 };
 
 use crate::proto::common::TunnelInfo;
@@ -170,6 +171,7 @@ impl HttpTunnelConnector {
         let original_url_clone = original_url.to_string();
         let body_clone = body.clone();
         let network_name = self.global_ctx.network.network_name.clone();
+        let user_agent = format!("easytier/{}", VERSION);
         let res = tokio::task::spawn_blocking(move || {
             let uri = http_req::uri::Uri::try_from(original_url_clone.as_ref())
                 .with_context(|| format!("parsing url failed. url: {}", original_url_clone))?;
@@ -181,6 +183,7 @@ impl HttpTunnelConnector {
             );
 
             Request::new(&uri)
+                .header("User-Agent", &user_agent)
                 .header("X-Network-Name", &network_name)
                 .redirect_policy(RedirectPolicy::Limit(0))
                 .timeout(std::time::Duration::from_secs(20))
