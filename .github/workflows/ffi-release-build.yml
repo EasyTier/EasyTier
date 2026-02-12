@@ -1,0 +1,94 @@
+name: Release EasyTier FFI
+
+on:
+  push:
+    tags:
+      - "*"
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --release -p easytier-ffi --target x86_64-pc-windows-msvc
+
+      - name: Verify DLL exists
+        run: dir target\x86_64-pc-windows-msvc\release
+
+      - name: Upload DLL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: easytier-ffi-dll
+          path: target/x86_64-pc-windows-msvc/release/*.dll
+
+      - name: Create Release and Upload DLL
+        uses: softprops/action-gh-release@v2
+        with:
+          name: EasyTier FFI ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: target/x86_64-pc-windows-msvc/release/*.dll
+          body: |
+            <div align="center">
+
+            # 🚀 EasyTier FFI ${{ github.ref_name }}
+
+            ![Platform](https://img.shields.io/badge/platform-Windows%20x86_64-blue)
+            ![Rust](https://img.shields.io/badge/rust-stable-orange)
+            ![Build](https://img.shields.io/badge/build-release-success)
+            ![License](https://img.shields.io/badge/license-MIT-green)
+
+            </div>
+
+            ---
+
+            ## 📦 Build Information
+
+            | Item | Value |
+            |------|--------|
+            | Version | `${{ github.ref_name }}` |
+            | Commit | `${{ github.sha }}` |
+            | Target | x86_64-pc-windows-msvc |
+            | Profile | release |
+            | CI | GitHub Actions |
+
+            ---
+
+            ## 📥 Download
+
+            👉 Download the attached **`easytier_ffi.dll`** below.
+
+            ---
+
+            ## 🧩 Integration
+
+            This library is compiled as `cdylib` and can be integrated with:
+
+            - C / C++
+            - C#
+            - Go (via cgo)
+            - Python (ctypes)
+            - Any FFI-compatible language
+
+            ---
+
+            ## 🔒 Build Guarantee
+
+            - Built in official GitHub Windows environment
+            - Fully optimized release build
+            - Generated automatically from tag `${{ github.ref_name }}`
+
+            ---
+
+            ⭐ If this project helps you, please consider giving it a star!
+
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
