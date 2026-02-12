@@ -10,6 +10,8 @@ declare global {
   const MenuItemExit: typeof import('./composables/tray')['MenuItemExit']
   const MenuItemShow: typeof import('./composables/tray')['MenuItemShow']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
+  const checkElevationForService: typeof import('./composables/elevation')['checkElevationForService']
+  const checkElevationForTun: typeof import('./composables/elevation')['checkElevationForTun']
   const collectNetworkInfo: typeof import('./composables/backend')['collectNetworkInfo']
   const computed: typeof import('vue')['computed']
   const createApp: typeof import('vue')['createApp']
@@ -36,6 +38,7 @@ declare global {
   const initWebClient: typeof import('./composables/backend')['initWebClient']
   const inject: typeof import('vue')['inject']
   const isClientRunning: typeof import('./composables/backend')['isClientRunning']
+  const isElevated: typeof import('./composables/backend')['isElevated']
   const isProxy: typeof import('vue')['isProxy']
   const isReactive: typeof import('vue')['isReactive']
   const isReadonly: typeof import('vue')['isReadonly']
@@ -71,11 +74,14 @@ declare global {
   const onWatcherCleanup: typeof import('vue')['onWatcherCleanup']
   const parseNetworkConfig: typeof import('./composables/backend')['parseNetworkConfig']
   const prepareVpnService: typeof import('./composables/mobile_vpn')['prepareVpnService']
+  const promptElevationRestart: typeof import('./composables/elevation')['promptElevationRestart']
   const provide: typeof import('vue')['provide']
   const reactive: typeof import('vue')['reactive']
   const readonly: typeof import('vue')['readonly']
   const ref: typeof import('vue')['ref']
+  const requireElevationForService: typeof import('./composables/elevation')['requireElevationForService']
   const resolveComponent: typeof import('vue')['resolveComponent']
+  const restartElevated: typeof import('./composables/backend')['restartElevated']
   const runNetworkInstance: typeof import('./composables/backend')['runNetworkInstance']
   const saveLastNetworkInstanceId: typeof import('./composables/config')['saveLastNetworkInstanceId']
   const saveMode: typeof import('./composables/mode')['saveMode']
@@ -134,6 +140,8 @@ declare module 'vue' {
     readonly MenuItemExit: UnwrapRef<typeof import('./composables/tray')['MenuItemExit']>
     readonly MenuItemShow: UnwrapRef<typeof import('./composables/tray')['MenuItemShow']>
     readonly acceptHMRUpdate: UnwrapRef<typeof import('pinia')['acceptHMRUpdate']>
+    readonly checkElevationForService: UnwrapRef<typeof import('./composables/elevation')['checkElevationForService']>
+    readonly checkElevationForTun: UnwrapRef<typeof import('./composables/elevation')['checkElevationForTun']>
     readonly collectNetworkInfo: UnwrapRef<typeof import('./composables/backend')['collectNetworkInfo']>
     readonly computed: UnwrapRef<typeof import('vue')['computed']>
     readonly createApp: UnwrapRef<typeof import('vue')['createApp']>
@@ -160,6 +168,7 @@ declare module 'vue' {
     readonly initWebClient: UnwrapRef<typeof import('./composables/backend')['initWebClient']>
     readonly inject: UnwrapRef<typeof import('vue')['inject']>
     readonly isClientRunning: UnwrapRef<typeof import('./composables/backend')['isClientRunning']>
+    readonly isElevated: UnwrapRef<typeof import('./composables/backend')['isElevated']>
     readonly isProxy: UnwrapRef<typeof import('vue')['isProxy']>
     readonly isReactive: UnwrapRef<typeof import('vue')['isReactive']>
     readonly isReadonly: UnwrapRef<typeof import('vue')['isReadonly']>
@@ -195,11 +204,14 @@ declare module 'vue' {
     readonly onWatcherCleanup: UnwrapRef<typeof import('vue')['onWatcherCleanup']>
     readonly parseNetworkConfig: UnwrapRef<typeof import('./composables/backend')['parseNetworkConfig']>
     readonly prepareVpnService: UnwrapRef<typeof import('./composables/mobile_vpn')['prepareVpnService']>
+    readonly promptElevationRestart: UnwrapRef<typeof import('./composables/elevation')['promptElevationRestart']>
     readonly provide: UnwrapRef<typeof import('vue')['provide']>
     readonly reactive: UnwrapRef<typeof import('vue')['reactive']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
+    readonly requireElevationForService: UnwrapRef<typeof import('./composables/elevation')['requireElevationForService']>
     readonly resolveComponent: UnwrapRef<typeof import('vue')['resolveComponent']>
+    readonly restartElevated: UnwrapRef<typeof import('./composables/backend')['restartElevated']>
     readonly runNetworkInstance: UnwrapRef<typeof import('./composables/backend')['runNetworkInstance']>
     readonly saveLastNetworkInstanceId: UnwrapRef<typeof import('./composables/config')['saveLastNetworkInstanceId']>
     readonly saveMode: UnwrapRef<typeof import('./composables/mode')['saveMode']>
