@@ -442,7 +442,7 @@ impl PeerCenterPeerManagerTrait for PeerMapWithPeerRpcManager {
         // TODO: currently latency between public server cannot be calculated because one public-server pair
         // has no connection between them. (hard to get latency from peer manager because it's hard to transfrom the peer id)
         // but it's fine because we don't want to too much traffic between public servers.
-        let peers = self.peer_map.list_peers().await;
+        let peers = self.peer_map.list_peers();
         let mut ret = PeerInfoForGlobalMap::default();
         for peer in peers {
             if let Some(conns) = self.peer_map.list_peer_conns(peer).await {
@@ -545,11 +545,12 @@ mod tests {
 
             println!("rpc service ready, {:#?}", rpc_service.global_peer_map);
 
-            if digest.is_none() {
-                digest = Some(rpc_service.global_peer_map_digest.load());
-            } else {
+            if let Some(prev) = digest {
                 let v = rpc_service.global_peer_map_digest.load();
-                assert_eq!(digest.unwrap(), v);
+                assert_eq!(prev, v);
+                digest = Some(prev);
+            } else {
+                digest = Some(rpc_service.global_peer_map_digest.load());
             }
 
             let mut route_cost = pc.get_cost_calculator();

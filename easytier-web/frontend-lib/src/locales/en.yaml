@@ -131,6 +131,9 @@ proxy_forward_by_system_help: Forward packet to proxy networks via system kernel
 disable_encryption: Disable Encryption
 disable_encryption_help: Disable encryption for peers communication, default is false, must be same with peers
 
+disable_tcp_hole_punching: Disable TCP Hole Punching
+disable_tcp_hole_punching_help: Disable tcp hole punching
+
 disable_udp_hole_punching: Disable UDP Hole Punching
 disable_udp_hole_punching_help: Disable udp hole punching
 
@@ -225,6 +228,7 @@ event:
   DhcpIpv4Changed: DhcpIpv4Changed
   DhcpIpv4Conflicted: DhcpIpv4Conflicted
   PortForwardAdded: PortForwardAdded
+  ProxyCidrsUpdated: ProxyCidrsUpdated
 
 web:
   login:
@@ -330,6 +334,8 @@ web:
     success: Success
     warning: Warning
     info: Info
+    enable: Enable
+    disable: Disable
 
   settings:
     title: Settings
@@ -346,6 +352,8 @@ mode:
   switch_mode: Switch Mode
   config_dir: Config Dir
   rpc_portal: RPC Portal
+  enable_rpc_tcp_listen: Enable RPC port listening (TCP)
+  rpc_listen_port: RPC Listen Port
   log_level: Log Level
   log_dir: Log Dir
   remote_rpc_address: Remote RPC Address
@@ -366,6 +374,7 @@ mode:
   stop_service_success: Service stopped successfully
   remote_rpc_address_empty: Remote RPC Address cannot be empty
   service_config_empty: Service Config cannot be empty
+  rpc_connection_failed: "RPC connection failed: {error}"
 
 config-server:
   title: Config Server

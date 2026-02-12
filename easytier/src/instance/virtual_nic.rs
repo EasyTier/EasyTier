@@ -13,6 +13,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
     },
+    instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
     peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
     tunnel::{
         common::{reserve_buf, FramedWriter, TunnelWrapper, ZCPacketToBytes},
@@ -366,9 +367,150 @@ impl VirtualNic {
         Ok(())
     }
 
+    /// FreeBSD specific: Rename a TUN interface
+    #[cfg(target_os = "freebsd")]
+    async fn rename_tun_interface(old_name: &str, new_name: &str) -> Result<(), Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg(old_name)
+            .arg("name")
+            .arg(new_name)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            tracing::info!(
+                "Successfully renamed interface {} to {}",
+                old_name,
+                new_name
+            );
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                "Failed to rename interface {} to {}: {}",
+                old_name,
+                new_name,
+                stderr
+            );
+            // Return Ok even if rename fails, as it's not critical
+            Ok(())
+        }
+    }
+
+    /// FreeBSD specific: List all TUN interface names
+    #[cfg(target_os = "freebsd")]
+    async fn list_tun_names() -> Result<Vec<String>, Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg("-g")
+            .arg("tun")
+            .output()
+            .await?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let tun_names: Vec<String> = stdout
+                .trim()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            tracing::debug!("Found TUN interfaces: {:?}", tun_names);
+            Ok(tun_names)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("Failed to list TUN interfaces: {}", stderr);
+            Ok(Vec::new())
+        }
+    }
+
+    /// FreeBSD specific: Get interface information
+    #[cfg(target_os = "freebsd")]
+    async fn get_interface_info(ifname: &str) -> Result<String, Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg("-v")
+            .arg(ifname)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(
+                anyhow::anyhow!("Failed to get interface details for {}: {}", ifname, stderr)
+                    .into(),
+            )
+        }
+    }
+
+    /// FreeBSD specific: Extract original name from interface information
+    #[cfg(target_os = "freebsd")]
+    fn extract_original_name(ifinfo: &str) -> Option<String> {
+        ifinfo
+            .lines()
+            .find(|line| line.trim().starts_with("drivername:"))
+            .and_then(|line| line.trim().split_whitespace().nth(1))
+            .map(|name| name.to_string())
+    }
+
+    /// FreeBSD specific: Check if interface is used by any process
+    #[cfg(target_os = "freebsd")]
+    fn is_interface_used(ifinfo: &str) -> bool {
+        ifinfo.contains("Opened by PID")
+    }
+
+    /// FreeBSD specific: Restore TUN interface name to its original value
+    #[cfg(target_os = "freebsd")]
+    async fn restore_tun_name(dev_name: &str) -> Result<(), Error> {
+        let tun_names = Self::list_tun_names().await?;
+
+        // Check if desired dev_name is in use
+        if tun_names.iter().any(|name| name == dev_name) {
+            tracing::debug!(
+                "Desired dev_name {} is in TUN interfaces list, checking if it can be renamed",
+                dev_name
+            );
+
+            let ifinfo = Self::get_interface_info(dev_name).await?;
+
+            // Check if interface is not occupied
+            if !Self::is_interface_used(&ifinfo) {
+                // Extract original name
+                if let Some(orig_name) = Self::extract_original_name(&ifinfo) {
+                    if orig_name != dev_name {
+                        tracing::info!(
+                            "Restoring dev_name {} to original name {}",
+                            dev_name,
+                            orig_name
+                        );
+                        // Rename interface
+                        Self::rename_tun_interface(dev_name, &orig_name).await?;
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "Interface {} is opened by a process, skipping rename",
+                    dev_name
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn create_tun(&self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
+
+        // FreeBSD specific: Check and restore TUN interfaces before creating new one
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() {
+                // Restore TUN interface name if needed, ignoring errors as it's not critical
+                let _ = Self::restore_tun_name(&dev_name).await;
+            }
+        }
 
         #[cfg(target_os = "linux")]
         {
@@ -441,26 +583,34 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    pub async fn create_dev_for_android(
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<Box<dyn Tunnel>, Error> {
         println!("tun_fd: {}", tun_fd);
         let mut config = Configuration::default();
         config.layer(Layer::L3);
+
+        #[cfg(target_os = "ios")]
+        config.platform_config(|config| {
+            // disable packet information so we can process the header by ourselves, see tun2 impl for more details
+            config.packet_information(false);
+        });
+
         config.raw_fd(tun_fd);
         config.close_fd_on_drop(false);
         config.up();
 
+        let has_packet_info = cfg!(target_os = "ios");
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
-            TunStream::new(a, false),
+            TunStream::new(a, has_packet_info),
             FramedWriter::new_with_converter(
                 TunAsyncWrite { l: b },
-                TunZCPacketToBytes::new(false),
+                TunZCPacketToBytes::new(has_packet_info),
             ),
             None,
         );
@@ -472,8 +622,26 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
+
+        #[cfg(not(target_os = "freebsd"))]
         let ifname = dev.tun_name()?;
+
+        #[cfg(target_os = "freebsd")]
+        let mut ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        // FreeBSD TUN interface rename functionality
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() && dev_name != ifname {
+                // Use ifconfig to rename the TUN interface
+                if Self::rename_tun_interface(&ifname, &dev_name).await.is_ok() {
+                    ifname = dev_name;
+                }
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
@@ -825,6 +993,57 @@ impl NicCtx {
         });
     }
 
+    async fn apply_route_changes(
+        ifcfg: &impl IfConfiguerTrait,
+        ifname: &str,
+        net_ns: &crate::common::netns::NetNS,
+        cur_proxy_cidrs: &mut BTreeSet<cidr::Ipv4Cidr>,
+        added: Vec<cidr::Ipv4Cidr>,
+        removed: Vec<cidr::Ipv4Cidr>,
+    ) {
+        tracing::debug!(?added, ?removed, "applying proxy_cidrs route changes");
+
+        // Remove routes
+        for cidr in removed {
+            if !cur_proxy_cidrs.contains(&cidr) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .remove_ipv4_route(ifname, cidr.first_address(), cidr.network_length())
+                .await;
+
+            if ret.is_err() {
+                tracing::trace!(
+                    cidr = ?cidr,
+                    err = ?ret,
+                    "remove route failed.",
+                );
+            }
+            cur_proxy_cidrs.remove(&cidr);
+        }
+
+        // Add routes
+        for cidr in added {
+            if cur_proxy_cidrs.contains(&cidr) {
+                continue;
+            }
+            let _g = net_ns.guard();
+            let ret = ifcfg
+                .add_ipv4_route(ifname, cidr.first_address(), cidr.network_length(), None)
+                .await;
+
+            if ret.is_err() {
+                tracing::trace!(
+                    cidr = ?cidr,
+                    err = ?ret,
+                    "add route failed.",
+                );
+            }
+            cur_proxy_cidrs.insert(cidr);
+        }
+    }
+
     async fn run_proxy_cidrs_route_updater(&mut self) -> Result<(), Error> {
         let Some(peer_mgr) = self.peer_mgr.upgrade() else {
             return Err(anyhow::anyhow!("peer manager not available").into());
@@ -834,79 +1053,66 @@ impl NicCtx {
         let nic = self.nic.lock().await;
         let ifcfg = nic.get_ifcfg();
         let ifname = nic.ifname().to_owned();
+        let mut event_receiver = global_ctx.subscribe();
 
         self.tasks.spawn(async move {
-            let mut cur_proxy_cidrs = BTreeSet::new();
+            let mut cur_proxy_cidrs = BTreeSet::<cidr::Ipv4Cidr>::new();
+
+            // Initial sync: get current proxy_cidrs state and apply routes
+            let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                peer_mgr.as_ref(),
+                &global_ctx,
+                &cur_proxy_cidrs,
+            )
+            .await;
+            Self::apply_route_changes(
+                &ifcfg,
+                &ifname,
+                &net_ns,
+                &mut cur_proxy_cidrs,
+                added,
+                removed,
+            )
+            .await;
+
             loop {
-                let mut proxy_cidrs = BTreeSet::new();
-                let routes = peer_mgr.list_routes().await;
-                for r in routes {
-                    for cidr in r.proxy_cidrs {
-                        let Ok(cidr) = cidr.parse::<cidr::Ipv4Cidr>() else {
-                            continue;
-                        };
-                        proxy_cidrs.insert(cidr);
+                let event = match event_receiver.recv().await {
+                    Ok(event) => event,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        tracing::debug!("event bus closed, stopping proxy_cidrs route updater");
+                        break;
                     }
-                }
-                // add vpn portal cidr to proxy_cidrs
-                if let Some(vpn_cfg) = global_ctx.config.get_vpn_portal_config() {
-                    proxy_cidrs.insert(vpn_cfg.client_cidr);
-                }
-
-                if let Some(routes) = global_ctx.config.get_routes() {
-                    // if has manual routes, just override entire proxy_cidrs
-                    proxy_cidrs = routes.into_iter().collect();
-                }
-
-                // if route is in cur_proxy_cidrs but not in proxy_cidrs, delete it.
-                for cidr in cur_proxy_cidrs.iter() {
-                    if proxy_cidrs.contains(cidr) {
-                        continue;
-                    }
-
-                    let _g = net_ns.guard();
-                    let ret = ifcfg
-                        .remove_ipv4_route(
-                            ifname.as_str(),
-                            cidr.first_address(),
-                            cidr.network_length(),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        tracing::warn!(
+                            "event bus lagged in proxy_cidrs route updater, doing full sync"
+                        );
+                        event_receiver = event_receiver.resubscribe();
+                        // Full sync after lagged to recover consistent state
+                        let (_, added, removed) = ProxyCidrsMonitor::diff_proxy_cidrs(
+                            peer_mgr.as_ref(),
+                            &global_ctx,
+                            &cur_proxy_cidrs,
                         )
                         .await;
-
-                    if ret.is_err() {
-                        tracing::trace!(
-                            cidr = ?cidr,
-                            err = ?ret,
-                            "remove route failed.",
-                        );
+                        GlobalCtxEvent::ProxyCidrsUpdated(added, removed)
                     }
-                }
+                };
 
-                for cidr in proxy_cidrs.iter() {
-                    if cur_proxy_cidrs.contains(cidr) {
-                        continue;
-                    }
-                    let _g = net_ns.guard();
-                    let ret = ifcfg
-                        .add_ipv4_route(
-                            ifname.as_str(),
-                            cidr.first_address(),
-                            cidr.network_length(),
-                            None,
-                        )
-                        .await;
+                // Only handle ProxyCidrsUpdated events
+                let (added, removed) = match event {
+                    GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => (added, removed),
+                    _ => continue,
+                };
 
-                    if ret.is_err() {
-                        tracing::trace!(
-                            cidr = ?cidr,
-                            err = ?ret,
-                            "add route failed.",
-                        );
-                    }
-                }
-
-                cur_proxy_cidrs = proxy_cidrs;
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                Self::apply_route_changes(
+                    &ifcfg,
+                    &ifname,
+                    &net_ns,
+                    &mut cur_proxy_cidrs,
+                    added,
+                    removed,
+                )
+                .await;
             }
         });
 
@@ -969,11 +1175,11 @@ impl NicCtx {
         Ok(())
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    pub async fn run_for_android(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
-            match nic.create_dev_for_android(tun_fd).await {
+            match nic.create_dev_for_mobile(tun_fd).await {
                 Ok(ret) => {
                     self.global_ctx
                         .issue_event(GlobalCtxEvent::TunDeviceReady(nic.ifname().to_string()));

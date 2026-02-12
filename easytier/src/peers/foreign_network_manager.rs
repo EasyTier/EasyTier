@@ -169,6 +169,7 @@ impl ForeignNetworkEntry {
 
         let mut flags = config.get_flags();
         flags.disable_relay_kcp = !global_ctx.get_flags().enable_relay_foreign_network_kcp;
+        flags.disable_relay_quic = !global_ctx.get_flags().enable_relay_foreign_network_quic;
         config.set_flags(flags);
 
         config.set_mapped_listeners(Some(global_ctx.config.get_mapped_listeners()));
@@ -221,7 +222,7 @@ impl ForeignNetworkEntry {
 
             async fn recv(&self) -> Result<ZCPacket, Error> {
                 if let Some(o) = self.packet_recv.lock().await.recv().await {
-                    tracing::info!("recv rpc packet in foreign network manager rpc transport");
+                    tracing::trace!("recv rpc packet in foreign network manager rpc transport");
                     Ok(o)
                 } else {
                     Err(Error::Unknown)
@@ -335,7 +336,7 @@ impl ForeignNetworkEntry {
                     tracing::warn!("invalid packet, skip");
                     continue;
                 };
-                tracing::info!(?hdr, "recv packet in foreign network manager");
+                tracing::trace!(?hdr, "recv packet in foreign network manager");
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id == my_node_id {
                     if hdr.packet_type == PacketType::TaRpc as u8
@@ -466,11 +467,15 @@ impl ForeignNetworkManagerData {
 
     fn remove_network(&self, network_name: &String) {
         let _l = self.lock.lock().unwrap();
-        self.peer_network_map.iter().for_each(|v| {
-            v.value().remove(network_name);
-        });
-        self.peer_network_map.retain(|_, v| !v.is_empty());
-        self.network_peer_maps.remove(network_name);
+        if let Some(old) = self.network_peer_maps.remove(network_name) {
+            let to_remove_peers = old.1.peer_map.list_peers();
+            for p in to_remove_peers {
+                self.peer_network_map.remove_if(&p, |_, v| {
+                    v.remove(network_name);
+                    v.is_empty()
+                });
+            }
+        }
         self.network_peer_last_update.remove(network_name);
     }
 
@@ -598,7 +603,7 @@ impl ForeignNetworkManager {
         {
             if new_added {
                 self.data
-                    .remove_network(&entry.network.network_name.clone());
+                    .remove_peer(peer_conn.get_peer_id(), &entry.network.network_name.clone());
             }
             let err = if entry.my_peer_id != peer_conn.get_my_peer_id() {
                 anyhow::anyhow!(
@@ -695,7 +700,7 @@ impl ForeignNetworkManager {
                 my_peer_id_for_this_network: item.my_peer_id,
                 peers: Default::default(),
             };
-            for peer in item.peer_map.list_peers().await {
+            for peer in item.peer_map.list_peers() {
                 let peer_info = PeerInfo {
                     peer_id: peer,
                     conns: item.peer_map.list_peer_conns(peer).await.unwrap_or(vec![]),
@@ -921,7 +926,6 @@ pub mod tests {
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
-                .await
         );
         assert_eq!(
             vec![pm_center
@@ -932,7 +936,6 @@ pub mod tests {
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
-                .await
         );
 
         assert_eq!(2, pma_net1.list_routes().await.len());

@@ -2,7 +2,6 @@ mod graph_algo;
 
 pub mod acl_filter;
 pub mod peer;
-// pub mod peer_conn;
 pub mod peer_conn;
 pub mod peer_conn_ping;
 pub mod peer_manager;
@@ -10,6 +9,7 @@ pub mod peer_map;
 pub mod peer_ospf_route;
 pub mod peer_rpc;
 pub mod peer_rpc_service;
+pub mod peer_session;
 pub mod route_trait;
 pub mod rpc_service;
 

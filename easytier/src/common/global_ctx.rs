@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::{
     hash::Hasher,
     sync::{Arc, Mutex},
@@ -15,6 +15,8 @@ use crate::proto::api::instance::PeerConnInfo;
 use crate::proto::common::{PeerFeatureFlag, PortForwardConfigPb};
 use crate::proto::peer_rpc::PeerGroupInfo;
 use crossbeam::atomic::AtomicCell;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 
 use super::{
     config::{ConfigLoader, Flags},
@@ -55,6 +57,8 @@ pub enum GlobalCtxEvent {
     PortForwardAdded(PortForwardConfigPb),
 
     ConfigPatched(InstanceConfigPatch),
+
+    ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
@@ -88,8 +92,6 @@ pub struct GlobalCtx {
 
     feature_flags: AtomicCell<PeerFeatureFlag>,
 
-    quic_proxy_port: AtomicCell<Option<u16>>,
-
     token_bucket_manager: TokenBucketManager,
 
     stats_manager: Arc<StatsManager>,
@@ -118,7 +120,7 @@ impl GlobalCtx {
         let net_ns = NetNS::new(config_fs.get_netns());
         let hostname = config_fs.get_hostname();
 
-        let (event_bus, _) = tokio::sync::broadcast::channel(8);
+        let (event_bus, _) = tokio::sync::broadcast::channel(16);
 
         let stun_info_collector = StunInfoCollector::new_with_default_servers();
 
@@ -145,6 +147,8 @@ impl GlobalCtx {
             kcp_input: !config_fs.get_flags().disable_kcp_input,
             no_relay_kcp: config_fs.get_flags().disable_relay_kcp,
             support_conn_list_sync: true, // Enable selective peer list sync by default
+            quic_input: !config_fs.get_flags().disable_quic_input,
+            no_relay_quic: config_fs.get_flags().disable_relay_quic,
             ..Default::default()
         };
 
@@ -177,7 +181,6 @@ impl GlobalCtx {
             p2p_only,
 
             feature_flags: AtomicCell::new(feature_flags),
-            quic_proxy_port: AtomicCell::new(None),
 
             token_bucket_manager: TokenBucketManager::new(),
 
@@ -255,8 +258,24 @@ impl GlobalCtx {
         }
     }
 
+    pub fn is_ip_local_virtual_ip(&self, ip: &IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v4) => self.get_ipv4().map(|x| x.address() == *v4).unwrap_or(false),
+            IpAddr::V6(v6) => self.get_ipv6().map(|x| x.address() == *v6).unwrap_or(false),
+        }
+    }
+
     pub fn get_network_identity(&self) -> NetworkIdentity {
         self.config.get_network_identity()
+    }
+
+    pub fn get_secret_proof(&self, challenge: &[u8]) -> Option<Hmac<Sha256>> {
+        let network_secret = self.get_network_identity().network_secret?;
+        let key = network_secret.as_bytes();
+        let mut mac = Hmac::<Sha256>::new_from_slice(key).unwrap();
+        mac.update(b"easytier secret proof");
+        mac.update(challenge);
+        Some(mac)
     }
 
     pub fn get_network_name(&self) -> String {
@@ -373,15 +392,6 @@ impl GlobalCtx {
         self.feature_flags.store(flags);
     }
 
-    pub fn get_quic_proxy_port(&self) -> Option<u16> {
-        self.quic_proxy_port.load()
-    }
-
-    pub fn set_quic_proxy_port(&self, port: Option<u16>) {
-        self.acl_filter.set_quic_udp_port(port.unwrap_or(0));
-        self.quic_proxy_port.store(port);
-    }
-
     pub fn token_bucket_manager(&self) -> &TokenBucketManager {
         &self.token_bucket_manager
     }
@@ -432,6 +442,46 @@ impl GlobalCtx {
     pub fn latency_first(&self) -> bool {
         // NOTICE: p2p only is conflict with latency first
         self.config.get_flags().latency_first && !self.p2p_only
+    }
+
+    fn is_port_in_running_listeners(&self, port: u16, is_udp: bool) -> bool {
+        let check_proto = |listener_proto: &str| {
+            let listener_is_udp = matches!(listener_proto, "udp" | "wg");
+            listener_is_udp == is_udp
+        };
+        self.running_listeners
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|x| x.port() == Some(port) && check_proto(x.scheme()))
+    }
+
+    #[tracing::instrument(ret, skip(self))]
+    pub fn should_deny_proxy(&self, dst_addr: &SocketAddr, is_udp: bool) -> bool {
+        let _g = self.net_ns.guard();
+        let ip = dst_addr.ip();
+        // first check if ip is virtual ip
+        // then try bind this ip, if succ means it is local ip
+        let dst_is_local_virtual_ip = self.is_ip_local_virtual_ip(&ip);
+        // this is an expensive operation, should be called sparingly
+        // 1. tcp/kcp/quic call this only after proxy conn is established
+        // 2. udp cache the result in nat entry
+        let dst_is_local_phy_ip = std::net::UdpSocket::bind(format!("{}:0", ip)).is_ok();
+
+        tracing::trace!(
+            "check should_deny_proxy: dst_addr={}, dst_is_local_virtual_ip={}, dst_is_local_phy_ip={}, is_udp={}",
+            dst_addr,
+            dst_is_local_virtual_ip,
+            dst_is_local_phy_ip,
+            is_udp
+        );
+
+        if dst_is_local_virtual_ip || dst_is_local_phy_ip {
+            // if is local ip, make sure the port is not one of the listening ports
+            self.is_port_in_running_listeners(dst_addr.port(), is_udp)
+        } else {
+            false
+        }
     }
 }
 

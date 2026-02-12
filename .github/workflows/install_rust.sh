@@ -31,8 +31,8 @@ fi
 
 # see https://github.com/rust-lang/rustup/issues/3709
 rustup set auto-self-update disable
-rustup install 1.89
-rustup default 1.89
+rustup install 1.93
+rustup default 1.93
 
 # mips/mipsel cannot add target from rustup, need compile by ourselves
 if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
@@ -44,8 +44,8 @@ if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
     ar x libgcc.a _ctzsi2.o _clz.o _bswapsi2.o
     ar rcs libctz.a _ctzsi2.o _clz.o _bswapsi2.o
 
-    rustup toolchain install nightly-2025-09-01-x86_64-unknown-linux-gnu
-    rustup component add rust-src --toolchain nightly-2025-09-01-x86_64-unknown-linux-gnu
+    rustup toolchain install nightly-2026-02-02-x86_64-unknown-linux-gnu
+    rustup component add rust-src --toolchain nightly-2026-02-02-x86_64-unknown-linux-gnu
 
     # https://github.com/rust-lang/rust/issues/128808
     # remove it after Cargo or rustc fix this.

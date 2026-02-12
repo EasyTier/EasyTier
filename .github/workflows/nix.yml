@@ -1,0 +1,30 @@
+name: Nix Check
+
+on:
+  push:
+    branches: ["main", "develop"]
+    paths:
+      - "**/*.nix"
+      - "flake.lock"
+  pull_request:
+    branches: ["main", "develop"]
+    paths:
+      - "**/*.nix"
+      - "flake.lock"
+
+jobs:
+  check-full-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v6
+
+      - name: Check full devShell
+        run: nix develop .#full --command true

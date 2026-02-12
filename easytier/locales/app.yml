@@ -4,11 +4,11 @@ core_clap:
   config_server:
     en: |+
       config server address, allow format:
-      full url: --config-server udp://127.0.0.1:22020/admin
+      full url: --config-server udp://127.0.0.1:22020/admin, 'udp' can be replaced with tcp, ws, wss (when config server ws is proxied to wss)
       only user name: --config-server admin, will use official server
     zh-CN: |+
       配置服务器地址。允许格式：
-      完整URL：--config-server udp://127.0.0.1:22020/admin
+      完整URL：--config-server udp://127.0.0.1:22020/admin，udp可以根据配置服务器替换为 tcp，ws，wss(配置服务器ws被代理为wss时)
       仅用户名：--config-server admin，将使用官方的服务器
   machine_id:
     en: |+
@@ -67,12 +67,12 @@ core_clap:
     en: |+
         listeners to accept connections, allow format:
         port number: <11010>. means tcp/udp will listen on 11010, ws/wss will listen on 11010 and 11011, wg will listen on 11011
-        url: <tcp://0.0.0.0:11010>. tcp can be tcp, udp, ring, wg, ws, wss\n
+        url: <tcp://0.0.0.0:11010>. tcp can be tcp, udp, ring, wg, ws, wss, quic, faketcp\n
         proto & port pair: <proto:port>. wg:11011, means listen on 11011 with wireguard protocol url and proto:port can occur multiple times.
     zh-CN: |+
       监听器用于接受连接，允许以下格式：
       端口号：<11010>，意味着tcp/udp将在11010端口监听，ws/wss将在11010和11011端口监听，wg将在11011端口监听。
-      url：<tcp://0.0.0.0:11010>，其中tcp可以是tcp、udp、ring、wg、ws、wss协议。
+      url：<tcp://0.0.0.0:11010>，其中tcp可以是tcp、udp、ring、wg、ws、wss、quic、faketcp协议。
       协议和端口对：<proto:port>，例如wg:11011，表示使用WireGuard协议在11011端口监听。URL 和 协议端口对 可以多次出现。
   no_listener:
     en: "do not listen on any port, only connect to peers"
@@ -157,6 +157,9 @@ core_clap:
   p2p_only:
     en: "only communicate with peers that already establish p2p connection"
     zh-CN: "仅与已经建立P2P连接的对等节点通信"
+  disable_tcp_hole_punching:
+    en: "disable tcp hole punching"
+    zh-CN: "禁用TCP打洞功能"
   disable_udp_hole_punching:
     en: "disable udp hole punching"
     zh-CN: "禁用UDP打洞功能"
@@ -193,9 +196,6 @@ core_clap:
   disable_quic_input:
     en: "do not allow other nodes to use QUIC to proxy tcp streams to this node. when a node with QUIC proxy enabled accesses this node, the original tcp connection is preserved."
     zh-CN: "不允许其他节点使用 QUIC 代理 TCP 流到此节点。开启 QUIC 代理的节点访问此节点时，依然使用原始 TCP 连接。"
-  quic_listen_port:
-    en: "the port to listen for quic connections, default is 0 (random port)"
-    zh-CN: "监听 QUIC 连接的端口，默认值为0（随机端口）。"
   port_forward:
     en: "forward local port to remote port in virtual network. e.g.: udp://0.0.0.0:12345/10.126.126.1:23456, means forward local udp port 12345 to 10.126.126.1:23456 in the virtual network. can specify multiple."
     zh-CN: "将本地端口转发到虚拟网络中的远程端口。例如：udp://0.0.0.0:12345/10.126.126.1:23456，表示将本地UDP端口12345转发到虚拟网络中的10.126.126.1:23456。可以指定多个。"
@@ -220,15 +220,30 @@ core_clap:
   disable_relay_kcp:
     en: "if true, disable relay kcp packets. avoid consuming too many bandwidth. default is false"
     zh-CN: "如果为true，则禁止节点转发 KCP 数据包，防止过度消耗流量。默认值为false"
+  disable_relay_quic:
+    en: "if true, disable relay quic packets. avoid consuming too many bandwidth. default is false"
+    zh-CN: "如果为true，则禁止节点转发 QUIC 数据包，防止过度消耗流量。默认值为false"
   enable_relay_foreign_network_kcp:
     en: "if true, allow relay kcp packets from foreign network. default is false (not forward foreign network kcp packets)"
     zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 KCP 数据包。默认值为false（不转发）"
+  enable_relay_foreign_network_quic:
+    en: "if true, allow relay quic packets from foreign network. default is false (not forward foreign network quic packets)"
+    zh-CN: "如果为true，则作为共享节点时也可以转发其他网络的 QUIC 数据包。默认值为false（不转发）"
   stun_servers:
     en: "Override default STUN servers; If configured but empty, STUN servers are not used"
     zh-CN: "覆盖内置的默认 STUN server 列表；如果设置了但是为空，则不使用 STUN servers；如果没设置，则使用默认 STUN server 列表"
   stun_servers_v6:
     en: "Override default STUN servers, IPv6; If configured but empty, IPv6 STUN servers are not used"
     zh-CN: "覆盖内置的默认 IPv6 STUN server 列表；如果设置了但是为空，则不使用 IPv6 STUN servers；如果没设置，则使用默认 IPv6 STUN server 列表"
+  secure_mode:
+    en: "if true, enable secure mode. default is false"
+    zh-CN: "如果为true，则启用安全模式。默认值为false"
+  local_private_key:
+    en: "local private key for secure mode. if not provided, a random key will be generated"
+    zh-CN: "安全模式下的本地私钥。如果未提供，则会随机生成一个密钥"
+  local_public_key:
+    en: "local public key for secure mode. if not provided, a random key will be generated, or use local private key to derive public key"
+    zh-CN: "安全模式下的本地公钥。如果未提供，则会随机生成一个密钥，或者使用本地私钥派生公钥"
   check_config:
     en: Check config validity without starting the network
     zh-CN: 检查配置文件的有效性并退出

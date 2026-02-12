@@ -29,6 +29,7 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
         let method_descriptor_name = format!("{}MethodDescriptor", service.name);
 
         let mut trait_methods = String::new();
+        let mut weak_impl_methods = String::new();
         let mut enum_methods = String::new();
         let mut list_enum_methods = String::new();
         let mut client_methods = String::new();
@@ -60,6 +61,21 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 trait_methods,
                 r#"    async fn {name}(&self, ctrl: Self::Controller, input: {input_type}) -> {namespace}::error::Result<{output_type}>;"#,
                 name = method.name,
+                input_type = method.input_type,
+                output_type = method.output_type,
+                namespace = NAMESPACE,
+            )
+            .unwrap();
+
+            writeln!(
+                weak_impl_methods,
+                r#"    async fn {method_name}(&self, ctrl: Self::Controller, input: {input_type}) -> {namespace}::error::Result<{output_type}> {{
+        let Some(service) = self.upgrade() else {{
+            return Err({namespace}::error::Error::Shutdown);
+        }};
+        service.{method_name}(ctrl, input).await
+    }}"#,
+                method_name = method.name,
                 input_type = method.input_type,
                 output_type = method.output_type,
                 namespace = NAMESPACE,
@@ -178,6 +194,17 @@ pub trait {name} {{
     {trait_methods}
 }}
 
+#[async_trait::async_trait]
+impl<T> {name} for ::std::sync::Weak<T>
+where
+    T: Send + Sync + 'static,
+    ::std::sync::Arc<T>: {name},
+{{
+    type Controller = <::std::sync::Arc<T> as {name}>::Controller;
+
+    {weak_impl_methods}
+}}
+
 /// A service descriptor for a `{name}`.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Default)]
 pub struct {descriptor_name};
@@ -249,6 +276,16 @@ impl<C> {namespace}::__rt::RpcClientFactory for {client_name}Factory<C> where C:
 /// supplied `{name}`.
 #[derive(Clone, Debug)]
 pub struct {server_name}<A>(A) where A: {name} + Clone + Send + 'static;
+
+impl<T> {server_name}<::std::sync::Weak<T>>
+where
+    T: Send + Sync + 'static,
+    ::std::sync::Arc<T>: {name},
+{{
+    pub fn new_arc(service: ::std::sync::Arc<T>) -> {server_name}<::std::sync::Weak<T>> {{
+        {server_name}(::std::sync::Arc::downgrade(&service))
+    }}
+}}
 
 impl<A> {server_name}<A> where A: {name} + Clone + Send + 'static {{
     /// Creates a new server instance that dispatches all calls to the supplied service.
@@ -345,6 +382,7 @@ impl {namespace}::descriptor::MethodDescriptor for {method_descriptor_name} {{
             proto_name = service.proto_name,
             package = service.package,
             trait_methods = trait_methods,
+            weak_impl_methods = weak_impl_methods,
             enum_methods = enum_methods,
             list_enum_methods = list_enum_methods,
             client_own_methods = client_own_methods,

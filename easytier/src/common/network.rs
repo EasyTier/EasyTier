@@ -16,7 +16,7 @@ struct InterfaceFilter {
     iface: NetworkInterface,
 }
 
-#[cfg(any(target_os = "android", target_env = "ohos"))]
+#[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
         true

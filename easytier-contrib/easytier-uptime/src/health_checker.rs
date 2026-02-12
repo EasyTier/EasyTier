@@ -359,6 +359,7 @@ impl HealthChecker {
             )
             .parse()
             .with_context(|| "failed to parse peer uri")?,
+            peer_public_key: None,
         }]);
 
         let inst_id = inst_id.unwrap_or(uuid::Uuid::new_v4());
@@ -374,6 +375,7 @@ impl HealthChecker {
         flags.no_tun = true;
         flags.disable_p2p = true;
         flags.disable_udp_hole_punching = true;
+        flags.disable_tcp_hole_punching = true;
         cfg.set_flags(flags);
 
         Ok(cfg)

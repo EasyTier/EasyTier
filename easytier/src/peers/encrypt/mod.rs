@@ -30,6 +30,13 @@ pub enum Error {
 
 pub trait Encryptor: Send + Sync + 'static {
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
+    fn encrypt_with_nonce(
+        &self,
+        zc_packet: &mut ZCPacket,
+        _nonce: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        self.encrypt(zc_packet)
+    }
     fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
 }
 

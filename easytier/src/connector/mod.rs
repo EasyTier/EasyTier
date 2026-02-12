@@ -5,8 +5,12 @@ use std::{
 
 use http_connector::HttpTunnelConnector;
 
+#[cfg(feature = "faketcp")]
+use crate::tunnel::fake_tcp::FakeTcpTunnelConnector;
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelConnector;
+#[cfg(unix)]
+use crate::tunnel::unix::UnixSocketTunnelConnector;
 #[cfg(feature = "wireguard")]
 use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
@@ -19,6 +23,7 @@ use crate::{
 
 pub mod direct;
 pub mod manual;
+pub mod tcp_hole_punch;
 pub mod udp_hole_punch;
 
 pub mod dns_connector;
@@ -29,7 +34,11 @@ async fn set_bind_addr_for_peer_connector(
     is_ipv4: bool,
     ip_collector: &Arc<IPCollector>,
 ) {
-    if cfg!(any(target_os = "android", target_env = "ohos")) {
+    if cfg!(any(
+        target_os = "android",
+        target_os = "ios",
+        target_env = "ohos"
+    )) {
         return;
     }
 
@@ -155,6 +164,26 @@ pub async fn create_connector_by_url(
                 )));
             }
             let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
+            Box::new(connector)
+        }
+        #[cfg(feature = "faketcp")]
+        "faketcp" => {
+            let dst_addr =
+                check_scheme_and_get_socket_addr::<SocketAddr>(&url, "faketcp", ip_version).await?;
+            let mut connector = FakeTcpTunnelConnector::new(url);
+            if global_ctx.config.get_flags().bind_device {
+                set_bind_addr_for_peer_connector(
+                    &mut connector,
+                    dst_addr.is_ipv4(),
+                    &global_ctx.get_ip_collector(),
+                )
+                .await;
+            }
+            Box::new(connector)
+        }
+        #[cfg(unix)]
+        "unix" => {
+            let connector = UnixSocketTunnelConnector::new(url);
             Box::new(connector)
         }
         _ => {

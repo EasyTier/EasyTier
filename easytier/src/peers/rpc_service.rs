@@ -33,13 +33,12 @@ impl PeerManagerRpcService {
     }
 
     pub async fn list_peers(peer_manager: &PeerManager) -> Vec<PeerInfo> {
-        let mut peers = peer_manager.get_peer_map().list_peers().await;
+        let mut peers = peer_manager.get_peer_map().list_peers();
         peers.extend(
             peer_manager
                 .get_foreign_network_client()
                 .get_peer_map()
                 .list_peers()
-                .await
                 .iter(),
         );
         let peer_map = peer_manager.get_peer_map();

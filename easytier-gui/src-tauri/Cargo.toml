@@ -1,6 +1,6 @@
 [package]
 name = "easytier-gui"
-version = "2.4.5"
+version = "2.5.0"
 description = "EasyTier GUI"
 authors = ["you"]
 edition = "2021"
@@ -35,6 +35,9 @@ serde_json = "1"
 
 easytier = { path = "../../easytier" }
 tokio = { version = "1", features = ["full"] }
+rustls = { version = "0.23.0", features = [
+    "ring",
+] }
 anyhow = "1.0"
 chrono = { version = "0.4.37", features = ["serde"] }
 
@@ -53,6 +56,8 @@ tauri-plugin-os = "2.3.0"
 
 uuid = "1.17.0"
 async-trait = "0.1.89"
+
+url = { version = "2.5", features = ["serde"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

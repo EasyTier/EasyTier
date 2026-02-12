@@ -9,6 +9,8 @@ use anyhow::Context;
 use async_trait::async_trait;
 use tokio::task::JoinSet;
 
+#[cfg(feature = "faketcp")]
+use crate::tunnel::fake_tcp::FakeTcpTunnelListener;
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelListener;
 #[cfg(feature = "wireguard")]
@@ -48,6 +50,13 @@ pub fn get_listener_by_url(
         "ws" | "wss" => {
             use crate::tunnel::websocket::WSTunnelListener;
             Box::new(WSTunnelListener::new(l.clone()))
+        }
+        #[cfg(feature = "faketcp")]
+        "faketcp" => Box::new(FakeTcpTunnelListener::new(l.clone())),
+        #[cfg(unix)]
+        "unix" => {
+            use crate::tunnel::unix::UnixSocketTunnelListener;
+            Box::new(UnixSocketTunnelListener::new(l.clone()))
         }
         _ => {
             return Err(Error::InvalidUrl(l.to_string()));
@@ -143,7 +152,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                 && !is_url_host_ipv6(&l)
                 && is_url_host_unspecified(&l)
                 // quic enables dual-stack by default, may conflict with v4 listener
-                && l.scheme() != "quic"
+                && l.scheme() != "quic" && l.scheme() != "faketcp"
             {
                 let mut ipv6_listener = l.clone();
                 ipv6_listener
@@ -200,6 +209,7 @@ impl<H: TunnelHandlerForListener + Send + Sync + 'static + Debug> ListenerManage
                         return;
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    continue;
                 }
             }
             loop {

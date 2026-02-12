@@ -67,6 +67,14 @@ impl Encryptor for RingChaCha20Cipher {
     }
 
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
+        self.encrypt_with_nonce(zc_packet, None)
+    }
+
+    fn encrypt_with_nonce(
+        &self,
+        zc_packet: &mut ZCPacket,
+        nonce: Option<&[u8]>,
+    ) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if pm_header.is_encrypted() {
             tracing::warn!(?zc_packet, "packet is already encrypted");
@@ -74,7 +82,14 @@ impl Encryptor for RingChaCha20Cipher {
         }
 
         let mut tail = ChaCha20Poly1305Tail::default();
-        rand::thread_rng().fill_bytes(&mut tail.nonce);
+        if let Some(nonce) = nonce {
+            if nonce.len() != tail.nonce.len() {
+                return Err(Error::EncryptionFailed);
+            }
+            tail.nonce.copy_from_slice(nonce);
+        } else {
+            rand::thread_rng().fill_bytes(&mut tail.nonce);
+        }
         let nonce = Nonce::assume_unique_for_key(tail.nonce);
 
         let rs =
@@ -100,6 +115,7 @@ mod tests {
         peers::encrypt::{ring_chacha20::RingChaCha20Cipher, Encryptor},
         tunnel::packet_def::ZCPacket,
     };
+    use zerocopy::FromBytes;
 
     use super::CHACHA20_POLY1305_ENCRYPTION_RESERVED;
 
@@ -121,5 +137,34 @@ mod tests {
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
         assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+    }
+
+    #[test]
+    fn test_ring_chacha20_cipher_with_nonce() {
+        let key = [9u8; 32];
+        let cipher = RingChaCha20Cipher::new(key);
+        let text = b"Hello";
+        let nonce = [5u8; 12];
+
+        let mut packet1 = ZCPacket::new_with_payload(text);
+        packet1.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet1, Some(&nonce))
+            .unwrap();
+
+        let mut packet2 = ZCPacket::new_with_payload(text);
+        packet2.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet2, Some(&nonce))
+            .unwrap();
+
+        assert_eq!(packet1.payload(), packet2.payload());
+
+        let tail = super::ChaCha20Poly1305Tail::ref_from_suffix(packet1.payload()).unwrap();
+        assert_eq!(tail.nonce, nonce);
+
+        cipher.decrypt(&mut packet1).unwrap();
+        assert_eq!(packet1.payload(), text);
+        assert!(!packet1.peer_manager_header().unwrap().is_encrypted());
     }
 }

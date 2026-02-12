@@ -19,16 +19,17 @@ use crate::{
     defer,
     instance_manager::NetworkInstanceManager,
     launcher::add_proxy_network_to_config,
-    proto::common::CompressionAlgoPb,
+    proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
     utils::{init_logger, setup_panic_handler},
-    web_client,
+    web_client, ShellType,
 };
 use anyhow::Context;
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
-use clap_complete::Shell;
+use rand::rngs::OsRng;
 use rust_i18n::t;
 use tokio::io::AsyncReadExt;
 
@@ -126,7 +127,7 @@ struct Cli {
     rpc_portal_options: RpcPortalOptions,
 
     #[clap(long, help = t!("core_clap.generate_completions").to_string())]
-    gen_autocomplete: Option<Shell>,
+    gen_autocomplete: Option<ShellType>,
 
     #[clap(long, help = t!("core_clap.check_config").to_string())]
     check_config: bool,
@@ -423,6 +424,15 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_DISABLE_TCP_HOLE_PUNCHING",
+        help = t!("core_clap.disable_tcp_hole_punching").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_tcp_hole_punching: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_DISABLE_SYM_HOLE_PUNCHING",
         help = t!("core_clap.disable_sym_hole_punching").to_string(),
         num_args = 0..=1,
@@ -499,14 +509,6 @@ struct NetworkOptions {
 
     #[arg(
         long,
-        env = "ET_QUIC_LISTEN_PORT",
-        help = t!("core_clap.quic_listen_port").to_string(),
-        num_args = 0..=1,
-    )]
-    quic_listen_port: Option<u16>,
-
-    #[arg(
-        long,
         env = "ET_PORT_FORWARD",
         value_delimiter = ',',
         help = t!("core_clap.port_forward").to_string(),
@@ -568,12 +570,30 @@ struct NetworkOptions {
 
     #[arg(
         long,
+        env = "ET_DISABLE_RELAY_QUIC",
+        help = t!("core_clap.disable_relay_quic").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    disable_relay_quic: Option<bool>,
+
+    #[arg(
+        long,
         env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_KCP",
         help = t!("core_clap.enable_relay_foreign_network_kcp").to_string(),
         num_args = 0..=1,
         default_missing_value = "true"
     )]
     enable_relay_foreign_network_kcp: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_ENABLE_RELAY_FOREIGN_NETWORK_QUIC",
+        help = t!("core_clap.enable_relay_foreign_network_quic").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    enable_relay_foreign_network_quic: Option<bool>,
 
     #[arg(
         long,
@@ -592,6 +612,29 @@ struct NetworkOptions {
         num_args = 0..
     )]
     stun_servers_v6: Option<Vec<String>>,
+
+    #[arg(
+        long,
+        env = "ET_SECURE_MODE",
+        help = t!("core_clap.secure_mode").to_string(),
+        num_args = 0..=1,
+        default_missing_value = "true"
+    )]
+    secure_mode: Option<bool>,
+
+    #[arg(
+        long,
+        env = "ET_LOCAL_PRIVATE_KEY",
+        help = t!("core_clap.local_private_key").to_string()
+    )]
+    local_private_key: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_LOCAL_PUBLIC_KEY",
+        help = t!("core_clap.local_public_key").to_string()
+    )]
+    local_public_key: Option<String>,
 }
 
 #[derive(Parser, Debug)]
@@ -715,6 +758,42 @@ impl NetworkOptions {
         false
     }
 
+    fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
+        if !user_cfg.enabled {
+            return Ok(user_cfg);
+        }
+
+        let private_key = if user_cfg.local_private_key.is_none() {
+            // if no private key, generate random one
+            let private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+            user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
+            private
+        } else {
+            // check if private key is valid
+            user_cfg.private_key()?
+        };
+
+        let public = x25519_dalek::PublicKey::from(&private_key);
+
+        match user_cfg.local_public_key {
+            None => {
+                user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
+            }
+            Some(ref user_pub) => {
+                let public = user_cfg.public_key()?;
+                if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
+                    return Err(anyhow::anyhow!(
+                        "local public key {} does not match generated public key {}",
+                        user_pub,
+                        BASE64_STANDARD.encode(public.as_bytes())
+                    ));
+                }
+            }
+        }
+
+        Ok(user_cfg)
+    }
+
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
         if self.hostname.is_some() {
             cfg.set_hostname(self.hostname.clone());
@@ -752,6 +831,7 @@ impl NetworkOptions {
                     uri: p
                         .parse()
                         .with_context(|| format!("failed to parse peer uri: {}", p))?,
+                    peer_public_key: None,
                 });
             }
             cfg.set_peers(peers);
@@ -812,6 +892,7 @@ impl NetworkOptions {
                 uri: external_nodes.parse().with_context(|| {
                     format!("failed to parse external node uri: {}", external_nodes)
                 })?,
+                peer_public_key: None,
             });
             cfg.set_peers(old_peers);
         }
@@ -860,7 +941,6 @@ impl NetworkOptions {
             ));
         }
 
-        #[cfg(feature = "socks5")]
         for port_forward in self.port_forward.iter() {
             let example_str = ", example: udp://0.0.0.0:12345/10.126.126.1:12345";
 
@@ -894,6 +974,17 @@ impl NetworkOptions {
             cfg.set_port_forwards(old);
         }
 
+        if let Some(secure_mode) = self.secure_mode {
+            if secure_mode {
+                let c = SecureModeConfig {
+                    enabled: secure_mode,
+                    local_private_key: self.local_private_key.clone(),
+                    local_public_key: self.local_public_key.clone(),
+                };
+                cfg.set_secure_mode(Some(Self::process_secure_mode_cfg(c)?));
+            }
+        }
+
         let mut f = cfg.get_flags();
         if let Some(default_protocol) = &self.default_protocol {
             f.default_protocol = default_protocol.clone()
@@ -925,6 +1016,9 @@ impl NetworkOptions {
         }
         f.disable_p2p = self.disable_p2p.unwrap_or(f.disable_p2p);
         f.p2p_only = self.p2p_only.unwrap_or(f.p2p_only);
+        f.disable_tcp_hole_punching = self
+            .disable_tcp_hole_punching
+            .unwrap_or(f.disable_tcp_hole_punching);
         f.disable_udp_hole_punching = self
             .disable_udp_hole_punching
             .unwrap_or(f.disable_udp_hole_punching);
@@ -946,9 +1040,6 @@ impl NetworkOptions {
         f.disable_kcp_input = self.disable_kcp_input.unwrap_or(f.disable_kcp_input);
         f.enable_quic_proxy = self.enable_quic_proxy.unwrap_or(f.enable_quic_proxy);
         f.disable_quic_input = self.disable_quic_input.unwrap_or(f.disable_quic_input);
-        if let Some(quic_listen_port) = self.quic_listen_port {
-            f.quic_listen_port = quic_listen_port as u32;
-        }
         f.accept_dns = self.accept_dns.unwrap_or(f.accept_dns);
         f.private_mode = self.private_mode.unwrap_or(f.private_mode);
         f.foreign_relay_bps_limit = self
@@ -956,9 +1047,13 @@ impl NetworkOptions {
             .unwrap_or(f.foreign_relay_bps_limit);
         f.multi_thread_count = self.multi_thread_count.unwrap_or(f.multi_thread_count);
         f.disable_relay_kcp = self.disable_relay_kcp.unwrap_or(f.disable_relay_kcp);
+        f.disable_relay_quic = self.disable_relay_quic.unwrap_or(f.disable_relay_quic);
         f.enable_relay_foreign_network_kcp = self
             .enable_relay_foreign_network_kcp
             .unwrap_or(f.enable_relay_foreign_network_kcp);
+        f.enable_relay_foreign_network_quic = self
+            .enable_relay_foreign_network_quic
+            .unwrap_or(f.enable_relay_foreign_network_quic);
         f.disable_sym_hole_punching = self.disable_sym_hole_punching.unwrap_or(false);
         // Configure tld_dns_zone: use provided value if set
         if let Some(tld_dns_zone) = &self.tld_dns_zone {
@@ -1368,7 +1463,12 @@ pub async fn main() -> ExitCode {
 
     if let Some(shell) = cli.gen_autocomplete {
         let mut cmd = Cli::command();
-        crate::print_completions(shell, &mut cmd, "easytier-core");
+        if let Some(shell) = shell.to_shell() {
+            crate::print_completions(shell, &mut cmd, "easytier-core");
+        } else {
+            // Handle Nushell
+            crate::print_nushell_completions(&mut cmd, "easytier-core");
+        }
         return ExitCode::SUCCESS;
     }
 

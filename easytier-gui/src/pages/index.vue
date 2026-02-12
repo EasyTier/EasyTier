@@ -2,8 +2,9 @@
 
 import { type } from '@tauri-apps/plugin-os'
 
-import { appLogDir } from '@tauri-apps/api/path'
+import { invoke } from '@tauri-apps/api/core'
 import { writeText } from '@tauri-apps/plugin-clipboard-manager'
+import { open } from '@tauri-apps/plugin-shell'
 import { exit } from '@tauri-apps/plugin-process'
 import { I18nUtils, RemoteManagement, Utils } from "easytier-frontend-lib"
 import type { MenuItem } from 'primevue/menuitem'
@@ -12,6 +13,7 @@ import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
+import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
 import { getServiceStatus } from '~/composables/backend'
 
@@ -154,13 +156,23 @@ async function initWithMode(mode: Mode) {
       url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
       retrys = 5
       break;
+    case 'normal':
+      url = mode.rpc_portal;
+      break;
   }
   for (let i = 0; i < retrys; i++) {
     try {
-      await connectRpcClient(url)
+      await connectRpcClient(mode.mode === 'normal', url)
       break;
     } catch (e) {
       if (i === retrys - 1) {
+        const errMsg = e instanceof Error ? e.message : String(e)
+        toast.add({
+          severity: 'error',
+          summary: t('error'),
+          detail: t('mode.rpc_connection_failed', { error: errMsg }),
+          life: 1000,
+        })
         throw e;
       }
       console.error("Error connecting rpc client, retrying...", e)
@@ -189,6 +201,12 @@ const remoteClient = computed(() => new GUIRemoteClient());
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
 
+watch(instanceId, (newVal) => {
+  if (newVal) {
+    saveLastNetworkInstanceId(newVal);
+  }
+});
+
 watch(clientRunning, async (newVal, oldVal) => {
   if (!newVal && oldVal) {
     if (manualDisconnect.value) {
@@ -196,6 +214,11 @@ watch(clientRunning, async (newVal, oldVal) => {
       return
     }
     await reconnectClient()
+  } else if (newVal && !oldVal) {
+    const lastInstanceId = loadLastNetworkInstanceId();
+    if (lastInstanceId) {
+      instanceId.value = lastInstanceId;
+    }
   }
 })
 
@@ -231,6 +254,11 @@ onMounted(async () => {
 let current_log_level = 'off'
 
 const log_menu = ref()
+// 从后端获取正确的日志路径
+async function getLogDirPath(): Promise<string> {
+  return await invoke<string>('get_log_dir_path')
+}
+
 const log_menu_items_popup: Ref<MenuItem[]> = ref([
   ...['off', 'warn', 'info', 'debug', 'trace'].map(level => ({
     label: () => t(`logging_level_${level}`) + (current_log_level === level ? ' ✓' : ''),
@@ -246,15 +274,16 @@ const log_menu_items_popup: Ref<MenuItem[]> = ref([
     label: () => t('logging_open_dir'),
     icon: 'pi pi-folder-open',
     command: async () => {
-      // console.log('open log dir', await appLogDir())
-      await open(await appLogDir())
+      // console.log('open log dir', await getLogDirPath())
+      await open(await getLogDirPath())
     },
+    visible: () => type() !== 'android',
   },
   {
     label: () => t('logging_copy_dir'),
     icon: 'pi pi-tablet',
     command: async () => {
-      await writeText(await appLogDir())
+      await writeText(await getLogDirPath())
     },
   },
 ])
@@ -313,9 +342,9 @@ const setting_menu_items: Ref<MenuItem[]> = ref([
   },
 ])
 
-async function connectRpcClient(url?: string) {
-  await initRpcConnection(url)
-  console.log("easytier rpc connection established")
+async function connectRpcClient(isNormalMode: boolean, url?: string) {
+  await initRpcConnection(isNormalMode, url)
+  console.log("easytier rpc connection established, isNormalMode: ", isNormalMode)
 }
 
 onMounted(async () => {

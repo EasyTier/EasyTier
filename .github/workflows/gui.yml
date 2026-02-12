@@ -29,7 +29,7 @@ jobs:
           concurrent_skipping: 'same_content_newer'
           skip_after_successful_duplicate: 'true'
           cancel_others: 'true'
-          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh", ".github/workflows/install_gui_dep.sh"]'
+          paths: '["Cargo.toml", "Cargo.lock", "easytier/**", "easytier-gui/**", ".github/workflows/gui.yml", ".github/workflows/install_rust.sh", ".github/workflows/install_gui_dep.sh", "easytier-web/frontend-lib/**"]'
   build-gui:
     strategy:
       fail-fast: false
@@ -170,11 +170,11 @@ jobs:
         if: ${{ matrix.OS == 'windows-latest' }}
         run: |
           if [[ $GUI_TARGET =~ ^aarch64.*$ ]]; then
-            cp ./easytier/third_party/arm64/*.dll ./easytier-gui/src-tauri/
+            cp ./easytier/third_party/arm64/* ./easytier-gui/src-tauri/
           elif [[ $GUI_TARGET =~ ^i686.*$ ]]; then
-            cp ./easytier/third_party/i686/*.dll ./easytier-gui/src-tauri/
+            cp ./easytier/third_party/i686/* ./easytier-gui/src-tauri/
           else
-            cp ./easytier/third_party/*.dll ./easytier-gui/src-tauri/
+            cp ./easytier/third_party/x86_64/* ./easytier-gui/src-tauri/
           fi
 
       - name: Build GUI

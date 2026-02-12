@@ -70,7 +70,7 @@ impl WindowsBuild {
         let target = std::env::var("TARGET").unwrap_or_default();
 
         if target.contains("x86_64") {
-            println!("cargo:rustc-link-search=native=easytier/third_party/");
+            println!("cargo:rustc-link-search=native=easytier/third_party/x86_64/");
         } else if target.contains("i686") {
             println!("cargo:rustc-link-search=native=easytier/third_party/i686/");
         } else if target.contains("aarch64") {
@@ -183,7 +183,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
-        .service_generator(Box::new(rpc_build::ServiceGenerator::new()))
+        .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
         .btree_map(["."])
         .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
 

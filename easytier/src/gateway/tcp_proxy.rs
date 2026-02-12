@@ -51,7 +51,7 @@ pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
         cidr_set: &CidrSet,
         global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
-        ipv4: &Ipv4Packet,
+        ipv4: &Ipv4Addr,
         real_dst_ip: &mut Ipv4Addr,
     ) -> bool;
     fn transport_type(&self) -> TcpProxyEntryTransportType;
@@ -90,16 +90,15 @@ impl NatDstConnector for NatDstTcpConnector {
         cidr_set: &CidrSet,
         global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
-        ipv4: &Ipv4Packet,
+        ipv4: &Ipv4Addr,
         real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
         let is_exit_node = hdr.is_exit_node();
 
-        if !(cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
+        if !(cidr_set.contains_v4(*ipv4, real_dst_ip)
             || is_exit_node
             || global_ctx.no_tun()
-                && Some(ipv4.get_destination())
-                    == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
+                && Some(*ipv4) == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
             return false;
         }
@@ -201,6 +200,7 @@ impl ProxyTcpStream {
     }
 }
 
+#[cfg(feature = "smoltcp")]
 type SmolTcpAcceptResult = Result<(tokio_smoltcp::TcpStream, SocketAddr)>;
 #[cfg(feature = "smoltcp")]
 struct SmolTcpListener {
@@ -316,7 +316,7 @@ type AddrConnSockMap = Arc<DashMap<SocketAddr, ArcNatDstEntry>>;
 #[derive(Debug)]
 pub struct TcpProxy<C: NatDstConnector> {
     global_ctx: Arc<GlobalCtx>,
-    peer_manager: Arc<PeerManager>,
+    peer_manager: Weak<PeerManager>,
     local_port: AtomicU16,
 
     tasks: Arc<std::sync::Mutex<JoinSet<()>>>,
@@ -331,6 +331,7 @@ pub struct TcpProxy<C: NatDstConnector> {
     smoltcp_stack_receiver: Arc<Mutex<Option<mpsc::Receiver<ZCPacket>>>>,
     #[cfg(feature = "smoltcp")]
     smoltcp_net: Arc<Mutex<Option<Net>>>,
+    #[cfg(feature = "smoltcp")]
     smoltcp_listener_tx: std::sync::Mutex<Option<mpsc::UnboundedSender<SmolTcpAcceptResult>>>,
     enable_smoltcp: Arc<AtomicBool>,
 
@@ -346,8 +347,10 @@ impl<C: NatDstConnector> PeerPacketFilter for TcpProxy<C> {
                 if let Err(e) = smoltcp_stack_sender.try_send(packet) {
                     tracing::error!("send to smoltcp stack failed: {:?}", e);
                 }
-            } else if let Err(e) = self.peer_manager.get_nic_channel().send(packet).await {
-                tracing::error!("send to nic failed: {:?}", e);
+            } else if let Some(peer_manager) = self.get_peer_manager() {
+                if let Err(e) = peer_manager.get_nic_channel().send(packet).await {
+                    tracing::error!("send to nic failed: {:?}", e);
+                }
             }
             return None;
         } else {
@@ -443,7 +446,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         Arc::new(Self {
             global_ctx: global_ctx.clone(),
-            peer_manager,
+            peer_manager: Arc::downgrade(&peer_manager),
 
             local_port: AtomicU16::new(0),
             tasks: Arc::new(std::sync::Mutex::new(JoinSet::new())),
@@ -459,12 +462,17 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
             #[cfg(feature = "smoltcp")]
             smoltcp_net: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "smoltcp")]
             smoltcp_listener_tx: std::sync::Mutex::new(None),
 
             enable_smoltcp: Arc::new(AtomicBool::new(true)),
 
             connector,
         })
+    }
+
+    pub fn get_peer_manager(&self) -> Option<Arc<PeerManager>> {
+        self.peer_manager.upgrade()
     }
 
     fn update_tcp_packet_checksum(
@@ -487,10 +495,13 @@ impl<C: NatDstConnector> TcpProxy<C> {
         self.run_syn_map_cleaner().await?;
         self.run_listener().await?;
         if add_pipeline {
-            self.peer_manager
+            let peer_manager = self
+                .get_peer_manager()
+                .ok_or_else(|| anyhow::anyhow!("peer manager is gone"))?;
+            peer_manager
                 .add_packet_process_pipeline(Box::new(self.clone()))
                 .await;
-            self.peer_manager
+            peer_manager
                 .add_nic_packet_process_pipeline(Box::new(self.clone()))
                 .await;
         }
@@ -526,7 +537,11 @@ impl<C: NatDstConnector> TcpProxy<C> {
         #[cfg(feature = "smoltcp")]
         if self.global_ctx.get_flags().use_smoltcp
             || self.global_ctx.no_tun()
-            || cfg!(any(target_os = "android", target_env = "ohos"))
+            || cfg!(any(
+                target_os = "android",
+                target_os = "ios",
+                target_env = "ohos"
+            ))
         {
             // use smoltcp network stack
 
@@ -565,6 +580,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
                     let dst = ipv4.get_destination();
                     let packet = ZCPacket::new_with_payload(&data);
+                    let Some(peer_mgr) = peer_mgr.upgrade() else {
+                        tracing::warn!("peer manager is gone, smoltcp sender exited");
+                        return;
+                    };
                     if let Err(e) = peer_mgr
                         .send_msg_by_ip(packet, IpAddr::V4(dst), false)
                         .await
@@ -730,9 +749,18 @@ impl<C: NatDstConnector> TcpProxy<C> {
             tracing::warn!("set_nodelay failed, ignore it: {:?}", e);
         }
 
-        let nat_dst = if Some(nat_entry.real_dst.ip())
-            == global_ctx.get_ipv4().map(|ip| IpAddr::V4(ip.address()))
-        {
+        if global_ctx.should_deny_proxy(&nat_entry.real_dst, false) {
+            tracing::error!(
+                ?nat_entry,
+                "nat dst port {} is in running listeners, ignore it",
+                nat_entry.real_dst.port()
+            );
+            nat_entry.state.store(NatDstEntryState::Closed);
+            Self::remove_entry_from_all_conn_map(conn_map, addr_conn_map, nat_entry);
+            return;
+        }
+
+        let nat_dst = if global_ctx.is_ip_local_virtual_ip(&nat_entry.real_dst.ip()) {
             format!("127.0.0.1:{}", nat_entry.real_dst.port())
                 .parse()
                 .unwrap()
@@ -815,7 +843,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
     }
 
     pub fn get_my_peer_id(&self) -> u32 {
-        self.peer_manager.my_peer_id()
+        self.peer_manager
+            .upgrade()
+            .map(|pm| pm.my_peer_id())
+            .unwrap_or_default()
     }
 
     pub fn get_local_ip(&self) -> Option<Ipv4Addr> {
@@ -853,33 +884,47 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         let ipv4_inet = self.get_local_inet()?;
         let ipv4_addr = ipv4_inet.address();
-        let hdr = packet.peer_manager_header().unwrap().clone();
-
-        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
-            return None;
-        };
-
-        let payload_bytes = packet.mut_payload();
-
-        let ipv4 = Ipv4Packet::new(payload_bytes)?;
-        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
-            return None;
+        {
+            let hdr = packet.peer_manager_header().unwrap();
+            if (hdr.packet_type != PacketType::Data as u8
+                && hdr.packet_type != PacketType::DataWithKcpSrcModified as u8
+                && hdr.packet_type != PacketType::DataWithQuicSrcModified as u8)
+                || hdr.is_no_proxy()
+            {
+                return None;
+            };
         }
 
-        let mut real_dst_ip = ipv4.get_destination();
+        let origin_ip = {
+            let payload_bytes = packet.mut_payload();
+            let ipv4 = Ipv4Packet::new(payload_bytes)?;
+            if ipv4.get_version() != 4
+                || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
+            {
+                return None;
+            }
+
+            ipv4.get_destination()
+        };
+        let mut real_dst_ip = origin_ip;
+        let hdr = packet.mut_peer_manager_header().unwrap();
 
         if !self.connector.check_packet_from_peer(
             &self.cidr_set,
             &self.global_ctx,
-            &hdr,
-            &ipv4,
+            hdr,
+            &origin_ip,
             &mut real_dst_ip,
         ) {
             return None;
         }
 
-        tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
+        // restore to data packet
+        hdr.packet_type = PacketType::Data as u8;
 
+        tracing::trace!(ipv4 = ?origin_ip, cidr_set = ?self.cidr_set, "proxy tcp packet received");
+
+        let payload_bytes = packet.mut_payload();
         let ip_packet = Ipv4Packet::new(payload_bytes).unwrap();
         let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
 
@@ -901,6 +946,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             tracing::info!(src = ?src, ?real_dst, ?mapped_dst, old_entry = ?old_val, "tcp syn received");
 
             // if smoltcp is enabled, add the listener to the net
+            #[cfg(feature = "smoltcp")]
             if self.is_smoltcp_enabled() {
                 let smoltcp_listener_tx = self.smoltcp_listener_tx.lock().unwrap().clone().unwrap();
                 SmolTcpListener::add_listener(
@@ -934,10 +980,6 @@ impl<C: NatDstConnector> TcpProxy<C> {
         tracing::trace!(?source, ?ipv4_addr, ?packet, "tcp packet after modified");
 
         Some(())
-    }
-
-    pub fn get_peer_manager(&self) -> &Arc<PeerManager> {
-        &self.peer_manager
     }
 
     pub fn is_tcp_proxy_connection(&self, src: SocketAddr) -> bool {

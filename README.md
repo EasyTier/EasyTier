@@ -80,8 +80,6 @@ easytier-cli gen-autocomplete fish > ~/.config/fish/completions/easytier-cli.fis
 
 EasyTier supports quick networking using shared public nodes. When you don't have a public IP, you can use the free shared nodes provided by the EasyTier community. Nodes will automatically attempt NAT traversal and establish P2P connections. When P2P fails, data will be relayed through shared nodes.
 
-The currently deployed shared public node is `tcp://public.easytier.cn:11010`.
-
 When using shared nodes, each node entering the network needs to provide the same `--network-name` and `--network-secret` parameters as the unique identifier of the network.
 
 Taking two nodes as an example (Please use more complex network name to avoid conflicts):
@@ -90,14 +88,14 @@ Taking two nodes as an example (Please use more complex network name to avoid co
 
 ```bash
 # Run with administrator privileges
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
+sudo easytier-core -d --network-name abc --network-secret abc -p tcp://<SharedNodeIP>:11010
 ```
 
 2. Run on Node B:
 
 ```bash
 # Run with administrator privileges
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010
+sudo easytier-core -d --network-name abc --network-secret abc -p tcp://<SharedNodeIP>:11010
 ```
 
 After successful execution, you can check the network status using `easytier-cli`:
@@ -105,9 +103,9 @@ After successful execution, you can check the network status using `easytier-cli
 ```text
 | ipv4         | hostname       | cost  | lat_ms | loss_rate | rx_bytes | tx_bytes | tunnel_proto | nat_type | id         | version         |
 | ------------ | -------------- | ----- | ------ | --------- | -------- | -------- | ------------ | -------- | ---------- | --------------- |
-| 10.126.126.1 | abc-1          | Local | *      | *         | *        | *        | udp          | FullCone | 439804259  | 2.4.5-70e69a38~ |
-| 10.126.126.2 | abc-2          | p2p   | 3.452  | 0         | 17.33 kB | 20.42 kB | udp          | FullCone | 390879727  | 2.4.5-70e69a38~ |
-|              | PublicServer_a | p2p   | 27.796 | 0.000     | 50.01 kB | 67.46 kB | tcp          | Unknown  | 3771642457 | 2.4.5-70e69a38~ |
+| 10.126.126.1 | abc-1          | Local | *      | *         | *        | *        | udp          | FullCone | 439804259  | 2.5.0-70e69a38~ |
+| 10.126.126.2 | abc-2          | p2p   | 3.452  | 0         | 17.33 kB | 20.42 kB | udp          | FullCone | 390879727  | 2.5.0-70e69a38~ |
+|              | PublicServer_a | p2p   | 27.796 | 0.000     | 50.01 kB | 67.46 kB | tcp          | Unknown  | 3771642457 | 2.5.0-70e69a38~ |
 ```
 
 You can test connectivity between nodes:
@@ -124,7 +122,7 @@ To improve availability, you can connect to multiple shared nodes simultaneously
 
 ```bash
 # Connect to multiple shared nodes
-sudo easytier-core -d --network-name abc --network-secret abc -p tcp://public.easytier.cn:11010 -p udp://public.easytier.cn:11010
+sudo easytier-core -d --network-name abc --network-secret abc -p tcp://<SharedNodeIP1>:11010 -p udp://<SharedNodeIP2>:11010
 ```
 
 Once your network is set up successfully, you can easily configure it to start automatically on system boot. Refer to the [One-Click Register Service guide](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) for step-by-step instructions on registering EasyTier as a system service.

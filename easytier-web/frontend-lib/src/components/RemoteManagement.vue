@@ -206,27 +206,39 @@ const confirmDeleteNetwork = (event: any) => {
     });
 };
 
-const saveAndRunNewNetwork = async () => {
-    if (!currentNetworkConfig.value) {
+const saveAndRunNewNetwork = async (config?: NetworkTypes.NetworkConfig) => {
+    const cfg = config ?? currentNetworkConfig.value;
+    if (!cfg) {
         return;
     }
+
+    const targetInstanceId = instanceId.value ?? cfg.instance_id;
+    if (targetInstanceId && cfg.instance_id !== targetInstanceId) {
+        cfg.instance_id = targetInstanceId;
+    }
+
     try {
-        await props.api.delete_network(instanceId.value!);
-        let ret = await props.api.run_network(currentNetworkConfig.value, currentNetworkControl.remoteSave.value);
-        console.debug("saveAndRunNewNetwork", ret);
+        if (networkIsDisabled.value) {
+            await props.api.save_config(cfg);
+            await props.api.update_network_instance_state(cfg.instance_id, false);
+        } else {
+            await props.api.run_network(cfg, currentNetworkControl.remoteSave.value);
+        }
 
-        delete networkMetaCache.value[currentNetworkConfig.value.instance_id];
-        await loadNetworkMetas([currentNetworkConfig.value.instance_id]);
+        delete networkMetaCache.value[cfg.instance_id];
+        await loadNetworkMetas([cfg.instance_id]);
 
-        selectedInstanceId.value = { uuid: currentNetworkConfig.value.instance_id };
+        selectedInstanceId.value = { uuid: cfg.instance_id };
+        await loadNetworkInstanceIds();
+        await loadCurrentNetworkInfo();
     } catch (e: any) {
         console.error(e);
-        toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to create network, error: ' + JSON.stringify(e.response.data), life: 2000 });
+        toast.add({ severity: 'error', summary: 'Error', detail: 'Failed to run network, error: ' + JSON.stringify(e.response?.data ?? e), life: 2000 });
         return;
     }
+
     emits('update');
-    // showCreateNetworkDialog.value = false;
-    isEditingNetwork.value = false; // Exit creation mode after successful network creation
+    isEditingNetwork.value = false;
 }
 
 const saveNetworkConfig = async () => {
@@ -388,18 +400,18 @@ const updateScreenWidth = () => {
 const menuRef = ref();
 const actionMenu: Ref<MenuItem[]> = ref([
     {
-        label: t('web.device_management.edit_network'),
+        label: () => t('web.device_management.edit_network'),
         icon: 'pi pi-pencil',
         visible: () => !(networkIsDisabled.value ?? true) && currentNetworkControl.editable.value,
         command: () => editNetwork()
     },
     {
-        label: t('web.device_management.export_config'),
+        label: () => t('web.device_management.export_config'),
         icon: 'pi pi-download',
         command: () => exportConfig()
     },
     {
-        label: t('web.device_management.delete_network'),
+        label: () => t('web.device_management.delete_network'),
         icon: 'pi pi-trash',
         class: 'p-error',
         visible: () => currentNetworkControl.deletable.value,
@@ -539,13 +551,15 @@ onUnmounted(() => {
                         :label="t('web.device_management.edit_as_file')" iconPos="left" severity="secondary" />
                     <Button @click="importConfig" icon="pi pi-upload" :label="t('web.device_management.import_config')"
                         iconPos="left" severity="help" />
-                    <Button v-if="networkIsDisabled" @click="saveNetworkConfig" icon="pi pi-save"
-                        :label="t('web.device_management.save_config')" iconPos="left" severity="success" />
+                    <Button v-if="networkIsDisabled" @click="saveNetworkConfig" :disabled="!currentNetworkConfig"
+                        icon="pi pi-save" :label="t('web.device_management.save_config')" iconPos="left"
+                        severity="success" />
                 </div>
 
                 <Divider />
 
-                <Config :cur-network="currentNetworkConfig" @run-network="saveAndRunNewNetwork"></Config>
+                <Config :cur-network="currentNetworkConfig" :config-invalid="!currentNetworkConfig"
+                    @run-network="saveAndRunNewNetwork"></Config>
             </div>
 
             <!-- Network Status (for running networks) -->

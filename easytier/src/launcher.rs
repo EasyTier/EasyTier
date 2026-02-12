@@ -16,16 +16,20 @@ use crate::{
 };
 use anyhow::Context;
 use chrono::{DateTime, Local};
-use std::net::SocketAddr;
 use std::{
     collections::VecDeque,
-    sync::{atomic::AtomicBool, Arc, RwLock},
+    net::SocketAddr,
+    sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
 };
-use tokio::{sync::broadcast, task::JoinSet};
+use tokio::{
+    sync::{broadcast, mpsc},
+    task::JoinSet,
+};
 
 pub type MyNodeInfo = crate::proto::api::manage::MyNodeInfo;
 
 type ArcMutApiService = Arc<RwLock<Option<Arc<dyn InstanceRpcService>>>>;
+type TunFd = Option<i32>;
 
 #[derive(serde::Serialize, Clone)]
 pub struct Event {
@@ -35,7 +39,7 @@ pub struct Event {
 
 struct EasyTierData {
     events: RwLock<VecDeque<Event>>,
-    tun_fd: Arc<RwLock<Option<i32>>>,
+    tun_fd: (mpsc::Sender<TunFd>, Mutex<Option<mpsc::Receiver<TunFd>>>),
     event_subscriber: RwLock<broadcast::Sender<GlobalCtxEvent>>,
     instance_stop_notifier: Arc<tokio::sync::Notify>,
 }
@@ -43,10 +47,11 @@ struct EasyTierData {
 impl Default for EasyTierData {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(16);
+        let (sender, receiver) = mpsc::channel(16);
         Self {
             event_subscriber: RwLock::new(tx),
             events: RwLock::new(VecDeque::new()),
-            tun_fd: Arc::new(RwLock::new(None)),
+            tun_fd: (sender, Mutex::new(Some(receiver))),
             instance_stop_notifier: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -88,8 +93,8 @@ impl EasyTierLauncher {
         }
     }
 
-    #[cfg(any(target_os = "android", target_env = "ohos"))]
-    async fn run_routine_for_android(
+    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    async fn run_routine_for_mobile(
         instance: &Instance,
         data: &EasyTierData,
         tasks: &mut JoinSet<()>,
@@ -98,26 +103,21 @@ impl EasyTierLauncher {
         let peer_mgr = instance.get_peer_manager();
         let nic_ctx = instance.get_nic_ctx();
         let peer_packet_receiver = instance.get_peer_packet_receiver();
-        let arc_tun_fd = data.tun_fd.clone();
+        let mut tun_fd_receiver = data.tun_fd.1.lock().unwrap().take().unwrap();
 
         tasks.spawn(async move {
-            let mut old_tun_fd = arc_tun_fd.read().unwrap().clone();
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                let tun_fd = arc_tun_fd.read().unwrap().clone();
-                if tun_fd != old_tun_fd && tun_fd.is_some() {
-                    let res = Instance::setup_nic_ctx_for_android(
-                        nic_ctx.clone(),
-                        global_ctx.clone(),
-                        peer_mgr.clone(),
-                        peer_packet_receiver.clone(),
-                        tun_fd.unwrap(),
-                    )
-                    .await;
-                    if res.is_ok() {
-                        old_tun_fd = tun_fd;
-                    }
-                }
+                let Some(tun_fd) = tun_fd_receiver.recv().await.flatten() else {
+                    return;
+                };
+                let res = Instance::setup_nic_ctx_for_mobile(
+                    nic_ctx.clone(),
+                    global_ctx.clone(),
+                    peer_mgr.clone(),
+                    peer_packet_receiver.clone(),
+                    tun_fd,
+                )
+                .await;
             }
         });
     }
@@ -152,8 +152,8 @@ impl EasyTierLauncher {
             }
         });
 
-        #[cfg(any(target_os = "android", target_env = "ohos"))]
-        Self::run_routine_for_android(&instance, &data, &mut tasks).await;
+        #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+        Self::run_routine_for_mobile(&instance, &data, &mut tasks).await;
 
         instance.run().await?;
 
@@ -370,6 +370,7 @@ impl NetworkInstance {
                     .map(|s| s.parse::<url::Url>().unwrap().into())
                     .collect(),
                 vpn_portal_cfg,
+                peer_id: my_info.peer_id,
             }),
             events: launcher
                 .get_events()
@@ -395,8 +396,14 @@ impl NetworkInstance {
 
     pub fn set_tun_fd(&mut self, tun_fd: i32) {
         if let Some(launcher) = self.launcher.as_ref() {
-            launcher.data.tun_fd.write().unwrap().replace(tun_fd);
+            let _ = launcher.data.tun_fd.0.blocking_send(Some(tun_fd));
         }
+    }
+
+    pub fn get_tun_fd_sender(&self) -> Option<mpsc::Sender<TunFd>> {
+        self.launcher
+            .as_ref()
+            .map(|launcher| launcher.data.tun_fd.0.clone())
     }
 
     pub fn start(&mut self) -> Result<EventBusSubscriber, anyhow::Error> {
@@ -522,6 +529,7 @@ impl NetworkConfig {
                     uri: public_server_url.parse().with_context(|| {
                         format!("failed to parse public server uri: {}", public_server_url)
                     })?,
+                    peer_public_key: None,
                 }]);
             }
             NetworkingMethod::Manual => {
@@ -534,6 +542,7 @@ impl NetworkConfig {
                         uri: peer_url
                             .parse()
                             .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
+                        peer_public_key: None,
                     });
                 }
 
@@ -659,6 +668,8 @@ impl NetworkConfig {
             ));
         }
 
+        cfg.set_secure_mode(self.secure_mode.clone());
+
         let mut flags = gen_default_flags();
         if let Some(latency_first) = self.latency_first {
             flags.latency_first = latency_first;
@@ -690,10 +701,6 @@ impl NetworkConfig {
 
         if let Some(disable_quic_input) = self.disable_quic_input {
             flags.disable_quic_input = disable_quic_input;
-        }
-
-        if let Some(quic_listen_port) = self.quic_listen_port {
-            flags.quic_listen_port = quic_listen_port as u32;
         }
 
         if let Some(disable_p2p) = self.disable_p2p {
@@ -738,6 +745,10 @@ impl NetworkConfig {
             } else {
                 flags.relay_network_whitelist = "".to_string();
             }
+        }
+
+        if let Some(disable_tcp_hole_punching) = self.disable_tcp_hole_punching {
+            flags.disable_tcp_hole_punching = disable_tcp_hole_punching;
         }
 
         if let Some(disable_udp_hole_punching) = self.disable_udp_hole_punching {
@@ -879,6 +890,8 @@ impl NetworkConfig {
             result.mapped_listeners = mapped_listeners.iter().map(|l| l.to_string()).collect();
         }
 
+        result.secure_mode = config.get_secure_mode();
+
         let flags = config.get_flags();
         result.latency_first = Some(flags.latency_first);
         result.dev_name = Some(flags.dev_name.clone());
@@ -888,7 +901,6 @@ impl NetworkConfig {
         result.disable_kcp_input = Some(flags.disable_kcp_input);
         result.enable_quic_proxy = Some(flags.enable_quic_proxy);
         result.disable_quic_input = Some(flags.disable_quic_input);
-        result.quic_listen_port = Some(flags.quic_listen_port as i32);
         result.disable_p2p = Some(flags.disable_p2p);
         result.p2p_only = Some(flags.p2p_only);
         result.bind_device = Some(flags.bind_device);
@@ -898,19 +910,26 @@ impl NetworkConfig {
         result.multi_thread = Some(flags.multi_thread);
         result.proxy_forward_by_system = Some(flags.proxy_forward_by_system);
         result.disable_encryption = Some(!flags.enable_encryption);
+        result.disable_tcp_hole_punching = Some(flags.disable_tcp_hole_punching);
         result.disable_udp_hole_punching = Some(flags.disable_udp_hole_punching);
         result.disable_sym_hole_punching = Some(flags.disable_sym_hole_punching);
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
 
-        if !flags.relay_network_whitelist.is_empty() && flags.relay_network_whitelist != "*" {
+        if flags.relay_network_whitelist == "*" {
+            result.enable_relay_network_whitelist = Some(false);
+        } else {
             result.enable_relay_network_whitelist = Some(true);
-            result.relay_network_whitelist = flags
-                .relay_network_whitelist
-                .split_whitespace()
-                .map(|s| s.to_string())
-                .collect();
+            if flags.relay_network_whitelist.is_empty() {
+                result.relay_network_whitelist = vec![];
+            } else {
+                result.relay_network_whitelist = flags
+                    .relay_network_whitelist
+                    .split_whitespace()
+                    .map(|s| s.to_string())
+                    .collect();
+            }
         }
 
         Ok(result)
@@ -919,7 +938,7 @@ impl NetworkConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::common::config::ConfigLoader;
+    use crate::{common::config::ConfigLoader, proto::common::SecureModeConfig};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -993,7 +1012,10 @@ mod tests {
                 let uri = format!("{}://127.0.0.1:{}", protocol, port)
                     .parse()
                     .unwrap();
-                peers.push(crate::common::config::PeerConfig { uri });
+                peers.push(crate::common::config::PeerConfig {
+                    uri,
+                    peer_public_key: None,
+                });
             }
             config.set_peers(peers);
 
@@ -1115,6 +1137,14 @@ mod tests {
                 config.set_mapped_listeners(Some(mapped_listeners));
             }
 
+            if rng.gen_bool(0.3) {
+                config.set_secure_mode(Some(SecureModeConfig {
+                    enabled: true,
+                    local_private_key: None,
+                    local_public_key: None,
+                }));
+            }
+
             if rng.gen_bool(0.9) {
                 let mut flags = crate::common::config::gen_default_flags();
                 flags.latency_first = rng.gen_bool(0.5);
@@ -1134,6 +1164,7 @@ mod tests {
                 flags.multi_thread = rng.gen_bool(0.7);
                 flags.proxy_forward_by_system = rng.gen_bool(0.3);
                 flags.enable_encryption = rng.gen_bool(0.8);
+                flags.disable_tcp_hole_punching = rng.gen_bool(0.2);
                 flags.disable_udp_hole_punching = rng.gen_bool(0.2);
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);

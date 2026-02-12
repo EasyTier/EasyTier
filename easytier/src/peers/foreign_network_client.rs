@@ -48,7 +48,7 @@ impl ForeignNetworkClient {
     }
 
     pub async fn list_public_peers(&self) -> Vec<PeerId> {
-        self.peer_map.list_peers().await
+        self.peer_map.list_peers()
     }
 
     pub fn get_next_hop(&self, peer_id: PeerId) -> Option<PeerId> {

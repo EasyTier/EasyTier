@@ -14,7 +14,7 @@ use crate::{
     instance::dns_server::DEFAULT_ET_DNS_ZONE,
     proto::{
         acl::Acl,
-        common::{CompressionAlgoPb, PortForwardConfigPb, SocketType},
+        common::{CompressionAlgoPb, PortForwardConfigPb, SecureModeConfig, SocketType},
     },
     tunnel::generate_digest_from_str,
 };
@@ -24,6 +24,7 @@ use super::env_parser;
 pub type Flags = crate::proto::common::FlagsInConfig;
 
 pub fn gen_default_flags() -> Flags {
+    #[allow(deprecated)]
     Flags {
         default_protocol: "tcp".to_string(),
         dev_name: "".to_string(),
@@ -39,6 +40,7 @@ pub fn gen_default_flags() -> Flags {
         disable_p2p: false,
         p2p_only: false,
         relay_all_peer_rpc: false,
+        disable_tcp_hole_punching: false,
         disable_udp_hole_punching: false,
         multi_thread: true,
         data_compress_algo: CompressionAlgoPb::None.into(),
@@ -51,12 +53,15 @@ pub fn gen_default_flags() -> Flags {
         private_mode: false,
         enable_quic_proxy: false,
         disable_quic_input: false,
-        quic_listen_port: 0,
+        disable_relay_quic: false,
+        enable_relay_foreign_network_quic: false,
         foreign_relay_bps_limit: u64::MAX,
         multi_thread_count: 2,
         encryption_algorithm: "aes-gcm".to_string(),
         disable_sym_hole_punching: false,
         tld_dns_zone: DEFAULT_ET_DNS_ZONE.to_string(),
+
+        quic_listen_port: u32::MAX,
     }
 }
 
@@ -208,6 +213,9 @@ pub trait ConfigLoader: Send + Sync {
     fn get_stun_servers_v6(&self) -> Option<Vec<String>>;
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>);
 
+    fn get_secure_mode(&self) -> Option<SecureModeConfig>;
+    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
+
     fn dump(&self) -> String;
 }
 
@@ -299,6 +307,7 @@ impl Default for NetworkIdentity {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct PeerConfig {
     pub uri: url::Url,
+    pub peer_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
@@ -405,6 +414,8 @@ struct Config {
     socks5_proxy: Option<url::Url>,
 
     port_forward: Option<Vec<PortForwardConfig>>,
+
+    secure_mode: Option<SecureModeConfig>,
 
     flags: Option<serde_json::Map<String, serde_json::Value>>,
 
@@ -625,12 +636,13 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn get_id(&self) -> uuid::Uuid {
         let mut locked_config = self.config.lock().unwrap();
-        if locked_config.instance_id.is_none() {
-            let id = uuid::Uuid::new_v4();
-            locked_config.instance_id = Some(id);
-            id
-        } else {
-            *locked_config.instance_id.as_ref().unwrap()
+        match locked_config.instance_id {
+            Some(id) => id,
+            None => {
+                let id = uuid::Uuid::new_v4();
+                locked_config.instance_id = Some(id);
+                id
+            }
         }
     }
 
@@ -799,6 +811,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_stun_servers_v6(&self, servers: Option<Vec<String>>) {
         self.config.lock().unwrap().stun_servers_v6 = servers;
+    }
+
+    fn get_secure_mode(&self) -> Option<SecureModeConfig> {
+        self.config.lock().unwrap().secure_mode.clone()
+    }
+
+    fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) {
+        self.config.lock().unwrap().secure_mode = secure_mode;
     }
 
     fn dump(&self) -> String {
@@ -1569,7 +1589,6 @@ enable_ipv6 = ${ENABLE_IPV6}
     async fn test_numeric_type_env_vars() {
         // 设置数字类型的环境变量
         std::env::set_var("MTU_VALUE", "1400");
-        std::env::set_var("QUIC_PORT", "8080");
         std::env::set_var("THREAD_COUNT", "4");
 
         let mut temp_file = NamedTempFile::new().unwrap();
@@ -1582,7 +1601,6 @@ network_secret = "secret"
 
 [flags]
 mtu = ${MTU_VALUE}
-quic_listen_port = ${QUIC_PORT}
 multi_thread_count = ${THREAD_COUNT}
 "#;
         temp_file.write_all(config_content.as_bytes()).unwrap();
@@ -1597,10 +1615,6 @@ multi_thread_count = ${THREAD_COUNT}
         let flags = config.get_flags();
         assert_eq!(flags.mtu, 1400, "mtu should be 1400");
         assert_eq!(
-            flags.quic_listen_port, 8080,
-            "quic_listen_port should be 8080"
-        );
-        assert_eq!(
             flags.multi_thread_count, 4,
             "multi_thread_count should be 4"
         );
@@ -1611,7 +1625,6 @@ multi_thread_count = ${THREAD_COUNT}
 
         // 清理
         std::env::remove_var("MTU_VALUE");
-        std::env::remove_var("QUIC_PORT");
         std::env::remove_var("THREAD_COUNT");
     }
 

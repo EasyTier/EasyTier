@@ -634,22 +634,7 @@ pub async fn subnet_proxy_three_node_test(
         subnet_proxy_test_tcp(listen_ip, target_ip).await;
         subnet_proxy_test_udp(listen_ip, target_ip).await;
     }
-
-    if enable_kcp_proxy && !disable_kcp_input {
-        let metrics = insts[0]
-            .get_global_ctx()
-            .stats_manager()
-            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
-        assert_eq!(metrics.len(), 3);
-        for metric in metrics {
-            assert_eq!(1, metric.value);
-            assert!(metric.labels.labels().iter().any(|l| {
-                let t =
-                    LabelType::Protocol(TcpProxyEntryTransportType::Kcp.as_str_name().to_string());
-                t.key() == l.key && t.value() == l.value
-            }));
-        }
-    } else if enable_quic_proxy && !disable_quic_input {
+    if enable_quic_proxy && !disable_quic_input {
         let metrics = insts[0]
             .get_global_ctx()
             .stats_manager()
@@ -660,6 +645,20 @@ pub async fn subnet_proxy_three_node_test(
             assert!(metric.labels.labels().iter().any(|l| {
                 let t =
                     LabelType::Protocol(TcpProxyEntryTransportType::Quic.as_str_name().to_string());
+                t.key() == l.key && t.value() == l.value
+            }));
+        }
+    } else if enable_kcp_proxy && !disable_kcp_input {
+        let metrics = insts[0]
+            .get_global_ctx()
+            .stats_manager()
+            .get_metrics_by_prefix(&MetricName::TcpProxyConnect.to_string());
+        assert_eq!(metrics.len(), 3);
+        for metric in metrics {
+            assert_eq!(1, metric.value);
+            assert!(metric.labels.labels().iter().any(|l| {
+                let t =
+                    LabelType::Protocol(TcpProxyEntryTransportType::Kcp.as_str_name().to_string());
                 t.key() == l.key && t.value() == l.value
             }));
         }
@@ -1476,30 +1475,124 @@ pub async fn relay_bps_limit_test(#[values(100, 200, 400, 800)] bps_limit: u64) 
 
     let bps = bps as u64 / 1024;
     // allow 50kb jitter
-    assert!(bps >= bps_limit - 50 && bps <= bps_limit + 50);
+    assert!(
+        bps >= bps_limit - 50 && bps <= bps_limit + 50,
+        "bps: {}, bps_limit: {}",
+        bps,
+        bps_limit
+    );
 
     drop_insts(insts).await;
 }
 
+async fn assert_try_direct_connect_err<C>(inst: &Instance, connector: C)
+where
+    C: crate::tunnel::TunnelConnector + std::fmt::Debug,
+{
+    let ret = tokio::time::timeout(
+        Duration::from_millis(100),
+        inst.get_peer_manager().try_direct_connect(connector),
+    )
+    .await;
+
+    assert!(matches!(ret, Err(_) | Ok(Err(_))));
+}
+
+use std::fs;
+use std::io;
+
+fn print_all_fds() -> io::Result<()> {
+    let fd_dir = "/proc/self/fd";
+
+    // 读取 /proc/self/fd 目录中的所有条目
+    for entry in fs::read_dir(fd_dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let fd_str = file_name.to_string_lossy();
+
+        // 尝试解析为数字（跳过 . 和 ..）
+        if let Ok(fd_num) = fd_str.parse::<i32>() {
+            // 获取文件描述符指向的文件路径（如果可能）
+            let target_path = format!("{}/{}", fd_dir, fd_num);
+            match fs::read_link(&target_path) {
+                Ok(target) => {
+                    println!("FD {}: {}", fd_num, target.to_string_lossy());
+                }
+                Err(e) => {
+                    println!("FD {}: (unreadable: {})", fd_num, e);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[rstest::rstest]
+#[serial_test::serial]
 #[tokio::test]
-async fn avoid_tunnel_loop_back_to_virtual_network() {
-    let insts = init_three_node("udp").await;
+async fn avoid_tunnel_loop_back_to_virtual_network(
+    #[values(true, false)] no_tun: bool,
+    #[values(true, false)] enable_kcp_proxy: bool,
+    #[values(true, false)] enable_quic_proxy: bool,
+) {
+    if enable_kcp_proxy && enable_quic_proxy {
+        return;
+    }
 
-    let tcp_connector = TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap());
-    insts[0]
-        .get_peer_manager()
-        .try_direct_connect(tcp_connector)
-        .await
-        .unwrap_err();
+    let insts = init_three_node_ex(
+        "udp",
+        |cfg| {
+            if matches!(cfg.get_inst_name().as_str(), "inst2" | "inst3") {
+                let mut flags = cfg.get_flags();
+                flags.no_tun = no_tun;
+                cfg.set_flags(flags);
+            }
 
-    let udp_connector = UdpTunnelConnector::new("udp://10.144.144.3:11010".parse().unwrap());
-    insts[0]
-        .get_peer_manager()
-        .try_direct_connect(udp_connector)
-        .await
-        .unwrap_err();
+            if cfg.get_inst_name().as_str() == "inst1" {
+                let mut flags = cfg.get_flags();
+                flags.enable_kcp_proxy = enable_kcp_proxy;
+                flags.enable_quic_proxy = enable_quic_proxy;
+                cfg.set_flags(flags);
+            }
+
+            if cfg.get_inst_name().as_str() == "inst3" {
+                cfg.add_proxy_cidr("10.1.2.0/24".parse().unwrap(), None)
+                    .unwrap();
+            }
+
+            cfg
+        },
+        false,
+    )
+    .await;
+
+    assert_try_direct_connect_err(
+        &insts[0],
+        TcpTunnelConnector::new("tcp://10.144.144.2:11010".parse().unwrap()),
+    )
+    .await;
+
+    assert_try_direct_connect_err(
+        &insts[0],
+        UdpTunnelConnector::new("udp://10.144.144.3:11010".parse().unwrap()),
+    )
+    .await;
+
+    assert_try_direct_connect_err(
+        &insts[0],
+        TcpTunnelConnector::new("tcp://10.1.2.3:11010".parse().unwrap()),
+    )
+    .await;
+
+    assert_try_direct_connect_err(
+        &insts[0],
+        UdpTunnelConnector::new("udp://10.1.2.3:11010".parse().unwrap()),
+    )
+    .await;
 
     drop_insts(insts).await;
+
+    let _ = print_all_fds();
 }
 
 #[rstest::rstest]
@@ -2468,12 +2561,21 @@ pub async fn acl_group_self_test(
 #[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn whitelist_test(#[values("tcp", "udp")] protocol: &str) {
+pub async fn whitelist_test(
+    #[values("tcp", "udp")] protocol: &str,
+    #[values(true, false)] test_outbound_allow_list: bool,
+) {
     let port = 44553;
+    let acl_configured_inst = if test_outbound_allow_list {
+        "inst1"
+    } else {
+        "inst3"
+    };
     let insts = init_three_node_ex(
         protocol,
         move |cfg| {
-            if cfg.get_inst_name() == "inst3" {
+            let port = if test_outbound_allow_list { 0 } else { port };
+            if cfg.get_inst_name() == acl_configured_inst {
                 if protocol == "tcp" {
                     cfg.set_tcp_whitelist(vec![format!("{}", port)]);
                 } else if protocol == "udp" {
@@ -2534,6 +2636,10 @@ pub async fn whitelist_test(#[values("tcp", "udp")] protocol: &str) {
         )
         .await
         .unwrap_or_else(|_| panic!("{} should be allowed", p));
+    }
+
+    if test_outbound_allow_list {
+        return;
     }
 
     // test other port

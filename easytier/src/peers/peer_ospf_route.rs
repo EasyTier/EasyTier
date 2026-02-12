@@ -123,6 +123,7 @@ fn is_foreign_network_info_newer(
 }
 
 impl RoutePeerInfo {
+    #[allow(deprecated)]
     pub fn new() -> Self {
         Self {
             peer_id: 0,
@@ -131,7 +132,8 @@ impl RoutePeerInfo {
             ipv4_addr: None,
             proxy_cidrs: Vec::new(),
             hostname: None,
-            udp_stun_info: 0,
+            udp_nat_type: 0,
+            tcp_nat_type: 0,
             // ensure this is updated when the peer_infos/conn_info/foreign_network lock is acquired.
             // else we may assign a older timestamp than iterate time.
             last_update: None,
@@ -140,9 +142,10 @@ impl RoutePeerInfo {
             feature_flag: None,
             peer_route_id: 0,
             network_length: 24,
-            quic_port: None,
             ipv6_addr: None,
             groups: Vec::new(),
+
+            quic_port: None,
         }
     }
 
@@ -160,6 +163,7 @@ impl RoutePeerInfo {
         peer_route_id: u64,
         global_ctx: &ArcGlobalCtx,
     ) -> Self {
+        let stun_info = global_ctx.get_stun_info_collector().get_stun_info();
         Self {
             peer_id: my_peer_id,
             inst_id: Some(global_ctx.get_id().into()),
@@ -174,10 +178,8 @@ impl RoutePeerInfo {
                 .map(|x| x.to_string())
                 .collect(),
             hostname: Some(global_ctx.get_hostname()),
-            udp_stun_info: global_ctx
-                .get_stun_info_collector()
-                .get_stun_info()
-                .udp_nat_type,
+            udp_nat_type: stun_info.udp_nat_type,
+            tcp_nat_type: stun_info.tcp_nat_type,
 
             // these two fields should not participate in comparison.
             last_update: None,
@@ -191,10 +193,11 @@ impl RoutePeerInfo {
                 .map(|x| x.network_length() as u32)
                 .unwrap_or(24),
 
-            quic_port: global_ctx.get_quic_proxy_port().map(|x| x as u32),
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
+
+            ..Default::default()
         }
     }
 
@@ -251,8 +254,11 @@ impl From<RoutePeerInfo> for crate::proto::api::instance::Route {
             hostname: val.hostname.unwrap_or_default(),
             stun_info: {
                 let mut stun_info = StunInfo::default();
-                if let Ok(udp_nat_type) = NatType::try_from(val.udp_stun_info) {
+                if let Ok(udp_nat_type) = NatType::try_from(val.udp_nat_type) {
                     stun_info.set_udp_nat_type(udp_nat_type);
+                }
+                if let Ok(tcp_nat_type) = NatType::try_from(val.tcp_nat_type) {
+                    stun_info.set_tcp_nat_type(tcp_nat_type);
                 }
                 Some(stun_info)
             },
@@ -527,7 +533,7 @@ impl SyncedRouteInfo {
         for (peer_idx, peer_id_version) in conn_bitmap.peer_ids.iter().enumerate() {
             let connceted_peers = conn_bitmap.get_connected_peers(peer_idx);
             self.fill_empty_peer_info(&connceted_peers);
-            need_inc_version = self.update_conn_info_one_peer(peer_id_version, connceted_peers);
+            need_inc_version |= self.update_conn_info_one_peer(peer_id_version, connceted_peers);
         }
         if need_inc_version {
             self.version.inc();
@@ -545,7 +551,7 @@ impl SyncedRouteInfo {
                 peer_conn_info.connected_peer_ids.iter().copied().collect();
 
             self.fill_empty_peer_info(&connected_peers);
-            need_inc_version = self.update_conn_info_one_peer(&peer_id_version, connected_peers);
+            need_inc_version |= self.update_conn_info_one_peer(&peer_id_version, connected_peers);
         }
         if need_inc_version {
             self.version.inc();
@@ -869,10 +875,10 @@ impl RouteTable {
         self.get_next_hop(peer_id).is_some()
     }
 
-    fn get_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
+    fn get_udp_nat_type(&self, peer_id: PeerId) -> Option<NatType> {
         self.peer_infos
             .get(&peer_id)
-            .map(|x| NatType::try_from(x.udp_stun_info).unwrap_or_default())
+            .map(|x| NatType::try_from(x.udp_nat_type).unwrap_or_default())
     }
 
     // return graph and start node index (node of my peer id).
@@ -2208,54 +2214,55 @@ impl PeerRouteServiceImpl {
             ret, sync_route_info_req, session, self.global_ctx.network, next_last_sync_succ_timestamp
         );
 
-        if let Err(e) = &ret {
-            tracing::error!(
-                ?ret,
-                ?my_peer_id,
-                ?dst_peer_id,
-                ?e,
-                "sync_route_info failed"
-            );
-            session
-                .need_sync_initiator_info
-                .store(true, Ordering::Relaxed);
-        } else {
-            let resp = ret.as_ref().unwrap();
-            if resp.error.is_some() {
-                let err = resp.error.unwrap();
-                if err == Error::DuplicatePeerId as i32 {
-                    if !self.global_ctx.get_feature_flags().is_public_server {
-                        panic!("duplicate peer id");
+        match ret.as_ref() {
+            Err(e) => {
+                tracing::error!(
+                    ?ret,
+                    ?my_peer_id,
+                    ?dst_peer_id,
+                    ?e,
+                    "sync_route_info failed"
+                );
+                session
+                    .need_sync_initiator_info
+                    .store(true, Ordering::Relaxed);
+            }
+            Ok(resp) => {
+                if let Some(err) = resp.error {
+                    if err == Error::DuplicatePeerId as i32 {
+                        if !self.global_ctx.get_feature_flags().is_public_server {
+                            panic!("duplicate peer id");
+                        }
+                    } else {
+                        tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
+                        session
+                            .need_sync_initiator_info
+                            .store(true, Ordering::Relaxed);
                     }
                 } else {
-                    tracing::error!(?ret, ?my_peer_id, ?dst_peer_id, "sync_route_info failed");
+                    session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
+
                     session
-                        .need_sync_initiator_info
-                        .store(true, Ordering::Relaxed);
+                        .dst_is_initiator
+                        .store(resp.is_initiator, Ordering::Relaxed);
+
+                    session.update_dst_session_id(resp.session_id);
+
+                    if let Some(peer_infos) = &peer_infos {
+                        session.update_dst_saved_peer_info_version(peer_infos, dst_peer_id);
+                    }
+
+                    if let Some(conn_info) = &conn_info {
+                        session.update_dst_saved_conn_info_version(conn_info, dst_peer_id);
+                    }
+
+                    if let Some(foreign_network) = &foreign_network {
+                        session
+                            .update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
+                    }
+
+                    session.update_last_sync_succ_timestamp(next_last_sync_succ_timestamp);
                 }
-            } else {
-                session.rpc_tx_count.fetch_add(1, Ordering::Relaxed);
-
-                session
-                    .dst_is_initiator
-                    .store(resp.is_initiator, Ordering::Relaxed);
-
-                session.update_dst_session_id(resp.session_id);
-
-                if let Some(peer_infos) = &peer_infos {
-                    session.update_dst_saved_peer_info_version(peer_infos, dst_peer_id);
-                }
-
-                // Update session saved versions based on the connection info format used
-                if let Some(conn_info) = &conn_info {
-                    session.update_dst_saved_conn_info_version(conn_info, dst_peer_id);
-                }
-
-                if let Some(foreign_network) = &foreign_network {
-                    session.update_dst_saved_foreign_network_version(foreign_network, dst_peer_id);
-                }
-
-                session.update_last_sync_succ_timestamp(next_last_sync_succ_timestamp);
             }
         }
         false
@@ -2516,7 +2523,7 @@ impl RouteSessionManager {
             let mut new_initiator_dst = None;
             // if any peer has NoPAT or OpenInternet stun type, we should use it.
             for peer_id in initiator_candidates.iter() {
-                let Some(nat_type) = service_impl.route_table.get_nat_type(*peer_id) else {
+                let Some(nat_type) = service_impl.route_table.get_udp_nat_type(*peer_id) else {
                     continue;
                 };
                 if nat_type == NatType::NoPat || nat_type == NatType::OpenInternet {
@@ -3286,7 +3293,6 @@ mod tests {
                 routable_peer
                     .get_peer_map()
                     .list_peers()
-                    .await
                     .into_iter()
                     .collect::<BTreeSet<PeerId>>()
             );
