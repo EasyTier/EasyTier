@@ -10,38 +10,45 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          targets: x86_64-pc-windows-msvc
 
-      - name: Build
+      - name: Build x86 DLL
+        run: cargo build --release -p easytier-ffi --target i686-pc-windows-msvc
+
+      - name: Build x64 DLL
         run: cargo build --release -p easytier-ffi --target x86_64-pc-windows-msvc
 
-      - name: Verify DLL exists
-        run: dir target\x86_64-pc-windows-msvc\release
+      - name: Package DLLs
+        run: |
+          mkdir release
+          copy target\i686-pc-windows-msvc\release\easytier_ffi.dll release\easytier_ffi_x86.dll
+          copy target\x86_64-pc-windows-msvc\release\easytier_ffi.dll release\easytier_ffi_x64.dll
+          dir release
 
-      - name: Upload DLL Artifact
+      - name: Upload DLLs as Artifact
         uses: actions/upload-artifact@v4
         with:
           name: easytier-ffi-dll
-          path: target/x86_64-pc-windows-msvc/release/*.dll
+          path: release/*.dll
 
-      - name: Create Release and Upload DLL
+      - name: Create GitHub Release and Upload DLLs
         uses: softprops/action-gh-release@v2
         with:
           name: EasyTier FFI ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          files: target/x86_64-pc-windows-msvc/release/*.dll
+          files: release/*.dll
           body: |
             <div align="center">
 
             # 🚀 EasyTier FFI ${{ github.ref_name }}
 
-            ![Platform](https://img.shields.io/badge/platform-Windows%20x86_64-blue)
+            ![Platform](https://img.shields.io/badge/platform-Windows-blue)
             ![Rust](https://img.shields.io/badge/rust-stable-orange)
             ![Build](https://img.shields.io/badge/build-release-success)
             ![License](https://img.shields.io/badge/license-MIT-green)
@@ -56,7 +63,7 @@ jobs:
             |------|--------|
             | Version | `${{ github.ref_name }}` |
             | Commit | `${{ github.sha }}` |
-            | Target | x86_64-pc-windows-msvc |
+            | Targets | x86, x64 |
             | Profile | release |
             | CI | GitHub Actions |
 
@@ -64,19 +71,7 @@ jobs:
 
             ## 📥 Download
 
-            👉 Download the attached **`easytier_ffi.dll`** below.
-
-            ---
-
-            ## 🧩 Integration
-
-            This library is compiled as `cdylib` and can be integrated with:
-
-            - C / C++
-            - C#
-            - Go (via cgo)
-            - Python (ctypes)
-            - Any FFI-compatible language
+            👉 Download attached **`easytier_ffi_x86.dll`** and **`easytier_ffi_x64.dll`**
 
             ---
 
@@ -85,10 +80,3 @@ jobs:
             - Built in official GitHub Windows environment
             - Fully optimized release build
             - Generated automatically from tag `${{ github.ref_name }}`
-
-            ---
-
-            ⭐ If this project helps you, please consider giving it a star!
-
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
