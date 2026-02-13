@@ -52,6 +52,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+          
+      - name: Install Protobuf
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - name: Build
         run: cargo build --release -p easytier-ffi --target x86_64-unknown-linux-gnu
@@ -81,6 +84,9 @@ jobs:
           targets: |
             x86_64-apple-darwin
             aarch64-apple-darwin
+            
+      - name: Install Protobuf
+        run: brew install protobuf
 
       - name: Build Intel
         run: cargo build --release -p easytier-ffi --target x86_64-apple-darwin
