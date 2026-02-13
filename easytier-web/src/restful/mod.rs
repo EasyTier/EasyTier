@@ -7,7 +7,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use axum::http::StatusCode;
 use axum::routing::post;
-use axum::{extract::State, routing::get, Json, Router};
+use axum::{extract::State, routing::get, Extension, Json, Router};
 use axum_login::tower_sessions::{ExpiredDeletion, SessionManagerLayer};
 use axum_login::{login_required, AuthManagerLayerBuilder, AuthUser, AuthzBackend};
 use axum_messages::MessagesManagerLayer;
@@ -37,6 +37,7 @@ struct Assets;
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
+    registration_disabled: bool,
     db: Db,
 
     // serve_task: Option<ScopedTask<()>>,
@@ -104,6 +105,7 @@ impl RestfulServer {
         client_mgr: Arc<ClientManager>,
         db: Db,
         web_router: Option<Router>,
+        registration_disabled: bool,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -112,6 +114,7 @@ impl RestfulServer {
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
+            registration_disabled,
             db,
             // serve_task: None,
             // delete_task: None,
@@ -240,7 +243,9 @@ impl RestfulServer {
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
             .merge(NetworkApi::build_route())
             .route_layer(login_required!(Backend))
-            .merge(auth::router())
+            .merge(auth::router().layer(Extension(auth::FeatureFlags {
+                disable_registration: self.registration_disabled,
+            })))
             .with_state(self.client_mgr.clone())
             .route(
                 "/api/v1/generate-config",
