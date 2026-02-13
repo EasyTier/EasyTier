@@ -1,4 +1,4 @@
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
 mod darwin;
 #[cfg(target_os = "linux")]
 mod netlink;
@@ -144,14 +144,14 @@ impl IfConfiguerTrait for DummyIfConfiger {}
 #[cfg(target_os = "linux")]
 pub type IfConfiger = netlink::NetlinkIfConfiger;
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
 pub type IfConfiger = darwin::MacIfConfiger;
 
 #[cfg(target_os = "windows")]
 pub type IfConfiger = windows::WindowsIfConfiger;
 
 #[cfg(not(any(
-    target_os = "macos",
+    all(target_os = "macos", not(feature = "macos-ne")),
     target_os = "linux",
     target_os = "windows",
     target_os = "freebsd",

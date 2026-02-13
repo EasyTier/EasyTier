@@ -394,3 +394,5 @@ tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
+# For Network Extension on macOS
+macos-ne = []

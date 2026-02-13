@@ -523,7 +523,7 @@ impl VirtualNic {
             }
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -583,7 +583,7 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(any(target_os = "android", any(target_os = "ios", feature = "macos-ne"), target_env = "ohos"))]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
@@ -592,7 +592,7 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", feature = "macos-ne"))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -602,7 +602,7 @@ impl VirtualNic {
         config.close_fd_on_drop(false);
         config.up();
 
-        let has_packet_info = cfg!(target_os = "ios");
+        let has_packet_info = cfg!(any(target_os = "ios", feature = "macos-ne"));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
@@ -680,7 +680,7 @@ impl VirtualNic {
             self.ifcfg.set_mtu(ifname.as_str(), mtu_in_config).await?;
         }
 
-        let has_packet_info = cfg!(target_os = "macos");
+        let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -827,7 +827,7 @@ impl NicCtx {
         nic.remove_ip(None).await?;
         nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
             .await?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
         {
             nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
                 .await?;
@@ -841,7 +841,7 @@ impl NicCtx {
         nic.remove_ipv6(None).await?;
         nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
             .await?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
         {
             nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
                 .await?;
@@ -1134,7 +1134,7 @@ impl NicCtx {
                         let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
-                    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+                    #[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
                     {
                         // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
                         let _ = nic
@@ -1175,7 +1175,7 @@ impl NicCtx {
         Ok(())
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(any(target_os = "android", any(target_os = "ios", feature = "macos-ne"), target_env = "ohos"))]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
