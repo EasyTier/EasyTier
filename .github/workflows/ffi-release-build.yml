@@ -6,77 +6,133 @@ on:
       - "*"
 
 jobs:
-  release:
+
+  # ===============================
+  # Windows Build
+  # ===============================
+  build-windows:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          targets: |
+            i686-pc-windows-msvc
+            x86_64-pc-windows-msvc
 
-      - name: Build x86 DLL
+      - name: Build x86
         run: cargo build --release -p easytier-ffi --target i686-pc-windows-msvc
 
-      - name: Build x64 DLL
+      - name: Build x64
         run: cargo build --release -p easytier-ffi --target x86_64-pc-windows-msvc
 
-      - name: Package DLLs
+      - name: Package
         run: |
           mkdir release
-          copy target\i686-pc-windows-msvc\release\easytier_ffi.dll release\easytier_ffi_x86.dll
-          copy target\x86_64-pc-windows-msvc\release\easytier_ffi.dll release\easytier_ffi_x64.dll
-          dir release
+          copy target\i686-pc-windows-msvc\release\easytier_ffi.dll release\easytier_ffi_windows_x86.dll
+          copy target\x86_64-pc-windows-msvc\release\easytier_ffi.dll release\easytier_ffi_windows_x64.dll
 
-      - name: Upload DLLs as Artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: easytier-ffi-dll
+          name: windows-dll
           path: release/*.dll
 
-      - name: Create GitHub Release and Upload DLLs
+
+  # ===============================
+  # Linux Build
+  # ===============================
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build
+        run: cargo build --release -p easytier-ffi --target x86_64-unknown-linux-gnu
+
+      - name: Package
+        run: |
+          mkdir release
+          cp target/x86_64-unknown-linux-gnu/release/libeasytier_ffi.so release/libeasytier_ffi_linux_x64.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-so
+          path: release/*.so
+
+
+  # ===============================
+  # macOS Build
+  # ===============================
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: |
+            x86_64-apple-darwin
+            aarch64-apple-darwin
+
+      - name: Build Intel
+        run: cargo build --release -p easytier-ffi --target x86_64-apple-darwin
+
+      - name: Build ARM64
+        run: cargo build --release -p easytier-ffi --target aarch64-apple-darwin
+
+      - name: Package
+        run: |
+          mkdir release
+          cp target/x86_64-apple-darwin/release/libeasytier_ffi.dylib release/libeasytier_ffi_macos_x64.dylib
+          cp target/aarch64-apple-darwin/release/libeasytier_ffi.dylib release/libeasytier_ffi_macos_arm64.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dylib
+          path: release/*.dylib
+
+
+  # ===============================
+  # Create GitHub Release
+  # ===============================
+  release:
+    needs:
+      - build-windows
+      - build-linux
+      - build-macos
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect files
+        run: |
+          mkdir release
+          find artifacts -type f -exec cp {} release/ \;
+
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: EasyTier FFI ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-          files: release/*.dll
+          files: release/*
           body: |
-            <div align="center">
+            🚀 EasyTier FFI ${{ github.ref_name }}
 
-            # 🚀 EasyTier FFI ${{ github.ref_name }}
+            Supported Platforms:
+            - Windows x86 / x64
+            - Linux x64
+            - macOS Intel / ARM64
 
-            ![Platform](https://img.shields.io/badge/platform-Windows-blue)
-            ![Rust](https://img.shields.io/badge/rust-stable-orange)
-            ![Build](https://img.shields.io/badge/build-release-success)
-            ![License](https://img.shields.io/badge/license-MIT-green)
-
-            </div>
-
-            ---
-
-            ## 📦 Build Information
-
-            | Item | Value |
-            |------|--------|
-            | Version | `${{ github.ref_name }}` |
-            | Commit | `${{ github.sha }}` |
-            | Targets | x86, x64 |
-            | Profile | release |
-            | CI | GitHub Actions |
-
-            ---
-
-            ## 📥 Download
-
-            👉 Download attached **`easytier_ffi_x86.dll`** and **`easytier_ffi_x64.dll`**
-
-            ---
-
-            ## 🔒 Build Guarantee
-
-            - Built in official GitHub Windows environment
-            - Fully optimized release build
-            - Generated automatically from tag `${{ github.ref_name }}`
+            Built automatically via GitHub Actions.
