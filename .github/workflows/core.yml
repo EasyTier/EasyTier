@@ -3,8 +3,6 @@ name: EasyTier Core
 on:
   push:
     branches: ["develop", "main", "releases/**"]
-    tags:
-      - "*"
   pull_request:
     branches: ["develop", "main"]
 
