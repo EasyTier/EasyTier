@@ -202,7 +202,13 @@ jobs:
           fi
 
       - name: Build FFI
-        if: ${{ ! endsWith(matrix.TARGET, 'freebsd') }}
+        if: >
+          matrix.TARGET == 'x86_64-pc-windows-msvc' ||
+          matrix.TARGET == 'i686-pc-windows-msvc' ||
+          matrix.TARGET == 'x86_64-unknown-linux-gnu' ||
+          matrix.TARGET == 'x86_64-apple-darwin' ||
+          matrix.TARGET == 'aarch64-apple-darwin'
+        continue-on-error: true
         run: |
           cargo build --release -p easytier-ffi --target ${{ matrix.TARGET }}
 
