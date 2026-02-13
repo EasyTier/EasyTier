@@ -210,6 +210,10 @@ service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", 
 
 zstd = { version = "0.13", optional = true }
 
+# additional compression algorithms
+lz4_flex = { version = "0.11", optional = true }
+brotli = { version = "7.0", optional = true }
+
 kcp-sys = { git = "https://github.com/EasyTier/kcp-sys", rev = "94964794caaed5d388463137da59b97499619e5f", optional = true }
 
 prost-reflect = { version = "0.14.5", default-features = false, features = [
@@ -351,6 +355,8 @@ default = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lz4",
+    "brotli",
 ]
 full = [
     "websocket",
@@ -365,6 +371,8 @@ full = [
     "faketcp",
     "magic-dns",
     "zstd",
+    "lz4",
+    "brotli",
 ]
 wireguard = ["dep:boringtun", "dep:ring"]
 quic = ["dep:quinn", "dep:quinn-plaintext", "dep:rustls", "dep:rcgen"]
@@ -394,3 +402,5 @@ tracing = ["tokio/tracing", "dep:console-subscriber"]
 magic-dns = ["dep:hickory-client", "dep:hickory-server"]
 faketcp = ["dep:flume"]
 zstd = ["dep:zstd"]
+lz4 = ["dep:lz4_flex"]
+brotli = ["dep:brotli"]

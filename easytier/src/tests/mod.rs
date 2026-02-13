@@ -3,6 +3,9 @@ mod three_node;
 
 mod ipv6_test;
 
+#[cfg(feature = "zstd")]
+mod compress_tests;
+
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
 

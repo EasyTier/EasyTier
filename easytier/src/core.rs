@@ -10,9 +10,10 @@ use std::{
 use crate::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
-            ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
-            PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            get_avaliable_encrypt_methods, get_available_compress_methods, load_config_from_file,
+            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
+            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+            VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
     },
@@ -461,6 +462,7 @@ struct NetworkOptions {
         long,
         env = "ET_COMPRESSION",
         help = t!("core_clap.compression").to_string(),
+        value_parser = get_available_compress_methods()
     )]
     compression: Option<String>,
 
@@ -1027,10 +1029,16 @@ impl NetworkOptions {
         if let Some(compression) = &self.compression {
             f.data_compress_algo = match compression.as_str() {
                 "none" => CompressionAlgoPb::None,
+                #[cfg(feature = "zstd")]
                 "zstd" => CompressionAlgoPb::Zstd,
+                #[cfg(feature = "lz4")]
+                "lz4" => CompressionAlgoPb::Lz4,
+                #[cfg(feature = "brotli")]
+                "brotli" | "br" => CompressionAlgoPb::Brotli,
                 _ => panic!(
-                    "unknown compression algorithm: {}, supported: none, zstd",
-                    compression
+                    "unknown or unsupported compression algorithm: {}, supported: {:?}",
+                    compression,
+                    crate::common::config::get_available_compress_methods()
                 ),
             }
             .into();

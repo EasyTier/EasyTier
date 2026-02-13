@@ -99,6 +99,8 @@ enum CompressionAlgoPb {
   Invalid = 0;
   None = 1;
   Zstd = 2;
+  Lz4 = 3;
+  Brotli = 4;
 }
 
 message RpcCompressionInfo {

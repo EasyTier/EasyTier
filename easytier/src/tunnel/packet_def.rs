@@ -290,6 +290,10 @@ pub enum CompressorAlgo {
     None = 0,
     #[cfg(feature = "zstd")]
     ZstdDefault = 1,
+    #[cfg(feature = "lz4")]
+    Lz4 = 2,
+    #[cfg(feature = "brotli")]
+    Brotli = 3,
 }
 
 #[repr(C, packed)]
@@ -302,8 +306,13 @@ pub const COMPRESSOR_TAIL_SIZE: usize = std::mem::size_of::<CompressorTail>();
 impl CompressorTail {
     pub fn get_algo(&self) -> Option<CompressorAlgo> {
         match self.algo {
+            0 => Some(CompressorAlgo::None),
             #[cfg(feature = "zstd")]
             1 => Some(CompressorAlgo::ZstdDefault),
+            #[cfg(feature = "lz4")]
+            2 => Some(CompressorAlgo::Lz4),
+            #[cfg(feature = "brotli")]
+            3 => Some(CompressorAlgo::Brotli),
             _ => None,
         }
     }

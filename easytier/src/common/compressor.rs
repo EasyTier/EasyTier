@@ -1,4 +1,4 @@
-#[cfg(feature = "zstd")]
+#[cfg(any(feature = "zstd", feature = "brotli"))]
 use anyhow::Context;
 #[cfg(feature = "zstd")]
 use dashmap::DashMap;
@@ -53,6 +53,33 @@ impl DefaultCompressor {
                     )
                 })
             }),
+
+            #[cfg(feature = "lz4")]
+            CompressorAlgo::Lz4 => {
+                let compressed = lz4_flex::compress_prepend_size(data);
+                Ok(compressed)
+            }
+
+            #[cfg(feature = "brotli")]
+            CompressorAlgo::Brotli => {
+                // Use batch API instead of streaming API to ensure errors are properly returned
+                // CompressorWriter's Drop implementation ignores errors, which can cause data loss
+                let mut params = brotli::enc::BrotliEncoderParams::default();
+                params.quality = 6;  // quality (0-11, 6 is a good balance)
+                params.lgwin = 22;   // lgwin (window size, 22 is default)
+
+                let mut compressed = Vec::new();
+                let mut input = std::io::Cursor::new(data);
+                brotli::BrotliCompress(&mut input, &mut compressed, &params)
+                    .with_context(|| {
+                        format!(
+                            "Failed to compress data with algorithm: {:?}",
+                            compress_algo
+                        )
+                    })?;
+                Ok(compressed)
+            }
+
             CompressorAlgo::None => Ok(data.to_vec()),
         }
     }
@@ -85,6 +112,29 @@ impl DefaultCompressor {
                     compress_algo
                 ))
             }),
+
+            #[cfg(feature = "lz4")]
+            CompressorAlgo::Lz4 => {
+                lz4_flex::decompress_size_prepended(data).map_err(|e| {
+                    anyhow::anyhow!("Failed to decompress with LZ4: {:?}", e)
+                })
+            }
+
+            #[cfg(feature = "brotli")]
+            CompressorAlgo::Brotli => {
+                // Use batch API for consistency with compress and proper error handling
+                let mut decompressed = Vec::new();
+                let mut input = std::io::Cursor::new(data);
+                brotli::BrotliDecompress(&mut input, &mut decompressed)
+                    .with_context(|| {
+                        format!(
+                            "Failed to decompress data with algorithm: {:?}",
+                            compress_algo
+                        )
+                    })?;
+                Ok(decompressed)
+            }
+
             CompressorAlgo::None => Ok(data.to_vec()),
         }
     }
@@ -233,5 +283,210 @@ pub mod tests {
         compressor.decompress(&mut packet).await.unwrap();
         assert_eq!(packet.payload(), text);
         assert!(!packet.peer_manager_header().unwrap().is_compressed());
+    }
+
+    #[tokio::test]
+    async fn test_all_algorithms_roundtrip() {
+        let algorithms = vec![
+            CompressorAlgo::ZstdDefault,
+            #[cfg(feature = "lz4")]
+            CompressorAlgo::Lz4,
+            #[cfg(feature = "brotli")]
+            CompressorAlgo::Brotli,
+        ];
+
+        let text = b"Hello, this is a test message for compression algorithms! ".repeat(10);
+        let compressor = DefaultCompressor {};
+
+        for algo in algorithms {
+            let mut packet = ZCPacket::new_with_payload(&text);
+            packet.fill_peer_manager_hdr(0, 0, 0);
+
+            compressor.compress(&mut packet, algo).await.unwrap();
+
+            if packet.peer_manager_header().unwrap().is_compressed() {
+                compressor.decompress(&mut packet).await.unwrap();
+                assert_eq!(packet.payload(), text.as_slice(), "Algorithm {:?} failed roundtrip", algo);
+            }
+        }
+    }
+
+    /// Test simulating real network transmission with channel-based communication
+    /// This simulates the actual peer_manager data flow: compress -> channel -> decompress
+    #[tokio::test]
+    async fn test_network_transmission_simulation() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::mpsc;
+        use tokio::time::{Duration, Instant};
+
+        let algorithms = vec![
+            ("Zstd", CompressorAlgo::ZstdDefault),
+            #[cfg(feature = "lz4")]
+            ("LZ4", CompressorAlgo::Lz4),
+            #[cfg(feature = "brotli")]
+            ("Brotli", CompressorAlgo::Brotli),
+        ];
+
+        // Generate test data patterns (similar to screen capture / remote desktop data)
+        let mut test_patterns: Vec<Vec<u8>> = Vec::new();
+
+        // Pattern 1: Small packets (like control messages) - 64 bytes
+        let pattern1: Vec<u8> = (0..64).map(|i| (i * 3) as u8).collect();
+        test_patterns.push(pattern1);
+
+        // Pattern 2: Medium packets (like small screen regions) - 1KB with repetition
+        let mut pattern2 = vec![0u8; 1024];
+        for i in 0..1024 {
+            pattern2[i] = ((i % 256) as u8).wrapping_add((i / 256) as u8);
+        }
+        test_patterns.push(pattern2);
+
+        // Pattern 3: Larger packets (like image data) - 8KB with mixed patterns
+        let mut pattern3 = vec![0u8; 8192];
+        let mut seed: u64 = 42;
+        for (i, byte) in pattern3.iter_mut().enumerate() {
+            if i % 100 < 70 {
+                // 70% repetitive (like solid color regions)
+                *byte = ((i / 100) % 256) as u8;
+            } else {
+                // 30% random (like edges/details)
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                *byte = (seed >> 33) as u8;
+            }
+        }
+        test_patterns.push(pattern3);
+
+        // Pattern 4: Large packet with high entropy (worst case for compression) - 16KB
+        let mut pattern4 = vec![0u8; 16384];
+        let mut seed: u64 = 12345;
+        for byte in pattern4.iter_mut() {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *byte = (seed >> 33) as u8;
+        }
+        test_patterns.push(pattern4);
+
+        println!("\n=== Network Transmission Simulation Test ===");
+        println!("Simulating: compress -> channel transfer -> decompress");
+        println!("Test duration: 3 seconds per algorithm, concurrent senders\n");
+
+        for (name, algo) in &algorithms {
+            // Channel to simulate network transmission (similar to peer_manager)
+            let (tx, mut rx) = mpsc::channel::<ZCPacket>(256);
+
+            let success_count = Arc::new(AtomicU64::new(0));
+            let fail_count = Arc::new(AtomicU64::new(0));
+            let total_bytes_sent = Arc::new(AtomicU64::new(0));
+            let total_latency_us = Arc::new(AtomicU64::new(0));
+
+            let algo_clone = *algo;
+            let patterns_clone = test_patterns.clone();
+            let success_clone = success_count.clone();
+            let fail_clone = fail_count.clone();
+            let bytes_clone = total_bytes_sent.clone();
+
+            // Sender task (simulates peer sending compressed data)
+            let sender_handle = tokio::spawn(async move {
+                let compressor = DefaultCompressor {};
+                let start = Instant::now();
+                let duration = Duration::from_secs(3);
+                let mut packet_id: u64 = 0;
+
+                while start.elapsed() < duration {
+                    for pattern in &patterns_clone {
+                        if start.elapsed() >= duration {
+                            break;
+                        }
+
+                        let mut packet = ZCPacket::new_with_payload(pattern);
+                        packet.fill_peer_manager_hdr(packet_id as u32, 0, 0);
+                        packet_id += 1;
+
+                        // Compress (like peer_manager does before sending)
+                        if let Err(_e) = compressor.compress(&mut packet, algo_clone).await {
+                            fail_clone.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+
+                        bytes_clone.fetch_add(packet.buf_len() as u64, Ordering::Relaxed);
+
+                        // Send through channel (simulates network transfer)
+                        if tx.send(packet).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                // Signal completion
+                drop(tx);
+            });
+
+            let latency_clone = total_latency_us.clone();
+            let success_recv = success_count.clone();
+            let fail_recv = fail_count.clone();
+            let patterns_for_verify = test_patterns.clone();
+
+            // Receiver task (simulates peer receiving and decompressing)
+            let receiver_handle = tokio::spawn(async move {
+                let compressor = DefaultCompressor {};
+
+                while let Some(mut packet) = rx.recv().await {
+                    let recv_time = Instant::now();
+                    let packet_id = packet.peer_manager_header().unwrap().from_peer_id.get();
+                    let pattern_idx = (packet_id as usize) % patterns_for_verify.len();
+                    let expected_pattern = &patterns_for_verify[pattern_idx];
+
+                    // Decompress (like peer_manager does after receiving)
+                    if packet.peer_manager_header().unwrap().is_compressed() {
+                        if let Err(_e) = compressor.decompress(&mut packet).await {
+                            fail_recv.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    }
+
+                    // Verify data integrity
+                    if packet.payload() == expected_pattern.as_slice() {
+                        success_recv.fetch_add(1, Ordering::Relaxed);
+                    } else {
+                        fail_recv.fetch_add(1, Ordering::Relaxed);
+                    }
+
+                    latency_clone.fetch_add(recv_time.elapsed().as_micros() as u64, Ordering::Relaxed);
+                }
+            });
+
+            // Wait for both tasks
+            let _ = sender_handle.await;
+            let _ = receiver_handle.await;
+
+            let success = success_count.load(Ordering::Relaxed);
+            let fail = fail_count.load(Ordering::Relaxed);
+            let bytes = total_bytes_sent.load(Ordering::Relaxed);
+            let total_latency = total_latency_us.load(Ordering::Relaxed);
+
+            let avg_latency_us = if success > 0 {
+                total_latency as f64 / success as f64
+            } else {
+                0.0
+            };
+
+            let throughput_mbps = (bytes as f64 * 8.0) / (3.0 * 1_000_000.0);
+
+            println!(
+                "{:8}: {:6} ok, {:4} fail | throughput: {:7.2} Mbps | avg decompress latency: {:8.2} µs",
+                name, success, fail, throughput_mbps, avg_latency_us
+            );
+
+            // Allow some margin for edge cases, but most should succeed
+            let total = success + fail;
+            let success_rate = if total > 0 { success as f64 / total as f64 } else { 0.0 };
+            assert!(
+                success_rate > 0.99,
+                "Algorithm {} success rate too low: {:.2}%",
+                name,
+                success_rate * 100.0
+            );
+        }
+
+        println!("\n=== Test Complete ===\n");
     }
 }
