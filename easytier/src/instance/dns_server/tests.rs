@@ -93,6 +93,28 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
     );
 }
 
+pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
+    let stream = UdpClientStream::builder(
+        SocketAddr::new((*fake_ip).into(), 53),
+        TokioRuntimeProvider::default(),
+    )
+    .build();
+    let (mut client, background) = Client::connect(stream).await.unwrap();
+    let background_task = tokio::spawn(background);
+    let response = client
+        .query(
+            rr::Name::from_str(domain).unwrap(),
+            rr::DNSClass::IN,
+            rr::RecordType::A,
+        )
+        .await;
+    drop(background_task);
+
+    if let Ok(response) = response {
+        assert!(response.answers().is_empty(), "{:?}", response.answers());
+    }
+}
+
 #[tokio::test]
 async fn test_magic_dns_server_instance() {
     let tun_ip = Ipv4Inet::from_str("10.144.144.10/24").unwrap();
@@ -218,7 +240,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
                 routes: vec![Route {
                     hostname: "test1".to_string(),
-                    ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
+                    ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/32").unwrap().into()),
                     ..Default::default()
                 }],
             },
@@ -234,7 +256,7 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
                 zone: DEFAULT_ET_DNS_ZONE.to_string(),
                 routes: vec![Route {
                     hostname: "test1".to_string(),
-                    ipv4_addr: Some(Ipv4Inet::from_str("1.1.1.1/24").unwrap().into()),
+                    ipv4_addr: Some(Ipv4Inet::from_str("1.1.1.1/32").unwrap().into()),
                     ..Default::default()
                 }],
             },
@@ -267,4 +289,27 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
     assert_eq!(a_records.len(), 1, "{a_records:?}");
     let resolved_ip = Ipv4Addr::from(a_records[0].value.unwrap_or_default());
     assert_eq!(resolved_ip, Ipv4Addr::new(1, 1, 1, 1));
+
+    let mut ctrl = BaseController::default();
+    ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
+        tunnel_type: "tcp".to_string(),
+        local_addr: None,
+        remote_addr: Some(crate::proto::common::Url {
+            url: "tcp://127.0.0.1:54321".to_string(),
+        }),
+    }));
+
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl,
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                routes: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    check_dns_record_missing(&fake_ip, "test1.et.net").await;
 }

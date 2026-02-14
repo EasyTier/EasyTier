@@ -140,6 +140,17 @@ impl MagicDnsServerInstanceData {
         }
     }
 
+    async fn remove_zone(&self, zone: &str) {
+        match LowerName::from_str(zone) {
+            Ok(zone_name) => {
+                self.dns_server.remove(&zone_name).await;
+            }
+            Err(e) => {
+                tracing::error!("Invalid zone name {}, skip remove: {:?}", zone, e);
+            }
+        }
+    }
+
     fn do_system_config(&self, zone: &str) -> Result<(), anyhow::Error> {
         if let Some(c) = &self.system_config {
             c.set_dns(&OSConfig {
@@ -197,7 +208,11 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         }
 
         self.route_infos.retain(|_, v| !v.is_empty());
-        self.route_infos.shrink_to_fit();
+        let zone_removed = !self.route_infos.contains_key(&zone);
+
+        if zone_removed {
+            self.remove_zone(&zone).await;
+        }
 
         self.update().await;
         Ok(Default::default())
@@ -449,11 +464,17 @@ impl RpcServerHook for MagicDnsServerInstanceData {
             return;
         };
         let remote_addr = remote_addr.into();
+        let mut removed_zones = vec![];
         for mut item in self.route_infos.iter_mut() {
             item.value_mut().remove(&remote_addr);
+            if item.value().is_empty() {
+                removed_zones.push(item.key().clone());
+            }
         }
         self.route_infos.retain(|_, v| !v.is_empty());
-        self.route_infos.shrink_to_fit();
+        for zone in removed_zones {
+            self.remove_zone(&zone).await;
+        }
         self.update().await;
     }
 }
