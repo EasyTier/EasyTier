@@ -5,7 +5,8 @@
 use std::{
     error::Error, io::IoSliceMut, net::SocketAddr, pin::Pin, sync::Arc, task::Poll, time::Duration,
 };
-
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::sync::OnceLock;
 use crate::tunnel::{
     common::{setup_sokcet2, FramedReader, FramedWriter, TunnelWrapper},
     TunnelInfo,
@@ -14,11 +15,8 @@ use anyhow::Context;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use parking_lot::RwLock;
-use quinn::{
-    congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
-    EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
-};
-
+use quinn::{congestion::BbrConfig, default_runtime, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint, EndpointConfig, ServerConfig, TransportConfig, UdpPoller};
+use crate::common::global_ctx::ArcGlobalCtx;
 use super::{
     check_scheme_and_get_socket_addr, IpVersion, Tunnel, TunnelConnector, TunnelError,
     TunnelListener,
@@ -211,6 +209,129 @@ impl<Item> RwPool<Item> {
             pool.reserve_exact(capacity);
             pool.truncate(capacity);
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct QuicEndpointManager {
+    ipv4: RwPool<Endpoint>,
+    ipv6: RwPool<Endpoint>,
+    both: RwPool<Endpoint>,
+}
+
+static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
+
+impl QuicEndpointManager {
+    fn create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
+        let socket = socket2::Socket::new(
+            socket2::Domain::for_address(addr),
+            socket2::Type::DGRAM,
+            Some(socket2::Protocol::UDP),
+        )?;
+        setup_sokcet2(&socket, &addr).map_err(std::io::Error::other)?;
+        if dual_stack {
+            socket.set_only_v6(false)?;
+        }
+        let socket = std::net::UdpSocket::from(socket);
+        let runtime = default_runtime().ok_or(std::io::Error::other("no async runtime found"))?;
+        let mut endpoint = Endpoint::new_with_abstract_socket(
+            endpoint_config(),
+            None,
+            runtime.wrap_udp_socket(socket)?,
+            runtime,
+        )?;
+        endpoint.set_default_client_config(client_config());
+        Ok(endpoint)
+    }
+}
+
+impl QuicEndpointManager {
+    fn new(capacity: usize) -> Self {
+        let ipv4 = RwPool::new(capacity.div_ceil(2));
+        let ipv6 = RwPool::new(capacity.div_ceil(2));
+        let both = RwPool::new(capacity);
+        both.enable();
+        Self { ipv4, ipv6, both }
+    }
+
+    fn load(global_ctx: &ArcGlobalCtx) -> &Self {
+        let capacity = global_ctx
+            .config
+            .get_flags()
+            .multi_thread
+            .then(std::thread::available_parallelism)
+            .and_then(|r| r.ok())
+            .map(|n| n.get())
+            .unwrap_or(1);
+
+        let mgr = QUIC_ENDPOINT_MANAGER.get();
+        match mgr {
+            Some(mgr) => {
+                for pool in [&mgr.ipv4, &mgr.ipv6, &mgr.both] {
+                    pool.resize();
+                }
+            }
+            None => {
+                let _ = QUIC_ENDPOINT_MANAGER.set(Self::new(capacity));
+            }
+        }
+
+        QUIC_ENDPOINT_MANAGER.get().unwrap()
+    }
+
+    fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Endpoint> {
+        let mgr = Self::load(global_ctx);
+
+        let pool = loop {
+            let dual_stack = mgr.both.is_enabled();
+            let (pool, addr) = match ip_version {
+                IpVersion::V4 if !dual_stack => (&mgr.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
+                _ => {
+                    let pool = if dual_stack { &mgr.both } else { &mgr.ipv6 };
+                    (pool, (Ipv6Addr::UNSPECIFIED, 0).into())
+                }
+            };
+            if pool.is_full() {
+                break pool;
+            }
+            let endpoint = Self::create(addr, dual_stack);
+            if let Err(e) = endpoint.as_ref() {
+                if dual_stack {
+                    tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
+                    mgr.both.disable();
+                    mgr.ipv4.enable();
+                    mgr.ipv6.enable();
+                    continue;
+                }
+            }
+            pool.try_push(endpoint?);
+            break pool;
+        };
+
+        Ok(pool
+            .read()
+            .iter()
+            .min_by_key(|e| e.open_connections())
+            .unwrap()
+            .clone())
+    }
+
+    async fn connect(
+        global_ctx: &ArcGlobalCtx,
+        addr: SocketAddr,
+    ) -> std::io::Result<(Endpoint, Connection)> {
+        let ip_version = if addr.ip().is_ipv4() {
+            IpVersion::V4
+        } else {
+            IpVersion::V6
+        };
+        let endpoint = Self::get(global_ctx, ip_version)?;
+        let connection = endpoint
+            .connect(addr, "localhost")
+            .map_err(std::io::Error::other)?
+            .await?;
+
+        Ok((endpoint, connection))
     }
 }
 
