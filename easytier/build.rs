@@ -150,6 +150,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "src/proto/api_manage.proto",
         "src/proto/web.proto",
         "src/proto/magic_dns.proto",
+        "src/proto/dns.proto",
         "src/proto/acl.proto",
     ];
 
@@ -159,13 +160,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut config = prost_build::Config::new();
     config
-        .protoc_arg("--experimental_allow_proto3_optional")
         .type_attribute(".acl", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute(".dns", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".api", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".config", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(
             "peer_rpc.GetIpListResponse",
             "#[derive(serde::Serialize, serde::Deserialize)]",
@@ -181,13 +181,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "peer_rpc.RouteForeignNetworkSummary",
             "#[derive(Hash, Eq, serde::Serialize, serde::Deserialize)]",
         )
-        .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
-        .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
-        .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
-        .btree_map(["."])
-        .skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
+        .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]");
 
-    config.compile_protos(&proto_files, &["src/proto/"])?;
+    config.field_attribute("api.manage.NetworkConfig", "#[serde(default)]");
+
+    config.skip_debug([".common.Ipv4Addr", ".common.Ipv6Addr", ".common.UUID"]);
+
+    config
+        .btree_map(["."])
+        .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
+        .protoc_arg("--experimental_allow_proto3_optional")
+        .compile_protos(&proto_files, &["src/proto/"])?;
 
     prost_reflect_build::Builder::new()
         .file_descriptor_set_bytes("crate::proto::DESCRIPTOR_POOL_BYTES")

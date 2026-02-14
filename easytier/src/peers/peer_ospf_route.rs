@@ -30,6 +30,17 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
+use super::{
+    graph_algo::dijkstra_with_first_hop,
+    peer_rpc::PeerRpcManager,
+    route_trait::{
+        DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
+        RouteCostCalculatorInterface,
+    },
+    PeerPacketFilter,
+};
+use crate::common::config::ConfigLoader;
+use crate::proto::dns::DnsConfigKind;
 use crate::{
     common::{
         config::NetworkIdentity, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx,
@@ -53,16 +64,6 @@ use crate::{
         },
     },
     use_global_var,
-};
-
-use super::{
-    graph_algo::dijkstra_with_first_hop,
-    peer_rpc::PeerRpcManager,
-    route_trait::{
-        DefaultRouteCostCalculator, ForeignNetworkRouteInfoMap, NextHopPolicy, RouteCostCalculator,
-        RouteCostCalculatorInterface,
-    },
-    PeerPacketFilter,
 };
 
 static SERVICE_ID: u32 = 7;
@@ -144,6 +145,7 @@ impl RoutePeerInfo {
             network_length: 24,
             ipv6_addr: None,
             groups: Vec::new(),
+            dns: Default::default(),
 
             quic_port: None,
         }
@@ -196,6 +198,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
+            dns: Some(global_ctx.config.get_dns().to_pb(DnsConfigKind::Remote)),
 
             ..Default::default()
         }
