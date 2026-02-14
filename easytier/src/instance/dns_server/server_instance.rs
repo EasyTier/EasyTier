@@ -140,14 +140,16 @@ impl MagicDnsServerInstanceData {
         }
     }
 
-    async fn remove_zone(&self, zone: &str) {
-        match LowerName::from_str(zone) {
-            Ok(zone_name) => {
-                self.dns_server.remove(&zone_name).await;
-            }
-            Err(e) => {
-                tracing::error!("Invalid zone name {}, skip remove: {:?}", zone, e);
-            }
+    async fn keep_zone_authoritative(&self, zone: &str) {
+        if let Err(e) = self
+            .update_dns_records(std::iter::empty::<&Route>(), zone)
+            .await
+        {
+            tracing::error!(
+                "Failed to keep DNS zone {} authoritative after route prune: {:?}",
+                zone,
+                e
+            );
         }
     }
 
@@ -195,23 +197,23 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
         };
         let zone = input.zone.clone();
         let remote_addr: url::Url = remote_addr.clone().into();
+        let mut zone_removed = false;
 
         if let Some(mut routes_by_addr) = self.route_infos.get_mut(&zone) {
             routes_by_addr.remove(&remote_addr);
             if !input.routes.is_empty() {
                 routes_by_addr.insert_many(remote_addr, input.routes);
             }
+            zone_removed = routes_by_addr.is_empty();
         } else if !input.routes.is_empty() {
             let mut routes_by_addr = MultiMap::new();
             routes_by_addr.insert_many(remote_addr, input.routes);
             self.route_infos.insert(zone.clone(), routes_by_addr);
         }
 
-        self.route_infos.retain(|_, v| !v.is_empty());
-        let zone_removed = !self.route_infos.contains_key(&zone);
-
         if zone_removed {
-            self.remove_zone(&zone).await;
+            self.route_infos.remove(&zone);
+            self.keep_zone_authoritative(&zone).await;
         }
 
         self.update().await;
@@ -471,9 +473,11 @@ impl RpcServerHook for MagicDnsServerInstanceData {
                 removed_zones.push(item.key().clone());
             }
         }
-        self.route_infos.retain(|_, v| !v.is_empty());
+        for zone in &removed_zones {
+            self.route_infos.remove(zone);
+        }
         for zone in removed_zones {
-            self.remove_zone(&zone).await;
+            self.keep_zone_authoritative(&zone).await;
         }
         self.update().await;
     }

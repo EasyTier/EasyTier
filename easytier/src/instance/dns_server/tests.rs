@@ -80,8 +80,9 @@ pub async fn check_dns_record(fake_ip: &Ipv4Addr, domain: &str, expected_ip: &st
             rr::RecordType::A,
         )
         .await
-        .unwrap();
-    drop(background_task);
+        .unwrap_or_else(|e| panic!("DNS query failed unexpectedly for domain '{domain}': {e}"));
+    background_task.abort();
+    let _ = background_task.await;
 
     println!("Response: {:?}", response);
 
@@ -107,12 +108,13 @@ pub async fn check_dns_record_missing(fake_ip: &Ipv4Addr, domain: &str) {
             rr::DNSClass::IN,
             rr::RecordType::A,
         )
-        .await;
-    drop(background_task);
-
-    if let Ok(response) = response {
-        assert!(response.answers().is_empty(), "{:?}", response.answers());
-    }
+        .await
+        .unwrap_or_else(|e| {
+            panic!("DNS query for missing record failed unexpectedly for domain '{domain}': {e}")
+        });
+    background_task.abort();
+    let _ = background_task.await;
+    assert!(response.answers().is_empty(), "{:?}", response.answers());
 }
 
 #[tokio::test]
@@ -311,5 +313,13 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         .await
         .unwrap();
 
-    check_dns_record_missing(&fake_ip, "test1.et.net").await;
+    let dns_records = dns_server_inst
+        .data
+        .get_dns_record(
+            BaseController::default(),
+            crate::proto::common::Void::default(),
+        )
+        .await
+        .unwrap();
+    assert!(dns_records.records.get(DEFAULT_ET_DNS_ZONE).is_none());
 }
