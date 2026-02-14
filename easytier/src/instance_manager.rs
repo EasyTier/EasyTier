@@ -1,11 +1,12 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-
 use dashmap::DashMap;
+use std::fmt::{Display, Formatter};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 use crate::{
     common::{
         config::{ConfigFileControl, ConfigLoader, TomlConfigLoader},
         global_ctx::{EventBusSubscriber, GlobalCtxEvent},
+        log,
         scoped_task::ScopedTask,
     },
     launcher::{NetworkInstance, NetworkInstanceRunningInfo},
@@ -85,10 +86,9 @@ impl NetworkInstanceManager {
                     .map(|event| ScopedTask::from(handle_event(instance_id, event)));
                 instance_stop_notifier.notified().await;
                 if let Some(instance) = instance_map.get(&instance_id) {
-                    if let Some(e) = instance.get_latest_error_msg() {
-                        tracing::error!(?e, ?instance_id, "instance stopped with error");
-                        eprintln!("instance {} stopped with error: {}", instance_id, e);
-                        instance_error_messages.insert(instance_id, e);
+                    if let Some(error) = instance.get_latest_error_msg() {
+                        log::error!(%error, "instance {} stopped", instance_id);
+                        instance_error_messages.insert(instance_id, error);
                     }
                 }
                 stop_check_notifier.notify_one();
@@ -261,6 +261,23 @@ impl NetworkInstanceManager {
     }
 }
 
+macro_rules! event {
+    ($lvl:ident, category: $cat:expr, $($args:tt)+) => {
+        event!(@impl $lvl, concat!("INSTANCE::", $cat), $($args)+)
+    };
+
+    ($lvl:ident, $($args:tt)+) => {
+        event!(@impl $lvl, "INSTANCE", $($args)+)
+    };
+
+    (@impl $lvl:ident, $cat:expr, $($args:tt)+) => {
+        log::$lvl!(
+            category: $cat,
+            $($args)+
+        );
+    };
+}
+
 #[tracing::instrument]
 fn handle_event(
     instance_id: uuid::Uuid,
@@ -270,158 +287,140 @@ fn handle_event(
         loop {
             if let Ok(e) = events.recv().await {
                 match e {
-                    GlobalCtxEvent::PeerAdded(p) => {
-                        print_event(instance_id, format!("new peer added. peer_id: {}", p));
+                    GlobalCtxEvent::PeerAdded(peer_id) => {
+                        event!(info, peer_id, "[{}] new peer added", instance_id);
                     }
 
-                    GlobalCtxEvent::PeerRemoved(p) => {
-                        print_event(instance_id, format!("peer removed. peer_id: {}", p));
+                    GlobalCtxEvent::PeerRemoved(peer_id) => {
+                        event!(info, peer_id, "[{}] peer removed", instance_id);
                     }
 
-                    GlobalCtxEvent::PeerConnAdded(p) => {
-                        print_event(
+                    GlobalCtxEvent::PeerConnAdded(conn_info) => {
+                        event!(
+                            info,
+                            category: "CONNECTION",
+                            %conn_info,
+                            "[{}] new peer connection added",
                             instance_id,
-                            format!(
-                                "new peer connection added. conn_info: {}",
-                                peer_conn_info_to_string(p)
-                            ),
                         );
                     }
 
-                    GlobalCtxEvent::PeerConnRemoved(p) => {
-                        print_event(
+                    GlobalCtxEvent::PeerConnRemoved(conn_info) => {
+                        event!(
+                            info,
+                            category: "CONNECTION",
+                            %conn_info,
+                            "[{}] peer connection removed",
                             instance_id,
-                            format!(
-                                "peer connection removed. conn_info: {}",
-                                peer_conn_info_to_string(p)
-                            ),
                         );
                     }
 
-                    GlobalCtxEvent::ListenerAddFailed(p, msg) => {
-                        print_event(
-                            instance_id,
-                            format!("listener add failed. listener: {}, msg: {}", p, msg),
-                        );
+                    GlobalCtxEvent::ListenerAddFailed(listener, msg) => {
+                        event!(warn, %listener, msg, "[{}] listener add failed", instance_id);
                     }
 
-                    GlobalCtxEvent::ListenerAcceptFailed(p, msg) => {
-                        print_event(
-                            instance_id,
-                            format!("listener accept failed. listener: {}, msg: {}", p, msg),
-                        );
+                    GlobalCtxEvent::ListenerAcceptFailed(listener, msg) => {
+                        event!(warn,  %listener, msg, "[{}] listener accept failed", instance_id);
                     }
 
-                    GlobalCtxEvent::ListenerAdded(p) => {
-                        if p.scheme() == "ring" {
+                    GlobalCtxEvent::ListenerAdded(listener) => {
+                        if listener.scheme() == "ring" {
                             continue;
                         }
-                        print_event(instance_id, format!("new listener added. listener: {}", p));
+                        event!(
+                            info,
+                            %listener,
+                            "[{}] new listener added",
+                            instance_id
+                        );
                     }
 
                     GlobalCtxEvent::ConnectionAccepted(local, remote) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "new connection accepted. local: {}, remote: {}",
-                                local, remote
-                            ),
-                        );
+                        event!(info, category: "CONNECTION", local, remote, "[{}] new connection accepted", instance_id);
                     }
 
                     GlobalCtxEvent::ConnectionError(local, remote, err) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "connection error. local: {}, remote: {}, err: {}",
-                                local, remote, err
-                            ),
-                        );
+                        event!(info, category: "CONNECTION", local, remote, err, "[{}] connection error", instance_id);
                     }
 
                     GlobalCtxEvent::TunDeviceReady(dev) => {
-                        print_event(instance_id, format!("tun device ready. dev: {}", dev));
+                        event!(info, dev, "[{}] tun device ready", instance_id);
                     }
 
                     GlobalCtxEvent::TunDeviceError(err) => {
-                        print_event(instance_id, format!("tun device error. err: {}", err));
+                        event!(error, %err, "[{}] tun device error", instance_id);
                     }
 
                     GlobalCtxEvent::Connecting(dst) => {
-                        print_event(instance_id, format!("connecting to peer. dst: {}", dst));
+                        event!(info, category: "CONNECTION", %dst, "[{}] connecting to peer", instance_id);
                     }
 
-                    GlobalCtxEvent::ConnectError(dst, ip_version, err) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "connect to peer error. dst: {}, ip_version: {}, err: {}",
-                                dst, ip_version, err
-                            ),
+                    GlobalCtxEvent::ConnectError(dst, ip_version, error) => {
+                        event!(
+                            info,
+                            category: "CONNECTION",
+                            dst,
+                            ip_version,
+                            %error,
+                            "[{}] connect to peer error",
+                            instance_id
                         );
                     }
 
                     GlobalCtxEvent::VpnPortalStarted(portal) => {
-                        print_event(
-                            instance_id,
-                            format!("vpn portal started. portal: {}", portal),
-                        );
+                        event!(info, portal, "[{}] vpn portal started", instance_id);
                     }
 
                     GlobalCtxEvent::VpnPortalClientConnected(portal, client_addr) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "vpn portal client connected. portal: {}, client_addr: {}",
-                                portal, client_addr
-                            ),
+                        event!(
+                            info,
+                            portal,
+                            client_addr,
+                            "[{}] vpn portal client connected",
+                            instance_id
                         );
                     }
 
                     GlobalCtxEvent::VpnPortalClientDisconnected(portal, client_addr) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "vpn portal client disconnected. portal: {}, client_addr: {}",
-                                portal, client_addr
-                            ),
+                        event!(
+                            info,
+                            portal,
+                            client_addr,
+                            "[{}] vpn portal client disconnected",
+                            instance_id
                         );
                     }
 
                     GlobalCtxEvent::DhcpIpv4Changed(old, new) => {
-                        print_event(
-                            instance_id,
-                            format!("dhcp ip changed. old: {:?}, new: {:?}", old, new),
-                        );
+                        event!(info, ?old, ?new, "[{}] dhcp ip changed", instance_id);
                     }
 
                     GlobalCtxEvent::DhcpIpv4Conflicted(ip) => {
-                        print_event(instance_id, format!("dhcp ip conflict. ip: {:?}", ip));
+                        event!(info, ?ip, "[{}] dhcp ip conflict", instance_id);
                     }
 
                     GlobalCtxEvent::PortForwardAdded(cfg) => {
-                        print_event(
+                        event!(
+                            info,
+                            local = %cfg.bind_addr.unwrap(),
+                            remote = %cfg.dst_addr.unwrap(),
+                            proto = %cfg.socket_type().as_str_name(),
+                            "[{}] port forward added",
                             instance_id,
-                            format!(
-                                "port forward added. local: {}, remote: {}, proto: {}",
-                                cfg.bind_addr.unwrap(),
-                                cfg.dst_addr.unwrap(),
-                                cfg.socket_type().as_str_name()
-                            ),
                         );
                     }
 
                     GlobalCtxEvent::ConfigPatched(patch) => {
-                        print_event(instance_id, format!("config patched. patch: {:?}", patch));
+                        event!(info, ?patch, "[{}] config patched", instance_id);
                     }
 
                     GlobalCtxEvent::ProxyCidrsUpdated(added, removed) => {
-                        print_event(
-                            instance_id,
-                            format!(
-                                "proxy CIDRs updated. added: {:?}, removed: {:?}",
-                                added, removed
-                            ),
+                        event!(
+                            info,
+                            ?added,
+                            ?removed,
+                            "[{}] proxy CIDRs updated",
+                            instance_id
                         );
                     }
                 }
@@ -432,20 +431,14 @@ fn handle_event(
     })
 }
 
-fn print_event(instance_id: uuid::Uuid, msg: String) {
-    println!(
-        "{}: [{}] {}",
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        instance_id,
-        msg
-    );
-}
-
-fn peer_conn_info_to_string(p: proto::api::instance::PeerConnInfo) -> String {
-    format!(
-        "my_peer_id: {}, dst_peer_id: {}, tunnel_info: {:?}",
-        p.my_peer_id, p.peer_id, p.tunnel
-    )
+impl Display for proto::api::instance::PeerConnInfo {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerConnInfo")
+            .field("my_peer_id", &self.my_peer_id)
+            .field("dst_peer_id", &self.peer_id)
+            .field("tunnel_info", &self.tunnel)
+            .finish()
+    }
 }
 
 #[cfg(test)]

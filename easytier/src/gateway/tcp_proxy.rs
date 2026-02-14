@@ -23,7 +23,7 @@ use tracing::Instrument;
 use crate::common::error::Result;
 use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtx};
 use crate::common::join_joinset_background;
-
+use crate::common::log;
 use crate::common::stats_manager::{LabelSet, LabelType, MetricName};
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::{NicPacketFilter, PeerPacketFilter};
@@ -66,9 +66,9 @@ impl NatDstConnector for NatDstTcpConnector {
     async fn connect(&self, _src: SocketAddr, nat_dst: SocketAddr) -> Result<Self::DstStream> {
         let socket = match TcpSocket::new_v4() {
             Ok(s) => s,
-            Err(e) => {
-                eprintln!("create v4 socket failed: {:?}", e);
-                return Err(e.into());
+            Err(error) => {
+                log::error!(%error, "create v4 socket failed");
+                return Err(error.into());
             }
         };
 
