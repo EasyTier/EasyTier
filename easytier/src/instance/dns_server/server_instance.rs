@@ -183,10 +183,21 @@ impl MagicDnsServerRpc for MagicDnsServerInstanceData {
             return Err(anyhow::anyhow!("No remote addr").into());
         };
         let zone = input.zone.clone();
-        self.route_infos
-            .entry(zone.clone())
-            .or_default()
-            .insert_many(remote_addr.clone().into(), input.routes);
+        let remote_addr: url::Url = remote_addr.clone().into();
+
+        if let Some(mut routes_by_addr) = self.route_infos.get_mut(&zone) {
+            routes_by_addr.remove(&remote_addr);
+            if !input.routes.is_empty() {
+                routes_by_addr.insert_many(remote_addr, input.routes);
+            }
+        } else if !input.routes.is_empty() {
+            let mut routes_by_addr = MultiMap::new();
+            routes_by_addr.insert_many(remote_addr, input.routes);
+            self.route_infos.insert(zone.clone(), routes_by_addr);
+        }
+
+        self.route_infos.retain(|_, v| !v.is_empty());
+        self.route_infos.shrink_to_fit();
 
         self.update().await;
         Ok(Default::default())

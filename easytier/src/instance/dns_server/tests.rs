@@ -23,6 +23,8 @@ use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 use crate::peers::create_packet_recv_chan;
 use crate::proto::api::instance::Route;
 use crate::proto::common::NatType;
+use crate::proto::magic_dns::{MagicDnsServerRpc as _, UpdateDnsRecordRequest};
+use crate::proto::rpc_types::controller::{BaseController, Controller as _};
 
 pub async fn prepare_env(dns_name: &str, tun_ip: Ipv4Inet) -> (Arc<PeerManager>, NicCtx) {
     prepare_env_with_tld_dns_zone(dns_name, tun_ip, None).await
@@ -180,4 +182,89 @@ async fn test_magic_dns_runner() {
         cancel_token.cancel();
         t.await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn test_magic_dns_update_replaces_records_for_same_client() {
+    let tun_ip = Ipv4Inet::from_str("100.100.100.0/24").unwrap();
+    let ctx = get_mock_global_ctx();
+    ctx.set_hostname("test1".to_string());
+    ctx.set_ipv4(Some(tun_ip));
+
+    let (s, _r) = create_packet_recv_chan();
+    let peer_mgr = Arc::new(PeerManager::new(RouteAlgoType::Ospf, ctx, s));
+    peer_mgr.run().await.unwrap();
+    replace_stun_info_collector(peer_mgr.clone(), NatType::PortRestricted);
+
+    let fake_ip = Ipv4Addr::from_str(MAGIC_DNS_FAKE_IP).unwrap();
+    let dns_server_inst = MagicDnsServerInstance::new(peer_mgr.clone(), None, tun_ip, fake_ip)
+        .await
+        .unwrap();
+
+    let mut ctrl = BaseController::default();
+    ctrl.set_tunnel_info(Some(crate::proto::common::TunnelInfo {
+        tunnel_type: "tcp".to_string(),
+        local_addr: None,
+        remote_addr: Some(crate::proto::common::Url {
+            url: "tcp://127.0.0.1:54321".to_string(),
+        }),
+    }));
+
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl.clone(),
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                routes: vec![Route {
+                    hostname: "test1".to_string(),
+                    ipv4_addr: Some(Ipv4Inet::from_str("8.8.8.8/24").unwrap().into()),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    dns_server_inst
+        .data
+        .update_dns_record(
+            ctrl,
+            UpdateDnsRecordRequest {
+                zone: DEFAULT_ET_DNS_ZONE.to_string(),
+                routes: vec![Route {
+                    hostname: "test1".to_string(),
+                    ipv4_addr: Some(Ipv4Inet::from_str("1.1.1.1/24").unwrap().into()),
+                    ..Default::default()
+                }],
+            },
+        )
+        .await
+        .unwrap();
+
+    let dns_records = dns_server_inst
+        .data
+        .get_dns_record(
+            BaseController::default(),
+            crate::proto::common::Void::default(),
+        )
+        .await
+        .unwrap();
+    let zone_records = dns_records.records.get(DEFAULT_ET_DNS_ZONE).unwrap();
+    let a_records = zone_records
+        .records
+        .iter()
+        .filter_map(|record| match record.record.as_ref() {
+            Some(crate::proto::magic_dns::dns_record::Record::A(a))
+                if a.name == "test1.et.net." =>
+            {
+                Some(a)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(a_records.len(), 1, "{a_records:?}");
+    let resolved_ip = Ipv4Addr::from(a_records[0].value.unwrap_or_default());
+    assert_eq!(resolved_ip, Ipv4Addr::new(1, 1, 1, 1));
 }
