@@ -321,5 +321,5 @@ async fn test_magic_dns_update_replaces_records_for_same_client() {
         )
         .await
         .unwrap();
-    assert!(dns_records.records.get(DEFAULT_ET_DNS_ZONE).is_none());
+    assert!(!dns_records.records.contains_key(DEFAULT_ET_DNS_ZONE));
 }
