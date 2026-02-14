@@ -52,7 +52,7 @@ pub mod unix;
 
 #[derive(thiserror::Error, Debug)]
 pub enum TunnelError {
-    #[error("io error")]
+    #[error("io error: {0}")]
     IOError(#[from] std::io::Error),
     #[error("invalid packet. msg: {0}")]
     InvalidPacket(String),
