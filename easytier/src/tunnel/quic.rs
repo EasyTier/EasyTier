@@ -265,7 +265,7 @@ impl TunnelConnector for QUICTunnelConnector {
             .connect(addr, "localhost")
             .map_err(|e| {
                 TunnelError::InvalidAddr(format!(
-                    "invalid quic connect target, url: {}, error: {}",
+                    "failed to create QUIC connection, url: {}, error: {}",
                     self.addr, e
                 ))
             })?
