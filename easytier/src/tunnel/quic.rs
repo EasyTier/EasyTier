@@ -11,6 +11,7 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
+use derivative::Derivative;
 use derive_more::{Deref, DerefMut};
 use parking_lot::RwLock;
 use quinn::{
@@ -146,24 +147,47 @@ impl Drop for ConnWrapper {
     }
 }
 
+#[derive(Derivative)]
+#[derivative(Default(bound = ""))]
 #[derive(Debug, Deref, DerefMut)]
-struct RwPool<Item> {
+struct RwPoolInner<Item> {
     #[deref]
     #[deref_mut]
-    pool: RwLock<Vec<Item>>,
+    pool: Vec<Item>,
+    enabled: bool,
+}
+
+#[derive(Debug, Deref)]
+struct RwPool<Item> {
+    #[deref]
+    inner: RwLock<RwPoolInner<Item>>,
     capacity: usize,
 }
 
 impl<Item> RwPool<Item> {
     fn new(capacity: usize) -> Self {
         Self {
-            pool: RwLock::new(Vec::with_capacity(capacity)),
+            inner: RwLock::new(RwPoolInner::default()),
             capacity,
         }
     }
 
     fn is_full(&self) -> bool {
         self.read().len() >= self.capacity
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.read().enabled
+    }
+
+    fn enable(&self) {
+        self.write().enabled = true;
+        self.resize();
+    }
+
+    fn disable(&self) {
+        self.write().enabled = false;
+        self.resize();
     }
 
     fn try_push(&self, item: Item) -> Option<Item> {
@@ -176,10 +200,16 @@ impl<Item> RwPool<Item> {
     }
 
     fn resize(&self) {
-        if self.read().capacity() != self.capacity {
+        let resize = {
+            let inner = self.read();
+            let capacity = self.capacity * inner.enabled as usize;
+            inner.capacity() != capacity
+        };
+        if resize {
             let mut pool = self.write();
-            pool.reserve_exact(self.capacity);
-            pool.truncate(self.capacity);
+            let capacity = self.capacity * pool.enabled as usize;
+            pool.reserve_exact(capacity);
+            pool.truncate(capacity);
         }
     }
 }
