@@ -205,6 +205,19 @@ pub async fn init_three_node_ex<F: Fn(TomlConfigLoader) -> TomlConfigLoader>(
     vec![inst1, inst2, inst3]
 }
 
+pub async fn make_three_node_full_mesh(insts: &[Instance]) {
+    insts[0]
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", insts[2].id()).parse().unwrap(),
+        ));
+    insts[2]
+        .get_conn_manager()
+        .add_connector(RingTunnelConnector::new(
+            format!("ring://{}", insts[0].id()).parse().unwrap(),
+        ));
+}
+
 pub async fn drop_insts(insts: Vec<Instance>) {
     let mut set = JoinSet::new();
     for mut inst in insts {
@@ -223,7 +236,7 @@ pub async fn drop_insts(insts: Vec<Instance>) {
     while set.join_next().await.is_some() {}
 }
 
-async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
+pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
         .args([
@@ -247,7 +260,7 @@ async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize
     code.code().unwrap() == 0
 }
 
-async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
+pub async fn ping6_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
     let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
     let code = tokio::process::Command::new("ip")
         .args([
@@ -2238,6 +2251,7 @@ pub async fn acl_group_base_test(
                 declares: group_declares.clone(),
                 members: vec![],
             }),
+            route_distance: None,
         }),
     };
 
@@ -2440,6 +2454,7 @@ pub async fn acl_group_self_test(
                 declares: group_declares.clone(),
                 members: vec!["admin".to_string()],
             }),
+            route_distance: None,
         }),
     };
 
@@ -2450,6 +2465,7 @@ pub async fn acl_group_self_test(
                 declares: group_declares.clone(),
                 members: vec![],
             }),
+            route_distance: None,
         }),
     };
 
@@ -2758,4 +2774,604 @@ pub async fn config_patch_test() {
     assert!(result.is_ok(), "Port forward pingpong should succeed");
 
     drop_insts(insts).await;
+}
+
+mod distance {
+    use std::time::Duration;
+
+    use rstest::rstest;
+
+    use crate::{
+        common::{
+            config::{ConfigLoader, NetworkIdentity},
+            PeerId,
+        },
+        instance::instance::Instance,
+        proto::acl::{
+            Acl, AclV1, GroupIdentity, GroupInfo, RouteDistanceConfig, RouteDistanceRule,
+        },
+        tunnel::common::tests::wait_for_condition,
+    };
+
+    use super::{drop_insts, make_three_node_full_mesh, ping_test, prepare_linux_namespaces};
+
+    use crate::common::stats_manager::MetricName;
+
+    // ============================================================
+    // Helper Functions
+    // ============================================================
+
+    /// Create an Acl config with RouteDistanceConfig
+    fn create_acl_with_distance(
+        rules: Vec<RouteDistanceRule>,
+        default_distance: u32,
+        group_info: Option<GroupInfo>,
+    ) -> Acl {
+        let route_distance = RouteDistanceConfig {
+            rules,
+            default_distance,
+        };
+
+        let acl_v1 = AclV1 {
+            route_distance: Some(route_distance),
+            group: group_info,
+            ..Default::default()
+        };
+
+        Acl {
+            acl_v1: Some(acl_v1),
+        }
+    }
+
+    /// Create a simple RouteDistanceRule for IP matching
+    fn create_ip_distance_rule(
+        name: &str,
+        priority: u32,
+        distance: u32,
+        ips: Vec<&str>,
+    ) -> RouteDistanceRule {
+        RouteDistanceRule {
+            name: name.to_string(),
+            priority,
+            enabled: true,
+            distance,
+            destination_ips: ips.into_iter().map(|s| s.to_string()).collect(),
+            destination_groups: vec![],
+            foreign_node: None,
+        }
+    }
+
+    /// Create a RouteDistanceRule for group matching
+    fn create_group_distance_rule(
+        name: &str,
+        priority: u32,
+        distance: u32,
+        groups: Vec<&str>,
+    ) -> RouteDistanceRule {
+        RouteDistanceRule {
+            name: name.to_string(),
+            priority,
+            enabled: true,
+            distance,
+            destination_ips: vec![],
+            destination_groups: groups.into_iter().map(|s| s.to_string()).collect(),
+            foreign_node: None,
+        }
+    }
+
+    /// Create a RouteDistanceRule for foreign_node matching
+    fn create_foreign_distance_rule(
+        name: &str,
+        priority: u32,
+        distance: u32,
+        is_foreign: bool,
+    ) -> RouteDistanceRule {
+        RouteDistanceRule {
+            name: name.to_string(),
+            priority,
+            enabled: true,
+            distance,
+            destination_ips: vec![],
+            destination_groups: vec![],
+            foreign_node: Some(is_foreign),
+        }
+    }
+
+    /// Check route distance for a specific peer
+    fn check_route_distance(
+        routes: &[crate::proto::api::instance::Route],
+        peer_id: PeerId,
+        expected_distance: i32,
+    ) {
+        let route = routes
+            .iter()
+            .find(|r| r.peer_id == peer_id)
+            .unwrap_or_else(|| panic!("Route for peer {} not found in {:?}", peer_id, routes));
+
+        assert_eq!(
+            route.distance, expected_distance,
+            "Expected distance {} for peer {}, but got {}. Routes: {:?}",
+            expected_distance, peer_id, route.distance, routes
+        );
+    }
+
+    /// Check route cost for a specific peer
+    fn check_route_cost(
+        routes: &[crate::proto::api::instance::Route],
+        peer_id: PeerId,
+        expected_cost: i32,
+    ) {
+        let route = routes
+            .iter()
+            .find(|r| r.peer_id == peer_id)
+            .unwrap_or_else(|| panic!("Route for peer {} not found in {:?}", peer_id, routes));
+
+        assert_eq!(
+            route.cost, expected_cost,
+            "Expected cost {} for peer {}, but got {}. Routes: {:?}",
+            expected_cost, peer_id, route.cost, routes
+        );
+    }
+
+    /// Wait for routes to appear and distance to propagate
+    async fn wait_for_distance_sync(inst: &Instance, expected_peer_count: usize) {
+        wait_for_condition(
+            || async {
+                let routes = inst.get_peer_manager().list_routes().await;
+                routes.len() >= expected_peer_count
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+
+    /// Wait for specific distance value to appear in routes
+    async fn wait_for_route_distance(
+        inst: &Instance,
+        peer_id: PeerId,
+        expected_distance: i32,
+        timeout_secs: u64,
+    ) {
+        wait_for_condition(
+            || async {
+                let routes = inst.get_peer_manager().list_routes().await;
+                routes
+                    .iter()
+                    .find(|r| r.peer_id == peer_id)
+                    .map(|r| r.distance == expected_distance)
+                    .unwrap_or(false)
+            },
+            Duration::from_secs(timeout_secs),
+        )
+        .await;
+    }
+
+    /// Get the total forwarded packets count for a node
+    fn get_forwarded_packets(inst: &Instance) -> u64 {
+        let all_metrics = inst.get_global_ctx().stats_manager().get_all_metrics();
+        let mut total = 0u64;
+        for metric in all_metrics {
+            if metric.name == MetricName::TrafficPacketsForwarded {
+                let counter = inst
+                    .get_global_ctx()
+                    .stats_manager()
+                    .get_counter(metric.name, metric.labels.clone());
+                total += counter.get();
+            }
+        }
+        total
+    }
+
+    /// Verify distance configuration and latency_first interaction
+    #[rstest]
+    #[case::latency_false_configured(false, 10, 5, 10, 15)]
+    #[case::latency_true_ignored(true, 1000, 1000, 0, 0)]
+    #[case::latency_false_fallback(false, 50, 5, 50, 55)]
+    #[tokio::test]
+    #[serial_test::serial]
+    pub async fn test_distance_accumulation(
+        #[case] latency_first: bool,
+        #[case] inst2_dist: u32,
+        #[case] inst3_dist: u32,
+        #[case] exp_dist2: i32,
+        #[case] exp_dist3: i32,
+    ) {
+        prepare_linux_namespaces();
+
+        let insts = super::init_three_node_ex(
+            "udp",
+            |cfg| {
+                let mut flags = cfg.get_flags();
+                flags.latency_first = latency_first;
+                cfg.set_flags(flags);
+
+                match cfg.get_inst_name().as_str() {
+                    "inst2" => {
+                        let acl = create_acl_with_distance(vec![], inst2_dist, None);
+                        cfg.set_acl(Some(acl));
+                    }
+                    "inst3" => {
+                        let acl = create_acl_with_distance(vec![], inst3_dist, None);
+                        cfg.set_acl(Some(acl));
+                    }
+                    _ => {}
+                }
+
+                cfg
+            },
+            false,
+        )
+        .await;
+
+        if latency_first {
+            wait_for_distance_sync(&insts[0], 2).await;
+        } else {
+            wait_for_route_distance(&insts[0], insts[1].peer_id(), exp_dist2, 60).await;
+        }
+
+        let routes = insts[0].get_peer_manager().list_routes().await;
+        println!("inst1 routes: {:?}", routes);
+
+        check_route_distance(&routes, insts[1].peer_id(), exp_dist2);
+        check_route_distance(&routes, insts[2].peer_id(), exp_dist3);
+
+        if latency_first {
+            for route in &routes {
+                assert!(route.cost < 500, "Cost should be latency-based");
+            }
+        }
+
+        drop_insts(insts).await;
+    }
+
+    /// Verify group matching logic with correct/incorrect secret
+    #[tokio::test]
+    #[serial_test::serial]
+    pub async fn test_group_matching_with_correct_secret() {
+        prepare_linux_namespaces();
+
+        let group_name = "trusted_zone";
+        let group_secret = "test-secret-123";
+
+        let insts = super::init_three_node_ex(
+            "udp",
+            |cfg| {
+                let mut flags = cfg.get_flags();
+                flags.latency_first = false;
+                cfg.set_flags(flags);
+
+                let group_info = GroupInfo {
+                    declares: vec![GroupIdentity {
+                        group_name: group_name.to_string(),
+                        group_secret: group_secret.to_string(),
+                    }],
+                    members: vec![group_name.to_string()],
+                };
+
+                match cfg.get_inst_name().as_str() {
+                    "inst2" => {
+                        let acl = create_acl_with_distance(
+                            vec![create_group_distance_rule(
+                                "trusted_low_dist",
+                                200,
+                                10,
+                                vec![group_name],
+                            )],
+                            100,
+                            Some(group_info.clone()),
+                        );
+                        cfg.set_acl(Some(acl));
+                    }
+                    "inst3" => {
+                        let acl = create_acl_with_distance(
+                            vec![create_group_distance_rule(
+                                "trusted_low_dist",
+                                200,
+                                10,
+                                vec![group_name],
+                            )],
+                            100,
+                            Some(group_info.clone()),
+                        );
+                        cfg.set_acl(Some(acl));
+                    }
+                    _ => {
+                        let acl = Acl {
+                            acl_v1: Some(AclV1 {
+                                group: Some(group_info.clone()),
+                                ..Default::default()
+                            }),
+                        };
+                        cfg.set_acl(Some(acl));
+                    }
+                }
+
+                cfg
+            },
+            false,
+        )
+        .await;
+
+        // Wait for specific distance values to propagate, not just route count
+        wait_for_route_distance(&insts[0], insts[1].peer_id(), 10, 60).await;
+        wait_for_route_distance(&insts[0], insts[2].peer_id(), 20, 60).await;
+
+        let routes = insts[0].get_peer_manager().list_routes().await;
+        println!("inst1 routes (group matching): {:?}", routes);
+
+        assert!(
+            routes.len() >= 2,
+            "Expected at least 2 routes, got {:?}",
+            routes
+        );
+
+        check_route_distance(&routes, insts[1].peer_id(), 10);
+        check_route_distance(&routes, insts[2].peer_id(), 20);
+
+        drop_insts(insts).await;
+    }
+
+    /// Verify foreign_node matching logic (public server scenario)
+    #[tokio::test]
+    #[serial_test::serial]
+    pub async fn test_foreign_node_matching() {
+        prepare_linux_namespaces();
+
+        let insts = super::init_three_node_ex(
+            "udp",
+            |cfg| {
+                let mut flags = cfg.get_flags();
+                flags.latency_first = false;
+                cfg.set_flags(flags);
+
+                if cfg.get_inst_name() == "inst2" {
+                    cfg.set_network_identity(NetworkIdentity::new(
+                        "public".to_string(),
+                        "public".to_string(),
+                    ));
+                }
+
+                match cfg.get_inst_name().as_str() {
+                    "inst2" => {
+                        let acl = create_acl_with_distance(
+                            vec![
+                                create_foreign_distance_rule("foreign_low", 200, 10, true),
+                                create_foreign_distance_rule("local_high", 100, 100, false),
+                            ],
+                            50,
+                            None,
+                        );
+                        cfg.set_acl(Some(acl));
+                    }
+                    "inst3" => {
+                        let acl = create_acl_with_distance(vec![], 5, None);
+                        cfg.set_acl(Some(acl));
+                    }
+                    _ => {}
+                }
+
+                cfg
+            },
+            true,
+        )
+        .await;
+
+        wait_for_distance_sync(&insts[0], 1).await;
+
+        let routes = insts[0].get_peer_manager().list_routes().await;
+        println!("inst1 routes (foreign_node matching): {:?}", routes);
+
+        assert!(!routes.is_empty(), "Expected routes, got none");
+
+        for route in &routes {
+            if route.peer_id == insts[1].peer_id() {
+                assert_eq!(
+                    route.distance, 100,
+                    "Route to inst2 should have distance=100 (local_high rule), got {}",
+                    route.distance
+                );
+            }
+        }
+
+        drop_insts(insts).await;
+    }
+
+    /// Verify distance boundary handling (0, negative, overflow)
+    #[rstest]
+    #[case::zero_corrected(0, 1)]
+    #[case::max_capped(u32::MAX, i32::MAX)]
+    #[tokio::test]
+    #[serial_test::serial]
+    pub async fn test_distance_boundary_handling(
+        #[case] input_dist: u32,
+        #[case] expected_dist: i32,
+    ) {
+        prepare_linux_namespaces();
+
+        let insts = super::init_three_node_ex(
+            "udp",
+            |cfg| {
+                let mut flags = cfg.get_flags();
+                flags.latency_first = false;
+                cfg.set_flags(flags);
+
+                if cfg.get_inst_name() == "inst2" {
+                    let acl = create_acl_with_distance(vec![], input_dist, None);
+                    cfg.set_acl(Some(acl));
+                }
+
+                cfg
+            },
+            false,
+        )
+        .await;
+
+        wait_for_distance_sync(&insts[0], 1).await;
+
+        let routes = insts[0].get_peer_manager().list_routes().await;
+        println!("inst1 routes (boundary handling): {:?}", routes);
+
+        if input_dist == 0 {
+            check_route_distance(&routes, insts[1].peer_id(), expected_dist);
+        } else {
+            let route = routes
+                .iter()
+                .find(|r| r.peer_id == insts[1].peer_id())
+                .unwrap();
+            assert!(route.distance > 0);
+        }
+
+        drop_insts(insts).await;
+    }
+
+    /// Additional test: Verify priority ordering of distance rules
+    /// Uses group-based rules since IP matching requires OSPF sync
+    #[tokio::test]
+    #[serial_test::serial]
+    pub async fn test_distance_rule_priority() {
+        prepare_linux_namespaces();
+
+        let group_name = "test_group";
+        let group_secret = "secret";
+
+        let insts = super::init_three_node_ex(
+            "udp",
+            |cfg| {
+                let mut flags = cfg.get_flags();
+                flags.latency_first = false;
+                cfg.set_flags(flags);
+
+                let group_info = GroupInfo {
+                    declares: vec![GroupIdentity {
+                        group_name: group_name.to_string(),
+                        group_secret: group_secret.to_string(),
+                    }],
+                    members: vec![group_name.to_string()],
+                };
+
+                if cfg.get_inst_name() == "inst2" {
+                    let acl = create_acl_with_distance(
+                        vec![
+                            create_group_distance_rule("low_priority", 50, 100, vec![group_name]),
+                            create_group_distance_rule("high_priority", 200, 5, vec![group_name]),
+                        ],
+                        1,
+                        Some(group_info.clone()),
+                    );
+                    cfg.set_acl(Some(acl));
+                } else {
+                    let acl = Acl {
+                        acl_v1: Some(AclV1 {
+                            group: Some(group_info.clone()),
+                            ..Default::default()
+                        }),
+                    };
+                    cfg.set_acl(Some(acl));
+                }
+
+                cfg
+            },
+            false,
+        )
+        .await;
+
+        wait_for_route_distance(&insts[0], insts[1].peer_id(), 5, 60).await;
+
+        let routes = insts[0].get_peer_manager().list_routes().await;
+        println!("inst1 routes (priority test): {:?}", routes);
+
+        assert!(
+            routes.len() >= 2,
+            "Expected at least 2 routes, got {:?}",
+            routes
+        );
+
+        check_route_distance(&routes, insts[1].peer_id(), 5);
+        check_route_distance(&routes, insts[2].peer_id(), 6);
+
+        drop_insts(insts).await;
+    }
+
+    /// Verify data path preference based on total distance
+    #[rstest]
+    #[case::prefer_direct(100, 1, vec![], 1)]
+    #[case::prefer_relay(1, 1, vec![("10.144.144.1/32", 100)], 2)]
+    #[tokio::test]
+    #[serial_test::serial]
+    pub async fn test_distance_routing_preference(
+        #[case] inst2_dist: u32,
+        #[case] inst3_dist: u32,
+        #[case] inst3_rules: Vec<(&str, u32)>,
+        #[case] expected_cost: i32,
+    ) {
+        prepare_linux_namespaces();
+
+        let insts = super::init_three_node_ex(
+            "udp",
+            |cfg| {
+                let mut flags = cfg.get_flags();
+                flags.latency_first = false;
+                cfg.set_flags(flags);
+
+                match cfg.get_inst_name().as_str() {
+                    "inst2" => {
+                        cfg.set_acl(Some(create_acl_with_distance(vec![], inst2_dist, None)));
+                    }
+                    "inst3" => {
+                        let rules = inst3_rules
+                            .iter()
+                            .map(|(ip, dist)| create_ip_distance_rule("rule", 100, *dist, vec![ip]))
+                            .collect();
+                        cfg.set_acl(Some(create_acl_with_distance(rules, inst3_dist, None)));
+                    }
+                    _ => {}
+                }
+                cfg
+            },
+            false,
+        )
+        .await;
+
+        make_three_node_full_mesh(&insts).await;
+
+        wait_for_condition(
+            || async {
+                let routes = insts[0].get_peer_manager().list_routes().await;
+                let inst3_route = routes.iter().find(|r| r.peer_id == insts[2].peer_id());
+                match inst3_route {
+                    Some(route) => route.cost == expected_cost,
+                    None => false,
+                }
+            },
+            Duration::from_secs(60),
+        )
+        .await;
+
+        let routes = insts[0].get_peer_manager().list_routes().await;
+        check_route_cost(&routes, insts[2].peer_id(), expected_cost);
+
+        let forwarded_before = get_forwarded_packets(&insts[1]);
+        for _ in 0..5 {
+            ping_test("net_a", "10.144.144.3", None).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let forwarded_after = get_forwarded_packets(&insts[1]);
+
+        if expected_cost == 1 {
+            assert_eq!(
+                forwarded_after, forwarded_before,
+                "Should NOT forward via inst2"
+            );
+        } else {
+            assert!(
+                forwarded_after > forwarded_before,
+                "Should forward via inst2"
+            );
+        }
+
+        drop_insts(insts).await;
+    }
 }

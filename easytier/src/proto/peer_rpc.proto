@@ -217,7 +217,10 @@ service TcpHolePunchRpc {
   rpc ExchangeMappedAddr(TcpHolePunchRequest) returns (TcpHolePunchResponse);
 }
 
-message DirectConnectedPeerInfo { int32 latency_ms = 1; }
+message DirectConnectedPeerInfo {
+  int32 latency_ms = 1;
+  uint32 distance = 2;
+}
 
 message PeerInfoForGlobalMap {
   map<uint32, DirectConnectedPeerInfo> direct_peers = 1;

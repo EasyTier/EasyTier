@@ -2,9 +2,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::net::{IpAddr, SocketAddr};
 use std::{
     hash::Hasher,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
 };
 
+use crate::common::acl_processor::RouteDistanceProcessor;
 use crate::common::config::ProxyNetworkConfig;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
@@ -97,6 +98,8 @@ pub struct GlobalCtx {
     stats_manager: Arc<StatsManager>,
 
     acl_filter: Arc<AclFilter>,
+
+    route_distance_processor: RwLock<Option<(u64, Arc<RouteDistanceProcessor>)>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -187,6 +190,8 @@ impl GlobalCtx {
             stats_manager: Arc::new(StatsManager::new()),
 
             acl_filter: Arc::new(AclFilter::new()),
+
+            route_distance_processor: RwLock::new(None),
         }
     }
 
@@ -402,6 +407,46 @@ impl GlobalCtx {
 
     pub fn get_acl_filter(&self) -> &Arc<AclFilter> {
         &self.acl_filter
+    }
+
+    pub fn get_route_distance_processor(&self) -> Arc<RouteDistanceProcessor> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let acl = self.config.get_acl();
+        let route_distance_config = acl
+            .as_ref()
+            .and_then(|a| a.acl_v1.as_ref())
+            .and_then(|v1| v1.route_distance.as_ref());
+
+        let mut hasher = DefaultHasher::new();
+        route_distance_config.hash(&mut hasher);
+        let config_digest = hasher.finish();
+
+        {
+            let cache = self.route_distance_processor.read().unwrap();
+            if let Some((digest, proc)) = &*cache {
+                if *digest == config_digest {
+                    return proc.clone();
+                }
+            }
+        }
+
+        let mut cache = self.route_distance_processor.write().unwrap();
+        if let Some((digest, proc)) = &*cache {
+            if *digest == config_digest {
+                return proc.clone();
+            }
+        }
+
+        let proc = Arc::new(if let Some(config) = route_distance_config {
+            RouteDistanceProcessor::new(config)
+        } else {
+            RouteDistanceProcessor::new(&Default::default())
+        });
+
+        *cache = Some((config_digest, proc.clone()));
+        proc
     }
 
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {

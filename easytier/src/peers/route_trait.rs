@@ -39,7 +39,7 @@ pub trait RouteCostCalculatorInterface: Send + Sync {
     fn begin_update(&mut self) {}
     fn end_update(&mut self) {}
 
-    fn calculate_cost(&self, _src: PeerId, _dst: PeerId) -> i32 {
+    fn calculate_cost(&self, _src: PeerId, _dst: PeerId, _policy: NextHopPolicy) -> i32 {
         1
     }
 
