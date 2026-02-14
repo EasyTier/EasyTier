@@ -245,6 +245,12 @@ impl TunnelConnector for QUICTunnelConnector {
         let addr =
             check_scheme_and_get_socket_addr::<SocketAddr>(&self.addr, "quic", self.ip_version)
                 .await?;
+        if addr.port() == 0 {
+            return Err(TunnelError::InvalidAddr(format!(
+                "invalid remote quic port 0 in url: {} (port 0 placeholder is only supported for ws/wss)",
+                self.addr
+            )));
+        }
         let local_addr = if addr.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -257,7 +263,12 @@ impl TunnelConnector for QUICTunnelConnector {
         // connect to server
         let connection = endpoint
             .connect(addr, "localhost")
-            .unwrap()
+            .map_err(|e| {
+                TunnelError::InvalidAddr(format!(
+                    "invalid quic connect target, url: {}, error: {}",
+                    self.addr, e
+                ))
+            })?
             .await
             .with_context(|| "connect failed")?;
         tracing::info!("[client] connected: addr={}", connection.remote_address());
@@ -300,7 +311,7 @@ impl TunnelConnector for QUICTunnelConnector {
 mod tests {
     use crate::tunnel::{
         common::tests::{_tunnel_bench, _tunnel_pingpong},
-        IpVersion,
+        IpVersion, TunnelConnector,
     };
 
     use super::*;
@@ -354,5 +365,12 @@ mod tests {
         listener.listen().await.unwrap();
         let port = listener.local_url().port().unwrap();
         assert!(port > 0);
+    }
+
+    #[tokio::test]
+    async fn quic_connector_reject_port_zero() {
+        let mut connector = QUICTunnelConnector::new("quic://127.0.0.1:0".parse().unwrap());
+        let err = connector.connect().await.unwrap_err().to_string();
+        assert!(err.contains("port 0"), "unexpected error: {}", err);
     }
 }
