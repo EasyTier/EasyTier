@@ -13,7 +13,7 @@ use winapi::um::processthreadsapi::{GetCurrentProcess, OpenProcessToken};
 use winapi::um::securitybaseapi::GetTokenInformation;
 use winapi::um::winnt::{TokenElevation, HANDLE, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::HWND;
+use windows::Win32::Foundation::{HINSTANCE, HWND};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -81,6 +81,20 @@ impl Command {
     /// }
     /// ```
     pub fn output(&self) -> Result<Output> {
+        let r = self.run_elevated()?;
+        Ok(Output {
+            status: ExitStatus::from_raw(r.0 as u32),
+            stdout: Vec::<u8>::new(),
+            stderr: Vec::<u8>::new(),
+        })
+    }
+
+    pub fn spawn(&self) -> Result<()> {
+        self.run_elevated()?;
+        Ok(())
+    }
+
+    fn run_elevated(&self) -> Result<HINSTANCE> {
         let args = self
             .cmd
             .get_args()
@@ -105,10 +119,14 @@ impl Command {
                 SW_HIDE,
             )
         };
-        Ok(Output {
-            status: ExitStatus::from_raw(r.0 as u32),
-            stdout: Vec::<u8>::new(),
-            stderr: Vec::<u8>::new(),
-        })
+
+        if r.0 as isize <= 32 {
+            return Err(anyhow::anyhow!(
+                "ShellExecuteW failed with code {}",
+                r.0 as isize
+            ));
+        }
+
+        Ok(r)
     }
 }
