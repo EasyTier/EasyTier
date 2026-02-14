@@ -247,7 +247,7 @@ impl TunnelConnector for QUICTunnelConnector {
                 .await?;
         if addr.port() == 0 {
             return Err(TunnelError::InvalidAddr(format!(
-                "invalid remote quic port 0 in url: {} (port 0 placeholder is only supported for ws/wss)",
+                "invalid remote QUIC port 0 in url: {} (port 0 is not a valid QUIC port)",
                 self.addr
             )));
         }
