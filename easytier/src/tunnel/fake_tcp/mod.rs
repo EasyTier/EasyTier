@@ -412,8 +412,9 @@ impl Stream for FakeTcpStream {
                         let min_packet_len = TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE;
                         if expected_payload_len < min_packet_len {
                             tracing::warn!(
+                                "drop fake tcp packet with invalid length: expected_payload_len={}, min_required={}",
                                 expected_payload_len,
-                                "drop fake tcp packet with invalid length"
+                                min_packet_len
                             );
                             s.state = FakeTcpStreamState::Closed;
                             return Poll::Ready(None);
