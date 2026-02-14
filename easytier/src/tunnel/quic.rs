@@ -578,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn quic_pingpong() {
         let listener =
-            QUICTunnelListener::new("quic://0.0.0.0:21011".parse().unwrap(), global_ctx());
+            QUICTunnelListener::new("quic://[::]:21011".parse().unwrap(), global_ctx());
         let connector =
             QUICTunnelConnector::new("quic://127.0.0.1:21011".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
@@ -587,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn quic_bench() {
         let listener =
-            QUICTunnelListener::new("quic://0.0.0.0:21012".parse().unwrap(), global_ctx());
+            QUICTunnelListener::new("quic://[::]:21012".parse().unwrap(), global_ctx());
         let connector =
             QUICTunnelConnector::new("quic://127.0.0.1:21012".parse().unwrap(), global_ctx());
         _tunnel_bench(listener, connector).await
@@ -595,7 +595,7 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_pingpong() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
+        let listener = QUICTunnelListener::new("quic://[::]:31015".parse().unwrap(), global_ctx());
         let connector =
             QUICTunnelConnector::new("quic://[::1]:31015".parse().unwrap(), global_ctx());
         _tunnel_pingpong(listener, connector).await
@@ -603,7 +603,7 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_domain_pingpong() {
-        let listener = QUICTunnelListener::new("quic://[::1]:31016".parse().unwrap(), global_ctx());
+        let listener = QUICTunnelListener::new("quic://[::]:31016".parse().unwrap(), global_ctx());
         let mut connector = QUICTunnelConnector::new(
             "quic://test.easytier.top:31016".parse().unwrap(),
             global_ctx(),
