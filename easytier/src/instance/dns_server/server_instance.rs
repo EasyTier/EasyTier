@@ -464,7 +464,7 @@ fn get_system_config(
         return Ok(Some(Box::new(WindowsDNSManager::new(tun_name)?)));
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     {
         use super::system_config::darwin::DarwinConfigurator;
         return Ok(Some(Box::new(DarwinConfigurator::new())));
