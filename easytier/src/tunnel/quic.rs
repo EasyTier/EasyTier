@@ -266,7 +266,7 @@ pub struct QuicEndpointManager {
 static QUIC_ENDPOINT_MANAGER: OnceLock<QuicEndpointManager> = OnceLock::new();
 
 impl QuicEndpointManager {
-    fn create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
+    fn try_create(addr: SocketAddr, dual_stack: bool) -> std::io::Result<Endpoint> {
         let socket = socket2::Socket::new(
             socket2::Domain::for_address(addr),
             socket2::Type::DGRAM,
@@ -286,6 +286,31 @@ impl QuicEndpointManager {
         )?;
         endpoint.set_default_client_config(client_config());
         Ok(endpoint)
+    }
+
+    fn create<F>(&self, mut selector: F) -> std::io::Result<(&RwPool<Endpoint>, Option<Endpoint>)>
+    where
+        F: FnMut(&QuicEndpointManager) -> (&RwPool<Endpoint>, Option<(SocketAddr, bool)>),
+    {
+        loop {
+            let (pool, r) = selector(self);
+            let Some((addr, dual_stack)) = r else {
+                return Ok((pool, None));
+            };
+
+            let endpoint = Self::try_create(addr, dual_stack);
+            if let Err(e) = endpoint.as_ref() {
+                if dual_stack {
+                    tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
+                    self.both.disable();
+                    self.ipv4.enable();
+                    self.ipv6.enable();
+                    continue;
+                }
+            }
+
+            return Ok((pool, Some(endpoint?)));
+        }
     }
 }
 
@@ -323,10 +348,40 @@ impl QuicEndpointManager {
         QUIC_ENDPOINT_MANAGER.get().unwrap()
     }
 
-    fn get(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Endpoint> {
+    /// Get a QUIC endpoint to be used as a server
+    ///
+    /// # Arguments
+    /// * `addr`: listen address
+    fn server(global_ctx: &ArcGlobalCtx, addr: SocketAddr) -> std::io::Result<Endpoint> {
         let mgr = Self::load(global_ctx);
 
-        let pool = loop {
+        let (pool, endpoint) = mgr.create(|mgr| {
+            let dual_stack = addr.ip() == Ipv6Addr::UNSPECIFIED && mgr.both.is_enabled();
+            let pool = if addr.is_ipv4() {
+                &mgr.ipv4
+            } else if dual_stack {
+                &mgr.both
+            } else {
+                &mgr.ipv6
+            };
+            (pool, Some((addr, dual_stack)))
+        })?;
+
+        let endpoint = endpoint.expect("server endpoint creation should not return None");
+        endpoint.set_server_config(Some(server_config()));
+        pool.push(endpoint.clone());
+
+        Ok(endpoint)
+    }
+
+    /// Get a quic endpoint to be used as a client
+    ///
+    /// # Arguments
+    /// * `ip_version`: the IP version of the remote address
+    fn client(global_ctx: &ArcGlobalCtx, ip_version: IpVersion) -> std::io::Result<Endpoint> {
+        let mgr = Self::load(global_ctx);
+
+        let (pool, endpoint) = mgr.create(|mgr| {
             let dual_stack = mgr.both.is_enabled();
             let (pool, addr) = match ip_version {
                 IpVersion::V4 if !dual_stack => (&mgr.ipv4, (Ipv4Addr::UNSPECIFIED, 0).into()),
@@ -336,21 +391,15 @@ impl QuicEndpointManager {
                 }
             };
             if pool.is_full() {
-                break pool;
+                (pool, None)
+            } else {
+                (pool, Some((addr, dual_stack)))
             }
-            let endpoint = Self::create(addr, dual_stack);
-            if let Err(e) = endpoint.as_ref() {
-                if dual_stack {
-                    tracing::warn!("create dual stack quic endpoint failed: {:?}", e);
-                    mgr.both.disable();
-                    mgr.ipv4.enable();
-                    mgr.ipv6.enable();
-                    continue;
-                }
-            }
-            pool.try_push(endpoint?);
-            break pool;
-        };
+        })?;
+
+        if let Some(endpoint) = endpoint {
+            pool.try_push(endpoint);
+        }
 
         Ok(pool.with_iter(|iter| iter.min_by_key(|e| e.open_connections()).unwrap().clone()))
     }
@@ -364,7 +413,7 @@ impl QuicEndpointManager {
         } else {
             IpVersion::V6
         };
-        let endpoint = Self::get(global_ctx, ip_version)?;
+        let endpoint = Self::client(global_ctx, ip_version)?;
         let connection = endpoint
             .connect(addr, "localhost")
             .map_err(std::io::Error::other)?
