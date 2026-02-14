@@ -63,7 +63,10 @@ impl Service {
                 ),
             ));
 
-        #[cfg(not(any(target_os = "windows", all(target_os = "macos", not(feature = "macos-ne")))))]
+        #[cfg(not(any(
+            target_os = "windows",
+            all(target_os = "macos", not(feature = "macos-ne"))
+        )))]
         let service_manager: Box<dyn ServiceManager> =
             Box::new(service_manager::TypedServiceManager::native()?);
 

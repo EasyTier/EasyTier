@@ -16,7 +16,11 @@ struct InterfaceFilter {
     iface: NetworkInterface,
 }
 
-#[cfg(any(target_os = "android", any(target_os = "ios", feature = "macos-ne"), target_env = "ohos"))]
+#[cfg(any(
+    target_os = "android",
+    any(target_os = "ios", feature = "macos-ne"),
+    target_env = "ohos"
+))]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
         true
@@ -64,7 +68,10 @@ impl InterfaceFilter {
 static NETWORKSETUP_CACHE: std::sync::OnceLock<Mutex<(String, std::time::Instant)>> =
     std::sync::OnceLock::new();
 
-#[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 impl InterfaceFilter {
     #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     async fn get_networksetup_output() -> String {

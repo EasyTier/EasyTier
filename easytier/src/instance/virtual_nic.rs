@@ -583,7 +583,11 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(target_os = "android", any(target_os = "ios", feature = "macos-ne"), target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        any(target_os = "ios", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
@@ -827,7 +831,10 @@ impl NicCtx {
         nic.remove_ip(None).await?;
         nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
             .await?;
-        #[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
         {
             nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
                 .await?;
@@ -841,7 +848,10 @@ impl NicCtx {
         nic.remove_ipv6(None).await?;
         nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
             .await?;
-        #[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
         {
             nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
                 .await?;
@@ -1134,7 +1144,10 @@ impl NicCtx {
                         let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
-                    #[cfg(any(all(target_os = "macos", not(feature = "macos-ne")), target_os = "freebsd"))]
+                    #[cfg(any(
+                        all(target_os = "macos", not(feature = "macos-ne")),
+                        target_os = "freebsd"
+                    ))]
                     {
                         // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
                         let _ = nic
@@ -1175,7 +1188,11 @@ impl NicCtx {
         Ok(())
     }
 
-    #[cfg(any(target_os = "android", any(target_os = "ios", feature = "macos-ne"), target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        any(target_os = "ios", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;
