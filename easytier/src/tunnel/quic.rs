@@ -11,7 +11,8 @@ use crate::tunnel::{
     TunnelInfo,
 };
 use anyhow::Context;
-
+use derive_more::{Deref, DerefMut};
+use parking_lot::RwLock;
 use quinn::{
     congestion::BbrConfig, udp::RecvMeta, AsyncUdpSocket, ClientConfig, Connection, Endpoint,
     EndpointConfig, ServerConfig, TransportConfig, UdpPoller,
@@ -142,6 +143,44 @@ struct ConnWrapper {
 impl Drop for ConnWrapper {
     fn drop(&mut self) {
         self.conn.close(0u32.into(), b"done");
+    }
+}
+
+#[derive(Debug, Deref, DerefMut)]
+struct RwPool<Item> {
+    #[deref]
+    #[deref_mut]
+    pool: RwLock<Vec<Item>>,
+    capacity: usize,
+}
+
+impl<Item> RwPool<Item> {
+    fn new(capacity: usize) -> Self {
+        Self {
+            pool: RwLock::new(Vec::with_capacity(capacity)),
+            capacity,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        self.read().len() >= self.capacity
+    }
+
+    fn try_push(&self, item: Item) -> Option<Item> {
+        let mut pool = self.write();
+        if pool.len() < self.capacity {
+            pool.push(item);
+            return None;
+        }
+        Some(item)
+    }
+
+    fn resize(&self) {
+        if self.read().capacity() != self.capacity {
+            let mut pool = self.write();
+            pool.reserve_exact(self.capacity);
+            pool.truncate(self.capacity);
+        }
     }
 }
 
