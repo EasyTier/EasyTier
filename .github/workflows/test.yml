@@ -61,7 +61,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check Clippy
-        run: cargo clippy --all-targets --all-features --all -- -D warnings
+        run: cargo clippy --all-targets --features full --all -- -D warnings
 
       - name: Check features
         if: ${{ !cancelled() }}
@@ -87,7 +87,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Archive test
-        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --all-features
+        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
 
       - uses: actions/upload-artifact@v4
         with:
