@@ -110,7 +110,7 @@ pub async fn create_connector_by_url(
         "quic" => {
             let dst_addr =
                 check_scheme_and_get_socket_addr::<SocketAddr>(&url, "quic", ip_version).await?;
-            let mut connector = QUICTunnelConnector::new(url);
+            let mut connector = QUICTunnelConnector::new(url, global_ctx.clone());
             if global_ctx.config.get_flags().bind_device {
                 set_bind_addr_for_peer_connector(
                     &mut connector,
