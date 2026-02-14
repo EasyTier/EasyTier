@@ -23,6 +23,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
+// region config
 pub fn transport_config() -> Arc<TransportConfig> {
     let mut config = TransportConfig::default();
 
@@ -55,17 +56,9 @@ pub fn endpoint_config() -> EndpointConfig {
     config.max_udp_payload_size(65527).unwrap();
     config
 }
+//endregion
 
-struct ConnWrapper {
-    conn: Connection,
-}
-
-impl Drop for ConnWrapper {
-    fn drop(&mut self) {
-        self.conn.close(0u32.into(), b"done");
-    }
-}
-
+//region rw pool
 #[derive(Derivative)]
 #[derivative(Default(bound = ""))]
 #[derive(Debug, Deref, DerefMut)]
@@ -176,7 +169,9 @@ impl<Item> RwPool<Item> {
         f(&mut persistent.iter().chain(ephemeral.iter()))
     }
 }
+//endregion
 
+//region endpoint manager
 #[derive(Debug)]
 pub struct QuicEndpointManager {
     ipv4: RwPool<Endpoint>,
@@ -341,6 +336,17 @@ impl QuicEndpointManager {
             .await?;
 
         Ok((endpoint, connection))
+    }
+}
+//endregion
+
+struct ConnWrapper {
+    conn: Connection,
+}
+
+impl Drop for ConnWrapper {
+    fn drop(&mut self) {
+        self.conn.close(0u32.into(), b"done");
     }
 }
 
