@@ -114,7 +114,7 @@ impl IpProxy {
             tracing::error!("start icmp proxy failed: {:?}", e);
             if cfg!(not(any(
                 target_os = "android",
-                target_os = "ios",
+                any(target_os = "ios", feature = "macos-ne"),
                 target_env = "ohos"
             ))) {
                 // android, ios and ohos not support icmp proxy
@@ -802,7 +802,11 @@ impl Instance {
                     }
 
                     #[cfg(all(
-                        not(any(target_os = "android", target_os = "ios", target_env = "ohos")),
+                        not(any(
+                            target_os = "android",
+                            any(target_os = "ios", feature = "macos-ne"),
+                            target_env = "ohos"
+                        )),
                         feature = "tun"
                     ))]
                     {
@@ -846,7 +850,11 @@ impl Instance {
     }
 
     #[cfg(all(
-        not(any(target_os = "android", target_os = "ios", target_env = "ohos")),
+        not(any(
+            target_os = "android",
+            any(target_os = "ios", feature = "macos-ne"),
+            target_env = "ohos"
+        )),
         feature = "tun"
     ))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
@@ -936,7 +944,11 @@ impl Instance {
         {
             Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
-            #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+            #[cfg(not(any(
+                target_os = "android",
+                any(target_os = "ios", feature = "macos-ne"),
+                target_env = "ohos"
+            )))]
             if !self.global_ctx.config.get_flags().no_tun {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);
@@ -1440,7 +1452,11 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        any(target_os = "ios", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
     pub async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,

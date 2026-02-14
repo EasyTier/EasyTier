@@ -61,11 +61,11 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Check Clippy
-        run: cargo clippy --all-targets --all-features --all -- -D warnings
+        run: cargo clippy --all-targets --features full --all -- -D warnings
 
       - name: Check features
         if: ${{ !cancelled() }}
-        run: cargo hack check --package easytier --each-feature --features aes-gcm --verbose
+        run: cargo hack check --package easytier --each-feature --features aes-gcm --exclude-features macos-ne --verbose
 
   pre-test:
     name: Build test
@@ -87,7 +87,7 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Archive test
-        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --all-features
+        run: cargo nextest archive --archive-file tests.tar.zst --package easytier --features full
 
       - uses: actions/upload-artifact@v4
         with:

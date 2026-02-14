@@ -16,7 +16,11 @@ struct InterfaceFilter {
     iface: NetworkInterface,
 }
 
-#[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+#[cfg(any(
+    target_os = "android",
+    any(target_os = "ios", feature = "macos-ne"),
+    target_env = "ohos"
+))]
 impl InterfaceFilter {
     async fn filter_iface(&self) -> bool {
         true
@@ -60,13 +64,16 @@ impl InterfaceFilter {
 }
 
 // Cache for networksetup command output
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
 static NETWORKSETUP_CACHE: std::sync::OnceLock<Mutex<(String, std::time::Instant)>> =
     std::sync::OnceLock::new();
 
-#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+#[cfg(any(
+    all(target_os = "macos", not(feature = "macos-ne")),
+    target_os = "freebsd"
+))]
 impl InterfaceFilter {
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     async fn get_networksetup_output() -> String {
         use anyhow::Context;
         use std::time::{Duration, Instant};
@@ -101,7 +108,7 @@ impl InterfaceFilter {
         stdout
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     async fn is_interface_physical(&self) -> bool {
         let interface_name = &self.iface.name;
         let stdout = Self::get_networksetup_output().await;
