@@ -769,6 +769,12 @@ impl NetworkConfig {
 
         if let Some(enable_magic_dns) = self.enable_magic_dns {
             flags.accept_dns = enable_magic_dns;
+
+            if flags.accept_dns {
+                if let Some(tld_dns_zone) = self.tld_dns_zone.clone() {
+                    flags.tld_dns_zone = tld_dns_zone;
+                }
+            }
         }
 
         if let Some(mtu) = self.mtu {
@@ -924,6 +930,9 @@ impl NetworkConfig {
         result.enable_magic_dns = Some(flags.accept_dns);
         result.mtu = Some(flags.mtu as i32);
         result.enable_private_mode = Some(flags.private_mode);
+        if flags.accept_dns {
+            result.tld_dns_zone = Some(flags.tld_dns_zone.clone());
+        }
 
         if flags.relay_network_whitelist == "*" {
             result.enable_relay_network_whitelist = Some(false);
@@ -1177,6 +1186,26 @@ mod tests {
                 flags.accept_dns = rng.gen_bool(0.6);
                 flags.mtu = rng.gen_range(1200..1500);
                 flags.private_mode = rng.gen_bool(0.3);
+
+                if flags.accept_dns && rng.gen_bool(0.5) {
+                    let tld = ["com", "cn", "io", "dev", "rs", "top", "xyz"];
+                    let mut subdomain = (0..rng.gen_range(3..8))
+                        .map(|_| match rng.gen_range(0..10) {
+                            0..=4 => rng.gen_range(b'a'..=b'z') as char,
+                            5..=8 => rng.gen_range(b'0'..=b'9') as char,
+                            _ => '-',
+                        })
+                        .collect::<String>()
+                        .trim_matches('-')
+                        .to_string();
+
+                    if subdomain.is_empty() {
+                        subdomain = String::from(rng.gen_range(b'a'..=b'z') as char)
+                    }
+
+                    flags.tld_dns_zone =
+                        format!("{}.{}.", subdomain, tld[rng.gen_range(0..tld.len())]);
+                }
 
                 if rng.gen_bool(0.4) {
                     flags.relay_network_whitelist = (0..rng.gen_range(1..3))
