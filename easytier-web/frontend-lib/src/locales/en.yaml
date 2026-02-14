@@ -18,12 +18,16 @@ advanced_settings: Advanced Settings
 basic_settings: Basic Settings
 listener_urls: Listener URLs
 rpc_port: RPC Port
+port: Port
 rpc_portal_whitelists: RPC Whitelist
 config_network: Config Network
 running: Running
 error_msg: Error Message
 detail: Detail
 add_new_network: New Network
+add_peer_url: Add Peer
+add_listener_url: Add Listener
+add_mapped_listener: Add Mapped Listener
 del_cur_network: Delete Current Network
 select_network: Select Network
 network_instances: Network Instances
@@ -336,6 +340,7 @@ web:
     info: Info
     enable: Enable
     disable: Disable
+    address: Address
 
   settings:
     title: Settings
