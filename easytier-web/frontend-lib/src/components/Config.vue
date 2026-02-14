@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog, Dropdown } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -172,6 +172,16 @@ const bool_flags: BoolFlag[] = [
   { field: 'enable_private_mode', help: 'enable_private_mode_help' },
 ]
 
+const encryptionAlgorithmOptions = ref([
+  { label: 'AES-GCM', value: 'aes-gcm' },
+  { label: 'AES-256-GCM', value: 'aes-256-gcm' },
+  { label: 'XOR', value: 'xor' },
+  { label: 'ChaCha20', value: 'chacha20' },
+  { label: 'OpenSSL AES-GCM', value: 'openssl-aes-gcm' },
+  { label: 'OpenSSL ChaCha20', value: 'openssl-chacha20' },
+  { label: 'OpenSSL AES-256-GCM', value: 'openssl-aes-256-gcm' },
+])
+
 const portForwardProtocolOptions = ref(["tcp", "udp"]);
 
 const editingPortForward = ref(false);
@@ -297,6 +307,16 @@ onMounted(() => {
                     </div>
 
                   </div>
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <label for="encryption_algorithm">{{ t('encryption_algorithm') }}</label>
+                  <Dropdown id="encryption_algorithm" v-model="curNetwork.encryption_algorithm"
+                    :options="encryptionAlgorithmOptions" option-label="label" option-value="value"
+                    :placeholder="t('encryption_algorithm_placeholder')" />
+                  <small class="p-text-secondary">{{ t('encryption_algorithm_help') }}</small>
                 </div>
               </div>
 
