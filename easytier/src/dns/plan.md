@@ -47,25 +47,26 @@ listeners = [
 ``` 
 
 <details>
-<summary><span><h2>计划和进展</h2></span></summary>
+<summary><h2>计划和进展</h2></summary>
 
 protobuf
 ---
 - `ZoneConfigPb`：包含所有 Zone 配置，以及一个 ID，该 ID 在读取 TOML 时生成
 - `DnsConfigPb`：包含 `name`、`domain` 和需要广播的 `ZoneConfigPb`
-- `DnsEphemeralConfig`: 用于 DnsServer 的短期接口，包含：instance id、时间戳、所有需要注册/更新的 Zone
-- `DnsPersistentConfig`: 用于 DnsServer 的长期接口，包含：instance id、时间戳、listeners 和 addresses
-- `DnsHeartbeat`: DnsClient 发送的心跳，包含：instance id、时间戳、当前存活的 zone ID 列表
+- `DnsMessageId`: 标记 DnsClient 和它发送的 RPC 消息，避免乱序，包含：instance id, sequence number
+- `DnsEphemeralConfig`: 用于 DnsServer 的短期接口，包含：id、需要注册/更新的 Zone、需要删除的 Zone ID
+- `DnsPersistentConfig`: 用于 DnsServer 的长期接口，包含：id、listeners 和 addresses
+- `DnsHeartbeat`: DnsClient 发送的心跳，包含：id
 
 DnsClient
 ---
 对于每个实例，它启动时读取 TOML 配置，然后用这个配置启动一个 DnsClient ，它需要做到：
-1. 启动时向 DnsServer 发送 listeners 和 addresses
+1. 启动时（配置更新时？）向 DnsServer 发送 listeners 和 addresses
 2. 使用自己的 name 和 domain 创建一个专用 zone，让 name 指向自身 IP，并监听 IP 地址变化事件（为 DNS 一致性避免使用 127.0.0.1 作为 IP，若没有 IP 则不创建这个 zone）
 3. 每次获得 PeerRouteInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是个 protobuf message (DnsConfigPb)，保存了远程 Peer 的 dns 配置（不含 addresses 和 listeners），接收后它需要：
     1. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 PeerRouteInfo 中的）
-    2. 检查 2., 3.i. 中得到的 zone、PeerRouteInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，将所有有变化且该变化不是删除的 zone 报告给 DnsServer，如果没变化就不要上报
-4. 每隔一小段时间向 DnsServer 发送带时间戳的心跳，心跳中包含当前存活的 zone （这将删除 3.ii. 中删除的 zone）
+    2. 检查 2., 3.i. 中得到的 zone、PeerRouteInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，将所有有变化的 zone 报告给 DnsServer，如果没变化就不要上报
+4. 每隔一小段时间向 DnsServer 发送心跳
 
 DnsServer
 ---
@@ -77,8 +78,8 @@ DnsServer
 DnsServer 需要做到：
 
 1.  提供两个 RPC 接口，以及与之对应的配置清理机制：
-    1. 短期接口，该接口获得的配置有效期与 DnsClient 的心跳间隔相同，比如：zone
-    2. 长期接口，该接口获得的配置有效期与 DnsClient 的有效期相同，比如：listeners, addresses
+    1. 短期接口，该接口获得的配置更新频率较高，有效期与 DnsClient 的心跳间隔相同，比如：zone
+    2. 长期接口，该接口获得的配置更新频率较低，有效期与 DnsClient 的（配置）有效期相同，比如：listeners, addresses
 2. 接受心跳时检查是否有死亡的 Zone，需要清除
 3. 持续检查是否有过期（丢失心跳）的 DnsClient，需要把这些 DnsClient 提供的 listeners, addresses 和 zone 清除 （应该不需要专门清理 zone）
 4. 启动时自动添加 root zone，并把它的 forwarder 设置为系统 DNS
@@ -115,7 +116,7 @@ TODO
 </details>
 
 <details>
-<summary><span><h2>Related Issues</h2></span></summary>
+<summary><h2>Related Issues</h2></summary>
 
 - related to https://github.com/EasyTier/EasyTier/issues/742
 - related to https://github.com/EasyTier/EasyTier/issues/771
