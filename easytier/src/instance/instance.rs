@@ -31,7 +31,7 @@ use crate::gateway::icmp_proxy::IcmpProxy;
 #[cfg(feature = "kcp")]
 use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc};
 #[cfg(feature = "quic")]
-use crate::gateway::quic_proxy::{QUICProxyDst, QUICProxyDstRpcService, QUICProxySrc};
+use crate::gateway::quic_proxy::{QuicProxy, QuicProxyDstRpcService};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
 use crate::peer_center::instance::PeerCenterInstance;
@@ -114,7 +114,7 @@ impl IpProxy {
             tracing::error!("start icmp proxy failed: {:?}", e);
             if cfg!(not(any(
                 target_os = "android",
-                target_os = "ios",
+                any(target_os = "ios", feature = "macos-ne"),
                 target_env = "ohos"
             ))) {
                 // android, ios and ohos not support icmp proxy
@@ -541,9 +541,7 @@ pub struct Instance {
     kcp_proxy_dst: Option<KcpProxyDst>,
 
     #[cfg(feature = "quic")]
-    quic_proxy_src: Option<QUICProxySrc>,
-    #[cfg(feature = "quic")]
-    quic_proxy_dst: Option<QUICProxyDst>,
+    quic_proxy: Option<QuicProxy>,
 
     peer_center: Arc<PeerCenterInstance>,
 
@@ -627,9 +625,7 @@ impl Instance {
             kcp_proxy_dst: None,
 
             #[cfg(feature = "quic")]
-            quic_proxy_src: None,
-            #[cfg(feature = "quic")]
-            quic_proxy_dst: None,
+            quic_proxy: None,
 
             peer_center,
 
@@ -806,7 +802,11 @@ impl Instance {
                     }
 
                     #[cfg(all(
-                        not(any(target_os = "android", target_os = "ios", target_env = "ohos")),
+                        not(any(
+                            target_os = "android",
+                            any(target_os = "ios", feature = "macos-ne"),
+                            target_env = "ohos"
+                        )),
                         feature = "tun"
                     ))]
                     {
@@ -850,7 +850,11 @@ impl Instance {
     }
 
     #[cfg(all(
-        not(any(target_os = "android", target_os = "ios", target_env = "ohos")),
+        not(any(
+            target_os = "android",
+            any(target_os = "ios", feature = "macos-ne"),
+            target_env = "ohos"
+        )),
         feature = "tun"
     ))]
     fn check_for_static_ip(&self, first_round_output: oneshot::Sender<Result<(), Error>>) {
@@ -927,21 +931,6 @@ impl Instance {
         });
     }
 
-    #[cfg(feature = "quic")]
-    async fn run_quic_dst(&mut self) -> Result<(), Error> {
-        if self.global_ctx.get_flags().disable_quic_input {
-            return Ok(());
-        }
-
-        let route = Arc::new(self.peer_manager.get_route());
-        let quic_dst = QUICProxyDst::new(self.global_ctx.clone(), route)?;
-        quic_dst.start().await?;
-        self.global_ctx
-            .set_quic_proxy_port(Some(quic_dst.local_addr()?.port()));
-        self.quic_proxy_dst = Some(quic_dst);
-        Ok(())
-    }
-
     pub async fn run(&mut self) -> Result<(), Error> {
         self.listener_manager
             .lock()
@@ -955,7 +944,11 @@ impl Instance {
         {
             Self::clear_nic_ctx(self.nic_ctx.clone(), self.peer_packet_receiver.clone()).await;
 
-            #[cfg(not(any(target_os = "android", target_os = "ios", target_env = "ohos")))]
+            #[cfg(not(any(
+                target_os = "android",
+                any(target_os = "ios", feature = "macos-ne"),
+                target_env = "ohos"
+            )))]
             if !self.global_ctx.config.get_flags().no_tun {
                 let (output_tx, output_rx) = oneshot::channel();
                 self.check_for_static_ip(output_tx);
@@ -982,19 +975,13 @@ impl Instance {
         }
 
         #[cfg(feature = "quic")]
-        if self.global_ctx.get_flags().enable_quic_proxy {
-            let quic_src = QUICProxySrc::new(self.get_peer_manager()).await;
-            quic_src.start().await;
-            self.quic_proxy_src = Some(quic_src);
-        }
-
-        #[cfg(feature = "quic")]
-        if !self.global_ctx.get_flags().disable_quic_input {
-            if let Err(e) = self.run_quic_dst().await {
-                eprintln!(
-                    "quic input start failed: {:?} (some platforms may not support)",
-                    e
-                );
+        {
+            let quic_src = self.global_ctx.get_flags().enable_quic_proxy;
+            let quic_dst = !self.global_ctx.get_flags().disable_quic_input;
+            if quic_src || quic_dst {
+                let mut quic_proxy = QuicProxy::new(self.get_peer_manager());
+                quic_proxy.run(quic_src, quic_dst).await;
+                self.quic_proxy = Some(quic_proxy);
             }
         }
 
@@ -1423,19 +1410,20 @@ impl Instance {
                 }
 
                 #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.quic_proxy_src.as_ref() {
-                    tcp_proxy_rpc_services.insert(
-                        "quic_src".to_string(),
-                        Arc::new(TcpProxyRpcService::new(quic_proxy.get_tcp_proxy())),
-                    );
-                }
+                if let Some(quic_proxy) = self.quic_proxy.as_ref() {
+                    if let Some(quic_src) = quic_proxy.src() {
+                        tcp_proxy_rpc_services.insert(
+                            "quic_src".to_string(),
+                            Arc::new(TcpProxyRpcService::new(quic_src.get_tcp_proxy())),
+                        );
+                    }
 
-                #[cfg(feature = "quic")]
-                if let Some(quic_proxy) = self.quic_proxy_dst.as_ref() {
-                    tcp_proxy_rpc_services.insert(
-                        "quic_dst".to_string(),
-                        Arc::new(QUICProxyDstRpcService::new(quic_proxy)),
-                    );
+                    if let Some(quic_dst) = quic_proxy.dst() {
+                        tcp_proxy_rpc_services.insert(
+                            "quic_dst".to_string(),
+                            Arc::new(QuicProxyDstRpcService::new(quic_dst)),
+                        );
+                    }
                 }
 
                 tcp_proxy_rpc_services
@@ -1464,7 +1452,11 @@ impl Instance {
         self.peer_packet_receiver.clone()
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        any(target_os = "ios", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
     pub async fn setup_nic_ctx_for_mobile(
         nic_ctx: ArcNicCtx,
         global_ctx: ArcGlobalCtx,

@@ -49,7 +49,7 @@ impl Service {
     pub fn new(name: String) -> Result<Self, anyhow::Error> {
         #[cfg(target_os = "windows")]
         let service_manager = Box::new(self::win_service_manager::WinServiceManager::new()?);
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
         let service_manager: Box<dyn ServiceManager> =
             Box::new(service_manager::TypedServiceManager::Launchd(
                 service_manager::LaunchdServiceManager::system().with_config(
@@ -63,7 +63,10 @@ impl Service {
                 ),
             ));
 
-        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        #[cfg(not(any(
+            target_os = "windows",
+            all(target_os = "macos", not(feature = "macos-ne"))
+        )))]
         let service_manager: Box<dyn ServiceManager> =
             Box::new(service_manager::TypedServiceManager::native()?);
 

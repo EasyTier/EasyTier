@@ -513,23 +513,26 @@ async fn get_log_dir_path(app: tauri::AppHandle) -> Result<String, String> {
 #[cfg(not(target_os = "android"))]
 fn toggle_window_visibility(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let visible = if window.is_visible().unwrap_or_default() {
-            if window.is_minimized().unwrap_or_default() {
-                let _ = window.unminimize();
-                false
-            } else {
-                true
+        let visible = window.is_visible().unwrap_or_default();
+        let minimized = window.is_minimized().unwrap_or_default();
+        let focused = window.is_focused().unwrap_or_default();
+
+        let should_show = !visible || minimized || !focused;
+        if should_show {
+            if !visible {
+                let _ = window.show();
             }
+            if minimized {
+                let _ = window.unminimize();
+            }
+            if !focused {
+                let _ = window.set_focus();
+            }
+            let _ = set_dock_visibility(app.clone(), true);
         } else {
-            let _ = window.show();
-            false
-        };
-        if visible {
             let _ = window.hide();
-        } else {
-            let _ = window.set_focus();
+            let _ = set_dock_visibility(app.clone(), false);
         }
-        let _ = set_dock_visibility(app.clone(), !visible);
     }
 }
 

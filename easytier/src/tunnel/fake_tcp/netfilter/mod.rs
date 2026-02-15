@@ -26,7 +26,7 @@ cfg_if::cfg_if! {
                 }
             }
         }
-    } else if #[cfg(target_os = "macos")] {
+    } else if #[cfg(all(target_os = "macos", not(feature = "macos-ne")))] {
         pub mod macos_bpf;
 
         pub fn create_tun(

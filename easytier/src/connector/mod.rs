@@ -5,6 +5,8 @@ use std::{
 
 use http_connector::HttpTunnelConnector;
 
+#[cfg(feature = "faketcp")]
+use crate::tunnel::fake_tcp::FakeTcpTunnelConnector;
 #[cfg(feature = "quic")]
 use crate::tunnel::quic::QUICTunnelConnector;
 #[cfg(unix)]
@@ -14,9 +16,8 @@ use crate::tunnel::wireguard::{WgConfig, WgTunnelConnector};
 use crate::{
     common::{error::Error, global_ctx::ArcGlobalCtx, idn, network::IPCollector},
     tunnel::{
-        check_scheme_and_get_socket_addr, fake_tcp::FakeTcpTunnelConnector,
-        ring::RingTunnelConnector, tcp::TcpTunnelConnector, udp::UdpTunnelConnector, IpVersion,
-        TunnelConnector,
+        check_scheme_and_get_socket_addr, ring::RingTunnelConnector, tcp::TcpTunnelConnector,
+        udp::UdpTunnelConnector, IpVersion, TunnelConnector,
     },
 };
 
@@ -35,7 +36,7 @@ async fn set_bind_addr_for_peer_connector(
 ) {
     if cfg!(any(
         target_os = "android",
-        target_os = "ios",
+        any(target_os = "ios", feature = "macos-ne"),
         target_env = "ohos"
     )) {
         return;
@@ -165,6 +166,7 @@ pub async fn create_connector_by_url(
             let connector = dns_connector::DNSTunnelConnector::new(url, global_ctx.clone());
             Box::new(connector)
         }
+        #[cfg(feature = "faketcp")]
         "faketcp" => {
             let dst_addr =
                 check_scheme_and_get_socket_addr::<SocketAddr>(&url, "faketcp", ip_version).await?;

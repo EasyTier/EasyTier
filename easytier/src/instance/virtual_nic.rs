@@ -367,9 +367,150 @@ impl VirtualNic {
         Ok(())
     }
 
+    /// FreeBSD specific: Rename a TUN interface
+    #[cfg(target_os = "freebsd")]
+    async fn rename_tun_interface(old_name: &str, new_name: &str) -> Result<(), Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg(old_name)
+            .arg("name")
+            .arg(new_name)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            tracing::info!(
+                "Successfully renamed interface {} to {}",
+                old_name,
+                new_name
+            );
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                "Failed to rename interface {} to {}: {}",
+                old_name,
+                new_name,
+                stderr
+            );
+            // Return Ok even if rename fails, as it's not critical
+            Ok(())
+        }
+    }
+
+    /// FreeBSD specific: List all TUN interface names
+    #[cfg(target_os = "freebsd")]
+    async fn list_tun_names() -> Result<Vec<String>, Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg("-g")
+            .arg("tun")
+            .output()
+            .await?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let tun_names: Vec<String> = stdout
+                .trim()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
+            tracing::debug!("Found TUN interfaces: {:?}", tun_names);
+            Ok(tun_names)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!("Failed to list TUN interfaces: {}", stderr);
+            Ok(Vec::new())
+        }
+    }
+
+    /// FreeBSD specific: Get interface information
+    #[cfg(target_os = "freebsd")]
+    async fn get_interface_info(ifname: &str) -> Result<String, Error> {
+        let output = tokio::process::Command::new("ifconfig")
+            .arg("-v")
+            .arg(ifname)
+            .output()
+            .await?;
+
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(
+                anyhow::anyhow!("Failed to get interface details for {}: {}", ifname, stderr)
+                    .into(),
+            )
+        }
+    }
+
+    /// FreeBSD specific: Extract original name from interface information
+    #[cfg(target_os = "freebsd")]
+    fn extract_original_name(ifinfo: &str) -> Option<String> {
+        ifinfo
+            .lines()
+            .find(|line| line.trim().starts_with("drivername:"))
+            .and_then(|line| line.trim().split_whitespace().nth(1))
+            .map(|name| name.to_string())
+    }
+
+    /// FreeBSD specific: Check if interface is used by any process
+    #[cfg(target_os = "freebsd")]
+    fn is_interface_used(ifinfo: &str) -> bool {
+        ifinfo.contains("Opened by PID")
+    }
+
+    /// FreeBSD specific: Restore TUN interface name to its original value
+    #[cfg(target_os = "freebsd")]
+    async fn restore_tun_name(dev_name: &str) -> Result<(), Error> {
+        let tun_names = Self::list_tun_names().await?;
+
+        // Check if desired dev_name is in use
+        if tun_names.iter().any(|name| name == dev_name) {
+            tracing::debug!(
+                "Desired dev_name {} is in TUN interfaces list, checking if it can be renamed",
+                dev_name
+            );
+
+            let ifinfo = Self::get_interface_info(dev_name).await?;
+
+            // Check if interface is not occupied
+            if !Self::is_interface_used(&ifinfo) {
+                // Extract original name
+                if let Some(orig_name) = Self::extract_original_name(&ifinfo) {
+                    if orig_name != dev_name {
+                        tracing::info!(
+                            "Restoring dev_name {} to original name {}",
+                            dev_name,
+                            orig_name
+                        );
+                        // Rename interface
+                        Self::rename_tun_interface(dev_name, &orig_name).await?;
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    "Interface {} is opened by a process, skipping rename",
+                    dev_name
+                );
+            }
+        }
+
+        Ok(())
+    }
+
     async fn create_tun(&self) -> Result<tun::platform::Device, Error> {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
+
+        // FreeBSD specific: Check and restore TUN interfaces before creating new one
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() {
+                // Restore TUN interface name if needed, ignoring errors as it's not critical
+                let _ = Self::restore_tun_name(&dev_name).await;
+            }
+        }
 
         #[cfg(target_os = "linux")]
         {
@@ -382,7 +523,7 @@ impl VirtualNic {
             }
         }
 
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -442,7 +583,11 @@ impl VirtualNic {
         Ok(tun::create(&config)?)
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        any(target_os = "ios", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
     pub async fn create_dev_for_mobile(
         &mut self,
         tun_fd: std::os::fd::RawFd,
@@ -451,7 +596,7 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", feature = "macos-ne"))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -461,7 +606,7 @@ impl VirtualNic {
         config.close_fd_on_drop(false);
         config.up();
 
-        let has_packet_info = cfg!(target_os = "ios");
+        let has_packet_info = cfg!(any(target_os = "ios", feature = "macos-ne"));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
@@ -481,8 +626,26 @@ impl VirtualNic {
 
     pub async fn create_dev(&mut self) -> Result<Box<dyn Tunnel>, Error> {
         let dev = self.create_tun().await?;
+
+        #[cfg(not(target_os = "freebsd"))]
         let ifname = dev.tun_name()?;
+
+        #[cfg(target_os = "freebsd")]
+        let mut ifname = dev.tun_name()?;
         self.ifcfg.wait_interface_show(ifname.as_str()).await?;
+
+        // FreeBSD TUN interface rename functionality
+        #[cfg(target_os = "freebsd")]
+        {
+            let dev_name = self.global_ctx.get_flags().dev_name;
+
+            if !dev_name.is_empty() && dev_name != ifname {
+                // Use ifconfig to rename the TUN interface
+                if Self::rename_tun_interface(&ifname, &dev_name).await.is_ok() {
+                    ifname = dev_name;
+                }
+            }
+        }
 
         #[cfg(target_os = "windows")]
         {
@@ -521,7 +684,7 @@ impl VirtualNic {
             self.ifcfg.set_mtu(ifname.as_str(), mtu_in_config).await?;
         }
 
-        let has_packet_info = cfg!(target_os = "macos");
+        let has_packet_info = cfg!(all(target_os = "macos", not(feature = "macos-ne")));
         let (a, b) = BiLock::new(dev);
         let ft = TunnelWrapper::new(
             TunStream::new(a, has_packet_info),
@@ -668,7 +831,10 @@ impl NicCtx {
         nic.remove_ip(None).await?;
         nic.add_ip(ipv4_addr.address(), ipv4_addr.network_length() as i32)
             .await?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
         {
             nic.add_route(ipv4_addr.first_address(), ipv4_addr.network_length())
                 .await?;
@@ -682,7 +848,10 @@ impl NicCtx {
         nic.remove_ipv6(None).await?;
         nic.add_ipv6(ipv6_addr.address(), ipv6_addr.network_length() as i32)
             .await?;
-        #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+        #[cfg(any(
+            all(target_os = "macos", not(feature = "macos-ne")),
+            target_os = "freebsd"
+        ))]
         {
             nic.add_ipv6_route(ipv6_addr.first_address(), ipv6_addr.network_length())
                 .await?;
@@ -975,7 +1144,10 @@ impl NicCtx {
                         let _ = RegistryManager::reg_change_catrgory_in_profile(&dev_name);
                     }
 
-                    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+                    #[cfg(any(
+                        all(target_os = "macos", not(feature = "macos-ne")),
+                        target_os = "freebsd"
+                    ))]
                     {
                         // remove the 10.0.0.0/24 route (which is added by rust-tun by default)
                         let _ = nic
@@ -1016,7 +1188,11 @@ impl NicCtx {
         Ok(())
     }
 
-    #[cfg(any(target_os = "android", target_os = "ios", target_env = "ohos"))]
+    #[cfg(any(
+        target_os = "android",
+        any(target_os = "ios", feature = "macos-ne"),
+        target_env = "ohos"
+    ))]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
         let tunnel = {
             let mut nic = self.nic.lock().await;

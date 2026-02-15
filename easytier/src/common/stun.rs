@@ -484,18 +484,14 @@ impl StunNatTypeDetectResult {
             if self.public_ips().len() != 1
                 || self.usable_stun_resp_count() <= 1
                 || self.max_port() - self.min_port() > 15
-                || self.extra_bind_test.is_none()
-                || self
-                    .extra_bind_test
-                    .as_ref()
-                    .unwrap()
-                    .mapped_socket_addr
-                    .is_none()
             {
                 NatType::Symmetric
-            } else {
-                let extra_bind_test = self.extra_bind_test.as_ref().unwrap();
-                let extra_port = extra_bind_test.mapped_socket_addr.unwrap().port();
+            } else if let Some(extra_bind_mapped) = self
+                .extra_bind_test
+                .as_ref()
+                .and_then(|extra| extra.mapped_socket_addr)
+            {
+                let extra_port = extra_bind_mapped.port();
 
                 let max_port_diff = extra_port.saturating_sub(self.max_port());
                 let min_port_diff = self.min_port().saturating_sub(extra_port);
@@ -506,6 +502,8 @@ impl StunNatTypeDetectResult {
                 } else {
                     NatType::Symmetric
                 }
+            } else {
+                NatType::Symmetric
             }
         } else {
             NatType::Unknown

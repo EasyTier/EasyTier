@@ -51,7 +51,7 @@ pub(crate) trait NatDstConnector: Send + Sync + Clone + 'static {
         cidr_set: &CidrSet,
         global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
-        ipv4: &Ipv4Packet,
+        ipv4: &Ipv4Addr,
         real_dst_ip: &mut Ipv4Addr,
     ) -> bool;
     fn transport_type(&self) -> TcpProxyEntryTransportType;
@@ -90,16 +90,15 @@ impl NatDstConnector for NatDstTcpConnector {
         cidr_set: &CidrSet,
         global_ctx: &GlobalCtx,
         hdr: &PeerManagerHeader,
-        ipv4: &Ipv4Packet,
+        ipv4: &Ipv4Addr,
         real_dst_ip: &mut Ipv4Addr,
     ) -> bool {
         let is_exit_node = hdr.is_exit_node();
 
-        if !(cidr_set.contains_v4(ipv4.get_destination(), real_dst_ip)
+        if !(cidr_set.contains_v4(*ipv4, real_dst_ip)
             || is_exit_node
             || global_ctx.no_tun()
-                && Some(ipv4.get_destination())
-                    == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
+                && Some(*ipv4) == global_ctx.get_ipv4().as_ref().map(Ipv4Inet::address))
         {
             return false;
         }
@@ -540,7 +539,7 @@ impl<C: NatDstConnector> TcpProxy<C> {
             || self.global_ctx.no_tun()
             || cfg!(any(
                 target_os = "android",
-                target_os = "ios",
+                any(target_os = "ios", feature = "macos-ne"),
                 target_env = "ohos"
             ))
         {
@@ -885,33 +884,47 @@ impl<C: NatDstConnector> TcpProxy<C> {
 
         let ipv4_inet = self.get_local_inet()?;
         let ipv4_addr = ipv4_inet.address();
-        let hdr = packet.peer_manager_header().unwrap().clone();
-
-        if hdr.packet_type != PacketType::Data as u8 || hdr.is_no_proxy() {
-            return None;
-        };
-
-        let payload_bytes = packet.mut_payload();
-
-        let ipv4 = Ipv4Packet::new(payload_bytes)?;
-        if ipv4.get_version() != 4 || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp {
-            return None;
+        {
+            let hdr = packet.peer_manager_header().unwrap();
+            if (hdr.packet_type != PacketType::Data as u8
+                && hdr.packet_type != PacketType::DataWithKcpSrcModified as u8
+                && hdr.packet_type != PacketType::DataWithQuicSrcModified as u8)
+                || hdr.is_no_proxy()
+            {
+                return None;
+            };
         }
 
-        let mut real_dst_ip = ipv4.get_destination();
+        let origin_ip = {
+            let payload_bytes = packet.mut_payload();
+            let ipv4 = Ipv4Packet::new(payload_bytes)?;
+            if ipv4.get_version() != 4
+                || ipv4.get_next_level_protocol() != IpNextHeaderProtocols::Tcp
+            {
+                return None;
+            }
+
+            ipv4.get_destination()
+        };
+        let mut real_dst_ip = origin_ip;
+        let hdr = packet.mut_peer_manager_header().unwrap();
 
         if !self.connector.check_packet_from_peer(
             &self.cidr_set,
             &self.global_ctx,
-            &hdr,
-            &ipv4,
+            hdr,
+            &origin_ip,
             &mut real_dst_ip,
         ) {
             return None;
         }
 
-        tracing::trace!(ipv4 = ?ipv4, cidr_set = ?self.cidr_set, "proxy tcp packet received");
+        // restore to data packet
+        hdr.packet_type = PacketType::Data as u8;
 
+        tracing::trace!(ipv4 = ?origin_ip, cidr_set = ?self.cidr_set, "proxy tcp packet received");
+
+        let payload_bytes = packet.mut_payload();
         let ip_packet = Ipv4Packet::new(payload_bytes).unwrap();
         let tcp_packet = TcpPacket::new(ip_packet.payload()).unwrap();
 

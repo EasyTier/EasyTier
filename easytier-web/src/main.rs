@@ -109,6 +109,13 @@ struct Cli {
         help = t!("cli.api_host").to_string()
     )]
     api_host: Option<url::Url>,
+
+    #[arg(
+        long,
+        default_value = "false",
+        help = t!("cli.disable_registration").to_string(),
+    )]
+    disable_registration: bool,
 }
 
 impl LoggingConfigLoader for &Cli {
@@ -212,6 +219,7 @@ async fn main() {
         mgr.clone(),
         db,
         web_router_restful,
+        cli.disable_registration,
     )
     .await
     .unwrap()

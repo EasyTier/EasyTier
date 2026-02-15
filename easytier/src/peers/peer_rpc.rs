@@ -235,15 +235,15 @@ pub mod tests {
             .await
             .unwrap();
 
-        assert_eq!(peer_mgr_a.get_peer_map().list_peers().await.len(), 1);
+        assert_eq!(peer_mgr_a.get_peer_map().list_peers().len(), 1);
         assert_eq!(
-            peer_mgr_a.get_peer_map().list_peers().await[0],
+            peer_mgr_a.get_peer_map().list_peers()[0],
             peer_mgr_b.my_peer_id()
         );
 
-        assert_eq!(peer_mgr_c.get_peer_map().list_peers().await.len(), 1);
+        assert_eq!(peer_mgr_c.get_peer_map().list_peers().len(), 1);
         assert_eq!(
-            peer_mgr_c.get_peer_map().list_peers().await[0],
+            peer_mgr_c.get_peer_map().list_peers()[0],
             peer_mgr_b.my_peer_id()
         );
 
@@ -299,9 +299,9 @@ pub mod tests {
             .await
             .unwrap();
 
-        assert_eq!(peer_mgr_a.get_peer_map().list_peers().await.len(), 1);
+        assert_eq!(peer_mgr_a.get_peer_map().list_peers().len(), 1);
         assert_eq!(
-            peer_mgr_a.get_peer_map().list_peers().await[0],
+            peer_mgr_a.get_peer_map().list_peers()[0],
             peer_mgr_b.my_peer_id()
         );
 

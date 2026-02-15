@@ -160,6 +160,7 @@ jobs:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
           prefix-key: ""
+          shared-key: "core-registry"
           cache-targets: "false"
 
       - name: Setup protoc
@@ -186,7 +187,7 @@ jobs:
           fi
 
           if [[ $OS =~ ^ubuntu.*$ && $TARGET =~ ^mips.*$ ]]; then
-            cargo +nightly-2025-09-01 build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
+            cargo +nightly-2026-02-02 build -r --target $TARGET -Z build-std=std,panic_abort --package=easytier --features=jemalloc
           else
             if [[ $OS =~ ^windows.*$ ]]; then
               SUFFIX=.exe
@@ -228,8 +229,8 @@ jobs:
 
             rustup set auto-self-update disable
 
-            rustup install 1.89
-            rustup default 1.89
+            rustup install 1.93
+            rustup default 1.93
 
             export CC=clang
             export CXX=clang++
