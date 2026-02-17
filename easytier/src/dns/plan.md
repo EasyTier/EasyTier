@@ -105,10 +105,16 @@ DnsServer 需要做到：
 
 - Zone 允许只有 forwarder，这时候就是纯转发器
 - Zone 允许没有 forwarder，这时候要检查是不是有 SOA 和 NS 记录，如果没有可能需要添加？
+- 另一种方案是 DnsClient 挂 filter，自己处理 UDP 劫持，用某种方式（如 RPC）把 DNS 请求代理给 DnsServer，该方案的优势在于完全解耦 DnsServer 的实现，特别是解决了 DnsServer 所在实例可能 no_tun 的问题，缺点是：
+  - 性能更差
+  - 操作路由表或 /etc/resolv.conf 时会有多个 instance 同时修改，修改结果没有确定性
+  - DnsServer 仍然需要得知 addresses 以进行回环检测
+  - debug 更麻烦
+  - 难以实现策略 DNS，比如不同来源的 DNS 请求走不同的 zone
 
 另外任何关于系统 DNS 的操作，清理都参考现有的 magic dns。
 
-## 已知但无计划/无需解决的问题
+## 已知但无需/无计划解决的问题
 
 - the ttl option isn't working because of https://github.com/hickory-dns/hickory-dns/pull/3450
 - [minor] address 路由绑定必须在有 tun 的实例上做；listener 绑定则与 tun 无关，现有竞选机制无法保证有 tun 的实例能优先启动 DnsServer
