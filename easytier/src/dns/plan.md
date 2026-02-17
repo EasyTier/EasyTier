@@ -75,10 +75,10 @@ listeners = [
 
 1. 启动时（配置更新时？）将 listeners 和 addresses 添加进 delta
 2. 使用自己的 name 和 domain 创建一个专用 zone，让 name 指向自身 IP，并监听 IP 地址变化事件（为 DNS 一致性避免使用 127.0.0.1 作为 IP，若没有 IP 则不创建这个 zone）
-3. 每次获得 PeerRouteInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是个 protobuf message (DnsConfigPb)，保存了远程 Peer 的 dns 配置（不含 addresses 和 listeners），接收后它需要：
-   1. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 PeerRouteInfo 中的）
-   2. 检查 2., 3.i. 中得到的 zone、PeerRouteInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，如果有变化，将变化的 Zone ID 添加进 delta
-4. 每隔一小段时间向 DnsServer 发送心跳，如果 delta 非空，发送 delta、当前配置的全量快照、checksum(checksum + delta)
+3. 每次获得 RoutePeerInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是个 protobuf message (DnsConfigPb)，保存了远程 Peer 的 dns 配置（不含 addresses 和 listeners），接收后它需要：
+   1. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 RoutePeerInfo 中的）
+   2. 检查 2., 3.i. 中得到的 zone、RoutePeerInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，如果有变化，将变化的 Zone ID 添加进 delta
+4. 每隔一小段时间向 DnsServer 发送心跳和当前 checksum，如果 delta 非空，发送 delta 和当前配置的全量快照；如果 DnsServer 返回 Mismatch，下一次心跳发送全量 Snapshot
 
 ## DnsServer
 
@@ -89,11 +89,11 @@ listeners = [
 
 DnsServer 需要做到：
 
-1.  提供一个 RPC 接口接受 DnsClient 的心跳
-2.  收到含有 delta 的心跳时，计算 checksum(local checksum + delta)，如果相等用 delta 更新本地配置，如果不相等就全量替换本地配置
+1.  提供一个 RPC 接口接受 DnsClient 的心跳，如果心跳 checksum 和本地不符则返回 Mismatch
+2.  收到含有 delta 的心跳时，直接忽略 delta 中的 Zone 用全量 snapshot 替换本地配置；如果 delta 中含有 listeners 或者 addresses 则 rebind
 3.  持续检查是否有过期（丢失心跳）的 DnsClient，需要把这些 DnsClient 提供的所有配置清除
 4.  启动时自动添加 root zone，并把它的 forwarder 设置为系统 DNS
-5.  使用 delta 更新 zone。不用合并同名 zone，直接用 Zone 结构体提供的 FallbackAuthority 按顺序插入 Catalog 就行，不过注意要先插入 InMemoryAuthority，这些都是 records，后插入 ForwardAuthority，这都是 forwarders
+5.  使用 snapshot 更新 zone。不用合并同名 zone，直接用 Zone 结构体提供的 FallbackAuthority 按顺序插入 Catalog 就行，不过注意要先插入 InMemoryAuthority，这些都是 records，后插入 ForwardAuthority，这都是 forwarders
 6.  更新 zone 的时候自动去掉 forwarder 中导致回环的那些，就是把 addresses 和 listeners 去掉（root zone 也需要这个逻辑）
 7.  内部接口，控制 DnsServer 是否 bind 到某些 socket（也就是配置中的 listeners）
 8.  Listeners 绑定失败打印日志（失败一个打印一次然后就跳过），即便这时 addresses 为空也不要停机。（否则释放 socket 绑定后会有 instance 抢占 socket 试图启动 server，然后就死循环）
@@ -108,19 +108,24 @@ DnsServer 需要做到：
 
 另外任何关于系统 DNS 的操作，清理都参考现有的 magic dns。
 
-## 问题
+## 已知但无计划/无需解决的问题
 
-- [ ] [minor] the ttl option isn't working because of https://github.com/hickory-dns/hickory-dns/pull/3450
+- the ttl option isn't working because of https://github.com/hickory-dns/hickory-dns/pull/3450
 - [minor] address 路由绑定必须在有 tun 的实例上做；listener 绑定则与 tun 无关，现有竞选机制无法保证有 tun 的实例能优先启动 DnsServer
   - 或许让 DnsClient 控制关于 address 的路由和 filter，并通过 RPC 转发 DNS 请求？有两个问题：DnsServer 必须得知 addresses 否则无法进行环路检测；多个 DnsClient 同时修改 resolv.conf 添加自己得 address 容易出问题
   - 或许不妨假设大多数情况下一台机器上所有实例的 no_tun 设置相同，这时候这个问题实际上不存在
-- [minor] DnsServer 更新 zone 的时候需要更精细的合并/去重控制
+- [minor] DnsServer 更新 zone 的时候需要更精细的合并/去重控制，如延迟低者/本地优先
+- [minor] 更新 forwarder 时还需要检查间接回环，如 DNS 请求发送给某个 Peer，这个 Peer 又把请求转发回自己了
+- [minor] 防止死锁/挂起的 DnsServer 占用 socket
+- [minor] RoutePeerInfo 可能不能过大
+- [minor] 增量 Zone 更新
 
 ## TODO
 
 - [x] 配置解析
-- [ ] 用 OSPF 传播需要广播的配置
-- [ ] 用 DNS RPC 更新收到的配置，合并相同的域，延迟低的 peer 配置优先
+- [ ] DnsClient
+- [ ] DnsServer
+- [ ] 用 OSPF (`RoutePeerInfo`) 传播需要广播的配置
 - [ ] cli 输出状态
 
 </details>
