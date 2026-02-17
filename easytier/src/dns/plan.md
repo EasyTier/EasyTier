@@ -69,6 +69,13 @@ listeners = [
 - `DnsHeartbeat`: DnsClient 发送的心跳，包含：id、checksum、`Option<Snapshot>`
 - `DnsSnapshot`: 所有 DnsServer 需要的配置，以及与上一次 Snapshot 之间的变化 `delta`
 
+## RoutePeerInfo
+
+为预防用户提交大量自定义 DNS 记录导致 RoutePeerInfo 泛洪造成带宽压力：
+
+- 在 `RoutePeerInfo` 中新增字段，保存本地 DNS 配置的 hash
+- 收到 `RoutePeerInfo` 读取其中 DNS 的 hash，若与本地不同，通过 RPC 拉取 Peer 的 DNS 配置
+
 ## DnsClient
 
 对于每个实例，它启动时读取 TOML 配置，然后用这个配置启动一个 DnsClient ，它需要做到：
@@ -79,6 +86,7 @@ listeners = [
    1. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 RoutePeerInfo 中的）
    2. 检查 2., 3.i. 中得到的 zone、RoutePeerInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，如果有变化，将变化的 Zone ID 添加进 delta
 4. 每隔一小段时间向 DnsServer 发送心跳和当前 checksum，如果 delta 非空，发送 delta 和当前配置的全量快照；如果 DnsServer 返回 Mismatch，下一次心跳发送全量 Snapshot
+5. 一个 RPC 接口，供 Peer 拉取 DNS 配置
 
 ## DnsServer
 
@@ -118,12 +126,11 @@ DnsServer 需要做到：
 
 - the ttl option isn't working because of https://github.com/hickory-dns/hickory-dns/pull/3450
 - [minor] address 路由绑定必须在有 tun 的实例上做；listener 绑定则与 tun 无关，现有竞选机制无法保证有 tun 的实例能优先启动 DnsServer
-  - 或许让 DnsClient 控制关于 address 的路由和 filter，并通过 RPC 转发 DNS 请求？有两个问题：DnsServer 必须得知 addresses 否则无法进行环路检测；多个 DnsClient 同时修改 resolv.conf 添加自己得 address 容易出问题
-  - 或许不妨假设大多数情况下一台机器上所有实例的 no_tun 设置相同，这时候这个问题实际上不存在
+  - 不妨假设大多数情况下一台机器上所有实例的 no_tun 设置相同，这时候这个问题实际上不存在
 - [minor] DnsServer 更新 zone 的时候需要更精细的合并/去重控制，如延迟低者/本地优先
 - [minor] 更新 forwarder 时还需要检查间接回环，如 DNS 请求发送给某个 Peer，这个 Peer 又把请求转发回自己了
 - [minor] 防止死锁/挂起的 DnsServer 占用 socket
-- [minor] RoutePeerInfo 可能不能过大
+- ~~[minor] RoutePeerInfo 可能不能过大~~
 - [minor] 增量 Zone 更新
 
 ## TODO
@@ -131,7 +138,7 @@ DnsServer 需要做到：
 - [x] 配置解析
 - [ ] DnsClient
 - [ ] DnsServer
-- [ ] 用 OSPF (`RoutePeerInfo`) 传播需要广播的配置
+- [ ] 用 `RoutePeerInfo` 传播配置 hash，用 RPC 拉取配置
 - [ ] cli 输出状态
 
 </details>
