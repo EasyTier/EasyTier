@@ -129,6 +129,7 @@ impl UdpNatEntry {
                 payload_len: payload_len + 8, // include udp header
                 payload_mtu,
                 ip_id,
+                dont_fragment: false,
             },
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);

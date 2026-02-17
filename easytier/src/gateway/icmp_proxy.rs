@@ -8,10 +8,9 @@ use std::{
 
 use anyhow::Context;
 use pnet::packet::{
-    icmp::{self, echo_reply::MutableEchoReplyPacket, IcmpCode, IcmpTypes, MutableIcmpPacket},
-    ip::IpNextHeaderProtocols,
-    ipv4::Ipv4Packet,
-    Packet,
+    Packet, icmp::{
+        self, IcmpCode, IcmpTypes, MutableIcmpPacket, destination_unreachable, echo_reply::MutableEchoReplyPacket, time_exceeded
+    }, ip::IpNextHeaderProtocols, ipv4::{Ipv4Flags, Ipv4Packet}
 };
 use socket2::Socket;
 use tokio::{
@@ -132,19 +131,51 @@ fn socket_recv_loop(
             continue;
         };
 
-        let Some(icmp_packet) = icmp::echo_reply::EchoReplyPacket::new(ipv4_packet.payload())
-        else {
+        let key = if let Some(echo_reply) = icmp::echo_reply::EchoReplyPacket::new(ipv4_packet.payload()) {
+            IcmpNatKey {
+                real_dst_ip: peer_ip,
+                icmp_id: echo_reply.get_identifier(),
+                icmp_seq: echo_reply.get_sequence_number(),
+            }
+        } else if let Some(time_exceeded_packet) =
+                time_exceeded::TimeExceededPacket::new(ipv4_packet.payload()) {
+            let Some(inner_ipv4_packet) = Ipv4Packet::new(time_exceeded_packet.payload()) else {
+                continue;
+            };
+            if inner_ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Icmp {
+                continue;
+            }
+            let Some(inner_echo_request) =
+                icmp::echo_request::EchoRequestPacket::new(inner_ipv4_packet.payload())
+            else {
+                continue;
+            };
+            IcmpNatKey {
+                real_dst_ip: inner_ipv4_packet.get_destination().into(),
+                icmp_id: inner_echo_request.get_identifier(),
+                icmp_seq: inner_echo_request.get_sequence_number(),
+            }
+        } else if let Some(dst_unreachable_packet) =
+                destination_unreachable::DestinationUnreachablePacket::new(ipv4_packet.payload()) {
+            let Some(inner_ipv4_packet) = Ipv4Packet::new(dst_unreachable_packet.payload()) else {
+                continue;
+            };
+            // TODO: support udp and tcp unreachable packet, currently only support icmp unreachable packet.
+            if inner_ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Icmp {
+                continue;
+            }
+            let Some(inner_echo_request) =
+                icmp::echo_request::EchoRequestPacket::new(inner_ipv4_packet.payload())
+            else {
+                continue;
+            };
+            IcmpNatKey {
+                real_dst_ip: inner_ipv4_packet.get_destination().into(),
+                icmp_id: inner_echo_request.get_identifier(),
+                icmp_seq: inner_echo_request.get_sequence_number(),
+            }
+        } else {
             continue;
-        };
-
-        if icmp_packet.get_icmp_type() != IcmpTypes::EchoReply {
-            continue;
-        }
-
-        let key = IcmpNatKey {
-            real_dst_ip: peer_ip,
-            icmp_id: icmp_packet.get_identifier(),
-            icmp_seq: icmp_packet.get_sequence_number(),
         };
 
         let Some((_, v)) = nat_table.remove(&key) else {
@@ -156,6 +187,7 @@ fn socket_recv_loop(
             continue;
         };
 
+        let dont_fragment = ipv4_packet.get_flags() & Ipv4Flags::DontFragment != 0;
         let payload_len = len - ipv4_packet.get_header_length() as usize * 4;
         let id = ipv4_packet.get_identification();
         let _ = compose_ipv4_packet(
@@ -167,6 +199,7 @@ fn socket_recv_loop(
                 payload_len,
                 payload_mtu: 1200,
                 ip_id: id,
+                dont_fragment,
             },
             |buf| {
                 let mut p = ZCPacket::new_with_payload(buf);
@@ -356,6 +389,7 @@ impl IcmpProxy {
                 payload_len: len,
                 payload_mtu: 1200,
                 ip_id: rand::random(),
+                dont_fragment: false,
             },
             |buf| {
                 let mut packet = ZCPacket::new_with_payload(buf);

@@ -199,6 +199,7 @@ pub struct ComposeIpv4PacketArgs<'a> {
     pub payload_len: usize,
     pub payload_mtu: usize,
     pub ip_id: u16,
+    pub dont_fragment: bool,
 }
 
 // ip payload should be in buf[20..]
@@ -210,6 +211,11 @@ where
     let mut buf_offset = 0;
     let mut fragment_offset = 0;
     let mut cur_piece = 0;
+    if args.dont_fragment && total_pieces > 1 {
+        return Err(Error::AnyhowError(anyhow::anyhow!(
+            "payload is too large to fit in a single packet, but dont_fragment is set"
+        )));
+    }
     while fragment_offset < args.payload_len {
         let next_fragment_offset =
             std::cmp::min(fragment_offset + args.payload_mtu, args.payload_len);
@@ -241,7 +247,7 @@ where
         ipv4_packet.set_next_level_protocol(args.next_protocol);
         ipv4_packet.set_checksum(ipv4::checksum(&ipv4_packet.to_immutable()));
 
-        tracing::trace!(?ipv4_packet, "udp nat packet response send");
+        tracing::trace!(?ipv4_packet, "nat packet response send");
 
         cb(ipv4_packet.packet())?;
 
