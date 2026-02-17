@@ -272,6 +272,12 @@ mod tests {
     name = "et-test"
     domain = "测试.net"
 
+    ["top".import]
+    whitelist = ["*"]
+    blacklist = []
+    disabled = true
+    recursive = true
+
     [[zone]]
     origin = "et.top"
 
@@ -281,8 +287,6 @@ mod tests {
 
     [[zone]]
     origin = "google.com"
-
-    broadcast = true
 
     ttl = 10
 
@@ -296,6 +300,8 @@ mod tests {
     forwarders = [
         "10.175.160.10",
     ]
+
+    [zone.export]
 
     "#;
 
@@ -325,7 +331,7 @@ mod tests {
             .extract_if(.., |z| z.origin.to_string() == "google.com")
             .next()
             .unwrap();
-        assert_eq!(zone.broadcast, true);
+        assert_eq!(zone.policy.export.is_some(), true);
         let zone = ZoneConfigPb::from(&zone);
         println!("{}", sep);
         println!("{}", zone);
