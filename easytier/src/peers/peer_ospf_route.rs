@@ -40,7 +40,6 @@ use super::{
     PeerPacketFilter,
 };
 use crate::common::config::ConfigLoader;
-use crate::proto::dns::DnsConfigKind;
 use crate::{
     common::{
         config::NetworkIdentity, constants::EASYTIER_VERSION, global_ctx::ArcGlobalCtx,
@@ -198,7 +197,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
-            dns: Some(global_ctx.config.get_dns().to_pb(DnsConfigKind::Remote)),
+            dns: Some(global_ctx.config.get_dns().export()),
 
             ..Default::default()
         }

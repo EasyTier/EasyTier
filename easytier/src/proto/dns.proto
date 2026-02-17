@@ -4,23 +4,16 @@ import "common.proto";
 
 package dns;
 
-enum DnsConfigKind {
-  LOCAL = 0;
-  REMOTE = 1;
-}
-
 message DnsConfigPb {
-  DnsConfigKind kind = 1;
-  repeated ZoneConfigPb zones = 2;
-  string name = 3;
-  string domain = 4;
-  repeated common.SocketAddr addresses = 5;
-  repeated string listeners = 6;
+  repeated ZoneConfigPb zones = 1;
+  string name = 2;
+  string domain = 3;
 }
 
 message ZoneConfigPb {
-  string origin = 1;
-  uint32 ttl = 2;
-  repeated string records = 3;
-  repeated string forwarders = 4;
+  common.UUID id = 1;
+  string origin = 2;
+  uint32 ttl = 3;
+  repeated string records = 4;
+  repeated string forwarders = 5;
 }
