@@ -200,8 +200,10 @@ impl Zone {
         A: AsRef<str>,
     {
         let name_servers = forwarders
-            .into_iter()
-            .map(|s| s.as_ref().parse::<NameServerAddr>().map(Into::into))
+            .map(|f| {
+                let addr: NameServerAddr = f.as_ref().parse()?;
+                Ok((&addr).into())
+            })
             .collect::<anyhow::Result<Vec<_>>>()?
             .into();
         self.forward = Some(ForwardConfig {
