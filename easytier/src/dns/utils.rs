@@ -6,6 +6,7 @@ use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
+use hickory_proto::rr::LowerName;
 use url::Url;
 
 pub fn sanitize(name: &str) -> String {
@@ -32,6 +33,16 @@ pub fn sanitize(name: &str) -> String {
         name.push('.');
     }
     name
+}
+
+pub fn parse(name: &str) -> LowerName {
+    if let Ok(name) = name.parse() {
+        name
+    } else {
+        let sanitized = sanitize(&name);
+        tracing::debug!("invalid hostname: {}, sanitized to: {}", name, sanitized);
+        sanitized.parse().unwrap_or_default()
+    }
 }
 
 static DNS_SUPPORTED_PROTOCOLS: [Protocol; 2] = [
