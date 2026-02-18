@@ -82,9 +82,11 @@ listeners = [
 
 1. 启动时（配置更新时？）将 listeners 和 addresses 添加进 delta
 2. 使用自己的 name 和 domain 创建一个专用 zone，让 name 指向自身 IP，并监听 IP 地址变化事件（为 DNS 一致性避免使用 127.0.0.1 作为 IP，若没有 IP 则不创建这个 zone）
-3. 每次获得 RoutePeerInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是个 protobuf message (DnsConfigPb)，保存了远程 Peer 的 dns 配置（不含 addresses 和 listeners），接收后它需要：
-   1. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 RoutePeerInfo 中的）
-   2. 检查 2., 3.i. 中得到的 zone、RoutePeerInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，如果有变化，将变化的 Zone ID 添加进 delta
+3. 每次获得 RoutePeerInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是远程 Peer 的 dns 配置（不含 addresses 和 listeners）的 hash，接收后它需要：
+   1. 检查 hash 和本地配置是否一致，如果一致，不做修改，否则进入下一个步骤
+   2. 通过 RPC 获取 Peer 的配置
+   3. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 RoutePeerInfo 中的）
+   4. 检查 2., 3.i. 中得到的 zone、RoutePeerInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，如果有变化，将变化的 Zone ID 添加进 delta
 4. 每隔一小段时间向 DnsServer 发送心跳和当前 checksum，如果 delta 非空，发送 delta 和当前配置的全量快照；如果 DnsServer 返回 Mismatch，下一次心跳发送全量 Snapshot
 5. 一个 RPC 接口，供 Peer 拉取 DNS 配置
 
