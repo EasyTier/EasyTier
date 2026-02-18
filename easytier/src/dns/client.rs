@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::config::{DnsConfig, DNS_SERVER_RPC_ADDR};
+use super::config::{DnsConfig, DnsGlobalCtxExt, DNS_SERVER_RPC_ADDR};
 use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
@@ -16,7 +16,6 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
 use dashmap::DashMap;
 use derivative::Derivative;
-use hickory_proto::rr::Name;
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -86,27 +85,6 @@ impl DnsClient {
         Ok(())
     }
 
-    fn create_dedicated_zone(
-        origin: &str,
-        ipv4: Option<Ipv4Addr>,
-        ipv6: Vec<Ipv6Addr>,
-    ) -> Option<ZoneConfigPb> {
-        let mut records = Vec::new();
-
-        if let Some(ipv4) = ipv4 {
-            records.push(format!("@ IN A {}", ipv4));
-        }
-        for ipv6 in ipv6 {
-            records.push(format!("@ IN AAAA {}", ipv6));
-        }
-        (!records.is_empty()).then_some(ZoneConfigPb {
-            origin: origin.to_string(),
-            records,
-
-            ..Default::default()
-        })
-    }
-
     async fn build_snapshot(&self) -> DnsSnapshot {
         let global_ctx = self.peer_mgr.get_global_ctx_ref();
 
@@ -116,46 +94,13 @@ impl DnsClient {
 
         // 1. Local zones
         zones.extend(config.zones.iter().map(Into::into));
-
-        // 1.5. Specialized zone for self (domain.tld -> self_ip)
-        if let Ok(origin) = Name::from(config.get_name()).append_domain(&*config.domain) {
-            let ipv4 = global_ctx.get_ipv4().map(|ip| ip.address());
-            let ipv6 = global_ctx.get_ipv6().map(|ip| ip.address());
-            let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
-            if let Some(zone) = Self::create_dedicated_zone(origin.to_string().as_str(), ipv4, ipv6)
-            {
-                zones.push(zone);
-            }
-        }
+        zones.extend(global_ctx.dns_self_zone().as_ref().map(Into::into));
 
         // 2. Peer zones
         for ref_multi in self.peer_configs.iter() {
             let config = ref_multi.value();
             // TODO: apply import policy here
             zones.extend(config.zones.clone());
-        }
-
-        // 3. Specialized zones for peers (domain.tld -> peer_ip)
-        let routes = self.peer_mgr.list_routes().await;
-        for route in routes.iter() {
-            let peer_id = route.peer_id;
-            if let Some(peer_config) = self.peer_configs.get(&peer_id) {
-                let origin = format!("{}.{}", peer_config.name, peer_config.domain);
-                let ipv4 = route
-                    .ipv4_addr
-                    .map(|ip| ip.address)
-                    .flatten()
-                    .map(Into::into);
-                let ipv6 = route
-                    .ipv6_addr
-                    .map(|ip| ip.address)
-                    .flatten()
-                    .map(Into::into);
-                let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
-                if let Some(zone) = Self::create_dedicated_zone(origin.as_str(), ipv4, ipv6) {
-                    zones.push(zone);
-                }
-            }
         }
 
         DnsSnapshot {

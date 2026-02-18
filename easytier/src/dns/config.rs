@@ -1,11 +1,14 @@
-use crate::dns::utils::{parse, sanitize, NameServerAddr};
+use crate::common::config::ConfigLoader;
+use crate::common::global_ctx::GlobalCtx;
+use crate::dns::utils::{parse, NameServerAddr};
 use crate::proto::dns::{DnsConfigPb, ZoneConfigPb};
 use derive_more::{Deref, DerefMut};
 use gethostname::gethostname;
-use hickory_proto::rr::{IntoName, LowerName, Name};
+use hickory_proto::rr::{LowerName, Name};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::iter;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::LazyLock;
 use url::Url;
@@ -44,17 +47,49 @@ impl DnsConfig {
         self.name = parse(name);
     }
 
-    pub fn export(&self) -> DnsConfigPb {
+    pub fn get_fqdn(&self) -> LowerName {
+        Name::from(self.get_name())
+            .append_domain(&self.domain)
+            .unwrap()
+            .into()
+    }
+
+    pub fn set_fqdn(&mut self, fqdn: &str) {
+        let mut fqdn = Name::from(parse(fqdn));
+        fqdn.set_fqdn(true);
+        self.name = Name::from_labels(iter::once(fqdn.iter().next().unwrap_or_default()))
+            .unwrap_or_default()
+            .into();
+        self.domain = fqdn.base_name().into();
+    }
+}
+
+pub trait DnsGlobalCtxExt {
+    fn dns_self_zone(&self) -> Option<ZoneConfig>;
+    fn dns_export_config(&self) -> DnsConfigPb;
+}
+
+impl DnsGlobalCtxExt for GlobalCtx {
+    fn dns_self_zone(&self) -> Option<ZoneConfig> {
+        let fqdn = self.config.get_dns().get_fqdn();
+        let ipv4 = self.get_ipv4().map(|ip| ip.address());
+        let ipv6 = self.get_ipv6().map(|ip| ip.address());
+        let ipv6 = ipv6.map(|a| vec![a]).unwrap_or_default();
+
+        ZoneConfig::dedicated(Some(self.get_id()), fqdn.clone(), ipv4, ipv6)
+    }
+
+    fn dns_export_config(&self) -> DnsConfigPb {
+        let config = self.config.get_dns();
+        let zone = self.dns_self_zone();
+        let zones = config.zones.iter().chain(zone.iter());
+
         DnsConfigPb {
-            zones: self
-                .zones
-                .iter()
+            zones: zones
                 .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
                 .map(Into::into)
                 .collect(),
-
-            name: self.get_name().to_string(),
-            domain: self.domain.to_string(),
+            fqdn: config.get_fqdn().to_string(),
         }
     }
 }
@@ -86,6 +121,37 @@ pub struct ZoneConfig {
     pub forwarders: Vec<NameServerAddr>,
     #[serde(flatten)]
     pub policy: ZonePolicyConfig,
+}
+
+impl ZoneConfig {
+    fn dedicated(
+        id: Option<Uuid>,
+        origin: LowerName,
+        ipv4: Option<Ipv4Addr>,
+        ipv6: Vec<Ipv6Addr>,
+    ) -> Option<Self> {
+        let mut records = Vec::new();
+
+        if let Some(ipv4) = ipv4 {
+            records.push(format!("@ IN A {}", ipv4));
+        }
+        for ipv6 in ipv6 {
+            records.push(format!("@ IN AAAA {}", ipv6));
+        }
+
+        let policy = ZonePolicyConfig {
+            export: Some(DnsExportPolicy::default()),
+        };
+
+        (!records.is_empty()).then_some(Self {
+            id: id.unwrap_or(Uuid::new_v4()),
+            origin,
+            records,
+            policy,
+
+            ..Default::default()
+        })
+    }
 }
 
 impl From<&ZoneConfig> for ZoneConfigPb {
