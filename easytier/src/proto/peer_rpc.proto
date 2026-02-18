@@ -48,7 +48,7 @@ message RoutePeerInfo {
   // Trusted credential public keys published by admin nodes (holding network_secret)
   repeated TrustedCredentialPubkeyProof trusted_credential_pubkeys = 19;
 
-  dns.DnsConfigPb dns = 20;
+  bytes dns = 20;
 }
 
 message PeerIdVersion {
