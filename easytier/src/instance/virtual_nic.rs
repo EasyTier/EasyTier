@@ -899,8 +899,15 @@ impl NicCtx {
             // sent to the virtual interface (i.e., "sent to ourselves") to maintain correct
             // forwarding behavior. Thus, loop prevention should only apply when the source IP
             // belongs to the local host.
+            //
+            // But macOS does route all the loop back traffic into the tun, so we also need to check
+            // whether the destination IP is local host.
             let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V4(dst_ipv4), Some(src_ipv4) == my_ipv4)
+                .send_msg_by_ip(
+                    ret,
+                    IpAddr::V4(dst_ipv4),
+                    Some(src_ipv4) == my_ipv4 && Some(dst_ipv4) != my_ipv4,
+                )
                 .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
@@ -933,7 +940,11 @@ impl NicCtx {
 
             // TODO: use zero-copy
             let send_ret = mgr
-                .send_msg_by_ip(ret, IpAddr::V6(dst_ipv6), Some(src_ipv6) == my_ipv6)
+                .send_msg_by_ip(
+                    ret,
+                    IpAddr::V6(dst_ipv6),
+                    Some(src_ipv6) == my_ipv6 && Some(dst_ipv6) != my_ipv6,
+                )
                 .await;
             if send_ret.is_err() {
                 tracing::trace!(?send_ret, "[USER_PACKET] send_msg failed")
