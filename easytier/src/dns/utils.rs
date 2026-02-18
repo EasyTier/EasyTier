@@ -49,9 +49,15 @@ pub struct NameServerAddr {
     addr: SocketAddr,
 }
 
-impl From<NameServerAddr> for NameServerConfig {
-    fn from(value: NameServerAddr) -> Self {
+impl From<&NameServerAddr> for NameServerConfig {
+    fn from(value: &NameServerAddr) -> Self {
         Self::new(value.addr, value.protocol)
+    }
+}
+
+impl From<&NameServerAddr> for Url {
+    fn from(value: &NameServerAddr) -> Self {
+        Url::parse(&format!("{}://{}", value.protocol, value.addr)).unwrap()
     }
 }
 
@@ -101,6 +107,6 @@ impl FromStr for NameServerAddr {
 
 impl Display for NameServerAddr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}://{}", self.protocol, self.addr)
+        f.write_str(Url::from(self).as_str())
     }
 }
