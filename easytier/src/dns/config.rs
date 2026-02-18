@@ -1,13 +1,14 @@
-use crate::dns::utils::{sanitize, NameServerAddr};
+use crate::dns::utils::{parse, sanitize, NameServerAddr};
 use crate::proto::dns::{DnsConfigPb, ZoneConfigPb};
 use derive_more::{Deref, DerefMut};
 use gethostname::gethostname;
-use hickory_proto::rr::LowerName;
+use hickory_proto::rr::{IntoName, LowerName, Name};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::LazyLock;
+use url::Url;
 use uuid::Uuid;
 
 pub const DNS_DEFAULT_ADDRESS: SocketAddr =
@@ -29,23 +30,16 @@ pub struct DnsConfig {
 }
 
 impl DnsConfig {
-    pub fn get_name(&self) -> String {
+    pub fn get_name(&self) -> LowerName {
         if self.name.is_empty() {
-            gethostname().to_string_lossy().to_string()
+            parse(gethostname().to_string_lossy().as_ref())
         } else {
-            self.name.to_string()
+            self.name.clone()
         }
     }
 
     pub fn set_name(&mut self, name: &str) {
-        self.name = match LowerName::from_str(name) {
-            Ok(name) => name,
-            Err(_) => {
-                let sanitized = sanitize(name);
-                tracing::debug!("invalid hostname: {}, sanitized to: {}", name, sanitized);
-                LowerName::from_str(&sanitized).unwrap_or_default()
-            }
-        };
+        self.name = parse(name);
     }
 
     pub fn export(&self) -> DnsConfigPb {
@@ -57,7 +51,7 @@ impl DnsConfig {
                 .map(Into::into)
                 .collect(),
 
-            name: self.get_name(),
+            name: self.get_name().to_string(),
             domain: self.domain.to_string(),
         }
     }
