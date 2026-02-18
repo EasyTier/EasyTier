@@ -15,6 +15,8 @@ pub const DNS_DEFAULT_ADDRESS: SocketAddr =
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(100, 100, 100, 101), 53));
 pub static DNS_DEFAULT_TLD: LazyLock<LowerName> =
     LazyLock::new(|| LowerName::from_str("et.net.").unwrap());
+pub static DNS_SERVER_RPC_ADDR: LazyLock<Url> =
+    LazyLock::new(|| Url::parse("tcp://127.0.0.1:49813").unwrap());
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(default)]

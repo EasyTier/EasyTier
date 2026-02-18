@@ -17,3 +17,20 @@ message ZoneConfigPb {
   repeated string records = 4;
   repeated string forwarders = 5;
 }
+
+message DnsSnapshot {
+    repeated ZoneConfigPb zones = 1;
+    repeated common.SocketAddr addresses = 2;
+    repeated common.Url listeners = 3;
+}
+
+message DnsHeartbeat {
+    common.UUID inst_id = 1;
+    uint64 checksum = 2;
+    optional DnsSnapshot data = 3;
+}
+
+service DnsServerRpc {
+    rpc Heartbeat(DnsHeartbeat) returns (common.Void) {}
+    rpc GetConfig(common.Void) returns (DnsConfigPb) {}
+}
