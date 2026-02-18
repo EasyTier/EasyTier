@@ -6,8 +6,7 @@ package dns;
 
 message DnsConfigPb {
   repeated ZoneConfigPb zones = 1;
-  string name = 2;
-  string domain = 3;
+  string fqdn = 2;
 }
 
 message ZoneConfigPb {

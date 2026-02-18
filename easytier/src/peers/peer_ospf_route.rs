@@ -40,6 +40,8 @@ use super::{
     PeerPacketFilter,
 };
 use crate::common::config::ConfigLoader;
+use crate::dns::config::DnsGlobalCtxExt;
+use crate::proto::dns::DeterministicDigest;
 use crate::{
     common::{
         config::NetworkIdentity,
@@ -69,7 +71,6 @@ use crate::{
     },
     use_global_var,
 };
-use crate::proto::dns::DeterministicDigest;
 
 use super::{
     graph_algo::dijkstra_with_first_hop,
@@ -261,7 +262,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
-            dns: global_ctx.config.get_dns().export().digest(),
+            dns: global_ctx.dns_export_config().digest(),
 
             noise_static_pubkey,
 
