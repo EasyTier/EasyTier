@@ -69,6 +69,7 @@ use crate::{
     },
     use_global_var,
 };
+use crate::proto::dns::DeterministicDigest;
 
 use super::{
     graph_algo::dijkstra_with_first_hop,
@@ -260,7 +261,7 @@ impl RoutePeerInfo {
             ipv6_addr: global_ctx.get_ipv6().map(|x| x.into()),
 
             groups: global_ctx.get_acl_groups(my_peer_id),
-            dns: Some(global_ctx.config.get_dns().export()),
+            dns: global_ctx.config.get_dns().export().digest(),
 
             noise_static_pubkey,
 
