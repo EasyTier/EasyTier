@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog, Select } from 'primevue'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -30,6 +30,20 @@ const networking_methods = ref([
   { value: NetworkingMethod.PublicServer, label: () => t('public_server') },
   { value: NetworkingMethod.Manual, label: () => t('manual') },
   { value: NetworkingMethod.Standalone, label: () => t('standalone') },
+])
+
+const compression_algorithms = ref([
+  { value: 'none', label: 'None' },
+  { value: 'lz4', label: 'LZ4' },
+  { value: 'zstd', label: 'Zstd' },
+  { value: 'brotli', label: 'Brotli' },
+])
+
+const encryption_algorithms = ref([
+  { value: 'aes-gcm', label: 'AES-GCM' },
+  { value: 'aes-256-gcm', label: 'AES-256-GCM' },
+  { value: 'chacha20', label: 'ChaCha20' },
+  { value: 'xor', label: 'XOR' },
 ])
 
 const protos: { [proto: string]: number } = { tcp: 11010, udp: 11010, wg: 11011, ws: 11011, wss: 11012 }
@@ -368,6 +382,30 @@ onMounted(() => {
                   </div>
                   <InputNumber id="mtu" v-model="curNetwork.mtu" aria-describedby="mtu-help" :format="false"
                     :placeholder="t('mtu_placeholder')" :min="400" :max="1380" fluid />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="compression_algo">{{ t('compression_algo') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('compression_algo_help')"></span>
+                  </div>
+                  <Select id="compression_algo" v-model="curNetwork.data_compress_algo"
+                    :options="compression_algorithms" option-label="label" option-value="value"
+                    :placeholder="t('compression_algo_placeholder')" class="w-48" />
+                </div>
+              </div>
+
+              <div class="flex flex-row gap-x-9 flex-wrap">
+                <div class="flex flex-col gap-2 basis-5/12 grow">
+                  <div class="flex">
+                    <label for="encryption_algo">{{ t('encryption_algo') }}</label>
+                    <span class="pi pi-question-circle ml-2 self-center" v-tooltip="t('encryption_algo_help')"></span>
+                  </div>
+                  <Select id="encryption_algo" v-model="curNetwork.encryption_algorithm"
+                    :options="encryption_algorithms" option-label="label" option-value="value"
+                    :placeholder="t('encryption_algo_placeholder')" class="w-48" />
                 </div>
               </div>
 
