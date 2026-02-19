@@ -577,7 +577,7 @@ impl PeerManager {
                 MetricName::TrafficBytesForeignForwardRx,
                 MetricName::TrafficPacketsForeignForwardRx,
             );
-            if let Err(_) = hdr.check_and_increase_forward_counter() {
+            if hdr.check_and_increase_forward_counter().is_err() {
                 return Ok(());
             }
             if let Err(e) = foreign_network_mgr
@@ -617,7 +617,7 @@ impl PeerManager {
 
             // modify the to_peer id from foreign network my peer id to the origin my peer id
             hdr.to_peer_id.set(to_peer_id);
-            if let Err(_) = hdr.check_and_increase_forward_counter() {
+            if hdr.check_and_increase_forward_counter().is_err() {
                 return Ok(());
             }
 
@@ -698,7 +698,7 @@ impl PeerManager {
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
-                    if let Err(_) = hdr.check_and_increase_forward_counter() {
+                    if hdr.check_and_increase_forward_counter().is_err() {
                         continue;
                     }
 

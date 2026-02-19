@@ -361,7 +361,7 @@ impl ForeignNetworkEntry {
                             continue;
                         }
                     }
-                    if let Err(_) = hdr.check_and_increase_forward_counter() {
+                    if hdr.check_and_increase_forward_counter().is_err() {
                         continue;
                     }
 
