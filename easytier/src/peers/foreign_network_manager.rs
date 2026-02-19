@@ -330,9 +330,9 @@ impl ForeignNetworkEntry {
             .get_counter(MetricName::TrafficPacketsRx, label_set.clone());
 
         self.tasks.lock().await.spawn(async move {
-            while let Ok(zc_packet) = recv_packet_from_chan(&mut recv).await {
+            while let Ok(mut zc_packet) = recv_packet_from_chan(&mut recv).await {
                 let buf_len = zc_packet.buf_len();
-                let Some(hdr) = zc_packet.peer_manager_header() else {
+                let Some(hdr) = zc_packet.mut_peer_manager_header() else {
                     tracing::warn!("invalid packet, skip");
                     continue;
                 };
@@ -361,6 +361,9 @@ impl ForeignNetworkEntry {
                             continue;
                         }
                     }
+                    if let Err(_) = hdr.check_and_increase_forward_counter() {
+                        continue;
+                    }
 
                     forward_bytes.add(buf_len as u64);
                     forward_packets.inc();
@@ -379,16 +382,13 @@ impl ForeignNetworkEntry {
                             }
                         }
                         _ => {
-                            let mut foreign_packet = ZCPacket::new_for_foreign_network(
-                                &network_name,
-                                to_peer_id,
-                                &zc_packet,
-                            );
                             let via_peer = gateway_peer_id.unwrap_or(to_peer_id);
-                            foreign_packet.fill_peer_manager_hdr(
+                            let foreign_packet = ZCPacket::new_for_foreign_network(
+                                &network_name,
                                 my_node_id,
                                 via_peer,
-                                PacketType::ForeignNetworkPacket as u8,
+                                to_peer_id,
+                                &zc_packet,
                             );
                             if let Err(e) = pm_sender.send(foreign_packet).await {
                                 tracing::error!("send packet to peer with pm failed: {:?}", e);

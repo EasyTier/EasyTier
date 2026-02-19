@@ -4,6 +4,7 @@ use zerocopy::byteorder::*;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
+use crate::common::error::{Error::RouteError, Result};
 
 type DefaultEndian = LittleEndian;
 
@@ -111,6 +112,7 @@ pub struct PeerManagerHeader {
     pub len: U32<DefaultEndian>,
 }
 pub const PEER_MANAGER_HEADER_SIZE: usize = std::mem::size_of::<PeerManagerHeader>();
+pub const FORWARD_COUNTER_MAX: u8 = 7;
 
 impl PeerManagerHeader {
     pub fn is_encrypted(&self) -> bool {
@@ -232,6 +234,22 @@ impl PeerManagerHeader {
         PeerManagerHeaderFlags::from_bits(self.flags)
             .unwrap()
             .contains(PeerManagerHeaderFlags::NOT_SEND_TO_TUN)
+    }
+
+    // this function SHOULD be called IF and ONLY IF the packet will be forwarded
+    pub fn check_and_increase_forward_counter(&mut self) -> Result<()> {
+        if self.forward_counter > FORWARD_COUNTER_MAX {
+            tracing::warn!(?self, "forward counter exceed, drop packet");
+            return Err(RouteError(None));
+        }
+
+        if self.forward_counter > 2 && self.is_latency_first() {
+            tracing::trace!(?self, "set_latency_first false because too many hop");
+            self.set_latency_first(false);
+        }
+
+        self.forward_counter += 1;
+        Ok(())
     }
 }
 
@@ -479,6 +497,8 @@ impl ZCPacket {
 
     pub fn new_for_foreign_network(
         network_name: &String,
+        src_peer_id: u32,
+        via_peer_id: u32,
         dst_peer_id: u32,
         foreign_zc_packet: &ZCPacket,
     ) -> Self {
@@ -502,10 +522,13 @@ impl ZCPacket {
         ret.mut_payload()[foreign_network_hdr.get_header_len()..]
             .copy_from_slice(foreign_zc_packet.tunnel_payload());
 
+        ret.fill_peer_manager_hdr(
+            src_peer_id,
+            via_peer_id,
+            PacketType::ForeignNetworkPacket as u8,
+        );
         let hdr = ret.mut_peer_manager_header().unwrap();
-        hdr.from_peer_id = 0.into();
-        hdr.to_peer_id = 0.into();
-        hdr.packet_type = PacketType::ForeignNetworkPacket as u8;
+        hdr.forward_counter = foreign_zc_packet.peer_manager_header().unwrap().forward_counter;
         hdr.len.set(total_payload_len as u32);
 
         ret

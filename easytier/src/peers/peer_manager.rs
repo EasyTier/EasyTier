@@ -568,6 +568,10 @@ impl PeerManager {
             stats_manager.get_counter(packets_metric, label_set).inc();
         };
 
+        let hdr = packet
+            .mut_peer_manager_header()
+            .unwrap();
+
         // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
         if to_peer_id == my_peer_id {
             // packet sent from other peer to me, extract the inner packet and forward it
@@ -575,6 +579,9 @@ impl PeerManager {
                 MetricName::TrafficBytesForeignForwardRx,
                 MetricName::TrafficPacketsForeignForwardRx,
             );
+            if let Err(_) = hdr.check_and_increase_forward_counter() {
+                return Ok(());
+            }
             if let Err(e) = foreign_network_mgr
                 .send_msg_to_peer(
                     &foreign_network_name,
@@ -611,11 +618,11 @@ impl PeerManager {
             );
 
             // modify the to_peer id from foreign network my peer id to the origin my peer id
-            packet
-                .mut_peer_manager_header()
-                .unwrap()
-                .to_peer_id
+            hdr.to_peer_id
                 .set(to_peer_id);
+            if let Err(_) = hdr.check_and_increase_forward_counter() {
+                return Ok(());
+            }
 
             // packet is generated from foreign network mgr and should be forward to other peer
             if let Err(e) = peer_map
@@ -694,17 +701,9 @@ impl PeerManager {
                 let from_peer_id = hdr.from_peer_id.get();
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
-                    if hdr.forward_counter > 7 {
-                        tracing::warn!(?hdr, "forward counter exceed, drop packet");
+                    if let Err(_) = hdr.check_and_increase_forward_counter() {
                         continue;
                     }
-
-                    if hdr.forward_counter > 2 && hdr.is_latency_first() {
-                        tracing::trace!(?hdr, "set_latency_first false because too many hop");
-                        hdr.set_latency_first(false);
-                    }
-
-                    hdr.forward_counter += 1;
 
                     if from_peer_id == my_peer_id {
                         compress_tx_bytes_before.add(buf_len as u64);

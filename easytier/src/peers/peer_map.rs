@@ -208,7 +208,7 @@ impl PeerMap {
     ) -> Result<(), Error> {
         let Some(gateway_peer_id) = self.get_gateway_peer_id(dst_peer_id, policy).await else {
             return Err(Error::RouteError(Some(format!(
-                "peer map sengmsg no gateway for dst_peer_id: {}",
+                "peer map send_msg no gateway for dst_peer_id: {}",
                 dst_peer_id
             ))));
         };
