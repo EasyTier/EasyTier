@@ -1,5 +1,6 @@
-pub mod client;
+mod client;
 pub mod config;
-mod utils;
-pub mod zone;
 mod peer_mgr;
+mod server;
+mod utils;
+mod zone;
