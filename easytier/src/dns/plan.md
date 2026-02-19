@@ -108,7 +108,7 @@ listeners = [
 2.  收到含有 snapshot 的心跳时替换本地配置；如果 snapshot 中的 listeners 或者 addresses 不同则 rebind
 3.  持续检查是否有过期（丢失心跳）的 DnsClient，需要把这些 DnsClient 提供的所有配置清除
 4.  启动时自动添加 root zone，并把它的 forwarder 设置为系统 DNS
-5.  使用 snapshot 更新 zone。不用合并同名 zone，直接用 Zone 结构体提供的 FallbackAuthority 按顺序插入 Catalog 就行，不过注意要先插入 InMemoryAuthority，这些都是 records，后插入 ForwardAuthority，这都是 forwarders
+5.  使用 snapshot 更新 zone。不用合并同名 zone，直接用 Zone 结构体提供的 ChainedAuthority 按顺序插入 Catalog 就行，不过注意要先插入 MemoryAuthority，这些都是 records，后插入 ForwardAuthority，这都是 forwarders
 6.  更新 zone 的时候自动去掉 forwarder 中导致回环的那些，就是把 addresses 和 listeners 去掉（root zone 也需要这个逻辑）
 7.  内部接口，控制 DnsServer 是否 bind 到某些 socket（也就是配置中的 listeners）
 8.  Listeners 绑定失败打印日志（失败一个打印一次然后就跳过），即便这时 addresses 为空也不要停机。（否则释放 socket 绑定后会有 instance 抢占 socket 试图启动 server，然后就死循环）
