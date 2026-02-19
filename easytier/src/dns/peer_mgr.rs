@@ -30,13 +30,15 @@ impl DnsPeerInfo {
     }
 }
 
+const DNS_PEER_TTL: Duration = Duration::from_secs(3);
+
 #[derive(Derivative, Deref)]
 #[derivative(Debug)]
 pub struct DnsPeerMgr {
     #[deref]
     mgr: Arc<PeerManager>,
 
-    cache: Cache<PeerId, DnsPeerInfo>,
+    peers: Cache<PeerId, DnsPeerInfo>,
     pub(super) dirty: AtomicBool,
 }
 
@@ -44,8 +46,8 @@ impl DnsPeerMgr {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         Self {
             mgr: peer_mgr.clone(),
-            cache: Cache::builder()
-                .time_to_live(Duration::from_secs(5))
+            peers: Cache::builder()
+                .time_to_live(DNS_PEER_TTL)
                 .build()
                 .into(),
             dirty: AtomicBool::new(true),
@@ -61,7 +63,7 @@ impl DnsPeerMgr {
         zones.extend(config.zones.iter().map(Into::into));
         zones.extend(global_ctx.dns_self_zone().as_ref().map(Into::into));
 
-        for (_, info) in self.cache.iter() {
+        for (_, info) in self.peers.iter() {
             zones.extend(info.config.zones.clone().into_iter());
         }
 
@@ -83,7 +85,7 @@ impl DnsPeerMgr {
     }
 
     pub(super) async fn refresh(&self, peer_id: PeerId, digest: Vec<u8>) {
-        if let Some(info) = self.cache.get(&peer_id).await {
+        if let Some(info) = self.peers.get(&peer_id).await {
             if info.digest == *digest {
                 return;
             }
@@ -91,11 +93,11 @@ impl DnsPeerMgr {
 
         match self.fetch(peer_id).await {
             Ok(config) => {
-                self.cache.insert(peer_id, DnsPeerInfo::new(config)).await;
+                self.peers.insert(peer_id, DnsPeerInfo::new(config)).await;
             }
             Err(e) => {
                 tracing::warn!("failed to fetch dns config from peer {}: {:?}", peer_id, e);
-                self.cache.invalidate(&peer_id).await;
+                self.peers.invalidate(&peer_id).await;
             }
         }
 
