@@ -12,12 +12,6 @@ message ZoneConfigPb {
   repeated string forwarders = 5;
 }
 
-message DnsSnapshot {
-    repeated ZoneConfigPb zones = 1;
-    repeated common.SocketAddr addresses = 2;
-    repeated common.Url listeners = 3;
-}
-
 message GetExportConfigRequest {}
 
 message GetExportConfigResponse {
@@ -29,13 +23,21 @@ service DnsPeerManagerRpc {
     rpc GetExportConfig(GetExportConfigRequest) returns (GetExportConfigResponse) {}
 }
 
+message DnsSnapshot {
+  repeated ZoneConfigPb zones = 1;
+  repeated common.SocketAddr addresses = 2;
+  repeated common.Url listeners = 3;
+}
+
 message HeartbeatRequest {
   common.UUID id = 1;
   bytes digest = 2;
   optional DnsSnapshot snapshot = 3;
 }
 
-message HeartbeatResponse {}
+message HeartbeatResponse {
+  bool resync = 1;
+}
 
 service DnsServerRpc {
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}

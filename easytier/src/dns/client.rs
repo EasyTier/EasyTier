@@ -20,7 +20,6 @@ use moka::future::Cache;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 use url::Url;
 use uuid::Uuid;
@@ -145,17 +144,10 @@ pub struct DnsClient {
     mgr: Arc<DnsPeerManager>,
 
     tasks: JoinSet<()>,
-
-    #[derivative(Debug = "ignore")]
-    // Client to talk to local DnsServer
-    server_rpc_client: Arc<Mutex<StandAloneClient<TcpTunnelConnector>>>,
 }
 
 impl DnsClient {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
-        let connector = TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone());
-        let server_rpc_client = Arc::new(Mutex::new(StandAloneClient::new(connector)));
-
         let mgr = Arc::new(DnsPeerManager::new(peer_mgr.clone()));
         peer_mgr
             .get_peer_rpc_mgr()
@@ -169,7 +161,6 @@ impl DnsClient {
         Self {
             mgr,
             tasks: JoinSet::new(),
-            server_rpc_client,
         }
     }
 
@@ -178,41 +169,48 @@ impl DnsClient {
     }
 
     pub async fn run(&self) {
-        let mut snapshot = Default::default();
-        let mut digest = Vec::new();
+        let mut rpc = StandAloneClient::new(TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone()));
+        let mut heartbeat = HeartbeatRequest {
+            id: Some(self.id().into()),
+
+            ..Default::default()
+        };
         loop {
-            let snapshot = self.mgr.dirty.swap(false, Ordering::Release).then(|| {
-                snapshot = self.mgr.snapshot();
-                digest = snapshot.digest();
-
-                snapshot.clone()
-            });
-
-            let heartbeat = HeartbeatRequest {
-                id: Some(self.id().into()),
-                digest: digest.clone(),
-                snapshot,
-            };
-
-            if let Err(e) = self.heartbeat(heartbeat).await {
+            if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
                 tracing::error!("DnsClient heartbeat failed: {:?}", e);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 
-    async fn heartbeat(&self, heartbeat: HeartbeatRequest) -> anyhow::Result<()> {
-        // scoped_client of StandAloneClient takes &mut self
-        let client = {
-            let mut client = self.server_rpc_client.lock().await; // Lock the mutex
-            client
-                .scoped_client::<DnsServerRpcClientFactory<BaseController>>("".to_string())
-                .await?
+    async fn heartbeat(
+        &self,
+        rpc: &mut StandAloneClient<TcpTunnelConnector>,
+        heartbeat: &mut HeartbeatRequest,
+    ) -> anyhow::Result<()> {
+        let request = if self.mgr.dirty.swap(false, Ordering::Release) {
+            let snapshot = self.mgr.snapshot();
+            heartbeat.digest = snapshot.digest();
+            heartbeat.snapshot = Some(snapshot);
+            heartbeat.clone()
+        } else {
+            let snapshot = heartbeat.snapshot.take();
+            let request = heartbeat.clone();
+            heartbeat.snapshot = snapshot;
+            request
         };
 
-        client
-            .heartbeat(BaseController::default(), heartbeat)
+        let client = rpc
+            .scoped_client::<DnsServerRpcClientFactory<BaseController>>("".to_string())
             .await?;
+
+        let response = client.heartbeat(BaseController::default(), request).await?;
+        if response.resync {
+            client
+                .heartbeat(BaseController::default(), heartbeat.clone())
+                .await?;
+        }
+
         Ok(())
     }
 
