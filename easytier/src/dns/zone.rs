@@ -146,50 +146,6 @@ impl Zone {
         Ok(authorities)
     }
 
-    fn parse_name_server<A>(addr: A) -> anyhow::Result<NameServerConfig>
-    where
-        A: AsRef<str>,
-    {
-        const SUPPORTED_PROTOCOLS: [Protocol; 2] = [
-            Protocol::Udp,
-            Protocol::Tcp,
-            // Protocol::Tls,
-            // Protocol::Https,
-            // Protocol::Quic,
-            // Protocol::H3,
-        ];
-
-        let addr = addr.as_ref();
-
-        let url = if addr.parse::<IpAddr>().is_ok() || addr.parse::<SocketAddr>().is_ok() {
-            Url::parse(&format!("udp://{addr}"))?
-        } else {
-            Url::parse(addr)?
-        };
-
-        let scheme = url.scheme();
-        let protocol = *SUPPORTED_PROTOCOLS
-            .iter()
-            .find(|p| p.to_string().to_lowercase() == scheme)
-            .ok_or(anyhow::anyhow!("unsupported scheme: {scheme}"))?;
-        let addr = url.host_str().ok_or(anyhow::anyhow!("host not found"))?;
-        let addr = addr
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .parse::<IpAddr>()
-            .map_err(|e| anyhow::anyhow!("invalid ip address '{addr}': {e}"))?;
-        let port = if let Some(port) = url.port() {
-            port
-        } else {
-            match protocol {
-                Protocol::Udp | Protocol::Tcp => 53,
-                _ => return Err(anyhow::anyhow!("port not found")),
-            }
-        };
-        let addr = SocketAddr::new(addr, port);
-        Ok(NameServerConfig::new(addr, protocol))
-    }
-
     pub fn set_forwarders<F, A>(
         &mut self,
         forwarders: F,
