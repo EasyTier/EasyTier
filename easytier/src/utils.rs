@@ -1,6 +1,8 @@
 use crate::common::log;
 use indoc::formatdoc;
 use std::{fs::OpenOptions, str::FromStr};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 pub type PeerRoutePair = crate::proto::api::instance::PeerRoutePair;
 
@@ -148,3 +150,14 @@ pub trait BoxExt: Sized {
 }
 
 impl<T> BoxExt for T {}
+
+pub trait DeterministicDigest: Serialize {
+    fn digest(&self) -> Vec<u8> {
+        let json = serde_json::to_vec(self).expect("failed to serialize the object to json");
+        let mut hasher = Sha256::new();
+        hasher.update(json);
+        hasher.finalize().to_vec()
+    }
+}
+
+impl<S: Serialize> DeterministicDigest for S {}
