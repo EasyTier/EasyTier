@@ -568,9 +568,7 @@ impl PeerManager {
             stats_manager.get_counter(packets_metric, label_set).inc();
         };
 
-        let hdr = packet
-            .mut_peer_manager_header()
-            .unwrap();
+        let hdr = packet.mut_peer_manager_header().unwrap();
 
         // NOTICE: the to peer id is modified by the src from foreign network my peer id to the origin my peer id
         if to_peer_id == my_peer_id {
@@ -618,8 +616,7 @@ impl PeerManager {
             );
 
             // modify the to_peer id from foreign network my peer id to the origin my peer id
-            hdr.to_peer_id
-                .set(to_peer_id);
+            hdr.to_peer_id.set(to_peer_id);
             if let Err(_) = hdr.check_and_increase_forward_counter() {
                 return Ok(());
             }

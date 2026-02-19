@@ -1,10 +1,10 @@
+use crate::common::error::{Error::RouteError, Result};
 use bytes::Bytes;
 use bytes::BytesMut;
 use zerocopy::byteorder::*;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
 use zerocopy::FromZeroes;
-use crate::common::error::{Error::RouteError, Result};
 
 type DefaultEndian = LittleEndian;
 
@@ -528,7 +528,10 @@ impl ZCPacket {
             PacketType::ForeignNetworkPacket as u8,
         );
         let hdr = ret.mut_peer_manager_header().unwrap();
-        hdr.forward_counter = foreign_zc_packet.peer_manager_header().unwrap().forward_counter;
+        hdr.forward_counter = foreign_zc_packet
+            .peer_manager_header()
+            .unwrap()
+            .forward_counter;
         hdr.len.set(total_payload_len as u32);
 
         ret

@@ -8,9 +8,13 @@ use std::{
 
 use anyhow::Context;
 use pnet::packet::{
-    Packet, icmp::{
-        self, IcmpCode, IcmpTypes, MutableIcmpPacket, destination_unreachable, echo_reply::MutableEchoReplyPacket, time_exceeded
-    }, ip::IpNextHeaderProtocols, ipv4::{Ipv4Flags, Ipv4Packet}
+    icmp::{
+        self, destination_unreachable, echo_reply::MutableEchoReplyPacket, time_exceeded, IcmpCode,
+        IcmpTypes, MutableIcmpPacket,
+    },
+    ip::IpNextHeaderProtocols,
+    ipv4::{Ipv4Flags, Ipv4Packet},
+    Packet,
 };
 use socket2::Socket;
 use tokio::{
@@ -131,14 +135,17 @@ fn socket_recv_loop(
             continue;
         };
 
-        let key = if let Some(echo_reply) = icmp::echo_reply::EchoReplyPacket::new(ipv4_packet.payload()) {
+        let key = if let Some(echo_reply) =
+            icmp::echo_reply::EchoReplyPacket::new(ipv4_packet.payload())
+        {
             IcmpNatKey {
                 real_dst_ip: peer_ip,
                 icmp_id: echo_reply.get_identifier(),
                 icmp_seq: echo_reply.get_sequence_number(),
             }
         } else if let Some(time_exceeded_packet) =
-                time_exceeded::TimeExceededPacket::new(ipv4_packet.payload()) {
+            time_exceeded::TimeExceededPacket::new(ipv4_packet.payload())
+        {
             let Some(inner_ipv4_packet) = Ipv4Packet::new(time_exceeded_packet.payload()) else {
                 continue;
             };
@@ -156,7 +163,8 @@ fn socket_recv_loop(
                 icmp_seq: inner_echo_request.get_sequence_number(),
             }
         } else if let Some(dst_unreachable_packet) =
-                destination_unreachable::DestinationUnreachablePacket::new(ipv4_packet.payload()) {
+            destination_unreachable::DestinationUnreachablePacket::new(ipv4_packet.payload())
+        {
             let Some(inner_ipv4_packet) = Ipv4Packet::new(dst_unreachable_packet.payload()) else {
                 continue;
             };
