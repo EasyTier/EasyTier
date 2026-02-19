@@ -1,104 +1,15 @@
-use crate::dns::utils::NameServerAddr;
+use crate::dns::utils::{ChainedAuthority, NameServerAddr};
 use crate::proto::dns::ZoneConfigPb;
-use async_trait::async_trait;
-use derive_more::{Deref, DerefMut};
-use hickory_proto::rr::{LowerName, Record, RecordSet, RecordType, RrKey, RrsetRecords};
+use hickory_proto::rr::{LowerName, Record, RecordSet, RrKey, RrsetRecords};
 use hickory_proto::serialize::txt::Parser;
-use hickory_proto::xfer::Protocol;
-use hickory_resolver::config::{NameServerConfig, ResolverOpts};
+use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_server::authority::{
-    Authority, AuthorityObject, LookupControlFlow, LookupObject, LookupOptions, MessageRequest,
-    UpdateResult, ZoneType,
-};
-use hickory_server::server::RequestInfo;
+use hickory_server::authority::ZoneType;
 use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
 use std::collections::BTreeMap;
-use std::mem;
-use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
-use url::Url;
-
-#[derive(Deref, DerefMut)]
-pub struct FallbackAuthority<A, L>
-where
-    A: Authority<Lookup = L> + Send + Sync + 'static,
-    L: LookupObject + Send + Sync + 'static,
-{
-    #[deref]
-    #[deref_mut]
-    inner: A,
-}
-
-#[async_trait]
-impl<A, L> Authority for FallbackAuthority<A, L>
-where
-    A: Authority<Lookup = L> + Send + Sync + 'static,
-    L: LookupObject + Send + Sync + 'static,
-{
-    type Lookup = L;
-
-    #[inline]
-    fn zone_type(&self) -> ZoneType {
-        self.inner.zone_type()
-    }
-    #[inline]
-    fn is_axfr_allowed(&self) -> bool {
-        self.inner.is_axfr_allowed()
-    }
-    #[inline]
-    async fn update(&self, update: &MessageRequest) -> UpdateResult<bool> {
-        self.inner.update(update).await
-    }
-    #[inline]
-    fn origin(&self) -> &LowerName {
-        self.inner.origin()
-    }
-    #[inline]
-    async fn lookup(
-        &self,
-        name: &LowerName,
-        rtype: RecordType,
-        lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Self::Lookup> {
-        self.inner.lookup(name, rtype, lookup_options).await
-    }
-    #[inline]
-    async fn consult(
-        &self,
-        name: &LowerName,
-        rtype: RecordType,
-        lookup_options: LookupOptions,
-        last_result: LookupControlFlow<Box<dyn LookupObject>>,
-    ) -> LookupControlFlow<Box<dyn LookupObject>> {
-        if let Some(Ok(l)) = last_result.map_result() {
-            LookupControlFlow::Break(Ok(l))
-        } else {
-            self.inner
-                .lookup(name, rtype, lookup_options)
-                .await
-                .map(|l| Box::new(l) as _)
-        }
-    }
-    #[inline]
-    async fn search(
-        &self,
-        request_info: RequestInfo<'_>,
-        lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Self::Lookup> {
-        self.inner.search(request_info, lookup_options).await
-    }
-    #[inline]
-    async fn get_nsec_records(
-        &self,
-        name: &LowerName,
-        lookup_options: LookupOptions,
-    ) -> LookupControlFlow<Self::Lookup> {
-        self.inner.get_nsec_records(name, lookup_options).await
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct Zone {
@@ -116,34 +27,35 @@ impl Zone {
         }
     }
 
-    pub fn create_authorities(&self) -> anyhow::Result<Vec<Arc<dyn AuthorityObject>>> {
-        let mut authorities = Vec::<Arc<dyn AuthorityObject>>::with_capacity(2);
+    pub fn create_memory_authority(&self) -> Option<Arc<ChainedAuthority<InMemoryAuthority>>> {
+        (!self.records.is_empty()).then(|| {
+            let mut memory =
+                InMemoryAuthority::empty(self.origin.clone().into(), ZoneType::External, false);
 
-        let mut memory =
-            InMemoryAuthority::empty(self.origin.clone().into(), ZoneType::External, false);
+            memory.records_get_mut().extend(
+                self.records
+                    .clone()
+                    .into_iter()
+                    .map(|(k, v)| (k, Arc::new(v))),
+            );
 
-        let mut records = self
-            .records
-            .clone()
-            .into_iter()
-            .map(|(k, v)| (k, Arc::new(v)))
-            .collect();
-        mem::swap(memory.records_get_mut(), &mut records);
+            Arc::new(memory.into())
+        })
+    }
 
-        authorities.push(Arc::new(memory));
-
-        if let Some(forward) = &self.forward {
-            let forward = ForwardAuthority::builder_with_config(
+    pub fn create_forward_authority(
+        &self,
+    ) -> Option<Arc<ChainedAuthority<ForwardAuthority<TokioConnectionProvider>>>> {
+        self.forward.as_ref().and_then(|forward| {
+            ForwardAuthority::builder_with_config(
                 forward.clone(),
                 TokioConnectionProvider::default(),
             )
             .build()
-            .map_err(|e| anyhow::anyhow!("failed to create forward authority: {}", e))?;
-            let forward = FallbackAuthority { inner: forward };
-            authorities.push(Arc::new(forward));
-        }
-
-        Ok(authorities)
+            .inspect_err(|e| tracing::error!("failed to create forward authority: {:?}", e))
+            .ok()
+            .map(|f| Arc::new(f.into()))
+        })
     }
 
     pub fn set_forwarders<F, A>(
@@ -215,7 +127,7 @@ mod tests {
     use hickory_proto::rr::{rdata, DNSClass, Name, RData, RecordType};
     use hickory_proto::runtime::TokioRuntimeProvider;
     use hickory_proto::udp::UdpClientStream;
-    use hickory_server::authority::Catalog;
+    use hickory_server::authority::{AuthorityObject, Catalog};
     use hickory_server::ServerFuture;
     use std::time::Duration;
     use tokio::net::UdpSocket;
@@ -334,7 +246,17 @@ mod tests {
 
         assert_eq!(zone.forward.as_ref().unwrap().name_servers.len(), 1);
 
-        let authorities = zone.create_authorities()?;
+        let mut authorities = Vec::new();
+        authorities.extend(
+            zone.create_memory_authority()
+                .map(|a| a as Arc<dyn AuthorityObject>)
+                .into_iter(),
+        );
+        authorities.extend(
+            zone.create_forward_authority()
+                .map(|a| a as Arc<dyn AuthorityObject>)
+                .into_iter(),
+        );
         assert_eq!(authorities.len(), 2);
         let mut catalog = Catalog::new();
         catalog.upsert(zone.origin.clone().into(), authorities);
