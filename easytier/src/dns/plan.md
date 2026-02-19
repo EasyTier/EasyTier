@@ -62,45 +62,50 @@ listeners = [
 <details>
 <summary><h2>计划和进展</h2></summary>
 
+每个 peer 会默认拥有一个专用 zone，它的 origin 是这个 peer 的 fqdn，唯一的记录是指向该 peer 的 ip 的 A、AAAA 记录
+
 ## protobuf
 
 - `ZoneConfigPb`：包含所有 Zone 配置，以及一个 ID，该 ID 在读取 TOML 时生成
-- `DnsConfigPb`：包含 `name`、`domain` 和需要广播的 `ZoneConfigPb`
-- `DnsHeartbeat`: DnsClient 发送的心跳，包含：id、checksum、`Option<Snapshot>`
-- `DnsSnapshot`: 所有 DnsServer 需要的配置，以及与上一次 Snapshot 之间的变化 `delta`
+- `GetExportConfigResponse`：包含全部 `ZoneConfigPb`（特别地，包含专用 zone）、该 peer 的 fqdn
+- `HeartbeatRequest`: DnsClient 发送的心跳，包含：id、digest、`Option<Snapshot>`
+- `DnsSnapshot`: 所有 DnsServer 需要的配置
 
 ## RoutePeerInfo
 
 为预防用户提交大量自定义 DNS 记录导致 RoutePeerInfo 泛洪造成带宽压力：
 
-- 在 `RoutePeerInfo` 中新增字段，保存本地 DNS 配置的 hash
-- 收到 `RoutePeerInfo` 读取其中 DNS 的 hash，若与本地不同，通过 RPC 拉取 Peer 的 DNS 配置
+- 在 `RoutePeerInfo` 中只保存本地 DNS 配置的 hash
+- 收到 `RoutePeerInfo` 后读取其中 DNS 的 hash，若与本地不同，通过 RPC 拉取 Peer 的 DNS 配置
+
+## DnsRunner
+
+用于启动/监护 DnsClient 和 DnsServer
+每个 EasyTier 实例都会启动一个 DnsClient，但是一台机器上的所有实例共享一个唯一的 DnsServer。
+
+每个实例启动时：
+
+1. 读取 TOML 配置，然后用这个配置启动一个 DnsClient，交给 DnsClient 一个用于尝试重启 server 的 notify
+2. 尝试绑定 DNS_SERVER_RPC_ADDR 监听 RPC 请求
+   1. 一台机器上所有 EasyTier 实例一起尝试绑定 DNS_SERVER_RPC_ADDR，绑定成功的那个就启动 DnsServer（当然也启动 DnsClient），失败的那些就只有 DnsClient
+   2. 这个启动 DnsServer 的操作其实是个循环，每隔一小段时间或者 DnsClient rpc 失败（notify）后立刻尝试 bind，如果 bind 成功就说明 DnsServer 真挂了，那就自己在这个已有的 SocketAddr 上启动 DnsServer（忽略 bind 失败或启动失败，启动失败就直接释放 socket），这样才能保证服务不断
+
 
 ## DnsClient
 
-对于每个实例，它启动时读取 TOML 配置，然后用这个配置启动一个 DnsClient ，它需要做到：
-
 1. 启动时（配置更新时？）将 listeners 和 addresses 添加进 delta
 2. 使用自己的 name 和 domain 创建一个专用 zone，让 name 指向自身 IP，并监听 IP 地址变化事件（为 DNS 一致性避免使用 127.0.0.1 作为 IP，若没有 IP 则不创建这个 zone）
-3. 每次获得 RoutePeerInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是远程 Peer 的 dns 配置（不含 addresses 和 listeners）的 hash，接收后它需要：
-   1. 检查 hash 和本地配置是否一致，如果一致，不做修改，否则进入下一个步骤
-   2. 通过 RPC 获取 Peer 的配置
-   3. 用远程配置中的 name 和 domain 创建远程 peer 的专用 zone，让这个 name 指向 peer 的 ip（这些 ip 是在 RoutePeerInfo 中的）
-   4. 检查 2., 3.i. 中得到的 zone、RoutePeerInfo 报告的 zone、本机 TOML 配置中的 zone 是否有变化，如果有变化，将变化的 Zone ID 添加进 delta
-4. 每隔一小段时间向 DnsServer 发送心跳和当前 checksum，如果 delta 非空，发送 delta 和当前配置的全量快照；如果 DnsServer 返回 Mismatch，下一次心跳发送全量 Snapshot
+3. 每次获得 RoutePeerInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是远程 Peer 的 dns 配置（不含 addresses 和 listeners）的 digest，接收后检查 digest 和本地配置是否一致，如果一致，不做修改，否则标记 dirty，下一次心跳时将重建快照
+4. 每隔一小段时间向 DnsServer 发送心跳和当前 digest： 
+   1. 如果没有 dirty 标记，心跳不含 snapshot；
+   2. 如果有 dirty 标记，重建 snapshot 并在心跳中包含；
+   3. 如果 DnsServer 返回 resync，立刻重新发送带有 Snapshot 的心跳
 5. 一个 RPC 接口，供 Peer 拉取 DNS 配置
 
 ## DnsServer
 
-每个 EasyTier 实例都会启动一个 DnsClient，但是一台机器上的所有实例共享一个唯一的 DnsServer。
-每个实例启动时：
-
-- 尝试绑定一个预先给定的 SocketAddr（是个常数，目前是 MAGIC_DNS_INSTANCE_ADDR）监听 RPC 请求（一台机器上所有 EasyTier 实例一起尝试绑定该 SocketAddr，绑定成功的那个就启动 DnsServer（当然也启动 DnsClient），失败的那些就只有 DnsClient），另外这个启动 DnsServer 的操作其实是个循环，每隔一小段时间或者 DnsClient rpc 失败后立刻尝试 bind，如果 bind 成功就说明 DnsServer 真挂了，那就自己在这个已有的 SocketAddr 上启动 DnsServer（忽略启动失败），这样才能保证服务不断
-
-DnsServer 需要做到：
-
-1.  提供一个 RPC 接口接受 DnsClient 的心跳，如果心跳 checksum 和本地不符则返回 Mismatch
-2.  收到含有 delta 的心跳时，直接忽略 delta 中的 Zone 用全量 snapshot 替换本地配置；如果 delta 中含有 listeners 或者 addresses 则 rebind
+1.  提供一个 RPC 接口接受 DnsClient 的心跳，如果心跳 digest 和本地不符则返回 resync
+2.  收到含有 snapshot 的心跳时替换本地配置；如果 snapshot 中的 listeners 或者 addresses 不同则 rebind
 3.  持续检查是否有过期（丢失心跳）的 DnsClient，需要把这些 DnsClient 提供的所有配置清除
 4.  启动时自动添加 root zone，并把它的 forwarder 设置为系统 DNS
 5.  使用 snapshot 更新 zone。不用合并同名 zone，直接用 Zone 结构体提供的 FallbackAuthority 按顺序插入 Catalog 就行，不过注意要先插入 InMemoryAuthority，这些都是 records，后插入 ForwardAuthority，这都是 forwarders
