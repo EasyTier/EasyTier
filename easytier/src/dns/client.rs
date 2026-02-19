@@ -65,17 +65,18 @@ impl DnsClient {
         rpc: &mut StandAloneClient<TcpTunnelConnector>,
         heartbeat: &mut HeartbeatRequest,
     ) -> anyhow::Result<()> {
-        let request = if self.mgr.dirty.swap(false, Ordering::Release) {
-            let snapshot = self.mgr.snapshot();
-            heartbeat.digest = snapshot.digest();
-            heartbeat.snapshot = Some(snapshot);
-            heartbeat.clone()
-        } else {
-            let snapshot = heartbeat.snapshot.take();
-            let request = heartbeat.clone();
-            heartbeat.snapshot = snapshot;
-            request
-        };
+        let request =
+            if heartbeat.snapshot.is_none() || self.mgr.dirty.swap(false, Ordering::Release) {
+                let snapshot = self.mgr.snapshot();
+                heartbeat.digest = snapshot.digest();
+                heartbeat.snapshot = Some(snapshot);
+                heartbeat.clone()
+            } else {
+                let snapshot = heartbeat.snapshot.take();
+                let request = heartbeat.clone();
+                heartbeat.snapshot = snapshot;
+                request
+            };
 
         let client = rpc
             .scoped_client::<DnsServerRpcClientFactory<BaseController>>("".to_string())
