@@ -13,8 +13,11 @@ pub trait DeterministicDigest: Serialize {
     }
 }
 
-impl DeterministicDigest for DnsConfigPb {}
+impl DeterministicDigest for GetExportConfigResponse {}
+
 impl DeterministicDigest for ZoneConfigPb {}
+
+impl DeterministicDigest for DnsSnapshot {}
 
 impl Display for ZoneConfigPb {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

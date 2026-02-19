@@ -37,7 +37,7 @@ tracing-subscriber = { version = "0.3", features = [
     "time",
 ] }
 derivative = "2.2.0"
-derive_more = {version = "2.1.1", features = ["full"]}
+derive_more = { version = "2.1.1", features = ["full"] }
 console-subscriber = { version = "0.4.1", optional = true }
 indoc = "2.0.7"
 regex = "1.8"
@@ -162,6 +162,8 @@ petgraph = "0.8.1"
 hashbrown = "0.15.3"
 ordered_hash_map = "0.5.0"# TODO: REPLACE THIS
 indexmap = "2.13.0"
+
+moka = { version = "0.12.13", features = ["future"] }
 
 # for wireguard
 boringtun = { package = "boringtun-easytier", version = "0.6.1", optional = true }

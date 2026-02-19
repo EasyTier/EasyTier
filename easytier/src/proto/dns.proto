@@ -4,11 +4,6 @@ import "common.proto";
 
 package dns;
 
-message DnsConfigPb {
-  repeated ZoneConfigPb zones = 1;
-  string fqdn = 2;
-}
-
 message ZoneConfigPb {
   common.UUID id = 1;
   string origin = 2;
@@ -23,13 +18,25 @@ message DnsSnapshot {
     repeated common.Url listeners = 3;
 }
 
-message DnsHeartbeat {
-    common.UUID inst_id = 1;
-    uint64 checksum = 2;
-    optional DnsSnapshot data = 3;
+message GetExportConfigRequest {}
+
+message GetExportConfigResponse {
+  repeated ZoneConfigPb zones = 1;
+  string fqdn = 2;
 }
 
+service DnsPeerManagerRpc {
+    rpc GetExportConfig(GetExportConfigRequest) returns (GetExportConfigResponse) {}
+}
+
+message HeartbeatRequest {
+  common.UUID id = 1;
+  bytes digest = 2;
+  optional DnsSnapshot snapshot = 3;
+}
+
+message HeartbeatResponse {}
+
 service DnsServerRpc {
-    rpc Heartbeat(DnsHeartbeat) returns (common.Void) {}
-    rpc GetConfig(common.Void) returns (DnsConfigPb) {}
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
 }
