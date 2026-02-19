@@ -1,36 +1,150 @@
-use std::net::{Ipv4Addr, Ipv6Addr};
-use std::sync::Arc;
-use std::time::Duration;
-
-use super::config::{DnsConfig, DnsGlobalCtxExt, DNS_SERVER_RPC_ADDR};
+use super::config::{DnsGlobalCtxExt, DNS_SERVER_RPC_ADDR};
 use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
+use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{
-    DeterministicDigest, DnsConfigPb, DnsHeartbeat, DnsServerRpcClientFactory, DnsSnapshot,
-    ZoneConfigPb,
+    DeterministicDigest, DnsPeerManagerRpc, DnsPeerManagerRpcClientFactory,
+    DnsPeerManagerRpcServer, DnsServerRpcClientFactory, DnsSnapshot, GetExportConfigRequest,
+    GetExportConfigResponse, HeartbeatRequest,
 };
-use crate::proto::peer_rpc::{OspfRouteRpcClientFactory, RoutePeerInfo};
+use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::proto::rpc_impl::standalone::StandAloneClient;
+use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
-use dashmap::DashMap;
+use anyhow::Context;
 use derivative::Derivative;
+use derive_more::Deref;
+use moka::future::Cache;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::task::JoinSet;
 use url::Url;
+use uuid::Uuid;
 
-// Stores the digest of peer DNS configs to avoid re-fetching if unchanged.
-type PeerDigestMap = Arc<DashMap<PeerId, Vec<u8>>>;
-// Stores peer DNS configs.
-type PeerConfigMap = Arc<DashMap<PeerId, DnsConfigPb>>;
+#[derive(Debug, Clone)]
+pub struct DnsPeerInfo {
+    digest: Vec<u8>,
+    config: GetExportConfigResponse,
+}
 
-#[derive(Derivative, Clone)]
+impl DnsPeerInfo {
+    pub fn new(config: GetExportConfigResponse) -> Self {
+        Self {
+            digest: config.digest(),
+            config,
+        }
+    }
+}
+
+#[derive(Derivative, Deref)]
+#[derivative(Debug)]
+pub struct DnsPeerManager {
+    #[deref]
+    mgr: Arc<PeerManager>,
+
+    cache: Cache<PeerId, DnsPeerInfo>,
+    dirty: AtomicBool,
+}
+
+impl DnsPeerManager {
+    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        Self {
+            mgr: peer_mgr.clone(),
+            cache: Cache::builder()
+                .time_to_live(Duration::from_secs(5))
+                .build()
+                .into(),
+            dirty: AtomicBool::new(true),
+        }
+    }
+
+    fn snapshot(&self) -> DnsSnapshot {
+        let global_ctx = self.get_global_ctx_ref();
+        let config = global_ctx.config.get_dns();
+
+        let mut zones = Vec::new();
+
+        zones.extend(config.zones.iter().map(Into::into));
+        zones.extend(global_ctx.dns_self_zone().as_ref().map(Into::into));
+
+        for (_, info) in self.cache.iter() {
+            zones.extend(info.config.zones.clone().into_iter());
+        }
+
+        DnsSnapshot {
+            zones,
+            addresses: config
+                .addresses
+                .clone()
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            listeners: config
+                .listeners
+                .iter()
+                .map(Url::from)
+                .map(Into::into)
+                .collect(),
+        }
+    }
+
+    async fn refresh(&self, peer_id: PeerId, digest: Vec<u8>) {
+        if let Some(info) = self.cache.get(&peer_id).await {
+            if info.digest == *digest {
+                return;
+            }
+        };
+
+        match self.fetch(peer_id).await {
+            Ok(config) => {
+                self.cache.insert(peer_id, DnsPeerInfo::new(config)).await;
+            }
+            Err(e) => {
+                tracing::warn!("failed to fetch dns config from peer {}: {:?}", peer_id, e);
+                self.cache.invalidate(&peer_id).await;
+            }
+        }
+
+        self.dirty.store(true, Ordering::Release);
+    }
+
+    async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<GetExportConfigResponse> {
+        self.get_peer_rpc_mgr()
+            .rpc_client()
+            .scoped_client::<DnsPeerManagerRpcClientFactory<BaseController>>(
+                self.mgr.my_peer_id(),
+                peer_id,
+                "".to_string(),
+            )
+            .get_export_config(BaseController::default(), GetExportConfigRequest {})
+            .await
+            .context("rpc call failed")
+    }
+}
+
+#[async_trait::async_trait]
+impl DnsPeerManagerRpc for DnsPeerManager {
+    type Controller = BaseController;
+
+    async fn get_export_config(
+        &self,
+        _: Self::Controller,
+        _: GetExportConfigRequest,
+    ) -> rpc_types::error::Result<GetExportConfigResponse> {
+        Ok(self.get_global_ctx_ref().dns_export_config())
+    }
+}
+
+#[derive(Derivative)]
 #[derivative(Debug)]
 pub struct DnsClient {
-    peer_mgr: Arc<PeerManager>,
+    mgr: Arc<DnsPeerManager>,
 
-    peer_configs: PeerConfigMap,
-    peer_digests: PeerDigestMap,
+    tasks: JoinSet<()>,
 
     #[derivative(Debug = "ignore")]
     // Client to talk to local DnsServer
@@ -42,28 +156,52 @@ impl DnsClient {
         let connector = TcpTunnelConnector::new(DNS_SERVER_RPC_ADDR.clone());
         let server_rpc_client = Arc::new(Mutex::new(StandAloneClient::new(connector)));
 
+        let mgr = Arc::new(DnsPeerManager::new(peer_mgr.clone()));
+        peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                DnsPeerManagerRpcServer::new_arc(mgr.clone()),
+                &peer_mgr.get_global_ctx_ref().get_network_name(),
+            );
+
         Self {
-            peer_mgr,
-            peer_configs: Arc::new(DashMap::new()),
-            peer_digests: Arc::new(DashMap::new()),
+            mgr,
+            tasks: JoinSet::new(),
             server_rpc_client,
         }
     }
 
-    fn config(&self) -> DnsConfig {
-        self.peer_mgr.get_global_ctx_ref().config.get_dns()
+    pub fn id(&self) -> Uuid {
+        self.mgr.get_global_ctx_ref().get_id().into()
     }
 
     pub async fn run(&self) {
+        let mut snapshot = Default::default();
+        let mut digest = Vec::new();
         loop {
-            if let Err(e) = self.do_heartbeat().await {
-                // tracing::error!("DnsClient heartbeat failed: {:?}", e);
+            let snapshot = self.mgr.dirty.swap(false, Ordering::Release).then(|| {
+                snapshot = self.mgr.snapshot();
+                digest = snapshot.digest();
+
+                snapshot.clone()
+            });
+
+            let heartbeat = HeartbeatRequest {
+                id: Some(self.id().into()),
+                digest: digest.clone(),
+                snapshot,
+            };
+
+            if let Err(e) = self.heartbeat(heartbeat).await {
+                tracing::error!("DnsClient heartbeat failed: {:?}", e);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 
-    async fn do_heartbeat(&self) -> anyhow::Result<()> {
+    async fn heartbeat(&self, heartbeat: HeartbeatRequest) -> anyhow::Result<()> {
         // scoped_client of StandAloneClient takes &mut self
         let client = {
             let mut client = self.server_rpc_client.lock().await; // Lock the mutex
@@ -72,122 +210,17 @@ impl DnsClient {
                 .await?
         };
 
-        let snapshot = self.build_snapshot().await;
-        let heartbeat = DnsHeartbeat {
-            inst_id: Some(self.peer_mgr.get_global_ctx_ref().id.into()),
-            checksum: 0, // Compute proper checksum if needed for optimization
-            data: Some(snapshot),
-        };
-
         client
             .heartbeat(BaseController::default(), heartbeat)
             .await?;
         Ok(())
     }
 
-    async fn build_snapshot(&self) -> DnsSnapshot {
-        let global_ctx = self.peer_mgr.get_global_ctx_ref();
-
-        let mut zones = Vec::new();
-
-        let config = self.config();
-
-        // 1. Local zones
-        zones.extend(config.zones.iter().map(Into::into));
-        zones.extend(global_ctx.dns_self_zone().as_ref().map(Into::into));
-
-        // 2. Peer zones
-        for ref_multi in self.peer_configs.iter() {
-            let config = ref_multi.value();
-            // TODO: apply import policy here
-            zones.extend(config.zones.clone());
-        }
-
-        DnsSnapshot {
-            zones,
-            addresses: self
-                .config()
-                .addresses
-                .clone()
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            listeners: self
-                .config()
-                .listeners
-                .iter()
-                .map(Url::from)
-                .map(Into::into)
-                .collect(),
-        }
-    }
-
-    pub async fn handle_route_peer_info(&self, peer_info: &RoutePeerInfo) {
+    pub async fn refresh(&mut self, peer_info: &RoutePeerInfo) {
+        let mgr = self.mgr.clone();
         let peer_id = peer_info.peer_id;
-        let new_digest = &peer_info.dns;
-
-        if new_digest.is_empty() {
-            self.peer_configs.remove(&peer_id);
-            self.peer_digests.remove(&peer_id);
-            return;
-        }
-        // Compare dedicated zone
-
-        let old_digest = self.peer_digests.get(&peer_id);
-        if let Some(d) = old_digest {
-            if d.as_slice() == new_digest.as_slice() {
-                return;
-            }
-        }
-
-        // Need fetch
-        // Spawn a task to avoid blocking the caller (which might be the peer manager thread)
-        let client_clone = self.clone();
-        let peer_id = peer_id;
-        let digest_clone = new_digest.clone();
-        let new_digest_vec = new_digest.to_vec();
-
-        tokio::spawn(async move {
-            match client_clone.fetch_peer_config(peer_id).await {
-                Ok(Some(config)) => {
-                    let digest = config.digest();
-                    // Verify digest matches?
-                    if digest == new_digest_vec {
-                        client_clone.peer_configs.insert(peer_id, config);
-                        client_clone.peer_digests.insert(peer_id, digest);
-                        // Trigger heartbeat immediately?
-                        if let Err(e) = client_clone.do_heartbeat().await {
-                            tracing::warn!(
-                                "Failed to push DNS snapshot after peer update: {:?}",
-                                e
-                            );
-                        }
-                    } else {
-                        tracing::warn!("Fetched DNS config digest mismatch for peer {}", peer_id);
-                    }
-                }
-                Ok(None) => {
-                    client_clone.peer_configs.remove(&peer_id);
-                    client_clone.peer_digests.remove(&peer_id);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to fetch DNS config from peer {}: {:?}", peer_id, e);
-                }
-            }
-        });
-    }
-
-    async fn fetch_peer_config(&self, peer_id: PeerId) -> anyhow::Result<Option<DnsConfigPb>> {
-        let peer_mgr = self.peer_mgr.clone();
-        let rpc_mgr = peer_mgr.get_peer_rpc_mgr();
-
-        let client = rpc_mgr.rpc_client();
-        let stub = client.scoped_client::<OspfRouteRpcClientFactory<BaseController>>(
-            peer_mgr.my_peer_id(),
-            peer_id,
-            peer_mgr.get_global_ctx_ref().get_network_name(),
-        );
-
-        Ok(None)
+        let digest = peer_info.dns.clone();
+        self.tasks
+            .spawn_local(async move { mgr.refresh(peer_id, digest).await });
     }
 }

@@ -1,7 +1,7 @@
 use crate::common::config::ConfigLoader;
 use crate::common::global_ctx::GlobalCtx;
 use crate::dns::utils::{parse, NameServerAddr};
-use crate::proto::dns::{DnsConfigPb, ZoneConfigPb};
+use crate::proto::dns::{GetExportConfigResponse, ZoneConfigPb};
 use derive_more::{Deref, DerefMut};
 use gethostname::gethostname;
 use hickory_proto::rr::{LowerName, Name};
@@ -64,9 +64,11 @@ impl DnsConfig {
     }
 }
 
+type DnsExportConfig = GetExportConfigResponse;
+
 pub trait DnsGlobalCtxExt {
     fn dns_self_zone(&self) -> Option<ZoneConfig>;
-    fn dns_export_config(&self) -> DnsConfigPb;
+    fn dns_export_config(&self) -> DnsExportConfig;
 }
 
 impl DnsGlobalCtxExt for GlobalCtx {
@@ -79,12 +81,12 @@ impl DnsGlobalCtxExt for GlobalCtx {
         ZoneConfig::dedicated(Some(self.get_id()), fqdn.clone(), ipv4, ipv6)
     }
 
-    fn dns_export_config(&self) -> DnsConfigPb {
+    fn dns_export_config(&self) -> DnsExportConfig {
         let config = self.config.get_dns();
         let zone = self.dns_self_zone();
         let zones = config.zones.iter().chain(zone.iter());
 
-        DnsConfigPb {
+        DnsExportConfig {
             zones: zones
                 .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
                 .map(Into::into)
