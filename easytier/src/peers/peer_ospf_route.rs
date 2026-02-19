@@ -41,7 +41,7 @@ use super::{
 };
 use crate::common::config::ConfigLoader;
 use crate::dns::config::DnsGlobalCtxExt;
-use crate::proto::dns::DeterministicDigest;
+use crate::utils::DeterministicDigest;
 use crate::{
     common::{
         config::NetworkIdentity,
