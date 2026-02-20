@@ -1,7 +1,7 @@
 use derive_more::{Deref, DerefMut, From, IntoIterator};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use crate::dns::utils::MapTryInto;
+use crate::utils::MapTryInto;
 
 pub trait MessageModel<Message: prost::Message>: Into<Message> + for<'m> TryFrom<&'m Message> {}
 
