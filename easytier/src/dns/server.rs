@@ -1,3 +1,4 @@
+use anyhow::Error;
 use hickory_proto::xfer::Protocol;
 use hickory_server::{
     authority::Catalog,
@@ -7,11 +8,8 @@ use hickory_server::{
 use moka::future::Cache;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{
-    sync::Arc,
-    time::Duration,
-};
-use anyhow::Error;
+use std::{sync::Arc, time::Duration};
+use itertools::Itertools;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Notify;
 use tokio::{
@@ -21,8 +19,8 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{utils::NameServerAddr, zone::Zone};
-use crate::dns::client::Heartbeat;
 use crate::proto::rpc_types;
+use crate::utils::{DeterministicDigest};
 use crate::{
     common::global_ctx::GlobalCtx,
     proto::{
@@ -30,6 +28,30 @@ use crate::{
         rpc_types::controller::BaseController,
     },
 };
+use crate::dns::utils::NameServerAddrGroup;
+use crate::dns::zone::ZoneGroup;
+use crate::proto::dns::DnsSnapshot;
+
+#[derive(Debug, Clone, Default)]
+pub struct DnsClientInfo {
+    digest: Vec<u8>,
+    zones: ZoneGroup,
+    addresses: NameServerAddrGroup,
+    listeners: NameServerAddrGroup,
+}
+
+impl TryFrom<&DnsSnapshot> for DnsClientInfo {
+    type Error = Error;
+
+    fn try_from(value: &DnsSnapshot) -> Result<Self, Self::Error> {
+        Ok(Self {
+            digest: value.digest(),
+            zones: (&value.zones).try_into()?,
+            addresses: (&value.addresses).try_into()?,
+            listeners: (&value.listeners).try_into()?,
+        })
+    }
+}
 
 // A wrapper around Catalog to allow hot-swapping the inner catalog
 #[derive(Clone)]
@@ -75,7 +97,7 @@ pub struct DnsServerDirtyState {
 #[derive(Clone)]
 pub struct DnsServer {
     global_ctx: Arc<GlobalCtx>,
-    clients: Cache<Uuid, Heartbeat>,
+    clients: Cache<Uuid, DnsClientInfo>,
     catalog: DynamicCatalog,
     server_task: Arc<Mutex<Option<JoinHandle<()>>>>,
     dirty: Arc<DnsServerDirtyState>,
@@ -89,18 +111,10 @@ impl DnsServer {
         let mut zones = vec![Zone::system()];
         let mut local = HashSet::<NameServerAddr>::new();
 
-        for (_, client) in self.clients.iter() {
-            let Some(snapshot) = client.snapshot.as_ref() else {
-                tracing::warn!("client snapshot not found: {:?}", client);
-                continue;
-            };
-            zones.extend(snapshot.zones.iter().filter_map(|z| {
-                z.try_into()
-                    .inspect_err(|e| tracing::warn!("failed to parse zone: {:?}", e))
-                    .ok()
-            }));
-            local.extend(&snapshot.addresses);
-            local.extend(&snapshot.listeners);
+        for (_, info) in self.clients.iter() {
+            zones.extend(info.zones.iter().cloned());
+            local.extend(info.addresses.iter());
+            local.extend(info.listeners.iter());
         }
 
         let mut catalog = Catalog::new();
@@ -134,17 +148,14 @@ impl DnsServer {
         let listeners = self
             .clients
             .iter()
-            .filter_map(|(_, client)| {
-                client
-                    .snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.listeners.clone().into_iter())
-            })
+            .map(|(_, info)| info.listeners.into_iter())
             .flatten()
-            .collect::<Vec<_>>();
+            .collect_vec();
 
         let mut server = self.server_task.lock().await;
-        if let Some(old) = server.take() { old.abort() }
+        if let Some(old) = server.take() {
+            old.abort()
+        }
 
         let mut new = ServerFuture::new(self.catalog.clone());
         for listener in listeners {
@@ -249,37 +260,37 @@ impl DnsServerRpc for DnsServer {
         _: BaseController,
         input: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
-        let heartbeat: Heartbeat = input
-            .try_into()
-            .map_err(|e: Error| rpc_types::error::Error::MalformatRpcPacket(e.to_string()))?;
-        let id = heartbeat.id;
+        let id = input.id.ok_or(
+            anyhow::anyhow!("missing id in heartbeat request: {:?}", input)
+        )?.into();
 
-        let resync = if let Some(snapshot) = heartbeat.snapshot.as_ref() {
+        let resync = if let Some(snapshot) = input.snapshot.as_ref() {
+            let new = DnsClientInfo::try_from(snapshot)?;
             let old = self
                 .clients
                 .get(&id)
                 .await
-                .unwrap_or_default()
-                .snapshot
                 .unwrap_or_default();
-            if snapshot.zones != old.zones {
-                self.dirty.zones.store(true, Ordering::Release);
-            }
-            if snapshot.addresses != old.addresses {
-                self.dirty.addresses.store(true, Ordering::Release);
-            }
-            if snapshot.listeners != old.listeners {
-                self.dirty.listeners.store(true, Ordering::Release);
-            }
+            if new.digest != old.digest {
+                if new.zones != old.zones {
+                    self.dirty.zones.store(true, Ordering::Release);
+                }
+                if new.addresses != old.addresses {
+                    self.dirty.addresses.store(true, Ordering::Release);
+                }
+                if new.listeners != old.listeners {
+                    self.dirty.listeners.store(true, Ordering::Release);
+                }
 
-            self.clients.insert(id, heartbeat).await;
-            self.dirty.reload.notify_one();
+                self.clients.insert(id, new).await;
+                self.dirty.reload.notify_one();
+            }
             false
         } else {
             self.clients
                 .get(&id)
                 .await
-                .is_none_or(|client| client.digest != heartbeat.digest)
+                .is_none_or(|client| client.digest != input.digest)
         };
 
         Ok(HeartbeatResponse { resync })
