@@ -155,15 +155,13 @@ pub trait DeterministicDigest: Serialize {
 
 impl<S: Serialize> DeterministicDigest for S {}
 
-pub trait MapTryInto<S> {
-    fn map_try_into<T: TryFrom<S>>(self) -> impl Iterator<Item = Result<T, T::Error>>;
-}
-
-impl<I, S> MapTryInto<S> for I
-where
-    I: IntoIterator<Item = S>,
-{
-    fn map_try_into<T: TryFrom<S>>(self) -> impl Iterator<Item = Result<T, T::Error>> {
-        self.into_iter().map(T::try_from)
+pub trait MapTryInto: Iterator + Sized {
+    fn map_try_into<R>(self) -> impl Iterator<Item = Result<R, <Self::Item as TryInto<R>>::Error>>
+    where
+        Self::Item: TryInto<R>,
+    {
+        self.into_iter().map(Self::Item::try_into)
     }
 }
+
+impl<T> MapTryInto for T where T: Iterator + Sized {}
