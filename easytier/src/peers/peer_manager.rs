@@ -9,7 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 
 use dashmap::DashMap;
-
+use pnet::packet::icmp::destination_unreachable;
 use tokio::{
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -59,6 +59,7 @@ use super::{
     foreign_network_client::ForeignNetworkClient,
     foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
     peer_conn::PeerConnId,
+    peer_icmp,
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManager,
@@ -1218,6 +1219,21 @@ impl PeerManager {
 
         if dst_peers.is_empty() {
             tracing::info!("no peer id for ip: {}", ip_addr);
+            let icmp_code = if self.global_ctx.is_ip_in_same_network(&ip_addr) {
+                destination_unreachable::IcmpCodes::DestinationHostUnreachable
+            } else {
+                destination_unreachable::IcmpCodes::DestinationNetworkUnreachable
+            };
+            if let Some(packet) = peer_icmp::build_icmp_unreachable_reply(
+                &self.global_ctx,
+                icmp_code,
+                self.my_peer_id,
+                &msg,
+            ) {
+                if let Err(e) = self.nic_channel.send(packet).await {
+                    tracing::warn!(?e, "send icmp unreachable to nic failed");
+                }
+            }
             return Ok(());
         }
 
