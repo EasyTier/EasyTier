@@ -9,7 +9,6 @@ use crate::proto::dns::{DnsPeerManagerRpc, DnsPeerManagerRpcClientFactory, GetEx
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use anyhow::Context;
-use derivative::Derivative;
 use derive_more::Deref;
 use moka::future::Cache;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -65,8 +64,7 @@ impl TryFrom<proto::dns::DnsSnapshot> for DnsSnapshot {
 
 const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
-#[derive(Derivative, Deref)]
-#[derivative(Debug)]
+#[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
     #[deref]
     mgr: Arc<PeerManager>,
