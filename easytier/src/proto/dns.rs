@@ -1,5 +1,5 @@
-use std::fmt::Display;
 use crate::utils::DeterministicDigest;
+use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/dns.rs"));
 
