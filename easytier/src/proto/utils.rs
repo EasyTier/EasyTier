@@ -49,7 +49,7 @@ where
     type Error = <Model as TryFrom<&'m Message>>::Error;
 
     fn try_from(value: &'m Vec<Message>) -> Result<Self, Self::Error> {
-        Ok(Self(value.into_iter().map_try_into().try_collect()?))
+        Ok(Self(value.iter().map_try_into().try_collect()?))
     }
 }
 
