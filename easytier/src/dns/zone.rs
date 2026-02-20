@@ -1,21 +1,41 @@
-use crate::dns::utils::{ChainedAuthority, NameServerAddr};
-use crate::proto::dns::ZoneConfigPb;
+use crate::common::dns::get_default_resolver_config;
+use crate::dns::utils::NameServerAddr;
+use crate::proto::dns::ZoneData;
 use hickory_proto::rr::{LowerName, Record, RecordSet, RrKey, RrsetRecords};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
 use hickory_resolver::name_server::TokioConnectionProvider;
-use hickory_server::authority::ZoneType;
+use hickory_resolver::system_conf::read_system_conf;
+use hickory_server::authority::{AuthorityObject, ZoneType};
 use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
+use itertools::Itertools;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use crate::utils::MapTryInto;
 
 #[derive(Debug, Clone)]
 pub struct Zone {
     pub(crate) origin: LowerName,
     pub(crate) records: BTreeMap<RrKey, RecordSet>,
     pub(crate) forward: Option<ForwardConfig>,
+}
+
+impl Zone {
+    pub fn system() -> Self {
+        let (config, opts) =
+            read_system_conf().unwrap_or((get_default_resolver_config(), ResolverOpts::default()));
+        let forward = ForwardConfig {
+            name_servers: config.name_servers().to_vec().into(),
+            options: Some(opts),
+        };
+        Self {
+            origin: ".".parse().unwrap(),
+            records: BTreeMap::new(),
+            forward: Some(forward),
+        }
+    }
 }
 
 impl Zone {
@@ -27,7 +47,7 @@ impl Zone {
         }
     }
 
-    pub fn create_memory_authority(&self) -> Option<Arc<ChainedAuthority<InMemoryAuthority>>> {
+    pub fn create_memory_authority(&self) -> Option<Arc<dyn AuthorityObject>> {
         (!self.records.is_empty()).then(|| {
             let mut memory =
                 InMemoryAuthority::empty(self.origin.clone().into(), ZoneType::External, false);
@@ -39,13 +59,11 @@ impl Zone {
                     .map(|(k, v)| (k, Arc::new(v))),
             );
 
-            Arc::new(memory.into())
+            Arc::new(memory) as Arc<dyn AuthorityObject>
         })
     }
 
-    pub fn create_forward_authority(
-        &self,
-    ) -> Option<Arc<ChainedAuthority<ForwardAuthority<TokioConnectionProvider>>>> {
+    pub fn create_forward_authority(&self) -> Option<Arc<dyn AuthorityObject>> {
         self.forward.as_ref().and_then(|forward| {
             ForwardAuthority::builder_with_config(
                 forward.clone(),
@@ -54,33 +72,11 @@ impl Zone {
             .build()
             .inspect_err(|e| tracing::error!("failed to create forward authority: {:?}", e))
             .ok()
-            .map(|f| Arc::new(f.into()))
+            .map(|f| Arc::new(f) as Arc<dyn AuthorityObject>)
         })
     }
 
-    pub fn set_forwarders<F, A>(
-        &mut self,
-        forwarders: F,
-        options: Option<ResolverOpts>,
-    ) -> anyhow::Result<()>
-    where
-        F: Iterator<Item = A>,
-        A: AsRef<str>,
-    {
-        let name_servers = forwarders
-            .map(|f| {
-                let addr: NameServerAddr = f.as_ref().parse()?;
-                Ok((&addr).into())
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?
-            .into();
-        self.forward = Some(ForwardConfig {
-            name_servers,
-            options,
-        });
-        Ok(())
-    }
-
+    // TODO: remove this
     pub fn iter_records(&self) -> impl Iterator<Item = &Record> {
         self.records
             .values()
@@ -100,7 +96,7 @@ impl FromStr for Zone {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (origin, records) = Parser::new(s, None, None)
             .parse()
-            .map_err(|e| anyhow::anyhow!("failed to parse zone file: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("failed to parse zone data: {e}"))?;
 
         let mut zone = Zone::new(origin.clone().into());
         zone.records = records;
@@ -108,12 +104,20 @@ impl FromStr for Zone {
     }
 }
 
-impl TryFrom<&ZoneConfigPb> for Zone {
+impl TryFrom<&ZoneData> for Zone {
     type Error = anyhow::Error;
 
-    fn try_from(value: &ZoneConfigPb) -> Result<Self, Self::Error> {
+    fn try_from(value: &ZoneData) -> Result<Self, Self::Error> {
         let mut zone: Zone = value.to_string().parse()?;
-        zone.set_forwarders(value.forwarders.iter(), None)?;
+        let name_servers = (&value.forwarders)
+            .map_try_into::<NameServerAddr>()
+            .map_ok(Into::into)
+            .collect::<anyhow::Result<Vec<_>>>()?
+            .into();
+        zone.forward = Some(ForwardConfig {
+            name_servers,
+            options: None,
+        });
 
         Ok(zone)
     }
@@ -127,7 +131,7 @@ mod tests {
     use hickory_proto::rr::{rdata, DNSClass, Name, RData, RecordType};
     use hickory_proto::runtime::TokioRuntimeProvider;
     use hickory_proto::udp::UdpClientStream;
-    use hickory_server::authority::{AuthorityObject, Catalog};
+    use hickory_server::authority::Catalog;
     use hickory_server::ServerFuture;
     use std::time::Duration;
     use tokio::net::UdpSocket;
@@ -187,7 +191,7 @@ mod tests {
             .extract_if(.., |c| c.origin.to_string() == "et.top")
             .next()
             .unwrap();
-        let zone = ZoneConfigPb::from(&zone);
+        let zone = ZoneData::from(zone);
         let zone = Zone::try_from(&zone)?;
         assert_eq!(zone.origin.to_string(), "et.top.");
         let records = zone.iter_records().collect::<Vec<_>>();
@@ -202,7 +206,7 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(zone.policy.export.is_some(), true);
-        let zone = ZoneConfigPb::from(&zone);
+        let zone = ZoneData::from(zone);
         println!("{}", sep);
         println!("{}", zone);
         println!("{}", sep);
@@ -247,16 +251,8 @@ mod tests {
         assert_eq!(zone.forward.as_ref().unwrap().name_servers.len(), 1);
 
         let mut authorities = Vec::new();
-        authorities.extend(
-            zone.create_memory_authority()
-                .map(|a| a as Arc<dyn AuthorityObject>)
-                .into_iter(),
-        );
-        authorities.extend(
-            zone.create_forward_authority()
-                .map(|a| a as Arc<dyn AuthorityObject>)
-                .into_iter(),
-        );
+        authorities.extend(zone.create_memory_authority().into_iter());
+        authorities.extend(zone.create_forward_authority().into_iter());
         assert_eq!(authorities.len(), 2);
         let mut catalog = Catalog::new();
         catalog.upsert(zone.origin.clone().into(), authorities);
