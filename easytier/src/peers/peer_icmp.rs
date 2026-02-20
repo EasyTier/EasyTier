@@ -25,9 +25,7 @@ pub fn build_icmp_unreachable_reply(
         icmp_packet.set_unused(0);
         icmp_packet.set_next_hop_mtu(0);
         icmp_packet.set_payload(&ipv4.packet()[..inner_len]);
-        icmp_packet.set_checksum(icmp::checksum(
-            &IcmpPacket::new(icmp_packet.packet())?,
-        ));
+        icmp_packet.set_checksum(icmp::checksum(&IcmpPacket::new(icmp_packet.packet())?));
         Some(icmp_buf)
     })
 }
@@ -41,15 +39,12 @@ pub fn build_icmp_time_exceeded_reply(
 ) -> Option<ZCPacket> {
     build_icmp_error_reply(ctx, from_peer_id, to_peer_id, msg, |ipv4, inner_len| {
         let mut icmp_buf = vec![0u8; 8 + inner_len];
-        let mut icmp_packet =
-            time_exceeded::MutableTimeExceededPacket::new(&mut icmp_buf)?;
+        let mut icmp_packet = time_exceeded::MutableTimeExceededPacket::new(&mut icmp_buf)?;
         icmp_packet.set_icmp_type(IcmpTypes::TimeExceeded);
         icmp_packet.set_icmp_code(code);
         icmp_packet.set_unused(0);
         icmp_packet.set_payload(&ipv4.packet()[..inner_len]);
-        icmp_packet.set_checksum(icmp::checksum(
-            &IcmpPacket::new(icmp_packet.packet())?,
-        ));
+        icmp_packet.set_checksum(icmp::checksum(&IcmpPacket::new(icmp_packet.packet())?));
         Some(icmp_buf)
     })
 }

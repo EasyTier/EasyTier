@@ -10,6 +10,7 @@ use async_trait::async_trait;
 
 use dashmap::DashMap;
 use pnet::packet::icmp::{destination_unreachable, time_exceeded};
+use pnet::packet::ipv4::MutableIpv4Packet;
 use tokio::{
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -829,9 +830,17 @@ impl PeerManager {
         #[async_trait::async_trait]
         impl PeerPacketFilter for NicPacketProcessor {
             async fn try_process_packet_from_peer(&self, packet: ZCPacket) -> Option<ZCPacket> {
+                let mut packet = packet;
                 let hdr = packet.peer_manager_header().unwrap();
                 if hdr.packet_type == PacketType::Data as u8 && !hdr.is_not_send_to_tun() {
                     tracing::trace!(?packet, "send packet to nic channel");
+                    let forward_counter = hdr.forward_counter;
+                    if let Some(mut ipv4) = MutableIpv4Packet::new(packet.mut_payload()) {
+                        ipv4.set_ttl(
+                            ipv4.get_ttl()
+                                .saturating_sub_signed(forward_counter.cast_signed() - 1),
+                        );
+                    }
                     // TODO: use a function to get the body ref directly for zero copy
                     let _ = self.nic_channel.send(packet).await;
                     None
