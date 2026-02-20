@@ -867,6 +867,7 @@ impl NicCtx {
             }
             let dst_ipv4 = ipv4.get_destination();
             let src_ipv4 = ipv4.get_source();
+            let hop_limit = ipv4.get_ttl();
             let my_ipv4 = mgr.get_global_ctx().get_ipv4().map(|x| x.address());
             tracing::trace!(
                 ?ret,
@@ -906,6 +907,7 @@ impl NicCtx {
                 .send_msg_by_ip(
                     ret,
                     IpAddr::V4(dst_ipv4),
+                    hop_limit,
                     Some(src_ipv4) == my_ipv4 && Some(dst_ipv4) != my_ipv4,
                 )
                 .await;
@@ -938,11 +940,13 @@ impl NicCtx {
                 return;
             }
 
+            let hop_limit = ipv6.get_hop_limit();
             // TODO: use zero-copy
             let send_ret = mgr
                 .send_msg_by_ip(
                     ret,
                     IpAddr::V6(dst_ipv6),
+                    hop_limit,
                     Some(src_ipv6) == my_ipv6 && Some(dst_ipv6) != my_ipv6,
                 )
                 .await;

@@ -2,19 +2,68 @@ use crate::common::global_ctx::ArcGlobalCtx;
 use crate::tunnel::packet_def::{PacketType, ZCPacket};
 use pnet::packet::icmp::IcmpCode;
 use pnet::packet::{
-    icmp::{self, destination_unreachable, IcmpPacket, IcmpTypes},
+    icmp::{self, destination_unreachable, time_exceeded, IcmpPacket, IcmpTypes},
     ip::IpNextHeaderProtocols,
     ipv4::{Ipv4Flags, Ipv4Packet, MutableIpv4Packet},
     Packet as _,
 };
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 pub fn build_icmp_unreachable_reply(
     ctx: &ArcGlobalCtx,
     code: IcmpCode,
-    my_peer_id: u32,
+    from_peer_id: u32,
+    to_peer_id: u32,
     msg: &ZCPacket,
 ) -> Option<ZCPacket> {
+    build_icmp_error_reply(ctx, from_peer_id, to_peer_id, msg, |ipv4, inner_len| {
+        let mut icmp_buf = vec![0u8; 8 + inner_len];
+        let mut icmp_packet =
+            destination_unreachable::MutableDestinationUnreachablePacket::new(&mut icmp_buf)?;
+        icmp_packet.set_icmp_type(IcmpTypes::DestinationUnreachable);
+        icmp_packet.set_icmp_code(code);
+        icmp_packet.set_unused(0);
+        icmp_packet.set_next_hop_mtu(0);
+        icmp_packet.set_payload(&ipv4.packet()[..inner_len]);
+        icmp_packet.set_checksum(icmp::checksum(
+            &IcmpPacket::new(icmp_packet.packet())?,
+        ));
+        Some(icmp_buf)
+    })
+}
+
+pub fn build_icmp_time_exceeded_reply(
+    ctx: &ArcGlobalCtx,
+    code: IcmpCode,
+    from_peer_id: u32,
+    to_peer_id: u32,
+    msg: &ZCPacket,
+) -> Option<ZCPacket> {
+    build_icmp_error_reply(ctx, from_peer_id, to_peer_id, msg, |ipv4, inner_len| {
+        let mut icmp_buf = vec![0u8; 8 + inner_len];
+        let mut icmp_packet =
+            time_exceeded::MutableTimeExceededPacket::new(&mut icmp_buf)?;
+        icmp_packet.set_icmp_type(IcmpTypes::TimeExceeded);
+        icmp_packet.set_icmp_code(code);
+        icmp_packet.set_unused(0);
+        icmp_packet.set_payload(&ipv4.packet()[..inner_len]);
+        icmp_packet.set_checksum(icmp::checksum(
+            &IcmpPacket::new(icmp_packet.packet())?,
+        ));
+        Some(icmp_buf)
+    })
+}
+
+fn build_icmp_error_reply<F>(
+    ctx: &ArcGlobalCtx,
+    from_peer_id: u32,
+    to_peer_id: u32,
+    msg: &ZCPacket,
+    build_icmp: F,
+) -> Option<ZCPacket>
+where
+    F: FnOnce(&Ipv4Packet, usize) -> Option<Vec<u8>>,
+{
     let ipv4 = Ipv4Packet::new(msg.payload())?;
     if ipv4.get_version() != 4 {
         return None;
@@ -25,7 +74,7 @@ pub fn build_icmp_unreachable_reply(
     }
 
     let src_ip = ipv4.get_source();
-    if !is_valid_icmp_src_ipv4(ctx, src_ip) {
+    if !is_valid_icmp_src_ipv4(src_ip) {
         return None;
     }
 
@@ -44,17 +93,7 @@ pub fn build_icmp_unreachable_reply(
     let original_payload_len = ipv4.payload().len();
     let inner_len = std::cmp::min(576 - 8, header_len + original_payload_len);
 
-    let mut icmp_buf = vec![0u8; 8 + inner_len];
-    let mut icmp_packet =
-        destination_unreachable::MutableDestinationUnreachablePacket::new(&mut icmp_buf)?;
-    icmp_packet.set_icmp_type(IcmpTypes::DestinationUnreachable);
-    icmp_packet.set_icmp_code(code);
-    icmp_packet.set_unused(0);
-    icmp_packet.set_next_hop_mtu(0);
-    icmp_packet.set_payload(&ipv4.packet()[..inner_len]);
-    icmp_packet.set_checksum(icmp::checksum(
-        &IcmpPacket::new(icmp_packet.packet()).unwrap(),
-    ));
+    let icmp_buf = build_icmp(&ipv4, inner_len)?;
 
     let mut ipv4_buf = vec![0u8; 20 + icmp_buf.len()];
     {
@@ -75,11 +114,11 @@ pub fn build_icmp_unreachable_reply(
     }
 
     let mut packet = ZCPacket::new_with_payload(&ipv4_buf);
-    packet.fill_peer_manager_hdr(my_peer_id, my_peer_id, PacketType::Data as u8);
+    packet.fill_peer_manager_hdr(from_peer_id, to_peer_id, PacketType::Data as u8);
     Some(packet)
 }
 
-fn is_valid_icmp_src_ipv4(ctx: &ArcGlobalCtx, src_ip: Ipv4Addr) -> bool {
+fn is_valid_icmp_src_ipv4(src_ip: Ipv4Addr) -> bool {
     if src_ip.is_unspecified() || src_ip.is_multicast() || src_ip.is_broadcast() {
         return false;
     }
@@ -88,7 +127,7 @@ fn is_valid_icmp_src_ipv4(ctx: &ArcGlobalCtx, src_ip: Ipv4Addr) -> bool {
         return false;
     }
 
-    ctx.is_ip_in_same_network(&IpAddr::V4(src_ip))
+    true
 }
 
 fn is_icmp_error_type(icmp_type: pnet::packet::icmp::IcmpType) -> bool {

@@ -9,7 +9,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 
 use dashmap::DashMap;
-use pnet::packet::icmp::destination_unreachable;
+use pnet::packet::icmp::{destination_unreachable, time_exceeded};
 use tokio::{
     sync::{
         mpsc::{self, UnboundedReceiver, UnboundedSender},
@@ -18,6 +18,19 @@ use tokio::{
     task::JoinSet,
 };
 
+use super::{
+    create_packet_recv_chan,
+    encrypt::{Encryptor, NullCipher},
+    foreign_network_client::ForeignNetworkClient,
+    foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
+    peer_conn::PeerConnId,
+    peer_icmp,
+    peer_map::PeerMap,
+    peer_ospf_route::PeerRoute,
+    peer_rpc::PeerRpcManager,
+    route_trait::{ArcRoute, Route},
+    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
+};
 use crate::{
     common::{
         compressor::{Compressor as _, DefaultCompressor},
@@ -48,23 +61,9 @@ use crate::{
     },
     tunnel::{
         self,
-        packet_def::{CompressorAlgo, PacketType, ZCPacket},
+        packet_def::{CompressorAlgo, PacketType, ZCPacket, FORWARD_COUNTER_MAX},
         Tunnel, TunnelConnector,
     },
-};
-
-use super::{
-    create_packet_recv_chan,
-    encrypt::{Encryptor, NullCipher},
-    foreign_network_client::ForeignNetworkClient,
-    foreign_network_manager::{ForeignNetworkManager, GlobalForeignNetworkAccessor},
-    peer_conn::PeerConnId,
-    peer_icmp,
-    peer_map::PeerMap,
-    peer_ospf_route::PeerRoute,
-    peer_rpc::PeerRpcManager,
-    route_trait::{ArcRoute, Route},
-    BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
 };
 
 struct RpcTransport {
@@ -700,6 +699,34 @@ impl PeerManager {
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id != my_peer_id {
                     if hdr.check_and_increase_forward_counter().is_err() {
+                        tracing::trace!(?hdr, "peer forward counter exceeded");
+                        if let Err(e) = encryptor.decrypt(&mut ret) {
+                            tracing::error!(?e, "decrypt failed");
+                            continue;
+                        }
+                        if let Some(packet) = peer_icmp::build_icmp_time_exceeded_reply(
+                            &global_ctx,
+                            time_exceeded::IcmpCodes::TimeToLiveExceededInTransit,
+                            my_peer_id,
+                            from_peer_id,
+                            &ret,
+                        ) {
+                            let ret = Self::send_msg_internal(
+                                &peers,
+                                &foreign_client,
+                                packet,
+                                from_peer_id,
+                            )
+                            .await;
+                            if ret.is_err() {
+                                tracing::error!(
+                                    ?ret,
+                                    ?from_peer_id,
+                                    ?from_peer_id,
+                                    "send time exceeded packet error"
+                                );
+                            }
+                        }
                         continue;
                     }
 
@@ -1185,12 +1212,14 @@ impl PeerManager {
         &self,
         mut msg: ZCPacket,
         ip_addr: IpAddr,
+        hop_limit: u8,
         not_send_to_self: bool,
     ) -> Result<(), Error> {
         tracing::trace!(
-            "do send_msg in peer manager, msg: {:?}, ip_addr: {}",
+            "do send_msg in peer manager, msg: {:?}, ip_addr: {}, hop_limit: {}",
             msg,
-            ip_addr
+            ip_addr,
+            hop_limit,
         );
 
         msg.fill_peer_manager_hdr(
@@ -1198,6 +1227,26 @@ impl PeerManager {
             0,
             tunnel::packet_def::PacketType::Data as u8,
         );
+        if hop_limit <= 0 {
+            if let Some(packet) = peer_icmp::build_icmp_time_exceeded_reply(
+                &self.global_ctx,
+                time_exceeded::IcmpCodes::TimeToLiveExceededInTransit,
+                self.my_peer_id,
+                self.my_peer_id,
+                &msg,
+            ) {
+                if let Err(e) = self.nic_channel.send(packet).await {
+                    tracing::warn!(?e, "send icmp unreachable to nic failed");
+                }
+            }
+            return Ok(());
+        } else {
+            // simulate ip header ttl
+            msg.mut_peer_manager_header().unwrap().forward_counter = std::cmp::max(
+                FORWARD_COUNTER_MAX.saturating_sub_signed(hop_limit.cast_signed() - 1),
+                1,
+            );
+        }
         if !self.run_nic_packet_process_pipeline(&mut msg).await {
             return Ok(());
         }
@@ -1227,6 +1276,7 @@ impl PeerManager {
             if let Some(packet) = peer_icmp::build_icmp_unreachable_reply(
                 &self.global_ctx,
                 icmp_code,
+                self.my_peer_id,
                 self.my_peer_id,
                 &msg,
             ) {

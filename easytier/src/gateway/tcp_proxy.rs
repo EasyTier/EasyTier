@@ -574,13 +574,14 @@ impl<C: NatDstConnector> TcpProxy<C> {
                     };
 
                     let dst = ipv4.get_destination();
+                    let hop_limit = ipv4.get_ttl();
                     let packet = ZCPacket::new_with_payload(&data);
                     let Some(peer_mgr) = peer_mgr.upgrade() else {
                         tracing::warn!("peer manager is gone, smoltcp sender exited");
                         return;
                     };
                     if let Err(e) = peer_mgr
-                        .send_msg_by_ip(packet, IpAddr::V4(dst), false)
+                        .send_msg_by_ip(packet, IpAddr::V4(dst), hop_limit, false)
                         .await
                     {
                         tracing::error!("send to peer failed in smoltcp sender: {:?}", e);

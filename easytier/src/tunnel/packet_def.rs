@@ -238,6 +238,7 @@ impl PeerManagerHeader {
 
     // this function SHOULD be called IF and ONLY IF the packet will be forwarded
     pub fn check_and_increase_forward_counter(&mut self) -> Result<()> {
+        self.forward_counter += 1;
         if self.forward_counter > FORWARD_COUNTER_MAX {
             tracing::warn!(?self, "forward counter exceed, drop packet");
             return Err(RouteError(None));
@@ -247,8 +248,6 @@ impl PeerManagerHeader {
             tracing::trace!(?self, "set_latency_first false because too many hop");
             self.set_latency_first(false);
         }
-
-        self.forward_counter += 1;
         Ok(())
     }
 }
