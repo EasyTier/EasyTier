@@ -1,11 +1,12 @@
 use crate::common::config::ConfigLoader;
 use crate::common::global_ctx::GlobalCtx;
-use crate::dns::utils::{parse, NameServerAddr};
-use crate::proto::dns::{GetExportConfigResponse, ZoneConfigPb};
+use crate::dns::utils::{parse, NameServerAddr, NameServerAddrGroup};
+use crate::proto::dns::{GetExportConfigResponse, ZoneData};
 use derive_more::{Deref, DerefMut};
 use gethostname::gethostname;
 use hickory_proto::rr::{LowerName, Name};
-use serde::{Deserialize, Serialize};
+use hickory_proto::xfer::Protocol;
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use std::iter;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
@@ -14,8 +15,10 @@ use std::sync::LazyLock;
 use url::Url;
 use uuid::Uuid;
 
-pub const DNS_DEFAULT_ADDRESS: SocketAddr =
-    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(100, 100, 100, 101), 53));
+pub const DNS_DEFAULT_ADDRESS: NameServerAddr = NameServerAddr {
+    protocol: Protocol::Udp,
+    addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(100, 100, 100, 101), 53))
+};
 pub static DNS_DEFAULT_TLD: LazyLock<LowerName> =
     LazyLock::new(|| LowerName::from_str("et.net.").unwrap());
 pub static DNS_SERVER_RPC_ADDR: LazyLock<Url> =
@@ -30,8 +33,27 @@ pub struct DnsConfig {
     pub policies: HashMap<LowerName, DnsPolicyConfig>,
     name: LowerName,
     pub domain: LowerName,
-    pub addresses: Vec<SocketAddr>,
-    pub listeners: Vec<NameServerAddr>,
+    #[serde(deserialize_with = "DnsConfig::validate_addresses")]
+    pub addresses: NameServerAddrGroup,
+    pub listeners: NameServerAddrGroup,
+}
+
+impl DnsConfig {
+    pub fn validate_addresses<'de, D>(deserializer: D) -> Result<NameServerAddrGroup, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let addresses = NameServerAddrGroup::deserialize(deserializer)?;
+        for address in &addresses {
+            if address.protocol != Protocol::Udp {
+                return Err(serde::de::Error::custom(format!(
+                    "unsupported address protocol: {}, only udp is supported",
+                    address.protocol
+                )));
+            }
+        }
+        Ok(addresses)
+    }
 }
 
 impl DnsConfig {
@@ -64,7 +86,7 @@ impl DnsConfig {
     }
 }
 
-type DnsExportConfig = GetExportConfigResponse;
+pub type DnsExportConfig = GetExportConfigResponse;
 
 pub trait DnsGlobalCtxExt {
     fn dns_self_zone(&self) -> Option<ZoneConfig>;
@@ -89,6 +111,7 @@ impl DnsGlobalCtxExt for GlobalCtx {
         DnsExportConfig {
             zones: zones
                 .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
+                .cloned()
                 .map(Into::into)
                 .collect(),
             fqdn: config.get_fqdn().to_string(),
@@ -103,8 +126,8 @@ impl Default for DnsConfig {
             policies: HashMap::new(),
             name: LowerName::default(),
             domain: DNS_DEFAULT_TLD.clone(),
-            addresses: vec![DNS_DEFAULT_ADDRESS],
-            listeners: vec![],
+            addresses: vec![DNS_DEFAULT_ADDRESS].into(),
+            listeners: vec![].into(),
         }
     }
 }
@@ -120,7 +143,7 @@ pub struct ZoneConfig {
     #[serde(default)]
     pub records: Vec<String>,
     #[serde(default)]
-    pub forwarders: Vec<NameServerAddr>,
+    pub forwarders: NameServerAddrGroup,
     #[serde(flatten)]
     pub policy: ZonePolicyConfig,
 }
@@ -156,14 +179,14 @@ impl ZoneConfig {
     }
 }
 
-impl From<&ZoneConfig> for ZoneConfigPb {
-    fn from(value: &ZoneConfig) -> Self {
+impl From<ZoneConfig> for ZoneData {
+    fn from(value: ZoneConfig) -> Self {
         Self {
             id: Some(value.id.into()),
             origin: value.origin.to_string(),
             ttl: value.ttl,
             records: value.records.clone(),
-            forwarders: value.forwarders.iter().map(ToString::to_string).collect(),
+            forwarders: value.forwarders.into(),
         }
     }
 }
