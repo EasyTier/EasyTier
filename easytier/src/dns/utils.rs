@@ -1,5 +1,6 @@
+use crate::proto;
 use anyhow::{anyhow, Error};
-use derive_more::{Deref, DerefMut};
+use derive_more::{Deref, DerefMut, From, Into, IntoIterator};
 use hickory_proto::rr::{LowerName, RecordType};
 use hickory_proto::xfer::Protocol;
 use hickory_resolver::config::NameServerConfig;
@@ -9,11 +10,14 @@ use hickory_server::authority::{
 };
 use hickory_server::server::RequestInfo;
 use idna::AsciiDenyList;
+use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use url::Url;
+use crate::proto::utils::{MessageModel, RepeatedMessageModel};
 
 pub fn sanitize(name: &str) -> String {
     let dot = name.ends_with('.');
@@ -60,28 +64,52 @@ static DNS_SUPPORTED_PROTOCOLS: [Protocol; 2] = [
     // Protocol::H3,
 ];
 
-#[derive(Debug, Clone, SerializeDisplay, DeserializeFromStr, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr)]
 pub struct NameServerAddr {
-    protocol: Protocol,
-    addr: SocketAddr,
+    pub(super) protocol: Protocol,
+    pub(super) addr: SocketAddr,
 }
 
-impl From<&NameServerAddr> for NameServerConfig {
-    fn from(value: &NameServerAddr) -> Self {
+impl From<NameServerAddr> for NameServerConfig {
+    fn from(value: NameServerAddr) -> Self {
         Self::new(value.addr, value.protocol)
     }
 }
 
-impl From<&NameServerAddr> for Url {
-    fn from(value: &NameServerAddr) -> Self {
+impl From<NameServerConfig> for NameServerAddr {
+    fn from(value: NameServerConfig) -> Self {
+        Self {
+            protocol: value.protocol,
+            addr: value.socket_addr,
+        }
+    }
+}
+
+impl From<SocketAddr> for NameServerAddr {
+    fn from(value: SocketAddr) -> Self {
+        Self {
+            protocol: Protocol::Udp,
+            addr: value,
+        }
+    }
+}
+
+impl From<IpAddr> for NameServerAddr {
+    fn from(value: IpAddr) -> Self {
+        SocketAddr::new(value, 53).into()
+    }
+}
+
+impl From<NameServerAddr> for Url {
+    fn from(value: NameServerAddr) -> Self {
         Url::parse(&format!("{}://{}", value.protocol, value.addr)).unwrap()
     }
 }
 
-impl TryFrom<Url> for NameServerAddr {
+impl TryFrom<&Url> for NameServerAddr {
     type Error = Error;
 
-    fn try_from(value: Url) -> Result<Self, Self::Error> {
+    fn try_from(value: &Url) -> Result<Self, Self::Error> {
         let scheme = value.scheme();
         let protocol = *DNS_SUPPORTED_PROTOCOLS
             .iter()
@@ -109,24 +137,42 @@ impl TryFrom<Url> for NameServerAddr {
     }
 }
 
+impl From<NameServerAddr> for proto::common::Url {
+    fn from(value: NameServerAddr) -> Self {
+        Url::from(value).into()
+    }
+}
+
+impl TryFrom<&proto::common::Url> for NameServerAddr {
+    type Error = Error;
+
+    fn try_from(value: &proto::common::Url) -> Result<Self, Self::Error> {
+        Self::try_from(&Url::try_from(value)?)
+    }
+}
+
 impl FromStr for NameServerAddr {
     type Err = Error;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let url = if s.parse::<IpAddr>().is_ok() || s.parse::<SocketAddr>().is_ok() {
-            Url::parse(&format!("udp://{}", s))?
-        } else {
-            Url::parse(s)?
-        };
+        macro_rules! try_parse {
+            ($($t:ty),+) => {
+                $( if let Ok(v) = s.parse::<$t>() { return Ok(v.into()); } )+
+            };
+        }
 
-        url.try_into()
+        try_parse!(IpAddr, SocketAddr);
+
+        (&Url::parse(s)?).try_into()
     }
 }
 
 impl Display for NameServerAddr {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str(Url::from(self).as_str())
+        f.write_str(Url::from(*self).as_str())
     }
 }
+
+pub(super) type NameServerAddrGroup = RepeatedMessageModel<NameServerAddr>;
 
 #[derive(Deref, DerefMut)]
 pub struct ChainedAuthority<A>(pub(super) A)
