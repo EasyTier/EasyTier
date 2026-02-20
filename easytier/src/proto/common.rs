@@ -257,15 +257,21 @@ impl FromStr for IpInet {
 
 impl From<url::Url> for Url {
     fn from(value: url::Url) -> Self {
-        Url {
-            url: value.to_string(),
-        }
+        Url { url: value.into() }
+    }
+}
+
+impl TryFrom<&Url> for url::Url {
+    type Error = url::ParseError;
+
+    fn try_from(value: &Url) -> Result<Self, Self::Error> {
+        value.url.parse()
     }
 }
 
 impl From<Url> for url::Url {
     fn from(value: Url) -> Self {
-        url::Url::parse(&value.url).unwrap()
+        (&value).try_into().expect("failed to parse url")
     }
 }
 
@@ -273,9 +279,7 @@ impl FromStr for Url {
     type Err = url::ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Url {
-            url: s.parse::<url::Url>()?.to_string(),
-        })
+        url::Url::try_from(s).map(Into::into)
     }
 }
 
