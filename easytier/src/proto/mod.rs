@@ -14,6 +14,7 @@ pub mod web;
 
 #[cfg(test)]
 pub mod tests;
+pub mod utils;
 
 const DESCRIPTOR_POOL_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/file_descriptor_set.bin"));
