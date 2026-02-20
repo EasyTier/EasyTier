@@ -1,4 +1,4 @@
-use super::config::DNS_SERVER_RPC_ADDR;
+use crate::dns::config::DNS_SERVER_RPC_ADDR;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{DnsPeerManagerRpcServer, DnsServerRpcClientFactory, HeartbeatRequest};

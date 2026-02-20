@@ -5,11 +5,11 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
+use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{sync::Arc, time::Duration};
-use itertools::Itertools;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Notify;
 use tokio::{
@@ -19,8 +19,11 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{utils::NameServerAddr, zone::Zone};
+use crate::dns::utils::NameServerAddrGroup;
+use crate::dns::zone::ZoneGroup;
+use crate::proto::dns::DnsSnapshot;
 use crate::proto::rpc_types;
-use crate::utils::{DeterministicDigest};
+use crate::utils::DeterministicDigest;
 use crate::{
     common::global_ctx::GlobalCtx,
     proto::{
@@ -28,9 +31,6 @@ use crate::{
         rpc_types::controller::BaseController,
     },
 };
-use crate::dns::utils::NameServerAddrGroup;
-use crate::dns::zone::ZoneGroup;
-use crate::proto::dns::DnsSnapshot;
 
 #[derive(Debug, Clone, Default)]
 pub struct DnsClientInfo {
@@ -53,7 +53,6 @@ impl TryFrom<&DnsSnapshot> for DnsClientInfo {
     }
 }
 
-// A wrapper around Catalog to allow hot-swapping the inner catalog
 #[derive(Clone)]
 pub struct DynamicCatalog {
     inner: Arc<RwLock<Catalog>>,
@@ -66,8 +65,8 @@ impl DynamicCatalog {
         }
     }
 
-    pub async fn replace(&self, new_catalog: Catalog) {
-        *self.inner.write().await = new_catalog;
+    pub async fn replace(&self, new: Catalog) {
+        *self.inner.write().await = new;
     }
 }
 
@@ -260,17 +259,17 @@ impl DnsServerRpc for DnsServer {
         _: BaseController,
         input: HeartbeatRequest,
     ) -> rpc_types::error::Result<HeartbeatResponse> {
-        let id = input.id.ok_or(
-            anyhow::anyhow!("missing id in heartbeat request: {:?}", input)
-        )?.into();
+        let id = input
+            .id
+            .ok_or(anyhow::anyhow!(
+                "missing id in heartbeat request: {:?}",
+                input
+            ))?
+            .into();
 
         let resync = if let Some(snapshot) = input.snapshot.as_ref() {
             let new = DnsClientInfo::try_from(snapshot)?;
-            let old = self
-                .clients
-                .get(&id)
-                .await
-                .unwrap_or_default();
+            let old = self.clients.get(&id).await.unwrap_or_default();
             if new.digest != old.digest {
                 if new.zones != old.zones {
                     self.dirty.zones.store(true, Ordering::Release);
