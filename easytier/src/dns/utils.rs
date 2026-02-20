@@ -1,9 +1,10 @@
 use crate::proto;
+use crate::proto::utils::RepeatedMessageModel;
 use anyhow::{anyhow, Error};
-use derive_more::{Deref, DerefMut, From, Into, IntoIterator};
+use derive_more::{Deref, DerefMut};
 use hickory_proto::rr::{LowerName, RecordType};
 use hickory_proto::xfer::Protocol;
-use hickory_resolver::config::NameServerConfig;
+use hickory_resolver::config::{NameServerConfig, NameServerConfigGroup};
 use hickory_server::authority::{
     Authority, LookupControlFlow, LookupObject, LookupOptions, MessageRequest, UpdateResult,
     ZoneType,
@@ -11,13 +12,11 @@ use hickory_server::authority::{
 use hickory_server::server::RequestInfo;
 use idna::AsciiDenyList;
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use url::Url;
-use crate::proto::utils::{MessageModel, RepeatedMessageModel};
 
 pub fn sanitize(name: &str) -> String {
     let dot = name.ends_with('.');
@@ -173,6 +172,23 @@ impl Display for NameServerAddr {
 }
 
 pub(super) type NameServerAddrGroup = RepeatedMessageModel<NameServerAddr>;
+
+impl From<NameServerAddrGroup> for NameServerConfigGroup {
+    fn from(value: NameServerAddrGroup) -> Self {
+        value.into_iter().map_into().collect_vec().into()
+    }
+}
+
+impl From<NameServerConfigGroup> for NameServerAddrGroup {
+    fn from(value: NameServerConfigGroup) -> Self {
+        value
+            .into_inner()
+            .into_iter()
+            .map_into()
+            .collect_vec()
+            .into()
+    }
+}
 
 #[derive(Deref, DerefMut)]
 pub struct ChainedAuthority<A>(pub(super) A)
