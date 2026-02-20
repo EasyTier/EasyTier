@@ -1,6 +1,14 @@
 use std::fmt::Display;
+use crate::utils::DeterministicDigest;
 
 include!(concat!(env!("OUT_DIR"), "/dns.rs"));
+
+impl HeartbeatRequest {
+    pub fn update(&mut self, snapshot: DnsSnapshot) {
+        self.digest = snapshot.digest();
+        self.snapshot = Some(snapshot);
+    }
+}
 
 impl Display for ZoneData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
