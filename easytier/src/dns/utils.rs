@@ -35,7 +35,7 @@ pub fn sanitize(name: &str) -> String {
                 .to_string()
         })
         .filter(|label| !label.is_empty())
-        .collect::<Vec<_>>()
+        .collect_vec()
         .join(".");
     name.truncate(253);
     if dot {
