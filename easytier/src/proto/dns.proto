@@ -4,18 +4,18 @@ import "common.proto";
 
 package dns;
 
-message ZoneConfigPb {
+message ZoneData {
   common.UUID id = 1;
   string origin = 2;
   uint32 ttl = 3;
   repeated string records = 4;
-  repeated string forwarders = 5;
+  repeated common.Url forwarders = 5;
 }
 
 message GetExportConfigRequest {}
 
 message GetExportConfigResponse {
-  repeated ZoneConfigPb zones = 1;
+  repeated ZoneData zones = 1;
   string fqdn = 2;
 }
 
@@ -24,8 +24,8 @@ service DnsPeerManagerRpc {
 }
 
 message DnsSnapshot {
-  repeated ZoneConfigPb zones = 1;
-  repeated common.SocketAddr addresses = 2;
+  repeated ZoneData zones = 1;
+  repeated common.Url addresses = 2;
   repeated common.Url listeners = 3;
 }
 
