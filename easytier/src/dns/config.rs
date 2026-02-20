@@ -14,6 +14,7 @@ use std::iter;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::LazyLock;
+use itertools::Itertools;
 use url::Url;
 use uuid::Uuid;
 
@@ -117,7 +118,7 @@ impl DnsGlobalCtxExt for GlobalCtx {
             zones: zones
                 .filter(|z| z.policy.export.is_some()) // TODO: check policies of parent zones
                 .cloned()
-                .map(Into::into)
+                .map_into()
                 .collect(),
             fqdn: config.get_fqdn().to_string(),
         }
