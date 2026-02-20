@@ -2,10 +2,11 @@ use std::fmt::Display;
 
 include!(concat!(env!("OUT_DIR"), "/dns.rs"));
 
-impl Display for ZoneConfigPb {
+impl Display for ZoneData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "; EasyTier Magic DNS zone file")?;
+        writeln!(f, "; EasyTier Magic DNS zone data")?;
         writeln!(f, "; https://github.com/easytier/easytier")?;
+        writeln!(f, "; {}", self.id.unwrap_or_default())?;
 
         if !self.forwarders.is_empty() {
             writeln!(f, "; Forwarders:")?;
