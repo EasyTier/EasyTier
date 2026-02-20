@@ -1,8 +1,10 @@
 use crate::common::config::ConfigLoader;
 use crate::common::global_ctx::GlobalCtx;
 use crate::dns::utils::{parse, NameServerAddr, NameServerAddrGroup};
+use crate::dns::zone::Zone;
 use crate::proto::dns::{GetExportConfigResponse, ZoneData};
-use derive_more::{Deref, DerefMut};
+use derivative::Derivative;
+use derive_more::{Deref, DerefMut, Into};
 use gethostname::gethostname;
 use hickory_proto::rr::{LowerName, Name};
 use hickory_proto::xfer::Protocol;
@@ -17,14 +19,15 @@ use uuid::Uuid;
 
 pub const DNS_DEFAULT_ADDRESS: NameServerAddr = NameServerAddr {
     protocol: Protocol::Udp,
-    addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(100, 100, 100, 101), 53))
+    addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(100, 100, 100, 101), 53)),
 };
 pub static DNS_DEFAULT_TLD: LazyLock<LowerName> =
     LazyLock::new(|| LowerName::from_str("et.net.").unwrap());
 pub static DNS_SERVER_RPC_ADDR: LazyLock<Url> =
     LazyLock::new(|| Url::parse("tcp://127.0.0.1:49813").unwrap());
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Derivative, Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derivative(Default)]
 #[serde(default)]
 pub struct DnsConfig {
     #[serde(rename = "zone")]
@@ -32,7 +35,9 @@ pub struct DnsConfig {
     #[serde(flatten)]
     pub policies: HashMap<LowerName, DnsPolicyConfig>,
     name: LowerName,
+    #[derivative(Default(value = "DNS_DEFAULT_TLD.clone()"))]
     pub domain: LowerName,
+    #[derivative(Default(value = "vec![DNS_DEFAULT_ADDRESS].into()"))]
     #[serde(deserialize_with = "DnsConfig::validate_addresses")]
     pub addresses: NameServerAddrGroup,
     pub listeners: NameServerAddrGroup,
@@ -119,33 +124,27 @@ impl DnsGlobalCtxExt for GlobalCtx {
     }
 }
 
-impl Default for DnsConfig {
-    fn default() -> Self {
-        Self {
-            zones: Vec::new(),
-            policies: HashMap::new(),
-            name: LowerName::default(),
-            domain: DNS_DEFAULT_TLD.clone(),
-            addresses: vec![DNS_DEFAULT_ADDRESS].into(),
-            listeners: vec![].into(),
-        }
-    }
+#[derive(Derivative, Debug, Clone, Deserialize, Serialize, Default, Deref, DerefMut, Into)]
+#[derivative(PartialEq)]
+#[serde(try_from = "ZoneConfigInner", into = "ZoneConfigInner")]
+pub struct ZoneConfig {
+    #[into]
+    #[derivative(PartialEq = "ignore")]
+    data: ZoneData,
+    #[into]
+    #[deref]
+    #[deref_mut]
+    inner: ZoneConfigInner,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
-pub struct ZoneConfig {
-    #[serde(default = "Uuid::new_v4")]
-    #[serde(skip_serializing)]
-    id: Uuid,
-    pub origin: LowerName,
-    #[serde(default)]
-    pub ttl: u32,
-    #[serde(default)]
-    pub records: Vec<String>,
-    #[serde(default)]
-    pub forwarders: NameServerAddrGroup,
-    #[serde(flatten)]
-    pub policy: ZonePolicyConfig,
+impl TryFrom<ZoneConfigInner> for ZoneConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(value: ZoneConfigInner) -> Result<Self, Self::Error> {
+        let data = ZoneData::from(value.clone());
+        let _ = Zone::try_from(&data)?;
+        Ok(Self { data, inner: value })
+    }
 }
 
 impl ZoneConfig {
@@ -168,24 +167,44 @@ impl ZoneConfig {
             export: Some(DnsExportPolicy::default()),
         };
 
-        (!records.is_empty()).then_some(Self {
-            id: id.unwrap_or(Uuid::new_v4()),
+        if records.is_empty() {
+            return None;
+        }
+
+        let config = ZoneConfigInner {
+            id: id.unwrap_or_else(Uuid::new_v4),
             origin,
             records,
             policy,
-
             ..Default::default()
-        })
+        };
+
+        config.try_into().ok()
     }
 }
 
-impl From<ZoneConfig> for ZoneData {
-    fn from(value: ZoneConfig) -> Self {
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
+pub struct ZoneConfigInner {
+    #[serde(default = "Uuid::new_v4")]
+    #[serde(skip_serializing)]
+    id: Uuid,
+    pub origin: LowerName,
+    #[serde(default)]
+    pub ttl: u32,
+    #[serde(default)]
+    pub records: Vec<String>,
+    #[serde(default)]
+    pub forwarders: NameServerAddrGroup,
+    #[serde(flatten)]
+    pub policy: ZonePolicyConfig,
+}
+
+impl From<ZoneConfigInner> for ZoneData {
+    fn from(value: ZoneConfigInner) -> Self {
         Self {
             id: Some(value.id.into()),
             origin: value.origin.to_string(),
-            ttl: value.ttl,
-            records: value.records.clone(),
+            records: value.records,
             forwarders: value.forwarders.into(),
         }
     }
