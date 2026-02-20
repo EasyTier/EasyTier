@@ -837,8 +837,11 @@ impl PeerManager {
                     let forward_counter = hdr.forward_counter;
                     if let Some(mut ipv4) = MutableIpv4Packet::new(packet.mut_payload()) {
                         ipv4.set_ttl(
-                            ipv4.get_ttl()
-                                .saturating_sub_signed(forward_counter.cast_signed() - 1),
+                            std::cmp::max(
+                                ipv4.get_ttl()
+                                    .saturating_sub_signed(forward_counter.cast_signed() - 1),
+                                (FORWARD_COUNTER_MAX + 1).saturating_sub(forward_counter),
+                            ),
                         );
                     }
                     // TODO: use a function to get the body ref directly for zero copy
