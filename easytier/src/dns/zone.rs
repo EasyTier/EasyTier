@@ -1,7 +1,9 @@
 use crate::common::dns::get_default_resolver_config;
 use crate::dns::utils::NameServerAddr;
 use crate::proto;
+use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::MapTryInto;
+use derivative::Derivative;
 use hickory_proto::rr::{LowerName, Record, RecordSet, RrKey, RrsetRecords};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
@@ -15,11 +17,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Derivative, Debug, Clone)]
+#[derivative(PartialEq)]
 pub struct Zone {
     pub(crate) id: Uuid,
     pub(crate) origin: LowerName,
     pub(crate) records: BTreeMap<RrKey, RecordSet>,
+    #[derivative(PartialEq(compare_with = "Zone::compare_forward"))]
     pub(crate) forward: Option<ForwardConfig>,
 }
 
@@ -34,6 +38,19 @@ impl Zone {
         let mut zone = Self::new(".".parse().unwrap());
         zone.forward = Some(forward);
         zone
+    }
+
+    pub fn compare_forward(l: &Option<ForwardConfig>, r: &Option<ForwardConfig>) -> bool {
+        match (l, r) {
+            (Some(l), Some(r)) => l
+                .name_servers
+                .iter()
+                .cloned()
+                .map_into::<NameServerAddr>()
+                .eq(r.name_servers.iter().cloned().map_into()),
+            (None, None) => true,
+            _ => false,
+        }
     }
 }
 
@@ -108,7 +125,7 @@ impl TryFrom<&proto::dns::ZoneData> for Zone {
             .iter()
             .map_try_into::<NameServerAddr>()
             .map_ok(Into::into)
-            .collect::<anyhow::Result<Vec<_>>>()?
+            .try_collect::<_, Vec<_>, _>()?
             .into();
         let forward = Some(ForwardConfig {
             name_servers,
@@ -149,6 +166,8 @@ impl From<Zone> for proto::dns::ZoneData {
         }
     }
 }
+
+pub type ZoneGroup = RepeatedMessageModel<Zone>;
 
 #[cfg(test)]
 mod tests {
@@ -222,7 +241,7 @@ mod tests {
         let zone = proto::dns::ZoneData::from(zone);
         let zone = Zone::try_from(&zone)?;
         assert_eq!(zone.origin.to_string(), "et.top.");
-        let records = zone.iter_records().collect::<Vec<_>>();
+        let records = zone.iter_records().collect_vec();
         assert_eq!(records.len(), 1);
 
         let mut record = Record::update0(zone.origin.clone().into(), 60, RecordType::A);
@@ -247,7 +266,7 @@ mod tests {
 
         assert_eq!(zone.origin.to_string(), "google.com.");
 
-        let records = zone.iter_records().collect::<Vec<_>>();
+        let records = zone.iter_records().collect_vec();
         assert_eq!(records.len(), 4);
 
         let mut record = Record::update0(
