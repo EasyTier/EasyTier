@@ -1,63 +1,38 @@
 use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
 use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
-use crate::dns::utils::NameServerAddrGroup;
+use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
-use crate::proto;
-use crate::proto::dns::{DnsPeerManagerRpc, DnsPeerManagerRpcClientFactory, GetExportConfigRequest, GetExportConfigResponse, ZoneData};
+use crate::proto::dns::{
+    DnsPeerManagerRpc, DnsPeerManagerRpcClientFactory, DnsSnapshot, GetExportConfigRequest,
+    GetExportConfigResponse, ZoneData,
+};
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
+use crate::utils::DeterministicDigest;
 use anyhow::Context;
 use derive_more::Deref;
+use itertools::Itertools;
 use moka::future::Cache;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use itertools::Itertools;
-use serde::Serialize;
-use crate::utils::DeterministicDigest;
 
 #[derive(Debug, Clone)]
 pub struct DnsPeerInfo {
     digest: Vec<u8>,
-    config: DnsExportConfig,
+    zones: Vec<ZoneData>,
 }
 
-impl DnsPeerInfo {
-    pub fn new(config: DnsExportConfig) -> Self {
-        Self {
-            digest: config.digest(),
-            config,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct DnsSnapshot {
-    pub(super) zones: Vec<ZoneData>,
-    pub(super) addresses: NameServerAddrGroup,
-    pub(super) listeners: NameServerAddrGroup,
-}
-
-impl From<DnsSnapshot> for proto::dns::DnsSnapshot {
-    fn from(value: DnsSnapshot) -> Self {
-        Self {
-            zones: value.zones,
-            addresses: value.addresses.into(),
-            listeners: value.listeners.into(),
-        }
-    }
-}
-
-impl TryFrom<proto::dns::DnsSnapshot> for DnsSnapshot {
+impl TryFrom<DnsExportConfig> for DnsPeerInfo {
     type Error = anyhow::Error;
 
-    fn try_from(value: proto::dns::DnsSnapshot) -> Result<Self, Self::Error> {
+    fn try_from(value: DnsExportConfig) -> Result<Self, Self::Error> {
+        let _ = ZoneGroup::try_from(&value.zones)?;
         Ok(Self {
+            digest: value.digest(),
             zones: value.zones,
-            addresses: (&value.addresses).try_into()?,
-            listeners: (&value.listeners).try_into()?,
         })
     }
 }
@@ -86,19 +61,23 @@ impl DnsPeerMgr {
         let global_ctx = self.get_global_ctx_ref();
         let config = global_ctx.config.get_dns();
 
-        let mut zones = Vec::new();
-
-        zones.extend(config.zones.iter().cloned().map_into());
-        zones.extend(global_ctx.dns_self_zone().map(Into::into));
-
-        for (_, info) in self.peers.iter() {
-            zones.extend(info.config.zones.iter().cloned());
-        }
+        let zones = config
+            .zones
+            .into_iter()
+            .map_into()
+            .chain(global_ctx.dns_self_zone().into_iter().map_into())
+            .chain(
+                self.peers
+                    .iter()
+                    .map(|(_, info)| info.zones.into_iter())
+                    .flatten(),
+            )
+            .collect();
 
         DnsSnapshot {
             zones,
-            addresses: config.addresses.clone(),
-            listeners: config.listeners.clone(),
+            addresses: config.addresses.into(),
+            listeners: config.listeners.into(),
         }
     }
 
@@ -110,11 +89,15 @@ impl DnsPeerMgr {
         };
 
         match self.fetch(peer_id).await {
-            Ok(config) => {
-                self.peers.insert(peer_id, DnsPeerInfo::new(config)).await;
+            Ok(info) => {
+                self.peers.insert(peer_id, info).await;
             }
             Err(e) => {
-                tracing::warn!("failed to fetch dns export config from peer {}: {:?}", peer_id, e);
+                tracing::warn!(
+                    "failed to fetch dns export config from peer {}: {:?}",
+                    peer_id,
+                    e
+                );
                 self.peers.invalidate(&peer_id).await;
             }
         }
@@ -122,7 +105,7 @@ impl DnsPeerMgr {
         self.dirty.store(true, Ordering::Release);
     }
 
-    async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsExportConfig> {
+    async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {
         self.get_peer_rpc_mgr()
             .rpc_client()
             .scoped_client::<DnsPeerManagerRpcClientFactory<BaseController>>(
@@ -132,7 +115,8 @@ impl DnsPeerMgr {
             )
             .get_export_config(BaseController::default(), GetExportConfigRequest {})
             .await
-            .context("rpc call failed")
+            .context("rpc call failed")?
+            .try_into()
     }
 }
 
