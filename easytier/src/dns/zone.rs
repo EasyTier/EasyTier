@@ -1,6 +1,7 @@
 use crate::common::dns::get_default_resolver_config;
 use crate::dns::utils::NameServerAddr;
-use crate::proto::dns::ZoneData;
+use crate::proto;
+use crate::utils::MapTryInto;
 use hickory_proto::rr::{LowerName, Record, RecordSet, RrKey, RrsetRecords};
 use hickory_proto::serialize::txt::Parser;
 use hickory_resolver::config::ResolverOpts;
@@ -11,12 +12,12 @@ use hickory_server::store::forwarder::{ForwardAuthority, ForwardConfig};
 use hickory_server::store::in_memory::InMemoryAuthority;
 use itertools::Itertools;
 use std::collections::BTreeMap;
-use std::str::FromStr;
 use std::sync::Arc;
-use crate::utils::MapTryInto;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct Zone {
+    pub(crate) id: Uuid,
     pub(crate) origin: LowerName,
     pub(crate) records: BTreeMap<RrKey, RecordSet>,
     pub(crate) forward: Option<ForwardConfig>,
@@ -30,17 +31,16 @@ impl Zone {
             name_servers: config.name_servers().to_vec().into(),
             options: Some(opts),
         };
-        Self {
-            origin: ".".parse().unwrap(),
-            records: BTreeMap::new(),
-            forward: Some(forward),
-        }
+        let mut zone = Self::new(".".parse().unwrap());
+        zone.forward = Some(forward);
+        zone
     }
 }
 
 impl Zone {
     pub fn new(name: LowerName) -> Self {
         Self {
+            id: Uuid::new_v4(),
             origin: name,
             records: BTreeMap::new(),
             forward: None,
@@ -90,36 +90,63 @@ impl Zone {
     }
 }
 
-impl FromStr for Zone {
-    type Err = anyhow::Error;
+impl TryFrom<&proto::dns::ZoneData> for Zone {
+    type Error = anyhow::Error;
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (origin, records) = Parser::new(s, None, None)
+    fn try_from(value: &proto::dns::ZoneData) -> Result<Self, Self::Error> {
+        let id = value
+            .id
+            .ok_or(anyhow::anyhow!("missing id in zone data"))?
+            .into();
+
+        let (origin, records) = Parser::new(value.to_string(), None, None)
             .parse()
             .map_err(|e| anyhow::anyhow!("failed to parse zone data: {e}"))?;
 
-        let mut zone = Zone::new(origin.clone().into());
-        zone.records = records;
-        Ok(zone)
-    }
-}
-
-impl TryFrom<&ZoneData> for Zone {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &ZoneData) -> Result<Self, Self::Error> {
-        let mut zone: Zone = value.to_string().parse()?;
-        let name_servers = (&value.forwarders)
+        let name_servers = value
+            .forwarders
+            .iter()
             .map_try_into::<NameServerAddr>()
             .map_ok(Into::into)
             .collect::<anyhow::Result<Vec<_>>>()?
             .into();
-        zone.forward = Some(ForwardConfig {
+        let forward = Some(ForwardConfig {
             name_servers,
             options: None,
         });
 
-        Ok(zone)
+        Ok(Self {
+            id,
+            origin: origin.into(),
+            records,
+            forward,
+        })
+    }
+}
+
+impl From<Zone> for proto::dns::ZoneData {
+    fn from(value: Zone) -> Self {
+        let records = value
+            .records
+            .values()
+            .flat_map(RecordSet::records_without_rrsigs)
+            .map(ToString::to_string)
+            .collect();
+
+        let forwarders = value
+            .forward
+            .into_iter()
+            .flat_map(|f| f.name_servers.into_inner().into_iter())
+            .map_into::<NameServerAddr>()
+            .map_into()
+            .collect();
+
+        Self {
+            id: Some(value.id.into()),
+            origin: value.origin.to_string(),
+            records,
+            forwarders,
+        }
     }
 }
 
@@ -133,6 +160,7 @@ mod tests {
     use hickory_proto::udp::UdpClientStream;
     use hickory_server::authority::Catalog;
     use hickory_server::ServerFuture;
+    use std::str::FromStr;
     use std::time::Duration;
     use tokio::net::UdpSocket;
     use tokio::spawn;
@@ -191,7 +219,7 @@ mod tests {
             .extract_if(.., |c| c.origin.to_string() == "et.top")
             .next()
             .unwrap();
-        let zone = ZoneData::from(zone);
+        let zone = proto::dns::ZoneData::from(zone);
         let zone = Zone::try_from(&zone)?;
         assert_eq!(zone.origin.to_string(), "et.top.");
         let records = zone.iter_records().collect::<Vec<_>>();
@@ -206,12 +234,16 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(zone.policy.export.is_some(), true);
-        let zone = ZoneData::from(zone);
+        let zone = proto::dns::ZoneData::from(zone);
         println!("{}", sep);
         println!("{}", zone);
         println!("{}", sep);
 
         let zone = Zone::try_from(&zone)?;
+
+        for record in zone.iter_records() {
+            println!("{}", record);
+        }
 
         assert_eq!(zone.origin.to_string(), "google.com.");
 
