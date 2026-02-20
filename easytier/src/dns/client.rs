@@ -7,7 +7,6 @@ use crate::proto::rpc_impl::standalone::StandAloneClient;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
 use crate::utils::DeterministicDigest;
-use derivative::Derivative;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,8 +60,7 @@ impl TryFrom<HeartbeatRequest> for Heartbeat {
     }
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct DnsClient {
     mgr: Arc<DnsPeerMgr>,
 
