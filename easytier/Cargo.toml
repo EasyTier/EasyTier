@@ -50,6 +50,8 @@ time = "0.3"
 toml = "0.8.12"
 chrono = { version = "0.4.37", features = ["serde"] }
 
+itertools = "0.14.0"
+
 gethostname = "1.1.0"
 
 futures = { version = "0.3", features = ["bilock", "unstable"] }
