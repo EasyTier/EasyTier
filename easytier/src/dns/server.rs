@@ -19,11 +19,10 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{utils::NameServerAddr, zone::Zone};
-use crate::dns::utils::NameServerAddrGroup;
 use crate::dns::zone::ZoneGroup;
 use crate::proto::dns::DnsSnapshot;
 use crate::proto::rpc_types;
-use crate::utils::DeterministicDigest;
+use crate::utils::{DeterministicDigest, MapTryInto};
 use crate::{
     common::global_ctx::GlobalCtx,
     proto::{
@@ -36,8 +35,8 @@ use crate::{
 pub struct DnsClientInfo {
     digest: Vec<u8>,
     zones: ZoneGroup,
-    addresses: NameServerAddrGroup,
-    listeners: NameServerAddrGroup,
+    addresses: HashSet<NameServerAddr>,
+    listeners: HashSet<NameServerAddr>,
 }
 
 impl TryFrom<&DnsSnapshot> for DnsClientInfo {
@@ -47,8 +46,8 @@ impl TryFrom<&DnsSnapshot> for DnsClientInfo {
         Ok(Self {
             digest: value.digest(),
             zones: (&value.zones).try_into()?,
-            addresses: (&value.addresses).try_into()?,
-            listeners: (&value.listeners).try_into()?,
+            addresses: value.addresses.iter().map_try_into().try_collect()?,
+            listeners: value.listeners.iter().map_try_into().try_collect()?,
         })
     }
 }
