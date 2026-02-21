@@ -1,7 +1,7 @@
 use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
 use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
-use crate::dns::utils::DirtyFlag;
+use crate::dns::utils::{DirtyFlag, DirtyState};
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
@@ -13,12 +13,11 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::DeterministicDigest;
 use anyhow::Context;
-use derive_more::{Deref, DerefMut};
+use derive_more::Deref;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
 
 #[derive(Debug, Clone)]
 pub struct DnsPeerInfo {
@@ -40,18 +39,15 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
 
 const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct DnsPeerMgrDirtyState {
+#[derive(Debug, Default)]
+pub struct DnsPeerMgrDirtyFlags {
     pub(crate) peers: DirtyFlag,
-    #[deref]
-    #[deref_mut]
-    notify: Notify,
 }
 
 #[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
     peers: Cache<PeerId, DnsPeerInfo>,
-    pub(super) dirty: DnsPeerMgrDirtyState,
+    pub(super) dirty: DirtyState<DnsPeerMgrDirtyFlags>,
 
     #[deref]
     mgr: Arc<PeerManager>,
@@ -112,7 +108,7 @@ impl DnsPeerMgr {
             }
         }
 
-        self.dirty.notify_one();
+        self.dirty.notify.notify_one();
     }
 
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {

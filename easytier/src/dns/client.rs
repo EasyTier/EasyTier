@@ -48,7 +48,7 @@ impl DnsClient {
             ..Default::default()
         };
         loop {
-            self.mgr.dirty.notified().await;
+            self.mgr.dirty.notify.notified().await;
             if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
                 tracing::error!("DnsClient heartbeat failed: {:?}", e);
             }
