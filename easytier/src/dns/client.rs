@@ -1,7 +1,7 @@
 use crate::dns::config::DNS_SERVER_RPC_ADDR;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::peers::peer_manager::PeerManager;
-use crate::proto::dns::{DnsPeerManagerRpcServer, DnsServerRpcClientFactory, HeartbeatRequest};
+use crate::proto::dns::{DnsPeerMgrRpcServer, DnsServerRpcClientFactory, HeartbeatRequest};
 use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::proto::rpc_impl::standalone::StandAloneClient;
 use crate::proto::rpc_types::controller::BaseController;
@@ -27,7 +27,7 @@ impl DnsClient {
             .rpc_server()
             .registry()
             .register(
-                DnsPeerManagerRpcServer::new_arc(mgr.clone()),
+                DnsPeerMgrRpcServer::new_arc(mgr.clone()),
                 &peer_mgr.get_global_ctx_ref().get_network_name(),
             );
 

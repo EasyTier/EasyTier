@@ -5,7 +5,7 @@ use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{
-    DnsPeerManagerRpc, DnsPeerManagerRpcClientFactory, DnsSnapshot, GetExportConfigRequest,
+    DnsPeerMgrRpc, DnsPeerMgrRpcClientFactory, DnsSnapshot, GetExportConfigRequest,
     GetExportConfigResponse, ZoneData,
 };
 use crate::proto::rpc_types;
@@ -108,7 +108,7 @@ impl DnsPeerMgr {
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {
         self.get_peer_rpc_mgr()
             .rpc_client()
-            .scoped_client::<DnsPeerManagerRpcClientFactory<BaseController>>(
+            .scoped_client::<DnsPeerMgrRpcClientFactory<BaseController>>(
                 self.mgr.my_peer_id(),
                 peer_id,
                 "".to_string(),
@@ -121,7 +121,7 @@ impl DnsPeerMgr {
 }
 
 #[async_trait::async_trait]
-impl DnsPeerManagerRpc for DnsPeerMgr {
+impl DnsPeerMgrRpc for DnsPeerMgr {
     type Controller = BaseController;
 
     async fn get_export_config(
