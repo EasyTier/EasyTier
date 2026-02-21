@@ -15,6 +15,7 @@ exclude = [
 [profile.dev]
 panic = "unwind"
 debug = 2
+opt-level = 0
 
 [profile.release]
 panic = "abort"
