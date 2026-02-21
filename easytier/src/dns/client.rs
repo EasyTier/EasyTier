@@ -1,7 +1,7 @@
 use crate::dns::config::DNS_SERVER_RPC_ADDR;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::peers::peer_manager::PeerManager;
-use crate::proto::dns::{DnsPeerMgrRpcServer, DnsServerRpcClientFactory, HeartbeatRequest};
+use crate::proto::dns::{DnsClientMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
 use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::proto::rpc_impl::standalone::StandAloneClient;
 use crate::proto::rpc_types::controller::BaseController;
@@ -63,22 +63,22 @@ impl DnsClient {
     ) -> anyhow::Result<()> {
         let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.peers.reset() {
             heartbeat.update(self.mgr.snapshot());
-            heartbeat.clone().into()
+            heartbeat.clone()
         } else {
             let snapshot = heartbeat.snapshot.take();
-            let request = heartbeat.clone().into();
+            let request = heartbeat.clone();
             heartbeat.snapshot = snapshot;
             request
         };
 
         let client = rpc
-            .scoped_client::<DnsServerRpcClientFactory<BaseController>>("".to_string())
+            .scoped_client::<DnsClientMgrRpcClientFactory<BaseController>>("".to_string())
             .await?;
 
         let response = client.heartbeat(BaseController::default(), request).await?;
         if response.resync {
             client
-                .heartbeat(BaseController::default(), heartbeat.clone().into())
+                .heartbeat(BaseController::default(), heartbeat.clone())
                 .await?;
         }
 
