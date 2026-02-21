@@ -62,7 +62,7 @@ impl DnsClient {
         heartbeat: &mut HeartbeatRequest,
     ) -> anyhow::Result<()> {
         let request =
-            if heartbeat.snapshot.is_none() || self.mgr.dirty.swap(false, Ordering::Release) {
+            if heartbeat.snapshot.is_none() || self.mgr.dirty.swap(false, Ordering::Acquire) {
                 heartbeat.update(self.mgr.snapshot());
                 heartbeat.clone().into()
             } else {
