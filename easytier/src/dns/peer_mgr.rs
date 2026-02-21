@@ -1,6 +1,7 @@
 use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
 use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
+use crate::dns::utils::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
@@ -15,7 +16,6 @@ use anyhow::Context;
 use derive_more::Deref;
 use itertools::Itertools;
 use moka::future::Cache;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,7 +42,7 @@ const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 #[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
     peers: Cache<PeerId, DnsPeerInfo>,
-    pub(super) dirty: AtomicBool,
+    pub(super) dirty: DirtyFlag,
 
     #[deref]
     mgr: Arc<PeerManager>,
@@ -53,7 +53,7 @@ impl DnsPeerMgr {
         Self {
             mgr: peer_mgr.clone(),
             peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
-            dirty: AtomicBool::new(true),
+            dirty: DirtyFlag::new(true),
         }
     }
 
@@ -102,7 +102,7 @@ impl DnsPeerMgr {
             }
         }
 
-        self.dirty.store(true, Ordering::Release);
+        self.dirty.mark();
     }
 
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {

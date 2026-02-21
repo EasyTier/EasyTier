@@ -1,3 +1,13 @@
+use super::{utils::NameServerAddr, zone::Zone};
+use crate::dns::utils::DirtyFlag;
+use crate::dns::zone::ZoneGroup;
+use crate::proto::dns::DnsSnapshot;
+use crate::proto::rpc_types;
+use crate::proto::{
+    dns::{DnsServerRpc, HeartbeatRequest, HeartbeatResponse},
+    rpc_types::controller::BaseController,
+};
+use crate::utils::{DeterministicDigest, MapTryInto};
 use anyhow::Error;
 use hickory_proto::xfer::Protocol;
 use hickory_server::{
@@ -8,26 +18,12 @@ use hickory_server::{
 use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::{sync::Arc, time::Duration};
+use derivative::Derivative;
 use tokio::net::{TcpListener, UdpSocket};
-use tokio::sync::Notify;
-use tokio::{
-    sync::{Mutex, RwLock},
-    task::JoinHandle,
-};
+use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-use super::{utils::NameServerAddr, zone::Zone};
-use crate::dns::zone::ZoneGroup;
-use crate::proto::dns::DnsSnapshot;
-use crate::proto::rpc_types;
-use crate::proto::{
-    dns::{DnsServerRpc, HeartbeatRequest, HeartbeatResponse},
-    rpc_types::controller::BaseController,
-};
-use crate::utils::{DeterministicDigest, MapTryInto};
 
 #[derive(Debug, Clone, Default)]
 pub struct DnsClientInfo {
@@ -82,11 +78,11 @@ impl RequestHandler for DynamicCatalog {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DnsServerDirtyState {
-    zones: AtomicBool,
-    addresses: AtomicBool,
-    listeners: AtomicBool,
+    zones: DirtyFlag,
+    addresses: DirtyFlag,
+    listeners: DirtyFlag,
 }
 
 struct DnsServerRuntime {
@@ -114,11 +110,14 @@ impl DnsServerRuntime {
     }
 }
 
-#[derive(Clone)]
+
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct DnsServer {
     clients: Cache<Uuid, DnsClientInfo>,
-    dirty: Arc<DnsServerDirtyState>,
+    dirty: DnsServerDirtyState,
 
+    #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
 }
 
@@ -207,18 +206,18 @@ impl DnsServer {
         let dirty = &self.dirty;
         let mut runtime = None;
         loop {
-            if dirty.zones.swap(false, Ordering::Acquire) {
+            if dirty.zones.reset() {
                 self.reload_zones().await;
             }
 
-            if dirty.addresses.swap(false, Ordering::Acquire) {
+            if dirty.addresses.reset() {
                 self.reload_addresses().await;
             }
 
-            if dirty.listeners.swap(false, Ordering::Acquire) {
+            if dirty.listeners.reset() {
                 if let Err(e) = self.reload_listeners(&mut runtime).await {
                     tracing::error!("failed to reload listeners: {:?}", e);
-                    self.dirty.listeners.store(true, Ordering::Relaxed);
+                    self.dirty.listeners.mark();
                 }
             }
 
@@ -316,13 +315,13 @@ impl DnsServerRpc for DnsServer {
             let old = self.clients.get(&id).await.unwrap_or_default();
             if new.digest != old.digest {
                 if new.zones != old.zones {
-                    self.dirty.zones.store(true, Ordering::Release);
+                    self.dirty.zones.mark();
                 }
                 if new.addresses != old.addresses {
-                    self.dirty.addresses.store(true, Ordering::Release);
+                    self.dirty.addresses.mark();
                 }
                 if new.listeners != old.listeners {
-                    self.dirty.listeners.store(true, Ordering::Release);
+                    self.dirty.listeners.mark();
                 }
 
                 self.clients.insert(id, new).await;

@@ -17,6 +17,7 @@ use serde_with::{DeserializeFromStr, SerializeDisplay};
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use url::Url;
 
 pub fn sanitize(name: &str) -> String {
@@ -263,5 +264,22 @@ where
         lookup_options: LookupOptions,
     ) -> LookupControlFlow<Self::Lookup> {
         self.0.get_nsec_records(name, lookup_options).await
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) struct DirtyFlag(AtomicBool);
+
+impl DirtyFlag {
+    pub fn new(value: bool) -> Self {
+        Self(AtomicBool::new(value))
+    }
+
+    pub fn mark(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn reset(&self) -> bool {
+        self.0.swap(false, Ordering::Acquire)
     }
 }
