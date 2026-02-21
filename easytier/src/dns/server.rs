@@ -1,5 +1,7 @@
-use super::utils::NameServerAddr;
 use crate::dns::client_mgr::DnsClientMgr;
+use crate::dns::utils::addr::NameServerAddr;
+use crate::peers::peer_manager::PeerManager;
+use crate::proto::dns::DnsClientMgrRpcServer;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use hickory_proto::rr::Record;
@@ -18,8 +20,6 @@ use std::{sync::Arc, time::Duration};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
-use crate::peers::peer_manager::PeerManager;
-use crate::proto::dns::DnsClientMgrRpcServer;
 
 #[derive(Clone)]
 pub struct DynamicCatalog {

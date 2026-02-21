@@ -1,5 +1,5 @@
 use crate::dns::config::policy::{DnsExportPolicy, ZonePolicyConfig};
-use crate::dns::utils::NameServerAddrGroup;
+use crate::dns::utils::addr::NameServerAddrGroup;
 use crate::dns::zone::Zone;
 use crate::proto::dns::ZoneData;
 use derivative::Derivative;
