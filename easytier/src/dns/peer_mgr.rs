@@ -41,11 +41,11 @@ const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
-    #[deref]
-    mgr: Arc<PeerManager>,
-
     peers: Cache<PeerId, DnsPeerInfo>,
     pub(super) dirty: AtomicBool,
+
+    #[deref]
+    mgr: Arc<PeerManager>,
 }
 
 impl DnsPeerMgr {
