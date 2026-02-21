@@ -16,10 +16,10 @@ use tokio::{
     sync::{Mutex, RwLock},
     task::JoinHandle,
 };
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::{utils::NameServerAddr, zone::Zone};
-use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::zone::ZoneGroup;
 use crate::proto::dns::DnsSnapshot;
 use crate::proto::rpc_types;
@@ -90,13 +90,37 @@ pub struct DnsServerDirtyState {
     reload: Notify,
 }
 
+struct DnsServerRuntime {
+    token: CancellationToken,
+    task: JoinHandle<()>,
+}
+
+impl DnsServerRuntime {
+    async fn stop(self) -> anyhow::Result<()> {
+        self.token.cancel();
+        self.task.await?;
+        Ok(())
+    }
+
+    fn start<T: RequestHandler>(mut server: ServerFuture<T>) -> Self {
+        Self {
+            token: server.shutdown_token().clone(),
+            task: tokio::spawn(async move {
+                server
+                    .block_until_done()
+                    .await
+                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
+            }),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DnsServer {
-    global_ctx: ArcGlobalCtx,
     clients: Cache<Uuid, DnsClientInfo>,
-    catalog: DynamicCatalog,
-    server: Arc<Mutex<Option<JoinHandle<()>>>>,
     dirty: Arc<DnsServerDirtyState>,
+
+    catalog: DynamicCatalog,
 }
 
 const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
@@ -140,7 +164,11 @@ impl DnsServer {
         self.catalog.replace(catalog).await;
     }
 
-    async fn reload_listeners(&self) {
+    async fn reload_addresses(&self) {
+        todo!()
+    }
+
+    async fn reload_listeners(&self, runtime: &mut Option<DnsServerRuntime>) -> anyhow::Result<()> {
         let listeners = self
             .clients
             .iter()
@@ -148,9 +176,8 @@ impl DnsServer {
             .flatten()
             .collect_vec();
 
-        let mut server = self.server.lock().await;
-        if let Some(old) = server.take() {
-            old.abort()
+        if let Some(old) = runtime.take() {
+            old.stop().await?;
         }
 
         let mut new = ServerFuture::new(self.catalog.clone());
@@ -172,11 +199,32 @@ impl DnsServer {
             }
         }
 
-        server.replace(tokio::spawn(async move {
-            if let Err(e) = new.block_until_done().await {
-                tracing::error!("DNS server exited with error: {:?}", e);
+        runtime.replace(DnsServerRuntime::start(new));
+
+        Ok(())
+    }
+
+    pub async fn run(&self) {
+        let dirty = &self.dirty;
+        let mut runtime = None;
+        loop {
+            if dirty.zones.swap(false, Ordering::Acquire) {
+                self.reload_zones().await;
             }
-        }));
+
+            if dirty.addresses.swap(false, Ordering::Acquire) {
+                self.reload_addresses().await;
+            }
+
+            if dirty.listeners.swap(false, Ordering::Acquire) {
+                if let Err(e) = self.reload_listeners(&mut runtime).await {
+                    tracing::error!("failed to reload listeners: {:?}", e);
+                    self.dirty.listeners.store(true, Ordering::Relaxed);
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
     }
 
     // pub async fn run(&self) {
