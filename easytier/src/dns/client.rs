@@ -48,6 +48,7 @@ impl DnsClient {
             ..Default::default()
         };
         loop {
+            self.mgr.dirty.notified().await;
             if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
                 tracing::error!("DnsClient heartbeat failed: {:?}", e);
             }
@@ -60,7 +61,7 @@ impl DnsClient {
         rpc: &mut StandAloneClient<TcpTunnelConnector>,
         heartbeat: &mut HeartbeatRequest,
     ) -> anyhow::Result<()> {
-        let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.reset() {
+        let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.peers.reset() {
             heartbeat.update(self.mgr.snapshot());
             heartbeat.clone().into()
         } else {

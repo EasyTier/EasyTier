@@ -20,8 +20,10 @@ use moka::future::Cache;
 use std::collections::HashSet;
 use std::{sync::Arc, time::Duration};
 use derivative::Derivative;
+use derive_more::{Deref, DerefMut};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -78,11 +80,15 @@ impl RequestHandler for DynamicCatalog {
     }
 }
 
-#[derive(Debug, Default)]
+// TODO: same as DnsPeerMgrDirtyState
+#[derive(Debug, Default, Deref, DerefMut)]
 pub struct DnsServerDirtyState {
     zones: DirtyFlag,
     addresses: DirtyFlag,
     listeners: DirtyFlag,
+    #[deref]
+    #[deref_mut]
+    notify: Notify,
 }
 
 struct DnsServerRuntime {
@@ -206,6 +212,8 @@ impl DnsServer {
         let dirty = &self.dirty;
         let mut runtime = None;
         loop {
+            dirty.notified().await;
+
             if dirty.zones.reset() {
                 self.reload_zones().await;
             }
@@ -218,6 +226,7 @@ impl DnsServer {
                 if let Err(e) = self.reload_listeners(&mut runtime).await {
                     tracing::error!("failed to reload listeners: {:?}", e);
                     self.dirty.listeners.mark();
+                    self.dirty.notify_one();
                 }
             }
 
@@ -325,6 +334,7 @@ impl DnsServerRpc for DnsServer {
                 }
 
                 self.clients.insert(id, new).await;
+                self.dirty.notify_one();
             }
             false
         } else {
