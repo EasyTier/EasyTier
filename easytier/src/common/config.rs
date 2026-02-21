@@ -95,6 +95,7 @@ pub enum EncryptionAlgorithm {
     OpenSslChaCha20,
 }
 
+#[allow(clippy::derivable_impls)]
 impl Default for EncryptionAlgorithm {
     fn default() -> Self {
         cfg_if! {
