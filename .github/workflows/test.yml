@@ -65,7 +65,7 @@ jobs:
 
       - name: Check features
         if: ${{ !cancelled() }}
-        run: cargo hack check --package easytier --each-feature --features aes-gcm --exclude-features macos-ne --verbose
+        run: cargo hack check --package easytier --each-feature --exclude-features macos-ne --verbose
 
   pre-test:
     name: Build test
