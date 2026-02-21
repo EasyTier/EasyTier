@@ -39,15 +39,10 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
 
 const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Default)]
-pub struct DnsPeerMgrDirtyFlags {
-    pub(crate) peers: DirtyFlag,
-}
-
 #[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
     peers: Cache<PeerId, DnsPeerInfo>,
-    pub(super) dirty: DirtyState<DnsPeerMgrDirtyFlags>,
+    pub(super) dirty: DirtyState<DirtyFlag>,
 
     #[deref]
     mgr: Arc<PeerManager>,
@@ -92,7 +87,7 @@ impl DnsPeerMgr {
             }
         };
 
-        self.dirty.peers.mark();
+        self.dirty.mark();
 
         match self.fetch(peer_id).await {
             Ok(info) => {
