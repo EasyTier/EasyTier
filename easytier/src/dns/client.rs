@@ -6,7 +6,6 @@ use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::proto::rpc_impl::standalone::StandAloneClient;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinSet;
@@ -61,16 +60,15 @@ impl DnsClient {
         rpc: &mut StandAloneClient<TcpTunnelConnector>,
         heartbeat: &mut HeartbeatRequest,
     ) -> anyhow::Result<()> {
-        let request =
-            if heartbeat.snapshot.is_none() || self.mgr.dirty.swap(false, Ordering::Acquire) {
-                heartbeat.update(self.mgr.snapshot());
-                heartbeat.clone().into()
-            } else {
-                let snapshot = heartbeat.snapshot.take();
-                let request = heartbeat.clone().into();
-                heartbeat.snapshot = snapshot;
-                request
-            };
+        let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.reset() {
+            heartbeat.update(self.mgr.snapshot());
+            heartbeat.clone().into()
+        } else {
+            let snapshot = heartbeat.snapshot.take();
+            let request = heartbeat.clone().into();
+            heartbeat.snapshot = snapshot;
+            request
+        };
 
         let client = rpc
             .scoped_client::<DnsServerRpcClientFactory<BaseController>>("".to_string())
