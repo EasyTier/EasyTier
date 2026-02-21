@@ -10,7 +10,7 @@ use std::{
 use crate::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
+            get_available_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
             ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
             PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
@@ -277,7 +277,7 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        value_parser = get_avaliable_encrypt_methods()
+        value_parser = get_available_encrypt_methods()
     )]
     encryption_algorithm: Option<String>,
 
