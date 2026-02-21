@@ -18,6 +18,7 @@ use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::Notify;
 use url::Url;
 
 pub fn sanitize(name: &str) -> String {
@@ -264,6 +265,23 @@ where
         lookup_options: LookupOptions,
     ) -> LookupControlFlow<Self::Lookup> {
         self.0.get_nsec_records(name, lookup_options).await
+    }
+}
+
+#[derive(Debug, Deref, DerefMut)]
+pub(super) struct DirtyState<T> {
+    #[deref]
+    #[deref_mut]
+    flags: T,
+    pub notify: Notify,
+}
+
+impl<T: Default> Default for DirtyState<T> {
+    fn default() -> Self {
+        Self {
+            flags: T::default(),
+            notify: Notify::new(),
+        }
     }
 }
 

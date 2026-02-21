@@ -1,4 +1,4 @@
-use crate::dns::utils::{DirtyFlag, NameServerAddr};
+use crate::dns::utils::{DirtyFlag, DirtyState, NameServerAddr};
 use crate::dns::zone::{Zone, ZoneGroup};
 use crate::proto::dns::DnsClientMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
@@ -6,13 +6,11 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::{DeterministicDigest, MapTryInto};
 use anyhow::Error;
-use derive_more::{Deref, DerefMut};
 use hickory_server::authority::Catalog;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::collections::HashSet;
 use std::time::Duration;
-use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -38,21 +36,17 @@ impl TryFrom<&DnsSnapshot> for DnsClientInfo {
 
 const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
 
-// TODO: same as DnsPeerMgrDirtyState
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct DnsClientMgrDirtyState {
+#[derive(Debug, Default)]
+pub struct DnsClientMgrDirtyFlags {
     pub(super) catalog: DirtyFlag,
     pub(super) addresses: DirtyFlag,
     pub(super) listeners: DirtyFlag,
-    #[deref]
-    #[deref_mut]
-    notify: Notify,
 }
 
 #[derive(Debug)]
 pub struct DnsClientMgr {
     clients: Cache<Uuid, DnsClientInfo>,
-    pub(super) dirty: DnsClientMgrDirtyState,
+    pub(super) dirty: DirtyState<DnsClientMgrDirtyFlags>,
 }
 
 impl DnsClientMgr {
@@ -150,7 +144,7 @@ impl DnsClientMgrRpc for DnsClientMgr {
                 }
 
                 self.clients.insert(id, new).await;
-                self.dirty.notify_one();
+                self.dirty.notify.notify_one();
             }
             false
         } else {
