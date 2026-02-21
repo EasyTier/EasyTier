@@ -19,17 +19,15 @@ use tokio::{
 use uuid::Uuid;
 
 use super::{utils::NameServerAddr, zone::Zone};
+use crate::common::global_ctx::ArcGlobalCtx;
 use crate::dns::zone::ZoneGroup;
 use crate::proto::dns::DnsSnapshot;
 use crate::proto::rpc_types;
-use crate::utils::{DeterministicDigest, MapTryInto};
-use crate::{
-    common::global_ctx::GlobalCtx,
-    proto::{
-        dns::{DnsServerRpc, HeartbeatRequest, HeartbeatResponse},
-        rpc_types::controller::BaseController,
-    },
+use crate::proto::{
+    dns::{DnsServerRpc, HeartbeatRequest, HeartbeatResponse},
+    rpc_types::controller::BaseController,
 };
+use crate::utils::{DeterministicDigest, MapTryInto};
 
 #[derive(Debug, Clone, Default)]
 pub struct DnsClientInfo {
@@ -94,7 +92,7 @@ pub struct DnsServerDirtyState {
 
 #[derive(Clone)]
 pub struct DnsServer {
-    global_ctx: Arc<GlobalCtx>,
+    global_ctx: ArcGlobalCtx,
     clients: Cache<Uuid, DnsClientInfo>,
     catalog: DynamicCatalog,
     server: Arc<Mutex<Option<JoinHandle<()>>>>,
