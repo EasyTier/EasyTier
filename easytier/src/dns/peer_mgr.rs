@@ -78,8 +78,7 @@ impl DnsPeerMgr {
             .chain(
                 self.peers
                     .iter()
-                    .map(|(_, info)| info.zones.into_iter())
-                    .flatten(),
+                    .flat_map(|(_, info)| info.zones.into_iter()),
             )
             .collect();
 
@@ -112,7 +111,7 @@ impl DnsPeerMgr {
                 self.peers.invalidate(&peer_id).await;
             }
         }
-        
+
         self.dirty.notify_one();
     }
 
