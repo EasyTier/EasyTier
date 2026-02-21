@@ -87,7 +87,6 @@ pub struct DnsServerDirtyState {
     zones: AtomicBool,
     addresses: AtomicBool,
     listeners: AtomicBool,
-    reload: Notify,
 }
 
 struct DnsServerRuntime {
@@ -327,7 +326,6 @@ impl DnsServerRpc for DnsServer {
                 }
 
                 self.clients.insert(id, new).await;
-                self.dirty.reload.notify_one();
             }
             false
         } else {
