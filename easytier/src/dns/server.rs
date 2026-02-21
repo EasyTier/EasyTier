@@ -1,52 +1,25 @@
 use super::{utils::NameServerAddr, zone::Zone};
-use crate::dns::utils::DirtyFlag;
-use crate::dns::zone::ZoneGroup;
-use crate::proto::dns::DnsSnapshot;
-use crate::proto::rpc_types;
-use crate::proto::{
-    dns::{DnsServerRpc, HeartbeatRequest, HeartbeatResponse},
-    rpc_types::controller::BaseController,
-};
-use crate::utils::{DeterministicDigest, MapTryInto};
-use anyhow::Error;
+use crate::common::PeerId;
+use crate::dns::client_mgr::DnsClientMgr;
+use cidr::Ipv4Inet;
+use derivative::Derivative;
+use derive_more::{Deref, DerefMut, From, Into};
+use hickory_proto::rr::Record;
+use hickory_proto::serialize::binary::BinEncoder;
 use hickory_proto::xfer::Protocol;
 use hickory_server::{
-    authority::Catalog,
+    authority::{Catalog, MessageResponse},
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
 use itertools::Itertools;
-use moka::future::Cache;
+use parking_lot::Mutex;
 use std::collections::HashSet;
+use std::io;
 use std::{sync::Arc, time::Duration};
-use derivative::Derivative;
-use derive_more::{Deref, DerefMut};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::{sync::RwLock, task::JoinHandle};
-use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
-
-#[derive(Debug, Clone, Default)]
-pub struct DnsClientInfo {
-    digest: Vec<u8>,
-    zones: ZoneGroup,
-    addresses: HashSet<NameServerAddr>,
-    listeners: HashSet<NameServerAddr>,
-}
-
-impl TryFrom<&DnsSnapshot> for DnsClientInfo {
-    type Error = Error;
-
-    fn try_from(value: &DnsSnapshot) -> Result<Self, Self::Error> {
-        Ok(Self {
-            digest: value.digest(),
-            zones: (&value.zones).try_into()?,
-            addresses: value.addresses.iter().map_try_into().try_collect()?,
-            listeners: value.listeners.iter().map_try_into().try_collect()?,
-        })
-    }
-}
 
 #[derive(Clone)]
 pub struct DynamicCatalog {
@@ -80,17 +53,6 @@ impl RequestHandler for DynamicCatalog {
     }
 }
 
-// TODO: same as DnsPeerMgrDirtyState
-#[derive(Debug, Default, Deref, DerefMut)]
-pub struct DnsServerDirtyState {
-    zones: DirtyFlag,
-    addresses: DirtyFlag,
-    listeners: DirtyFlag,
-    #[deref]
-    #[deref_mut]
-    notify: Notify,
-}
-
 struct DnsServerRuntime {
     token: CancellationToken,
     task: JoinHandle<()>,
@@ -116,70 +78,102 @@ impl DnsServerRuntime {
     }
 }
 
+// ResponseWrapper for serializing DNS responses into a byte buffer.
+// Used by the address hijacking NIC packet filter to produce DNS replies in-place.
+#[derive(Debug, Clone, From, Into, Deref, DerefMut)]
+struct Response(Arc<Mutex<Vec<u8>>>);
+
+impl Response {
+    pub fn new(capacity: usize) -> Self {
+        Self(Arc::new(Mutex::new(Vec::with_capacity(capacity))))
+    }
+
+    pub fn into_inner(self) -> Option<Vec<u8>> {
+        Arc::into_inner(self.0).map(Mutex::into_inner)
+    }
+}
+
+trait RecordIter<'r>: Iterator<Item = &'r Record> + Send + 'r {}
+impl<'r, T> RecordIter<'r> for T where T: Iterator<Item = &'r Record> + Send + 'r {}
+
+#[async_trait::async_trait]
+impl ResponseHandler for Response {
+    async fn send_response<'r>(
+        &mut self,
+        response: MessageResponse<
+            '_,
+            'r,
+            impl RecordIter<'r>,
+            impl RecordIter<'r>,
+            impl RecordIter<'r>,
+            impl RecordIter<'r>,
+        >,
+    ) -> io::Result<ResponseInfo> {
+        let max_size = if let Some(edns) = response.get_edns() {
+            edns.max_payload()
+        } else {
+            hickory_proto::udp::MAX_RECEIVE_BUFFER_SIZE as u16
+        };
+
+        let mut this = self.lock();
+        let mut encoder = BinEncoder::new(this.as_mut());
+        encoder.set_max_size(max_size);
+        response
+            .destructive_emit(&mut encoder)
+            .map_err(io::Error::other)
+    }
+}
 
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct DnsServer {
-    clients: Cache<Uuid, DnsClientInfo>,
-    dirty: DnsServerDirtyState,
+    mgr: DnsClientMgr,
 
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
+
+    /// Current set of hijacked addresses (only UDP protocol addresses).
+    hijacked: RwLock<HashSet<NameServerAddr>>,
+
+    /// Tun device name, needed for adding/removing routes.
+    tun_dev: RwLock<Option<String>>,
+
+    /// Tun device IP inet, used to check if an address is within the tun subnet.
+    tun_inet: RwLock<Option<Ipv4Inet>>,
+
+    /// Our peer ID, used to set the to_peer_id on response packets.
+    my_peer_id: RwLock<PeerId>,
 }
 
-const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DnsServer {
     async fn reload_zones(&self) {
-        let mut zones = vec![Zone::system()];
-        let mut local = HashSet::<NameServerAddr>::new();
-
-        for (_, info) in self.clients.iter() {
-            zones.extend(info.zones.iter().cloned());
-            local.extend(info.addresses.iter());
-            local.extend(info.listeners.iter());
-        }
-
-        let mut catalog = Catalog::new();
-
-        for zone in zones.iter_mut() {
-            if let Some(forward) = zone.forward.as_mut() {
-                forward
-                    .name_servers
-                    .retain(|ns| !local.contains(&ns.clone().into()));
-            }
-        }
-
-        for zone in zones.iter() {
-            catalog.upsert(
-                zone.origin.clone(),
-                zone.create_memory_authority().into_iter().collect(),
-            );
-        }
-
-        for zone in zones.iter() {
-            catalog.upsert(
-                zone.origin.clone(),
-                zone.create_forward_authority().into_iter().collect(),
-            );
-        }
-
-        self.catalog.replace(catalog).await;
+        self.catalog.replace(self.mgr.catalog()).await;
     }
 
-    async fn reload_addresses(&self) {
-        todo!()
+    async fn reload_addresses(&self, addresses: impl IntoIterator<Item = NameServerAddr>) {
+        let addresses = addresses.into_iter().collect::<HashSet<_>>();
+
+        let mut active = self.hijacked.write().await;
+
+        let added = addresses.difference(&active).cloned().collect_vec();
+        let removed = active.difference(&addresses).cloned().collect_vec();
+
+        if added.is_empty() && removed.is_empty() {
+            return;
+        }
+
+        *active = addresses;
+
+        // TODO
     }
 
-    async fn reload_listeners(&self, runtime: &mut Option<DnsServerRuntime>) -> anyhow::Result<()> {
-        let listeners = self
-            .clients
-            .iter()
-            .map(|(_, info)| info.listeners.into_iter())
-            .flatten()
-            .collect_vec();
-
+    async fn reload_listeners(
+        &self,
+        listeners: impl IntoIterator<Item = NameServerAddr>,
+        runtime: &mut Option<DnsServerRuntime>,
+    ) -> anyhow::Result<()> {
         if let Some(old) = runtime.take() {
             old.stop().await?;
         }
@@ -209,74 +203,31 @@ impl DnsServer {
     }
 
     pub async fn run(&self) {
-        let dirty = &self.dirty;
+        let dirty = &self.mgr.dirty;
         let mut runtime = None;
         loop {
             dirty.notified().await;
 
             if dirty.zones.reset() {
-                self.reload_zones().await;
+                self.reload_zones(&self.mgr.collect_zones()).await;
             }
 
             if dirty.addresses.reset() {
-                self.reload_addresses().await;
+                self.reload_addresses(self.mgr.iter_addresses()).await;
             }
 
             if dirty.listeners.reset() {
-                if let Err(e) = self.reload_listeners(&mut runtime).await {
+                if let Err(e) = self
+                    .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
+                    .await
+                {
                     tracing::error!("failed to reload listeners: {:?}", e);
-                    self.dirty.listeners.mark();
-                    self.dirty.notify_one();
+                    dirty.listeners.mark();
+                    dirty.notify_one();
                 }
             }
 
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl DnsServerRpc for DnsServer {
-    type Controller = BaseController;
-
-    async fn heartbeat(
-        &self,
-        _: BaseController,
-        input: HeartbeatRequest,
-    ) -> rpc_types::error::Result<HeartbeatResponse> {
-        let id = input
-            .id
-            .ok_or(anyhow::anyhow!(
-                "missing id in heartbeat request: {:?}",
-                input
-            ))?
-            .into();
-
-        let resync = if let Some(snapshot) = input.snapshot.as_ref() {
-            let new = DnsClientInfo::try_from(snapshot)?;
-            let old = self.clients.get(&id).await.unwrap_or_default();
-            if new.digest != old.digest {
-                if new.zones != old.zones {
-                    self.dirty.zones.mark();
-                }
-                if new.addresses != old.addresses {
-                    self.dirty.addresses.mark();
-                }
-                if new.listeners != old.listeners {
-                    self.dirty.listeners.mark();
-                }
-
-                self.clients.insert(id, new).await;
-                self.dirty.notify_one();
-            }
-            false
-        } else {
-            self.clients
-                .get(&id)
-                .await
-                .is_none_or(|info| info.digest != input.digest)
-        };
-
-        Ok(HeartbeatResponse { resync })
     }
 }
