@@ -13,11 +13,12 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::DeterministicDigest;
 use anyhow::Context;
-use derive_more::Deref;
+use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 
 #[derive(Debug, Clone)]
 pub struct DnsPeerInfo {
@@ -39,10 +40,18 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
 
 const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
+#[derive(Debug, Default, Deref, DerefMut)]
+pub struct DnsPeerMgrDirtyState {
+    pub(crate) peers: DirtyFlag,
+    #[deref]
+    #[deref_mut]
+    notify: Notify,
+}
+
 #[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
     peers: Cache<PeerId, DnsPeerInfo>,
-    pub(super) dirty: DirtyFlag,
+    pub(super) dirty: DnsPeerMgrDirtyState,
 
     #[deref]
     mgr: Arc<PeerManager>,
@@ -53,7 +62,7 @@ impl DnsPeerMgr {
         Self {
             mgr: peer_mgr.clone(),
             peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
-            dirty: DirtyFlag::new(true),
+            dirty: Default::default(),
         }
     }
 
@@ -88,6 +97,8 @@ impl DnsPeerMgr {
             }
         };
 
+        self.dirty.peers.mark();
+
         match self.fetch(peer_id).await {
             Ok(info) => {
                 self.peers.insert(peer_id, info).await;
@@ -101,8 +112,8 @@ impl DnsPeerMgr {
                 self.peers.invalidate(&peer_id).await;
             }
         }
-
-        self.dirty.mark();
+        
+        self.dirty.notify_one();
     }
 
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {

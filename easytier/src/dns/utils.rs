@@ -267,7 +267,7 @@ where
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct DirtyFlag(AtomicBool);
 
 impl DirtyFlag {
@@ -281,5 +281,11 @@ impl DirtyFlag {
 
     pub fn reset(&self) -> bool {
         self.0.swap(false, Ordering::Acquire)
+    }
+}
+
+impl Default for DirtyFlag {
+    fn default() -> Self {
+        Self::new(true)
     }
 }
