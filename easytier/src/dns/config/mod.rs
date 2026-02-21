@@ -1,4 +1,4 @@
-use crate::dns::utils::NameServerAddr;
+use crate::dns::utils::addr::NameServerAddr;
 use hickory_proto::rr::LowerName;
 use hickory_proto::xfer::Protocol;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};

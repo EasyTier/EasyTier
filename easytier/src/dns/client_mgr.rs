@@ -1,4 +1,5 @@
-use crate::dns::utils::{DirtyFlag, DirtyState, NameServerAddr};
+use crate::dns::utils::addr::NameServerAddr;
+use crate::dns::utils::dirty::{DirtyFlag, DirtyState};
 use crate::dns::zone::{Zone, ZoneGroup};
 use crate::proto::dns::DnsClientMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};

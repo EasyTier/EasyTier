@@ -1,5 +1,5 @@
 use crate::common::dns::get_default_resolver_config;
-use crate::dns::utils::NameServerAddr;
+use crate::dns::utils::addr::NameServerAddr;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use crate::utils::MapTryInto;
