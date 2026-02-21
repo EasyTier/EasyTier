@@ -98,7 +98,7 @@ pub struct DnsServer {
     global_ctx: Arc<GlobalCtx>,
     clients: Cache<Uuid, DnsClientInfo>,
     catalog: DynamicCatalog,
-    server_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    server: Arc<Mutex<Option<JoinHandle<()>>>>,
     dirty: Arc<DnsServerDirtyState>,
 }
 
@@ -151,7 +151,7 @@ impl DnsServer {
             .flatten()
             .collect_vec();
 
-        let mut server = self.server_task.lock().await;
+        let mut server = self.server.lock().await;
         if let Some(old) = server.take() {
             old.abort()
         }
@@ -289,7 +289,7 @@ impl DnsServerRpc for DnsServer {
             self.clients
                 .get(&id)
                 .await
-                .is_none_or(|client| client.digest != input.digest)
+                .is_none_or(|info| info.digest != input.digest)
         };
 
         Ok(HeartbeatResponse { resync })

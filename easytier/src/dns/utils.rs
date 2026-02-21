@@ -1,3 +1,4 @@
+use crate::dns::config::DNS_SUPPORTED_PROTOCOLS;
 use crate::proto;
 use crate::proto::utils::RepeatedMessageModel;
 use anyhow::{anyhow, Error};
@@ -53,15 +54,6 @@ pub fn parse(name: &str) -> LowerName {
         sanitized.parse().unwrap_or_default()
     }
 }
-
-static DNS_SUPPORTED_PROTOCOLS: [Protocol; 2] = [
-    Protocol::Udp,
-    Protocol::Tcp,
-    // Protocol::Tls,
-    // Protocol::Https,
-    // Protocol::Quic,
-    // Protocol::H3,
-];
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, SerializeDisplay, DeserializeFromStr)]
 pub struct NameServerAddr {
