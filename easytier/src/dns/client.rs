@@ -61,7 +61,7 @@ impl DnsClient {
         rpc: &mut StandAloneClient<TcpTunnelConnector>,
         heartbeat: &mut HeartbeatRequest,
     ) -> anyhow::Result<()> {
-        let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.peers.reset() {
+        let request = if heartbeat.snapshot.is_none() || self.mgr.dirty.reset() {
             heartbeat.update(self.mgr.snapshot());
             heartbeat.clone()
         } else {
