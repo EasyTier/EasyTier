@@ -20,6 +20,9 @@ use std::{sync::Arc, time::Duration};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+use crate::dns::peer_mgr::DnsPeerMgr;
+use crate::peers::peer_manager::PeerManager;
+use crate::proto::dns::{DnsClientMgrRpcServer, DnsPeerMgrRpcServer};
 
 #[derive(Clone)]
 pub struct DynamicCatalog {
@@ -127,31 +130,40 @@ impl ResponseHandler for Response {
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct DnsServer {
-    mgr: DnsClientMgr,
+    mgr: Arc<DnsClientMgr>,
 
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
 
     /// Current set of hijacked addresses (only UDP protocol addresses).
-    hijacked: RwLock<HashSet<NameServerAddr>>,
-
-    /// Tun device name, needed for adding/removing routes.
-    tun_dev: RwLock<Option<String>>,
-
-    /// Tun device IP inet, used to check if an address is within the tun subnet.
-    tun_inet: RwLock<Option<Ipv4Inet>>,
-
-    /// Our peer ID, used to set the to_peer_id on response packets.
-    my_peer_id: RwLock<PeerId>,
+    addresses: RwLock<HashSet<NameServerAddr>>,
 }
 
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DnsServer {
+    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+        let mgr = Arc::new(DnsClientMgr::new());
+        peer_mgr
+            .get_peer_rpc_mgr()
+            .rpc_server()
+            .registry()
+            .register(
+                DnsClientMgrRpcServer::new_arc(mgr.clone()),
+                &peer_mgr.get_global_ctx_ref().get_network_name(),
+            );
+
+        Self {
+            mgr,
+            catalog: DynamicCatalog::new(),
+            addresses: RwLock::new(HashSet::new()),
+        }
+    }
+
     async fn reload_addresses(&self, addresses: impl IntoIterator<Item = NameServerAddr>) {
         let addresses = addresses.into_iter().collect::<HashSet<_>>();
 
-        let mut active = self.hijacked.write().await;
+        let mut active = self.addresses.write().await;
 
         let added = addresses.difference(&active).cloned().collect_vec();
         let removed = active.difference(&addresses).cloned().collect_vec();
