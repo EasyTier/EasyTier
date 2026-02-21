@@ -148,10 +148,6 @@ pub struct DnsServer {
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DnsServer {
-    async fn reload_zones(&self) {
-        self.catalog.replace(self.mgr.catalog()).await;
-    }
-
     async fn reload_addresses(&self, addresses: impl IntoIterator<Item = NameServerAddr>) {
         let addresses = addresses.into_iter().collect::<HashSet<_>>();
 
@@ -208,8 +204,8 @@ impl DnsServer {
         loop {
             dirty.notified().await;
 
-            if dirty.zones.reset() {
-                self.reload_zones(&self.mgr.collect_zones()).await;
+            if dirty.catalog.reset() {
+                self.catalog.replace(self.mgr.catalog()).await;
             }
 
             if dirty.addresses.reset() {

@@ -41,7 +41,7 @@ const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
 // TODO: same as DnsPeerMgrDirtyState
 #[derive(Debug, Default, Deref, DerefMut)]
 pub struct DnsClientMgrDirtyState {
-    pub(super) zones: DirtyFlag,
+    pub(super) catalog: DirtyFlag,
     pub(super) addresses: DirtyFlag,
     pub(super) listeners: DirtyFlag,
     #[deref]
@@ -141,7 +141,7 @@ impl DnsClientMgrRpc for DnsClientMgr {
             let new = DnsClientInfo::try_from(snapshot)?;
             let old = self.clients.get(&id).await.unwrap_or_default();
             if new.digest != old.digest {
-                self.dirty.zones.mark();
+                self.dirty.catalog.mark();
                 if new.addresses != old.addresses {
                     self.dirty.addresses.mark();
                 }
