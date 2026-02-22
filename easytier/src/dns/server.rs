@@ -1,7 +1,7 @@
-use crate::dns::client_mgr::DnsClientMgr;
+use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::utils::addr::NameServerAddr;
 use crate::peers::peer_manager::PeerManager;
-use crate::proto::dns::DnsClientMgrRpcServer;
+use crate::proto::dns::DnsNodeMgrRpcServer;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use hickory_proto::rr::Record;
@@ -127,7 +127,7 @@ impl ResponseHandler for Response {
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct DnsServer {
-    mgr: Arc<DnsClientMgr>,
+    mgr: Arc<DnsNodeMgr>,
 
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
@@ -140,13 +140,13 @@ const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DnsServer {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
-        let mgr = Arc::new(DnsClientMgr::new());
+        let mgr = Arc::new(DnsNodeMgr::new());
         peer_mgr
             .get_peer_rpc_mgr()
             .rpc_server()
             .registry()
             .register(
-                DnsClientMgrRpcServer::new_arc(mgr.clone()),
+                DnsNodeMgrRpcServer::new_arc(mgr.clone()),
                 &peer_mgr.get_global_ctx_ref().get_network_name(),
             );
 

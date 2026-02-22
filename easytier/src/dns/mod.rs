@@ -1,5 +1,5 @@
-mod client;
-mod client_mgr;
+mod node;
+mod node_mgr;
 pub mod config;
 mod peer_mgr;
 mod server;

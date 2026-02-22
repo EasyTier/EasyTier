@@ -1,7 +1,7 @@
 use crate::dns::config::DNS_SERVER_RPC_ADDR;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::peers::peer_manager::PeerManager;
-use crate::proto::dns::{DnsClientMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
+use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
 use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::proto::rpc_impl::standalone::StandAloneClient;
 use crate::proto::rpc_types::controller::BaseController;
@@ -12,13 +12,13 @@ use tokio::task::JoinSet;
 use uuid::Uuid;
 
 #[derive(Debug)]
-pub struct DnsClient {
+pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
 
     tasks: JoinSet<()>,
 }
 
-impl DnsClient {
+impl DnsNode {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         let mgr = Arc::new(DnsPeerMgr::new(peer_mgr.clone()));
         peer_mgr
@@ -50,7 +50,7 @@ impl DnsClient {
         loop {
             self.mgr.dirty.notify.notified().await;
             if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
-                tracing::error!("DnsClient heartbeat failed: {:?}", e);
+                tracing::error!("heartbeat failed: {:?}", e);
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -72,7 +72,7 @@ impl DnsClient {
         };
 
         let client = rpc
-            .scoped_client::<DnsClientMgrRpcClientFactory<BaseController>>("".to_string())
+            .scoped_client::<DnsNodeMgrRpcClientFactory<BaseController>>("".to_string())
             .await?;
 
         let response = client.heartbeat(BaseController::default(), request).await?;
