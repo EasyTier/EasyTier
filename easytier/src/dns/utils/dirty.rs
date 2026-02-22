@@ -24,6 +24,10 @@ impl DirtyFlag {
         self.0.store(true, Ordering::Release);
     }
 
+    pub fn peek(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
     pub fn reset(&self) -> bool {
         self.0.swap(false, Ordering::Acquire)
     }
