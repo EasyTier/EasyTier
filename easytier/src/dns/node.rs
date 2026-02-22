@@ -1,3 +1,4 @@
+use crate::common::global_ctx::GlobalCtxEvent;
 use crate::dns::config::DNS_SERVER_RPC_ADDR;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::peers::peer_manager::PeerManager;
@@ -8,7 +9,9 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tokio::task::JoinSet;
+use tokio::time::{sleep_until, Instant};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -47,12 +50,61 @@ impl DnsNode {
 
             ..Default::default()
         };
+        let rr_interval = Duration::from_secs(1);
+        let mut last_heartbeat = Instant::now();
+        let sleep = sleep_until(last_heartbeat);
+        tokio::pin!(sleep);
+
+        let mut subscriber = self.mgr.get_global_ctx_ref().subscribe();
+
         loop {
-            self.mgr.dirty.notify.notified().await;
-            if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
-                tracing::error!("heartbeat failed: {:?}", e);
+            let next_heartbeat = last_heartbeat
+                + if self.mgr.dirty.peek() {
+                    rr_interval
+                } else {
+                    rr_interval / 8
+                };
+            sleep.as_mut().reset(next_heartbeat);
+
+            tokio::select! {
+                biased;
+
+                _ = &mut sleep => {
+                    if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
+                        // TODO: try to start server
+                        tracing::error!("heartbeat failed: {:?}", e);
+                    }
+
+                    last_heartbeat = Instant::now();
+                }
+
+                _ = self.mgr.dirty.notify.notified() => {}
+
+                event = subscriber.recv() => {
+                    match event {
+                        Ok(
+                            GlobalCtxEvent::DhcpIpv4Changed(..)
+                            | GlobalCtxEvent::DhcpIpv4Conflicted(..),
+                        ) => {
+                            tracing::info!(?event, "ip change detected, rebuilding snapshot");
+                        }
+                        Ok(GlobalCtxEvent::ConfigPatched(patch)) => {
+                            // TODO: inspect patch
+                            tracing::info!(?patch, "config change detected, rebuilding snapshot");
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!("event listener lagged, skipped {n} events, rebuilding snapshot");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::info!("event bus closed");
+                            break;
+                        }
+                        _ => continue,
+                    }
+
+                    self.mgr.dirty.mark();
+                }
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 
