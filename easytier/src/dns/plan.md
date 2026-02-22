@@ -73,19 +73,6 @@ forwarders = [
 - 在 `RoutePeerInfo` 中只保存本地 DNS 配置的 hash
 - 收到 `RoutePeerInfo` 后读取其中 DNS 的 hash，若与本地不同，通过 RPC 拉取 Peer 的 DNS 配置
 
-## DnsRunner
-
-用于启动/监护 DnsNode 和 DnsServer
-每个 EasyTier 实例都会启动一个 DnsNode，但是一台机器上的所有实例共享一个唯一的 DnsServer。
-
-每个实例启动时：
-
-1. - [ ] 读取 TOML 配置，然后用这个配置启动一个 DnsNode，交给 DnsNode 一个用于尝试重启 server 的 notify
-2. - [ ] 尝试绑定 DNS_SERVER_RPC_ADDR 监听 RPC 请求
-   1. 一台机器上所有 EasyTier 实例一起尝试绑定 DNS_SERVER_RPC_ADDR，绑定成功的那个就启动 DnsServer（当然也启动 DnsNode），失败的那些就只有 DnsNode
-   2. 这个启动 DnsServer 的操作其实是个循环，每隔一小段时间或者 DnsNode rpc 失败（notify）后立刻尝试 bind，如果 bind 成功就说明 DnsServer 真挂了，那就自己在这个已有的 SocketAddr 上启动 DnsServer（忽略 bind 失败或启动失败，启动失败就直接释放 socket），这样才能保证服务不断
-
-
 ## DnsNode
 
 1. - [x] 监听配置更新/IP 地址变化，重建快照
@@ -97,6 +84,9 @@ forwarders = [
    2. 如果有 dirty 标记，重建 snapshot 并在心跳中包含；
    3. 如果 DnsServer 返回 resync，立刻重新发送带有 Snapshot 的心跳
 5. - [x] 一个 RPC 接口，供 Peer 拉取 DNS 配置
+6. - [x] 一个独立循环，用于选举 DnsServer，每次循环尝试绑定 DNS_SERVER_RPC_ADDR 监听 RPC 请求
+   1. 一台机器上所有 EasyTier 实例一起尝试绑定 DNS_SERVER_RPC_ADDR，绑定成功的那个就启动 DnsServer（当然也启动 DnsNode），失败的那些就只有 DnsNode
+   2. 每隔一小段时间或者 DnsNode 心跳失败（notify）后立刻尝试 bind，如果 bind 成功就说明 DnsServer 真挂了，那就自己在这个已有的 SocketAddr 上启动 DnsServer（忽略 bind 失败或启动失败，启动失败就直接释放 socket），这样才能保证服务不断
 
 ## DnsServer
 
@@ -142,6 +132,7 @@ forwarders = [
 ## TODO
 
 - [x] 配置解析
+- [ ] 单元测试
 - [ ] cli 输出状态
 
 </details>
