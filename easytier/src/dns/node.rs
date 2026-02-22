@@ -9,7 +9,7 @@ use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{sleep_until, Instant};
 use uuid::Uuid;
@@ -17,10 +17,12 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
+
+    election: Arc<Notify>,
 }
 
 impl DnsNode {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(peer_mgr: Arc<PeerManager>, election: Arc<Notify>) -> Self {
         let mgr = Arc::new(DnsPeerMgr::new(peer_mgr.clone()));
         peer_mgr
             .get_peer_rpc_mgr()
@@ -31,7 +33,10 @@ impl DnsNode {
                 &peer_mgr.get_global_ctx_ref().get_network_name(),
             );
 
-        Self { mgr }
+        Self {
+            mgr,
+            election,
+        }
     }
 
     pub fn id(&self) -> Uuid {
@@ -67,8 +72,8 @@ impl DnsNode {
 
                 _ = &mut sleep => {
                     if let Err(e) = self.heartbeat(&mut rpc, &mut heartbeat).await {
-                        // TODO: try to start server
                         tracing::error!("heartbeat failed: {:?}", e);
+                        self.election.notify_one();
                     }
 
                     last_heartbeat = Instant::now();
