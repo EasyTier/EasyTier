@@ -1,7 +1,7 @@
 use crate::dns::utils::addr::NameServerAddr;
 use crate::dns::utils::dirty::{DirtyFlag, DirtyState};
 use crate::dns::zone::{Zone, ZoneGroup};
-use crate::proto::dns::DnsClientMgrRpc;
+use crate::proto::dns::DnsNodeMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
@@ -15,14 +15,14 @@ use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
-pub struct DnsClientInfo {
+pub struct DnsNodeInfo {
     digest: Vec<u8>,
     zones: ZoneGroup,
     addresses: HashSet<NameServerAddr>,
     listeners: HashSet<NameServerAddr>,
 }
 
-impl TryFrom<&DnsSnapshot> for DnsClientInfo {
+impl TryFrom<&DnsSnapshot> for DnsNodeInfo {
     type Error = Error;
 
     fn try_from(value: &DnsSnapshot) -> Result<Self, Self::Error> {
@@ -38,22 +38,22 @@ impl TryFrom<&DnsSnapshot> for DnsClientInfo {
 const DNS_CLIENT_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
-pub struct DnsClientMgrDirtyFlags {
+pub struct DnsNodeMgrDirtyFlags {
     pub(super) catalog: DirtyFlag,
     pub(super) addresses: DirtyFlag,
     pub(super) listeners: DirtyFlag,
 }
 
 #[derive(Debug)]
-pub struct DnsClientMgr {
-    clients: Cache<Uuid, DnsClientInfo>,
-    pub(super) dirty: DirtyState<DnsClientMgrDirtyFlags>,
+pub struct DnsNodeMgr {
+    nodes: Cache<Uuid, DnsNodeInfo>,
+    pub(super) dirty: DirtyState<DnsNodeMgrDirtyFlags>,
 }
 
-impl DnsClientMgr {
+impl DnsNodeMgr {
     pub fn new() -> Self {
         Self {
-            clients: Cache::builder().time_to_live(DNS_CLIENT_TTL).build(),
+            nodes: Cache::builder().time_to_live(DNS_CLIENT_TTL).build(),
             dirty: Default::default(),
         }
     }
@@ -83,7 +83,7 @@ impl DnsClientMgr {
         let mut zones = vec![Zone::system()];
         let mut local = HashSet::<NameServerAddr>::new();
 
-        for (_, info) in self.clients.iter() {
+        for (_, info) in self.nodes.iter() {
             zones.extend(info.zones);
             local.extend(info.addresses);
             local.extend(info.listeners);
@@ -101,14 +101,14 @@ impl DnsClientMgr {
     }
 
     pub fn iter_addresses(&self) -> impl Iterator<Item = NameServerAddr> + use<'_> {
-        self.clients
+        self.nodes
             .iter()
             .flat_map(|(_, info)| info.addresses)
             .unique()
     }
 
     pub fn iter_listeners(&self) -> impl Iterator<Item = NameServerAddr> + use<'_> {
-        self.clients
+        self.nodes
             .iter()
             .flat_map(|(_, info)| info.listeners)
             .unique()
@@ -116,7 +116,7 @@ impl DnsClientMgr {
 }
 
 #[async_trait::async_trait]
-impl DnsClientMgrRpc for DnsClientMgr {
+impl DnsNodeMgrRpc for DnsNodeMgr {
     type Controller = BaseController;
 
     async fn heartbeat(
@@ -133,8 +133,8 @@ impl DnsClientMgrRpc for DnsClientMgr {
             .into();
 
         let resync = if let Some(snapshot) = input.snapshot.as_ref() {
-            let new = DnsClientInfo::try_from(snapshot)?;
-            let old = self.clients.get(&id).await.unwrap_or_default();
+            let new = DnsNodeInfo::try_from(snapshot)?;
+            let old = self.nodes.get(&id).await.unwrap_or_default();
             if new.digest != old.digest {
                 self.dirty.catalog.mark();
                 if new.addresses != old.addresses {
@@ -144,12 +144,12 @@ impl DnsClientMgrRpc for DnsClientMgr {
                     self.dirty.listeners.mark();
                 }
 
-                self.clients.insert(id, new).await;
+                self.nodes.insert(id, new).await;
                 self.dirty.notify.notify_one();
             }
             false
         } else {
-            self.clients
+            self.nodes
                 .get(&id)
                 .await
                 .is_none_or(|info| info.digest != input.digest)

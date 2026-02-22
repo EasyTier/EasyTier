@@ -38,6 +38,6 @@ message HeartbeatResponse {
   bool resync = 1;
 }
 
-service DnsClientMgrRpc {
+service DnsNodeMgrRpc {
     rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {}
 }
