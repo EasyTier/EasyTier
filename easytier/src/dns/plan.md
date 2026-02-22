@@ -88,7 +88,7 @@ forwarders = [
 
 ## DnsNode
 
-1. - [ ] 监听配置更新/IP 地址变化，重建快照
+1. - [x] 监听配置更新/IP 地址变化，重建快照
 2. - [x] (`GlobalCtx` 的扩展 trait) 使用自己的 name 和 domain 创建一个专用 zone，让 name 指向自身 IP（为 DNS 一致性避免使用 127.0.0.1 作为 IP，若没有 IP 则不创建这个 zone）
 3. - [ ] 每次获得 RoutePeerInfo 时，读取其中的 dns 字段（和一些别的身份标记字段），这是远程 Peer 的 dns 配置（不含 addresses 和 listeners）的 digest
    - [x] 接收后检查 digest 和本地配置是否一致，如果一致，不做修改，否则标记 dirty，下一次心跳时将重建快照
