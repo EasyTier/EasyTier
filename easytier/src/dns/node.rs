@@ -1,9 +1,9 @@
 use crate::common::global_ctx::GlobalCtxEvent;
+use crate::common::PeerId;
 use crate::dns::config::DNS_SERVER_RPC_ADDR;
 use crate::dns::peer_mgr::DnsPeerMgr;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::{DnsNodeMgrRpcClientFactory, DnsPeerMgrRpcServer, HeartbeatRequest};
-use crate::proto::peer_rpc::RoutePeerInfo;
 use crate::proto::rpc_impl::standalone::StandAloneClient;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::tunnel::tcp::TcpTunnelConnector;
@@ -17,8 +17,6 @@ use uuid::Uuid;
 #[derive(Debug)]
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
-
-    tasks: JoinSet<()>,
 }
 
 impl DnsNode {
@@ -33,10 +31,7 @@ impl DnsNode {
                 &peer_mgr.get_global_ctx_ref().get_network_name(),
             );
 
-        Self {
-            mgr,
-            tasks: JoinSet::new(),
-        }
+        Self { mgr }
     }
 
     pub fn id(&self) -> Uuid {
@@ -56,6 +51,7 @@ impl DnsNode {
         tokio::pin!(sleep);
 
         let mut subscriber = self.mgr.get_global_ctx_ref().subscribe();
+        let mut tasks = JoinSet::new();
 
         loop {
             let next_heartbeat = last_heartbeat
@@ -82,6 +78,10 @@ impl DnsNode {
 
                 event = subscriber.recv() => {
                     match event {
+                        Ok(GlobalCtxEvent::PeerInfoUpdated(peer_ids)) => {
+                            self.refresh(&mut tasks, peer_ids);
+                            continue;
+                        }
                         Ok(
                             GlobalCtxEvent::DhcpIpv4Changed(..)
                             | GlobalCtxEvent::DhcpIpv4Conflicted(..),
@@ -137,11 +137,19 @@ impl DnsNode {
         Ok(())
     }
 
-    pub async fn refresh(&mut self, peer_info: &RoutePeerInfo) {
-        let mgr = self.mgr.clone();
-        let peer_id = peer_info.peer_id;
-        let digest = peer_info.dns.clone();
-        self.tasks
-            .spawn(async move { mgr.refresh(peer_id, digest).await });
+    fn refresh(&self, tasks: &mut JoinSet<()>, peer_ids: Vec<PeerId>) {
+        let my_peer_id = self.mgr.my_peer_id();
+        for peer_id in peer_ids {
+            if peer_id == my_peer_id {
+                continue;
+            }
+            let mgr = self.mgr.clone();
+            let route = mgr.get_route();
+            tasks.spawn(async move {
+                if let Some(peer_info) = route.get_peer_info(peer_id).await {
+                    mgr.refresh(peer_id, peer_info.dns).await;
+                }
+            });
+        }
     }
 }
