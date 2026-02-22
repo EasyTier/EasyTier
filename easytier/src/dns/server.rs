@@ -225,40 +225,46 @@ impl DnsServer {
         let dirty = &self.mgr.dirty;
         let mut runtime = None;
 
-        tokio::join!(
-            async {
-                loop {
-                    dirty.catalog.notified().await;
-                    if dirty.catalog.reset() {
-                        self.catalog.replace(self.mgr.catalog()).await;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+        let reload_catalog = async {
+            loop {
+                dirty.catalog.notified().await;
+                if dirty.catalog.reset() {
+                    self.catalog.replace(self.mgr.catalog()).await;
                 }
-            },
-            async {
-                loop {
-                    dirty.addresses.notified().await;
-                    if dirty.addresses.reset() {
-                        self.reload_addresses(self.mgr.iter_addresses()).await;
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+
+        let reload_addresses = async {
+            loop {
+                dirty.addresses.notified().await;
+                if dirty.addresses.reset() {
+                    self.reload_addresses(self.mgr.iter_addresses()).await;
                 }
-            },
-            async {
-                loop {
-                    dirty.listeners.notified().await;
-                    if dirty.listeners.reset() {
-                        if let Err(e) = self
-                            .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
-                            .await
-                        {
-                            tracing::error!("failed to reload listeners: {:?}", e);
-                            dirty.listeners.mark();
-                        }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+
+        let reload_listeners = async {
+            loop {
+                dirty.listeners.notified().await;
+                if dirty.listeners.reset() {
+                    if let Err(e) = self
+                        .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
+                        .await
+                    {
+                        tracing::error!("failed to reload listeners: {:?}", e);
+                        dirty.listeners.mark();
                     }
-                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
-            },
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+
+        tokio::select!(
+            _ = reload_catalog => {},
+            _ = reload_addresses => {},
+            _ = reload_listeners => {},
         );
 
         self.reload_addresses(iter::empty()).await;
