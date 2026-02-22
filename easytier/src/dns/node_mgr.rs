@@ -1,5 +1,5 @@
 use crate::dns::utils::addr::NameServerAddr;
-use crate::dns::utils::dirty::{DirtyFlag, DirtyState};
+use crate::dns::utils::dirty::DirtyFlag;
 use crate::dns::zone::{Zone, ZoneGroup};
 use crate::proto::dns::DnsNodeMgrRpc;
 use crate::proto::dns::{DnsSnapshot, HeartbeatRequest, HeartbeatResponse};
@@ -47,7 +47,7 @@ pub struct DnsNodeMgrDirtyFlags {
 #[derive(Debug)]
 pub struct DnsNodeMgr {
     nodes: Cache<Uuid, DnsNodeInfo>,
-    pub(super) dirty: DirtyState<DnsNodeMgrDirtyFlags>,
+    pub(super) dirty: DnsNodeMgrDirtyFlags,
 }
 
 impl DnsNodeMgr {
@@ -145,7 +145,6 @@ impl DnsNodeMgrRpc for DnsNodeMgr {
                 }
 
                 self.nodes.insert(id, new).await;
-                self.dirty.notify.notify_one();
             }
             false
         } else {
