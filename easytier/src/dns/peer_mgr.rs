@@ -13,7 +13,6 @@ use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
 use crate::utils::DeterministicDigest;
 use anyhow::Context;
-use derive_more::Deref;
 use itertools::Itertools;
 use moka::future::Cache;
 use std::sync::Arc;
@@ -39,26 +38,25 @@ impl TryFrom<DnsExportConfig> for DnsPeerInfo {
 
 const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 
-#[derive(Debug, Deref)]
+#[derive(Debug)]
 pub struct DnsPeerMgr {
     peers: Cache<PeerId, DnsPeerInfo>,
     pub(super) dirty: DirtyFlag,
 
-    #[deref]
-    mgr: Arc<PeerManager>,
+    peer_mgr: Arc<PeerManager>,
 }
 
 impl DnsPeerMgr {
     pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
         Self {
-            mgr: peer_mgr.clone(),
             peers: Cache::builder().time_to_live(DNS_PEER_TTL).build(),
             dirty: Default::default(),
+            peer_mgr: peer_mgr.clone(),
         }
     }
 
     pub fn snapshot(&self) -> DnsSnapshot {
-        let global_ctx = self.get_global_ctx_ref();
+        let global_ctx = self.peer_mgr.get_global_ctx_ref();
         let config = global_ctx.config.get_dns();
 
         let zones = config
@@ -107,10 +105,11 @@ impl DnsPeerMgr {
     }
 
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {
-        self.get_peer_rpc_mgr()
+        self.peer_mgr
+            .get_peer_rpc_mgr()
             .rpc_client()
             .scoped_client::<DnsPeerMgrRpcClientFactory<BaseController>>(
-                self.mgr.my_peer_id(),
+                self.peer_mgr.my_peer_id(),
                 peer_id,
                 "".to_string(),
             )
@@ -130,6 +129,6 @@ impl DnsPeerMgrRpc for DnsPeerMgr {
         _: Self::Controller,
         _: GetExportConfigRequest,
     ) -> rpc_types::error::Result<GetExportConfigResponse> {
-        Ok(self.get_global_ctx_ref().dns_export_config())
+        Ok(self.peer_mgr.get_global_ctx_ref().dns_export_config())
     }
 }

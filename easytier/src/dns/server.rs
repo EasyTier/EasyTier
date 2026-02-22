@@ -1,4 +1,3 @@
-use crate::common::PeerId;
 use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::utils::addr::NameServerAddr;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
@@ -154,10 +153,11 @@ impl ResponseHandler for Response {
 pub struct DnsServer {
     mgr: Arc<DnsNodeMgr>,
 
+    peer_mgr: Arc<PeerManager>,
+
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
 
-    my_peer_id: PeerId,
     addresses: Arc<RwLock<HashSet<NameServerAddr>>>,
 }
 
@@ -172,8 +172,8 @@ impl DnsServer {
 
         Self {
             mgr,
+            peer_mgr,
             catalog: DynamicCatalog::new(),
-            my_peer_id: peer_mgr.my_peer_id(),
             addresses: Arc::new(Default::default()),
         }
     }
@@ -349,7 +349,7 @@ impl DnsServer {
         ip_packet.set_checksum(ipv4::checksum(&ip_packet.to_immutable()));
 
         // Route the response back to ourselves so it goes through the tun device.
-        zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.my_peer_id.into();
+        zc_packet.mut_peer_manager_header().unwrap().to_peer_id = self.peer_mgr.my_peer_id().into();
 
         Some(())
     }
