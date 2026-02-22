@@ -66,25 +66,38 @@ impl RequestHandler for DynamicCatalog {
 
 struct DnsServerRuntime {
     token: CancellationToken,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
 }
 
 impl DnsServerRuntime {
-    async fn stop(self) -> anyhow::Result<()> {
-        self.token.cancel();
-        self.task.await?;
-        Ok(())
-    }
-
     fn start<T: RequestHandler>(mut server: ServerFuture<T>) -> Self {
         Self {
             token: server.shutdown_token().clone(),
-            task: tokio::spawn(async move {
+            task: Some(tokio::spawn(async move {
                 server
                     .block_until_done()
                     .await
                     .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
-            }),
+            })),
+        }
+    }
+
+    async fn stop(mut self) -> anyhow::Result<()> {
+        self.token.cancel();
+        if let Some(task) = self.task.take() {
+            task.await?;
+        }
+        Ok(())
+    }
+
+}
+
+impl Drop for DnsServerRuntime {
+    fn drop(&mut self) {
+        self.token.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+            tracing::warn!("DNS server runtime is leaked");
         }
     }
 }
