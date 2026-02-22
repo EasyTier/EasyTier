@@ -90,6 +90,6 @@ impl DnsClient {
         let peer_id = peer_info.peer_id;
         let digest = peer_info.dns.clone();
         self.tasks
-            .spawn_local(async move { mgr.refresh(peer_id, digest).await });
+            .spawn(async move { mgr.refresh(peer_id, digest).await });
     }
 }
