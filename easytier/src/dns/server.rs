@@ -2,6 +2,7 @@ use crate::dns::node_mgr::DnsNodeMgr;
 use crate::dns::utils::addr::NameServerAddr;
 use crate::peers::peer_manager::PeerManager;
 use crate::proto::dns::DnsNodeMgrRpcServer;
+use crate::tunnel::common::bind_socket;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use hickory_proto::rr::Record;
@@ -17,7 +18,6 @@ use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::io;
 use std::{sync::Arc, time::Duration};
-use tokio::net::{TcpListener, UdpSocket};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -160,7 +160,7 @@ impl DnsServer {
     ) {
         let addresses = addresses.into_iter().collect::<HashSet<_>>();
 
-        let added = addresses.difference(&current).cloned().collect_vec();
+        let added = addresses.difference(current).cloned().collect_vec();
         let removed = current.difference(&addresses).cloned().collect_vec();
 
         if added.is_empty() && removed.is_empty() {
@@ -183,20 +183,14 @@ impl DnsServer {
 
         let mut new = ServerFuture::new(self.catalog.clone());
         for listener in listeners {
-            match listener.protocol {
-                Protocol::Udp => match UdpSocket::bind(listener.addr).await {
-                    Ok(socket) => new.register_socket(socket),
-                    Err(e) => tracing::error!("failed to bind udp socket {}: {}", listener.addr, e),
-                },
-                Protocol::Tcp => match TcpListener::bind(listener.addr).await {
-                    Ok(listener) => {
-                        new.register_listener(listener, DNS_SERVER_LISTENER_TCP_TIMEOUT)
-                    }
-                    Err(e) => {
-                        tracing::error!("failed to bind tcp listener {}: {}", listener.addr, e)
-                    }
-                },
+            let addr = listener.addr;
+            if let Err(e) = match listener.protocol {
+                Protocol::Udp => bind_socket(addr, None).map(|s| new.register_socket(s)),
+                Protocol::Tcp => bind_socket(addr, None)
+                    .map(|s| new.register_listener(s, DNS_SERVER_LISTENER_TCP_TIMEOUT)),
                 _ => unimplemented!(),
+            } {
+                tracing::error!("failed to bind DNS server on {}: {:?}", addr, e);
             }
         }
 
