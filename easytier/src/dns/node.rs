@@ -74,7 +74,7 @@ impl DnsNode {
                     last_heartbeat = Instant::now();
                 }
 
-                _ = self.mgr.dirty.notify.notified() => {}
+                _ = self.mgr.dirty.notified() => {}
 
                 event = subscriber.recv() => {
                     match event {

@@ -1,7 +1,7 @@
 use crate::common::config::ConfigLoader;
 use crate::common::PeerId;
 use crate::dns::config::{DnsExportConfig, DnsGlobalCtxExt};
-use crate::dns::utils::dirty::{DirtyFlag, DirtyState};
+use crate::dns::utils::dirty::DirtyFlag;
 use crate::dns::zone::ZoneGroup;
 use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
@@ -42,7 +42,7 @@ const DNS_PEER_TTL: Duration = Duration::from_secs(3);
 #[derive(Debug, Deref)]
 pub struct DnsPeerMgr {
     peers: Cache<PeerId, DnsPeerInfo>,
-    pub(super) dirty: DirtyState<DirtyFlag>,
+    pub(super) dirty: DirtyFlag,
 
     #[deref]
     mgr: Arc<PeerManager>,
@@ -103,7 +103,7 @@ impl DnsPeerMgr {
             }
         }
 
-        self.dirty.notify.notify_one();
+        self.dirty.notify_one();
     }
 
     async fn fetch(&self, peer_id: PeerId) -> anyhow::Result<DnsPeerInfo> {

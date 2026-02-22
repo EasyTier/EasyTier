@@ -131,9 +131,6 @@ pub struct DnsServer {
 
     #[derivative(Debug = "ignore")]
     catalog: DynamicCatalog,
-
-    /// Current set of hijacked addresses (only UDP protocol addresses).
-    addresses: RwLock<HashSet<NameServerAddr>>,
 }
 
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -153,23 +150,24 @@ impl DnsServer {
         Self {
             mgr,
             catalog: DynamicCatalog::new(),
-            addresses: RwLock::new(HashSet::new()),
         }
     }
 
-    async fn reload_addresses(&self, addresses: impl IntoIterator<Item = NameServerAddr>) {
+    async fn reload_addresses(
+        &self,
+        addresses: impl IntoIterator<Item = NameServerAddr>,
+        current: &mut HashSet<NameServerAddr>,
+    ) {
         let addresses = addresses.into_iter().collect::<HashSet<_>>();
 
-        let mut active = self.addresses.write().await;
-
-        let added = addresses.difference(&active).cloned().collect_vec();
-        let removed = active.difference(&addresses).cloned().collect_vec();
+        let added = addresses.difference(&current).cloned().collect_vec();
+        let removed = current.difference(&addresses).cloned().collect_vec();
 
         if added.is_empty() && removed.is_empty() {
             return;
         }
 
-        *active = addresses;
+        *current = addresses;
 
         // TODO
     }
@@ -209,30 +207,44 @@ impl DnsServer {
 
     pub async fn run(&self) {
         let dirty = &self.mgr.dirty;
-        let mut runtime = None;
-        loop {
-            dirty.notify.notified().await;
 
-            if dirty.catalog.reset() {
-                self.catalog.replace(self.mgr.catalog()).await;
-            }
-
-            if dirty.addresses.reset() {
-                self.reload_addresses(self.mgr.iter_addresses()).await;
-            }
-
-            if dirty.listeners.reset() {
-                if let Err(e) = self
-                    .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
-                    .await
-                {
-                    tracing::error!("failed to reload listeners: {:?}", e);
-                    dirty.listeners.mark();
-                    dirty.notify.notify_one();
+        tokio::join!(
+            async {
+                loop {
+                    dirty.catalog.notified().await;
+                    if dirty.catalog.reset() {
+                        self.catalog.replace(self.mgr.catalog()).await;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
-            }
-
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
+            },
+            async {
+                let mut addresses = HashSet::new();
+                loop {
+                    dirty.addresses.notified().await;
+                    if dirty.addresses.reset() {
+                        self.reload_addresses(self.mgr.iter_addresses(), &mut addresses)
+                            .await;
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            },
+            async {
+                let mut runtime = None;
+                loop {
+                    dirty.listeners.notified().await;
+                    if dirty.listeners.reset() {
+                        if let Err(e) = self
+                            .reload_listeners(self.mgr.iter_listeners(), &mut runtime)
+                            .await
+                        {
+                            tracing::error!("failed to reload listeners: {:?}", e);
+                            dirty.listeners.mark();
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+            },
+        );
     }
 }
