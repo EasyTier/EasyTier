@@ -45,6 +45,8 @@ pub enum GlobalCtxEvent {
     PeerConnAdded(PeerConnInfo),
     PeerConnRemoved(PeerConnInfo),
 
+    PeerInfoUpdated(Vec<PeerId>),
+
     ListenerAdded(url::Url),
     ListenerAddFailed(url::Url, String), // (url, error message)
     ListenerAcceptFailed(url::Url, String), // (url, error message)
