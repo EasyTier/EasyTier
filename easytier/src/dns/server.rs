@@ -5,8 +5,10 @@ use crate::peer_center::instance::PeerCenterPeerManagerTrait;
 use crate::peers::peer_manager::PeerManager;
 use crate::peers::NicPacketFilter;
 use crate::proto::dns::DnsNodeMgrRpcServer;
+use crate::proto::rpc_impl::standalone::StandAloneServer;
 use crate::tunnel::common::bind_socket;
 use crate::tunnel::packet_def::ZCPacket;
+use crate::tunnel::tcp::TcpTunnelListener;
 use derivative::Derivative;
 use derive_more::{Deref, DerefMut, From, Into};
 use hickory_proto::rr::Record;
@@ -26,8 +28,8 @@ use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
 use std::collections::HashSet;
-use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::{io, iter};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::RwLock, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -89,7 +91,6 @@ impl DnsServerRuntime {
         }
         Ok(())
     }
-
 }
 
 impl Drop for DnsServerRuntime {
@@ -163,16 +164,11 @@ pub struct DnsServer {
 const DNS_SERVER_LISTENER_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl DnsServer {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(peer_mgr: Arc<PeerManager>, rpc: StandAloneServer<TcpTunnelListener>) -> Self {
         let mgr = Arc::new(DnsNodeMgr::new());
-        peer_mgr
-            .get_peer_rpc_mgr()
-            .rpc_server()
-            .registry()
-            .register(
-                DnsNodeMgrRpcServer::new_arc(mgr.clone()),
-                &peer_mgr.get_global_ctx_ref().get_network_name(),
-            );
+
+        rpc.registry()
+            .register(DnsNodeMgrRpcServer::new_arc(mgr.clone()), "");
 
         Self {
             mgr,
@@ -227,6 +223,7 @@ impl DnsServer {
 
     pub async fn run(&self) {
         let dirty = &self.mgr.dirty;
+        let mut runtime = None;
 
         tokio::join!(
             async {
@@ -248,7 +245,6 @@ impl DnsServer {
                 }
             },
             async {
-                let mut runtime = None;
                 loop {
                     dirty.listeners.notified().await;
                     if dirty.listeners.reset() {
@@ -264,6 +260,18 @@ impl DnsServer {
                 }
             },
         );
+
+        self.reload_addresses(iter::empty()).await;
+        if let Some(runtime) = runtime.take() {
+            let _ = runtime.stop().await;
+        }
+    }
+}
+
+impl Drop for DnsServer {
+    fn drop(&mut self) {
+        tracing::info!("DnsServer is dropped");
+        // TODO: remove addresses
     }
 }
 
