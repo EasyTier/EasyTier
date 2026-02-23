@@ -1377,9 +1377,7 @@ impl Instance {
 
             fn get_peer_center_service(
                 &self,
-            ) -> Arc<
-                dyn PeerCenterRpc<Controller = BaseController> + Send + Sync,
-            > {
+            ) -> Arc<dyn PeerCenterRpc<Controller = BaseController> + Send + Sync> {
                 Arc::new(self.peer_center_rpc_service.clone())
             }
         }

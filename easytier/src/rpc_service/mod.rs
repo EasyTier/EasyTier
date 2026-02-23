@@ -72,9 +72,9 @@ pub trait InstanceRpcService: Sync + Send {
         &self,
     ) -> std::sync::Arc<
         dyn crate::proto::peer_rpc::PeerCenterRpc<
-            Controller = crate::proto::rpc_types::controller::BaseController,
-        > + Send
-        + Sync,
+                Controller = crate::proto::rpc_types::controller::BaseController,
+            > + Send
+            + Sync,
     >;
 }
 

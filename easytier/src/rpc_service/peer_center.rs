@@ -73,7 +73,10 @@ mod tests {
     async fn get_global_peer_map_errors_when_no_instance() {
         let svc = make_service();
         let result = svc
-            .get_global_peer_map(BaseController::default(), GetGlobalPeerMapRequest::default())
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest::default(),
+            )
             .await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
