@@ -1312,7 +1312,7 @@ impl Instance {
             port_forward_manage_rpc_service: F,
             stats_rpc_service: G,
             config_rpc_service: H,
-            peer_center_rpc_service: PeerCenterInstanceService,
+            peer_center_rpc_service: Arc<PeerCenterInstanceService>,
         }
 
         #[async_trait::async_trait]
@@ -1378,7 +1378,7 @@ impl Instance {
             fn get_peer_center_service(
                 &self,
             ) -> Arc<dyn PeerCenterRpc<Controller = BaseController> + Send + Sync> {
-                Arc::new(self.peer_center_rpc_service.clone())
+                self.peer_center_rpc_service.clone()
             }
         }
 
@@ -1440,7 +1440,7 @@ impl Instance {
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
-            peer_center_rpc_service: self.peer_center.get_rpc_service(),
+            peer_center_rpc_service: Arc::new(self.peer_center.get_rpc_service()),
         }
     }
 
