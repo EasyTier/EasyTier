@@ -177,8 +177,8 @@ impl DnsServer {
         }
     }
 
-    pub fn routes(&self) -> HashSet<IpAddr> {
-        self.addresses.read().iter().map(|a| a.addr.ip()).collect()
+    pub fn addresses(&self) -> HashSet<SocketAddr> {
+        self.addresses.read().iter().map(|a| a.addr).collect()
     }
 
     async fn reload_listeners(

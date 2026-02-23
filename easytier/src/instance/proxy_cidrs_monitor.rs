@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 
@@ -52,6 +53,13 @@ impl ProxyCidrsMonitor {
         // If has manual routes, override entire proxy_cidrs
         if let Some(routes) = global_ctx.config.get_routes() {
             proxy_cidrs = routes.into_iter().collect();
+        }
+
+        if let Some(dns) = global_ctx.get_dns() {
+            proxy_cidrs.extend(dns.addresses().into_iter().filter_map(|a| match a.ip() {
+                IpAddr::V4(ip) => Some(cidr::Ipv4Cidr::new_host(ip)),
+                _ => None,
+            }))
         }
 
         // Calculate diff
