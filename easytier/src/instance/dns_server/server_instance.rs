@@ -11,7 +11,7 @@ use super::{
     server::Server,
     MAGIC_DNS_INSTANCE_ADDR,
 };
-use crate::dns::system::{OSConfig, SystemConfig};
+use crate::dns::system::{OSConfig, SystemConfigurator};
 use crate::{
     common::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
@@ -69,7 +69,7 @@ pub(super) struct MagicDnsServerInstanceData {
     // zone -> (tunnel remote addr -> route)
     route_infos: DashMap<String, MultiMap<url::Url, Route>>,
 
-    system_config: Option<Box<dyn SystemConfig>>,
+    system_config: Option<Box<dyn SystemConfigurator>>,
 }
 
 impl MagicDnsServerInstanceData {
@@ -492,7 +492,7 @@ pub struct MagicDnsServerInstance {
 
 fn get_system_config(
     _tun_name: Option<&str>,
-) -> Result<Option<Box<dyn SystemConfig>>, anyhow::Error> {
+) -> Result<Option<Box<dyn SystemConfigurator>>, anyhow::Error> {
     #[cfg(target_os = "windows")]
     {
         use crate::dns::system::windows::WindowsDNSManager;
@@ -583,7 +583,7 @@ impl MagicDnsServerInstance {
 
     pub async fn clean_env(&self) {
         if let Some(configer) = &self.data.system_config {
-            let ret = configer.close();
+            let ret = configer.clean();
             if let Err(e) = ret {
                 tracing::error!("Failed to close system config: {:?}", e);
             }

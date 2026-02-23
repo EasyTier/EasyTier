@@ -6,13 +6,13 @@ use std::{
     path::Path,
 };
 
-use super::{OSConfig, SystemConfig};
+use super::{OSConfig, SystemConfigurator};
 
 const MAC_RESOLVER_FILE_HEADER: &str = "# Added by easytier\n";
 const ETC_RESOLVER: &str = "/etc/resolver";
 const ETC_RESOLV_CONF: &str = "/etc/resolv.conf";
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct DarwinConfigurator {}
 impl DarwinConfigurator {
     pub fn new() -> Self {
@@ -104,12 +104,12 @@ impl DarwinConfigurator {
     }
 }
 
-impl SystemConfig for DarwinConfigurator {
+impl SystemConfigurator for DarwinConfigurator {
     fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
         self.do_set_dns(cfg)
     }
 
-    fn close(&self) -> io::Result<()> {
+    fn clean(&self) -> io::Result<()> {
         self.do_close()
     }
 }

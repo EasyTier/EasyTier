@@ -14,7 +14,7 @@ pub struct OSConfig {
     pub match_domains: Vec<String>,
 }
 
-pub trait SystemConfig: Send + Sync {
+pub trait SystemConfigurator: Send + Sync + Clone {
     fn set_dns(&self, cfg: &OSConfig) -> std::io::Result<()>;
-    fn close(&self) -> std::io::Result<()>;
+    fn clean(&self) -> std::io::Result<()>;
 }
