@@ -68,12 +68,16 @@ impl DnsNode {
 
             let server = Arc::new(DnsServer::new(self.peer_mgr.clone(), rpc));
 
+            self.peer_mgr
+                .get_global_ctx_ref()
+                .set_dns(Some(server.clone()));
             tokio::join!(
                 self.peer_mgr
                     .add_nic_packet_process_pipeline(Box::new(server.clone())),
                 server.run()
             );
 
+            self.peer_mgr.get_global_ctx_ref().set_dns(None);
             let _ = self
                 .peer_mgr
                 .remove_nic_packet_process_pipeline(server.id())
