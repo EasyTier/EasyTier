@@ -19,29 +19,28 @@ use hickory_server::{
     server::{Request, RequestHandler, ResponseHandler, ResponseInfo},
     ServerFuture,
 };
-use itertools::Itertools;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use pnet::packet::icmp::{IcmpTypes, MutableIcmpPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet::packet::udp::{MutableUdpPacket, UdpPacket};
 use pnet::packet::{icmp, ipv4, udp, MutablePacket, Packet};
 use std::collections::HashSet;
+use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::{io, iter};
 use std::{sync::Arc, time::Duration};
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct DynamicCatalog {
-    inner: Arc<RwLock<Catalog>>,
+    inner: Arc<tokio::sync::RwLock<Catalog>>,
 }
 
 impl DynamicCatalog {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(RwLock::new(Catalog::new())),
+            inner: Arc::new(tokio::sync::RwLock::new(Catalog::new())),
         }
     }
 
@@ -62,43 +61,6 @@ impl RequestHandler for DynamicCatalog {
             .await
             .handle_request(request, response_handle)
             .await
-    }
-}
-
-struct DnsServerRuntime {
-    token: CancellationToken,
-    task: Option<JoinHandle<()>>,
-}
-
-impl DnsServerRuntime {
-    fn start<T: RequestHandler>(mut server: ServerFuture<T>) -> Self {
-        Self {
-            token: server.shutdown_token().clone(),
-            task: Some(tokio::spawn(async move {
-                server
-                    .block_until_done()
-                    .await
-                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
-            })),
-        }
-    }
-
-    async fn stop(mut self) -> anyhow::Result<()> {
-        self.token.cancel();
-        if let Some(task) = self.task.take() {
-            task.await?;
-        }
-        Ok(())
-    }
-}
-
-impl Drop for DnsServerRuntime {
-    fn drop(&mut self) {
-        self.token.cancel();
-        if let Some(task) = self.task.take() {
-            task.abort();
-            tracing::warn!("DNS server runtime is leaked");
-        }
     }
 }
 
@@ -148,6 +110,43 @@ impl ResponseHandler for Response {
     }
 }
 
+struct DnsServerRuntime {
+    token: CancellationToken,
+    task: Option<JoinHandle<()>>,
+}
+
+impl DnsServerRuntime {
+    fn start<T: RequestHandler>(mut server: ServerFuture<T>) -> Self {
+        Self {
+            token: server.shutdown_token().clone(),
+            task: Some(tokio::spawn(async move {
+                server
+                    .block_until_done()
+                    .await
+                    .unwrap_or_else(|e| tracing::error!("DNS server exited with error: {:?}", e));
+            })),
+        }
+    }
+
+    async fn stop(mut self) -> anyhow::Result<()> {
+        self.token.cancel();
+        if let Some(task) = self.task.take() {
+            task.await?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for DnsServerRuntime {
+    fn drop(&mut self) {
+        self.token.cancel();
+        if let Some(task) = self.task.take() {
+            task.abort();
+            tracing::warn!("DNS server runtime is leaked");
+        }
+    }
+}
+
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct DnsServer {
@@ -178,20 +177,8 @@ impl DnsServer {
         }
     }
 
-    async fn reload_addresses(&self, addresses: impl IntoIterator<Item = NameServerAddr>) {
-        let addresses = addresses.into_iter().collect::<HashSet<_>>();
-        let mut current = self.addresses.write().await; // TODO: read?
-
-        if *current == addresses {
-            return;
-        }
-
-        let added = addresses.difference(&*current).cloned().collect_vec();
-        let removed = current.difference(&addresses).cloned().collect_vec();
-
-        *current = addresses;
-
-        // TODO
+    pub fn routes(&self) -> HashSet<IpAddr> {
+        self.addresses.read().iter().map(|a| a.addr.ip()).collect()
     }
 
     async fn reload_listeners(
@@ -239,7 +226,7 @@ impl DnsServer {
             loop {
                 dirty.addresses.notified().await;
                 if dirty.addresses.reset() {
-                    self.reload_addresses(self.mgr.iter_addresses()).await;
+                    *self.addresses.write() = self.mgr.iter_addresses().collect();
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -267,7 +254,7 @@ impl DnsServer {
             _ = reload_listeners => {},
         );
 
-        self.reload_addresses(iter::empty()).await;
+        self.addresses.write().clear();
         if let Some(runtime) = runtime.take() {
             let _ = runtime.stop().await;
         }
@@ -295,19 +282,15 @@ impl NicPacketFilter for DnsServer {
 }
 
 impl DnsServer {
-    async fn is_hijacked_ip(&self, ip: &IpAddr) -> bool {
-        self.addresses
-            .read()
-            .await
-            .iter()
-            .any(|a| a.addr.ip() == *ip)
+    fn is_hijacked_ip(&self, ip: &IpAddr) -> bool {
+        self.addresses.read().iter().any(|a| a.addr.ip() == *ip)
     }
 
-    async fn is_hijacked_addr(&self, addr: &NameServerAddr) -> bool {
-        self.addresses.read().await.contains(addr)
+    fn is_hijacked_addr(&self, addr: &NameServerAddr) -> bool {
+        self.addresses.read().contains(addr)
     }
 
-    /// Replace content of incoming UDP DNS request and ICMP echo request packet with reply data,
+    /// Replace the content of an incoming UDP DNS request and ICMP echo request packet with reply data,
     /// and swap source and destination IP addresses to send it back.
     async fn handle_ip_packet(&self, zc_packet: &mut ZCPacket) -> Option<()> {
         let (ip_header_length, ip_protocol, src_ip, dst_ip) = {
@@ -325,7 +308,7 @@ impl DnsServer {
             )
         };
 
-        if !self.is_hijacked_ip(&dst_ip.into()).await {
+        if !self.is_hijacked_ip(&dst_ip.into()) {
             return None;
         }
 
@@ -383,10 +366,7 @@ impl DnsServer {
             )
         };
 
-        if !self
-            .is_hijacked_addr(&SocketAddr::new(dst_ip.into(), dst_port).into())
-            .await
-        {
+        if !self.is_hijacked_addr(&SocketAddr::new(dst_ip.into(), dst_port).into()) {
             return None;
         }
 
