@@ -34,7 +34,7 @@ use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc}
 use crate::gateway::quic_proxy::{QuicProxy, QuicProxyDstRpcService};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
-use crate::peer_center::instance::PeerCenterInstance;
+use crate::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService};
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 #[cfg(feature = "tun")]
@@ -54,6 +54,7 @@ use crate::proto::api::instance::{
 };
 use crate::proto::api::manage::NetworkConfig;
 use crate::proto::common::{PortForwardConfigPb, TunnelInfo};
+use crate::proto::peer_rpc::PeerCenterRpc;
 use crate::proto::rpc_impl::standalone::RpcServerHook;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
@@ -1311,6 +1312,7 @@ impl Instance {
             port_forward_manage_rpc_service: F,
             stats_rpc_service: G,
             config_rpc_service: H,
+            peer_center_rpc_service: PeerCenterInstanceService,
         }
 
         #[async_trait::async_trait]
@@ -1372,6 +1374,14 @@ impl Instance {
             fn get_config_service(&self) -> &dyn ConfigRpc<Controller = BaseController> {
                 &self.config_rpc_service
             }
+
+            fn get_peer_center_service(
+                &self,
+            ) -> Arc<
+                dyn PeerCenterRpc<Controller = BaseController> + Send + Sync,
+            > {
+                Arc::new(self.peer_center_rpc_service.clone())
+            }
         }
 
         ApiRpcServiceImpl {
@@ -1432,6 +1442,7 @@ impl Instance {
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
+            peer_center_rpc_service: self.peer_center.get_rpc_service(),
         }
     }
 
