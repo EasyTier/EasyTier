@@ -31,15 +31,7 @@ impl PeerCenterRpc for PeerCenterManageRpcService {
         ctrl: BaseController,
         req: GetGlobalPeerMapRequest,
     ) -> crate::proto::rpc_types::error::Result<GetGlobalPeerMapResponse> {
-        let id = self
-            .instance_manager
-            .iter()
-            .next()
-            .map(|v| *v.key())
-            .ok_or_else(|| anyhow::anyhow!("No running instance found"))?;
-        self.instance_manager
-            .get_instance_service(&id)
-            .ok_or_else(|| anyhow::anyhow!("Instance API service not available"))?
+        super::get_instance_service(&self.instance_manager, &None)?
             .get_peer_center_service()
             .get_global_peer_map(ctrl, req)
             .await
@@ -81,7 +73,7 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("No running instance found"),
+            msg.contains("No instance matches the selector"),
             "unexpected error: {msg}"
         );
     }
