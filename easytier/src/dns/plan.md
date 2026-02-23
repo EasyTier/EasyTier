@@ -100,7 +100,7 @@ forwarders = [
 7.  - [x] 内部接口，控制 DnsServer 是否 bind 到某些 socket（也就是配置中的 listeners）
 8.  - [x] Listeners 绑定失败打印日志（失败一个打印一次然后就跳过），即便这时 addresses 为空也不要停机。（否则释放 socket 绑定后会有 instance 抢占 socket 试图启动 server，然后就死循环）
 9.  - [x] 内部接口，更新 addresses。目前这些用来 hijack 的 addresses 都是只支持 udp 简单查询，就是一个 UDP 包查询，tcp 完全不管。但是可以支持除了 53 之外的端口，这个不难。
-    - [ ] 并且给 tun 添加删除这些 addresses 的路由
+    - [x] 并且给 tun 添加删除这些 addresses 的路由
 10. - [x] 启动时，往 packet pipeline 上挂一个 filter，和目前 magic dns 的操作一样，给 addresses 添加路由并劫持所有目的为配置中 addresses 的 UDP 包，直接作为 DNS request 读取并交给 DnsServer 解析
     - [ ] 这个 addresses 可能还得 append 到 resolv.conf 之类的地方
 11. - [x] Addresses 和 Listeners 更新时~~需要检查所有 zone 的 forwarder~~直接更新所有 zone，之前为了避免回环可能去掉了一些 forwarder，或者有新的 forwarder 要去除
