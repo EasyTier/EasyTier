@@ -9,9 +9,9 @@
 use super::{
     config::{GeneralConfigBuilder, RunConfigBuilder},
     server::Server,
-    system_config::{OSConfig, SystemConfig},
     MAGIC_DNS_INSTANCE_ADDR,
 };
+use crate::dns::system::{OSConfig, SystemConfig};
 use crate::{
     common::{
         ifcfg::{IfConfiger, IfConfiguerTrait},
@@ -495,14 +495,14 @@ fn get_system_config(
 ) -> Result<Option<Box<dyn SystemConfig>>, anyhow::Error> {
     #[cfg(target_os = "windows")]
     {
-        use super::system_config::windows::WindowsDNSManager;
+        use crate::dns::system::windows::WindowsDNSManager;
         let tun_name = _tun_name.ok_or_else(|| anyhow::anyhow!("No tun name"))?;
         return Ok(Some(Box::new(WindowsDNSManager::new(tun_name)?)));
     }
 
     #[cfg(all(target_os = "macos", not(feature = "macos-ne")))]
     {
-        use super::system_config::darwin::DarwinConfigurator;
+        use crate::dns::system_config::darwin::DarwinConfigurator;
         return Ok(Some(Box::new(DarwinConfigurator::new())));
     }
 

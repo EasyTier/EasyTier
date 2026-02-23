@@ -10,10 +10,18 @@ use std::{
 use arc_swap::ArcSwap;
 use dashmap::DashMap;
 
+use super::{
+    config::{ConfigLoader, Flags},
+    netns::NetNS,
+    network::IPCollector,
+    stun::{StunInfoCollector, StunInfoCollectorTrait},
+    PeerId,
+};
 use crate::common::config::ProxyNetworkConfig;
 use crate::common::shrink_dashmap;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
+use crate::dns::server::DnsServer;
 use crate::peers::acl_filter::AclFilter;
 use crate::peers::credential_manager::CredentialManager;
 use crate::proto::acl::GroupIdentity;
@@ -25,14 +33,6 @@ use crossbeam::atomic::AtomicCell;
 use hmac::{Hmac, Mac};
 use parking_lot::RwLock;
 use sha2::Sha256;
-use crate::dns::server::DnsServer;
-use super::{
-    config::{ConfigLoader, Flags},
-    netns::NetNS,
-    network::IPCollector,
-    stun::{StunInfoCollector, StunInfoCollectorTrait},
-    PeerId,
-};
 
 pub type NetworkIdentity = crate::common::config::NetworkIdentity;
 
@@ -297,7 +297,7 @@ impl GlobalCtx {
                 net_ns,
                 stun_info_collector.clone(),
             )))),
-            
+
             dns: RwLock::new(None),
 
             hostname: Mutex::new(hostname),
@@ -417,11 +417,11 @@ impl GlobalCtx {
     pub fn get_ip_collector(&self) -> Arc<IPCollector> {
         self.ip_collector.lock().unwrap().as_ref().unwrap().clone()
     }
-    
+
     pub fn get_dns(&self) -> Option<Arc<DnsServer>> {
         self.dns.read().clone()
     }
-    
+
     pub fn set_dns(&self, dns: Option<Arc<DnsServer>>) {
         *self.dns.write() = dns;
     }
