@@ -264,7 +264,7 @@ impl DnsServer {
 impl Drop for DnsServer {
     fn drop(&mut self) {
         tracing::info!("DnsServer is dropped");
-        // TODO: remove addresses
+        self.addresses.write().clear();
     }
 }
 
