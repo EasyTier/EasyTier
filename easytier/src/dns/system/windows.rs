@@ -6,7 +6,7 @@ use winreg::RegKey;
 
 use crate::common::ifcfg::RegistryManager;
 
-use super::{OSConfig, SystemConfig};
+use super::{OSConfig, SystemConfigurator};
 
 pub fn is_windows_10_or_better() -> io::Result<bool> {
     let hklm = winreg::enums::HKEY_LOCAL_MACHINE;
@@ -19,6 +19,7 @@ pub fn is_windows_10_or_better() -> io::Result<bool> {
 }
 
 // 假设 interface_guid 是你的网络接口 GUID
+#[derive(Clone)]
 pub struct InterfaceControl {
     interface_guid: String,
 }
@@ -125,6 +126,7 @@ impl InterfaceControl {
     }
 }
 
+#[derive(Clone)]
 pub struct WindowsDNSManager {
     tun_dev_name: String,
     interface_control: InterfaceControl,
@@ -146,7 +148,7 @@ impl WindowsDNSManager {
     }
 }
 
-impl SystemConfig for WindowsDNSManager {
+impl SystemConfigurator for WindowsDNSManager {
     fn set_dns(&self, cfg: &OSConfig) -> io::Result<()> {
         self.set_primary_dns(
             &cfg.nameservers
@@ -158,7 +160,7 @@ impl SystemConfig for WindowsDNSManager {
         Ok(())
     }
 
-    fn close(&self) -> io::Result<()> {
+    fn clean(&self) -> io::Result<()> {
         Ok(())
     }
 }
