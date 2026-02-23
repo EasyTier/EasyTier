@@ -15,17 +15,18 @@ use tokio::sync::{broadcast, Notify};
 use tokio::task::JoinSet;
 use tokio::time::{sleep, sleep_until, Instant};
 use uuid::Uuid;
+use crate::instance::instance::ArcNicCtx;
 
 #[derive(Debug)]
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
 
-    global_ctx: ArcGlobalCtx,
     peer_mgr: Arc<PeerManager>,
+    global_ctx: ArcGlobalCtx,
 }
 
 impl DnsNode {
-    pub fn new(global_ctx: ArcGlobalCtx, peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(peer_mgr: Arc<PeerManager>, global_ctx: ArcGlobalCtx) -> Self {
         let mgr = Arc::new(DnsPeerMgr::new(peer_mgr.clone()));
         peer_mgr
             .get_peer_rpc_mgr()
