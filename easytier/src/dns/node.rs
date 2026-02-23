@@ -68,11 +68,11 @@ impl DnsNode {
 
             let server = Arc::new(DnsServer::new(self.peer_mgr.clone(), rpc));
 
-            self.peer_mgr
-                .add_nic_packet_process_pipeline(Box::new(server.clone()))
-                .await;
-
-            server.run().await;
+            tokio::join!(
+                self.peer_mgr
+                    .add_nic_packet_process_pipeline(Box::new(server.clone())),
+                server.run()
+            );
 
             let _ = self
                 .peer_mgr
