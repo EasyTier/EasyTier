@@ -1,4 +1,4 @@
-use crate::common::global_ctx::GlobalCtxEvent;
+use crate::common::global_ctx::{ArcGlobalCtx, GlobalCtxEvent};
 use crate::common::PeerId;
 use crate::dns::config::{DNS_SERVER_ELECTION_INTERVAL, DNS_SERVER_RPC_ADDR};
 use crate::dns::peer_mgr::DnsPeerMgr;
@@ -20,11 +20,12 @@ use uuid::Uuid;
 pub struct DnsNode {
     mgr: Arc<DnsPeerMgr>,
 
+    global_ctx: ArcGlobalCtx,
     peer_mgr: Arc<PeerManager>,
 }
 
 impl DnsNode {
-    pub fn new(peer_mgr: Arc<PeerManager>) -> Self {
+    pub fn new(global_ctx: ArcGlobalCtx, peer_mgr: Arc<PeerManager>) -> Self {
         let mgr = Arc::new(DnsPeerMgr::new(peer_mgr.clone()));
         peer_mgr
             .get_peer_rpc_mgr()
@@ -32,14 +33,18 @@ impl DnsNode {
             .registry()
             .register(
                 DnsPeerMgrRpcServer::new_arc(mgr.clone()),
-                &peer_mgr.get_global_ctx_ref().get_network_name(),
+                &global_ctx.get_network_name(),
             );
 
-        Self { mgr, peer_mgr }
+        Self {
+            mgr,
+            global_ctx,
+            peer_mgr,
+        }
     }
 
     pub fn id(&self) -> Uuid {
-        self.peer_mgr.get_global_ctx_ref().get_id()
+        self.global_ctx.get_id()
     }
 
     pub async fn run(&self) {
@@ -68,16 +73,14 @@ impl DnsNode {
 
             let server = Arc::new(DnsServer::new(self.peer_mgr.clone(), rpc));
 
-            self.peer_mgr
-                .get_global_ctx_ref()
-                .set_dns(Some(server.clone()));
+            self.global_ctx.set_dns(Some(server.clone()));
             tokio::join!(
                 self.peer_mgr
                     .add_nic_packet_process_pipeline(Box::new(server.clone())),
                 server.run()
             );
 
-            self.peer_mgr.get_global_ctx_ref().set_dns(None);
+            self.global_ctx.set_dns(None);
             let _ = self
                 .peer_mgr
                 .remove_nic_packet_process_pipeline(server.id())
@@ -99,7 +102,7 @@ impl DnsNode {
         let sleep = sleep_until(last_heartbeat);
         tokio::pin!(sleep);
 
-        let mut subscriber = self.peer_mgr.get_global_ctx_ref().subscribe();
+        let mut subscriber = self.global_ctx.subscribe();
         let mut tasks = JoinSet::new();
 
         loop {
