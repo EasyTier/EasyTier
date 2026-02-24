@@ -15,7 +15,7 @@ use easytier::ShellType;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
-use tabled::settings::{location::ByColumnName, object::Columns, Disable, Modify, Style, Width};
+use tabled::settings::{location::ByColumnName, object::{Columns, Rows}, Disable, Modify, Style, Width};
 use terminal_size::{terminal_size, Width as TerminalWidth};
 use unicode_width::UnicodeWidthStr;
 
@@ -76,7 +76,13 @@ struct Cli {
     )]
     rpc_portal: SocketAddr,
 
-    #[arg(short, long, default_value = "false", help = "verbose output")]
+    #[arg(
+        short,
+        long,
+        default_value = "false",
+        global = true,
+        help = "verbose output"
+    )]
     verbose: bool,
 
     #[arg(
@@ -84,16 +90,19 @@ struct Cli {
         long = "output",
         value_enum,
         default_value = "table",
+        global = true,
         help = "output format"
     )]
     output_format: OutputFormat,
 
     #[arg(
-        long = "no-trunc",
+        short = 'w',
+        long = "wide",
         default_value = "false",
-        help = "disable column truncation"
+        global = true,
+        help = "show more columns / disable truncation"
     )]
-    no_trunc: bool,
+    wide: bool,
 
     #[command(flatten)]
     instance_select: InstanceSelectArgs,
@@ -397,7 +406,7 @@ struct CommandHandler<'a> {
     client: tokio::sync::Mutex<RpcClient>,
     verbose: bool,
     output_format: &'a OutputFormat,
-    no_trunc: bool,
+    wide: bool,
     instance_selector: InstanceIdentifier,
 }
 
@@ -722,7 +731,7 @@ impl CommandHandler<'_> {
             self.output_format,
             &["tunnel", "version"],
             &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
-            self.no_trunc,
+            self.wide,
         )?;
 
         Ok(())
@@ -814,28 +823,55 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    async fn handle_route_list(&self) -> Result<(), Error> {
+    async fn handle_route_list(&self, wide: bool) -> Result<(), Error> {
         #[derive(tabled::Tabled, serde::Serialize)]
         struct RouteTableItem {
-            ipv4: String,
+            #[tabled(rename = "Hostname")]
             hostname: String,
-            proxy_cidrs: String,
-
-            next_hop_ipv4: String,
-            next_hop_hostname: String,
-            next_hop_lat: f64,
-            path_len: i32,
-            path_latency: i32,
-
-            next_hop_ipv4_lat_first: String,
-            next_hop_hostname_lat_first: String,
-            path_len_lat_first: i32,
-            path_latency_lat_first: i32,
-
-            version: String,
+            #[tabled(rename = "IPv4")]
+            ipv4: String,
+            #[tabled(rename = "Via")]
+            via: String,
+            #[tabled(rename = "Hops")]
+            hops: String,
+            #[tabled(rename = "Latency")]
+            latency: String,
+            #[tabled(rename = "Proxy")]
+            proxy: String,
         }
 
-        let mut items: Vec<RouteTableItem> = vec![];
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct RouteTableItemWide {
+            #[tabled(rename = "Hostname")]
+            hostname: String,
+            #[tabled(rename = "IPv4")]
+            ipv4: String,
+            #[tabled(rename = "Via")]
+            via: String,
+            #[tabled(rename = "Hops")]
+            hops: String,
+            #[tabled(rename = "Latency")]
+            latency: String,
+            #[tabled(rename = "Lat-First")]
+            lat_first: String,
+            #[tabled(rename = "Proxy")]
+            proxy: String,
+        }
+
+        #[derive(serde::Serialize)]
+        struct RouteItemJson {
+            ipv4: String,
+            hostname: String,
+            proxy_cidrs: Vec<String>,
+            via: String,
+            hops: i32,
+            latency_ms: i32,
+            version: String,
+            lat_first_via: String,
+            lat_first_hops: i32,
+            lat_first_latency_ms: i32,
+        }
+
         let client = self.get_peer_manager_client().await?;
         let node_info = client
             .show_node_info(
@@ -865,24 +901,41 @@ impl CommandHandler<'_> {
             return Ok(());
         }
 
-        items.push(RouteTableItem {
+        let mut items_json: Vec<RouteItemJson> = vec![];
+        let mut items: Vec<RouteTableItem> = vec![];
+        let mut items_wide: Vec<RouteTableItemWide> = vec![];
+
+        let local_via = "(local)".to_string();
+        items_json.push(RouteItemJson {
             ipv4: node_info.ipv4_addr.clone(),
             hostname: node_info.hostname.clone(),
-            proxy_cidrs: node_info.proxy_cidrs.join(", "),
-
-            next_hop_ipv4: "-".to_string(),
-            next_hop_hostname: "Local".to_string(),
-            next_hop_lat: 0.0,
-            path_len: 0,
-            path_latency: 0,
-
-            next_hop_ipv4_lat_first: "-".to_string(),
-            next_hop_hostname_lat_first: "Local".to_string(),
-            path_len_lat_first: 0,
-            path_latency_lat_first: 0,
-
+            proxy_cidrs: node_info.proxy_cidrs.clone(),
+            via: local_via.clone(),
+            hops: 0,
+            latency_ms: 0,
             version: node_info.version.clone(),
+            lat_first_via: String::new(),
+            lat_first_hops: 0,
+            lat_first_latency_ms: 0,
         });
+        items.push(RouteTableItem {
+            hostname: node_info.hostname.clone(),
+            ipv4: node_info.ipv4_addr.clone(),
+            via: local_via.clone(),
+            hops: "-".to_string(),
+            latency: "-".to_string(),
+            proxy: node_info.proxy_cidrs.join("\n"),
+        });
+        items_wide.push(RouteTableItemWide {
+            hostname: node_info.hostname.clone(),
+            ipv4: node_info.ipv4_addr.clone(),
+            via: local_via.clone(),
+            hops: "-".to_string(),
+            latency: "-".to_string(),
+            lat_first: "-".to_string(),
+            proxy: node_info.proxy_cidrs.join("\n"),
+        });
+
         for p in peer_routes.iter() {
             let Some(next_hop_pair) = peer_routes.iter().find(|pair| {
                 pair.route.clone().unwrap_or_default().peer_id
@@ -901,70 +954,104 @@ impl CommandHandler<'_> {
             });
 
             let route = p.route.clone().unwrap_or_default();
+
+            let via = if route.cost == 1 {
+                "DIRECT".to_string()
+            } else {
+                let nh = next_hop_pair.route.clone().unwrap_or_default();
+                if !nh.hostname.is_empty() {
+                    nh.hostname.clone()
+                } else {
+                    nh.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default()
+                }
+            };
+
+            let lat_first_via = if route.cost_latency_first.unwrap_or_default() == 1 {
+                "DIRECT".to_string()
+            } else {
+                match next_hop_pair_latency_first {
+                    Some(pair) => {
+                        let lf = pair.route.clone().unwrap_or_default();
+                        if !lf.hostname.is_empty() {
+                            lf.hostname.clone()
+                        } else {
+                            lf.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default()
+                        }
+                    }
+                    None => String::new(),
+                }
+            };
+
+            let version = if route.version.is_empty() {
+                "unknown".to_string()
+            } else {
+                route.version.clone()
+            };
+
+            let ipv4 = route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default();
+            let hostname = route.hostname.clone();
+            let proxy = route.proxy_cidrs.join("\n");
+            let hops = route.cost;
+            let latency_ms = route.path_latency;
+            let lat_first_hops = route.cost_latency_first.unwrap_or_default();
+            let lat_first_latency_ms = route.path_latency_latency_first.unwrap_or_default();
+
+            items_json.push(RouteItemJson {
+                ipv4: ipv4.clone(),
+                hostname: hostname.clone(),
+                proxy_cidrs: route.proxy_cidrs.clone(),
+                via: via.clone(),
+                hops,
+                latency_ms,
+                version: version.clone(),
+                lat_first_via: lat_first_via.clone(),
+                lat_first_hops,
+                lat_first_latency_ms,
+            });
+
             items.push(RouteTableItem {
-                ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
-                hostname: route.hostname.clone(),
-                proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
-                next_hop_ipv4: if route.cost == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair
-                        .route
-                        .clone()
-                        .unwrap_or_default()
-                        .ipv4_addr
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default()
-                },
-                next_hop_hostname: if route.cost == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair
-                        .route
-                        .clone()
-                        .unwrap_or_default()
-                        .hostname
-                        .clone()
-                },
-                next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                path_len: route.cost,
-                path_latency: route.path_latency,
+                hostname: hostname.clone(),
+                ipv4: ipv4.clone(),
+                via: via.clone(),
+                hops: hops.to_string(),
+                latency: format!("{}ms", latency_ms),
+                proxy: proxy.clone(),
+            });
 
-                next_hop_ipv4_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair_latency_first
-                        .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
-                        .unwrap_or_default()
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default()
-                },
-                next_hop_hostname_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair_latency_first
-                        .map(|pair| pair.route.clone().unwrap_or_default().hostname)
-                        .unwrap_or_default()
-                        .clone()
-                },
-                path_latency_lat_first: route.path_latency_latency_first.unwrap_or_default(),
-                path_len_lat_first: route.cost_latency_first.unwrap_or_default(),
+            let lat_same = lat_first_via.is_empty()
+                || (lat_first_via == via
+                    && lat_first_hops == hops
+                    && lat_first_latency_ms == latency_ms);
+            let lat_first = if lat_same {
+                "-".to_string()
+            } else {
+                format!(
+                    "via: {}\nhops: {}\nlatency: {}ms",
+                    lat_first_via, lat_first_hops, lat_first_latency_ms
+                )
+            };
 
-                version: if route.version.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    route.version.to_string()
-                },
+            items_wide.push(RouteTableItemWide {
+                hostname,
+                ipv4,
+                via,
+                hops: hops.to_string(),
+                latency: format!("{}ms", latency_ms),
+                lat_first,
+                proxy,
             });
         }
 
-        print_output(
-            &items,
-            self.output_format,
-            &["proxy_cidrs", "version"],
-            &["proxy_cidrs", "version"],
-            self.no_trunc,
-        )?;
+        if *self.output_format == OutputFormat::Json {
+            println!("{}", serde_json::to_string_pretty(&items_json)?);
+            return Ok(());
+        }
+
+        if wide {
+            print_output(&items_wide, self.output_format, &[], &[], self.wide)?;
+        } else {
+            print_output(&items, self.output_format, &[], &[], self.wide)?;
+        }
 
         Ok(())
     }
@@ -1146,7 +1233,7 @@ impl CommandHandler<'_> {
             })
             .collect();
 
-        print_output(&items, self.output_format, &[], &[], self.no_trunc)?;
+        print_output(&items, self.output_format, &[], &[], self.wide)?;
         Ok(())
     }
 
@@ -1400,7 +1487,7 @@ fn print_output<T>(
     format: &OutputFormat,
     optional_columns: &[&str],
     drop_columns: &[&str],
-    no_trunc: bool,
+    wide: bool,
 ) -> Result<(), Error>
 where
     T: tabled::Tabled + serde::Serialize,
@@ -1409,7 +1496,10 @@ where
         OutputFormat::Table => {
             let mut table = tabled::Table::new(items);
             table.with(Style::markdown());
-            if no_trunc {
+            if wide {
+                if let Some(terminal_width) = terminal_table_width() {
+                    table.modify(Rows::new(1..), Width::wrap(terminal_width));
+                }
                 println!("{}", table);
                 return Ok(());
             }
@@ -1630,7 +1720,7 @@ async fn main() -> Result<(), Error> {
         client: tokio::sync::Mutex::new(client),
         verbose: cli.verbose,
         output_format: &cli.output_format,
-        no_trunc: cli.no_trunc,
+        wide: cli.wide,
         instance_selector: (&cli.instance_select).into(),
     };
 
@@ -1689,7 +1779,7 @@ async fn main() -> Result<(), Error> {
             }
         }
         SubCommand::Route(route_args) => match route_args.sub_command {
-            Some(RouteSubCommand::List) | None => handler.handle_route_list().await?,
+            Some(RouteSubCommand::List) | None => handler.handle_route_list(cli.wide).await?,
             Some(RouteSubCommand::Dump) => handler.handle_route_dump().await?,
         },
         SubCommand::Stun => {
@@ -1840,7 +1930,7 @@ async fn main() -> Result<(), Error> {
                 &cli.output_format,
                 &["direct_peers"],
                 &["direct_peers"],
-                cli.no_trunc,
+                cli.wide,
             )?;
         }
         SubCommand::VpnPortal => {
@@ -2054,7 +2144,7 @@ async fn main() -> Result<(), Error> {
                 &cli.output_format,
                 &["start_time", "state", "transport_type"],
                 &["start_time", "state", "transport_type"],
-                cli.no_trunc,
+                cli.wide,
             )?;
         }
         SubCommand::Acl(acl_args) => match &acl_args.sub_command {
@@ -2169,7 +2259,7 @@ async fn main() -> Result<(), Error> {
                         &cli.output_format,
                         &["labels"],
                         &["labels"],
-                        cli.no_trunc,
+                        cli.wide,
                     )?
                 }
             }
