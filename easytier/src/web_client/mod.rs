@@ -133,7 +133,7 @@ pub async fn run_web_client(
     //c_url.set_path("");
     let token = config_server_url
         .path_segments()
-        .and_then(|x| x.last())
+        .and_then(|mut x| x.next_back())
         .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
         .transpose()
         .with_context(|| "failed to decode config server token")?
