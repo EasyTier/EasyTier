@@ -130,7 +130,7 @@ pub async fn run_web_client(
     };
 
     let mut c_url = config_server_url.clone();
-    if !matches!(c_url.schema(), "ws" | "wss") {
+    if !matches!(c_url.scheme(), "ws" | "wss") {
         c_url.set_path("");
     }
     let token = config_server_url
