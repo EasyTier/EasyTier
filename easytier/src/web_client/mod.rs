@@ -129,8 +129,10 @@ pub async fn run_web_client(
         .with_context(|| "failed to parse config server URL")?,
     };
 
-    let c_url = config_server_url.clone();
-    //c_url.set_path("");
+    let mut c_url = config_server_url.clone();
+    if !matches!(c_url.schema(), "ws" | "wss") {
+        c_url.set_path("");
+    }
     let token = config_server_url
         .path_segments()
         .and_then(|mut x| x.next_back())
