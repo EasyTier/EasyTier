@@ -281,11 +281,15 @@ impl DirectConnectorManagerData {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn spawn_direct_connect_task(
         self: &Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         ip_list: &GetIpListResponse,
         listener: &url::Url,
+        local_listeners: &[url::Url],
+        local_v4_ips: &HashSet<String>,
+        local_v6_ips: &HashSet<String>,
         tasks: &mut JoinSet<Result<(), Error>>,
     ) {
         let Ok(mut addrs) = socket_addrs(listener, || None).await else {
@@ -294,6 +298,20 @@ impl DirectConnectorManagerData {
         };
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
+
+        let is_self_connect = |scheme: &str, ip_str: &str, port: u16| -> bool {
+            local_listeners.iter().any(|ll| {
+                ll.scheme() == scheme
+                    && ll.port() == Some(port)
+                    && match ll.host_str() {
+                        Some("0.0.0.0") => local_v4_ips.contains(ip_str),
+                        Some("::") => local_v6_ips.contains(ip_str),
+                        Some(h) => h == ip_str,
+                        None => false,
+                    }
+            })
+        };
+
         match listener_host {
             Some(SocketAddr::V4(s_addr)) => {
                 if s_addr.ip().is_unspecified() {
@@ -302,6 +320,14 @@ impl DirectConnectorManagerData {
                         .iter()
                         .chain(ip_list.public_ipv4.iter())
                         .for_each(|ip| {
+                            if is_self_connect(listener.scheme(), &ip.to_string(), s_addr.port()) {
+                                tracing::debug!(
+                                    ?ip,
+                                    ?listener,
+                                    "skip self-connection (0.0.0.0 expansion)"
+                                );
+                                return;
+                            }
                             let mut addr = (*listener).clone();
                             if addr.set_host(Some(ip.to_string().as_str())).is_ok() {
                                 tasks.spawn(Self::try_connect_to_ip(
@@ -319,11 +345,15 @@ impl DirectConnectorManagerData {
                             }
                         });
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
-                    tasks.spawn(Self::try_connect_to_ip(
-                        self.clone(),
-                        dst_peer_id,
-                        listener.to_string(),
-                    ));
+                    if is_self_connect(listener.scheme(), &s_addr.ip().to_string(), s_addr.port()) {
+                        tracing::debug!(?listener, "skip self-connection (specific IPv4)");
+                    } else {
+                        tasks.spawn(Self::try_connect_to_ip(
+                            self.clone(),
+                            dst_peer_id,
+                            listener.to_string(),
+                        ));
+                    }
                 }
             }
             Some(SocketAddr::V6(s_addr)) => {
@@ -345,6 +375,14 @@ impl DirectConnectorManagerData {
                         .collect::<HashSet<_>>()
                         .iter()
                         .for_each(|ip| {
+                            if is_self_connect(listener.scheme(), &ip.to_string(), s_addr.port()) {
+                                tracing::debug!(
+                                    ?ip,
+                                    ?listener,
+                                    "skip self-connection (:: expansion)"
+                                );
+                                return;
+                            }
                             let mut addr = (*listener).clone();
                             if addr.set_host(Some(format!("[{}]", ip).as_str())).is_ok() {
                                 tasks.spawn(Self::try_connect_to_ip(
@@ -362,11 +400,15 @@ impl DirectConnectorManagerData {
                             }
                         });
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
-                    tasks.spawn(Self::try_connect_to_ip(
-                        self.clone(),
-                        dst_peer_id,
-                        listener.to_string(),
-                    ));
+                    if is_self_connect(listener.scheme(), &s_addr.ip().to_string(), s_addr.port()) {
+                        tracing::debug!(?listener, "skip self-connection (specific IPv6)");
+                    } else {
+                        tasks.spawn(Self::try_connect_to_ip(
+                            self.clone(),
+                            dst_peer_id,
+                            listener.to_string(),
+                        ));
+                    }
                 }
             }
             p => {
@@ -398,6 +440,19 @@ impl DirectConnectorManagerData {
             return Err(anyhow::anyhow!("peer {} have no valid listener", dst_peer_id).into());
         }
 
+        let local_listeners = self.global_ctx.get_running_listeners();
+        let local_addrs = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
+        let local_v4_ips: HashSet<String> = local_addrs
+            .interface_ipv4s
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect();
+        let local_v6_ips: HashSet<String> = local_addrs
+            .interface_ipv6s
+            .iter()
+            .map(|ip| ip.to_string())
+            .collect();
+
         let default_protocol = self.global_ctx.get_flags().default_protocol;
         // sort available listeners, default protocol has the highest priority, udp is second, others just random
         // highest priority is in the last
@@ -424,8 +479,16 @@ impl DirectConnectorManagerData {
                 }
 
                 tracing::debug!("try direct connect to peer with listener: {}", listener);
-                self.spawn_direct_connect_task(dst_peer_id, &ip_list, listener, &mut tasks)
-                    .await;
+                self.spawn_direct_connect_task(
+                    dst_peer_id,
+                    &ip_list,
+                    listener,
+                    &local_listeners,
+                    &local_v4_ips,
+                    &local_v6_ips,
+                    &mut tasks,
+                )
+                .await;
 
                 listener_list.push(listener.clone().to_string());
                 available_listeners.pop();
