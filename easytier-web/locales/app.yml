@@ -37,3 +37,30 @@ cli:
   disable_registration:
     en: "Disable user registration"
     zh-CN: "禁用用户注册"
+  oidc_issuer_url:
+    en: "The OIDC issuer URL for single sign-on authentication"
+    zh-CN: "OIDC 签发者 URL，用于单点登录认证"
+  oidc_client_id:
+    en: "The OIDC client ID"
+    zh-CN: "OIDC 客户端 ID"
+  oidc_client_secret:
+    en: "The OIDC client secret (can also be set via OIDC_CLIENT_SECRET env var)"
+    zh-CN: "OIDC 客户端密钥（也可通过 OIDC_CLIENT_SECRET 环境变量设置）"
+  oidc_username_claim:
+    en: "The OIDC claim to use as the local username, default: preferred_username"
+    zh-CN: "用作本地用户名的 OIDC claim 字段，默认: preferred_username"
+  oidc_scopes:
+    en: "OIDC scopes to request during login. Supports comma-separated values or repeated --oidc-scopes flags, default: openid,profile"
+    zh-CN: "登录时请求的 OIDC scopes。支持逗号分隔或多次指定 --oidc-scopes，默认: openid,profile"
+  oidc_redirect_url:
+    en: "The OIDC redirect URL (callback URL), must match exactly what is registered with your Identity Provider. Required when using OIDC. Example: http://your-domain.com:11211/api/v1/auth/oidc/callback"
+    zh-CN: "OIDC 重定向 URL（回调 URL），必须与身份提供商注册的地址完全一致。使用 OIDC 时必须提供。示例: http://your-domain.com:11211/api/v1/auth/oidc/callback"
+  allow_auto_create_user:
+    en: "Allow auto-creating local user when easytier-core connects with an unknown username"
+    zh-CN: "当 easytier-core 使用未知用户名连接时，允许自动创建本地用户"
+  oidc_disable_pkce:
+    en: "Disable PKCE (Proof Key for Code Exchange) for OIDC authentication"
+    zh-CN: "禁用 OIDC 认证的 PKCE（授权码交换证明密钥）"
+  oidc_frontend_base_url:
+    en: "Frontend base URL to redirect to after successful OIDC callback. Required when frontend and API are deployed separately (non-embed build, --no-web mode, or different web_server_port)"
+    zh-CN: "OIDC 回调成功后跳转的前端入口地址。当前端与 API 分离部署时必须提供（非 embed 构建、--no-web 模式、或 web_server_port 与 api_server_port 不同）"

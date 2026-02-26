@@ -9,7 +9,7 @@ use easytier::{
 use entity::user_running_network_configs;
 use sea_orm::{
     prelude::Expr, sea_query::OnConflict, ColumnTrait as _, DatabaseConnection, DbErr, EntityTrait,
-    QueryFilter as _, SqlxSqliteConnector, TransactionTrait as _,
+    QueryFilter as _, Set, SqlxSqliteConnector, TransactionTrait as _,
 };
 use sea_orm_migration::MigratorTrait as _;
 use sqlx::{migrate::MigrateDatabase as _, types::chrono, Sqlite, SqlitePool};
@@ -80,6 +80,57 @@ impl Db {
             .await?;
 
         Ok(user.map(|u| u.id))
+    }
+
+    /// `password_hash` must be pre-hashed by the caller.
+    /// Creates user + joins "users" group in one transaction. Returns the created user model.
+    pub async fn create_user_and_join_users_group(
+        &self,
+        username: &str,
+        password_hash: String,
+    ) -> Result<entity::users::Model, DbErr> {
+        use entity::{groups, users, users_groups};
+
+        let txn = self.orm_db().begin().await?;
+
+        let user_active = users::ActiveModel {
+            username: Set(username.to_string()),
+            password: Set(password_hash),
+            ..Default::default()
+        };
+        let insert_result = users::Entity::insert(user_active).exec(&txn).await?;
+
+        let new_user = users::Entity::find_by_id(insert_result.last_insert_id)
+            .one(&txn)
+            .await?
+            .ok_or_else(|| DbErr::Custom("Failed to find newly created user".to_string()))?;
+
+        let users_group = groups::Entity::find()
+            .filter(groups::Column::Name.eq("users"))
+            .one(&txn)
+            .await?
+            .ok_or_else(|| DbErr::Custom("Users group not found".to_string()))?;
+
+        let ug_active = users_groups::ActiveModel {
+            user_id: Set(new_user.id),
+            group_id: Set(users_group.id),
+            ..Default::default()
+        };
+        users_groups::Entity::insert(ug_active).exec(&txn).await?;
+
+        txn.commit().await?;
+
+        Ok(new_user)
+    }
+
+    pub async fn auto_create_user(&self, username: &str) -> Result<entity::users::Model, DbErr> {
+        let random_password = uuid::Uuid::new_v4().to_string();
+        let hashed_password =
+            tokio::task::spawn_blocking(move || password_auth::generate_hash(&random_password))
+                .await
+                .map_err(|e| DbErr::Custom(format!("Failed to hash password: {}", e)))?;
+        self.create_user_and_join_users_group(username, hashed_password)
+            .await
     }
 
     // TODO: currently we don't have a token system, so we just use the user name as token

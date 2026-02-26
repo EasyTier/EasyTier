@@ -17,6 +17,8 @@ use easytier::{
 use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
+
+use crate::FeatureFlags;
 use tokio::task::JoinSet;
 
 use crate::db::{entity::user_running_network_configs, Db, UserIdInDb};
@@ -55,11 +57,13 @@ pub struct ClientManager {
     client_sessions: Arc<DashMap<url::Url, Arc<Session>>>,
     storage: Storage,
 
+    feature_flags: Arc<FeatureFlags>,
+
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
 }
 
 impl ClientManager {
-    pub fn new(db: Db, geoip_db: Option<String>) -> Self {
+    pub fn new(db: Db, geoip_db: Option<String>, feature_flags: Arc<FeatureFlags>) -> Self {
         let client_sessions = Arc::new(DashMap::new());
         let sessions: Arc<DashMap<url::Url, Arc<Session>>> = client_sessions.clone();
         let mut tasks = JoinSet::new();
@@ -76,6 +80,8 @@ impl ClientManager {
 
             client_sessions,
             storage: Storage::new(db),
+            feature_flags,
+
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
         }
     }
@@ -90,6 +96,7 @@ impl ClientManager {
         let storage = self.storage.weak_ref();
         let listeners_cnt = self.listeners_cnt.clone();
         let geoip_db = self.geoip_db.clone();
+        let feature_flags = self.feature_flags.clone();
         self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
                 let info = tunnel.info().unwrap();
@@ -100,7 +107,12 @@ impl ClientManager {
                     client_url,
                     location
                 );
-                let mut session = Session::new(storage.clone(), client_url.clone(), location);
+                let mut session = Session::new(
+                    storage.clone(),
+                    client_url.clone(),
+                    location,
+                    feature_flags.clone(),
+                );
                 session.serve(tunnel).await;
                 sessions.insert(client_url, Arc::new(session));
             }
@@ -291,12 +303,16 @@ mod tests {
     };
     use sqlx::Executor;
 
-    use crate::{client_manager::ClientManager, db::Db};
+    use crate::{client_manager::ClientManager, db::Db, FeatureFlags};
 
     #[tokio::test]
     async fn test_client() {
         let listener = UdpTunnelListener::new("udp://0.0.0.0:54333".parse().unwrap());
-        let mut mgr = ClientManager::new(Db::memory_db().await, None);
+        let mut mgr = ClientManager::new(
+            Db::memory_db().await,
+            None,
+            Arc::new(FeatureFlags::default()),
+        );
         mgr.add_listener(Box::new(listener)).await.unwrap();
 
         mgr.db()

@@ -242,6 +242,7 @@ web:
     captcha: Captcha
     back_to_login: Back to Login
     login: Login
+    sso_login: "SSO Login"
 
   register:
     title: Register
