@@ -431,16 +431,61 @@ impl DirectConnectorManagerData {
                 available_listeners.pop();
             }
 
-            let ret = tasks.join_all().await;
+            // Poll tasks to completion while watching for a stable direct connection.
+            // Using join_all() alone allows competing tasks (e.g. the WiFi path) to
+            // exit via the `has_directly_connected_conn` shortcut in try_connect_to_ip
+            // without being blacklisted. When the winning connection later drops, those
+            // tasks are not blacklisted and their blacklist timers become desynchronised
+            // from the other paths, causing windows where only the always-failing path
+            // (WiFi) is retried for minutes at a time.  By aborting all remaining tasks
+            // the moment a stable connection is confirmed we keep every path's blacklist
+            // state in sync and avoid the staggering problem.
+            let mut check_interval = tokio::time::interval(Duration::from_millis(200));
+            // consume the first (immediate) tick so the interval fires at 200 ms, 400 ms…
+            check_interval.tick().await;
+            let connected = loop {
+                tokio::select! {
+                    result = tasks.join_next() => {
+                        match result {
+                            // All tasks finished without a stable connection.
+                            None => break false,
+                            Some(task_ret) => {
+                                tracing::debug!(
+                                    ?task_ret,
+                                    ?dst_peer_id,
+                                    ?cur_scheme,
+                                    "one direct-connect task finished"
+                                );
+                                // Check immediately after each task completes.
+                                if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                                    break true;
+                                }
+                            }
+                        }
+                    }
+                    _ = check_interval.tick() => {
+                        if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+                            break true;
+                        }
+                    }
+                }
+            };
+
+            // Abort any tasks still in flight so they are cancelled cleanly rather
+            // than exiting via the has_directly_connected_conn shortcut (which would
+            // leave their URLs un-blacklisted and desync future retry windows).
+            tasks.abort_all();
+            while tasks.join_next().await.is_some() {}
+
             tracing::debug!(
-                ?ret,
+                connected,
                 ?dst_peer_id,
                 ?cur_scheme,
                 ?listener_list,
                 "all tasks finished for current scheme"
             );
 
-            if self.peer_manager.has_directly_connected_conn(dst_peer_id) {
+            if connected {
                 tracing::info!(
                     "direct connect to peer {} success, has direct conn",
                     dst_peer_id
