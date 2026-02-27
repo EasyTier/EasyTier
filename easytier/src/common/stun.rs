@@ -164,9 +164,9 @@ impl StunClient {
     }
 
     #[tracing::instrument(skip(self, buf))]
-    async fn wait_stun_response<'a, const N: usize>(
+    async fn wait_stun_response<const N: usize>(
         &self,
-        buf: &'a mut [u8; N],
+        buf: &mut [u8; N],
         tids: &Vec<u32>,
         expected_ip_changed: bool,
         expected_port_changed: bool,

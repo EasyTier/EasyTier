@@ -68,7 +68,7 @@ pin-project-lite = "0.2.13"
 
 atomic_refcell = "0.1.13"
 
-quinn = { version = "0.11.8", optional = true, features = ["ring"] }
+quinn = { version = "=0.11.8", optional = true, features = ["ring"] }
 quinn-plaintext = { version = "0.3.0", optional = true }
 
 rustls = { version = "0.23.0", features = [
@@ -335,7 +335,7 @@ maplit = "1.0.2"
 tempfile = "3.22.0"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-defguard_wireguard_rs = "0.4.2"
+defguard_wireguard_rs = "=0.4.2"
 tokio-socks = "0.5.2"
 
 
