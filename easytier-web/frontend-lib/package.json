@@ -20,7 +20,7 @@
   "dependencies": {
     "@primeuix/themes": "^1.2.3",
     "@vueuse/core": "^11.1.0",
-    "axios": "^1.7.7",
+    "axios": "^1.13.5",
     "chart.js": "^4.5.0",
     "floating-vue": "^5.2",
     "ip-num": "1.5.1",
