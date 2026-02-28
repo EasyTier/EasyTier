@@ -3,7 +3,7 @@
   "private": true,
   "pnpm": {
     "overrides": {
-      "minimatch": "^10.2.4"
+      "minimatch": "10.2.4"
     }
   }
 }
