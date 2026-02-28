@@ -53,8 +53,8 @@ impl IfConfiguerTrait for MacIfConfiger {
     ) -> Result<(), Error> {
         run_shell_cmd(
             format!(
-                "ifconfig {} {:?}/{:?} 10.8.8.8 up",
-                name, address, cidr_prefix,
+                "ifconfig {} {:?}/{:?} {:?} up",
+                name, address, cidr_prefix, address,
             )
             .as_str(),
         )
