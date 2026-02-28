@@ -11,7 +11,7 @@
   "dependencies": {
     "@modyfi/vite-plugin-yaml": "^1.1.0",
     "@primeuix/themes": "^1.2.3",
-    "axios": "^1.7.7",
+    "axios": "^1.13.5",
     "easytier-frontend-lib": "workspace:*",
     "primevue": "^4.3.9",
     "tailwindcss-primeui": "^0.3.4",
