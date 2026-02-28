@@ -4,7 +4,12 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  minimatch: ^10.2.4
+
 importers:
+
+  .: {}
 
   easytier-gui:
     dependencies:
@@ -991,14 +996,6 @@ packages:
         optional: true
       vue-i18n:
         optional: true
-
-  '@isaacs/balanced-match@4.0.1':
-    resolution: {integrity: sha512-yzMTt9lEb8Gv7zRioUilSglI0c0smZ9k5D65677DLWLtWJaXIS3CqcGyUFByYKlnUj6TkjLVs54fBl6+TiGQDQ==}
-    engines: {node: 20 || >=22}
-
-  '@isaacs/brace-expansion@5.0.0':
-    resolution: {integrity: sha512-ZT55BDLV0yv0RBm2czMiZ+SqCGO7AvmOM3G/w2xhVPH+te0aKgFjmBvGlL1dH+ql2tgGO3MVrbb3jCKyvpgnxA==}
-    engines: {node: 20 || >=22}
 
   '@isaacs/cliui@8.0.2':
     resolution: {integrity: sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA==}
@@ -2096,8 +2093,9 @@ packages:
   axios@1.13.6:
     resolution: {integrity: sha512-ChTCHMouEe2kn713WHbQGcuYrr6fXTBiu460OTwWrWob16g1bXn4vtz07Ope7ewMozJAnEquLk5lWQWtBig9DQ==}
 
-  balanced-match@1.0.2:
-    resolution: {integrity: sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==}
+  balanced-match@4.0.4:
+    resolution: {integrity: sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==}
+    engines: {node: 18 || 20 || >=22}
 
   binary-extensions@2.3.0:
     resolution: {integrity: sha512-Ceh+7ox5qe7LJuLHoY0feh3pHuUDHAcRUeyL2VYghZwfpkNIy/+8Ocg0a3UuSoYzavmylwuLWQOf3hl0jjMMIw==}
@@ -2109,11 +2107,9 @@ packages:
   boolbase@1.0.0:
     resolution: {integrity: sha512-JZOSA7Mo9sNGB8+UjSgzdLtokWAky1zbztM3WRLCbZ70/3cTANmQmOdR7y2g+J0e2WXywy1yS468tY+IruqEww==}
 
-  brace-expansion@1.1.12:
-    resolution: {integrity: sha512-9T9UjW3r0UW5c1Q7GTwllptXwhvYmEzFhzMfZ9H7FQWt+uZePjZPjBP/W1ZEyZ1twGWom5/56TF4lPcqjnDHcg==}
-
-  brace-expansion@2.0.2:
-    resolution: {integrity: sha512-Jt0vHyM+jmUBqojB7E1NIYadt0vI0Qxjxd2TErW94wDz+E2LAm5vKMXXwg6ZZBTHPuUlDgQHKXvjGBdfcF1ZDQ==}
+  brace-expansion@5.0.4:
+    resolution: {integrity: sha512-h+DEnpVvxmfVefa4jFbCf5HdH5YMDXRsmKflpf1pILZWRFlTbJpxeU55nJl4Smt5HQaGzg1o6RHFPJaOqnmBDg==}
+    engines: {node: 18 || 20 || >=22}
 
   braces@3.0.3:
     resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
@@ -2211,9 +2207,6 @@ packages:
 
   computeds@0.0.1:
     resolution: {integrity: sha512-7CEBgcMjVmitjYo5q8JTJVra6X5mQ20uTThdK+0kR7UEaDrAWEQcRiBtWJzga4eRpP6afNwwLsX2SET2JhVB1Q==}
-
-  concat-map@0.0.1:
-    resolution: {integrity: sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==}
 
   confbox@0.1.8:
     resolution: {integrity: sha512-RMtmw0iFkeR4YV+fUOSucriAQNb9g8zFR52MWCtl+cCZOFRNL6zeB395vPzFhEjjn4fMxXudmELnl/KF/WrK6w==}
@@ -3212,16 +3205,9 @@ packages:
     resolution: {integrity: sha512-I9jwMn07Sy/IwOj3zVkVik2JTvgpaykDZEigL6Rx6N9LbMywwUSMtxET+7lVoDLLd3O3IXwJwvuuns8UB/HeAg==}
     engines: {node: '>=4'}
 
-  minimatch@10.0.3:
-    resolution: {integrity: sha512-IPZ167aShDZZUMdRk66cyQAW3qr0WzbHkPdMYa8bzZhlHhO3jALbKdxcaak7W9FfT2rZNpQuUu4Od7ILEpXSaw==}
-    engines: {node: 20 || >=22}
-
-  minimatch@3.1.2:
-    resolution: {integrity: sha512-J7p63hRiAjw1NDEww1W7i37+ByIrOWO5XQQAzZ3VOcL0PNybwpfmV/N05zFAzwQ9USyEcX6t3UO+K5aqBQOIHw==}
-
-  minimatch@9.0.5:
-    resolution: {integrity: sha512-G6T0ZX48xgozx7587koeX9Ys2NYy6Gmv//P89sEte9V9whIapMNF4idKxnW2QtCcLiTWlb/wfCabAtAFWhhBow==}
-    engines: {node: '>=16 || 14 >=14.17'}
+  minimatch@10.2.4:
+    resolution: {integrity: sha512-oRjTw/97aTBN0RHbYCdtF1MQfvusSIBQM0IZEgzl6426+8jSC0nF1a/GmnVLpfB9yyr6g6FTqWqiZVbxrtaCIg==}
+    engines: {node: 18 || 20 || >=22}
 
   minipass@7.1.2:
     resolution: {integrity: sha512-qOOzS1cBTWYF4BH8fVePDBOO9iptMnGUEZwNc/cMWnTV2nVLZ7VoNWEPHkYczZA0pdoA7dl6e7FL659nX9S2aw==}
@@ -4683,7 +4669,7 @@ snapshots:
     dependencies:
       '@eslint/object-schema': 2.1.6
       debug: 4.4.1
-      minimatch: 3.1.2
+      minimatch: 10.2.4
     transitivePeerDependencies:
       - supports-color
 
@@ -4706,7 +4692,7 @@ snapshots:
       ignore: 5.3.2
       import-fresh: 3.3.1
       js-yaml: 4.1.0
-      minimatch: 3.1.2
+      minimatch: 10.2.4
       strip-json-comments: 3.1.1
     transitivePeerDependencies:
       - supports-color
@@ -4837,12 +4823,6 @@ snapshots:
       vue: 3.5.21(typescript@5.6.3)
       vue-i18n: 10.0.8(vue@3.5.21(typescript@5.6.3))
 
-  '@isaacs/balanced-match@4.0.1': {}
-
-  '@isaacs/brace-expansion@5.0.0':
-    dependencies:
-      '@isaacs/balanced-match': 4.0.1
-
   '@isaacs/cliui@8.0.2':
     dependencies:
       string-width: 5.1.2
@@ -4905,7 +4885,7 @@ snapshots:
       '@rushstack/terminal': 0.15.4(@types/node@22.18.1)
       '@rushstack/ts-command-line': 5.0.2(@types/node@22.18.1)
       lodash: 4.17.21
-      minimatch: 10.0.3
+      minimatch: 10.2.4
       resolve: 1.22.10
       semver: 7.5.4
       source-map: 0.6.1
@@ -5359,7 +5339,7 @@ snapshots:
       debug: 4.4.1
       fast-glob: 3.3.3
       is-glob: 4.0.3
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       semver: 7.7.2
       ts-api-utils: 2.1.0(typescript@5.6.3)
       typescript: 5.6.3
@@ -5879,7 +5859,7 @@ snapshots:
       '@vue/compiler-vue2': 2.7.16
       '@vue/shared': 3.5.21
       alien-signals: 0.2.2
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       muggle-string: 0.4.1
       path-browserify: 1.0.1
     optionalDependencies:
@@ -5892,7 +5872,7 @@ snapshots:
       '@vue/compiler-vue2': 2.7.16
       '@vue/shared': 3.5.21
       computeds: 0.0.1
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       muggle-string: 0.4.1
       path-browserify: 1.0.1
     optionalDependencies:
@@ -5905,7 +5885,7 @@ snapshots:
       '@vue/compiler-vue2': 2.7.16
       '@vue/shared': 3.5.21
       alien-signals: 0.4.14
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       muggle-string: 0.4.1
       path-browserify: 1.0.1
     optionalDependencies:
@@ -5918,7 +5898,7 @@ snapshots:
       '@vue/compiler-vue2': 2.7.16
       '@vue/shared': 3.5.21
       alien-signals: 1.0.13
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       muggle-string: 0.4.1
       path-browserify: 1.0.1
     optionalDependencies:
@@ -6065,7 +6045,7 @@ snapshots:
     transitivePeerDependencies:
       - debug
 
-  balanced-match@1.0.2: {}
+  balanced-match@4.0.4: {}
 
   binary-extensions@2.3.0: {}
 
@@ -6073,14 +6053,9 @@ snapshots:
 
   boolbase@1.0.0: {}
 
-  brace-expansion@1.1.12:
+  brace-expansion@5.0.4:
     dependencies:
-      balanced-match: 1.0.2
-      concat-map: 0.0.1
-
-  brace-expansion@2.0.2:
-    dependencies:
-      balanced-match: 1.0.2
+      balanced-match: 4.0.4
 
   braces@3.0.3:
     dependencies:
@@ -6173,8 +6148,6 @@ snapshots:
   compare-versions@6.1.1: {}
 
   computeds@0.0.1: {}
-
-  concat-map@0.0.1: {}
 
   confbox@0.1.8: {}
 
@@ -6431,7 +6404,7 @@ snapshots:
       eslint: 9.35.0(jiti@2.5.1)
       eslint-import-context: 0.1.9(unrs-resolver@1.11.1)
       is-glob: 4.0.3
-      minimatch: 10.0.3
+      minimatch: 10.2.4
       semver: 7.7.2
       stable-hash-x: 0.2.0
       unrs-resolver: 1.11.1
@@ -6622,7 +6595,7 @@ snapshots:
       is-glob: 4.0.3
       json-stable-stringify-without-jsonify: 1.0.1
       lodash.merge: 4.6.2
-      minimatch: 3.1.2
+      minimatch: 10.2.4
       natural-compare: 1.4.0
       optionator: 0.9.4
     optionalDependencies:
@@ -6821,7 +6794,7 @@ snapshots:
     dependencies:
       foreground-child: 3.3.1
       jackspeak: 3.4.3
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       minipass: 7.1.2
       package-json-from-dist: 1.0.1
       path-scurry: 1.11.1
@@ -7418,17 +7391,9 @@ snapshots:
 
   min-indent@1.0.1: {}
 
-  minimatch@10.0.3:
+  minimatch@10.2.4:
     dependencies:
-      '@isaacs/brace-expansion': 5.0.0
-
-  minimatch@3.1.2:
-    dependencies:
-      brace-expansion: 1.1.12
-
-  minimatch@9.0.5:
-    dependencies:
-      brace-expansion: 2.0.2
+      brace-expansion: 5.0.4
 
   minipass@7.1.2: {}
 
@@ -8097,7 +8062,7 @@ snapshots:
       fast-glob: 3.3.3
       local-pkg: 0.5.1
       magic-string: 0.30.18
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       unimport: 3.14.6(rollup@4.50.1)
       unplugin: 1.16.1
     optionalDependencies:
@@ -8121,7 +8086,7 @@ snapshots:
       fast-glob: 3.3.3
       local-pkg: 0.5.1
       magic-string: 0.30.18
-      minimatch: 9.0.5
+      minimatch: 10.2.4
       mlly: 1.8.0
       unplugin: 1.16.1
       vue: 3.5.21(typescript@5.6.3)
