@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate rust_i18n;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -83,6 +84,13 @@ struct Cli {
 
     #[arg(
         long,
+        default_value = "0.0.0.0",
+        help = t!("cli.api_server_addr").to_string(),
+    )]
+    api_server_addr: IpAddr,
+
+    #[arg(
+        long,
         help = t!("cli.geoip_db").to_string(),
     )]
     geoip_db: Option<String>,
@@ -94,6 +102,14 @@ struct Cli {
         help = t!("cli.web_server_port").to_string(),
     )]
     web_server_port: Option<u16>,
+
+    #[cfg(feature = "embed")]
+    #[arg(
+        long,
+        default_value = "0.0.0.0",
+        help = t!("cli.web_server_addr").to_string(),
+    )]
+    web_server_addr: IpAddr,
 
     #[cfg(feature = "embed")]
     #[arg(
@@ -205,7 +221,10 @@ async fn main() {
         (None, None)
     } else {
         let web_router = web::build_router(cli.api_host.clone());
-        if cli.web_server_port.is_none() || cli.web_server_port == Some(cli.api_server_port) {
+        if cli.web_server_port.is_none()
+            || (cli.web_server_port == Some(cli.api_server_port)
+                && cli.web_server_addr == cli.api_server_addr)
+        {
             (Some(web_router), None)
         } else {
             (None, Some(web_router))
@@ -215,7 +234,7 @@ async fn main() {
     let web_router_restful = None;
 
     let _restful_server_tasks = restful::RestfulServer::new(
-        format!("0.0.0.0:{}", cli.api_server_port).parse().unwrap(),
+        std::net::SocketAddr::new(cli.api_server_addr, cli.api_server_port),
         mgr.clone(),
         db,
         web_router_restful,
@@ -231,9 +250,7 @@ async fn main() {
     let _web_server_task = if let Some(web_router) = web_router_static {
         Some(
             web::WebServer::new(
-                format!("0.0.0.0:{}", cli.web_server_port.unwrap_or(0))
-                    .parse()
-                    .unwrap(),
+                std::net::SocketAddr::new(cli.web_server_addr, cli.web_server_port.unwrap_or(0)),
                 web_router,
             )
             .await
