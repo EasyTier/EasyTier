@@ -29,6 +29,7 @@ pub const PROTO_PORT_OFFSET: &[(&str, u16)] = &[
     ("wg", 1),
     ("ws", 1),
     ("wss", 2),
+    ("quic", 2),
     ("faketcp", 3),
 ];
 
