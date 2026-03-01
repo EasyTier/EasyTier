@@ -15,6 +15,7 @@ use crate::{
             PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
+        log,
     },
     defer,
     instance_manager::NetworkInstanceManager,
@@ -22,7 +23,7 @@ use crate::{
     proto::common::{CompressionAlgoPb, SecureModeConfig},
     rpc_service::ApiRpcServer,
     tunnel::PROTO_PORT_OFFSET,
-    utils::{init_logger, setup_panic_handler},
+    utils::setup_panic_handler,
     web_client, ShellType,
 };
 use anyhow::Context;
@@ -1163,7 +1164,7 @@ fn win_service_event_loop(
                         }
                         Err(e) => {
                             status_handle.set_service_status(error_status).unwrap();
-                            eprintln!("error: {}", e);
+                            log::error!("{}", e);
                         }
                     }
                 },
@@ -1231,7 +1232,7 @@ fn win_service_main(arg: Vec<std::ffi::OsString>) {
 
 async fn run_main(cli: Cli) -> anyhow::Result<()> {
     defer!(dump_profile(0););
-    init_logger(&cli.logging_options, true)?;
+    log::init(&cli.logging_options, true)?;
 
     let manager = Arc::new(NetworkInstanceManager::new().with_config_path(cli.config_dir.clone()));
 
@@ -1253,12 +1254,12 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         )
         .await
         .inspect(|_| {
-            println!(
-                "Web client started successfully...\nserver: {}",
-                config_server_url_s,
+            log::info!(
+                server = config_server_url_s,
+                "Web client started successfully...",
             );
 
-            println!("Official config website: https://easytier.cn/web");
+            log::info!("Official config website: https://easytier.cn/web");
         })?;
 
         Some(wc)
@@ -1324,13 +1325,17 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             control.set_no_delete(true);
         }
 
-        println!(
-            "Starting easytier from config file {:?}({:?}) with config:",
-            config_file, control.permission
+        log::info!(
+            "\
+            Starting easytier from config file {:?}({:?}) with config:\n\
+            ############### TOML ###############\n\
+            {}\n\
+            -----------------------------------\n\
+            ",
+            config_file,
+            control.permission,
+            cfg.dump()
         );
-        println!("############### TOML ###############\n");
-        println!("{}", cfg.dump());
-        println!("-----------------------------------");
         manager.run_network_instance(cfg, true, control)?;
     }
 
@@ -1339,10 +1344,15 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
         cli.network_options
             .merge_into(&cfg)
             .with_context(|| "failed to create config from cli".to_string())?;
-        println!("Starting easytier from cli with config:");
-        println!("############### TOML ###############\n");
-        println!("{}", cfg.dump());
-        println!("-----------------------------------");
+        log::info!(
+            "\
+            Starting easytier from cli with config:\n\
+            ############### TOML ###############\n\
+            {}\n\
+            -----------------------------------\n\
+            ",
+            cfg.dump()
+        );
         manager.run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)?;
     }
 
@@ -1363,11 +1373,11 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             }
         }
         _ = tokio::signal::ctrl_c() => {
-            println!("ctrl-c received, exiting...");
+            log::info!("ctrl-c received, exiting...");
         }
 
         _ = sigterm, if cfg!(unix) => {
-            println!("terminate signal received, exiting...");
+            log::warn!("terminate signal received, exiting...");
         }
     }
     Ok(())
@@ -1384,11 +1394,7 @@ fn memory_monitor(_force_dump: Arc<AtomicBool>) {
             e.advance().unwrap();
             let new_heap_size = allocated_stats.read().unwrap();
 
-            println!(
-                "heap size: {} bytes, time: {}",
-                new_heap_size,
-                chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-            );
+            log::debug!("heap size: {} bytes", new_heap_size);
 
             // dump every 75MB
             if (last_peak_size > 0
@@ -1396,10 +1402,9 @@ fn memory_monitor(_force_dump: Arc<AtomicBool>) {
                 && new_heap_size - last_peak_size > 10 * 1024 * 1024)
                 || _force_dump.load(std::sync::atomic::Ordering::Relaxed)
             {
-                println!(
-                    "heap size increased: {} bytes, time: {}",
+                log::debug!(
+                    "heap size increased: {} bytes",
                     new_heap_size - last_peak_size,
-                    chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
                 );
                 dump_profile(new_heap_size);
                 last_peak_size = new_heap_size;
@@ -1475,7 +1480,7 @@ pub async fn main() -> ExitCode {
     // Verify configurations
     if cli.check_config {
         if let Err(e) = validate_config(&cli).await {
-            eprintln!("Config validation failed: {:?}", e);
+            log::error!("Config validation failed: {:?}", e);
             return ExitCode::FAILURE;
         } else {
             return ExitCode::SUCCESS;
@@ -1484,12 +1489,12 @@ pub async fn main() -> ExitCode {
 
     let mut ret_code = 0;
 
-    if let Err(e) = run_main(cli).await {
-        eprintln!("error: {:?}", e);
+    if let Err(error) = run_main(cli).await {
+        log::error!(%error);
         ret_code = 1;
     }
 
-    println!("Stopping easytier...");
+    log::info!("Stopping easytier...");
     set_prof_active(false);
 
     ExitCode::from(ret_code)

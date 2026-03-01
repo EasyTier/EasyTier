@@ -21,6 +21,7 @@ pub mod error;
 pub mod global_ctx;
 pub mod idn;
 pub mod ifcfg;
+pub mod log;
 pub mod netns;
 pub mod network;
 pub mod scoped_task;

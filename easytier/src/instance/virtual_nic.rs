@@ -12,6 +12,7 @@ use crate::{
         error::Error,
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         ifcfg::{IfConfiger, IfConfiguerTrait},
+        log,
     },
     instance::proxy_cidrs_monitor::ProxyCidrsMonitor,
     peers::{peer_manager::PeerManager, recv_packet_from_chan, PacketRecvChanReceiver},
@@ -95,7 +96,7 @@ impl Stream for TunStream {
         match ret {
             Ok(_) => Poll::Ready(Some(Ok(ZCPacket::new_from_buf(ret_buf, ZCPacketType::NIC)))),
             Err(err) => {
-                println!("tun stream error: {:?}", err);
+                log::error!("tun stream error: {:?}", err);
                 Poll::Ready(None)
             }
         }
@@ -249,10 +250,11 @@ impl Drop for VirtualNic {
         {
             if let Some(ref ifname) = self.ifname {
                 // Try to clean up firewall rules, but don't panic in destructor
-                if let Err(e) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
-                    eprintln!(
-                        "Warning: Failed to remove firewall rules for interface {}: {}",
-                        ifname, e
+                if let Err(error) = crate::arch::windows::remove_interface_firewall_rules(ifname) {
+                    log::warn!(
+                        %error,
+                        "failed to remove firewall rules for interface {}",
+                        ifname
                     );
                 }
             }
@@ -293,25 +295,20 @@ impl VirtualNic {
                 .unwrap_or(false);
 
         if !tun_module_available {
-            tracing::warn!("TUN kernel module may not be loaded");
-            println!("⚠ Warning: TUN kernel module may not be available.");
-            println!("  You may need to load it with: sudo modprobe tun");
+            log::warn!("TUN kernel module may not be available.");
+            log::warn!("\tYou may need to load it with: sudo modprobe tun.");
         }
 
         // Try to create /dev/net directory if it doesn't exist
         if tokio::fs::metadata(TUN_DIR_PATH).await.is_err() {
-            if let Err(e) = tokio::fs::create_dir_all(TUN_DIR_PATH).await {
-                tracing::warn!(
-                    "Failed to create directory {}: {}. Continuing anyway.",
-                    TUN_DIR_PATH,
-                    e
-                );
-                println!(
-                    "⚠ Warning: Failed to create directory {}. TUN device creation may fail.",
+            if let Err(error) = tokio::fs::create_dir_all(TUN_DIR_PATH).await {
+                log::warn!(
+                    ?error,
+                    "Failed to create directory {}. TUN device creation may fail. Continuing anyway.",
                     TUN_DIR_PATH
                 );
-                println!(
-                    "  You may need to run with root privileges or manually create the TUN device."
+                log::warn!(
+                    "\tYou may need to run with root privileges or manually create the TUN device."
                 );
                 Self::print_troubleshooting_info();
                 return;
@@ -330,20 +327,14 @@ impl VirtualNic {
             dev_node,
         ) {
             Ok(_) => {
-                tracing::info!("Successfully created TUN device node {}", TUN_DEV_PATH);
-                println!("✓ Created TUN device node {}", TUN_DEV_PATH);
+                log::info!("Successfully created TUN device node {}", TUN_DEV_PATH);
             }
-            Err(e) => {
+            Err(error) => {
                 tracing::warn!(
-                    "Failed to create TUN device node {}: {}. Continuing anyway.",
+                    %error,
+                    "Failed to create TUN device node {}. Continuing anyway.",
                     TUN_DEV_PATH,
-                    e
                 );
-                println!(
-                    "⚠ Warning: Failed to create TUN device node {}.",
-                    TUN_DEV_PATH
-                );
-                println!("  Error: {}", e);
                 Self::print_troubleshooting_info();
             }
         }
@@ -352,13 +343,15 @@ impl VirtualNic {
     /// Print troubleshooting information for TUN device issues
     #[cfg(target_os = "linux")]
     fn print_troubleshooting_info() {
-        println!("  Possible solutions:");
-        println!("  1. Run with root privileges: sudo ./easytier-core [options]");
-        println!("  2. Manually create TUN device: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200");
-        println!("  3. Load TUN kernel module: sudo modprobe tun");
-        println!("  4. Use --no-tun flag if TUN functionality is not needed");
-        println!("  5. Check if your system/container supports TUN devices");
-        println!("  Note: TUN functionality may still work if the kernel supports dynamic device creation.");
+        log::info!(
+            "Possible solutions:\
+            \n\t1. Run with root privileges: sudo ./easytier-core [options]\
+            \n\t2. Manually create TUN device: sudo mkdir -p /dev/net && sudo mknod /dev/net/tun c 10 200\
+            \n\t3. Load TUN kernel module: sudo modprobe tun\
+            \n\t4. Use --no-tun flag if TUN functionality is not needed\
+            \n\t5. Check if your system/container supports TUN devices\
+            \nNote: TUN functionality may still work if the kernel supports dynamic device creation."
+        );
     }
 
     /// For non-Linux systems, this is a no-op
@@ -535,10 +528,9 @@ impl VirtualNic {
 
             match crate::arch::windows::add_self_to_firewall_allowlist() {
                 Ok(_) => tracing::info!("add_self_to_firewall_allowlist successful!"),
-                Err(e) => {
-                    println!("Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly. error: {}", e);
-                    println!("You can add firewall rules manually, or use --use-smoltcp to run with user-space TCP/IP stack.");
-                    println!();
+                Err(error) => {
+                    log::warn!(%error, "Failed to add Easytier to firewall allowlist, Subnet proxy and KCP proxy may not work properly.");
+                    log::warn!("You can add firewall rules manually, or use --use-smoltcp to run with user-space TCP/IP stack.");
                 }
             }
 
@@ -592,7 +584,7 @@ impl VirtualNic {
         &mut self,
         tun_fd: std::os::fd::RawFd,
     ) -> Result<Box<dyn Tunnel>, Error> {
-        println!("tun_fd: {}", tun_fd);
+        log::debug!(%tun_fd);
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
@@ -711,19 +703,11 @@ impl VirtualNic {
                         ifname
                     );
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to configure Windows Firewall for {}: {}", ifname, e);
-                    println!(
-                        "⚠ Warning: Failed to configure Windows Firewall for interface {}.",
-                        ifname
-                    );
-                    println!("  This may cause connectivity issues with ping and other network functions.");
-                    println!(
-                        "  Please run as Administrator or manually configure Windows Firewall."
-                    );
-                    println!(
-                        "  Alternatively, you can disable Windows Firewall for testing purposes."
-                    );
+                Err(error) => {
+                    log::warn!(%error, "Failed to configure Windows Firewall for interface {}\
+                    \n\tThis may cause connectivity issues with ping and other network functions.\
+                    \n\tPlease run as Administrator or manually configure Windows Firewall.\
+                    \n\tAlternatively, you can disable Windows Firewall for testing purposes.", ifname);
                 }
             }
         }

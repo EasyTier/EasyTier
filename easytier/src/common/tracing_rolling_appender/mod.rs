@@ -184,6 +184,7 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct FileAppenderWrapper {
     appender: std::sync::Arc<parking_lot::Mutex<RollingFileAppenderBase>>,
 }
@@ -206,6 +207,7 @@ impl FileAppenderWrapper {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct FileAppenderWriter {
     appender: std::sync::Arc<parking_lot::Mutex<RollingFileAppenderBase>>,
 }

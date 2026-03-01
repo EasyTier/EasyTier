@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use crate::{common::config::EncryptionAlgorithm, tunnel::packet_def::ZCPacket};
+use crate::{
+    common::{config::EncryptionAlgorithm, log},
+    tunnel::packet_def::ZCPacket,
+};
 
 #[cfg(feature = "wireguard")]
 pub mod ring_aes_gcm;
@@ -66,7 +69,7 @@ pub fn create_encryptor(
     let algorithm = match EncryptionAlgorithm::try_from(algorithm) {
         Ok(algorithm) => algorithm,
         Err(_) => {
-            eprintln!(
+            log::warn!(
                 "Unknown encryption algorithm: {}, falling back to default AES-GCM",
                 algorithm
             );
