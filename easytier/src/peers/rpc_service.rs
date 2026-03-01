@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    peer_center::instance::PeerCenterInstance,
     proto::{
         api::instance::{
             AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest,
@@ -23,16 +24,22 @@ use super::peer_manager::PeerManager;
 #[derive(Clone)]
 pub struct PeerManagerRpcService {
     peer_manager: Weak<PeerManager>,
+    peer_center: Weak<PeerCenterInstance>,
 }
 
 impl PeerManagerRpcService {
-    pub fn new(peer_manager: Arc<PeerManager>) -> Self {
+    pub fn new(peer_manager: Arc<PeerManager>, peer_center: Arc<PeerCenterInstance>) -> Self {
         PeerManagerRpcService {
             peer_manager: Arc::downgrade(&peer_manager),
+            peer_center: Arc::downgrade(&peer_center),
         }
     }
 
-    pub async fn list_peers(peer_manager: &PeerManager) -> Vec<PeerInfo> {
+    pub async fn list_peers(
+        peer_manager: &PeerManager,
+        peer_center: Option<Arc<PeerCenterInstance>>,
+    ) -> Vec<PeerInfo> {
+        let my_peer_id = peer_manager.my_peer_id();
         let mut peers = peer_manager.get_peer_map().list_peers();
         peers.extend(
             peer_manager
@@ -69,6 +76,16 @@ impl PeerManagerRpcService {
                 peer_info.conns = conns;
             }
 
+            // Distance calculation depends on the caller's context:
+            // - Some(peer_center): CLI query - return outbound distance (self→peer),
+            //   fetched from peer's reported GlobalPeerMap data
+            // - None: GlobalPeerMap sync - return inbound distance (peer→self),
+            //   calculated locally using this node's route_distance config
+            peer_info.distance = match peer_center.as_ref() {
+                Some(pc) => pc.get_outbound_distance(my_peer_id, peer).unwrap_or(0),
+                None => peer_map.get_peer_distance(peer).await,
+            };
+
             peer_infos.push(peer_info);
         }
 
@@ -86,8 +103,12 @@ impl PeerManageRpc for PeerManagerRpcService {
     ) -> Result<ListPeerResponse, rpc_types::error::Error> {
         let mut reply = ListPeerResponse::default();
 
-        let peers =
-            PeerManagerRpcService::list_peers(weak_upgrade(&self.peer_manager)?.deref()).await;
+        let peer_center = self.peer_center.upgrade();
+        let peers = PeerManagerRpcService::list_peers(
+            weak_upgrade(&self.peer_manager)?.deref(),
+            peer_center,
+        )
+        .await;
         for peer in peers {
             reply.peer_infos.push(peer);
         }
