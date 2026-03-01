@@ -31,7 +31,22 @@ impl PeerCenterRpc for PeerCenterManageRpcService {
         ctrl: BaseController,
         req: GetGlobalPeerMapRequest,
     ) -> crate::proto::rpc_types::error::Result<GetGlobalPeerMapResponse> {
-        super::get_instance_service(&self.instance_manager, &None)?
+        let instance_service =
+            super::get_instance_service(&self.instance_manager, &None).map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("please specify the instance ID") {
+                    anyhow::anyhow!(
+                        "PeerCenter management RPC cannot select an instance automatically \
+                         when multiple instances are running; please use an API that allows \
+                         specifying an instance identifier."
+                    )
+                    .into()
+                } else {
+                    e
+                }
+            })?;
+
+        instance_service
             .get_peer_center_service()
             .get_global_peer_map(ctrl, req)
             .await
