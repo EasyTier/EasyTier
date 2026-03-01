@@ -441,8 +441,6 @@ impl DirectConnectorManagerData {
             // the moment a stable connection is confirmed we keep every path's blacklist
             // state in sync and avoid the staggering problem.
             let mut check_interval = tokio::time::interval(Duration::from_millis(200));
-            // consume the first (immediate) tick so the interval fires at 200 ms, 400 ms…
-            check_interval.tick().await;
             let connected = loop {
                 tokio::select! {
                     result = tasks.join_next() => {
@@ -477,13 +475,21 @@ impl DirectConnectorManagerData {
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
 
-            tracing::debug!(
-                connected,
-                ?dst_peer_id,
-                ?cur_scheme,
-                ?listener_list,
-                "all tasks finished for current scheme"
-            );
+            if connected {
+                tracing::debug!(
+                    ?dst_peer_id,
+                    ?cur_scheme,
+                    ?listener_list,
+                    "direct connection confirmed; aborted remaining tasks"
+                );
+            } else {
+                tracing::debug!(
+                    ?dst_peer_id,
+                    ?cur_scheme,
+                    ?listener_list,
+                    "all tasks completed without direct connection"
+                );
+            }
 
             if connected {
                 tracing::info!(
