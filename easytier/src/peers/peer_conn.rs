@@ -292,6 +292,9 @@ pub struct PeerConn {
 
     peer_session_store: Arc<PeerSessionStore>,
     my_encrypt_algo: String,
+
+    // means a better conn is needed
+    low_priority: bool,
 }
 
 impl Debug for PeerConn {
@@ -382,7 +385,14 @@ impl PeerConn {
 
             peer_session_store,
             my_encrypt_algo,
+            low_priority: false,
         }
+    }
+    pub fn set_low_priority(&mut self, low_priority: bool) {
+        self.low_priority = low_priority;
+    }
+    pub fn is_low_priority(&self) -> bool {
+        self.low_priority
     }
 
     fn get_peer_session_store(&self) -> &Arc<PeerSessionStore> {

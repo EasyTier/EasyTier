@@ -428,7 +428,6 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
         let my_peer_id = data.peer_mgr.my_peer_id();
 
         data.blacklist.cleanup();
-        let peers_cfg = data.peer_mgr.get_global_ctx().config.get_peers();
         // collect peer list from peer manager and do some filter:
         // 1. peers without direct conns;
         // 2. peers is full cone (any restricted type);
@@ -460,19 +459,15 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            // Check if peer already has a connection
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
-                if !should_try_better_route(
-                    "udp".to_string(),
-                    data.peer_mgr.clone(),
-                    peer_id,
-                    &peers_cfg,
-                )
-                .await
-                {
-                    tracing::trace!(peer_id, "udp hole punch task collect skip already has peer");
-                    continue;
-                }
+            // Skip if peer already has a connection that is not low priority
+            if data
+                .peer_mgr
+                .get_peer_map()
+                .get_peer_by_id(peer_id)
+                .is_some_and(|f| !f.all_conns_low_priority())
+            {
+                tracing::trace!(peer_id, "udp hole punch task collect skip already has peer");
+                continue;
             }
 
             let global_ctx = data.peer_mgr.get_global_ctx();
@@ -580,33 +575,6 @@ impl UdpHolePunchConnector {
 
         Ok(())
     }
-}
-
-pub(crate) async fn should_try_better_route(
-    hole_type: String,
-    peer_mgr: Arc<PeerManager>,
-    peer_id: PeerId,
-    peers_cfg: &Vec<crate::common::config::PeerConfig>,
-) -> bool {
-    let conns = peer_mgr.get_peer_map().list_peer_conns(peer_id).await;
-    let tunnels = if let Some(conns) = &conns {
-        conns.iter().filter_map(|c| c.tunnel.as_ref()).collect()
-    } else {
-        vec![]
-    };
-    if tunnels.iter().any(|t| t.tunnel_type == hole_type) {
-        return false;
-    }
-    let existing_url: Vec<&str> = tunnels
-        .iter()
-        .filter_map(|t| t.remote_addr.as_ref())
-        .map(|u| u.url.as_str())
-        .collect();
-
-    let try_better_route = peers_cfg
-        .iter()
-        .any(|p| p.needs_better_route && existing_url.iter().any(|u| *u == p.uri.as_str()));
-    try_better_route
 }
 
 #[cfg(test)]
