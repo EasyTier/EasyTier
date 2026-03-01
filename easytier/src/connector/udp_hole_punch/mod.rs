@@ -640,7 +640,7 @@ pub mod tests {
         .await;
     }
 }
-pub async fn should_try_better_route(
+pub(crate) async fn should_try_better_route(
     hole_type: String,
     peer_mgr: Arc<PeerManager>,
     peer_id: PeerId,
