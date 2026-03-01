@@ -26,7 +26,9 @@ use derivative::Derivative;
 use derive_more::{Constructor, Deref, DerefMut, From, Into};
 use prost::Message;
 use quinn::udp::{EcnCodepoint, RecvMeta, Transmit};
-use quinn::{AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, TokioRuntime, UdpPoller};
+use quinn::{
+    default_runtime, AsyncUdpSocket, Endpoint, RecvStream, SendStream, StreamId, UdpPoller,
+};
 use std::cmp::min;
 use std::future::Future;
 use std::io::IoSliceMut;
@@ -808,7 +810,7 @@ impl QuicProxy {
             endpoint_config(),
             Some(server_config()),
             Arc::new(socket),
-            Arc::new(TokioRuntime),
+            default_runtime().unwrap(),
         )
         .unwrap();
         endpoint.set_default_client_config(client_config());
@@ -1022,7 +1024,7 @@ mod tests {
             endpoint_config.clone(),
             Some(server_config.clone()),
             socket_client.clone(),
-            Arc::new(TokioRuntime),
+            default_runtime().unwrap(),
         )
         .unwrap();
         client_endpoint.set_default_client_config(client_config.clone());
@@ -1032,7 +1034,7 @@ mod tests {
             endpoint_config.clone(),
             Some(server_config.clone()),
             socket_server.clone(),
-            Arc::new(TokioRuntime),
+            default_runtime().unwrap(),
         )
         .unwrap();
         server_endpoint.set_default_client_config(client_config.clone());

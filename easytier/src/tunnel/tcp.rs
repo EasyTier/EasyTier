@@ -5,7 +5,7 @@ use futures::stream::FuturesUnordered;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use super::TunnelInfo;
-use crate::tunnel::common::setup_sokcet2;
+use crate::tunnel::common::setup_socket2;
 
 use super::{
     check_scheme_and_get_socket_addr,
@@ -67,7 +67,7 @@ impl TunnelListener for TcpTunnelListener {
             socket2::Type::STREAM,
             Some(socket2::Protocol::TCP),
         )?;
-        setup_sokcet2(&socket2_socket, &addr)?;
+        setup_socket2(&socket2_socket, &addr, true)?;
         let socket = TcpSocket::from_std_stream(socket2_socket.into());
 
         if let Err(e) = socket.set_nodelay(true) {
@@ -173,7 +173,7 @@ impl TcpTunnelConnector {
                 Some(socket2::Protocol::TCP),
             )?;
 
-            if let Err(e) = setup_sokcet2(&socket2_socket, bind_addr) {
+            if let Err(e) = setup_socket2(&socket2_socket, bind_addr, true) {
                 tracing::error!(bind_addr = ?bind_addr, ?addr, "bind addr fail: {:?}", e);
                 continue;
             }
