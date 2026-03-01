@@ -475,13 +475,21 @@ impl DirectConnectorManagerData {
             tasks.abort_all();
             while tasks.join_next().await.is_some() {}
 
-            tracing::debug!(
-                connected,
-                ?dst_peer_id,
-                ?cur_scheme,
-                ?listener_list,
-                "all tasks finished for current scheme"
-            );
+            if connected {
+                tracing::debug!(
+                    ?dst_peer_id,
+                    ?cur_scheme,
+                    ?listener_list,
+                    "direct connection confirmed; aborted remaining tasks"
+                );
+            } else {
+                tracing::debug!(
+                    ?dst_peer_id,
+                    ?cur_scheme,
+                    ?listener_list,
+                    "all tasks completed without direct connection"
+                );
+            }
 
             if connected {
                 tracing::info!(
