@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use axum_login::{AuthUser, AuthnBackend, AuthzBackend, UserId};
 use password_auth::verify_password;
 use sea_orm::{
-    ActiveModelTrait as _, ColumnTrait, EntityTrait, FromQueryResult, IntoActiveModel, JoinType,
-    QueryFilter, QuerySelect as _, RelationTrait, Set, TransactionTrait,
+    ColumnTrait, EntityTrait, FromQueryResult, IntoActiveModel, JoinType, QueryFilter,
+    QuerySelect as _, RelationTrait, Set,
 };
 use serde::{Deserialize, Serialize};
 use tokio::task;
@@ -14,7 +14,7 @@ use crate::db::{self, entity};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct User {
-    db_user: entity::users::Model,
+    pub(crate) db_user: entity::users::Model,
     pub tokens: Vec<String>,
 }
 
@@ -74,38 +74,45 @@ impl Backend {
         Self { db }
     }
 
+    pub fn db(&self) -> &db::Db {
+        &self.db
+    }
+
     pub async fn register_new_user(&self, new_user: &RegisterNewUser) -> anyhow::Result<()> {
         let hashed_password = password_auth::generate_hash(new_user.credentials.password.as_str());
-        let txn = self.db.orm_db().begin().await?;
-
-        entity::users::ActiveModel {
-            username: Set(new_user.credentials.username.clone()),
-            password: Set(hashed_password.clone()),
-            ..Default::default()
-        }
-        .save(&txn)
-        .await?;
-
-        entity::users_groups::ActiveModel {
-            user_id: Set(entity::users::Entity::find()
-                .filter(entity::users::Column::Username.eq(new_user.credentials.username.as_str()))
-                .one(&txn)
-                .await?
-                .unwrap()
-                .id),
-            group_id: Set(entity::groups::Entity::find()
-                .filter(entity::groups::Column::Name.eq("users"))
-                .one(&txn)
-                .await?
-                .unwrap()
-                .id),
-            ..Default::default()
-        }
-        .save(&txn)
-        .await?;
-        txn.commit().await?;
-
+        self.db
+            .create_user_and_join_users_group(&new_user.credentials.username, hashed_password)
+            .await?;
         Ok(())
+    }
+
+    /// Find a user by username, or auto-create one for OIDC-authenticated users.
+    ///
+    /// Unlike the heartbeat auto-creation path (controlled by `allow_auto_create_user`),
+    /// OIDC users are always provisioned automatically because their identity has already
+    /// been verified by a trusted external Identity Provider (IdP).
+    pub async fn find_or_create_oidc_user(&self, username: &str) -> anyhow::Result<User> {
+        use entity::users;
+
+        // Try to find an existing user first.
+        if let Some(db_user) = users::Entity::find()
+            .filter(users::Column::Username.eq(username))
+            .one(self.db.orm_db())
+            .await?
+        {
+            return Ok(User {
+                tokens: vec![db_user.username.clone()],
+                db_user,
+            });
+        }
+
+        // User not found – auto-provision a local account backed by the IdP identity.
+        let db_user = self.db.auto_create_user(username).await?;
+        tracing::info!("Auto-provisioned OIDC user '{username}'");
+        Ok(User {
+            tokens: vec![db_user.username.clone()],
+            db_user,
+        })
     }
 
     pub async fn change_password(

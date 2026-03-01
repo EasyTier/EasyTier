@@ -9,17 +9,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::restful::users::Backend;
 
+use std::sync::Arc;
+
+use crate::FeatureFlags;
+
 use super::{
     users::{AuthSession, Credentials},
     AppStateInner,
 };
-
-/// Feature flags for the web server
-#[derive(Clone, Default)]
-pub struct FeatureFlags {
-    /// Whether user registration is disabled
-    pub disable_registration: bool,
-}
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LoginResult {
@@ -117,7 +114,7 @@ mod post {
     }
 
     pub async fn register(
-        Extension(feature_flags): Extension<FeatureFlags>,
+        Extension(feature_flags): Extension<Arc<FeatureFlags>>,
         auth_session: AuthSession,
         captcha_session: tower_sessions::Session,
         Json(req): Json<RegisterNewUser>,

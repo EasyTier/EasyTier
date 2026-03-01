@@ -1,6 +1,7 @@
 mod auth;
 pub(crate) mod captcha;
 mod network;
+pub(crate) mod oidc;
 mod users;
 
 use std::{net::SocketAddr, sync::Arc};
@@ -19,7 +20,7 @@ use network::NetworkApi;
 use sea_orm::DbErr;
 use tokio::net::TcpListener;
 use tower_sessions::cookie::time::Duration;
-use tower_sessions::cookie::Key;
+use tower_sessions::cookie::{Key, SameSite};
 use tower_sessions::Expiry;
 use tower_sessions_sqlx_store::SqliteStore;
 use users::{AuthSession, Backend};
@@ -27,6 +28,7 @@ use users::{AuthSession, Backend};
 use crate::client_manager::storage::StorageToken;
 use crate::client_manager::ClientManager;
 use crate::db::Db;
+use crate::FeatureFlags;
 
 /// Embed assets for web dashboard, build frontend first
 #[cfg(feature = "embed")]
@@ -37,8 +39,9 @@ struct Assets;
 pub struct RestfulServer {
     bind_addr: SocketAddr,
     client_mgr: Arc<ClientManager>,
-    registration_disabled: bool,
+    feature_flags: Arc<FeatureFlags>,
     db: Db,
+    oidc_config: oidc::OidcConfig,
 
     // serve_task: Option<ScopedTask<()>>,
     // delete_task: Option<ScopedTask<tower_sessions::session_store::Result<()>>>,
@@ -105,7 +108,8 @@ impl RestfulServer {
         client_mgr: Arc<ClientManager>,
         db: Db,
         web_router: Option<Router>,
-        registration_disabled: bool,
+        feature_flags: Arc<FeatureFlags>,
+        oidc_config: oidc::OidcConfig,
     ) -> anyhow::Result<Self> {
         assert!(client_mgr.is_running());
 
@@ -114,8 +118,9 @@ impl RestfulServer {
         Ok(RestfulServer {
             bind_addr,
             client_mgr,
-            registration_disabled,
+            feature_flags,
             db,
+            oidc_config,
             // serve_task: None,
             // delete_task: None,
             // network_api,
@@ -222,6 +227,7 @@ impl RestfulServer {
 
         let session_layer = SessionManagerLayer::new(session_store)
             .with_secure(false)
+            .with_same_site(SameSite::Lax)
             .with_expiry(Expiry::OnInactivity(Duration::days(1)))
             .with_signed(key);
 
@@ -243,15 +249,15 @@ impl RestfulServer {
             .route("/api/v1/sessions", get(Self::handle_list_all_sessions))
             .merge(NetworkApi::build_route())
             .route_layer(login_required!(Backend))
-            .merge(auth::router().layer(Extension(auth::FeatureFlags {
-                disable_registration: self.registration_disabled,
-            })))
+            .merge(auth::router().layer(Extension(self.feature_flags.clone())))
+            .merge(oidc::router())
             .with_state(self.client_mgr.clone())
             .route(
                 "/api/v1/generate-config",
                 post(Self::handle_generate_config),
             )
             .route("/api/v1/parse-config", post(Self::handle_parse_config))
+            .layer(Extension(self.oidc_config.clone()))
             .layer(MessagesManagerLayer)
             .layer(auth_layer)
             .layer(tower_http::cors::CorsLayer::very_permissive())

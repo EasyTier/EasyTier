@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Card, InputText, Password, Button, AutoComplete } from 'primevue';
 import { useRouter } from 'vue-router';
 import { useToast } from 'primevue/usetoast';
@@ -68,8 +68,43 @@ const apiHostSearch = async (event: { query: string }) => {
     });
 }
 
-onMounted(() => {
+const oidcEnabled = ref(false);
+const lastCheckedHost = ref('');
+const oidcCheckTimer = ref<ReturnType<typeof setTimeout> | null>(null);
+const checkOidcConfig = () => {
+    if (oidcCheckTimer.value) clearTimeout(oidcCheckTimer.value);
+    oidcCheckTimer.value = setTimeout(async () => {
+        const host = apiHost.value;
+        if (host === lastCheckedHost.value) return;
 
+        const enabled = (await new ApiClient(host).getOidcConfig()).enabled;
+        // If host changes while request is in-flight, do not overwrite UI state.
+        if (apiHost.value !== host) return;
+
+        lastCheckedHost.value = host;
+        oidcEnabled.value = enabled;
+    }, 300);
+};
+
+watch(apiHost, () => {
+    checkOidcConfig();
+});
+
+const onSsoLogin = () => {
+    saveApiHost(apiHost.value);
+    localStorage.setItem('apiHost', btoa(apiHost.value));
+    window.location.href = api.value.oidcLoginUrl();
+};
+
+onMounted(() => {
+    checkOidcConfig();
+});
+
+onBeforeUnmount(() => {
+    if (oidcCheckTimer.value) {
+        clearTimeout(oidcCheckTimer.value);
+        oidcCheckTimer.value = null;
+    }
 });
 
 </script>
@@ -103,6 +138,10 @@ onMounted(() => {
                     <div class="flex items-center justify-between">
                         <Button :label="t('web.login.register')" type="button" class="w-full"
                             @click="saveApiHost(apiHost); $router.replace({ name: 'register' })" severity="secondary" />
+                    </div>
+                    <div v-if="oidcEnabled" class="flex items-center justify-between">
+                        <Button :label="t('web.login.sso_login')" type="button" class="w-full" severity="info"
+                            @click="onSsoLogin" />
                     </div>
                 </form>
 
