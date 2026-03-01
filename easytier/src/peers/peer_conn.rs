@@ -1743,6 +1743,7 @@ pub mod tests {
                     .local_public_key
                     .unwrap(),
             ),
+            allow_p2p_upgrade: None,
         }]);
 
         let ps = Arc::new(PeerSessionStore::new());
