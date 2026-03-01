@@ -6,6 +6,51 @@ LOG_FILE="${MODDIR}/log.log"
 MODULE_PROP="${MODDIR}/module.prop"
 EASYTIER="${MODDIR}/easytier-core"
 REDIR_STATUS=""
+LAST_RULE_ADD_ERR=""
+
+has_high_priority_main_rule() {
+    # `ip rule show` 的常见输出示例：
+    #   9999: from all lookup main
+    # 第 1 列是优先级，`$1 + 0` 会把 `9999:` 自动转成数字 `9999`。
+    # 只要存在任意一条优先级 < 10000 的 main 规则，就认为条件满足并返回成功(0)。
+    ip rule show | awk '
+        /from all/ && /lookup main/ {
+            if ($1 + 0 < 10000) {
+                found = 1
+                exit
+            }
+        }
+        END { exit(found ? 0 : 1) }
+    '
+}
+
+ensure_main_lookup_rule() {
+    # 目的：在 Android 策略路由场景下，确保至少有一条高优先级 main 表规则。
+    # 若已存在满足条件的规则，直接返回，避免重复添加。
+    has_high_priority_main_rule && return 0
+
+    # 添加固定优先级规则；捕获 stderr 以便定位失败原因。
+    local err
+    err=$(ip rule add pref 9999 from all lookup main 2>&1) && {
+        LAST_RULE_ADD_ERR=""
+        return 0
+    }
+
+    # 竞态场景：本次检查与添加之间，规则可能已被其他路径补上。
+    # 这种情况下 `File exists` 视为成功，不需要记录错误。
+    case "${err}" in
+        *"File exists"*)
+            LAST_RULE_ADD_ERR=""
+            return 0
+            ;;
+    esac
+
+    # 守护循环每 3 秒执行一次：相同错误只记录一次，防止日志刷屏。
+    [ "${err}" = "${LAST_RULE_ADD_ERR}" ] && return 1
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ip rule add failed: ${err}" >> "${LOG_FILE}"
+    LAST_RULE_ADD_ERR="${err}"
+    return 1
+}
 
 # 更新module.prop文件中的description
 update_module_description() {
@@ -52,12 +97,14 @@ while true; do
                 sleep 5s # 等待easytier-core启动完成
                 update_module_description "主程序已开启(配置文件模式) | ${REDIR_STATUS}"
             fi
-            ip rule add from all lookup main
             if ! pgrep -f 'easytier-core' >/dev/null; then
-                update_module_descriptio "主程序启动失败，请检查配置文件"
+                update_module_description "主程序启动失败，请检查配置文件"
             fi
         else
             echo "开关控制$(date "+%Y-%m-%d %H:%M:%S") 进程已存在"
+        fi
+        if pgrep -f 'easytier-core' >/dev/null; then
+            ensure_main_lookup_rule
         fi
     fi
     
