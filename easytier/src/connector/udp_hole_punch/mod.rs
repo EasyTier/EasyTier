@@ -464,7 +464,7 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
             if data.peer_mgr.get_peer_map().has_peer(peer_id) {
                 if !should_try_better_route("udp".to_string(), data.peer_mgr.clone(), peer_id).await
                 {
-                    tracing::debug!(?peer_id, "peer has a better route, skipping");
+                    tracing::trace!(peer_id, "udp hole punch task collect skip already has peer");
                     continue;
                 }
             }
