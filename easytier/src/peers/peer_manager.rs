@@ -378,6 +378,7 @@ impl PeerManager {
         is_directly_connected: bool,
         peer_id_hint: Option<PeerId>,
     ) -> Result<(PeerId, PeerConnId), Error> {
+        let info = tunnel.as_ref().info();
         let mut peer = PeerConn::new_with_peer_id_hint(
             self.my_peer_id,
             self.global_ctx.clone(),
@@ -385,6 +386,17 @@ impl PeerManager {
             peer_id_hint,
             self.peer_session_store.clone(),
         );
+        if let Some(remote_addr) = info.and_then(|f| f.remote_addr) {
+            if self
+                .global_ctx
+                .config
+                .get_peers()
+                .iter()
+                .any(|p| p.needs_better_route && p.uri.as_str() == remote_addr.url.as_str())
+            {
+                peer.set_low_priority(true);
+            }
+        }
         peer.set_is_hole_punched(!is_directly_connected);
         peer.do_handshake_as_client().await?;
         let conn_id = peer.get_conn_id();
@@ -1821,6 +1833,7 @@ mod tests {
             crate::common::config::PeerConfig {
                 uri: server_remote_url,
                 peer_public_key: Some(server_pub_b64.clone()),
+                needs_better_route: false,
             },
         ]);
 

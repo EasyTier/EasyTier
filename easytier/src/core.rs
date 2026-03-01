@@ -832,6 +832,7 @@ impl NetworkOptions {
                         .parse()
                         .with_context(|| format!("failed to parse peer uri: {}", p))?,
                     peer_public_key: None,
+                    needs_better_route: false,
                 });
             }
             cfg.set_peers(peers);
@@ -893,6 +894,7 @@ impl NetworkOptions {
                     format!("failed to parse external node uri: {}", external_nodes)
                 })?,
                 peer_public_key: None,
+                needs_better_route: false,
             });
             cfg.set_peers(old_peers);
         }
