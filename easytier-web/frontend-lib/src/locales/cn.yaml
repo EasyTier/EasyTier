@@ -395,3 +395,10 @@ config-server:
 client:
   not_running: 无法连接至远程客户端
   retry: 重试
+
+elevation:
+  restart_required: 需要管理员权限
+  restart_confirm: 此操作需要管理员权限。是否以管理员身份重启应用程序？
+  restart: 以管理员身份重启
+  cancelled: 操作已取消
+  operation_cancelled: 由于需要管理员权限，操作已取消。

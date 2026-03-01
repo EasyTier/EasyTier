@@ -395,3 +395,10 @@ config-server:
 client:
   not_running: Unable to connect to remote client.
   retry: Retry
+
+elevation:
+  restart_required: Administrator Privileges Required
+  restart_confirm: This operation requires administrator privileges. Do you want to restart the application with elevated permissions?
+  restart: Restart as Admin
+  cancelled: Operation Cancelled
+  operation_cancelled: The operation was cancelled because administrator privileges are required.

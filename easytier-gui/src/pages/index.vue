@@ -13,6 +13,7 @@ import { GUIRemoteClient } from '~/modules/api'
 
 import { useToast, useConfirm } from 'primevue'
 import { loadMode, saveMode, WebClientConfig, type Mode } from '~/composables/mode'
+import { promptElevationRestart, requireElevationForService } from '~/composables/elevation'
 import { saveLastNetworkInstanceId, loadLastNetworkInstanceId } from '~/composables/config'
 import ModeSwitcher from '~/components/ModeSwitcher.vue'
 import { getServiceStatus } from '~/composables/backend'
@@ -71,6 +72,11 @@ async function onUninstallService() {
       isModeSaving.value = true
       try {
         await initWithMode({ ...currentMode.value, mode: 'normal' });
+
+        if (!await requireElevationForService(currentMode.value, t, confirm, toast)) {
+          return
+        }
+
         await initService(undefined)
         toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.uninstall_service_success'), life: 3000 })
         modeDialogVisible.value = false
@@ -88,6 +94,9 @@ async function onStopService() {
   isModeSaving.value = true
   manualDisconnect.value = true
   try {
+    if (!await requireElevationForService(currentMode.value, t, confirm, toast)) {
+      return
+    }
     await setServiceStatus(false)
     toast.add({ severity: 'success', summary: t('web.common.success'), detail: t('mode.stop_service_success'), life: 3000 })
     modeDialogVisible.value = false
@@ -108,6 +117,11 @@ async function initWithMode(mode: Mode) {
     let serviceStatus = await getServiceStatus()
     if (serviceStatus === "Running") {
       manualDisconnect.value = true
+
+      if (!await requireElevationForService(currentMode.value, t, confirm, toast)) {
+        return
+      }
+
       await setServiceStatus(false)
       serviceStatus = await getServiceStatus()
       for (let i = 0; i < 10; i++) { // macOS takes a while to stop the service
@@ -119,6 +133,9 @@ async function initWithMode(mode: Mode) {
       }
     }
     if (serviceStatus === "Stopped") {
+      if (!await requireElevationForService(currentMode.value, t, confirm, toast)) {
+        return
+      }
       await initService(undefined)
     }
   }
@@ -141,6 +158,11 @@ async function initWithMode(mode: Mode) {
       let serviceStatus = await getServiceStatus()
       if (serviceStatus === "NotInstalled" || JSON.stringify(mode) !== JSON.stringify(currentMode.value)) {
         mode.config_server_url = mode.config_server_url || undefined
+
+        if (!await requireElevationForService(mode, t, confirm, toast)) {
+          return
+        }
+
         await initService({
           config_dir: mode.config_dir,
           file_log_dir: mode.file_log_dir,
@@ -151,6 +173,9 @@ async function initWithMode(mode: Mode) {
         serviceStatus = await getServiceStatus()
       }
       if (serviceStatus === "Stopped") {
+        if (!await requireElevationForService(mode, t, confirm, toast)) {
+          return
+        }
         await setServiceStatus(true)
       }
       url = "tcp://" + mode.rpc_portal.replace("0.0.0.0", "127.0.0.1")
@@ -197,7 +222,11 @@ onMounted(() => {
 useTray(true)
 let toast = useToast();
 
-const remoteClient = computed(() => new GUIRemoteClient());
+const elevationHandler = async (): Promise<boolean> => {
+  return await promptElevationRestart(t, confirm);
+};
+
+const remoteClient = computed(() => new GUIRemoteClient(elevationHandler));
 const instanceId = ref<string | undefined>(undefined);
 const clientRunning = ref(false);
 
@@ -423,6 +452,7 @@ const configServerConnectionStatus = computed(() => {
 
 <template>
   <div id="root" class="flex flex-col">
+    <ConfirmDialog group="elevation" />
     <Dialog v-model:visible="aboutVisible" modal :header="t('about.title')" :style="{ width: '70%' }">
       <About />
     </Dialog>

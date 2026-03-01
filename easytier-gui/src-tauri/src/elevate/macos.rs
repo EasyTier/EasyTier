@@ -71,64 +71,6 @@ macro_rules! make_cstring {
     };
 }
 
-unsafe fn gui_runas(prog: *const i8, argv: *const *const i8) -> i32 {
-    let mut authref: AuthorizationRef = ptr::null_mut();
-    let mut pipe: *mut libc::FILE = ptr::null_mut();
-
-    if AuthorizationCreate(
-        ptr::null(),
-        ptr::null(),
-        kAuthorizationFlagDefaults,
-        &mut authref,
-    ) != errAuthorizationSuccess
-    {
-        return -1;
-    }
-    if AuthorizationExecuteWithPrivileges(
-        authref,
-        prog,
-        kAuthorizationFlagDefaults,
-        argv as *const *mut _,
-        &mut pipe,
-    ) != errAuthorizationSuccess
-    {
-        AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
-        return -1;
-    }
-
-    let pid = fcntl(fileno(pipe), F_GETOWN, 0);
-    let mut status = 0;
-    loop {
-        let r = waitpid(pid, &mut status, 0);
-        if r == -1 && io::Error::last_os_error().raw_os_error() == Some(EINTR) {
-            continue;
-        } else {
-            break;
-        }
-    }
-
-    AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
-    status
-}
-
-fn runas_root_gui(cmd: &Command) -> io::Result<ExitStatus> {
-    let exe: OsString = match get_exe_path(&cmd.cmd.get_program()) {
-        Some(exe) => exe.into(),
-        None => unsafe {
-            return Ok(mem::transmute(!0));
-        },
-    };
-    let prog = make_cstring!(exe);
-    let mut args = vec![];
-    for arg in cmd.cmd.get_args() {
-        args.push(make_cstring!(arg))
-    }
-    let mut argv: Vec<_> = args.iter().map(|x| x.as_ptr()).collect();
-    argv.push(ptr::null());
-
-    unsafe { Ok(mem::transmute(gui_runas(prog.as_ptr(), argv.as_ptr()))) }
-}
-
 /// The implementation of state check and elevated executing varies on each platform
 impl Command {
     /// Check the state the current program running
@@ -172,11 +114,90 @@ impl Command {
     /// }
     /// ```
     pub fn output(&self) -> Result<Output> {
-        let status = runas_root_gui(self)?;
+        let (_prog_owned, _args_owned, prog, argv) = self.prepare_runas()?;
+        let status = unsafe { gui_runas(prog, argv.as_ptr(), true) };
         Ok(Output {
-            status,
+            status: unsafe { mem::transmute(status) },
             stdout: Vec::new(),
             stderr: Vec::new(),
         })
     }
+
+    pub fn spawn(&self) -> Result<()> {
+        let (_prog_owned, _args_owned, prog, argv) = self.prepare_runas()?;
+        let status = unsafe { gui_runas(prog, argv.as_ptr(), false) };
+        if status < 0 {
+            return Err(anyhow::anyhow!("Failed to spawn elevated process"));
+        }
+        Ok(())
+    }
+
+    fn prepare_runas(&self) -> io::Result<(CString, Vec<CString>, *const i8, Vec<*const i8>)> {
+        let exe: OsString = match get_exe_path(&self.cmd.get_program()) {
+            Some(exe) => exe.into(),
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "executable not found",
+                ));
+            }
+        };
+        let prog = make_cstring!(exe);
+        let mut args = vec![];
+        for arg in self.cmd.get_args() {
+            args.push(make_cstring!(arg))
+        }
+        let mut argv: Vec<_> = args.iter().map(|x| x.as_ptr()).collect();
+        argv.push(ptr::null());
+
+        let prog_ptr = prog.as_ptr();
+        Ok((prog, args, prog_ptr, argv))
+    }
+}
+
+unsafe fn gui_runas(prog: *const i8, argv: *const *const i8, wait: bool) -> i32 {
+    let mut authref: AuthorizationRef = ptr::null_mut();
+    let mut pipe: *mut libc::FILE = ptr::null_mut();
+
+    if AuthorizationCreate(
+        ptr::null(),
+        ptr::null(),
+        kAuthorizationFlagDefaults,
+        &mut authref,
+    ) != errAuthorizationSuccess
+    {
+        return -1;
+    }
+    if AuthorizationExecuteWithPrivileges(
+        authref,
+        prog,
+        kAuthorizationFlagDefaults,
+        argv as *const *mut _,
+        &mut pipe,
+    ) != errAuthorizationSuccess
+    {
+        AuthorizationFree(authref, kAuthorizationFlagDestroyRights);
+        return -1;
+    }
+
+    let mut status = 0;
+    if wait {
+        let pid = fcntl(fileno(pipe), F_GETOWN, 0);
+        loop {
+            let r = waitpid(pid, &mut status, 0);
+            if r == -1 && io::Error::last_os_error().raw_os_error() == Some(EINTR) {
+                continue;
+            } else {
+                break;
+            }
+        }
+    }
+
+    let flag = if wait {
+        kAuthorizationFlagDestroyRights
+    } else {
+        kAuthorizationFlagDefaults
+    };
+    AuthorizationFree(authref, flag);
+    status
 }

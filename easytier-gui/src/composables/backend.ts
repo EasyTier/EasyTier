@@ -104,3 +104,11 @@ export async function initWebClient(url?: string) {
 export async function isWebClientConnected() {
   return await invoke<boolean>('is_web_client_connected')
 }
+
+export async function isElevated() {
+  return await invoke<boolean>('is_elevated')
+}
+
+export async function restartElevated() {
+  return await invoke('restart_elevated')
+}
