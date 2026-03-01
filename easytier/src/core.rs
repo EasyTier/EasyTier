@@ -832,7 +832,7 @@ impl NetworkOptions {
                         .parse()
                         .with_context(|| format!("failed to parse peer uri: {}", p))?,
                     peer_public_key: None,
-                    allow_p2p_upgrade: None,
+                    try_more_conn: None,
                 });
             }
             cfg.set_peers(peers);
@@ -894,7 +894,7 @@ impl NetworkOptions {
                     format!("failed to parse external node uri: {}", external_nodes)
                 })?,
                 peer_public_key: None,
-                allow_p2p_upgrade: None,
+                try_more_conn: None,
             });
             cfg.set_peers(old_peers);
         }
