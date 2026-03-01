@@ -459,8 +459,16 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
             }
 
             if data.peer_mgr.get_peer_map().has_peer(peer_id) {
-                tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
-                continue;
+                if !crate::connector::udp_hole_punch::should_try_better_route(
+                    "tcp".to_string(),
+                    data.peer_mgr.clone(),
+                    peer_id,
+                )
+                .await
+                {
+                    tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
+                    continue;
+                }
             }
 
             let peer_tcp_nat_type = route

@@ -308,12 +308,9 @@ impl Default for NetworkIdentity {
 pub struct PeerConfig {
     pub uri: url::Url,
     pub peer_public_key: Option<String>,
-    /// Try to establish additional connections with these protocols.
-    /// Examples: ["udp", "tcp", "ws", "wss", "wg"]
-    /// The system will try to establish connections for each protocol in this list
-    /// if not already connected via that protocol.
+    /// After establishing the initial URI-based connection, attempt to find and upgrade to a better route.
     #[serde(default)]
-    pub try_more_conn: Option<Vec<String>>,
+    pub needs_better_route: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

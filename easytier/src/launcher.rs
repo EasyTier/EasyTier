@@ -538,7 +538,7 @@ impl NetworkConfig {
                         format!("failed to parse public server uri: {}", public_server_url)
                     })?,
                     peer_public_key: None,
-                    try_more_conn: None,
+                    needs_better_route: false,
                 }]);
             }
             NetworkingMethod::Manual => {
@@ -552,7 +552,7 @@ impl NetworkConfig {
                             .parse()
                             .with_context(|| format!("failed to parse peer uri: {}", peer_url))?,
                         peer_public_key: None,
-                        try_more_conn: None,
+                        needs_better_route: false,
                     });
                 }
 
@@ -1025,7 +1025,7 @@ mod tests {
                 peers.push(crate::common::config::PeerConfig {
                     uri,
                     peer_public_key: None,
-                    try_more_conn: None,
+                    needs_better_route: false,
                 });
             }
             config.set_peers(peers);

@@ -462,19 +462,9 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
 
             // Check if peer already has a connection
             if data.peer_mgr.get_peer_map().has_peer(peer_id) {
-                // Get existing connection protocols for this peer
-                let conns = data.peer_mgr.get_peer_map().list_peer_conns(peer_id).await;
-                let existing_protos: Vec<String> = if let Some(conns) = &conns {
-                    conns.iter()
-                        .filter_map(|c| c.tunnel.as_ref())
-                        .filter_map(|t| Some(t.tunnel_type.clone()))
-                        .collect()
-                } else {
-                    vec![]
-                };
-
-                // If UDP already connected, skip this peer
-                if existing_protos.contains(&"udp".to_string()) {
+                if !should_try_better_route("udp".to_string(), data.peer_mgr.clone(), peer_id).await
+                {
+                    tracing::debug!(?peer_id, "peer has a better route, skipping");
                     continue;
                 }
             }
@@ -649,4 +639,30 @@ pub mod tests {
         )
         .await;
     }
+}
+pub async fn should_try_better_route(
+    hole_type: String,
+    peer_mgr: Arc<PeerManager>,
+    peer_id: PeerId,
+) -> bool {
+    let conns = peer_mgr.get_peer_map().list_peer_conns(peer_id).await;
+    let tunnels = if let Some(conns) = &conns {
+        conns.iter().filter_map(|c| c.tunnel.as_ref()).collect()
+    } else {
+        vec![]
+    };
+    if tunnels.iter().any(|t| t.tunnel_type == hole_type) {
+        return false;
+    }
+    let existing_url: Vec<&str> = tunnels
+        .iter()
+        .filter_map(|t| t.remote_addr.as_ref())
+        .map(|u| u.url.as_str())
+        .collect();
+
+    let peers = peer_mgr.get_global_ctx().config.get_peers();
+    let try_better_route = peers
+        .iter()
+        .any(|p| p.needs_better_route && existing_url.iter().any(|u| *u == p.uri.as_str()));
+    return try_better_route;
 }

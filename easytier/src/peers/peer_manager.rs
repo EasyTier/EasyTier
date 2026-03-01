@@ -1821,7 +1821,7 @@ mod tests {
             crate::common::config::PeerConfig {
                 uri: server_remote_url,
                 peer_public_key: Some(server_pub_b64.clone()),
-                try_more_conn: None,
+                needs_better_route: false,
             },
         ]);
 
