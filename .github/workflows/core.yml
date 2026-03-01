@@ -83,6 +83,9 @@ jobs:
           - TARGET: x86_64-unknown-linux-musl
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-x86_64
+          - TARGET: x86_64-unknown-linux-gnu
+            OS: ubuntu-22.04
+            ARTIFACT_NAME: linux-x86_64-gnu
           - TARGET: riscv64gc-unknown-linux-musl
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-riscv64
@@ -104,18 +107,15 @@ jobs:
           - TARGET: arm-unknown-linux-musleabi # raspberry pi 0-1, not tested
             OS: ubuntu-22.04
             ARTIFACT_NAME: linux-arm
-
           - TARGET: loongarch64-unknown-linux-musl
             OS: ubuntu-24.04
             ARTIFACT_NAME: linux-loongarch64
-
           - TARGET: x86_64-apple-darwin
             OS: macos-latest
             ARTIFACT_NAME: macos-x86_64
           - TARGET: aarch64-apple-darwin
             OS: macos-latest
             ARTIFACT_NAME: macos-aarch64
-
           - TARGET: x86_64-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-x86_64
@@ -125,7 +125,6 @@ jobs:
           - TARGET: i686-pc-windows-msvc
             OS: windows-latest
             ARTIFACT_NAME: windows-i686
-
           - TARGET: x86_64-unknown-freebsd
             OS: ubuntu-22.04
             ARTIFACT_NAME: freebsd-13.2-x86_64
@@ -201,6 +200,17 @@ jobs:
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./target/$TARGET/release/easytier-web-embed"$SUFFIX"
             cargo build --release --target $TARGET $CORE_FEATURES
           fi
+
+      - name: Build FFI
+        if: >
+          matrix.TARGET == 'x86_64-pc-windows-msvc' ||
+          matrix.TARGET == 'i686-pc-windows-msvc' ||
+          matrix.TARGET == 'x86_64-unknown-linux-gnu' ||
+          matrix.TARGET == 'x86_64-apple-darwin' ||
+          matrix.TARGET == 'aarch64-apple-darwin'
+        continue-on-error: true
+        run: |
+          cargo build --release -p easytier-ffi --target ${{ matrix.TARGET }}
 
       # Copied and slightly modified from @lmq8267 (https://github.com/lmq8267)
       - name: Build Core & Cli (X86_64 FreeBSD)
@@ -283,6 +293,19 @@ jobs:
           if [[ ! $TARGET =~ ^mips.*$ ]]; then
             mv ./target/$TARGET/release/easytier-web"$SUFFIX" ./artifacts/objects/
             mv ./target/$TARGET/release/easytier-web-embed"$SUFFIX" ./artifacts/objects/
+          fi
+
+          # Handle FFI artifacts
+          if [[ $TARGET == "x86_64-pc-windows-msvc" ]]; then
+            cp ./target/$TARGET/release/easytier_ffi.dll ./artifacts/easytier_ffi_windows_x64.dll
+          elif [[ $TARGET == "i686-pc-windows-msvc" ]]; then
+            cp ./target/$TARGET/release/easytier_ffi.dll ./artifacts/easytier_ffi_windows_x86.dll
+          elif [[ $TARGET == "x86_64-unknown-linux-gnu" ]]; then
+            cp ./target/$TARGET/release/libeasytier_ffi.so ./artifacts/libeasytier_ffi_linux_x64.so
+          elif [[ $TARGET == "x86_64-apple-darwin" ]]; then
+            cp ./target/$TARGET/release/libeasytier_ffi.dylib ./artifacts/libeasytier_ffi_macos_x64.dylib
+          elif [[ $TARGET == "aarch64-apple-darwin" ]]; then
+            cp ./target/$TARGET/release/libeasytier_ffi.dylib ./artifacts/libeasytier_ffi_macos_arm64.dylib
           fi
 
           mv ./artifacts/objects/* ./artifacts/
