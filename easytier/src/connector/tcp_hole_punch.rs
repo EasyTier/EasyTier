@@ -436,6 +436,7 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
         let my_peer_id = data.peer_mgr.my_peer_id();
 
         data.blacklist.cleanup();
+        let peers_cfg = data.peer_mgr.get_global_ctx().config.get_peers();
 
         let mut peers_to_connect = Vec::new();
         for route in data.peer_mgr.list_routes().await.iter() {
@@ -463,6 +464,7 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
                     "tcp".to_string(),
                     data.peer_mgr.clone(),
                     peer_id,
+                    &peers_cfg,
                 )
                 .await
                 {
