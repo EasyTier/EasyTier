@@ -15,7 +15,11 @@ use easytier::ShellType;
 use humansize::format_size;
 use rust_i18n::t;
 use service_manager::*;
-use tabled::settings::{location::ByColumnName, object::{Columns, Rows}, Disable, Modify, Style, Width};
+use tabled::settings::{
+    location::ByColumnName,
+    object::{Columns, Rows},
+    Disable, Modify, Style, Width,
+};
 use terminal_size::{terminal_size, Width as TerminalWidth};
 use unicode_width::UnicodeWidthStr;
 
