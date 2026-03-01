@@ -664,5 +664,5 @@ pub(crate) async fn should_try_better_route(
     let try_better_route = peers
         .iter()
         .any(|p| p.needs_better_route && existing_url.iter().any(|u| *u == p.uri.as_str()));
-    return try_better_route;
+    try_better_route
 }
