@@ -441,8 +441,6 @@ impl DirectConnectorManagerData {
             // the moment a stable connection is confirmed we keep every path's blacklist
             // state in sync and avoid the staggering problem.
             let mut check_interval = tokio::time::interval(Duration::from_millis(200));
-            // consume the first (immediate) tick so the interval fires at 200 ms, 400 ms…
-            check_interval.tick().await;
             let connected = loop {
                 tokio::select! {
                     result = tasks.join_next() => {
