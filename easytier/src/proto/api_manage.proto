@@ -83,6 +83,8 @@ message NetworkConfig {
   optional bool disable_tcp_hole_punching = 54;
 
   common.SecureModeConfig secure_mode = 55;
+
+  optional string tld_dns_zone = 56;
 }
 
 message PortForwardConfig {
