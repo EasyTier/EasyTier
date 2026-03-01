@@ -40,7 +40,6 @@ impl PeerCenterRpc for PeerCenterManageRpcService {
                          when multiple instances are running; please use an API that allows \
                          specifying an instance identifier."
                     )
-                    .into()
                 } else {
                     e
                 }
