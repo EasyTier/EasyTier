@@ -308,11 +308,12 @@ impl Default for NetworkIdentity {
 pub struct PeerConfig {
     pub uri: url::Url,
     pub peer_public_key: Option<String>,
-    /// Allow (and force) P2P upgrade for this peer.
-    /// When set to true, the system will continuously try to establish UDP P2P connection
-    /// even if a relay connection (TCP/WebSocket) is already established.
+    /// Try to establish additional connections with these protocols.
+    /// Examples: ["udp", "tcp", "ws", "wss", "wg"]
+    /// The system will try to establish connections for each protocol in this list
+    /// if not already connected via that protocol.
     #[serde(default)]
-    pub allow_p2p_upgrade: Option<bool>,
+    pub try_more_conn: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]

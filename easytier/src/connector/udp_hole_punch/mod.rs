@@ -36,7 +36,6 @@ pub(crate) mod both_easy_sym;
 pub(crate) mod common;
 pub(crate) mod cone;
 pub(crate) mod sym_to_cone;
-pub(crate) mod upgrade;
 
 // sym punch should be serialized
 static SYM_PUNCH_LOCK: Lazy<DashMap<PeerId, Arc<Mutex<()>>>> = Lazy::new(DashMap::new);
@@ -463,33 +462,19 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
 
             // Check if peer already has a connection
             if data.peer_mgr.get_peer_map().has_peer(peer_id) {
-                // Allow P2P upgrade if the peer config has allow_p2p_upgrade = true
-                let global_ctx = data.peer_mgr.get_global_ctx();
-                let peers_config = global_ctx.config.get_peers();
-                
-                // Get peer connections to check their URLs
+                // Get existing connection protocols for this peer
                 let conns = data.peer_mgr.get_peer_map().list_peer_conns(peer_id).await;
-                let mut allow_upgrade = false;
-                
-                if let Some(conns) = conns {
-                    for conn in conns.iter() {
-                        if let Some(tunnel) = &conn.tunnel {
-                            if let Some(remote) = &tunnel.remote_addr {
-                                let conn_url = remote.url.clone();
-                                
-                                allow_upgrade = peers_config.iter().any(|p| {
-                                    p.uri.to_string() == conn_url && p.allow_p2p_upgrade.unwrap_or(false)
-                                });
-                                
-                                if allow_upgrade {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                if !allow_upgrade {
+                let existing_protos: Vec<String> = if let Some(conns) = &conns {
+                    conns.iter()
+                        .filter_map(|c| c.tunnel.as_ref())
+                        .filter_map(|t| Some(t.tunnel_type.clone()))
+                        .collect()
+                } else {
+                    vec![]
+                };
+
+                // If UDP already connected, skip this peer
+                if existing_protos.contains(&"udp".to_string()) {
                     continue;
                 }
             }
@@ -547,7 +532,6 @@ impl PeerTaskLauncher for UdpHolePunchPeerTaskLauncher {
 pub struct UdpHolePunchConnector {
     server: Arc<UdpHolePunchServer>,
     client: PeerTaskManager<UdpHolePunchPeerTaskLauncher>,
-    upgrade_client: PeerTaskManager<upgrade::PeerUpgradeTaskLauncher>,
     peer_mgr: Arc<PeerManager>,
 }
 
@@ -563,14 +547,12 @@ impl UdpHolePunchConnector {
         Self {
             server: UdpHolePunchServer::new(peer_mgr.clone()),
             client: PeerTaskManager::new(UdpHolePunchPeerTaskLauncher {}, peer_mgr.clone()),
-            upgrade_client: PeerTaskManager::new(upgrade::PeerUpgradeTaskLauncher {}, peer_mgr.clone()),
             peer_mgr,
         }
     }
 
     pub async fn run_as_client(&mut self) -> Result<(), Error> {
         self.client.start();
-        self.upgrade_client.start();
         Ok(())
     }
 
