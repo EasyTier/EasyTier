@@ -17,6 +17,7 @@ use crate::{
             logger::LoggerRpcServer,
             manage::WebClientServiceServer,
         },
+        peer_rpc::PeerCenterRpcServer,
         rpc_impl::{service_registry::ServiceRegistry, standalone::StandAloneServer},
         rpc_types::error::Error,
     },
@@ -24,8 +25,9 @@ use crate::{
         acl_manage::AclManageRpcService, config::ConfigRpcService,
         connector_manage::ConnectorManageRpcService, instance_manage::InstanceManageRpcService,
         logger::LoggerRpcService, mapped_listener_manage::MappedListenerManageRpcService,
-        peer_manage::PeerManageRpcService, port_forward_manage::PortForwardManageRpcService,
-        proxy::TcpProxyRpcService, stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
+        peer_center::PeerCenterManageRpcService, peer_manage::PeerManageRpcService,
+        port_forward_manage::PortForwardManageRpcService, proxy::TcpProxyRpcService,
+        stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
     tunnel::{tcp::TcpTunnelListener, TunnelListener},
     web_client::DefaultHooks,
@@ -147,6 +149,11 @@ fn register_api_rpc_service(
             instance_manager.clone(),
             Arc::new(DefaultHooks),
         )),
+        "",
+    );
+
+    registry.register(
+        PeerCenterRpcServer::new(PeerCenterManageRpcService::new(instance_manager.clone())),
         "",
     );
 }
