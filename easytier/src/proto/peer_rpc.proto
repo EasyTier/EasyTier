@@ -2,6 +2,7 @@ syntax = "proto3";
 
 import "google/protobuf/timestamp.proto";
 import "common.proto";
+import "dns.proto";
 
 package peer_rpc;
 
@@ -29,6 +30,8 @@ message RoutePeerInfo {
   repeated PeerGroupInfo groups = 16;
 
   common.NatType tcp_nat_type = 17;
+
+  dns.DnsConfigPb dns = 18;
 }
 
 message PeerIdVersion {

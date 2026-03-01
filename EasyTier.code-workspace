@@ -6,38 +6,6 @@
 		{
 			"name": "core",
 			"path": "easytier"
-		},
-		{
-			"name": "gui",
-			"path": "easytier-gui"
-		},
-		{
-			"name": "web",
-			"path": "easytier-web"
-		},
-		{
-			"name": "ffi",
-			"path": "easytier-contrib/easytier-ffi"
-		},
-		{
-			"name": "magisk",
-			"path": "easytier-contrib/easytier-magisk"
-		},
-		{
-			"name": "openharmony",
-			"path": "easytier-contrib/easytier-ohrs"
-		},
-		{
-			"name": "uptime",
-			"path": "easytier-contrib/easytier-uptime"
-		},
-		{
-			"name": "vpnservice",
-			"path": "tauri-plugin-vpnservice"
-		},
-		{
-			"name": "rpc-build",
-			"path": "easytier-rpc-build"
 		}
 	],
 	"settings": {

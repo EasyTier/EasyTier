@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package dns;
+
+message DnsConfigPb {
+  repeated ZoneConfigPb zones = 1;
+  string name = 2;
+  string domain = 3;
+}
+
+message ZoneConfigPb {
+  common.UUID id = 1;
+  string origin = 2;
+  uint32 ttl = 3;
+  repeated string records = 4;
+  repeated string forwarders = 5;
+}
