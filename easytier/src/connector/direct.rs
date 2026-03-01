@@ -2,7 +2,7 @@
 
 use std::{
     collections::HashSet,
-    net::{Ipv6Addr, SocketAddr},
+    net::{IpAddr, Ipv6Addr, SocketAddr},
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -281,15 +281,11 @@ impl DirectConnectorManagerData {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn spawn_direct_connect_task(
         self: &Arc<DirectConnectorManagerData>,
         dst_peer_id: PeerId,
         ip_list: &GetIpListResponse,
         listener: &url::Url,
-        local_listeners: &[url::Url],
-        local_v4_ips: &HashSet<String>,
-        local_v6_ips: &HashSet<String>,
         tasks: &mut JoinSet<Result<(), Error>>,
     ) {
         let Ok(mut addrs) = socket_addrs(listener, || None).await else {
@@ -299,18 +295,7 @@ impl DirectConnectorManagerData {
         let listener_host = addrs.pop();
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
-        let is_self_connect = |scheme: &str, ip_str: &str, port: u16| -> bool {
-            local_listeners.iter().any(|ll| {
-                ll.scheme() == scheme
-                    && ll.port() == Some(port)
-                    && match ll.host_str() {
-                        Some("0.0.0.0") => local_v4_ips.contains(ip_str),
-                        Some("::") => local_v6_ips.contains(ip_str),
-                        Some(h) => h == ip_str,
-                        None => false,
-                    }
-            })
-        };
+        let is_udp = matches!(listener.scheme(), "udp" | "wg");
 
         match listener_host {
             Some(SocketAddr::V4(s_addr)) => {
@@ -320,7 +305,11 @@ impl DirectConnectorManagerData {
                         .iter()
                         .chain(ip_list.public_ipv4.iter())
                         .for_each(|ip| {
-                            if is_self_connect(listener.scheme(), &ip.to_string(), s_addr.port()) {
+                            let sock_addr = SocketAddr::new(
+                                IpAddr::V4(std::net::Ipv4Addr::from(ip.addr)),
+                                s_addr.port(),
+                            );
+                            if self.global_ctx.should_deny_proxy(&sock_addr, is_udp) {
                                 tracing::debug!(
                                     ?ip,
                                     ?listener,
@@ -345,7 +334,10 @@ impl DirectConnectorManagerData {
                             }
                         });
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
-                    if is_self_connect(listener.scheme(), &s_addr.ip().to_string(), s_addr.port()) {
+                    if self
+                        .global_ctx
+                        .should_deny_proxy(&SocketAddr::from(s_addr), is_udp)
+                    {
                         tracing::debug!(?listener, "skip self-connection (specific IPv4)");
                     } else {
                         tasks.spawn(Self::try_connect_to_ip(
@@ -375,7 +367,9 @@ impl DirectConnectorManagerData {
                         .collect::<HashSet<_>>()
                         .iter()
                         .for_each(|ip| {
-                            if is_self_connect(listener.scheme(), &ip.to_string(), s_addr.port()) {
+                            let sock_addr =
+                                SocketAddr::new(IpAddr::V6(*ip), s_addr.port());
+                            if self.global_ctx.should_deny_proxy(&sock_addr, is_udp) {
                                 tracing::debug!(
                                     ?ip,
                                     ?listener,
@@ -400,7 +394,10 @@ impl DirectConnectorManagerData {
                             }
                         });
                 } else if !s_addr.ip().is_loopback() || TESTING.load(Ordering::Relaxed) {
-                    if is_self_connect(listener.scheme(), &s_addr.ip().to_string(), s_addr.port()) {
+                    if self
+                        .global_ctx
+                        .should_deny_proxy(&SocketAddr::from(s_addr), is_udp)
+                    {
                         tracing::debug!(?listener, "skip self-connection (specific IPv6)");
                     } else {
                         tasks.spawn(Self::try_connect_to_ip(
@@ -440,19 +437,6 @@ impl DirectConnectorManagerData {
             return Err(anyhow::anyhow!("peer {} have no valid listener", dst_peer_id).into());
         }
 
-        let local_listeners = self.global_ctx.get_running_listeners();
-        let local_addrs = self.global_ctx.get_ip_collector().collect_ip_addrs().await;
-        let local_v4_ips: HashSet<String> = local_addrs
-            .interface_ipv4s
-            .iter()
-            .map(|ip| ip.to_string())
-            .collect();
-        let local_v6_ips: HashSet<String> = local_addrs
-            .interface_ipv6s
-            .iter()
-            .map(|ip| ip.to_string())
-            .collect();
-
         let default_protocol = self.global_ctx.get_flags().default_protocol;
         // sort available listeners, default protocol has the highest priority, udp is second, others just random
         // highest priority is in the last
@@ -483,9 +467,6 @@ impl DirectConnectorManagerData {
                     dst_peer_id,
                     &ip_list,
                     listener,
-                    &local_listeners,
-                    &local_v4_ips,
-                    &local_v6_ips,
                     &mut tasks,
                 )
                 .await;
