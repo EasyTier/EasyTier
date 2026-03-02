@@ -301,9 +301,9 @@ impl DirectConnectorManagerData {
         // unspecified-address expansion loops below.
         let local_listeners = self.global_ctx.get_running_listeners();
         let port_has_local_listener = |port: u16| -> bool {
-            local_listeners.iter().any(|l| {
-                l.port() == Some(port) && (matches!(l.scheme(), "udp" | "wg") == is_udp)
-            })
+            local_listeners
+                .iter()
+                .any(|l| l.port() == Some(port) && (matches!(l.scheme(), "udp" | "wg") == is_udp))
         };
 
         match listener_host {
@@ -322,9 +322,7 @@ impl DirectConnectorManagerData {
                                 IpAddr::V4(std::net::Ipv4Addr::from(ip.addr)),
                                 s_addr.port(),
                             );
-                            if check_self
-                                && self.global_ctx.should_deny_proxy(&sock_addr, is_udp)
-                            {
+                            if check_self && self.global_ctx.should_deny_proxy(&sock_addr, is_udp) {
                                 tracing::debug!(
                                     ?ip,
                                     ?listener,
@@ -385,11 +383,8 @@ impl DirectConnectorManagerData {
                         .collect::<HashSet<_>>()
                         .iter()
                         .for_each(|ip| {
-                            let sock_addr =
-                                SocketAddr::new(IpAddr::V6(*ip), s_addr.port());
-                            if check_self
-                                && self.global_ctx.should_deny_proxy(&sock_addr, is_udp)
-                            {
+                            let sock_addr = SocketAddr::new(IpAddr::V6(*ip), s_addr.port());
+                            if check_self && self.global_ctx.should_deny_proxy(&sock_addr, is_udp) {
                                 tracing::debug!(
                                     ?ip,
                                     ?listener,
@@ -483,13 +478,8 @@ impl DirectConnectorManagerData {
                 }
 
                 tracing::debug!("try direct connect to peer with listener: {}", listener);
-                self.spawn_direct_connect_task(
-                    dst_peer_id,
-                    &ip_list,
-                    listener,
-                    &mut tasks,
-                )
-                .await;
+                self.spawn_direct_connect_task(dst_peer_id, &ip_list, listener, &mut tasks)
+                    .await;
 
                 listener_list.push(listener.clone().to_string());
                 available_listeners.pop();
