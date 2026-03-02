@@ -296,10 +296,23 @@ impl DirectConnectorManagerData {
         tracing::info!(?listener_host, ?listener, "try direct connect to peer");
 
         let is_udp = matches!(listener.scheme(), "udp" | "wg");
+        // Snapshot running listeners once; used for cheap port pre-checks before the
+        // expensive should_deny_proxy call (which binds a socket per IP) in the
+        // unspecified-address expansion loops below.
+        let local_listeners = self.global_ctx.get_running_listeners();
+        let port_has_local_listener = |port: u16| -> bool {
+            local_listeners.iter().any(|l| {
+                l.port() == Some(port) && (matches!(l.scheme(), "udp" | "wg") == is_udp)
+            })
+        };
 
         match listener_host {
             Some(SocketAddr::V4(s_addr)) => {
                 if s_addr.ip().is_unspecified() {
+                    // Only pay the should_deny_proxy cost (bind per IP) when a local
+                    // listener actually uses this port+protocol; otherwise the check
+                    // can never return true.
+                    let check_self = port_has_local_listener(s_addr.port());
                     ip_list
                         .interface_ipv4s
                         .iter()
@@ -309,7 +322,9 @@ impl DirectConnectorManagerData {
                                 IpAddr::V4(std::net::Ipv4Addr::from(ip.addr)),
                                 s_addr.port(),
                             );
-                            if self.global_ctx.should_deny_proxy(&sock_addr, is_udp) {
+                            if check_self
+                                && self.global_ctx.should_deny_proxy(&sock_addr, is_udp)
+                            {
                                 tracing::debug!(
                                     ?ip,
                                     ?listener,
@@ -351,6 +366,9 @@ impl DirectConnectorManagerData {
             Some(SocketAddr::V6(s_addr)) => {
                 if s_addr.ip().is_unspecified() {
                     // for ipv6, only try public ip
+                    // Same port pre-check as IPv4: avoid binding per IP when no local
+                    // listener uses this port+protocol.
+                    let check_self = port_has_local_listener(s_addr.port());
                     ip_list
                         .interface_ipv6s
                         .iter()
@@ -369,7 +387,9 @@ impl DirectConnectorManagerData {
                         .for_each(|ip| {
                             let sock_addr =
                                 SocketAddr::new(IpAddr::V6(*ip), s_addr.port());
-                            if self.global_ctx.should_deny_proxy(&sock_addr, is_udp) {
+                            if check_self
+                                && self.global_ctx.should_deny_proxy(&sock_addr, is_udp)
+                            {
                                 tracing::debug!(
                                     ?ip,
                                     ?listener,
