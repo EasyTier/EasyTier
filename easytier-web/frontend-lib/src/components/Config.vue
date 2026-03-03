@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { AutoComplete, Button, Checkbox, Dialog, Divider, InputNumber, InputText, Panel, Password, SelectButton, ToggleButton } from 'primevue'
 import InputGroup from 'primevue/inputgroup'
 import InputGroupAddon from 'primevue/inputgroupaddon'
-import { SelectButton, Checkbox, InputText, InputNumber, AutoComplete, Panel, Divider, ToggleButton, Button, Password, Dialog } from 'primevue'
+import { onMounted, onUnmounted, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   addRow,
   DEFAULT_NETWORK_CONFIG,
@@ -9,8 +11,7 @@ import {
   NetworkingMethod,
   removeRow
 } from '../types/network'
-import { ref, onMounted, onUnmounted } from 'vue'
-import { useI18n } from 'vue-i18n'
+import AclManager from './acl/AclManager.vue'
 
 const props = defineProps<{
   configInvalid?: boolean
@@ -538,6 +539,18 @@ onMounted(() => {
                   </Dialog>
                 </div>
               </div>
+            </div>
+          </Panel>
+
+          <Divider />
+
+          <Panel :header="t('acl.title')" toggleable collapsed>
+            <div v-if="curNetwork.acl" class="flex flex-col gap-y-2">
+              <AclManager v-model="curNetwork.acl" />
+            </div>
+            <div v-else class="flex justify-center p-4">
+              <Button :label="t('acl.enabled')"
+                @click="curNetwork.acl = { acl_v1: { chains: [], group: { declares: [], members: [] } } }" />
             </div>
           </Panel>
 
