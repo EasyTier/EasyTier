@@ -130,10 +130,12 @@ pub async fn run_web_client(
     };
 
     let mut c_url = config_server_url.clone();
-    c_url.set_path("");
+    if !matches!(c_url.scheme(), "ws" | "wss") {
+        c_url.set_path("");
+    }
     let token = config_server_url
         .path_segments()
-        .and_then(|mut x| x.next())
+        .and_then(|mut x| x.next_back())
         .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
         .transpose()
         .with_context(|| "failed to decode config server token")?
