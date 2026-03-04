@@ -577,7 +577,7 @@ impl VirtualNic {
 
     #[cfg(any(
         target_os = "android",
-        any(target_os = "ios", feature = "macos-ne"),
+        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
         target_env = "ohos"
     ))]
     pub async fn create_dev_for_mobile(
@@ -588,7 +588,7 @@ impl VirtualNic {
         let mut config = Configuration::default();
         config.layer(Layer::L3);
 
-        #[cfg(any(target_os = "ios", feature = "macos-ne"))]
+        #[cfg(any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")))]
         config.platform_config(|config| {
             // disable packet information so we can process the header by ourselves, see tun2 impl for more details
             config.packet_information(false);
@@ -598,7 +598,10 @@ impl VirtualNic {
         config.close_fd_on_drop(false);
         config.up();
 
-        let has_packet_info = cfg!(any(target_os = "ios", feature = "macos-ne"));
+        let has_packet_info = cfg!(any(
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne")
+        ));
         let dev = tun::create(&config)?;
         let dev = AsyncDevice::new(dev)?;
         let (a, b) = BiLock::new(dev);
@@ -1174,7 +1177,7 @@ impl NicCtx {
 
     #[cfg(any(
         target_os = "android",
-        any(target_os = "ios", feature = "macos-ne"),
+        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
         target_env = "ohos"
     ))]
     pub async fn run_for_mobile(&mut self, tun_fd: std::os::fd::RawFd) -> Result<(), Error> {
