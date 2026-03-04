@@ -10,8 +10,6 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use base64::Engine;
 use cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr};
 use crossbeam::atomic::AtomicCell;
 use dashmap::DashMap;
@@ -170,8 +168,8 @@ impl RoutePeerInfo {
         let noise_static_pubkey = global_ctx
             .config
             .get_secure_mode()
-            .and_then(|cfg| cfg.local_public_key)
-            .and_then(|key| BASE64_STANDARD.decode(key).ok())
+            .and_then(|cfg| cfg.public_key().ok())
+            .map(|pk| pk.as_bytes().to_vec())
             .unwrap_or_default();
         Self {
             peer_id: my_peer_id,
