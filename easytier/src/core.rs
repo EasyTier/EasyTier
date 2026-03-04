@@ -11,8 +11,8 @@ use crate::{
     common::{
         config::{
             load_config_from_file, process_secure_mode_cfg, ConfigFileControl, ConfigLoader,
-            ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
-            PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            ConsoleLoggerConfig, EncryptionAlgorithm, FileLoggerConfig, LoggingConfigLoader,
+            NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -276,9 +276,9 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        value_parser = get_available_encrypt_methods()
+        value_enum,
     )]
-    encryption_algorithm: Option<String>,
+    encryption_algorithm: Option<EncryptionAlgorithm>,
 
     #[arg(
         long,
@@ -988,7 +988,7 @@ impl NetworkOptions {
             f.enable_encryption = !v;
         }
         if let Some(algorithm) = &self.encryption_algorithm {
-            f.encryption_algorithm = algorithm.clone();
+            f.encryption_algorithm = algorithm.to_string();
         }
         if let Some(v) = self.disable_ipv6 {
             f.enable_ipv6 = !v;
