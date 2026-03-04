@@ -18,6 +18,7 @@ use easytier::{
 use tokio::sync::{broadcast, RwLock};
 
 use super::storage::{Storage, StorageToken, WeakRefStorage};
+use crate::FeatureFlags;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Location {
@@ -29,6 +30,7 @@ pub struct Location {
 #[derive(Debug)]
 pub struct SessionData {
     storage: WeakRefStorage,
+    feature_flags: Arc<FeatureFlags>,
     client_url: url::Url,
 
     storage_token: Option<StorageToken>,
@@ -38,11 +40,17 @@ pub struct SessionData {
 }
 
 impl SessionData {
-    fn new(storage: WeakRefStorage, client_url: url::Url, location: Option<Location>) -> Self {
+    fn new(
+        storage: WeakRefStorage,
+        client_url: url::Url,
+        location: Option<Location>,
+        feature_flags: Arc<FeatureFlags>,
+    ) -> Self {
         let (tx, _rx1) = broadcast::channel(2);
 
         SessionData {
             storage,
+            feature_flags,
             client_url,
             storage_token: None,
             notifier: tx,
@@ -98,7 +106,7 @@ impl SessionRpcService {
             req.machine_id
         ))?;
 
-        let user_id = storage
+        let user_id = match storage
             .db()
             .get_user_id_by_token(req.user_token.clone())
             .await
@@ -107,11 +115,18 @@ impl SessionRpcService {
                     "Failed to get user id by token from db: {:?}",
                     req.user_token
                 )
-            })?
-            .ok_or(anyhow::anyhow!(
-                "User not found by token: {:?}",
-                req.user_token
-            ))?;
+            })? {
+            Some(id) => id,
+            None if data.feature_flags.allow_auto_create_user => storage
+                .auto_create_user(&req.user_token)
+                .await
+                .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
+            None => {
+                return Err(
+                    anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
+                );
+            }
+        };
 
         if data.req.replace(req.clone()).is_none() {
             assert!(data.storage_token.is_none());
@@ -173,8 +188,13 @@ impl Debug for Session {
 type SessionRpcClient = Box<dyn WebClientService<Controller = BaseController> + Send>;
 
 impl Session {
-    pub fn new(storage: WeakRefStorage, client_url: url::Url, location: Option<Location>) -> Self {
-        let session_data = SessionData::new(storage, client_url, location);
+    pub fn new(
+        storage: WeakRefStorage,
+        client_url: url::Url,
+        location: Option<Location>,
+        feature_flags: Arc<FeatureFlags>,
+    ) -> Self {
+        let session_data = SessionData::new(storage, client_url, location, feature_flags);
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =

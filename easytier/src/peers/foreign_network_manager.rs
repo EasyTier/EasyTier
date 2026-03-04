@@ -93,7 +93,8 @@ impl ForeignNetworkEntry {
         pm_packet_sender: PacketRecvChan,
     ) -> Self {
         let stats_mgr = global_ctx.stats_manager().clone();
-        let foreign_global_ctx = Self::build_foreign_global_ctx(&network, global_ctx.clone());
+        let foreign_global_ctx =
+            Self::build_foreign_global_ctx(&network, global_ctx.clone(), relay_data);
 
         let (packet_sender, packet_recv) = create_packet_recv_chan();
 
@@ -158,6 +159,7 @@ impl ForeignNetworkEntry {
     fn build_foreign_global_ctx(
         network: &NetworkIdentity,
         global_ctx: ArcGlobalCtx,
+        relay_data: bool,
     ) -> ArcGlobalCtx {
         let config = TomlConfigLoader::default();
         config.set_network_identity(network.clone());
@@ -180,6 +182,9 @@ impl ForeignNetworkEntry {
 
         let mut feature_flag = global_ctx.get_feature_flags();
         feature_flag.is_public_server = true;
+        if !relay_data {
+            feature_flag.avoid_relay_data = true;
+        }
         foreign_global_ctx.set_feature_flags(feature_flag);
 
         for u in global_ctx.get_running_listeners().into_iter() {
