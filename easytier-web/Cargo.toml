@@ -63,6 +63,9 @@ uuid = { version = "1.5.0", features = [
 ] }
 
 chrono = { version = "0.4.37", features = ["serde"] }
+openidconnect = { version = "4.0", default-features = false, features = ["accept-rfc3339-timestamps", "reqwest"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+subtle = "2.6"
 
 mimalloc = { version = "*" }
 

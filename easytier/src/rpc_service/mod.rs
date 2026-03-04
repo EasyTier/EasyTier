@@ -3,6 +3,7 @@ mod api;
 mod config;
 mod connector_manage;
 mod mapped_listener_manage;
+mod peer_center;
 mod peer_manage;
 mod port_forward_manage;
 mod proxy;
@@ -66,6 +67,14 @@ pub trait InstanceRpcService: Sync + Send {
         &self,
     ) -> &dyn crate::proto::api::config::ConfigRpc<
         Controller = crate::proto::rpc_types::controller::BaseController,
+    >;
+    fn get_peer_center_service(
+        &self,
+    ) -> std::sync::Arc<
+        dyn crate::proto::peer_rpc::PeerCenterRpc<
+                Controller = crate::proto::rpc_types::controller::BaseController,
+            > + Send
+            + Sync,
     >;
 }
 

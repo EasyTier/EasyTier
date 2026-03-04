@@ -242,6 +242,7 @@ web:
     captcha: 验证码
     back_to_login: 返回登录
     login: 登录
+    sso_login: "SSO 登录"
 
   register:
     title: 注册
