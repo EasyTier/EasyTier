@@ -13,10 +13,11 @@ use easytier::{
         config::{ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader},
         constants::EASYTIER_VERSION,
         error::Error,
+        log,
         network::{local_ipv4, local_ipv6},
     },
     tunnel::{tcp::TcpTunnelListener, udp::UdpTunnelListener, TunnelListener},
-    utils::{init_logger, setup_panic_handler},
+    utils::setup_panic_handler,
 };
 
 use mimalloc::MiMalloc;
@@ -205,7 +206,7 @@ async fn main() {
     setup_panic_handler();
 
     let cli = Cli::parse();
-    init_logger(&cli, false).unwrap();
+    log::init(&cli, false).unwrap();
 
     // Validate OIDC configuration: check split-deploy specific requirements
     // Basic OIDC parameter validation is handled in OidcConfig::from_params
