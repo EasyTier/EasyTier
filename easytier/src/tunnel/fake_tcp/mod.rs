@@ -366,7 +366,9 @@ impl crate::tunnel::TunnelConnector for FakeTcpTunnelConnector {
     }
 }
 
-use crate::tunnel::packet_def::{ZCPacket, ZCPacketType};
+use crate::tunnel::packet_def::{
+    ZCPacket, ZCPacketType, PEER_MANAGER_HEADER_SIZE, TCP_TUNNEL_HEADER_SIZE,
+};
 use crate::tunnel::{SinkError, SinkItem, StreamItem};
 use futures::{Sink, Stream};
 use std::task::{Context as TaskContext, Poll};
@@ -407,7 +409,18 @@ impl Stream for FakeTcpStream {
                     let packet = ZCPacket::new_from_buf(buf, ZCPacketType::TCP);
                     if let Some(tcp_hdr) = packet.tcp_tunnel_header() {
                         let expected_payload_len = tcp_hdr.len.get() as usize;
-                        if expected_payload_len <= buf_len && expected_payload_len != 0 {
+                        let min_packet_len = TCP_TUNNEL_HEADER_SIZE + PEER_MANAGER_HEADER_SIZE;
+                        if expected_payload_len < min_packet_len {
+                            tracing::warn!(
+                                "drop fake tcp packet with invalid length: expected_payload_len={}, min_required={}",
+                                expected_payload_len,
+                                min_packet_len
+                            );
+                            s.state = FakeTcpStreamState::Closed;
+                            return Poll::Ready(None);
+                        }
+
+                        if expected_payload_len <= buf_len {
                             let mut buf = packet.inner();
                             let new_inner = buf.split_to(expected_payload_len);
                             s.state = FakeTcpStreamState::ConsumingBuf(buf);
