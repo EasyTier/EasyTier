@@ -7,8 +7,10 @@ use std::{
 
 use anyhow::Context;
 use cfg_if::cfg_if;
+use clap::builder::PossibleValue;
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
-use strum::{Display, EnumString};
+use strum::{Display, EnumString, VariantArray};
 use tokio::io::AsyncReadExt as _;
 
 use crate::{
@@ -67,7 +69,7 @@ pub fn gen_default_flags() -> Flags {
     }
 }
 
-#[derive(Debug, Display, EnumString)]
+#[derive(Debug, Clone, PartialEq, Eq, Display, EnumString, VariantArray)]
 #[strum(ascii_case_insensitive)]
 pub enum EncryptionAlgorithm {
     #[strum(serialize = "xor")]
@@ -94,6 +96,20 @@ pub enum EncryptionAlgorithm {
     OpensslChaCha20,
 }
 
+impl ValueEnum for EncryptionAlgorithm {
+    fn value_variants<'a>() -> &'a [Self] {
+        Self::VARIANTS
+    }
+
+    fn from_str(input: &str, _ignore_case: bool) -> Result<Self, String> {
+        input.parse().map_err(|_| format!("'{}' is not a valid encryption algorithm", input))
+    }
+
+    fn to_possible_value(&self) -> Option<PossibleValue> {
+        Some(PossibleValue::new(self.to_string()))
+    }
+}
+
 #[allow(clippy::derivable_impls)]
 impl Default for EncryptionAlgorithm {
     fn default() -> Self {
@@ -107,24 +123,6 @@ impl Default for EncryptionAlgorithm {
             }
         }
     }
-}
-
-pub fn get_available_encrypt_methods() -> Vec<&'static str> {
-    let mut r = vec!["xor"];
-    if cfg!(feature = "aes-gcm") || cfg!(feature = "wireguard") {
-        r.extend(vec!["aes-gcm", "aes-256-gcm"]);
-    }
-    if cfg!(feature = "wireguard") {
-        r.push("chacha20");
-    }
-    if cfg!(feature = "openssl-crypto") {
-        r.extend(vec![
-            "openssl-aes-gcm",
-            "openssl-aes-256-gcm",
-            "openssl-chacha20",
-        ]);
-    }
-    r
 }
 
 #[auto_impl::auto_impl(Box, &)]
