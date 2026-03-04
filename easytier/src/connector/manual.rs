@@ -315,10 +315,12 @@ impl ManualConnectorManager {
         for ip_version in ip_versions {
             let use_long_timeout = dead_url.scheme() == "http"
                 || dead_url.scheme() == "https"
+                || dead_url.scheme() == "ws"
+                || dead_url.scheme() == "wss"
                 || dead_url.scheme() == "txt"
                 || dead_url.scheme() == "srv";
             let ret = timeout(
-                // allow http connector to wait longer
+                // allow http/websocket connector to wait longer
                 std::time::Duration::from_secs(if use_long_timeout { 20 } else { 2 }),
                 Self::conn_reconnect_with_ip_version(
                     data.clone(),

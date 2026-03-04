@@ -39,6 +39,9 @@ tracing-subscriber = { version = "0.3", features = [
 derivative = "2.2.0"
 derive_more = {version = "2.1.1", features = ["full"]}
 console-subscriber = { version = "0.4.1", optional = true }
+indoc = "2.0.7"
+regex = "1.8"
+paste = "1.0"
 thiserror = "1.0"
 auto_impl = "1.1.0"
 crossbeam = "0.8.4"
@@ -72,7 +75,7 @@ quinn = { version = "0.11.8", optional = true, features = ["ring"] }
 quinn-plaintext = { version = "0.3.0", optional = true }
 
 rustls = { version = "0.23.0", features = [
-    "ring",
+    "ring","tls12"
 ], default-features = false, optional = true }
 rcgen = { version = "0.12.1", optional = true }
 

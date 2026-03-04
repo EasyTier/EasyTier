@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     common::{
-        config::TomlConfigLoader, global_ctx::GlobalCtx, scoped_task::ScopedTask,
+        config::TomlConfigLoader, global_ctx::GlobalCtx, log, scoped_task::ScopedTask,
         set_default_machine_id, stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
@@ -87,18 +87,16 @@ impl WebClient {
         loop {
             let conn = match connector.connect().await {
                 Ok(conn) => conn,
-                Err(e) => {
-                    println!(
-                        "Failed to connect to the server ({}), retrying in 5 seconds...",
-                        e
-                    );
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                Err(error) => {
+                    let wait = 1;
+                    log::warn!(%error, "Failed to connect to the server, retrying in {} seconds...", wait);
+                    tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                     continue;
                 }
             };
 
             connected.store(true, Ordering::Release);
-            println!("Successfully connected to {:?}", conn.info());
+            log::info!("Successfully connected to {:?}", conn.info());
 
             let mut session = session::Session::new(conn, controller.clone());
             session.wait().await;
@@ -130,10 +128,12 @@ pub async fn run_web_client(
     };
 
     let mut c_url = config_server_url.clone();
-    c_url.set_path("");
+    if !matches!(c_url.scheme(), "ws" | "wss") {
+        c_url.set_path("");
+    }
     let token = config_server_url
         .path_segments()
-        .and_then(|mut x| x.next())
+        .and_then(|mut x| x.next_back())
         .map(|x| percent_encoding::percent_decode_str(x).decode_utf8())
         .transpose()
         .with_context(|| "failed to decode config server token")?
