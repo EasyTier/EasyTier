@@ -331,17 +331,23 @@ impl RelayPeerMap {
         let out_len = hs
             .write_message(&payload, &mut out)
             .map_err(|e| Error::RouteError(Some(format!("noise write msg1 failed: {e:?}"))))?;
-        self.send_handshake_packet(
-            out[..out_len].to_vec(),
-            PacketType::RelayHandshake,
-            dst_peer_id,
-            policy,
-        )
-        .await?;
-
         let server_handshake_hash = hs.get_handshake_hash().to_vec();
         let (tx, rx) = oneshot::channel();
         self.pending_handshakes.insert(dst_peer_id, tx);
+
+        let send_res = self
+            .send_handshake_packet(
+                out[..out_len].to_vec(),
+                PacketType::RelayHandshake,
+                dst_peer_id,
+                policy,
+            )
+            .await;
+
+        if send_res.is_err() {
+            self.pending_handshakes.remove(&dst_peer_id);
+        }
+        send_res?;
         let msg2_pkt = match timeout(Duration::from_secs(HANDSHAKE_TIMEOUT_SECS), rx).await {
             Ok(Ok(pkt)) => pkt,
             Ok(Err(_)) => {
