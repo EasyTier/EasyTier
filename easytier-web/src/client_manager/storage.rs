@@ -21,7 +21,6 @@ struct ClientInfo {
 
 #[derive(Debug)]
 pub struct StorageInner {
-    // some map for indexing
     user_clients_map: DashMap<UserIdInDb, DashMap<uuid::Uuid, ClientInfo>>,
     pub db: Db,
 }
@@ -122,5 +121,11 @@ impl Storage {
 
     pub fn db(&self) -> &Db {
         &self.0.db
+    }
+
+    pub async fn auto_create_user(&self, username: &str) -> anyhow::Result<UserIdInDb> {
+        let new_user = self.db().auto_create_user(username).await?;
+        tracing::info!("Auto-created user '{}' with id {}", username, new_user.id);
+        Ok(new_user.id)
     }
 }

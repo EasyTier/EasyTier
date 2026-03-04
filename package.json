@@ -1,0 +1,9 @@
+{
+  "name": "easytier-monorepo",
+  "private": true,
+  "pnpm": {
+    "overrides": {
+      "minimatch": "10.2.4"
+    }
+  }
+}
