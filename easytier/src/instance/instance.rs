@@ -115,7 +115,10 @@ impl IpProxy {
             tracing::error!("start icmp proxy failed: {:?}", e);
             if cfg!(not(any(
                 target_os = "android",
-                any(target_os = "ios", feature = "macos-ne"),
+                any(
+                    target_os = "ios",
+                    all(target_os = "macos", feature = "macos-ne")
+                ),
                 target_env = "ohos"
             ))) {
                 // android, ios and ohos not support icmp proxy
@@ -805,7 +808,7 @@ impl Instance {
                     #[cfg(all(
                         not(any(
                             target_os = "android",
-                            any(target_os = "ios", feature = "macos-ne"),
+                            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
                             target_env = "ohos"
                         )),
                         feature = "tun"
@@ -853,7 +856,7 @@ impl Instance {
     #[cfg(all(
         not(any(
             target_os = "android",
-            any(target_os = "ios", feature = "macos-ne"),
+            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
             target_env = "ohos"
         )),
         feature = "tun"
@@ -947,7 +950,7 @@ impl Instance {
 
             #[cfg(not(any(
                 target_os = "android",
-                any(target_os = "ios", feature = "macos-ne"),
+                any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
                 target_env = "ohos"
             )))]
             if !self.global_ctx.config.get_flags().no_tun {
@@ -1463,7 +1466,7 @@ impl Instance {
 
     #[cfg(any(
         target_os = "android",
-        any(target_os = "ios", feature = "macos-ne"),
+        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
         target_env = "ohos"
     ))]
     pub async fn setup_nic_ctx_for_mobile(

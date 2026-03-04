@@ -539,7 +539,10 @@ impl<C: NatDstConnector> TcpProxy<C> {
             || self.global_ctx.no_tun()
             || cfg!(any(
                 target_os = "android",
-                any(target_os = "ios", feature = "macos-ne"),
+                any(
+                    target_os = "ios",
+                    all(target_os = "macos", feature = "macos-ne")
+                ),
                 target_env = "ohos"
             ))
         {
