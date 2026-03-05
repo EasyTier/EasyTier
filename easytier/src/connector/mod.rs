@@ -36,7 +36,10 @@ async fn set_bind_addr_for_peer_connector(
 ) {
     if cfg!(any(
         target_os = "android",
-        any(target_os = "ios", feature = "macos-ne"),
+        any(
+            target_os = "ios",
+            all(target_os = "macos", feature = "macos-ne")
+        ),
         target_env = "ohos"
     )) {
         return;
