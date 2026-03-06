@@ -42,6 +42,11 @@ const protos: { [proto: string]: number } = {
   srv: 0,
 }
 
+const listenerExcludedProtos = new Set(['http', 'https', 'txt', 'srv'])
+const listenerProtos: { [proto: string]: number } = Object.fromEntries(
+  Object.entries(protos).filter(([proto]) => !listenerExcludedProtos.has(proto))
+)
+
 const inetSuggestions = ref([''])
 
 function searchInetSuggestions(e: { query: string }) {
@@ -283,8 +288,8 @@ watch(() => curNetwork.value, syncNormalizedNetwork, { immediate: true, deep: fa
               <div class="flex flex-row gap-x-9 flex-wrap">
                 <div class="flex flex-col gap-2 grow p-fluid">
                   <label for="listener_urls">{{ t('listener_urls') }}</label>
-                  <UrlListInput v-model="curNetwork.listener_urls" :protos="protos" :add-label="t('add_listener_url')"
-                    placeholder="0.0.0.0" />
+                  <UrlListInput v-model="curNetwork.listener_urls" :protos="listenerProtos"
+                    :add-label="t('add_listener_url')" placeholder="0.0.0.0" />
                 </div>
               </div>
 
