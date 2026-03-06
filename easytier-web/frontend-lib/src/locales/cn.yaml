@@ -19,6 +19,7 @@ basic_settings: 基础设置
 listener_urls: 监听地址
 rpc_port: RPC端口
 port: 端口
+path: 路径
 rpc_portal_whitelists: RPC白名单
 config_network: 配置网络
 running: 运行中
