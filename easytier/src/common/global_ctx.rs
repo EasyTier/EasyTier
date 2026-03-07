@@ -1,14 +1,19 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::{
     hash::Hasher,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
+
+use arc_swap::ArcSwap;
 
 use crate::common::config::ProxyNetworkConfig;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
+use crate::peers::credential_manager::CredentialManager;
 use crate::proto::acl::GroupIdentity;
 use crate::proto::api::config::InstanceConfigPatch;
 use crate::proto::api::instance::PeerConnInfo;
@@ -59,10 +64,42 @@ pub enum GlobalCtxEvent {
     ConfigPatched(InstanceConfigPatch),
 
     ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
+
+    CredentialChanged,
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
+
+/// Source of a trusted public key from OSPF route propagation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedKeySource {
+    /// Peer node's noise static pubkey
+    OspfNode,
+    /// Admin-declared trusted credential pubkey
+    OspfCredential,
+}
+
+/// Metadata for a trusted public key
+#[derive(Debug, Clone)]
+pub struct TrustedKeyMetadata {
+    pub source: TrustedKeySource,
+    /// Expiry time in Unix seconds. None means never expires.
+    pub expiry_unix: Option<i64>,
+}
+
+impl TrustedKeyMetadata {
+    pub fn is_expired(&self) -> bool {
+        if let Some(expiry) = self.expiry_unix {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            return now >= expiry;
+        }
+        false
+    }
+}
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -97,6 +134,12 @@ pub struct GlobalCtx {
     stats_manager: Arc<StatsManager>,
 
     acl_filter: Arc<AclFilter>,
+
+    credential_manager: Arc<CredentialManager>,
+
+    /// OSPF propagated trusted keys (peer pubkeys and admin credentials)
+    /// Stored in ArcSwap for lock-free reads and atomic batch updates
+    trusted_keys: ArcSwap<HashMap<Vec<u8>, TrustedKeyMetadata>>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -152,6 +195,9 @@ impl GlobalCtx {
             ..Default::default()
         };
 
+        let credential_storage_path = config_fs.get_credential_file();
+        let credential_manager = Arc::new(CredentialManager::new(credential_storage_path));
+
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -187,6 +233,10 @@ impl GlobalCtx {
             stats_manager: Arc::new(StatsManager::new()),
 
             acl_filter: Arc::new(AclFilter::new()),
+
+            credential_manager,
+
+            trusted_keys: ArcSwap::new(Arc::new(HashMap::new())),
         }
     }
 
@@ -402,6 +452,31 @@ impl GlobalCtx {
 
     pub fn get_acl_filter(&self) -> &Arc<AclFilter> {
         &self.acl_filter
+    }
+
+    pub fn get_credential_manager(&self) -> &Arc<CredentialManager> {
+        &self.credential_manager
+    }
+
+    /// Check if a public key is trusted using two-level lookup:
+    /// 1. OSPF propagated trusted_keys (lock-free)
+    /// 2. Local credential_manager
+    pub fn is_pubkey_trusted(&self, pubkey: &[u8]) -> bool {
+        // First level: check OSPF propagated keys (lock-free)
+        let keys = self.trusted_keys.load();
+        if let Some(metadata) = keys.get(pubkey) {
+            return !metadata.is_expired();
+        }
+        drop(keys);
+
+        // Second level: check local credential_manager
+        self.credential_manager.is_pubkey_trusted(pubkey)
+    }
+
+    /// Atomically replace all OSPF trusted keys with a new set
+    /// Called by OSPF route layer after each route update
+    pub fn update_trusted_keys(&self, keys: HashMap<Vec<u8>, TrustedKeyMetadata>) {
+        self.trusted_keys.store(Arc::new(keys));
     }
 
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {

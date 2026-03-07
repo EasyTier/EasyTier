@@ -216,6 +216,11 @@ pub trait ConfigLoader: Send + Sync {
     fn get_secure_mode(&self) -> Option<SecureModeConfig>;
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
 
+    fn get_credential_file(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
+
     fn dump(&self) -> String;
 }
 
@@ -294,6 +299,16 @@ impl NetworkIdentity {
             network_name,
             network_secret: Some(network_secret),
             network_secret_digest: Some(network_secret_digest),
+        }
+    }
+
+    /// Create a NetworkIdentity for a credential node (no network_secret).
+    /// The node identifies by network_name only and authenticates via credential keypair.
+    pub fn new_credential(network_name: String) -> Self {
+        NetworkIdentity {
+            network_name,
+            network_secret: None,
+            network_secret_digest: None,
         }
     }
 }
@@ -428,6 +443,8 @@ struct Config {
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
+
+    credential_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -819,6 +836,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) {
         self.config.lock().unwrap().secure_mode = secure_mode;
+    }
+
+    fn get_credential_file(&self) -> Option<PathBuf> {
+        self.config.lock().unwrap().credential_file.clone()
+    }
+
+    fn set_credential_file(&self, path: Option<PathBuf>) {
+        self.config.lock().unwrap().credential_file = path;
     }
 
     fn dump(&self) -> String {

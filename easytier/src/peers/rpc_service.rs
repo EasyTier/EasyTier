@@ -1,17 +1,21 @@
 use std::{
     ops::Deref,
     sync::{Arc, Weak},
+    time::Duration,
 };
 
 use crate::{
     proto::{
         api::instance::{
-            AclManageRpc, DumpRouteRequest, DumpRouteResponse, GetAclStatsRequest,
+            AclManageRpc, CredentialManageRpc, DumpRouteRequest, DumpRouteResponse,
+            GenerateCredentialRequest, GenerateCredentialResponse, GetAclStatsRequest,
             GetAclStatsResponse, GetForeignNetworkSummaryRequest, GetForeignNetworkSummaryResponse,
-            GetWhitelistRequest, GetWhitelistResponse, ListForeignNetworkRequest,
-            ListForeignNetworkResponse, ListGlobalForeignNetworkRequest,
-            ListGlobalForeignNetworkResponse, ListPeerRequest, ListPeerResponse, ListRouteRequest,
-            ListRouteResponse, PeerInfo, PeerManageRpc, ShowNodeInfoRequest, ShowNodeInfoResponse,
+            GetWhitelistRequest, GetWhitelistResponse, ListCredentialsRequest,
+            ListCredentialsResponse, ListForeignNetworkRequest, ListForeignNetworkResponse,
+            ListGlobalForeignNetworkRequest, ListGlobalForeignNetworkResponse, ListPeerRequest,
+            ListPeerResponse, ListRouteRequest, ListRouteResponse, PeerInfo, PeerManageRpc,
+            RevokeCredentialRequest, RevokeCredentialResponse, ShowNodeInfoRequest,
+            ShowNodeInfoResponse,
         },
         rpc_types::{self, controller::BaseController},
     },
@@ -198,6 +202,80 @@ impl AclManageRpc for PeerManagerRpcService {
         Ok(GetWhitelistResponse {
             tcp_ports,
             udp_ports,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialManageRpc for PeerManagerRpcService {
+    type Controller = BaseController;
+
+    async fn generate_credential(
+        &self,
+        _: BaseController,
+        request: GenerateCredentialRequest,
+    ) -> Result<GenerateCredentialResponse, rpc_types::error::Error> {
+        let pm = weak_upgrade(&self.peer_manager)?;
+        let global_ctx = pm.get_global_ctx();
+
+        if global_ctx.get_network_identity().network_secret.is_none() {
+            return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!(
+                "only admin nodes (with network_secret) can generate credentials"
+            )));
+        }
+
+        let ttl = if request.ttl_seconds > 0 {
+            Duration::from_secs(request.ttl_seconds as u64)
+        } else {
+            return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!(
+                "ttl_seconds must be positive"
+            )));
+        };
+
+        let (id, secret) = global_ctx.get_credential_manager().generate_credential(
+            request.groups,
+            request.allow_relay,
+            request.allowed_proxy_cidrs,
+            ttl,
+        );
+
+        global_ctx.issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
+
+        Ok(GenerateCredentialResponse {
+            credential_id: id,
+            credential_secret: secret,
+        })
+    }
+
+    async fn revoke_credential(
+        &self,
+        _: BaseController,
+        request: RevokeCredentialRequest,
+    ) -> Result<RevokeCredentialResponse, rpc_types::error::Error> {
+        let pm = weak_upgrade(&self.peer_manager)?;
+        let global_ctx = pm.get_global_ctx();
+
+        let success = global_ctx
+            .get_credential_manager()
+            .revoke_credential(&request.credential_id);
+
+        if success {
+            global_ctx.issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
+        }
+
+        Ok(RevokeCredentialResponse { success })
+    }
+
+    async fn list_credentials(
+        &self,
+        _: BaseController,
+        _request: ListCredentialsRequest,
+    ) -> Result<ListCredentialsResponse, rpc_types::error::Error> {
+        let pm = weak_upgrade(&self.peer_manager)?;
+        let global_ctx = pm.get_global_ctx();
+
+        Ok(ListCredentialsResponse {
+            credentials: global_ctx.get_credential_manager().list_credentials(),
         })
     }
 }

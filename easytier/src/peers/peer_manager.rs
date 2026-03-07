@@ -43,7 +43,8 @@ use crate::{
             ListGlobalForeignNetworkResponse,
         },
         peer_rpc::{
-            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkSummary,
+            ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
+            RouteForeignNetworkSummary,
         },
     },
     tunnel::{
@@ -374,12 +375,34 @@ impl PeerManager {
     }
 
     async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        if self.global_ctx.get_network_identity() != peer_conn.get_network_identity() {
+        let my_identity = self.global_ctx.get_network_identity();
+        let peer_identity = peer_conn.get_network_identity();
+
+        // For credential nodes, network_secret_digest is either None or all-zeros
+        // (all-zeros when received over the wire via handshake).
+        // In this case, only compare network_name.
+        let my_digest_empty = my_identity
+            .network_secret_digest
+            .as_ref()
+            .is_none_or(|d| d.iter().all(|b| *b == 0));
+        let peer_digest_empty = peer_identity
+            .network_secret_digest
+            .as_ref()
+            .is_none_or(|d| d.iter().all(|b| *b == 0));
+
+        let identity_ok = if my_digest_empty || peer_digest_empty {
+            // Credential node: only check network_name
+            my_identity.network_name == peer_identity.network_name
+        } else {
+            my_identity == peer_identity
+        };
+
+        if !identity_ok {
             return Err(Error::SecretKeyError(
                 "network identity not match".to_string(),
             ));
         }
-        self.peers.add_new_peer_conn(peer_conn).await;
+        self.peers.add_new_peer_conn(peer_conn).await?;
         Ok(())
     }
 
@@ -414,7 +437,7 @@ impl PeerManager {
         {
             self.add_new_peer_conn(peer).await?;
         } else {
-            self.foreign_network_client.add_new_peer_conn(peer).await;
+            self.foreign_network_client.add_new_peer_conn(peer).await?;
         }
         Ok((peer_id, conn_id))
     }
@@ -674,6 +697,12 @@ impl PeerManager {
         let secure_mode_enabled = self.is_secure_mode_enabled;
         let stats_mgr = self.global_ctx.stats_manager().clone();
         let route = self.get_route();
+        let is_credential_node = self
+            .global_ctx
+            .get_network_identity()
+            .network_secret
+            .is_none()
+            && secure_mode_enabled;
 
         let label_set =
             LabelSet::new().with_label_type(LabelType::NetworkName(global_ctx.get_network_name()));
@@ -718,6 +747,17 @@ impl PeerManager {
                 if to_peer_id != my_peer_id {
                     if hdr.forward_counter > 7 {
                         tracing::warn!(?hdr, "forward counter exceed, drop packet");
+                        continue;
+                    }
+
+                    // Step 10b: credential nodes don't forward handshake packets
+                    if is_credential_node
+                        && (hdr.packet_type == PacketType::HandShake as u8
+                            || hdr.packet_type == PacketType::NoiseHandshakeMsg1 as u8
+                            || hdr.packet_type == PacketType::NoiseHandshakeMsg2 as u8
+                            || hdr.packet_type == PacketType::NoiseHandshakeMsg3 as u8)
+                    {
+                        tracing::debug!("credential node dropping forwarded handshake packet");
                         continue;
                     }
 
@@ -932,6 +972,11 @@ impl PeerManager {
 
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
+            }
+
+            async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+                let peer_map = self.peers.upgrade()?;
+                peer_map.get_peer_identity_type(peer_id)
             }
 
             async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
@@ -1965,7 +2010,7 @@ mod tests {
                         return false;
                     };
                     conns.iter().any(|c| {
-                        c.secure_auth_level == SecureAuthLevel::SharedNodePubkeyVerified as i32
+                        c.secure_auth_level == SecureAuthLevel::PeerVerified as i32
                             && c.noise_local_static_pubkey.len() == 32
                             && c.noise_remote_static_pubkey.len() == 32
                     })

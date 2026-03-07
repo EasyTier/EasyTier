@@ -16,7 +16,7 @@ use crate::{
     },
     proto::{
         api::instance::{self, PeerConnInfo},
-        peer_rpc::RoutePeerInfo,
+        peer_rpc::{PeerIdentityType, RoutePeerInfo},
     },
     tunnel::{packet_def::ZCPacket, TunnelError},
 };
@@ -56,18 +56,19 @@ impl PeerMap {
             .issue_event(GlobalCtxEvent::PeerAdded(peer_id));
     }
 
-    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
+    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         let _ = self.maintain_alive_client_urls(&peer_conn);
         let peer_id = peer_conn.get_peer_id();
         let no_entry = self.peer_map.get(&peer_id).is_none();
         if no_entry {
             let new_peer = Peer::new(peer_id, self.packet_send.clone(), self.global_ctx.clone());
-            new_peer.add_peer_conn(peer_conn).await;
+            new_peer.add_peer_conn(peer_conn).await?;
             self.add_new_peer(new_peer).await;
         } else {
             let peer = self.peer_map.get(&peer_id).unwrap().clone();
-            peer.add_peer_conn(peer_conn).await;
+            peer.add_peer_conn(peer_conn).await?;
         }
+        Ok(())
     }
 
     fn maintain_alive_client_urls(&self, peer_conn: &PeerConn) -> Option<()> {
@@ -300,6 +301,11 @@ impl PeerMap {
     pub async fn get_peer_default_conn_id(&self, peer_id: PeerId) -> Option<PeerConnId> {
         self.get_peer_by_id(peer_id)
             .map(|p| p.get_default_conn_id())
+    }
+
+    pub fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+        self.get_peer_by_id(peer_id)
+            .and_then(|p| p.get_peer_identity_type())
     }
 
     pub async fn close_peer_conn(

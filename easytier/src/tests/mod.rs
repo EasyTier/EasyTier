@@ -3,6 +3,11 @@ mod three_node;
 
 mod ipv6_test;
 
+#[cfg(target_os = "linux")]
+mod credential_tests;
+
+use std::io::IsTerminal as _;
+
 use crate::common::PeerId;
 use crate::peers::peer_manager::PeerManager;
 
@@ -126,9 +131,12 @@ pub fn enable_log() {
         .from_env()
         .unwrap()
         .add_directive("tarpc=error".parse().unwrap());
+    let use_ansi = std::io::stderr().is_terminal();
     tracing_subscriber::fmt::fmt()
         .pretty()
+        .with_ansi(use_ansi)
         .with_env_filter(filter)
+        .with_writer(std::io::stderr)
         .init();
 }
 
@@ -199,4 +207,46 @@ fn set_link_status(net_ns: &str, up: bool) {
         .output()
         .unwrap();
     tracing::info!("set link status: {:?}, net_ns: {}, up: {}", ret, net_ns, up);
+}
+
+pub async fn drop_insts(insts: Vec<crate::instance::instance::Instance>) {
+    let mut set = tokio::task::JoinSet::new();
+    for mut inst in insts {
+        set.spawn(async move {
+            inst.clear_resources().await;
+            let pm = std::sync::Arc::downgrade(&inst.get_peer_manager());
+            drop(inst);
+            let now = std::time::Instant::now();
+            while now.elapsed().as_secs() < 5 && pm.strong_count() > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            assert_eq!(pm.strong_count(), 0, "PeerManager should be dropped");
+        });
+    }
+    while set.join_next().await.is_some() {}
+}
+
+pub async fn ping_test(from_netns: &str, target_ip: &str, payload_size: Option<usize>) -> bool {
+    use crate::common::netns::{NetNS, ROOT_NETNS_NAME};
+    let _g = NetNS::new(Some(ROOT_NETNS_NAME.to_owned())).guard();
+    let code = tokio::process::Command::new("ip")
+        .args([
+            "netns",
+            "exec",
+            from_netns,
+            "ping",
+            "-c",
+            "1",
+            "-s",
+            payload_size.unwrap_or(56).to_string().as_str(),
+            "-W",
+            "1",
+            target_ip.to_string().as_str(),
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .unwrap();
+    code.code().unwrap() == 0
 }

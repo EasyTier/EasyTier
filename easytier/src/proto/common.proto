@@ -216,6 +216,7 @@ message PeerFeatureFlag {
   bool support_conn_list_sync = 5;
   bool quic_input = 6;
   bool no_relay_quic = 7;
+  bool is_credential_peer = 8;
 }
 
 enum SocketType {
