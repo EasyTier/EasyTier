@@ -2893,13 +2893,13 @@ pub async fn relay_peer_e2e_encryption(#[values("tcp", "udp")] proto: &str) {
 }
 
 /// Test Relay Peer session cleanup on relay failure - TCP
-#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-pub async fn relay_peer_session_cleanup_tcp(#[values("tcp", "udp")] proto: &str) {
-    // Initialize three nodes with secure mode enabled in config phase
+pub async fn relay_peer_session_cleanup() {
+    use crate::peers::route_trait::NextHopPolicy;
+
     let mut insts = init_three_node_ex(
-        proto,
+        "tcp",
         |cfg| {
             cfg.set_secure_mode(Some(generate_secure_mode_config()));
             cfg
@@ -2908,39 +2908,55 @@ pub async fn relay_peer_session_cleanup_tcp(#[values("tcp", "udp")] proto: &str)
     )
     .await;
 
+    let inst2_peer_id = insts[1].peer_id();
     let inst3_peer_id = insts[2].peer_id();
+    let relay_map_1 = insts[0].get_peer_manager().get_relay_peer_map();
 
-    // Establish initial connectivity
     wait_for_condition(
         || async { ping_test("net_a", "10.144.144.3", None).await },
-        Duration::from_secs(10),
+        Duration::from_secs(6),
     )
     .await;
 
-    // Verify relay session exists
-    let relay_map_1 = insts[0].get_peer_manager().get_relay_peer_map();
     wait_for_condition(
-        || async { relay_map_1.has_state(inst3_peer_id) },
-        Duration::from_secs(5),
+        || async { relay_map_1.has_state(inst3_peer_id) && relay_map_1.has_session(inst3_peer_id) },
+        Duration::from_secs(3),
     )
     .await;
 
-    // Simulate relay node failure by dropping inst2
+    let next_hop = insts[0]
+        .get_peer_manager()
+        .get_peer_map()
+        .get_gateway_peer_id(inst3_peer_id, NextHopPolicy::LeastHop)
+        .await;
+    assert_eq!(next_hop, Some(inst2_peer_id));
+
     let mut inst2 = insts.remove(1);
     inst2.clear_resources().await;
     drop(inst2);
 
-    // Give time for route updates
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    wait_for_condition(
+        || async {
+            let routes = insts[0].get_peer_manager().list_routes().await;
+            !routes.iter().any(|r| r.peer_id == inst3_peer_id)
+        },
+        Duration::from_secs(6),
+    )
+    .await;
 
-    // Verify route to inst3 is gone
-    // Note: after remove(1), insts now contains [inst1, inst3] where inst3 is at index 1
-    let routes = insts[0].get_peer_manager().list_routes().await;
-    assert!(
-        !routes.iter().any(|r| r.peer_id == inst3_peer_id),
-        "Route to inst3 should be removed after relay node failure"
-    );
+    relay_map_1.evict_idle_sessions(Duration::from_millis(0));
+    assert!(!relay_map_1.has_state(inst3_peer_id));
 
-    // Cleanup remaining instances
+    insts[0]
+        .get_peer_manager()
+        .get_peer_session_store()
+        .evict_unused_sessions();
+
+    wait_for_condition(
+        || async { !relay_map_1.has_session(inst3_peer_id) },
+        Duration::from_secs(1),
+    )
+    .await;
+
     drop_insts(insts).await;
 }
