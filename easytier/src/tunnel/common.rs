@@ -531,7 +531,13 @@ pub mod tests {
             _tunnel_echo_server(ret, false).await
         });
 
-        let tunnel = c_netns.run_async(|| connector.connect()).await.unwrap();
+        let tunnel = tokio::time::timeout(
+            tokio::time::Duration::from_millis(100),
+            c_netns.run_async(|| connector.connect()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         println!("connect: {:?}", tunnel.info());
 
         if connector.remote_url().scheme() == "faketcp" {
