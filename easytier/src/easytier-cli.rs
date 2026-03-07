@@ -37,17 +37,18 @@ use easytier::{
             instance::{
                 instance_identifier::{InstanceSelector, Selector},
                 list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
-                ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
-                GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest,
-                GetWhitelistRequest, InstanceIdentifier, ListConnectorRequest,
-                ListForeignNetworkRequest, ListGlobalForeignNetworkRequest,
-                ListMappedListenerRequest, ListPeerRequest, ListPeerResponse,
-                ListPortForwardRequest, ListRouteRequest, ListRouteResponse,
+                ConnectorManageRpcClientFactory, CredentialManageRpc,
+                CredentialManageRpcClientFactory, DumpRouteRequest, GenerateCredentialRequest,
+                GetAclStatsRequest, GetPrometheusStatsRequest, GetStatsRequest,
+                GetVpnPortalInfoRequest, GetWhitelistRequest, InstanceIdentifier,
+                ListConnectorRequest, ListCredentialsRequest, ListForeignNetworkRequest,
+                ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
+                ListPeerResponse, ListPortForwardRequest, ListRouteRequest, ListRouteResponse,
                 MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo,
                 PeerManageRpc, PeerManageRpcClientFactory, PortForwardManageRpc,
-                PortForwardManageRpcClientFactory, ShowNodeInfoRequest, StatsRpc,
-                StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
-                TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
+                PortForwardManageRpcClientFactory, RevokeCredentialRequest, ShowNodeInfoRequest,
+                StatsRpc, StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType,
+                TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
             },
             logger::{
                 GetLoggerConfigRequest, LogLevel, LoggerRpc, LoggerRpcClientFactory,
@@ -134,6 +135,8 @@ enum SubCommand {
     Stats(StatsArgs),
     #[command(about = "manage logger configuration")]
     Logger(LoggerArgs),
+    #[command(about = "manage temporary credentials")]
+    Credential(CredentialArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: ShellType },
 }
@@ -341,6 +344,42 @@ enum LoggerSubCommand {
 }
 
 #[derive(Args, Debug)]
+struct CredentialArgs {
+    #[command(subcommand)]
+    sub_command: CredentialSubCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum CredentialSubCommand {
+    /// Generate a new temporary credential
+    Generate {
+        #[arg(long, help = "TTL in seconds (required)")]
+        ttl: i64,
+        #[arg(long, value_delimiter = ',', help = "ACL groups (comma-separated)")]
+        groups: Option<Vec<String>>,
+        #[arg(
+            long,
+            default_value = "false",
+            help = "allow relay through this credential node"
+        )]
+        allow_relay: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "allowed proxy CIDRs (comma-separated)"
+        )]
+        allowed_proxy_cidrs: Option<Vec<String>>,
+    },
+    /// Revoke a credential by its ID
+    Revoke {
+        #[arg(help = "credential ID (public key base64)")]
+        credential_id: String,
+    },
+    /// List all active credentials
+    List,
+}
+
+#[derive(Args, Debug)]
 struct ServiceArgs {
     #[arg(short, long, default_value = env!("CARGO_PKG_NAME"), help = "service name")]
     name: String,
@@ -535,6 +574,18 @@ impl CommandHandler<'_> {
             .scoped_client::<ConfigRpcClientFactory<BaseController>>("".to_string())
             .await
             .with_context(|| "failed to get config client")?)
+    }
+
+    async fn get_credential_client(
+        &self,
+    ) -> Result<Box<dyn CredentialManageRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<CredentialManageRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get credential client")?)
     }
 
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
@@ -1353,6 +1404,121 @@ impl CommandHandler<'_> {
         match self.output_format {
             OutputFormat::Table => {
                 println!("Log level successfully set to: {}", level);
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_credential_generate(
+        &self,
+        ttl: i64,
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+    ) -> Result<(), Error> {
+        let client = self.get_credential_client().await?;
+        let request = GenerateCredentialRequest {
+            groups,
+            allow_relay,
+            allowed_proxy_cidrs,
+            ttl_seconds: ttl,
+        };
+        let response = client
+            .generate_credential(BaseController::default(), request)
+            .await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                println!("Credential generated successfully:");
+                println!("  credential_id:     {}", response.credential_id);
+                println!("  credential_secret: {}", response.credential_secret);
+                println!();
+                println!("To use this credential on a new node:");
+                println!(
+                    "  easytier-core --network-name <name> --secure-mode --credential {}",
+                    response.credential_secret
+                );
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_credential_revoke(&self, credential_id: &str) -> Result<(), Error> {
+        let client = self.get_credential_client().await?;
+        let request = RevokeCredentialRequest {
+            credential_id: credential_id.to_string(),
+        };
+        let response = client
+            .revoke_credential(BaseController::default(), request)
+            .await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                if response.success {
+                    println!("Credential revoked successfully");
+                } else {
+                    println!("Credential not found");
+                }
+            }
+            OutputFormat::Json => {
+                let json = serde_json::to_string_pretty(&response)?;
+                println!("{}", json);
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_credential_list(&self) -> Result<(), Error> {
+        let client = self.get_credential_client().await?;
+        let request = ListCredentialsRequest {};
+        let response = client
+            .list_credentials(BaseController::default(), request)
+            .await?;
+
+        match self.output_format {
+            OutputFormat::Table => {
+                if response.credentials.is_empty() {
+                    println!("No active credentials");
+                } else {
+                    use tabled::{builder::Builder, settings::Style};
+                    let mut builder = Builder::default();
+                    builder.push_record(["ID", "Groups", "Relay", "Expiry", "Allowed CIDRs"]);
+                    for cred in &response.credentials {
+                        let expiry = {
+                            let secs = cred.expiry_unix;
+                            let remaining = secs
+                                - std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs() as i64;
+                            if remaining > 0 {
+                                format!("{}s remaining", remaining)
+                            } else {
+                                "expired".to_string()
+                            }
+                        };
+                        builder.push_record([
+                            &cred.credential_id[..],
+                            &cred.groups.join(","),
+                            if cred.allow_relay { "yes" } else { "no" },
+                            &expiry,
+                            &cred.allowed_proxy_cidrs.join(","),
+                        ]);
+                    }
+                    let table = builder.build().with(Style::rounded()).to_string();
+                    println!("{}", table);
+                }
             }
             OutputFormat::Json => {
                 let json = serde_json::to_string_pretty(&response)?;
@@ -2191,6 +2357,29 @@ async fn main() -> Result<(), Error> {
             }
             Some(LoggerSubCommand::Set { level }) => {
                 handler.handle_logger_set(level).await?;
+            }
+        },
+        SubCommand::Credential(credential_args) => match &credential_args.sub_command {
+            CredentialSubCommand::Generate {
+                ttl,
+                groups,
+                allow_relay,
+                allowed_proxy_cidrs,
+            } => {
+                handler
+                    .handle_credential_generate(
+                        *ttl,
+                        groups.clone().unwrap_or_default(),
+                        *allow_relay,
+                        allowed_proxy_cidrs.clone().unwrap_or_default(),
+                    )
+                    .await?;
+            }
+            CredentialSubCommand::Revoke { credential_id } => {
+                handler.handle_credential_revoke(credential_id).await?;
+            }
+            CredentialSubCommand::List => {
+                handler.handle_credential_list().await?;
             }
         },
         SubCommand::GenAutocomplete { shell } => {

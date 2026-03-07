@@ -423,6 +423,10 @@ fn handle_event(
                             instance_id
                         );
                     }
+
+                    GlobalCtxEvent::CredentialChanged => {
+                        event!(info, "[{}] credential changed", instance_id);
+                    }
                 }
             } else {
                 events = events.resubscribe();

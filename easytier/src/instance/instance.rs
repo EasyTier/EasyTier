@@ -1316,6 +1316,7 @@ impl Instance {
             stats_rpc_service: G,
             config_rpc_service: H,
             peer_center_rpc_service: Arc<PeerCenterInstanceService>,
+            credential_manage_rpc_service: PeerManagerRpcService,
         }
 
         #[async_trait::async_trait]
@@ -1383,6 +1384,12 @@ impl Instance {
             ) -> Arc<dyn PeerCenterRpc<Controller = BaseController> + Send + Sync> {
                 self.peer_center_rpc_service.clone()
             }
+
+            fn get_credential_manage_service(
+                &self,
+            ) -> &dyn CredentialManageRpc<Controller = BaseController> {
+                &self.credential_manage_rpc_service
+            }
         }
 
         ApiRpcServiceImpl {
@@ -1444,6 +1451,7 @@ impl Instance {
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
             peer_center_rpc_service: Arc::new(self.peer_center.get_rpc_service()),
+            credential_manage_rpc_service: PeerManagerRpcService::new(self.peer_manager.clone()),
         }
     }
 

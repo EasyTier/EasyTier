@@ -8,8 +8,8 @@ use dashmap::DashMap;
 use crate::{
     common::{global_ctx::NetworkIdentity, PeerId},
     proto::peer_rpc::{
-        ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, RouteForeignNetworkInfos,
-        RouteForeignNetworkSummary, RoutePeerInfo,
+        ForeignNetworkRouteInfoEntry, ForeignNetworkRouteInfoKey, PeerIdentityType,
+        RouteForeignNetworkInfos, RouteForeignNetworkSummary, RoutePeerInfo,
     },
 };
 
@@ -27,6 +27,9 @@ pub type ForeignNetworkRouteInfoMap =
 pub trait RouteInterface {
     async fn list_peers(&self) -> Vec<PeerId>;
     fn my_peer_id(&self) -> PeerId;
+    async fn get_peer_identity_type(&self, _peer_id: PeerId) -> Option<PeerIdentityType> {
+        None
+    }
     async fn list_foreign_networks(&self) -> ForeignNetworkRouteInfoMap {
         DashMap::new()
     }

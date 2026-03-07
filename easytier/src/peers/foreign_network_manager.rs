@@ -686,7 +686,7 @@ impl ForeignNetworkManager {
             }
         }
 
-        entry.peer_map.add_new_peer_conn(peer_conn).await;
+        entry.peer_map.add_new_peer_conn(peer_conn).await?;
         Ok(())
     }
 

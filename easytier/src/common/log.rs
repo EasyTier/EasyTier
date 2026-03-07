@@ -1,3 +1,5 @@
+use std::io::IsTerminal as _;
+
 use crate::common::config::LoggingConfigLoader;
 use crate::common::get_logger_timer_rfc3339;
 use crate::common::tracing_rolling_appender::{FileAppenderWrapper, RollingFileAppenderBase};
@@ -175,7 +177,8 @@ pub fn init(
 
     let layer = || {
         layer()
-            .pretty()
+            .compact()
+            .with_ansi(std::io::stderr().is_terminal())
             .with_timer(get_logger_timer_rfc3339())
             .with_writer(std::io::stderr)
     };

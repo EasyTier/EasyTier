@@ -5,6 +5,14 @@ import "common.proto";
 
 package peer_rpc;
 
+message TrustedCredentialPubkey {
+  bytes pubkey = 1;              // X25519 public key (32 bytes)
+  repeated string groups = 2;   // ACL groups this credential belongs to
+  bool allow_relay = 3;         // whether this credential node can relay data
+  int64 expiry_unix = 4;        // expiry time (Unix timestamp)
+  repeated string allowed_proxy_cidrs = 5; // allowed proxy_cidrs ranges
+}
+
 message RoutePeerInfo {
   // means next hop in route table.
   uint32 peer_id = 1;
@@ -30,6 +38,9 @@ message RoutePeerInfo {
 
   common.NatType tcp_nat_type = 17;
   bytes noise_static_pubkey = 18;
+
+  // Trusted credential public keys published by admin nodes (holding network_secret)
+  repeated TrustedCredentialPubkey trusted_credential_pubkeys = 19;
 }
 
 message PeerIdVersion {
@@ -263,8 +274,14 @@ message KcpConnData {
 enum SecureAuthLevel {
   None = 0;
   EncryptedUnauthenticated = 1;
-  SharedNodePubkeyVerified = 2;
+  PeerVerified = 2;
   NetworkSecretConfirmed = 3;
+}
+
+enum PeerIdentityType {
+  Admin = 0;
+  Credential = 1;
+  SharedNode = 2;
 }
 
 enum PeerConnSessionActionPb {

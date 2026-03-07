@@ -636,6 +636,20 @@ struct NetworkOptions {
         help = t!("core_clap.local_public_key").to_string()
     )]
     local_public_key: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_CREDENTIAL",
+        help = t!("core_clap.credential").to_string()
+    )]
+    credential: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_CREDENTIAL_FILE",
+        help = t!("core_clap.credential_file").to_string()
+    )]
+    credential_file: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -802,11 +816,17 @@ impl NetworkOptions {
 
         let old_ns = cfg.get_network_identity();
         let network_name = self.network_name.clone().unwrap_or(old_ns.network_name);
-        let network_secret = self
-            .network_secret
-            .clone()
-            .unwrap_or(old_ns.network_secret.unwrap_or_default());
-        cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
+
+        if self.credential.is_some() {
+            // Credential mode: no network_secret, authenticate via credential keypair
+            cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
+        } else {
+            let network_secret = self
+                .network_secret
+                .clone()
+                .unwrap_or(old_ns.network_secret.unwrap_or_default());
+            cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
+        }
 
         if let Some(dhcp) = self.dhcp {
             cfg.set_dhcp(dhcp);
@@ -975,7 +995,19 @@ impl NetworkOptions {
             cfg.set_port_forwards(old);
         }
 
-        if let Some(secure_mode) = self.secure_mode {
+        if let Some(ref credential_file) = self.credential_file {
+            cfg.set_credential_file(Some(credential_file.clone()));
+        }
+
+        if let Some(ref credential_secret) = self.credential {
+            // --credential implies --secure-mode and sets the credential private key
+            let c = SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(credential_secret.clone()),
+                local_public_key: None,
+            };
+            cfg.set_secure_mode(Some(Self::process_secure_mode_cfg(c)?));
+        } else if let Some(secure_mode) = self.secure_mode {
             if secure_mode {
                 let c = SecureModeConfig {
                     enabled: secure_mode,

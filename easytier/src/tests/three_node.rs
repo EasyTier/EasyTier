@@ -7,8 +7,9 @@ use std::{
     time::Duration,
 };
 
-use rand::Rng;
+use rand::{rngs::OsRng, Rng};
 use tokio::{net::UdpSocket, task::JoinSet};
+use x25519_dalek::StaticSecret;
 
 use super::*;
 
@@ -2763,21 +2764,28 @@ pub async fn config_patch_test() {
     drop_insts(insts).await;
 }
 
-/// Generate SecureModeConfig with random x25519 keypair
-fn generate_secure_mode_config() -> SecureModeConfig {
+/// Generate SecureModeConfig with specified x25519 private key
+pub fn generate_secure_mode_config_with_key(
+    private_key: &x25519_dalek::StaticSecret,
+) -> SecureModeConfig {
     use base64::{prelude::BASE64_STANDARD, Engine};
-    use rand::rngs::OsRng;
-    use x25519_dalek::{PublicKey, StaticSecret};
+    use x25519_dalek::PublicKey;
 
-    let private = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&private);
+    let public = PublicKey::from(private_key);
 
     SecureModeConfig {
         enabled: true,
-        local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+        local_private_key: Some(BASE64_STANDARD.encode(private_key.as_bytes())),
         local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
     }
 }
+
+/// Generate SecureModeConfig with random x25519 keypair
+pub fn generate_secure_mode_config() -> SecureModeConfig {
+    let private = StaticSecret::random_from_rng(OsRng);
+    generate_secure_mode_config_with_key(&private)
+}
+
 /// Test relay peer end-to-end encryption with TCP
 #[rstest::rstest]
 #[tokio::test]

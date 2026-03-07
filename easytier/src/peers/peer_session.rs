@@ -787,7 +787,15 @@ impl PeerSession {
         let encryptor = self
             .get_encryptor(epoch, dir, true)
             .ok_or_else(|| anyhow!("no key for epoch"))?;
-        let _ = encryptor.encrypt_with_nonce(pkt, Some(nonce_bytes.as_slice()));
+        if let Err(e) = encryptor.encrypt_with_nonce(pkt, Some(nonce_bytes.as_slice())) {
+            tracing::warn!(
+                peer_id = ?self.peer_id,
+                ?e,
+                "session encrypt failed, invalidating"
+            );
+            self.invalidate();
+            return Err(e.into());
+        }
         Ok(())
     }
 
