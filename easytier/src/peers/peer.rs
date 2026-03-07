@@ -221,6 +221,9 @@ impl Peer {
     pub fn get_default_conn_id(&self) -> PeerConnId {
         self.default_conn_id.load()
     }
+    pub fn all_conns_low_priority(&self) -> bool {
+        self.conns.iter().all(|c| c.is_low_priority())
+    }
 }
 
 // pritn on drop

@@ -458,7 +458,13 @@ impl PeerTaskLauncher for TcpHolePunchPeerTaskLauncher {
                 continue;
             }
 
-            if data.peer_mgr.get_peer_map().has_peer(peer_id) {
+            // Skip if peer already has a connection that is not low priority
+            if data
+                .peer_mgr
+                .get_peer_map()
+                .get_peer_by_id(peer_id)
+                .is_some_and(|f| !f.all_conns_low_priority())
+            {
                 tracing::trace!(peer_id, "tcp hole punch task collect skip already has peer");
                 continue;
             }

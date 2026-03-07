@@ -308,6 +308,9 @@ impl Default for NetworkIdentity {
 pub struct PeerConfig {
     pub uri: url::Url,
     pub peer_public_key: Option<String>,
+    /// After establishing the initial URI-based connection, attempt to find and upgrade to a better route.
+    #[serde(default)]
+    pub needs_better_route: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
