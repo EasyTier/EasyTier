@@ -303,7 +303,7 @@ message GenerateCredentialRequest {
 }
 
 message GenerateCredentialResponse {
-  string credential_id = 1;       // public key base64
+  string credential_id = 1;       // UUID
   string credential_secret = 2;   // private key base64
 }
 
@@ -318,7 +318,7 @@ message RevokeCredentialResponse {
 message ListCredentialsRequest {}
 
 message CredentialInfo {
-  string credential_id = 1;       // public key base64
+  string credential_id = 1;       // UUID
   repeated string groups = 2;
   bool allow_relay = 3;
   int64 expiry_unix = 4;

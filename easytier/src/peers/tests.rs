@@ -903,6 +903,104 @@ async fn credential_revocation_removes_from_routes() {
     .await;
 }
 
+#[tokio::test]
+async fn credential_expiry_disconnects_from_all_admins() {
+    let admin_a = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
+    let admin_b = create_mock_peer_manager_secure("net1".to_string(), "secret".to_string()).await;
+
+    connect_peer_manager(admin_a.clone(), admin_b.clone()).await;
+    wait_route_appear(admin_a.clone(), admin_b.clone())
+        .await
+        .unwrap();
+
+    let (_cred_id, cred_secret) = admin_a
+        .get_global_ctx()
+        .get_credential_manager()
+        .generate_credential(vec![], false, vec![], std::time::Duration::from_secs(2));
+
+    admin_a
+        .get_global_ctx()
+        .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
+
+    let privkey_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&cred_secret)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+    let cred_c = create_mock_peer_manager_credential("net1".to_string(), &private).await;
+    let cred_c_id = cred_c.my_peer_id();
+
+    connect_peer_manager(cred_c.clone(), admin_a.clone()).await;
+
+    wait_for_condition(
+        || {
+            let admin_b = admin_b.clone();
+            async move {
+                admin_b
+                    .list_routes()
+                    .await
+                    .iter()
+                    .any(|r| r.peer_id == cred_c_id)
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    connect_peer_manager(cred_c.clone(), admin_b.clone()).await;
+
+    wait_for_condition(
+        || {
+            let admin_b = admin_b.clone();
+            async move {
+                admin_b
+                    .get_peer_map()
+                    .list_peer_conns(cred_c_id)
+                    .await
+                    .is_some_and(|conns| !conns.is_empty())
+            }
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    admin_a
+        .get_global_ctx()
+        .issue_event(crate::common::global_ctx::GlobalCtxEvent::CredentialChanged);
+
+    wait_for_condition(
+        || {
+            let admin_b = admin_b.clone();
+            async move {
+                !admin_b
+                    .list_routes()
+                    .await
+                    .iter()
+                    .any(|r| r.peer_id == cred_c_id)
+            }
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+
+    wait_for_condition(
+        || {
+            let admin_b = admin_b.clone();
+            async move {
+                admin_b
+                    .get_peer_map()
+                    .list_peer_conns(cred_c_id)
+                    .await
+                    .is_none_or(|conns| conns.is_empty())
+            }
+        },
+        Duration::from_secs(20),
+    )
+    .await;
+}
+
 /// Test: admin node with credential — credential node gets group assignment.
 /// Verify that the credential node's groups appear in the OSPF sync data.
 #[tokio::test]

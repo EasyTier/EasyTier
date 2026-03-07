@@ -14,7 +14,7 @@ use crate::proto::peer_rpc::TrustedCredentialPubkey;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CredentialEntry {
-    pubkey_bytes: Vec<u8>,
+    pubkey: String,
     groups: Vec<String>,
     allow_relay: bool,
     allowed_proxy_cidrs: Vec<String>,
@@ -46,7 +46,8 @@ impl CredentialManager {
     ) -> (String, String) {
         let private = StaticSecret::random_from_rng(rand::rngs::OsRng);
         let public = PublicKey::from(&private);
-        let id = BASE64_STANDARD.encode(public.as_bytes());
+        let id = uuid::Uuid::new_v4().to_string();
+        let pubkey = BASE64_STANDARD.encode(public.as_bytes());
         let secret = BASE64_STANDARD.encode(private.as_bytes());
 
         let now = SystemTime::now()
@@ -56,7 +57,7 @@ impl CredentialManager {
         let expiry_unix = now + ttl.as_secs() as i64;
 
         let entry = CredentialEntry {
-            pubkey_bytes: public.as_bytes().to_vec(),
+            pubkey,
             groups,
             allow_relay,
             allowed_proxy_cidrs,
@@ -94,12 +95,13 @@ impl CredentialManager {
             .values()
             .filter(|e| e.expiry_unix > now)
             .map(|e| TrustedCredentialPubkey {
-                pubkey: e.pubkey_bytes.clone(),
+                pubkey: Self::decode_pubkey_b64(&e.pubkey).unwrap_or_default(),
                 groups: e.groups.clone(),
                 allow_relay: e.allow_relay,
                 expiry_unix: e.expiry_unix,
                 allowed_proxy_cidrs: e.allowed_proxy_cidrs.clone(),
             })
+            .filter(|e| !e.pubkey.is_empty())
             .collect()
     }
 
@@ -109,11 +111,12 @@ impl CredentialManager {
             .unwrap()
             .as_secs() as i64;
 
+        let encoded = BASE64_STANDARD.encode(pubkey);
         self.credentials
             .lock()
             .unwrap()
             .values()
-            .any(|e| e.pubkey_bytes == pubkey && e.expiry_unix > now)
+            .any(|e| e.pubkey == encoded && e.expiry_unix > now)
     }
 
     pub fn list_credentials(&self) -> Vec<crate::proto::api::instance::CredentialInfo> {
@@ -166,6 +169,14 @@ impl CredentialManager {
             }
         }
     }
+
+    fn decode_pubkey_b64(s: &str) -> Option<Vec<u8>> {
+        let decoded = BASE64_STANDARD.decode(s).ok()?;
+        if decoded.len() != 32 {
+            return None;
+        }
+        Some(decoded)
+    }
 }
 
 #[cfg(test)]
@@ -184,8 +195,11 @@ mod tests {
 
         assert!(!id.is_empty());
         assert!(!secret.is_empty());
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
 
-        let pubkey_bytes = BASE64_STANDARD.decode(&id).unwrap();
+        let privkey_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let private = StaticSecret::from(privkey_bytes);
+        let pubkey_bytes = PublicKey::from(&private).as_bytes().to_vec();
         assert!(mgr.is_pubkey_trusted(&pubkey_bytes));
 
         let trusted = mgr.get_trusted_pubkeys();
@@ -201,9 +215,11 @@ mod tests {
     fn test_expired_credential() {
         let mgr = CredentialManager::new(None);
         // TTL of 0 seconds - immediately expired
-        let (id, _) = mgr.generate_credential(vec![], false, vec![], Duration::from_secs(0));
+        let (_, secret) = mgr.generate_credential(vec![], false, vec![], Duration::from_secs(0));
 
-        let pubkey_bytes = BASE64_STANDARD.decode(&id).unwrap();
+        let privkey_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let private = StaticSecret::from(privkey_bytes);
+        let pubkey_bytes = PublicKey::from(&private).as_bytes().to_vec();
         assert!(!mgr.is_pubkey_trusted(&pubkey_bytes));
         assert!(mgr.get_trusted_pubkeys().is_empty());
     }
@@ -233,9 +249,8 @@ mod tests {
         let privkey_bytes: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
         let private = StaticSecret::from(privkey_bytes);
         let derived_public = PublicKey::from(&private);
-        let derived_id = BASE64_STANDARD.encode(derived_public.as_bytes());
-
-        assert_eq!(id, derived_id);
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+        assert!(mgr.is_pubkey_trusted(derived_public.as_bytes()));
     }
 
     #[test]
@@ -247,21 +262,35 @@ mod tests {
     #[test]
     fn test_multiple_credentials_independent() {
         let mgr = CredentialManager::new(None);
-        let (id1, _) = mgr.generate_credential(
+        let (id1, secret1) = mgr.generate_credential(
             vec!["group1".to_string()],
             false,
             vec![],
             Duration::from_secs(3600),
         );
-        let (id2, _) = mgr.generate_credential(
+        let (_id2, secret2) = mgr.generate_credential(
             vec!["group2".to_string()],
             true,
             vec!["10.0.0.0/8".to_string()],
             Duration::from_secs(3600),
         );
 
-        let pk1 = BASE64_STANDARD.decode(&id1).unwrap();
-        let pk2 = BASE64_STANDARD.decode(&id2).unwrap();
+        let sk1: [u8; 32] = BASE64_STANDARD
+            .decode(&secret1)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let sk2: [u8; 32] = BASE64_STANDARD
+            .decode(&secret2)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let pk1 = PublicKey::from(&StaticSecret::from(sk1))
+            .as_bytes()
+            .to_vec();
+        let pk2 = PublicKey::from(&StaticSecret::from(sk2))
+            .as_bytes()
+            .to_vec();
 
         assert!(mgr.is_pubkey_trusted(&pk1));
         assert!(mgr.is_pubkey_trusted(&pk2));
@@ -284,7 +313,7 @@ mod tests {
     #[test]
     fn test_trusted_pubkeys_include_metadata() {
         let mgr = CredentialManager::new(None);
-        let (id, _) = mgr.generate_credential(
+        let (_, secret) = mgr.generate_credential(
             vec!["admin".to_string(), "ops".to_string()],
             true,
             vec!["192.168.0.0/16".to_string(), "10.0.0.0/8".to_string()],
@@ -302,7 +331,8 @@ mod tests {
         );
         assert!(tc.expiry_unix > 0);
 
-        let pk = BASE64_STANDARD.decode(&id).unwrap();
+        let sk: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
+        let pk = PublicKey::from(&StaticSecret::from(sk)).as_bytes().to_vec();
         assert_eq!(tc.pubkey, pk);
     }
 
