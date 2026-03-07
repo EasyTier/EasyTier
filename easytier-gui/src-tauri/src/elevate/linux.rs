@@ -7,7 +7,8 @@ use super::Command;
 use anyhow::{anyhow, Result};
 use std::env;
 use std::ffi::OsStr;
-use std::process::{Command as StdCommand, Output};
+use std::os::unix::process::CommandExt;
+use std::process::{Command as StdCommand, Output, Stdio};
 
 /// The implementation of state check and elevated executing varies on each platform
 impl Command {
@@ -22,6 +23,28 @@ impl Command {
     /// Prompting the user with a graphical OS dialog for the root password,
     /// excuting the command with escalated privileges, and return the output
     pub fn output(&self) -> Result<Output> {
+        let mut command = self.build_pkexec_command()?;
+        let output = command.output()?;
+        Ok(output)
+    }
+
+    pub fn spawn(&self) -> Result<()> {
+        let mut command = self.build_pkexec_command()?;
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        Ok(())
+    }
+
+    fn build_pkexec_command(&self) -> Result<StdCommand> {
         let mut command = StdCommand::new("pkexec");
         let display = env::var("DISPLAY");
         let xauthority = env::var("XAUTHORITY");
@@ -58,7 +81,6 @@ impl Command {
             command.args(args);
         }
 
-        let output = command.output()?;
-        Ok(output)
+        Ok(command)
     }
 }
