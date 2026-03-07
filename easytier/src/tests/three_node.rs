@@ -419,8 +419,10 @@ pub async fn subnet_proxy_loop_prevention_test() {
     drop_insts(insts).await;
 }
 
-async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str) {
-    use crate::tunnel::{common::tests::_tunnel_pingpong_netns, udp::UdpTunnelListener};
+async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str, timeout: Duration) {
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns_with_timeout, udp::UdpTunnelListener,
+    };
     use rand::Rng;
 
     let udp_listener =
@@ -438,14 +440,16 @@ async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str) {
         "net_d"
     };
 
-    _tunnel_pingpong_netns(
+    let result = _tunnel_pingpong_netns_with_timeout(
         udp_listener,
         udp_connector,
         NetNS::new(Some(ns_name.into())),
         NetNS::new(Some("net_a".into())),
         buf,
+        timeout,
     )
     .await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
 
     // no fragment
     let udp_listener =
@@ -456,18 +460,22 @@ async fn subnet_proxy_test_udp(listen_ip: &str, target_ip: &str) {
     let mut buf = vec![0; 1024];
     rand::thread_rng().fill(&mut buf[..]);
 
-    _tunnel_pingpong_netns(
+    let result = _tunnel_pingpong_netns_with_timeout(
         udp_listener,
         udp_connector,
         NetNS::new(Some(ns_name.into())),
         NetNS::new(Some("net_a".into())),
         buf,
+        timeout,
     )
     .await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
 }
 
-async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str) {
-    use crate::tunnel::{common::tests::_tunnel_pingpong_netns, tcp::TcpTunnelListener};
+async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str, timeout: Duration) {
+    use crate::tunnel::{
+        common::tests::_tunnel_pingpong_netns_with_timeout, tcp::TcpTunnelListener,
+    };
     use rand::Rng;
 
     let tcp_listener = TcpTunnelListener::new(format!("tcp://{listen_ip}:22223").parse().unwrap());
@@ -483,26 +491,28 @@ async fn subnet_proxy_test_tcp(listen_ip: &str, connect_ip: &str) {
         "net_d"
     };
 
-    _tunnel_pingpong_netns(
+    let result = _tunnel_pingpong_netns_with_timeout(
         tcp_listener,
         tcp_connector,
         NetNS::new(Some(ns_name.into())),
         NetNS::new(Some("net_a".into())),
         buf,
+        timeout,
     )
     .await;
+    assert!(result.is_ok(), "{}", result.unwrap_err());
 }
 
-async fn subnet_proxy_test_icmp(target_ip: &str) {
+async fn subnet_proxy_test_icmp(target_ip: &str, timeout: Duration) {
     wait_for_condition(
         || async { ping_test("net_a", target_ip, None).await },
-        Duration::from_secs(5),
+        timeout,
     )
     .await;
 
     wait_for_condition(
         || async { ping_test("net_a", target_ip, Some(5 * 1024)).await },
-        Duration::from_secs(5),
+        timeout,
     )
     .await;
 }
@@ -538,10 +548,10 @@ pub async fn quic_proxy() {
 
     let target_ip = "10.1.2.4";
 
-    subnet_proxy_test_icmp(target_ip).await;
-    subnet_proxy_test_icmp("10.144.144.3").await;
-    subnet_proxy_test_tcp(target_ip, target_ip).await;
-    subnet_proxy_test_tcp("0.0.0.0", "10.144.144.3").await;
+    subnet_proxy_test_icmp(target_ip, Duration::from_secs(5)).await;
+    subnet_proxy_test_icmp("10.144.144.3", Duration::from_secs(5)).await;
+    subnet_proxy_test_tcp(target_ip, target_ip, Duration::from_secs(5)).await;
+    subnet_proxy_test_tcp("0.0.0.0", "10.144.144.3", Duration::from_secs(5)).await;
 
     let metrics = insts[0]
         .get_global_ctx()
@@ -629,14 +639,14 @@ pub async fn subnet_proxy_three_node_test(
     .await;
 
     for target_ip in ["10.1.3.4", "10.1.2.4", "10.144.144.3"] {
-        subnet_proxy_test_icmp(target_ip).await;
+        subnet_proxy_test_icmp(target_ip, Duration::from_secs(5)).await;
         let listen_ip = if target_ip == "10.144.144.3" {
             "0.0.0.0"
         } else {
             "10.1.2.4"
         };
-        subnet_proxy_test_tcp(listen_ip, target_ip).await;
-        subnet_proxy_test_udp(listen_ip, target_ip).await;
+        subnet_proxy_test_tcp(listen_ip, target_ip, Duration::from_secs(5)).await;
+        subnet_proxy_test_udp(listen_ip, target_ip, Duration::from_secs(5)).await;
     }
     if enable_quic_proxy && !disable_quic_input {
         let metrics = insts[0]
@@ -1607,7 +1617,7 @@ pub async fn acl_rule_test_inbound(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns,
+        common::tests::_tunnel_pingpong_netns_with_timeout,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
@@ -1707,43 +1717,38 @@ pub async fn acl_rule_test_inbound(
         rand::thread_rng().fill(&mut buf[..]);
 
         // 5. 8081 应该可以 pingpong 成功
-        _tunnel_pingpong_netns(
+        let result = _tunnel_pingpong_netns_with_timeout(
             listener_8081,
             connector_8081,
             NetNS::new(Some("net_c".into())),
             NetNS::new(Some("net_a".into())),
             buf.clone(),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+
+        // 6. 8080 应该连接失败（被 ACL 拦截）
+        let result = _tunnel_pingpong_netns_with_timeout(
+            listener_8080,
+            connector_8080,
+            NetNS::new(Some("net_c".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            Duration::from_millis(500),
         )
         .await;
 
-        // 6. 8080 应该连接失败（被 ACL 拦截）
-        let result = tokio::spawn(tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            _tunnel_pingpong_netns(
-                listener_8080,
-                connector_8080,
-                NetNS::new(Some("net_c".into())),
-                NetNS::new(Some("net_a".into())),
-                buf.clone(),
-            ),
-        ))
-        .await;
-
-        assert!(
-            result.is_err() || result.unwrap().is_err(),
-            "TCP 连接 8080 应被 ACL 拦截，不能成功"
-        );
+        assert!(result.is_err(), "TCP 连接 8080 应被 ACL 拦截，不能成功");
 
         // 7. 从 10.144.144.2 连接 8082 应该连接失败（被 ACL 拦截）
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            _tunnel_pingpong_netns(
-                listener_8082,
-                connector_8082,
-                NetNS::new(Some("net_c".into())),
-                NetNS::new(Some("net_b".into())),
-                buf.clone(),
-            ),
+        let result = _tunnel_pingpong_netns_with_timeout(
+            listener_8082,
+            connector_8082,
+            NetNS::new(Some("net_c".into())),
+            NetNS::new(Some("net_b".into())),
+            buf.clone(),
+            Duration::from_millis(500),
         )
         .await;
 
@@ -1770,25 +1775,25 @@ pub async fn acl_rule_test_inbound(
         rand::thread_rng().fill(&mut buf[..]);
 
         // 4. 8081 应该可以 pingpong 成功
-        _tunnel_pingpong_netns(
+        let result = _tunnel_pingpong_netns_with_timeout(
             listener_8081,
             connector_8081,
             NetNS::new(Some("net_c".into())),
             NetNS::new(Some("net_a".into())),
             buf.clone(),
+            Duration::from_secs(5),
         )
         .await;
+        assert!(result.is_ok(), "{}", result.unwrap_err());
 
         // 5. 8080 应该连接失败（被 ACL 拦截）
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            _tunnel_pingpong_netns(
-                listener_8080,
-                connector_8080,
-                NetNS::new(Some("net_c".into())),
-                NetNS::new(Some("net_a".into())),
-                buf.clone(),
-            ),
+        let result = _tunnel_pingpong_netns_with_timeout(
+            listener_8080,
+            connector_8080,
+            NetNS::new(Some("net_c".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            Duration::from_millis(500),
         )
         .await;
 
@@ -1815,7 +1820,7 @@ pub async fn acl_rule_test_subnet_proxy(
     #[values(true, false)] enable_quic_proxy: bool,
 ) {
     use crate::tunnel::{
-        common::tests::_tunnel_pingpong_netns,
+        common::tests::_tunnel_pingpong_netns_with_timeout,
         tcp::{TcpTunnelConnector, TcpTunnelListener},
         udp::{UdpTunnelConnector, UdpTunnelListener},
     };
@@ -1932,48 +1937,46 @@ pub async fn acl_rule_test_subnet_proxy(
         rand::thread_rng().fill(&mut buf[..]);
 
         // 8082 应该可以连接成功（不被 ACL 拦截）
-        _tunnel_pingpong_netns(
+        let result = _tunnel_pingpong_netns_with_timeout(
             listener_8082,
             connector_8082,
             NetNS::new(Some("net_d".into())),
             NetNS::new(Some("net_a".into())),
             buf.clone(),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(result.is_ok(), "{}", result.unwrap_err());
+
+        // 8080 应该连接失败（被 ACL 拦截 - 禁止访问子网代理的 8080）
+        let result = _tunnel_pingpong_netns_with_timeout(
+            listener_8080,
+            connector_8080,
+            NetNS::new(Some("net_d".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            Duration::from_millis(500),
         )
         .await;
 
-        // 8080 应该连接失败（被 ACL 拦截 - 禁止访问子网代理的 8080）
-        let result = tokio::spawn(tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            _tunnel_pingpong_netns(
-                listener_8080,
-                connector_8080,
-                NetNS::new(Some("net_d".into())),
-                NetNS::new(Some("net_a".into())),
-                buf.clone(),
-            ),
-        ))
-        .await;
-
         assert!(
-            result.is_err() || result.unwrap().is_err(),
+            result.is_err(),
             "TCP 连接子网代理 8080 应被 ACL 拦截，不能成功"
         );
 
         // 8081 应该连接失败（被 ACL 拦截 - 禁止 inst1 访问子网代理的 8081）
-        let result = tokio::spawn(tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            _tunnel_pingpong_netns(
-                listener_8081,
-                connector_8081,
-                NetNS::new(Some("net_d".into())),
-                NetNS::new(Some("net_a".into())),
-                buf.clone(),
-            ),
-        ))
+        let result = _tunnel_pingpong_netns_with_timeout(
+            listener_8081,
+            connector_8081,
+            NetNS::new(Some("net_d".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            Duration::from_millis(500),
+        )
         .await;
 
         assert!(
-            result.is_err() || result.unwrap().is_err(),
+            result.is_err(),
             "TCP 连接子网代理 8081 应被 ACL 拦截，不能成功"
         );
 
@@ -1993,25 +1996,25 @@ pub async fn acl_rule_test_subnet_proxy(
         rand::thread_rng().fill(&mut buf[..]);
 
         // 8082 应该可以连接成功
-        _tunnel_pingpong_netns(
+        let result = _tunnel_pingpong_netns_with_timeout(
             listener_8082,
             connector_8082,
             NetNS::new(Some("net_d".into())),
             NetNS::new(Some("net_a".into())),
             buf.clone(),
+            Duration::from_secs(5),
         )
         .await;
+        assert!(result.is_ok(), "{}", result.unwrap_err());
 
         // 8080 应该连接失败（被 ACL 拦截）
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(200),
-            _tunnel_pingpong_netns(
-                listener_8080,
-                connector_8080,
-                NetNS::new(Some("net_d".into())),
-                NetNS::new(Some("net_a".into())),
-                buf.clone(),
-            ),
+        let result = _tunnel_pingpong_netns_with_timeout(
+            listener_8080,
+            connector_8080,
+            NetNS::new(Some("net_d".into())),
+            NetNS::new(Some("net_a".into())),
+            buf.clone(),
+            Duration::from_millis(500),
         )
         .await;
 
@@ -2120,7 +2123,7 @@ pub async fn p2p_only_test(
     for target_ip in ["10.144.144.3", target_ip] {
         assert_panics_ext(
             || async {
-                subnet_proxy_test_icmp(target_ip).await;
+                subnet_proxy_test_icmp(target_ip, Duration::from_millis(100)).await;
             },
             !has_p2p_conn,
         )
@@ -2133,7 +2136,7 @@ pub async fn p2p_only_test(
         };
         assert_panics_ext(
             || async {
-                subnet_proxy_test_tcp(listen_ip, target_ip).await;
+                subnet_proxy_test_tcp(listen_ip, target_ip, Duration::from_millis(100)).await;
             },
             !has_p2p_conn,
         )
@@ -2141,7 +2144,7 @@ pub async fn p2p_only_test(
 
         assert_panics_ext(
             || async {
-                subnet_proxy_test_udp(listen_ip, target_ip).await;
+                subnet_proxy_test_udp(listen_ip, target_ip, Duration::from_millis(100)).await;
             },
             !has_p2p_conn,
         )
