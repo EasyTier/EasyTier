@@ -25,6 +25,25 @@ use crate::common::error::Error;
 use super::dns::resolve_txt_record;
 use super::stun_codec_ext::*;
 
+const DEFAULT_UDP_STUN_SERVERS: &[&str] = &[
+    "txt:stun.easytier.cn",
+    "stun.miwifi.com",
+    "stun.chat.bilibili.com",
+    "stun.hitv.com",
+];
+
+const DEFAULT_TCP_STUN_SERVERS: &[&str] = &[
+    "stun.hot-chilli.net",
+    "stun.fitauto.ru",
+    "fwa.lifesizecloud.com",
+    "global.turn.twilio.com",
+    "turn.cloudflare.com",
+    "stun.voip.blackberry.com",
+    "stun.radiojar.com",
+];
+
+const DEFAULT_UDP_V6_STUN_SERVERS: &[&str] = &["txt:stun-v6.easytier.cn"];
+
 struct HostResolverIter {
     hostnames: Vec<String>,
     ips: Vec<SocketAddr>,
@@ -1100,39 +1119,39 @@ impl StunInfoCollector {
     }
 
     pub fn get_default_servers() -> Vec<String> {
-        // NOTICE: we may need to choose stun server based on geolocation
-        // stun server cross nation may return an external ip address with high latency and loss rate
-        [
-            "txt:stun.easytier.cn",
-            "stun.miwifi.com",
-            "stun.chat.bilibili.com",
-            "stun.hitv.com",
-        ]
-        .iter()
-        .map(|x| x.to_string())
-        .collect()
+        if cfg!(test) {
+            Vec::new()
+        } else {
+            // NOTICE: we may need to choose stun server based on geolocation
+            // stun server cross nation may return an external ip address with high latency and loss rate
+            DEFAULT_UDP_STUN_SERVERS
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }
     }
 
     pub fn get_default_tcp_servers() -> Vec<String> {
-        [
-            "stun.hot-chilli.net",
-            "stun.fitauto.ru",
-            "fwa.lifesizecloud.com",
-            "global.turn.twilio.com",
-            "turn.cloudflare.com",
-            "stun.voip.blackberry.com",
-            "stun.radiojar.com",
-        ]
-        .iter()
-        .map(|x| x.to_string())
-        .collect()
+        // if test, return empty vector
+        if cfg!(test) {
+            Vec::new()
+        } else {
+            DEFAULT_TCP_STUN_SERVERS
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }
     }
 
     pub fn get_default_servers_v6() -> Vec<String> {
-        ["txt:stun-v6.easytier.cn"]
-            .iter()
-            .map(|x| x.to_string())
-            .collect()
+        if cfg!(test) {
+            Vec::new()
+        } else {
+            DEFAULT_UDP_V6_STUN_SERVERS
+                .iter()
+                .map(ToString::to_string)
+                .collect()
+        }
     }
 
     async fn get_public_ipv6(servers: &[String]) -> Option<Ipv6Addr> {
@@ -1328,7 +1347,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_udp_nat_type_detector() {
-        let collector = StunInfoCollector::new_with_default_servers();
+        let collector = StunInfoCollector::new(
+            DEFAULT_UDP_STUN_SERVERS
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            vec![],
+            vec![],
+        );
         collector.update_stun_info();
         loop {
             let ret = collector.get_stun_info();

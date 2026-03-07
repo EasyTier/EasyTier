@@ -47,7 +47,9 @@ use super::{
     peer_ospf_route::PeerRoute,
     peer_rpc::{PeerRpcManager, PeerRpcManagerTransport},
     peer_rpc_service::DirectConnectorManagerRpcServer,
+    peer_session::PeerSessionStore,
     recv_packet_from_chan,
+    relay_peer_map::RelayPeerMap,
     route_trait::NextHopPolicy,
     PacketRecvChan, PacketRecvChanReceiver, PUBLIC_SERVER_HOSTNAME_PREFIX,
 };
@@ -64,6 +66,8 @@ struct ForeignNetworkEntry {
     global_ctx: ArcGlobalCtx,
     network: NetworkIdentity,
     peer_map: Arc<PeerMap>,
+    relay_peer_map: Arc<RelayPeerMap>,
+    peer_session_store: Arc<PeerSessionStore>,
     relay_data: bool,
     pm_packet_sender: Mutex<Option<PacketRecvChan>>,
 
@@ -103,6 +107,13 @@ impl ForeignNetworkEntry {
             foreign_global_ctx.clone(),
             my_peer_id,
         ));
+        let peer_session_store = Arc::new(PeerSessionStore::new());
+        let relay_peer_map = RelayPeerMap::new(
+            peer_map.clone(),
+            foreign_global_ctx.clone(),
+            my_peer_id,
+            peer_session_store.clone(),
+        );
 
         let (peer_rpc, rpc_transport_sender) = Self::build_rpc_tspt(my_peer_id, peer_map.clone());
 
@@ -136,6 +147,8 @@ impl ForeignNetworkEntry {
             global_ctx: foreign_global_ctx,
             network,
             peer_map,
+            relay_peer_map,
+            peer_session_store,
             relay_data,
             pm_packet_sender: Mutex::new(Some(pm_packet_sender)),
 
@@ -314,6 +327,7 @@ impl ForeignNetworkEntry {
         let my_node_id = self.my_peer_id;
         let rpc_sender = self.rpc_sender.clone();
         let peer_map = self.peer_map.clone();
+        let relay_peer_map = self.relay_peer_map.clone();
         let relay_data = self.relay_data;
         let pm_sender = self.pm_packet_sender.lock().await.take().unwrap();
         let network_name = self.network.network_name.clone();
@@ -344,6 +358,12 @@ impl ForeignNetworkEntry {
                 tracing::trace!(?hdr, "recv packet in foreign network manager");
                 let to_peer_id = hdr.to_peer_id.get();
                 if to_peer_id == my_node_id {
+                    if hdr.packet_type == PacketType::RelayHandshake as u8
+                        || hdr.packet_type == PacketType::RelayHandshakeAck as u8
+                    {
+                        let _ = relay_peer_map.handle_handshake_packet(zc_packet).await;
+                        continue;
+                    }
                     if hdr.packet_type == PacketType::TaRpc as u8
                         || hdr.packet_type == PacketType::RpcReq as u8
                         || hdr.packet_type == PacketType::RpcResp as u8
@@ -358,6 +378,8 @@ impl ForeignNetworkEntry {
                     if hdr.packet_type == PacketType::Data as u8
                         || hdr.packet_type == PacketType::KcpSrc as u8
                         || hdr.packet_type == PacketType::KcpDst as u8
+                        || hdr.packet_type == PacketType::RelayHandshake as u8
+                        || hdr.packet_type == PacketType::RelayHandshakeAck as u8
                     {
                         if !relay_data {
                             continue;
@@ -405,9 +427,31 @@ impl ForeignNetworkEntry {
         });
     }
 
+    async fn run_relay_session_gc_routine(&self) {
+        let relay_peer_map = self.relay_peer_map.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
+    async fn run_peer_session_gc_routine(&self) {
+        let peer_session_store = self.peer_session_store.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                peer_session_store.evict_unused_sessions();
+            }
+        });
+    }
+
     async fn prepare(&self, accessor: Box<dyn GlobalForeignNetworkAccessor>) {
         self.prepare_route(accessor).await;
         self.start_packet_recv().await;
+        self.run_relay_session_gc_routine().await;
+        self.run_peer_session_gc_routine().await;
         self.peer_rpc.run();
         self.peer_center.init().await;
     }
@@ -734,7 +778,7 @@ impl ForeignNetworkManager {
     ) -> Result<(), Error> {
         if let Some(entry) = self.data.get_network_entry(network_name) {
             entry
-                .peer_map
+                .relay_peer_map
                 .send_msg(msg, dst_peer_id, NextHopPolicy::LeastHop)
                 .await
         } else {

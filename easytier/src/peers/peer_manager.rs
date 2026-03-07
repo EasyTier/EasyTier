@@ -62,6 +62,7 @@ use super::{
     peer_map::PeerMap,
     peer_ospf_route::PeerRoute,
     peer_rpc::PeerRpcManager,
+    relay_peer_map::RelayPeerMap,
     route_trait::{ArcRoute, Route},
     BoxNicPacketFilter, BoxPeerPacketFilter, PacketRecvChan, PacketRecvChanReceiver,
 };
@@ -76,6 +77,7 @@ struct RpcTransport {
     peer_rpc_tspt_sender: UnboundedSender<ZCPacket>,
 
     encryptor: Arc<dyn Encryptor>,
+    is_secure_mode_enabled: bool,
 }
 
 #[async_trait::async_trait]
@@ -93,7 +95,7 @@ impl PeerRpcManagerTransport for RpcTransport {
             .and_then(|x| x.feature_flag.map(|x| x.is_public_server))
             // if dst is directly connected, it's must not public server
             .unwrap_or(!peers.has_peer(dst_peer_id));
-        if !is_dst_peer_public_server {
+        if !is_dst_peer_public_server && !self.is_secure_mode_enabled {
             self.encryptor
                 .encrypt(&mut msg)
                 .with_context(|| "encrypt failed")?;
@@ -150,6 +152,7 @@ pub struct PeerManager {
 
     foreign_network_manager: Arc<ForeignNetworkManager>,
     foreign_network_client: Arc<ForeignNetworkClient>,
+    relay_peer_map: Arc<RelayPeerMap>,
 
     encryptor: Arc<dyn Encryptor + 'static>,
     data_compress_algo: CompressorAlgo,
@@ -163,6 +166,7 @@ pub struct PeerManager {
     self_tx_counters: SelfTxCounters,
 
     peer_session_store: Arc<PeerSessionStore>,
+    is_secure_mode_enabled: bool,
 }
 
 impl Debug for PeerManager {
@@ -189,6 +193,13 @@ impl PeerManager {
             global_ctx.clone(),
             my_peer_id,
         ));
+        let peer_session_store = Arc::new(PeerSessionStore::new());
+        let relay_peer_map = RelayPeerMap::new(
+            peers.clone(),
+            global_ctx.clone(),
+            my_peer_id,
+            peer_session_store.clone(),
+        );
 
         let encryptor = if global_ctx.get_flags().enable_encryption {
             // 只有在启用加密时才使用工厂函数选择算法
@@ -213,6 +224,12 @@ impl PeerManager {
             global_ctx.set_feature_flags(f);
         }
 
+        let is_secure_mode_enabled = global_ctx
+            .config
+            .get_secure_mode()
+            .map(|cfg| cfg.enabled)
+            .unwrap_or(false);
+
         // TODO: remove these because we have impl pipeline processor.
         let (peer_rpc_tspt_sender, peer_rpc_tspt_recv) = mpsc::unbounded_channel();
         let rpc_tspt = Arc::new(RpcTransport {
@@ -222,6 +239,7 @@ impl PeerManager {
             packet_recv: Mutex::new(peer_rpc_tspt_recv),
             peer_rpc_tspt_sender,
             encryptor: encryptor.clone(),
+            is_secure_mode_enabled,
         });
         let peer_rpc_mgr = Arc::new(PeerRpcManager::new_with_stats_manager(
             rpc_tspt.clone(),
@@ -304,6 +322,7 @@ impl PeerManager {
 
             foreign_network_manager,
             foreign_network_client,
+            relay_peer_map,
 
             encryptor,
             data_compress_algo,
@@ -316,7 +335,8 @@ impl PeerManager {
 
             self_tx_counters,
 
-            peer_session_store: Arc::new(PeerSessionStore::new()),
+            peer_session_store,
+            is_secure_mode_enabled,
         }
     }
 
@@ -645,11 +665,13 @@ impl PeerManager {
         let peers = self.peers.clone();
         let pipe_line = self.peer_packet_process_pipeline.clone();
         let foreign_client = self.foreign_network_client.clone();
+        let relay_peer_map = self.relay_peer_map.clone();
         let foreign_mgr = self.foreign_network_manager.clone();
         let encryptor = self.encryptor.clone();
         let compress_algo = self.data_compress_algo;
         let acl_filter = self.global_ctx.get_acl_filter().clone();
         let global_ctx = self.global_ctx.clone();
+        let secure_mode_enabled = self.is_secure_mode_enabled;
         let stats_mgr = self.global_ctx.stats_manager().clone();
         let route = self.get_route();
 
@@ -713,9 +735,13 @@ impl PeerManager {
                             || hdr.packet_type == PacketType::KcpSrc as u8
                             || hdr.packet_type == PacketType::KcpDst as u8
                         {
-                            let _ =
-                                Self::try_compress_and_encrypt(compress_algo, &encryptor, &mut ret)
-                                    .await;
+                            let _ = Self::try_compress_and_encrypt(
+                                compress_algo,
+                                &encryptor,
+                                &mut ret,
+                                secure_mode_enabled,
+                            )
+                            .await;
                         }
 
                         compress_tx_bytes_after.add(ret.buf_len() as u64);
@@ -727,15 +753,41 @@ impl PeerManager {
                     }
 
                     tracing::trace!(?to_peer_id, ?my_peer_id, "need forward");
-                    let ret =
-                        Self::send_msg_internal(&peers, &foreign_client, ret, to_peer_id).await;
+                    let ret = Self::send_msg_internal(
+                        &peers,
+                        &foreign_client,
+                        &relay_peer_map,
+                        ret,
+                        to_peer_id,
+                    )
+                    .await;
                     if ret.is_err() {
                         tracing::error!(?ret, ?to_peer_id, ?from_peer_id, "forward packet error");
                     }
                 } else {
-                    if let Err(e) = encryptor.decrypt(&mut ret) {
-                        tracing::error!(?e, "decrypt failed");
+                    if hdr.packet_type == PacketType::RelayHandshake as u8
+                        || hdr.packet_type == PacketType::RelayHandshakeAck as u8
+                    {
+                        let _ = relay_peer_map.handle_handshake_packet(ret).await;
                         continue;
+                    }
+                    if !secure_mode_enabled {
+                        if let Err(e) = encryptor.decrypt(&mut ret) {
+                            tracing::error!(?e, "decrypt failed");
+                            continue;
+                        }
+                    } else if !peers.has_peer(from_peer_id) {
+                        match relay_peer_map.decrypt_if_needed(&mut ret) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                tracing::error!("relay session not found");
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::error!(?e, "relay decrypt failed");
+                                continue;
+                            }
+                        }
                     }
 
                     self_rx_bytes.add(buf_len as u64);
@@ -1033,16 +1085,27 @@ impl PeerManager {
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
 
-        Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
+        Self::try_compress_and_encrypt(
+            self.data_compress_algo,
+            &self.encryptor,
+            &mut msg,
+            self.is_secure_mode_enabled,
+        )
+        .await?;
 
         self.self_tx_counters
             .compress_tx_bytes_after
             .add(msg.buf_len() as u64);
 
         let msg_len = msg.buf_len() as u64;
-        let result =
-            Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, dst_peer_id)
-                .await;
+        let result = Self::send_msg_internal(
+            &self.peers,
+            &self.foreign_network_client,
+            &self.relay_peer_map,
+            msg,
+            dst_peer_id,
+        )
+        .await;
         if result.is_ok() {
             self.self_tx_counters.self_tx_bytes.add(msg_len);
             self.self_tx_counters.self_tx_packets.inc();
@@ -1053,15 +1116,20 @@ impl PeerManager {
     async fn send_msg_internal(
         peers: &Arc<PeerMap>,
         foreign_network_client: &Arc<ForeignNetworkClient>,
+        relay_peer_map: &Arc<RelayPeerMap>,
         msg: ZCPacket,
         dst_peer_id: PeerId,
     ) -> Result<(), Error> {
         let policy =
             Self::get_next_hop_policy(msg.peer_manager_header().unwrap().is_latency_first());
 
+        if peers.has_peer(dst_peer_id) {
+            return peers.send_msg_directly(msg, dst_peer_id).await;
+        }
+
         if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
             if peers.has_peer(gateway) {
-                peers.send_msg_directly(msg, gateway).await
+                relay_peer_map.send_msg(msg, dst_peer_id, policy).await
             } else if foreign_network_client.has_next_hop(gateway) {
                 foreign_network_client.send_msg(msg, gateway).await
             } else {
@@ -1174,13 +1242,16 @@ impl PeerManager {
         compress_algo: CompressorAlgo,
         encryptor: &Arc<dyn Encryptor + 'static>,
         msg: &mut ZCPacket,
+        secure_mode_enabled: bool,
     ) -> Result<(), Error> {
         let compressor = DefaultCompressor {};
         compressor
             .compress(msg, compress_algo)
             .await
             .with_context(|| "compress failed")?;
-        encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
+        if !secure_mode_enabled {
+            encryptor.encrypt(msg).with_context(|| "encrypt failed")?;
+        }
         Ok(())
     }
 
@@ -1209,6 +1280,7 @@ impl PeerManager {
             return Self::send_msg_internal(
                 &self.peers,
                 &self.foreign_network_client,
+                &self.relay_peer_map,
                 msg,
                 cur_to_peer_id,
             )
@@ -1229,7 +1301,13 @@ impl PeerManager {
             .compress_tx_bytes_before
             .add(msg.buf_len() as u64);
 
-        Self::try_compress_and_encrypt(self.data_compress_algo, &self.encryptor, &mut msg).await?;
+        Self::try_compress_and_encrypt(
+            self.data_compress_algo,
+            &self.encryptor,
+            &mut msg,
+            self.is_secure_mode_enabled,
+        )
+        .await?;
 
         self.self_tx_counters
             .compress_tx_bytes_after
@@ -1273,9 +1351,14 @@ impl PeerManager {
                 .add(msg.buf_len() as u64);
             self.self_tx_counters.self_tx_packets.inc();
 
-            if let Err(e) =
-                Self::send_msg_internal(&self.peers, &self.foreign_network_client, msg, *peer_id)
-                    .await
+            if let Err(e) = Self::send_msg_internal(
+                &self.peers,
+                &self.foreign_network_client,
+                &self.relay_peer_map,
+                msg,
+                *peer_id,
+            )
+            .await
             {
                 errs.push(e);
             }
@@ -1301,6 +1384,26 @@ impl PeerManager {
         });
     }
 
+    async fn run_relay_session_gc_routine(&self) {
+        let relay_peer_map = self.relay_peer_map.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                relay_peer_map.evict_idle_sessions(std::time::Duration::from_secs(60));
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            }
+        });
+    }
+
+    async fn run_peer_session_gc_routine(&self) {
+        let peer_session_store = self.peer_session_store.clone();
+        self.tasks.lock().await.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                peer_session_store.evict_unused_sessions();
+            }
+        });
+    }
+
     async fn run_foriegn_network(&self) {
         self.peer_rpc_tspt
             .foreign_peers
@@ -1322,6 +1425,8 @@ impl PeerManager {
 
         self.start_peer_recv().await;
         self.run_clean_peer_without_conn_routine().await;
+        self.run_relay_session_gc_routine().await;
+        self.run_peer_session_gc_routine().await;
 
         self.run_foriegn_network().await;
 
@@ -1332,8 +1437,16 @@ impl PeerManager {
         self.peers.clone()
     }
 
+    pub fn get_relay_peer_map(&self) -> Arc<RelayPeerMap> {
+        self.relay_peer_map.clone()
+    }
+
     pub fn get_peer_rpc_mgr(&self) -> Arc<PeerRpcManager> {
         self.peer_rpc_mgr.clone()
+    }
+
+    pub fn get_peer_session_store(&self) -> Arc<PeerSessionStore> {
+        self.peer_session_store.clone()
     }
 
     pub fn my_node_id(&self) -> uuid::Uuid {
