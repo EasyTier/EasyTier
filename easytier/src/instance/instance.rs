@@ -34,7 +34,7 @@ use crate::gateway::kcp_proxy::{KcpProxyDst, KcpProxyDstRpcService, KcpProxySrc}
 use crate::gateway::quic_proxy::{QuicProxy, QuicProxyDstRpcService};
 use crate::gateway::tcp_proxy::{NatDstTcpConnector, TcpProxy, TcpProxyRpcService};
 use crate::gateway::udp_proxy::UdpProxy;
-use crate::peer_center::instance::PeerCenterInstance;
+use crate::peer_center::instance::{PeerCenterInstance, PeerCenterInstanceService};
 use crate::peers::peer_conn::PeerConnId;
 use crate::peers::peer_manager::{PeerManager, RouteAlgoType};
 #[cfg(feature = "tun")]
@@ -54,6 +54,7 @@ use crate::proto::api::instance::{
 };
 use crate::proto::api::manage::NetworkConfig;
 use crate::proto::common::{PortForwardConfigPb, TunnelInfo};
+use crate::proto::peer_rpc::PeerCenterRpc;
 use crate::proto::rpc_impl::standalone::RpcServerHook;
 use crate::proto::rpc_types;
 use crate::proto::rpc_types::controller::BaseController;
@@ -114,7 +115,10 @@ impl IpProxy {
             tracing::error!("start icmp proxy failed: {:?}", e);
             if cfg!(not(any(
                 target_os = "android",
-                any(target_os = "ios", feature = "macos-ne"),
+                any(
+                    target_os = "ios",
+                    all(target_os = "macos", feature = "macos-ne")
+                ),
                 target_env = "ohos"
             ))) {
                 // android, ios and ohos not support icmp proxy
@@ -804,7 +808,7 @@ impl Instance {
                     #[cfg(all(
                         not(any(
                             target_os = "android",
-                            any(target_os = "ios", feature = "macos-ne"),
+                            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
                             target_env = "ohos"
                         )),
                         feature = "tun"
@@ -852,7 +856,7 @@ impl Instance {
     #[cfg(all(
         not(any(
             target_os = "android",
-            any(target_os = "ios", feature = "macos-ne"),
+            any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
             target_env = "ohos"
         )),
         feature = "tun"
@@ -946,7 +950,7 @@ impl Instance {
 
             #[cfg(not(any(
                 target_os = "android",
-                any(target_os = "ios", feature = "macos-ne"),
+                any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
                 target_env = "ohos"
             )))]
             if !self.global_ctx.config.get_flags().no_tun {
@@ -1311,6 +1315,7 @@ impl Instance {
             port_forward_manage_rpc_service: F,
             stats_rpc_service: G,
             config_rpc_service: H,
+            peer_center_rpc_service: Arc<PeerCenterInstanceService>,
         }
 
         #[async_trait::async_trait]
@@ -1372,6 +1377,12 @@ impl Instance {
             fn get_config_service(&self) -> &dyn ConfigRpc<Controller = BaseController> {
                 &self.config_rpc_service
             }
+
+            fn get_peer_center_service(
+                &self,
+            ) -> Arc<dyn PeerCenterRpc<Controller = BaseController> + Send + Sync> {
+                self.peer_center_rpc_service.clone()
+            }
         }
 
         ApiRpcServiceImpl {
@@ -1432,6 +1443,7 @@ impl Instance {
             port_forward_manage_rpc_service: self.get_port_forward_manager_rpc_service(),
             stats_rpc_service: self.get_stats_rpc_service(),
             config_rpc_service: self.get_config_service(),
+            peer_center_rpc_service: Arc::new(self.peer_center.get_rpc_service()),
         }
     }
 
@@ -1454,7 +1466,7 @@ impl Instance {
 
     #[cfg(any(
         target_os = "android",
-        any(target_os = "ios", feature = "macos-ne"),
+        any(target_os = "ios", all(target_os = "macos", feature = "macos-ne")),
         target_env = "ohos"
     ))]
     pub async fn setup_nic_ctx_for_mobile(

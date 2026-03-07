@@ -6,6 +6,10 @@ export interface ValidateConfigResponse {
     toml_config: string;
 }
 
+export interface OidcConfigResponse {
+    enabled: boolean;
+}
+
 // 定义接口返回的数据结构
 export interface LoginResponse {
     success: boolean;
@@ -172,6 +176,19 @@ export class ApiClient {
 
     public captcha_url() {
         return this.client.defaults.baseURL + '/auth/captcha';
+    }
+
+    public async getOidcConfig(): Promise<OidcConfigResponse> {
+        try {
+            const response = await this.client.get<any, OidcConfigResponse>('/auth/oidc/config');
+            return response;
+        } catch (error) {
+            return { enabled: false };
+        }
+    }
+
+    public oidcLoginUrl() {
+        return this.client.defaults.baseURL + '/auth/oidc/login';
     }
 
     public get_remote_client(machine_id: string): Api.RemoteClient {

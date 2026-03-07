@@ -14,7 +14,10 @@ use easytier::rpc_service::remote_client::{
 };
 use easytier::web_client::{self, WebClient};
 use easytier::{
-    common::config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
+    common::{
+        config::{ConfigLoader, FileLoggerConfig, LoggingConfigBuilder, TomlConfigLoader},
+        log,
+    },
     instance_manager::NetworkInstanceManager,
     launcher::NetworkConfig,
     rpc_service::ApiRpcServer,
@@ -1119,7 +1122,7 @@ pub fn run_gui() -> std::process::ExitCode {
                 })
                 .build()
                 .map_err(|e| e.to_string())?;
-            let Ok(_) = utils::init_logger(&config, true) else {
+            let Ok(_) = log::init(&config, true) else {
                 return Ok(());
             };
 
