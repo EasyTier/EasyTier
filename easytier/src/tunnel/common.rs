@@ -495,17 +495,20 @@ pub mod tests {
         L: TunnelListener + Send + Sync + 'static,
         C: TunnelConnector + Send + Sync + 'static,
     {
-        _tunnel_pingpong_netns(
+        _tunnel_pingpong_netns_with_timeout(
             listener,
             connector,
             NetNS::new(None),
             NetNS::new(None),
             "12345678abcdefg".as_bytes().to_vec(),
+            // only used by tunnel test, so set a long timeout
+            tokio::time::Duration::from_secs(5),
         )
-        .await;
+        .await
+        .unwrap();
     }
 
-    pub(crate) async fn _tunnel_pingpong_netns<L, C>(
+    async fn _tunnel_pingpong_netns<L, C>(
         mut listener: L,
         mut connector: C,
         l_netns: NetNS,
