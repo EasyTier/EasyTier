@@ -241,6 +241,7 @@ impl EasyTierLauncher {
             }
             instance_alive.store(false, std::sync::atomic::Ordering::Relaxed);
             notifier.notify_one();
+            rt.shutdown_background();
         }));
     }
 
