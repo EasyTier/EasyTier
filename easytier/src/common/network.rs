@@ -18,7 +18,8 @@ struct InterfaceFilter {
 
 #[cfg(any(
     target_os = "android",
-    any(target_os = "ios", feature = "macos-ne"),
+    target_os = "ios",
+    all(target_os = "macos", feature = "macos-ne"),
     target_env = "ohos"
 ))]
 impl InterfaceFilter {

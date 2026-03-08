@@ -10,9 +10,9 @@ use crate::{
         api::{
             config::ConfigRpcServer,
             instance::{
-                AclManageRpcServer, ConnectorManageRpcServer, MappedListenerManageRpcServer,
-                PeerManageRpcServer, PortForwardManageRpcServer, StatsRpcServer, TcpProxyRpcServer,
-                VpnPortalRpcServer,
+                AclManageRpcServer, ConnectorManageRpcServer, CredentialManageRpcServer,
+                MappedListenerManageRpcServer, PeerManageRpcServer, PortForwardManageRpcServer,
+                StatsRpcServer, TcpProxyRpcServer, VpnPortalRpcServer,
             },
             logger::LoggerRpcServer,
             manage::WebClientServiceServer,
@@ -23,8 +23,9 @@ use crate::{
     },
     rpc_service::{
         acl_manage::AclManageRpcService, config::ConfigRpcService,
-        connector_manage::ConnectorManageRpcService, instance_manage::InstanceManageRpcService,
-        logger::LoggerRpcService, mapped_listener_manage::MappedListenerManageRpcService,
+        connector_manage::ConnectorManageRpcService, credential_manage::CredentialManageRpcService,
+        instance_manage::InstanceManageRpcService, logger::LoggerRpcService,
+        mapped_listener_manage::MappedListenerManageRpcService,
         peer_center::PeerCenterManageRpcService, peer_manage::PeerManageRpcService,
         port_forward_manage::PortForwardManageRpcService, proxy::TcpProxyRpcService,
         stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
@@ -154,6 +155,11 @@ fn register_api_rpc_service(
 
     registry.register(
         PeerCenterRpcServer::new(PeerCenterManageRpcService::new(instance_manager.clone())),
+        "",
+    );
+
+    registry.register(
+        CredentialManageRpcServer::new(CredentialManageRpcService::new(instance_manager.clone())),
         "",
     );
 }

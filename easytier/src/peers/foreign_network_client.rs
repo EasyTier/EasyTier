@@ -38,7 +38,7 @@ impl ForeignNetworkClient {
         }
     }
 
-    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) {
+    pub async fn add_new_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
         tracing::warn!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network client");
         self.peer_map.add_new_peer_conn(peer_conn).await
     }

@@ -244,6 +244,12 @@ core_clap:
   local_public_key:
     en: "local public key for secure mode. if not provided, a random key will be generated, or use local private key to derive public key"
     zh-CN: "安全模式下的本地公钥。如果未提供，则会随机生成一个密钥，或者使用本地私钥派生公钥"
+  credential:
+    en: "credential secret (base64-encoded private key) for joining network as a temporary node without network_secret"
+    zh-CN: "凭据密钥（base64编码的私钥），用于作为临时节点加入网络，无需 network_secret"
+  credential_file:
+    en: "path to credential storage file for persisting generated credentials across restarts (admin nodes)"
+    zh-CN: "凭据存储文件路径，用于在管理节点重启后保留已生成的凭据"
   check_config:
     en: Check config validity without starting the network
     zh-CN: 检查配置文件的有效性并退出

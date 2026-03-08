@@ -5,6 +5,14 @@ import "common.proto";
 
 package peer_rpc;
 
+message TrustedCredentialPubkey {
+  bytes pubkey = 1;              // X25519 public key (32 bytes)
+  repeated string groups = 2;   // ACL groups this credential belongs to
+  bool allow_relay = 3;         // whether this credential node can relay data
+  int64 expiry_unix = 4;        // expiry time (Unix timestamp)
+  repeated string allowed_proxy_cidrs = 5; // allowed proxy_cidrs ranges
+}
+
 message RoutePeerInfo {
   // means next hop in route table.
   uint32 peer_id = 1;
@@ -29,6 +37,10 @@ message RoutePeerInfo {
   repeated PeerGroupInfo groups = 16;
 
   common.NatType tcp_nat_type = 17;
+  bytes noise_static_pubkey = 18;
+
+  // Trusted credential public keys published by admin nodes (holding network_secret)
+  repeated TrustedCredentialPubkey trusted_credential_pubkeys = 19;
 }
 
 message PeerIdVersion {
@@ -262,8 +274,14 @@ message KcpConnData {
 enum SecureAuthLevel {
   None = 0;
   EncryptedUnauthenticated = 1;
-  SharedNodePubkeyVerified = 2;
+  PeerVerified = 2;
   NetworkSecretConfirmed = 3;
+}
+
+enum PeerIdentityType {
+  Admin = 0;
+  Credential = 1;
+  SharedNode = 2;
 }
 
 enum PeerConnSessionActionPb {
@@ -281,6 +299,27 @@ message PeerConnNoiseMsg1Pb {
 }
 
 message PeerConnNoiseMsg2Pb {
+  string b_network_name = 1;
+  uint32 role_hint = 2;
+  PeerConnSessionActionPb action = 3;
+  uint32 b_session_generation = 4;
+  optional bytes root_key_32 = 5;
+  uint32 initial_epoch = 6;
+  common.UUID b_conn_id = 7;
+  common.UUID a_conn_id_echo = 8;
+  optional bytes secret_proof_32 = 9;
+  string server_encryption_algorithm = 10;
+}
+
+message RelayNoiseMsg1Pb {
+  uint32 version = 1;
+  string a_network_name = 2;
+  optional uint32 a_session_generation = 3;
+  common.UUID a_conn_id = 4;
+  string client_encryption_algorithm = 5;
+}
+
+message RelayNoiseMsg2Pb {
   string b_network_name = 1;
   uint32 role_hint = 2;
   PeerConnSessionActionPb action = 3;
