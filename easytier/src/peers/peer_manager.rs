@@ -974,6 +974,16 @@ impl PeerManager {
                 self.my_peer_id
             }
 
+            async fn close_peer(&self, peer_id: PeerId) {
+                if let Some(peer_map) = self.peers.upgrade() {
+                    let _ = peer_map.close_peer(peer_id).await;
+                }
+
+                if let Some(foreign_client) = self.foreign_network_client.upgrade() {
+                    let _ = foreign_client.get_peer_map().close_peer(peer_id).await;
+                }
+            }
+
             async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
                 let peer_map = self.peers.upgrade()?;
                 peer_map.get_peer_identity_type(peer_id)

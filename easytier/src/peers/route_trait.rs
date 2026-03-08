@@ -27,6 +27,7 @@ pub type ForeignNetworkRouteInfoMap =
 pub trait RouteInterface {
     async fn list_peers(&self) -> Vec<PeerId>;
     fn my_peer_id(&self) -> PeerId;
+    async fn close_peer(&self, _peer_id: PeerId) {}
     async fn get_peer_identity_type(&self, _peer_id: PeerId) -> Option<PeerIdentityType> {
         None
     }

@@ -708,6 +708,18 @@ async fn credential_revocation_propagates() {
     )
     .await;
 
+    wait_for_condition(
+        || async { !ping_test("ns_adm", "10.144.144.2", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { !ping_test("ns_c1", "10.144.144.1", None).await },
+        Duration::from_secs(10),
+    )
+    .await;
+
     drop_insts(vec![admin_inst, cred_inst]).await;
 }
 

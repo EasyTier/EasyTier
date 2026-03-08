@@ -372,7 +372,7 @@ enum CredentialSubCommand {
     },
     /// Revoke a credential by its ID
     Revoke {
-        #[arg(help = "credential ID (public key base64)")]
+        #[arg(help = "credential ID (UUID)")]
         credential_id: String,
     },
     /// List all active credentials
@@ -1440,7 +1440,7 @@ impl CommandHandler<'_> {
                 println!();
                 println!("To use this credential on a new node:");
                 println!(
-                    "  easytier-core --network-name <name> --secure-mode --credential {}",
+                    "  easytier-core --network-name <name> --secure-mode --credential {} -p <node-url>",
                     response.credential_secret
                 );
             }

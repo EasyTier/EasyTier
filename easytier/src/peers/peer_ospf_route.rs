@@ -2261,6 +2261,7 @@ impl PeerRouteServiceImpl {
             let (untrusted, global_trusted_keys) =
                 self.synced_route_info.verify_and_update_credential_trusts();
             self.global_ctx.update_trusted_keys(global_trusted_keys);
+            self.disconnect_untrusted_peers(&untrusted).await;
             untrusted_changed = !untrusted.is_empty();
         }
 
@@ -2272,6 +2273,22 @@ impl PeerRouteServiceImpl {
             self.update_peer_info_last_update();
         }
         my_peer_info_updated || my_conn_info_updated || my_foreign_network_updated
+    }
+
+    async fn disconnect_untrusted_peers(&self, untrusted_peers: &[PeerId]) {
+        if untrusted_peers.is_empty() {
+            return;
+        }
+
+        let interface = self.interface.lock().await;
+        let Some(interface) = interface.as_ref() else {
+            return;
+        };
+
+        for peer_id in untrusted_peers {
+            tracing::warn!(?peer_id, "disconnecting untrusted peer");
+            interface.close_peer(*peer_id).await;
+        }
     }
 
     fn build_sync_request(
@@ -2904,6 +2921,7 @@ impl RouteSessionManager {
         session.update_dst_session_id(from_session_id);
 
         let mut need_update_route_table = false;
+        let mut untrusted_peers = Vec::new();
 
         if let Some(peer_infos) = &peer_infos {
             // Step 9b: credential peers can only propagate their own route info
@@ -3001,9 +3019,10 @@ impl RouteSessionManager {
 
         if need_update_route_table {
             // Run credential verification and update route table
-            let (_untrusted, global_trusted_keys) = service_impl
+            let (untrusted, global_trusted_keys) = service_impl
                 .synced_route_info
                 .verify_and_update_credential_trusts();
+            untrusted_peers = untrusted;
             // Sync trusted keys to GlobalCtx for handshake verification
             service_impl
                 .global_ctx
@@ -3034,6 +3053,11 @@ impl RouteSessionManager {
             .store(is_initiator, Ordering::Relaxed);
         let is_initiator = session.we_are_initiator.load(Ordering::Relaxed);
         let session_id = session.my_session_id.load(Ordering::Relaxed);
+
+        drop(_session_lock);
+        service_impl
+            .disconnect_untrusted_peers(&untrusted_peers)
+            .await;
 
         self.sync_now("sync_route_info");
 
