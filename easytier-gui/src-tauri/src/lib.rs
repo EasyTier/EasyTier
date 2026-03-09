@@ -472,11 +472,17 @@ async fn init_web_client(app: AppHandle, url: Option<String>) -> Result<(), Stri
 
     let hooks = Arc::new(manager::GuiHooks { app: app.clone() });
 
-    let web_client =
-        web_client::run_web_client(url.as_str(), None, None, instance_manager, Some(hooks))
-            .await
-            .with_context(|| "Failed to initialize web client")
-            .map_err(|e| format!("{:#}", e))?;
+    let web_client = web_client::run_web_client(
+        url.as_str(),
+        None,
+        None,
+        false,
+        instance_manager,
+        Some(hooks),
+    )
+    .await
+    .with_context(|| "Failed to initialize web client")
+    .map_err(|e| format!("{:#}", e))?;
     *web_client_guard = Some(web_client);
     Ok(())
 }

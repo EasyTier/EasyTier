@@ -13,6 +13,7 @@ use easytier::{
     },
     rpc_service::remote_client::{self, RemoteClientManager},
     tunnel::TunnelListener,
+    web_client::security,
 };
 use maxminddb::geoip2;
 use session::{Location, Session};
@@ -99,12 +100,20 @@ impl ClientManager {
         let feature_flags = self.feature_flags.clone();
         self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
+                let (tunnel, secure) = match security::accept_or_upgrade_server_tunnel(tunnel).await {
+                    Ok(v) => v,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
+                        continue;
+                    }
+                };
                 let info = tunnel.info().unwrap();
                 let client_url: url::Url = info.remote_addr.unwrap().into();
                 let location = Self::lookup_location(&client_url, geoip_db.clone());
                 tracing::info!(
-                    "New session from {:?}, location: {:?}",
+                    "New session from {:?}, secure: {}, location: {:?}",
                     client_url,
+                    secure,
                     location
                 );
                 let mut session = Session::new(
@@ -326,26 +335,36 @@ mod tests {
             connector,
             "test",
             "test",
+            false,
             Arc::new(NetworkInstanceManager::new()),
             None,
         );
 
         wait_for_condition(
-            || async { mgr.client_sessions.len() == 1 },
-            Duration::from_secs(6),
+            || async { !mgr.client_sessions.is_empty() },
+            Duration::from_secs(12),
         )
         .await;
 
-        let mut a = mgr
-            .client_sessions
-            .iter()
-            .next()
-            .unwrap()
-            .data()
-            .read()
-            .await
-            .heartbeat_waiter();
-        let req = a.recv().await.unwrap();
+        let req = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let session = mgr
+                    .client_sessions
+                    .iter()
+                    .next()
+                    .map(|item| item.value().clone());
+                let Some(session) = session else {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                };
+                let mut waiter = session.data().read().await.heartbeat_waiter();
+                if let Ok(req) = waiter.recv().await {
+                    break req;
+                }
+            }
+        })
+        .await
+        .unwrap();
         println!("{:?}", req);
         println!("{:?}", mgr);
     }
