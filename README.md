@@ -48,31 +48,36 @@
 
 Choose the installation method that best suits your needs:
 
+Linux (Recommended):
 ```bash
-# 1. Download pre-built binary (Recommended, All platforms supported)
-# Visit https://github.com/EasyTier/EasyTier/releases
+curl -fsSL "https://github.com/EasyTier/EasyTier/blob/main/script/install.sh?raw=true" | sudo bash -s install
+```
 
-# 2. Install via cargo (Latest development version)
-cargo install --git https://github.com/EasyTier/EasyTier.git easytier
-
-# 3. Install via Docker
-# See https://easytier.cn/en/guide/installation.html#installation-methods
-
-# 4. Linux Quick Install
-wget -O- https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh | sudo bash -s install
-
-# 5. MacOS via Homebrew
+Homebrew (MacOS/Linux):
+```bash
 brew tap brewforge/chinese
 brew install --cask easytier-gui
-
-# 6. OpenWrt Luci Web UI
-# Visit https://github.com/EasyTier/luci-app-easytier
-
-# 7. (Optional) Install shell completions:
-easytier-core --gen-autocomplete fish > ~/.config/fish/completions/easytier-core.fish
-easytier-cli gen-autocomplete fish > ~/.config/fish/completions/easytier-cli.fish
-
 ```
+
+Windows (Recommended, run with administrator privileges):
+```powershell
+irm "https://github.com/EasyTier/EasyTier/blob/main/script/install.ps1?raw=true" | iex
+```
+
+Install via cargo (Latest development version): 
+```bash
+cargo install --git https://github.com/EasyTier/EasyTier.git easytier
+```
+
+[Install pre-built binary](https://github.com/EasyTier/EasyTier/releases) (Recommended, All platforms supported)
+
+[Install via Docker](https://easytier.cn/en/guide/installation.html#installation-methods)
+
+[Install OpenWrt ipk package](https://github.com/EasyTier/luci-app-easytier)
+
+Additional steps:
+
+[One-Click Register Service](https://easytier.cn/en/guide/network/oneclick-install-as-service.html) (Automatically start when the system boots and run in the background)
 
 ### 🚀 Basic Usage
 
