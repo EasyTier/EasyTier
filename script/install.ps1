@@ -85,7 +85,7 @@ Write-Host ''
 # ---------------------------------------------------------------------------
 # Step 1 - Resolve release version
 # ---------------------------------------------------------------------------
-Write-Host '[1/4] Querying GitHub Release info...' -ForegroundColor Yellow
+Write-Host '[1/5] Querying GitHub Release info...' -ForegroundColor Yellow
 
 try {
     if ($Version -eq 'latest' -or $Version -eq 'stable') {
@@ -115,6 +115,8 @@ Write-Host "  Version : $releaseVersion" -ForegroundColor Green
 # ---------------------------------------------------------------------------
 # Step 2 - Find download URL
 # ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '[2/5] Resolving download URL...' -ForegroundColor Yellow
 $asset = $releaseInfo.assets |
     Where-Object { $_.name -eq $assetZipName } |
     Select-Object -First 1
@@ -132,7 +134,7 @@ Write-Host "  URL     : $downloadUrl" -ForegroundColor DarkGray
 # Step 3 - Download ZIP
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host "[2/4] Downloading $assetZipName ..." -ForegroundColor Yellow
+Write-Host "[3/5] Downloading $assetZipName ..." -ForegroundColor Yellow
 
 $tempDir = Join-Path $env:TEMP "easytier-install-$(Get-Random)"
 $zipPath = Join-Path $tempDir $assetZipName
@@ -154,7 +156,7 @@ catch {
 # Step 4 - Extract & copy to install directory
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '[3/4] Extracting and copying files...' -ForegroundColor Yellow
+Write-Host '[4/5] Extracting and copying files...' -ForegroundColor Yellow
 
 $extractDir = Join-Path $tempDir 'extracted'
 New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
@@ -194,7 +196,7 @@ Write-Host "  Installed to: $InstallDir" -ForegroundColor Green
 # Step 5 - Update system PATH
 # ---------------------------------------------------------------------------
 Write-Host ''
-Write-Host '[4/4] Updating system PATH...' -ForegroundColor Yellow
+Write-Host '[5/5] Updating system PATH...' -ForegroundColor Yellow
 
 $systemPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
 # Split on ';' and normalize (trim trailing backslash, case-insensitive) for an exact match
