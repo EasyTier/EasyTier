@@ -3,7 +3,8 @@
     EasyTier Windows Installer
 
 .DESCRIPTION
-    Download EasyTier from GitHub Release and install it
+    Download EasyTier from GitHub Release and install it.
+    Copies binaries to the install directory and updates the system PATH.
 
 .PARAMETER Version
     Target version: "latest", "stable", or a specific tag like "v2.5.0".
@@ -19,7 +20,9 @@
     .\install.ps1 -InstallDir "C:\EasyTier"
 
 .NOTES
-    Administrator privileges are required
+    Administrator privileges are required.
+    After installation, run: easytier-cli service install
+    to register EasyTier as a system service.
 #>
 param(
     [Parameter(Position = 0)]
@@ -33,6 +36,9 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+# Force TLS 1.2+ for GitHub API and download requests
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -53,12 +59,16 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 # ---------------------------------------------------------------------------
 # Architecture detection
 # ---------------------------------------------------------------------------
-switch ($env:PROCESSOR_ARCHITECTURE) {
+# Check PROCESSOR_ARCHITEW6432 first to correctly identify 64-bit OS when
+# running under 32-bit PowerShell (WoW64), where PROCESSOR_ARCHITECTURE
+# reports 'x86' even on a 64-bit machine.
+$cpuArch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+switch ($cpuArch) {
     'AMD64' { $arch = 'x86_64' }
     'ARM64' { $arch = 'arm64'  }
     'x86'   { $arch = 'i686'   }
     default {
-        Write-Error "Unsupported processor architecture: $env:PROCESSOR_ARCHITECTURE"
+        Write-Error "Unsupported processor architecture: $cpuArch"
         exit 1
     }
 }
@@ -102,6 +112,9 @@ $assetZipName   = "$assetBaseName-$releaseVersion.zip"
 
 Write-Host "  Version : $releaseVersion" -ForegroundColor Green
 
+# ---------------------------------------------------------------------------
+# Step 2 - Find download URL
+# ---------------------------------------------------------------------------
 $asset = $releaseInfo.assets |
     Where-Object { $_.name -eq $assetZipName } |
     Select-Object -First 1
@@ -116,7 +129,7 @@ $downloadUrl = $asset.browser_download_url
 Write-Host "  URL     : $downloadUrl" -ForegroundColor DarkGray
 
 # ---------------------------------------------------------------------------
-# Step 2 - Download ZIP
+# Step 3 - Download ZIP
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host "[2/4] Downloading $assetZipName ..." -ForegroundColor Yellow
@@ -138,7 +151,7 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# Step 3 - Extract & copy to install directory
+# Step 4 - Extract & copy to install directory
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '[3/4] Extracting and copying files...' -ForegroundColor Yellow
@@ -178,13 +191,16 @@ catch {
 Write-Host "  Installed to: $InstallDir" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
-# Step 4 - Update system PATH
+# Step 5 - Update system PATH
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '[4/4] Updating system PATH...' -ForegroundColor Yellow
 
 $systemPath = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
-if ($systemPath -notlike "*$InstallDir*") {
+# Split on ';' and normalize (trim trailing backslash, case-insensitive) for an exact match
+$pathEntries = $systemPath -split ';' | ForEach-Object { $_.TrimEnd('\') }
+$normalizedInstallDir = $InstallDir.TrimEnd('\')
+if ($pathEntries -inotcontains $normalizedInstallDir) {
     [Environment]::SetEnvironmentVariable('PATH', "$systemPath;$InstallDir", 'Machine')
     $env:PATH = "$env:PATH;$InstallDir"
     Write-Host "  Added $InstallDir to system PATH" -ForegroundColor Green
