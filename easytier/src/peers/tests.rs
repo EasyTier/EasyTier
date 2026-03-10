@@ -163,7 +163,7 @@ async fn relay_peer_map_secure_session_decrypt() {
     set_secure_mode_cfg(&ctx, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = RelayPeerMap::new(peer_map, ctx.clone(), 10, store.clone());
+    let relay_map = RelayPeerMap::new(peer_map, None, ctx.clone(), 10, store.clone());
 
     let algo = ctx.get_flags().encryption_algorithm.clone();
     let root_key = [7u8; 32];
@@ -188,7 +188,7 @@ async fn relay_peer_map_secure_session_decrypt() {
     let mut packet = ZCPacket::new_with_payload(b"relay-hello");
     packet.fill_peer_manager_hdr(20, 10, PacketType::Data as u8);
     session.encrypt_payload(20, 10, &mut packet).unwrap();
-    assert!(relay_map.decrypt_if_needed(&mut packet).unwrap());
+    assert!(relay_map.decrypt_if_needed(&mut packet).await.unwrap());
     assert_eq!(packet.payload(), b"relay-hello");
 }
 
@@ -200,6 +200,7 @@ async fn relay_peer_map_retry_backoff_and_evict() {
     let peer_map = Arc::new(PeerMap::new(s, ctx_secure.clone(), 10));
     let relay_map = RelayPeerMap::new(
         peer_map,
+        None,
         ctx_secure.clone(),
         10,
         Arc::new(PeerSessionStore::new()),
@@ -217,6 +218,7 @@ async fn relay_peer_map_retry_backoff_and_evict() {
     let peer_map_plain = Arc::new(PeerMap::new(s2, ctx_plain.clone(), 30));
     let relay_map_plain = RelayPeerMap::new(
         peer_map_plain,
+        None,
         ctx_plain.clone(),
         30,
         Arc::new(PeerSessionStore::new()),
@@ -244,7 +246,7 @@ async fn relay_peer_map_pending_packet_buffer() {
     set_secure_mode_cfg(&ctx, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = RelayPeerMap::new(peer_map, ctx.clone(), 10, store.clone());
+    let relay_map = RelayPeerMap::new(peer_map, None, ctx.clone(), 10, store.clone());
 
     // Send multiple packets while no session exists (handshake will fail, but packets should be buffered)
     for i in 0..5u8 {
@@ -554,7 +556,7 @@ async fn relay_peer_map_remove_peer() {
     set_secure_mode_cfg(&ctx, true);
     let peer_map = Arc::new(PeerMap::new(s, ctx.clone(), 10));
     let store = Arc::new(PeerSessionStore::new());
-    let relay_map = RelayPeerMap::new(peer_map, ctx.clone(), 10, store.clone());
+    let relay_map = RelayPeerMap::new(peer_map, None, ctx.clone(), 10, store.clone());
 
     let peer_1: PeerId = 100;
 

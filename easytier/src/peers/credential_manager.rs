@@ -10,7 +10,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::proto::peer_rpc::TrustedCredentialPubkey;
+use crate::proto::peer_rpc::{TrustedCredentialPubkey, TrustedCredentialPubkeyProof};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CredentialEntry {
@@ -83,7 +83,7 @@ impl CredentialManager {
         removed
     }
 
-    pub fn get_trusted_pubkeys(&self) -> Vec<TrustedCredentialPubkey> {
+    pub fn get_trusted_pubkeys(&self, network_secret: &str) -> Vec<TrustedCredentialPubkeyProof> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -94,14 +94,22 @@ impl CredentialManager {
             .unwrap()
             .values()
             .filter(|e| e.expiry_unix > now)
-            .map(|e| TrustedCredentialPubkey {
-                pubkey: Self::decode_pubkey_b64(&e.pubkey).unwrap_or_default(),
-                groups: e.groups.clone(),
-                allow_relay: e.allow_relay,
-                expiry_unix: e.expiry_unix,
-                allowed_proxy_cidrs: e.allowed_proxy_cidrs.clone(),
+            .map(|e| {
+                let credential = TrustedCredentialPubkey {
+                    pubkey: Self::decode_pubkey_b64(&e.pubkey).unwrap_or_default(),
+                    groups: e.groups.clone(),
+                    allow_relay: e.allow_relay,
+                    expiry_unix: e.expiry_unix,
+                    allowed_proxy_cidrs: e.allowed_proxy_cidrs.clone(),
+                };
+                TrustedCredentialPubkeyProof::new_signed(credential, network_secret)
             })
-            .filter(|e| !e.pubkey.is_empty())
+            .filter(|e| {
+                e.credential
+                    .as_ref()
+                    .map(|x| !x.pubkey.is_empty())
+                    .unwrap_or(false)
+            })
             .collect()
     }
 
@@ -202,13 +210,16 @@ mod tests {
         let pubkey_bytes = PublicKey::from(&private).as_bytes().to_vec();
         assert!(mgr.is_pubkey_trusted(&pubkey_bytes));
 
-        let trusted = mgr.get_trusted_pubkeys();
+        let trusted = mgr.get_trusted_pubkeys("sec");
         assert_eq!(trusted.len(), 1);
-        assert_eq!(trusted[0].groups, vec!["guest".to_string()]);
+        assert_eq!(
+            trusted[0].credential.as_ref().unwrap().groups,
+            vec!["guest".to_string()]
+        );
 
         assert!(mgr.revoke_credential(&id));
         assert!(!mgr.is_pubkey_trusted(&pubkey_bytes));
-        assert!(mgr.get_trusted_pubkeys().is_empty());
+        assert!(mgr.get_trusted_pubkeys("sec").is_empty());
     }
 
     #[test]
@@ -221,7 +232,7 @@ mod tests {
         let private = StaticSecret::from(privkey_bytes);
         let pubkey_bytes = PublicKey::from(&private).as_bytes().to_vec();
         assert!(!mgr.is_pubkey_trusted(&pubkey_bytes));
-        assert!(mgr.get_trusted_pubkeys().is_empty());
+        assert!(mgr.get_trusted_pubkeys("sec").is_empty());
     }
 
     #[test]
@@ -300,12 +311,15 @@ mod tests {
         assert!(!mgr.is_pubkey_trusted(&pk1));
         assert!(mgr.is_pubkey_trusted(&pk2));
 
-        let trusted = mgr.get_trusted_pubkeys();
+        let trusted = mgr.get_trusted_pubkeys("sec");
         assert_eq!(trusted.len(), 1);
-        assert_eq!(trusted[0].groups, vec!["group2".to_string()]);
-        assert!(trusted[0].allow_relay);
         assert_eq!(
-            trusted[0].allowed_proxy_cidrs,
+            trusted[0].credential.as_ref().unwrap().groups,
+            vec!["group2".to_string()]
+        );
+        assert!(trusted[0].credential.as_ref().unwrap().allow_relay);
+        assert_eq!(
+            trusted[0].credential.as_ref().unwrap().allowed_proxy_cidrs,
             vec!["10.0.0.0/8".to_string()]
         );
     }
@@ -320,20 +334,29 @@ mod tests {
             Duration::from_secs(7200),
         );
 
-        let trusted = mgr.get_trusted_pubkeys();
+        let trusted = mgr.get_trusted_pubkeys("sec");
         assert_eq!(trusted.len(), 1);
         let tc = &trusted[0];
-        assert_eq!(tc.groups, vec!["admin".to_string(), "ops".to_string()]);
-        assert!(tc.allow_relay);
         assert_eq!(
-            tc.allowed_proxy_cidrs,
+            tc.credential.as_ref().unwrap().groups,
+            vec!["admin".to_string(), "ops".to_string()]
+        );
+        assert!(tc.credential.as_ref().unwrap().allow_relay);
+        assert_eq!(
+            tc.credential.as_ref().unwrap().allowed_proxy_cidrs,
             vec!["192.168.0.0/16".to_string(), "10.0.0.0/8".to_string()]
         );
-        assert!(tc.expiry_unix > 0);
+        assert!(tc.credential.as_ref().unwrap().expiry_unix > 0);
+        assert!(tc.verify_credential_hmac("sec"));
+        assert!(tc
+            .credential
+            .as_ref()
+            .map(|x| !x.pubkey.is_empty())
+            .unwrap_or(false));
 
         let sk: [u8; 32] = BASE64_STANDARD.decode(&secret).unwrap().try_into().unwrap();
         let pk = PublicKey::from(&StaticSecret::from(sk)).as_bytes().to_vec();
-        assert_eq!(tc.pubkey, pk);
+        assert_eq!(tc.credential.as_ref().unwrap().pubkey, pk);
     }
 
     #[test]

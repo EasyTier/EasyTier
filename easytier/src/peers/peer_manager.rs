@@ -195,12 +195,6 @@ impl PeerManager {
             my_peer_id,
         ));
         let peer_session_store = Arc::new(PeerSessionStore::new());
-        let relay_peer_map = RelayPeerMap::new(
-            peers.clone(),
-            global_ctx.clone(),
-            my_peer_id,
-            peer_session_store.clone(),
-        );
 
         let encryptor = if global_ctx.get_flags().enable_encryption {
             // 只有在启用加密时才使用工厂函数选择算法
@@ -259,6 +253,7 @@ impl PeerManager {
         let foreign_network_manager = Arc::new(ForeignNetworkManager::new(
             my_peer_id,
             global_ctx.clone(),
+            peer_session_store.clone(),
             packet_send.clone(),
             Self::build_foreign_network_manager_accessor(&peers),
         ));
@@ -268,6 +263,14 @@ impl PeerManager {
             peer_rpc_mgr.clone(),
             my_peer_id,
         ));
+
+        let relay_peer_map = RelayPeerMap::new(
+            peers.clone(),
+            Some(foreign_network_client.clone()),
+            global_ctx.clone(),
+            my_peer_id,
+            peer_session_store.clone(),
+        );
 
         let data_compress_algo = global_ctx
             .get_flags()
@@ -619,7 +622,7 @@ impl PeerManager {
                 MetricName::TrafficPacketsForeignForwardRx,
             );
             if let Err(e) = foreign_network_mgr
-                .send_msg_to_peer(
+                .forward_foreign_network_packet(
                     &foreign_network_name,
                     foreign_peer_id,
                     packet.foreign_network_packet(),
@@ -816,8 +819,10 @@ impl PeerManager {
                             tracing::error!(?e, "decrypt failed");
                             continue;
                         }
-                    } else if !peers.has_peer(from_peer_id) {
-                        match relay_peer_map.decrypt_if_needed(&mut ret) {
+                    } else if !peers.has_peer(from_peer_id)
+                        && !foreign_client.has_next_hop(from_peer_id)
+                    {
+                        match relay_peer_map.decrypt_if_needed(&mut ret).await {
                             Ok(true) => {}
                             Ok(false) => {
                                 tracing::error!("relay session not found");
@@ -1180,13 +1185,13 @@ impl PeerManager {
 
         if peers.has_peer(dst_peer_id) {
             return peers.send_msg_directly(msg, dst_peer_id).await;
+        } else if foreign_network_client.has_next_hop(dst_peer_id) {
+            return foreign_network_client.send_msg(msg, dst_peer_id).await;
         }
 
         if let Some(gateway) = peers.get_gateway_peer_id(dst_peer_id, policy.clone()).await {
-            if peers.has_peer(gateway) {
+            if peers.has_peer(gateway) || foreign_network_client.has_next_hop(gateway) {
                 relay_peer_map.send_msg(msg, dst_peer_id, policy).await
-            } else if foreign_network_client.has_next_hop(gateway) {
-                foreign_network_client.send_msg(msg, gateway).await
             } else {
                 tracing::warn!(
                     ?gateway,

@@ -101,6 +101,18 @@ fn cidr_is_subset_str(child: &str, parent: &str) -> bool {
     }
 }
 
+/// Patch specific fields in a raw DynamicMessage from a decoded RoutePeerInfo,
+/// preserving all other fields (including unknown ones).
+fn patch_raw_from_info(raw: &mut DynamicMessage, info: &RoutePeerInfo, fields: &[&str]) {
+    let mut decoded_raw = DynamicMessage::new(RoutePeerInfo::default().descriptor());
+    decoded_raw.transcode_from(info).unwrap();
+    for field_name in fields {
+        if let Some(value) = decoded_raw.get_field_by_name(field_name) {
+            raw.set_field_by_name(field_name, value.into_owned());
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AtomicVersion(Arc<AtomicU32>);
 
@@ -229,12 +241,12 @@ impl RoutePeerInfo {
             noise_static_pubkey,
 
             // Only admin nodes (holding network_secret) publish trusted credential pubkeys
-            trusted_credential_pubkeys: if global_ctx
-                .get_network_identity()
-                .network_secret
-                .is_some()
+            trusted_credential_pubkeys: if let Some(network_secret) =
+                global_ctx.get_network_identity().network_secret
             {
-                global_ctx.get_credential_manager().get_trusted_pubkeys()
+                global_ctx
+                    .get_credential_manager()
+                    .get_trusted_pubkeys(&network_secret)
             } else {
                 Vec::new()
             },
@@ -886,6 +898,7 @@ impl SyncedRouteInfo {
     /// Also returns a HashMap of trusted keys for synchronization to GlobalCtx.
     fn verify_and_update_credential_trusts(
         &self,
+        network_secret: Option<&str>,
     ) -> (
         Vec<PeerId>,
         HashMap<Vec<u8>, crate::common::global_ctx::TrustedKeyMetadata>,
@@ -919,7 +932,19 @@ impl SyncedRouteInfo {
                     },
                 );
             }
-            for tc in &info.trusted_credential_pubkeys {
+            for proof in &info.trusted_credential_pubkeys {
+                // If we have a network_secret, verify the HMAC as before.
+                // If we don't (e.g. credential nodes), accept proofs from admin peers
+                // based on the authenticated channel instead of local HMAC verification.
+                let hmac_valid = network_secret
+                    .map(|secret| proof.verify_credential_hmac(secret))
+                    .unwrap_or(true);
+                if !hmac_valid {
+                    continue;
+                }
+                let Some(tc) = proof.credential.as_ref() else {
+                    continue;
+                };
                 if tc.expiry_unix > now {
                     all_trusted
                         .entry(tc.pubkey.clone())
@@ -2258,9 +2283,13 @@ impl PeerRouteServiceImpl {
         let my_foreign_network_updated = self.update_my_foreign_network().await;
         let mut untrusted_changed = false;
         if my_peer_info_updated {
-            let (untrusted, global_trusted_keys) =
-                self.synced_route_info.verify_and_update_credential_trusts();
-            self.global_ctx.update_trusted_keys(global_trusted_keys);
+            let network_identity = self.global_ctx.get_network_identity();
+            let network_secret = network_identity.network_secret.as_deref();
+            let (untrusted, global_trusted_keys) = self
+                .synced_route_info
+                .verify_and_update_credential_trusts(network_secret);
+            self.global_ctx
+                .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
             self.disconnect_untrusted_peers(&untrusted).await;
             untrusted_changed = !untrusted.is_empty();
         }
@@ -2913,6 +2942,7 @@ impl RouteSessionManager {
             .await
             .unwrap_or(PeerIdentityType::Admin);
         let from_is_credential = matches!(from_identity_type, PeerIdentityType::Credential);
+        let from_is_shared = matches!(from_identity_type, PeerIdentityType::SharedNode);
 
         let _session_lock = session.lock.lock();
 
@@ -2958,8 +2988,18 @@ impl RouteSessionManager {
                         info
                     })
                     .collect();
-                normalized_raw_peer_infos =
-                    normalized_peer_infos.iter().map(normalize_raw).collect();
+                normalized_raw_peer_infos = normalized_peer_infos
+                    .iter()
+                    .map(|info| {
+                        // Find original raw for this peer to preserve unknown fields
+                        let orig_idx = peer_infos.iter().position(|p| p.peer_id == info.peer_id);
+                        let mut raw = orig_idx
+                            .and_then(|idx| raw_peer_infos.as_ref().map(|rpi| rpi[idx].clone()))
+                            .unwrap_or_else(|| normalize_raw(info));
+                        patch_raw_from_info(&mut raw, info, &["proxy_cidrs", "feature_flag"]);
+                        raw
+                    })
+                    .collect();
                 (&normalized_peer_infos, &normalized_raw_peer_infos)
             } else {
                 let mut peer_infos_mut = peer_infos.clone();
@@ -2967,6 +3007,13 @@ impl RouteSessionManager {
                     .as_ref()
                     .cloned()
                     .unwrap_or_else(|| peer_infos_mut.iter().map(normalize_raw).collect());
+                if from_is_shared {
+                    for (info, raw) in peer_infos_mut.iter_mut().zip(raw_peer_infos_mut.iter_mut())
+                    {
+                        info.trusted_credential_pubkeys.clear();
+                        patch_raw_from_info(raw, info, &["trusted_credential_pubkeys"]);
+                    }
+                }
                 if let Some((idx, info)) = peer_infos_mut
                     .iter()
                     .enumerate()
@@ -2975,7 +3022,7 @@ impl RouteSessionManager {
                     let mut info = info.clone();
                     SyncedRouteInfo::mark_credential_peer(&mut info, false);
                     peer_infos_mut[idx] = info.clone();
-                    raw_peer_infos_mut[idx] = normalize_raw(&info);
+                    patch_raw_from_info(&mut raw_peer_infos_mut[idx], &info, &["feature_flag"]);
                 }
                 normalized_peer_infos = peer_infos_mut;
                 normalized_raw_peer_infos = raw_peer_infos_mut;
@@ -3019,14 +3066,15 @@ impl RouteSessionManager {
 
         if need_update_route_table {
             // Run credential verification and update route table
+            let network_identity = service_impl.global_ctx.get_network_identity();
             let (untrusted, global_trusted_keys) = service_impl
                 .synced_route_info
-                .verify_and_update_credential_trusts();
+                .verify_and_update_credential_trusts(network_identity.network_secret.as_deref());
             untrusted_peers = untrusted;
             // Sync trusted keys to GlobalCtx for handshake verification
             service_impl
                 .global_ctx
-                .update_trusted_keys(global_trusted_keys);
+                .update_trusted_keys(global_trusted_keys, &network_identity.network_name);
             service_impl.update_route_table_and_cached_local_conn_bitmap();
         }
 
@@ -3424,7 +3472,7 @@ mod tests {
             common::{NatType, PeerFeatureFlag},
             peer_rpc::{
                 PeerIdentityType, RoutePeerInfo, RoutePeerInfos, SyncRouteInfoRequest,
-                TrustedCredentialPubkey,
+                TrustedCredentialPubkey, TrustedCredentialPubkeyProof,
             },
         },
         tunnel::common::tests::wait_for_condition,
@@ -3538,6 +3586,7 @@ mod tests {
     #[tokio::test]
     async fn trusted_credentials_only_from_admin_publishers() {
         let service_impl = PeerRouteServiceImpl::new(1, get_mock_global_ctx());
+        let network_secret = "sec1";
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -3553,11 +3602,14 @@ mod tests {
             is_credential_peer: false,
             ..Default::default()
         });
-        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkey {
-            pubkey: admin_key.clone(),
-            expiry_unix: now + 600,
-            ..Default::default()
-        }];
+        admin_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof::new_signed(
+            TrustedCredentialPubkey {
+                pubkey: admin_key.clone(),
+                expiry_unix: now + 600,
+                ..Default::default()
+            },
+            network_secret,
+        )];
 
         let mut credential_info = RoutePeerInfo::new();
         credential_info.peer_id = 21;
@@ -3566,11 +3618,15 @@ mod tests {
             is_credential_peer: true,
             ..Default::default()
         });
-        credential_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkey {
-            pubkey: credential_key.clone(),
-            expiry_unix: now + 600,
-            ..Default::default()
-        }];
+        credential_info.trusted_credential_pubkeys =
+            vec![TrustedCredentialPubkeyProof::new_signed(
+                TrustedCredentialPubkey {
+                    pubkey: credential_key.clone(),
+                    expiry_unix: now + 600,
+                    ..Default::default()
+                },
+                network_secret,
+            )];
 
         {
             let mut guard = service_impl.synced_route_info.peer_infos.write();
@@ -3580,7 +3636,7 @@ mod tests {
 
         service_impl
             .synced_route_info
-            .verify_and_update_credential_trusts();
+            .verify_and_update_credential_trusts(Some(network_secret));
 
         assert!(service_impl
             .synced_route_info
@@ -3645,6 +3701,72 @@ mod tests {
             .unwrap_or(false));
         assert!(stored.proxy_cidrs.is_empty());
         assert!(guard.get(&forwarded_peer_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn sync_route_info_shared_sender_cannot_publish_trusted_credentials() {
+        let peer_mgr = create_mock_pmgr().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+        let from_peer_id: PeerId = 10021;
+        let forwarded_peer_id: PeerId = 10022;
+        let credential_key = vec![9u8; 32];
+
+        let identity_type = DashMap::new();
+        identity_type.insert(from_peer_id, PeerIdentityType::SharedNode);
+        *route.service_impl.interface.lock().await = Some(Box::new(AuthOnlyInterface {
+            my_peer_id: peer_mgr.my_peer_id(),
+            identity_type,
+        }));
+
+        let mut sender_info = RoutePeerInfo::new();
+        sender_info.peer_id = from_peer_id;
+        sender_info.version = 1;
+
+        let mut forwarded_info = RoutePeerInfo::new();
+        forwarded_info.peer_id = forwarded_peer_id;
+        forwarded_info.version = 1;
+        forwarded_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof {
+            credential: Some(TrustedCredentialPubkey {
+                pubkey: credential_key.clone(),
+                expiry_unix: i64::MAX,
+                ..Default::default()
+            }),
+            credential_hmac: vec![1; 32],
+        }];
+
+        let make_raw = |info: &RoutePeerInfo| {
+            let mut raw = DynamicMessage::new(RoutePeerInfo::default().descriptor());
+            raw.transcode_from(info).unwrap();
+            raw
+        };
+        let raw_infos = vec![make_raw(&sender_info), make_raw(&forwarded_info)];
+
+        route
+            .session_mgr
+            .do_sync_route_info(
+                from_peer_id,
+                1,
+                true,
+                Some(vec![sender_info, forwarded_info]),
+                Some(raw_infos),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let guard = route.service_impl.synced_route_info.peer_infos.read();
+        assert!(guard
+            .get(&forwarded_peer_id)
+            .map(|x| x.trusted_credential_pubkeys.is_empty())
+            .unwrap_or(false));
+        drop(guard);
+
+        assert!(!route
+            .service_impl
+            .synced_route_info
+            .trusted_credential_pubkeys
+            .contains_key(&credential_key));
     }
 
     #[tokio::test]
@@ -4297,5 +4419,198 @@ mod tests {
 
         connect_peer_manager(p_b.clone(), p_c.clone()).await;
         wait_route_appear(p_a.clone(), p_c.clone()).await.unwrap();
+    }
+
+    /// Helper: create a raw DynamicMessage from a RoutePeerInfo with an extra
+    /// unknown field appended (field number 9999, varint value 42).
+    /// Returns the raw DynamicMessage and the encoded unknown field bytes.
+    fn make_raw_with_unknown_field(info: &RoutePeerInfo) -> (DynamicMessage, Vec<u8>) {
+        // Encode the info to bytes
+        let mut bytes = info.encode_to_vec();
+        // Append an unknown field: field 9999, wire type 0 (varint), value 42
+        // Tag = (9999 << 3) | 0 = 79992, encoded as varint
+        prost::encoding::encode_key(9999, prost::encoding::WireType::Varint, &mut bytes);
+        prost::encoding::encode_varint(42, &mut bytes);
+        let unknown_field_bytes = bytes[info.encoded_len()..].to_vec();
+        // Decode as DynamicMessage — unknown fields are preserved
+        let raw = DynamicMessage::decode(RoutePeerInfo::default().descriptor(), bytes.as_slice())
+            .unwrap();
+        (raw, unknown_field_bytes)
+    }
+
+    /// Check that a raw DynamicMessage still contains the unknown field bytes
+    /// by re-encoding and checking the suffix.
+    fn raw_has_unknown_bytes(raw: &DynamicMessage, unknown_bytes: &[u8]) -> bool {
+        let encoded = raw.encode_to_vec();
+        // The unknown field bytes should appear somewhere in the encoded output
+        encoded
+            .windows(unknown_bytes.len())
+            .any(|w| w == unknown_bytes)
+    }
+
+    #[tokio::test]
+    async fn sync_route_preserves_unknown_fields_for_credential_sender() {
+        let peer_mgr = create_mock_pmgr().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+        let from_peer_id: PeerId = 20001;
+
+        let identity_type = DashMap::new();
+        identity_type.insert(from_peer_id, PeerIdentityType::Credential);
+        *route.service_impl.interface.lock().await = Some(Box::new(AuthOnlyInterface {
+            my_peer_id: peer_mgr.my_peer_id(),
+            identity_type,
+        }));
+
+        let mut sender_info = RoutePeerInfo::new();
+        sender_info.peer_id = from_peer_id;
+        sender_info.version = 1;
+
+        let (raw, unknown_bytes) = make_raw_with_unknown_field(&sender_info);
+
+        route
+            .session_mgr
+            .do_sync_route_info(
+                from_peer_id,
+                1,
+                true,
+                Some(vec![sender_info]),
+                Some(vec![raw]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let stored_raw = route
+            .service_impl
+            .synced_route_info
+            .raw_peer_infos
+            .get(&from_peer_id)
+            .expect("raw peer info should be stored");
+        assert!(
+            raw_has_unknown_bytes(stored_raw.value(), &unknown_bytes),
+            "unknown fields should be preserved for credential sender"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_route_preserves_unknown_fields_for_shared_sender() {
+        let peer_mgr = create_mock_pmgr().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+        let from_peer_id: PeerId = 20011;
+        let forwarded_peer_id: PeerId = 20012;
+
+        let identity_type = DashMap::new();
+        identity_type.insert(from_peer_id, PeerIdentityType::SharedNode);
+        *route.service_impl.interface.lock().await = Some(Box::new(AuthOnlyInterface {
+            my_peer_id: peer_mgr.my_peer_id(),
+            identity_type,
+        }));
+
+        let mut sender_info = RoutePeerInfo::new();
+        sender_info.peer_id = from_peer_id;
+        sender_info.version = 1;
+
+        let mut forwarded_info = RoutePeerInfo::new();
+        forwarded_info.peer_id = forwarded_peer_id;
+        forwarded_info.version = 1;
+        forwarded_info.trusted_credential_pubkeys = vec![TrustedCredentialPubkeyProof {
+            credential: Some(TrustedCredentialPubkey {
+                pubkey: vec![9u8; 32],
+                expiry_unix: i64::MAX,
+                ..Default::default()
+            }),
+            credential_hmac: vec![1; 32],
+        }];
+
+        let (raw_sender, unknown_sender) = make_raw_with_unknown_field(&sender_info);
+        let (raw_forwarded, unknown_forwarded) = make_raw_with_unknown_field(&forwarded_info);
+
+        route
+            .session_mgr
+            .do_sync_route_info(
+                from_peer_id,
+                1,
+                true,
+                Some(vec![sender_info, forwarded_info]),
+                Some(vec![raw_sender, raw_forwarded]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Shared node: trusted_credential_pubkeys cleared but unknown fields preserved
+        let stored_sender = route
+            .service_impl
+            .synced_route_info
+            .raw_peer_infos
+            .get(&from_peer_id)
+            .expect("sender raw should be stored");
+        assert!(
+            raw_has_unknown_bytes(stored_sender.value(), &unknown_sender),
+            "unknown fields should be preserved for shared sender's own info"
+        );
+
+        let stored_forwarded = route
+            .service_impl
+            .synced_route_info
+            .raw_peer_infos
+            .get(&forwarded_peer_id)
+            .expect("forwarded raw should be stored");
+        assert!(
+            raw_has_unknown_bytes(stored_forwarded.value(), &unknown_forwarded),
+            "unknown fields should be preserved for shared sender's forwarded info"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_route_preserves_unknown_fields_for_admin_sender() {
+        let peer_mgr = create_mock_pmgr().await;
+        let route = create_mock_route(peer_mgr.clone()).await;
+        let from_peer_id: PeerId = 20021;
+
+        let identity_type = DashMap::new();
+        identity_type.insert(from_peer_id, PeerIdentityType::Admin);
+        *route.service_impl.interface.lock().await = Some(Box::new(AuthOnlyInterface {
+            my_peer_id: peer_mgr.my_peer_id(),
+            identity_type,
+        }));
+
+        let mut sender_info = RoutePeerInfo::new();
+        sender_info.peer_id = from_peer_id;
+        sender_info.version = 1;
+        // Set is_credential_peer=true so the mark_credential_peer(false) path triggers
+        sender_info.feature_flag = Some(PeerFeatureFlag {
+            is_credential_peer: true,
+            ..Default::default()
+        });
+
+        let (raw, unknown_bytes) = make_raw_with_unknown_field(&sender_info);
+
+        route
+            .session_mgr
+            .do_sync_route_info(
+                from_peer_id,
+                1,
+                true,
+                Some(vec![sender_info]),
+                Some(vec![raw]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let stored_raw = route
+            .service_impl
+            .synced_route_info
+            .raw_peer_infos
+            .get(&from_peer_id)
+            .expect("raw peer info should be stored");
+        assert!(
+            raw_has_unknown_bytes(stored_raw.value(), &unknown_bytes),
+            "unknown fields should be preserved for admin sender (mark non-credential path)"
+        );
     }
 }

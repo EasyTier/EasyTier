@@ -148,6 +148,29 @@ fn create_admin_config(
     config
 }
 
+fn create_shared_config(
+    inst_name: &str,
+    ns: Option<&str>,
+    ipv4: &str,
+    ipv6: &str,
+) -> TomlConfigLoader {
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(inst_name.to_owned());
+    config.set_netns(ns.map(|s| s.to_owned()));
+    config.set_ipv4(Some(ipv4.parse().unwrap()));
+    config.set_ipv6(Some(ipv6.parse().unwrap()));
+    config.set_listeners(vec![
+        "tcp://0.0.0.0:11010".parse().unwrap(),
+        "udp://0.0.0.0:11010".parse().unwrap(),
+    ]);
+    config.set_network_identity(NetworkIdentity::new(
+        "shared_network".to_string(),
+        "".to_string(),
+    ));
+    config.set_secure_mode(Some(generate_secure_mode_config()));
+    config
+}
+
 /// Test 1: Basic credential node connectivity
 /// Topology: Admin ← Credential
 /// Verifies that a credential node can connect to an admin node and appears in routes
@@ -298,7 +321,6 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         config.set_netns(Some("ns_c1".to_string()));
         config.set_ipv4(Some("10.144.144.2".parse().unwrap()));
         config.set_ipv6(Some("fd00::2/64".parse().unwrap()));
-        config.set_listeners(vec!["tcp://0.0.0.0:11021".parse().unwrap()]);
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -326,7 +348,6 @@ async fn credential_relay_capability(#[case] allow_relay: bool) {
         config.set_netns(Some("ns_c2".to_string()));
         config.set_ipv4(Some("10.144.144.3".parse().unwrap()));
         config.set_ipv6(Some("fd00::3/64".parse().unwrap()));
-        config.set_listeners(vec!["tcp://0.0.0.0:11022".parse().unwrap()]);
         config.set_network_identity(NetworkIdentity::new_credential(
             admin_inst
                 .get_global_ctx()
@@ -786,4 +807,125 @@ async fn credential_unknown_rejected() {
     );
 
     drop_insts(vec![admin_inst, cred_inst]).await;
+}
+
+#[rstest::rstest]
+#[tokio::test]
+#[serial_test::serial]
+async fn credential_admin_shared_admin_credential_connectivity(
+    #[values(true, false)] connect_to_admin: bool,
+) {
+    prepare_credential_network();
+
+    // 10.1.1.1
+    let admin_a_config =
+        create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let mut admin_a_inst = Instance::new(admin_a_config);
+    admin_a_inst.run().await.unwrap();
+
+    // 10.1.1.2
+    let shared_b_config =
+        create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
+    let mut shared_b_inst = Instance::new(shared_b_config);
+    shared_b_inst.run().await.unwrap();
+
+    // 10.1.1.4
+    let admin_c_config =
+        create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
+    let mut admin_c_inst = Instance::new(admin_c_config);
+    admin_c_inst.run().await.unwrap();
+
+    admin_a_inst
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+    admin_c_inst
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    // print all peer ids
+    println!("admin_a_peer_id: {:?}", admin_a_inst.peer_id());
+    println!("shared_b_peer_id: {:?}", shared_b_inst.peer_id());
+    println!("admin_c_peer_id: {:?}", admin_c_inst.peer_id());
+
+    let admin_c_peer_id = admin_c_inst.peer_id();
+    wait_for_condition(
+        || async {
+            let a_routes = admin_a_inst.get_peer_manager().list_routes().await;
+            let c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            println!(
+                "bootstrap routes: a={:?} c={:?}",
+                a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
+                c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+            );
+            a_routes.iter().any(|r| r.peer_id == admin_c_peer_id)
+                || c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
+        },
+        Duration::from_secs(3),
+    )
+    .await;
+
+    let cred_d_config = create_credential_config(
+        &admin_a_inst,
+        "cred_d",
+        Some("ns_c2"),
+        "10.144.144.5",
+        "fd00::5/64",
+    )
+    .await;
+    admin_a_inst
+        .get_global_ctx()
+        .issue_event(GlobalCtxEvent::CredentialChanged);
+
+    let mut cred_d_inst = Instance::new(cred_d_config);
+    cred_d_inst.run().await.unwrap();
+    let cred_d_peer_id = cred_d_inst.peer_id();
+
+    cred_d_inst
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(if !connect_to_admin {
+            // connect to shared node
+            "tcp://10.1.1.2:11010".parse().unwrap()
+        } else {
+            // connect to admin node
+            "tcp://10.1.1.4:11010".parse().unwrap()
+        }));
+    // print all peer ids
+    println!("cred_d_peer_id: {:?}", cred_d_peer_id);
+
+    wait_for_condition(
+        || async {
+            admin_c_inst
+                .get_peer_manager()
+                .list_routes()
+                .await
+                .iter()
+                .any(|r| r.peer_id == cred_d_peer_id)
+        },
+        Duration::from_secs(60),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("ns_c3", "10.144.144.5", None).await },
+        Duration::from_secs(15),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("ns_adm", "10.144.144.5", None).await },
+        Duration::from_secs(15),
+    )
+    .await;
+
+    wait_for_condition(
+        || async { ping_test("ns_c2", "10.144.144.4", None).await },
+        Duration::from_secs(15),
+    )
+    .await;
+
+    drop_insts(vec![admin_a_inst, shared_b_inst, admin_c_inst, cred_d_inst]).await;
 }

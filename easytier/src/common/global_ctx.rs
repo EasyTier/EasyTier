@@ -8,8 +8,10 @@ use std::{
 };
 
 use arc_swap::ArcSwap;
+use dashmap::DashMap;
 
 use crate::common::config::ProxyNetworkConfig;
+use crate::common::shrink_dashmap;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
@@ -101,6 +103,53 @@ impl TrustedKeyMetadata {
     }
 }
 
+// key is (pubkey, network-name)
+pub type TrustedKeyMap = HashMap<Vec<u8>, TrustedKeyMetadata>;
+
+struct TrustedKeyMapManager {
+    network_trusted_keys: DashMap<String, ArcSwap<TrustedKeyMap>>,
+}
+
+impl TrustedKeyMapManager {
+    pub fn new() -> Self {
+        Self {
+            network_trusted_keys: DashMap::new(),
+        }
+    }
+
+    pub fn update_trusted_keys(&self, network_name: &str, trusted_keys: TrustedKeyMap) {
+        match self.network_trusted_keys.entry(network_name.to_string()) {
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(ArcSwap::new(Arc::new(trusted_keys)));
+            }
+            dashmap::Entry::Occupied(entry) => {
+                entry.get().store(Arc::new(trusted_keys));
+            }
+        }
+    }
+
+    pub fn remove_trusted_keys(&self, network_name: &str) {
+        self.network_trusted_keys.remove(network_name);
+        shrink_dashmap(&self.network_trusted_keys, None);
+    }
+
+    pub fn verify_trusted_key(&self, pubkey: &[u8], network_name: &str) -> bool {
+        let Some(trusted_keys) = self
+            .network_trusted_keys
+            .get(network_name)
+            .map(|v| v.load_full())
+        else {
+            return false;
+        };
+
+        let Some(metadata) = trusted_keys.get(&pubkey.to_vec()) else {
+            return false;
+        };
+
+        !metadata.is_expired()
+    }
+}
+
 pub struct GlobalCtx {
     pub inst_name: String,
     pub id: uuid::Uuid,
@@ -139,7 +188,7 @@ pub struct GlobalCtx {
 
     /// OSPF propagated trusted keys (peer pubkeys and admin credentials)
     /// Stored in ArcSwap for lock-free reads and atomic batch updates
-    trusted_keys: ArcSwap<HashMap<Vec<u8>, TrustedKeyMetadata>>,
+    trusted_keys: Arc<TrustedKeyMapManager>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -236,7 +285,7 @@ impl GlobalCtx {
 
             credential_manager,
 
-            trusted_keys: ArcSwap::new(Arc::new(HashMap::new())),
+            trusted_keys: Arc::new(TrustedKeyMapManager::new()),
         }
     }
 
@@ -461,22 +510,28 @@ impl GlobalCtx {
     /// Check if a public key is trusted using two-level lookup:
     /// 1. OSPF propagated trusted_keys (lock-free)
     /// 2. Local credential_manager
-    pub fn is_pubkey_trusted(&self, pubkey: &[u8]) -> bool {
+    pub fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
         // First level: check OSPF propagated keys (lock-free)
-        let keys = self.trusted_keys.load();
-        if let Some(metadata) = keys.get(pubkey) {
-            return !metadata.is_expired();
+        if self.trusted_keys.verify_trusted_key(pubkey, network_name) {
+            return true;
         }
-        drop(keys);
 
-        // Second level: check local credential_manager
-        self.credential_manager.is_pubkey_trusted(pubkey)
+        // Second level: check local credential_manager if in the same network
+        if network_name == self.get_network_name() {
+            return self.credential_manager.is_pubkey_trusted(pubkey);
+        }
+
+        false
     }
 
     /// Atomically replace all OSPF trusted keys with a new set
     /// Called by OSPF route layer after each route update
-    pub fn update_trusted_keys(&self, keys: HashMap<Vec<u8>, TrustedKeyMetadata>) {
-        self.trusted_keys.store(Arc::new(keys));
+    pub fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
+        self.trusted_keys.update_trusted_keys(network_name, keys);
+    }
+
+    pub fn remove_trusted_keys(&self, network_name: &str) {
+        self.trusted_keys.remove_trusted_keys(network_name);
     }
 
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {

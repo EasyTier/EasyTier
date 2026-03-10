@@ -36,7 +36,7 @@ pub enum PeerSessionAction {
     Create,
 }
 
-#[derive(PartialEq, Clone, Eq, Hash)]
+#[derive(PartialEq, Clone, Eq, Hash, Debug)]
 pub struct SessionKey {
     network_name: String,
     peer_id: PeerId,
@@ -95,6 +95,7 @@ impl PeerSessionStore {
             .retain(|_key, session| Arc::strong_count(session) > 1);
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn upsert_responder_session(
         &self,
         key: &SessionKey,
@@ -103,6 +104,7 @@ impl PeerSessionStore {
         recv_algorithm: String,
         peer_static_pubkey: Option<[u8; 32]>,
     ) -> Result<UpsertResponderSessionReturn, anyhow::Error> {
+        tracing::event!(tracing::Level::INFO, "upsert_responder_session {:?}", key);
         let existing = self
             .sessions
             .get(key)
@@ -159,6 +161,7 @@ impl PeerSessionStore {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(skip(self))]
     pub fn apply_initiator_action(
         &self,
         key: &SessionKey,
@@ -170,12 +173,7 @@ impl PeerSessionStore {
         recv_algorithm: String,
         peer_static_pubkey: Option<[u8; 32]>,
     ) -> Result<Arc<PeerSession>, anyhow::Error> {
-        tracing::info!(
-            "apply_initiator_action {:?}, send_algorithm: {}, recv_algorithm: {}",
-            action,
-            send_algorithm,
-            recv_algorithm
-        );
+        tracing::event!(tracing::Level::INFO, "apply_initiator_action {:?}", key);
         match action {
             PeerSessionAction::Join => {
                 let Some(session) = self.get(key) else {
@@ -301,9 +299,9 @@ impl ReplayWindow256 {
 
         if bit_shift > 0 {
             let mut carry = 0u8;
-            for b in self.bitmap.iter_mut().rev() {
-                let new_carry = *b << (8 - bit_shift);
-                *b = (*b >> bit_shift) | carry;
+            for b in self.bitmap.iter_mut() {
+                let new_carry = *b >> (8 - bit_shift);
+                *b = (*b << bit_shift) | carry;
                 carry = new_carry;
             }
         }
@@ -560,12 +558,7 @@ impl PeerSession {
         {
             let mut rx = self.rx_slots.lock().unwrap();
             for dir in 0..2 {
-                rx[dir][0] = EpochRxSlot {
-                    epoch: initial_epoch,
-                    window: ReplayWindow256::default(),
-                    last_rx_ms: 0,
-                    valid: true,
-                };
+                rx[dir][0].clear();
                 rx[dir][1].clear();
             }
         }
@@ -816,7 +809,11 @@ impl PeerSession {
 
         let now_ms = now_ms();
         if !self.check_replay(epoch, seq, dir, now_ms) {
-            return Err(anyhow!("replay rejected"));
+            return Err(anyhow!(
+                "replay rejected, sender_peer_id: {:?}, receiver_peer_id: {:?}",
+                sender_peer_id,
+                receiver_peer_id
+            ));
         }
 
         let encryptor = self
@@ -918,5 +915,72 @@ mod tests {
 
         assert!(s.check_replay(1, 1, 0, now + 1));
         assert!(s.check_replay(1, 2, 0, now + 2));
+    }
+
+    #[test]
+    fn replay_window_shift_preserves_bits() {
+        let mut w = ReplayWindow256::default();
+        // Accept seqs 0..10
+        for i in 0..10u64 {
+            assert!(w.accept(i), "seq {i} should be accepted");
+        }
+        assert_eq!(w.max_seq, 9);
+
+        // All seqs 0..10 should be marked as seen (replay)
+        for i in 0..10u64 {
+            assert!(!w.accept(i), "seq {i} should be rejected as replay");
+        }
+
+        // Seq 10 should still be accepted
+        assert!(w.accept(10));
+    }
+
+    #[test]
+    fn replay_window_out_of_order_within_window() {
+        let mut w = ReplayWindow256::default();
+        // Accept even seqs 0,2,4,...,20
+        for i in (0..=20u64).step_by(2) {
+            assert!(w.accept(i), "seq {i} should be accepted");
+        }
+        // Now accept odd seqs 1,3,5,...,19 (out of order, within window)
+        for i in (1..=19u64).step_by(2) {
+            assert!(w.accept(i), "seq {i} should be accepted (out of order)");
+        }
+        // All seqs 0..=20 should now be marked as seen
+        for i in 0..=20u64 {
+            assert!(!w.accept(i), "seq {i} should be rejected as replay");
+        }
+    }
+
+    #[test]
+    fn sync_root_key_allows_any_epoch_from_remote() {
+        // After sync_root_key, the remote peer may still be sending at an
+        // old epoch. The receiver should accept those packets.
+        let peer_id: PeerId = 10;
+        let root_key = PeerSession::new_root_key();
+        let s = PeerSession::new(
+            peer_id,
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+            None,
+        );
+
+        // Simulate receiving some packets at epoch 0
+        let now = now_ms();
+        assert!(s.check_replay(0, 0, 0, now));
+        assert!(s.check_replay(0, 1, 0, now));
+
+        // Sync with initial_epoch=2 (simulating a Sync action)
+        s.sync_root_key(root_key, 2, 2);
+
+        // Remote peer is still sending at epoch 0 — should be accepted
+        // (rx_slots were cleared, so the first packet establishes the epoch)
+        assert!(
+            s.check_replay(0, 10, 0, now + 1),
+            "packets at old epoch should be accepted after sync"
+        );
     }
 }
