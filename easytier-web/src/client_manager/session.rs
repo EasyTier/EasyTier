@@ -169,6 +169,16 @@ impl WebServerService for SessionRpcService {
         }
         ret
     }
+
+    async fn get_feature(
+        &self,
+        _: BaseController,
+        _: easytier::proto::web::GetFeatureRequest,
+    ) -> rpc_types::error::Result<easytier::proto::web::GetFeatureResponse> {
+        Ok(easytier::proto::web::GetFeatureResponse {
+            support_encryption: true,
+        })
+    }
 }
 
 pub struct Session {
