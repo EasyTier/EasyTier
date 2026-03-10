@@ -1281,6 +1281,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             config_server_url_s,
             cli.machine_id.clone(),
             cli.network_options.hostname.clone(),
+            cli.network_options.secure_mode.unwrap_or(false),
             manager.clone(),
             None,
         )

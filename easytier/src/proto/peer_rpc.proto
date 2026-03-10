@@ -13,6 +13,11 @@ message TrustedCredentialPubkey {
   repeated string allowed_proxy_cidrs = 5; // allowed proxy_cidrs ranges
 }
 
+message TrustedCredentialPubkeyProof {
+  TrustedCredentialPubkey credential = 1;
+  bytes credential_hmac = 2;
+}
+
 message RoutePeerInfo {
   // means next hop in route table.
   uint32 peer_id = 1;
@@ -40,7 +45,7 @@ message RoutePeerInfo {
   bytes noise_static_pubkey = 18;
 
   // Trusted credential public keys published by admin nodes (holding network_secret)
-  repeated TrustedCredentialPubkey trusted_credential_pubkeys = 19;
+  repeated TrustedCredentialPubkeyProof trusted_credential_pubkeys = 19;
 }
 
 message PeerIdVersion {
@@ -313,22 +318,18 @@ message PeerConnNoiseMsg2Pb {
 
 message RelayNoiseMsg1Pb {
   uint32 version = 1;
-  string a_network_name = 2;
   optional uint32 a_session_generation = 3;
   common.UUID a_conn_id = 4;
   string client_encryption_algorithm = 5;
 }
 
 message RelayNoiseMsg2Pb {
-  string b_network_name = 1;
-  uint32 role_hint = 2;
   PeerConnSessionActionPb action = 3;
   uint32 b_session_generation = 4;
   optional bytes root_key_32 = 5;
   uint32 initial_epoch = 6;
   common.UUID b_conn_id = 7;
   common.UUID a_conn_id_echo = 8;
-  optional bytes secret_proof_32 = 9;
   string server_encryption_algorithm = 10;
 }
 
