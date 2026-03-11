@@ -43,7 +43,7 @@ impl crate::proto::rpc_types::handler::Handler for GreetingJsonCallHandler {
 
 #[tokio::test]
 async fn greeting_client_json_call_method_supports_snake_and_proto_method_name() {
-    let client = GreetingClient::new(GreetingJsonCallHandler::default());
+    let client = GreetingClient::new(GreetingJsonCallHandler);
 
     let snake = client
         .json_call_method(
@@ -68,7 +68,7 @@ async fn greeting_client_json_call_method_supports_snake_and_proto_method_name()
 
 #[tokio::test]
 async fn greeting_client_json_call_method_rejects_invalid_json() {
-    let client = GreetingClient::new(GreetingJsonCallHandler::default());
+    let client = GreetingClient::new(GreetingJsonCallHandler);
 
     let err = client
         .json_call_method(
@@ -86,7 +86,7 @@ async fn greeting_client_json_call_method_rejects_invalid_json() {
 
 #[tokio::test]
 async fn greeting_client_json_call_method_rejects_unknown_method() {
-    let client = GreetingClient::new(GreetingJsonCallHandler::default());
+    let client = GreetingClient::new(GreetingJsonCallHandler);
 
     let err = client
         .json_call_method(
