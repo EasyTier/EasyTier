@@ -260,3 +260,65 @@ pub mod logger {
 pub mod manage {
     include!(concat!(env!("OUT_DIR"), "/api.manage.rs"));
 }
+
+#[cfg(test)]
+mod tests {
+    use prost::Message;
+
+    use super::manage::{
+        ListNetworkInstanceRequest, ListNetworkInstanceResponse, WebClientServiceDescriptor,
+    };
+    use crate::proto::common::Uuid;
+
+    #[tokio::test]
+    async fn web_client_service_call_json_method_supports_snake_and_proto_method_name() {
+        let descriptor = WebClientServiceDescriptor::default();
+
+        let invoke = |idx: u8, data: Vec<u8>| async move {
+            assert_eq!(idx, 5);
+            let _req = ListNetworkInstanceRequest::decode(data.as_slice()).unwrap();
+            let resp = ListNetworkInstanceResponse {
+                inst_ids: vec![Uuid {
+                    part1: 1,
+                    part2: 2,
+                    part3: 3,
+                    part4: 4,
+                }],
+            };
+            Ok(resp.encode_to_vec())
+        };
+
+        let snake_result = descriptor
+            .call_json_method("list_network_instance", serde_json::json!({}), invoke)
+            .await
+            .unwrap();
+        assert_eq!(
+            snake_result["inst_ids"][0],
+            serde_json::json!({
+                "part1": 1,
+                "part2": 2,
+                "part3": 3,
+                "part4": 4
+            })
+        );
+
+        let proto_result = descriptor
+            .call_json_method("ListNetworkInstance", serde_json::json!({}), invoke)
+            .await
+            .unwrap();
+        assert_eq!(proto_result["inst_ids"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn web_client_service_call_json_method_rejects_unknown_method() {
+        let descriptor = WebClientServiceDescriptor::default();
+        let ret = descriptor
+            .call_json_method(
+                "not_exist_method",
+                serde_json::json!({}),
+                |_idx, _data| async { Ok(Vec::new()) },
+            )
+            .await;
+        assert!(ret.is_err());
+    }
+}
