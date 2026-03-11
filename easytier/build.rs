@@ -166,6 +166,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .type_attribute(".api", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".config", "#[derive(serde::Serialize, serde::Deserialize)]")
+        .type_attribute("acl.RouteDistanceRule", "#[derive(Hash)]")
+        .type_attribute("acl.RouteDistanceConfig", "#[derive(Hash)]")
         .type_attribute(
             "peer_rpc.GetIpListResponse",
             "#[derive(serde::Serialize, serde::Deserialize)]",
