@@ -48,32 +48,36 @@
 
 选择最适合您需求的安装方式：
 
+Linux（推荐）：
 ```bash
-# 1. 下载预编译二进制文件（推荐，支持所有平台）
-# 访问 https://github.com/EasyTier/EasyTier/releases
+curl -fsSL "https://github.com/EasyTier/EasyTier/blob/main/script/install.sh?raw=true" | sudo bash -s install
+```
 
-# 2. 通过 cargo 安装（最新开发版本）
-cargo install --git https://github.com/EasyTier/EasyTier.git easytier
-
-# 3. 通过 Docker 安装
-# 参见 https://easytier.cn/guide/installation.html#%E5%AE%89%E8%A3%85%E6%96%B9%E5%BC%8F
-
-# 4. Linux 快速安装
-wget -O- https://raw.githubusercontent.com/EasyTier/EasyTier/main/script/install.sh | sudo bash -s install
-
-# 5. MacOS 通过 Homebrew 安装
+Homebrew（MacOS/Linux）：
+```bash
 brew tap brewforge/chinese
 brew install --cask easytier-gui
-
-# 6. OpenWrt Luci Web 界面
-# 访问 https://github.com/EasyTier/luci-app-easytier
-
-# 7.（可选）安装 Shell 补全功能：
-# Fish 补全
-easytier-core --gen-autocomplete fish > ~/.config/fish/completions/easytier-core.fish
-easytier-cli gen-autocomplete fish > ~/.config/fish/completions/easytier-cli.fish
-
 ```
+
+Windows（推荐，请以管理员权限运行）：
+```powershell
+irm "https://github.com/EasyTier/EasyTier/blob/main/script/install.ps1?raw=true" | iex
+```
+
+通过 cargo 安装（最新开发版本）：
+```bash
+cargo install --git https://github.com/EasyTier/EasyTier.git easytier
+```
+
+[下载预编译文件](https://github.com/EasyTier/EasyTier/releases)（推荐，支持所有平台）
+
+[通过 Docker 安装](https://easytier.cn/guide/installation.html#%E5%AE%89%E8%A3%85%E6%96%B9%E5%BC%8F)
+
+[安装 OpenWrt ipk 软件包](https://github.com/EasyTier/luci-app-easytier)
+
+附加步骤：
+
+[一键注册系统服务](https://easytier.cn/guide/network/oneclick-install-as-service.html)（系统启动时自动后台运行）
 
 ### 🚀 基本用法
 
