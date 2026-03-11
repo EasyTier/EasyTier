@@ -9,7 +9,6 @@ use tokio::{
 use crate::{
     common::{constants::EASYTIER_VERSION, get_machine_id},
     proto::{
-        api::manage::WebClientServiceServer,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
         web::{
@@ -43,10 +42,7 @@ impl Session {
         let rpc_mgr = BidirectRpcManager::new();
         rpc_mgr.run_with_tunnel(tunnel);
 
-        rpc_mgr.rpc_server().registry().register(
-            WebClientServiceServer::new(controller.get_rpc_service()),
-            "",
-        );
+        controller.register_api_rpc_service(rpc_mgr.rpc_server().registry());
 
         let (tx, _rx1) = broadcast::channel(2);
         let heartbeat_ctx = HeartbeatCtx {

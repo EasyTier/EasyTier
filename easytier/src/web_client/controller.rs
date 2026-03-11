@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::{
-    instance_manager::NetworkInstanceManager,
-    rpc_service::instance_manage::InstanceManageRpcService, web_client::WebClientHooks,
+    instance_manager::NetworkInstanceManager, proto::rpc_impl::service_registry::ServiceRegistry,
+    rpc_service::api::register_api_rpc_service, web_client::WebClientHooks,
 };
 
 pub struct Controller {
@@ -39,8 +39,8 @@ impl Controller {
         self.hostname.clone()
     }
 
-    pub fn get_rpc_service(&self) -> InstanceManageRpcService {
-        InstanceManageRpcService::new(self.manager.clone(), self.hooks.clone())
+    pub fn register_api_rpc_service(&self, registry: &ServiceRegistry) {
+        register_api_rpc_service(&self.manager, registry, Some(self.hooks.clone()));
     }
 
     pub(super) fn notify_manager_stopping(&self) {

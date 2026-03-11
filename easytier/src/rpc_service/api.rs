@@ -31,7 +31,7 @@ use crate::{
         stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
     tunnel::{tcp::TcpTunnelListener, TunnelListener},
-    web_client::DefaultHooks,
+    web_client::{DefaultHooks, WebClientHooks},
 };
 
 pub struct ApiRpcServer<T: TunnelListener + 'static> {
@@ -64,7 +64,7 @@ impl ApiRpcServer<TcpTunnelListener> {
 impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     pub fn from_tunnel(tunnel: T, instance_manager: Arc<NetworkInstanceManager>) -> Self {
         let rpc_server = StandAloneServer::new(tunnel);
-        register_api_rpc_service(&instance_manager, rpc_server.registry());
+        register_api_rpc_service(&instance_manager, rpc_server.registry(), None);
         Self { rpc_server }
     }
 }
@@ -87,9 +87,10 @@ impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {
     }
 }
 
-fn register_api_rpc_service(
+pub fn register_api_rpc_service(
     instance_manager: &Arc<NetworkInstanceManager>,
     registry: &ServiceRegistry,
+    hooks: Option<Arc<dyn WebClientHooks>>,
 ) {
     registry.register(
         PeerManageRpcServer::new(PeerManageRpcService::new(instance_manager.clone())),
@@ -148,7 +149,7 @@ fn register_api_rpc_service(
     registry.register(
         WebClientServiceServer::new(InstanceManageRpcService::new(
             instance_manager.clone(),
-            Arc::new(DefaultHooks),
+            hooks.unwrap_or(Arc::new(DefaultHooks)),
         )),
         "",
     );

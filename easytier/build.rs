@@ -1,5 +1,8 @@
 #[cfg(target_os = "windows")]
-use std::{env, io::Cursor, path::PathBuf};
+use std::io::Cursor;
+use std::{env, path::PathBuf};
+
+use prost_wkt_build::{FileDescriptorSet, Message as _};
 
 #[cfg(target_os = "windows")]
 struct WindowsBuild {}
@@ -157,30 +160,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rerun-if-changed={proto_file}");
     }
 
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let descriptor_file = out.join("descriptors.bin");
+
     let mut config = prost_build::Config::new();
     config
+        .type_attribute(".", "#[derive(serde::Serialize,serde::Deserialize)]")
+        .extern_path(".google.protobuf.Any", "::prost_wkt_types::Any")
+        .extern_path(".google.protobuf.Timestamp", "::prost_wkt_types::Timestamp")
+        .extern_path(".google.protobuf.Value", "::prost_wkt_types::Value")
+        .file_descriptor_set_path(&descriptor_file)
         .protoc_arg("--experimental_allow_proto3_optional")
-        .type_attribute(".acl", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".common", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".error", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".api", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".web", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(".config", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .type_attribute(
-            "peer_rpc.GetIpListResponse",
-            "#[derive(serde::Serialize, serde::Deserialize)]",
-        )
         .type_attribute("peer_rpc.DirectConnectedPeerInfo", "#[derive(Hash)]")
         .type_attribute("peer_rpc.PeerInfoForGlobalMap", "#[derive(Hash)]")
         .type_attribute("peer_rpc.ForeignNetworkRouteInfoKey", "#[derive(Hash, Eq)]")
         .type_attribute(
             "peer_rpc.RouteForeignNetworkSummary.Info",
-            "#[derive(Hash, Eq, serde::Serialize, serde::Deserialize)]",
+            "#[derive(Hash, Eq)]",
         )
-        .type_attribute(
-            "peer_rpc.RouteForeignNetworkSummary",
-            "#[derive(Hash, Eq, serde::Serialize, serde::Deserialize)]",
-        )
+        .type_attribute("peer_rpc.RouteForeignNetworkSummary", "#[derive(Hash, Eq)]")
         .type_attribute("common.RpcDescriptor", "#[derive(Hash, Eq)]")
         .field_attribute(".api.manage.NetworkConfig", "#[serde(default)]")
         .service_generator(Box::new(easytier_rpc_build::ServiceGenerator::default()))
@@ -192,6 +190,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     prost_reflect_build::Builder::new()
         .file_descriptor_set_bytes("crate::proto::DESCRIPTOR_POOL_BYTES")
         .compile_protos_with_config(config, &proto_files_reflect, &["src/proto/"])?;
+
+    let descriptor_bytes = std::fs::read(descriptor_file).unwrap();
+    let descriptor = FileDescriptorSet::decode(&descriptor_bytes[..]).unwrap();
+    prost_wkt_build::add_serde(out, descriptor);
 
     check_locale();
     Ok(())

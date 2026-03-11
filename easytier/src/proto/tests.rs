@@ -7,6 +7,101 @@ use tokio::task::JoinSet;
 
 use super::rpc_impl::RpcController;
 
+#[derive(Clone, Default)]
+struct GreetingJsonCallHandler;
+
+#[async_trait::async_trait]
+impl crate::proto::rpc_types::handler::Handler for GreetingJsonCallHandler {
+    type Descriptor = GreetingDescriptor;
+    type Controller = crate::proto::rpc_types::controller::BaseController;
+
+    async fn call(
+        &self,
+        _ctrl: Self::Controller,
+        method: <Self::Descriptor as crate::proto::rpc_types::descriptor::ServiceDescriptor>::Method,
+        input: bytes::Bytes,
+    ) -> crate::proto::rpc_types::error::Result<bytes::Bytes> {
+        use prost::Message;
+        match method {
+            GreetingMethodDescriptor::SayHello => {
+                let req = SayHelloRequest::decode(input)?;
+                let resp = SayHelloResponse {
+                    greeting: format!("Hello {}!", req.name),
+                };
+                Ok(bytes::Bytes::from(resp.encode_to_vec()))
+            }
+            GreetingMethodDescriptor::SayGoodbye => {
+                let req = SayGoodbyeRequest::decode(input)?;
+                let resp = SayGoodbyeResponse {
+                    greeting: format!("Goodbye, {}!", req.name),
+                };
+                Ok(bytes::Bytes::from(resp.encode_to_vec()))
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn greeting_client_json_call_method_supports_snake_and_proto_method_name() {
+    let client = GreetingClient::new(GreetingJsonCallHandler);
+
+    let snake = client
+        .json_call_method(
+            crate::proto::rpc_types::controller::BaseController::default(),
+            "say_hello",
+            serde_json::json!({"name": "world"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(snake["greeting"], serde_json::json!("Hello world!"));
+
+    let proto = client
+        .json_call_method(
+            crate::proto::rpc_types::controller::BaseController::default(),
+            "SayHello",
+            serde_json::json!({"name": "world"}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(proto["greeting"], serde_json::json!("Hello world!"));
+}
+
+#[tokio::test]
+async fn greeting_client_json_call_method_rejects_invalid_json() {
+    let client = GreetingClient::new(GreetingJsonCallHandler);
+
+    let err = client
+        .json_call_method(
+            crate::proto::rpc_types::controller::BaseController::default(),
+            "say_hello",
+            serde_json::json!({"name": 123}),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        crate::proto::rpc_types::error::Error::MalformatRpcPacket(_)
+    ));
+}
+
+#[tokio::test]
+async fn greeting_client_json_call_method_rejects_unknown_method() {
+    let client = GreetingClient::new(GreetingJsonCallHandler);
+
+    let err = client
+        .json_call_method(
+            crate::proto::rpc_types::controller::BaseController::default(),
+            "not_exist_method",
+            serde_json::json!({"name": "world"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        crate::proto::rpc_types::error::Error::InvalidMethodIndex(0, _)
+    ));
+}
+
 #[derive(Clone)]
 pub struct GreetingService {
     pub delay_ms: u64,
