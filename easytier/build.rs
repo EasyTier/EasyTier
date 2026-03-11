@@ -1,5 +1,5 @@
 #[cfg(target_os = "windows")]
-use std::{env, io::Cursor, path::PathBuf};
+use std::io::Cursor;
 use std::{env, path::PathBuf};
 
 use prost_wkt_build::{FileDescriptorSet, Message as _};
