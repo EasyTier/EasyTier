@@ -278,9 +278,135 @@ impl FromStr for Url {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedTunnelUrl {
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+    is_ipv6: bool,
+    has_brackets: bool,
+}
+
+fn canonical_tunnel_scheme(raw_scheme: &str) -> Option<&'static str> {
+    const SCHEMES: &[&str] = &["faketcp", "quic", "wss", "tcp", "udp", "ws", "wg"];
+
+    if SCHEMES.contains(&raw_scheme) {
+        return SCHEMES.iter().copied().find(|scheme| *scheme == raw_scheme);
+    }
+
+    SCHEMES.iter().copied().find(|scheme| {
+        raw_scheme
+            .strip_suffix(scheme)
+            .map(|prefix| prefix.is_empty() || prefix.ends_with('-'))
+            .unwrap_or(false)
+    })
+}
+
+fn normalize_tunnel_port(raw_port: &str, is_ipv6: bool) -> Option<u16> {
+    if let Ok(port) = raw_port.parse::<u16>() {
+        return Some(port);
+    }
+
+    if is_ipv6 && raw_port.ends_with('6') {
+        return raw_port[..raw_port.len() - 1].parse::<u16>().ok();
+    }
+
+    None
+}
+
+fn normalize_tunnel_host(raw_host: &str) -> (&str, bool) {
+    let trimmed = raw_host.trim();
+    if let Some(inner) = trimmed
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+    {
+        (inner, true)
+    } else {
+        (trimmed, false)
+    }
+}
+
+fn parse_tunnel_url(raw: &str) -> Option<ParsedTunnelUrl> {
+    if let Ok(url) = url::Url::parse(raw) {
+        let scheme = canonical_tunnel_scheme(url.scheme())?;
+        let (host, had_brackets) = normalize_tunnel_host(url.host_str()?);
+        let is_ipv6 = matches!(url.host(), Some(url::Host::Ipv6(_)));
+        return Some(ParsedTunnelUrl {
+            scheme: scheme.to_string(),
+            host: host.to_string(),
+            port: url.port_or_known_default(),
+            is_ipv6,
+            has_brackets: is_ipv6 || had_brackets,
+        });
+    }
+
+    let (raw_scheme, rest) = raw.split_once("://")?;
+    let scheme = canonical_tunnel_scheme(raw_scheme)?;
+
+    if let Some(rest) = rest.strip_prefix('[') {
+        let (host, remainder) = rest.split_once(']')?;
+        let (host, _) = normalize_tunnel_host(host);
+        let port = remainder
+            .strip_prefix(':')
+            .and_then(|raw_port| normalize_tunnel_port(raw_port, true))?;
+        return Some(ParsedTunnelUrl {
+            scheme: scheme.to_string(),
+            host: host.to_string(),
+            port: Some(port),
+            is_ipv6: true,
+            has_brackets: true,
+        });
+    }
+
+    let (host, raw_port) = rest.rsplit_once(':')?;
+    let port = normalize_tunnel_port(raw_port, false)?;
+    Some(ParsedTunnelUrl {
+        scheme: scheme.to_string(),
+        host: host.to_string(),
+        port: Some(port),
+        is_ipv6: false,
+        has_brackets: false,
+    })
+}
+
+fn normalized_tunnel_url(raw: &str) -> Option<String> {
+    let parsed = parse_tunnel_url(raw)?;
+    let scheme = if parsed.is_ipv6
+        && matches!(
+            parsed.scheme.as_str(),
+            "tcp" | "udp" | "quic" | "wg" | "ws" | "wss"
+        ) {
+        format!("{}6", parsed.scheme)
+    } else {
+        parsed.scheme.to_string()
+    };
+    let host = if parsed.has_brackets {
+        format!("[{}]", parsed.host)
+    } else {
+        parsed.host.to_string()
+    };
+
+    Some(match parsed.port {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    })
+}
+
 impl fmt::Display for Url {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.url)
+    }
+}
+
+impl Url {
+    pub fn normalized_tunnel_display(&self) -> String {
+        normalized_tunnel_url(&self.url).unwrap_or_else(|| self.url.clone())
+    }
+
+    pub fn is_ipv6_tunnel_endpoint(&self) -> bool {
+        parse_tunnel_url(&self.url)
+            .map(|parsed| parsed.is_ipv6)
+            .unwrap_or(false)
     }
 }
 
@@ -322,6 +448,28 @@ impl From<SocketAddr> for std::net::SocketAddr {
 impl Display for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", std::net::SocketAddr::from(*self))
+    }
+}
+
+impl TunnelInfo {
+    pub fn display_tunnel_type(&self) -> String {
+        let is_ipv6 = self
+            .local_addr
+            .as_ref()
+            .or(self.remote_addr.as_ref())
+            .map(|url| url.is_ipv6_tunnel_endpoint())
+            .unwrap_or(false);
+        if is_ipv6 {
+            format!("{}6", self.tunnel_type)
+        } else {
+            self.tunnel_type.clone()
+        }
+    }
+
+    pub fn display_remote_addr(&self) -> Option<String> {
+        self.remote_addr
+            .as_ref()
+            .map(|url| url.normalized_tunnel_display())
     }
 }
 
@@ -395,5 +543,47 @@ impl SecureModeConfig {
             .try_into()
             .map_err(|_| anyhow::anyhow!("invalid public key length: {}", len))?;
         Ok(x25519_dalek::PublicKey::from(k))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalized_tunnel_url, TunnelInfo, Url};
+
+    #[test]
+    fn normalize_ipv6_tcp_tunnel_url() {
+        let url = Url {
+            url: "tcp://[2001:db8::1]:11010".to_string(),
+        };
+        assert_eq!(
+            url.normalized_tunnel_display(),
+            "tcp6://[2001:db8::1]:11010"
+        );
+        assert!(url.is_ipv6_tunnel_endpoint());
+    }
+
+    #[test]
+    fn recover_malformed_ipv6_tcp_tunnel_url() {
+        assert_eq!(
+            normalized_tunnel_url("txt-tcp://[2001:db8::1]:110106").as_deref(),
+            Some("tcp6://[2001:db8::1]:11010")
+        );
+    }
+
+    #[test]
+    fn tunnel_info_display_tunnel_type_uses_remote_addr_fallback() {
+        let tunnel = TunnelInfo {
+            tunnel_type: "tcp".to_string(),
+            local_addr: None,
+            remote_addr: Some(Url {
+                url: "tcp://[2001:db8::2]:11010".to_string(),
+            }),
+        };
+
+        assert_eq!(tunnel.display_tunnel_type(), "tcp6");
+        assert_eq!(
+            tunnel.display_remote_addr().as_deref(),
+            Some("tcp6://[2001:db8::2]:11010")
+        );
     }
 }
