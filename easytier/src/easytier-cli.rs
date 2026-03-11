@@ -355,6 +355,11 @@ enum CredentialSubCommand {
     Generate {
         #[arg(long, help = "TTL in seconds (required)")]
         ttl: i64,
+        #[arg(
+            long,
+            help = "custom credential ID, return existing credential if already generated"
+        )]
+        credential_id: Option<String>,
         #[arg(long, value_delimiter = ',', help = "ACL groups (comma-separated)")]
         groups: Option<Vec<String>>,
         #[arg(
@@ -1417,12 +1422,14 @@ impl CommandHandler<'_> {
     async fn handle_credential_generate(
         &self,
         ttl: i64,
+        credential_id: Option<String>,
         groups: Vec<String>,
         allow_relay: bool,
         allowed_proxy_cidrs: Vec<String>,
     ) -> Result<(), Error> {
         let client = self.get_credential_client().await?;
         let request = GenerateCredentialRequest {
+            credential_id,
             groups,
             allow_relay,
             allowed_proxy_cidrs,
@@ -2362,6 +2369,7 @@ async fn main() -> Result<(), Error> {
         SubCommand::Credential(credential_args) => match &credential_args.sub_command {
             CredentialSubCommand::Generate {
                 ttl,
+                credential_id,
                 groups,
                 allow_relay,
                 allowed_proxy_cidrs,
@@ -2369,6 +2377,7 @@ async fn main() -> Result<(), Error> {
                 handler
                     .handle_credential_generate(
                         *ttl,
+                        credential_id.clone(),
                         groups.clone().unwrap_or_default(),
                         *allow_relay,
                         allowed_proxy_cidrs.clone().unwrap_or_default(),
