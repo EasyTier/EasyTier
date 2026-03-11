@@ -300,6 +300,7 @@ message GenerateCredentialRequest {
   bool allow_relay = 2;         // optional: allow relay through credential node
   repeated string allowed_proxy_cidrs = 3; // optional: restrict proxy_cidrs
   int64 ttl_seconds = 4;        // must be > 0: credential TTL in seconds (0 / omitted is invalid)
+  optional string credential_id = 5; // optional: user-specified credential id, reused if already exists
 }
 
 message GenerateCredentialResponse {

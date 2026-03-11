@@ -15,6 +15,8 @@ use crate::proto::peer_rpc::{TrustedCredentialPubkey, TrustedCredentialPubkeyPro
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CredentialEntry {
     pubkey: String,
+    #[serde(default)]
+    secret: String,
     groups: Vec<String>,
     allow_relay: bool,
     allowed_proxy_cidrs: Vec<String>,
@@ -44,9 +46,47 @@ impl CredentialManager {
         allowed_proxy_cidrs: Vec<String>,
         ttl: Duration,
     ) -> (String, String) {
+        self.generate_credential_with_id(groups, allow_relay, allowed_proxy_cidrs, ttl, None)
+    }
+
+    pub fn generate_credential_with_id(
+        &self,
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+        ttl: Duration,
+        credential_id: Option<String>,
+    ) -> (String, String) {
+        let mut credentials = self.credentials.lock().unwrap();
+        let id = if let Some(id) = credential_id
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+        {
+            if let Some(existing) = credentials.get(&id) {
+                if !existing.secret.is_empty() {
+                    return (id, existing.secret.clone());
+                }
+            }
+            id
+        } else {
+            uuid::Uuid::new_v4().to_string()
+        };
+
+        let (entry, secret) = Self::build_entry(groups, allow_relay, allowed_proxy_cidrs, ttl);
+        credentials.insert(id.clone(), entry);
+        drop(credentials);
+        self.save_to_disk();
+        (id, secret)
+    }
+
+    fn build_entry(
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+        ttl: Duration,
+    ) -> (CredentialEntry, String) {
         let private = StaticSecret::random_from_rng(rand::rngs::OsRng);
         let public = PublicKey::from(&private);
-        let id = uuid::Uuid::new_v4().to_string();
         let pubkey = BASE64_STANDARD.encode(public.as_bytes());
         let secret = BASE64_STANDARD.encode(private.as_bytes());
 
@@ -58,16 +98,14 @@ impl CredentialManager {
 
         let entry = CredentialEntry {
             pubkey,
+            secret: secret.clone(),
             groups,
             allow_relay,
             allowed_proxy_cidrs,
             expiry_unix,
             created_at_unix: now,
         };
-
-        self.credentials.lock().unwrap().insert(id.clone(), entry);
-        self.save_to_disk();
-        (id, secret)
+        (entry, secret)
     }
 
     pub fn revoke_credential(&self, credential_id: &str) -> bool {
@@ -403,5 +441,36 @@ mod tests {
 
         let list = mgr.list_credentials();
         assert_eq!(list.len(), 1);
+    }
+
+    #[test]
+    fn test_generate_with_specified_id_reuses_existing_result() {
+        let mgr = CredentialManager::new(None);
+        let fixed_id = "fixed-credential-id".to_string();
+        let (id1, secret1) = mgr.generate_credential_with_id(
+            vec!["group-a".to_string()],
+            false,
+            vec!["10.0.0.0/24".to_string()],
+            Duration::from_secs(3600),
+            Some(fixed_id.clone()),
+        );
+        let (id2, secret2) = mgr.generate_credential_with_id(
+            vec!["group-b".to_string()],
+            true,
+            vec!["192.168.0.0/16".to_string()],
+            Duration::from_secs(7200),
+            Some(fixed_id.clone()),
+        );
+
+        assert_eq!(id1, fixed_id);
+        assert_eq!(id2, fixed_id);
+        assert_eq!(secret1, secret2);
+
+        let list = mgr.list_credentials();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].credential_id, fixed_id);
+        assert_eq!(list[0].groups, vec!["group-a".to_string()]);
+        assert!(!list[0].allow_relay);
+        assert_eq!(list[0].allowed_proxy_cidrs, vec!["10.0.0.0/24".to_string()]);
     }
 }
