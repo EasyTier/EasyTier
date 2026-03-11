@@ -263,33 +263,63 @@ pub mod manage {
 
 #[cfg(test)]
 mod tests {
+    use bytes::Bytes;
     use prost::Message;
 
     use super::manage::{
-        ListNetworkInstanceRequest, ListNetworkInstanceResponse, WebClientServiceDescriptor,
+        ListNetworkInstanceRequest, ListNetworkInstanceResponse, WebClientService,
+        WebClientServiceClient, WebClientServiceDescriptor, WebClientServiceMethodDescriptor,
     };
     use crate::proto::common::Uuid;
+    use crate::proto::rpc_types::controller::BaseController;
+    use crate::proto::rpc_types::descriptor::ServiceDescriptor;
+    use crate::proto::rpc_types::error::Error;
+    use crate::proto::rpc_types::handler::Handler;
+
+    #[derive(Clone, Default)]
+    struct WebClientServiceJsonCallHandler;
+
+    #[async_trait::async_trait]
+    impl Handler for WebClientServiceJsonCallHandler {
+        type Descriptor = WebClientServiceDescriptor;
+        type Controller = BaseController;
+
+        async fn call(
+            &self,
+            _ctrl: Self::Controller,
+            method: <Self::Descriptor as ServiceDescriptor>::Method,
+            input: Bytes,
+        ) -> crate::proto::rpc_types::error::Result<Bytes> {
+            match method {
+                WebClientServiceMethodDescriptor::ListNetworkInstance => {
+                    let _req = ListNetworkInstanceRequest::decode(input.as_ref()).unwrap();
+                    let resp = ListNetworkInstanceResponse {
+                        inst_ids: vec![Uuid {
+                            part1: 1,
+                            part2: 2,
+                            part3: 3,
+                            part4: 4,
+                        }],
+                    };
+                    Ok(Bytes::from(resp.encode_to_vec()))
+                }
+                _ => Err(Error::ExecutionError(anyhow::anyhow!(
+                    "unsupported method in test handler"
+                ))),
+            }
+        }
+    }
 
     #[tokio::test]
     async fn web_client_service_call_json_method_supports_snake_and_proto_method_name() {
-        let descriptor = WebClientServiceDescriptor::default();
+        let client = WebClientServiceClient::new(WebClientServiceJsonCallHandler);
 
-        let invoke = |idx: u8, data: Vec<u8>| async move {
-            assert_eq!(idx, 5);
-            let _req = ListNetworkInstanceRequest::decode(data.as_slice()).unwrap();
-            let resp = ListNetworkInstanceResponse {
-                inst_ids: vec![Uuid {
-                    part1: 1,
-                    part2: 2,
-                    part3: 3,
-                    part4: 4,
-                }],
-            };
-            Ok(resp.encode_to_vec())
-        };
-
-        let snake_result = descriptor
-            .call_json_method("list_network_instance", serde_json::json!({}), invoke)
+        let snake_result = client
+            .json_call_method(
+                BaseController::default(),
+                "list_network_instance",
+                serde_json::json!({}),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -302,8 +332,12 @@ mod tests {
             })
         );
 
-        let proto_result = descriptor
-            .call_json_method("ListNetworkInstance", serde_json::json!({}), invoke)
+        let proto_result = client
+            .json_call_method(
+                BaseController::default(),
+                "ListNetworkInstance",
+                serde_json::json!({}),
+            )
             .await
             .unwrap();
         assert_eq!(proto_result["inst_ids"].as_array().unwrap().len(), 1);
@@ -311,12 +345,12 @@ mod tests {
 
     #[tokio::test]
     async fn web_client_service_call_json_method_rejects_unknown_method() {
-        let descriptor = WebClientServiceDescriptor::default();
-        let ret = descriptor
-            .call_json_method(
+        let client = WebClientServiceClient::new(WebClientServiceJsonCallHandler);
+        let ret = client
+            .json_call_method(
+                BaseController::default(),
                 "not_exist_method",
                 serde_json::json!({}),
-                |_idx, _data| async { Ok(Vec::new()) },
             )
             .await;
         assert!(ret.is_err());
