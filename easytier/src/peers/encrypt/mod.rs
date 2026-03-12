@@ -69,14 +69,19 @@ pub fn create_encryptor(
     let algorithm = match EncryptionAlgorithm::try_from(algorithm) {
         Ok(algorithm) => algorithm,
         Err(_) => {
+            let default = EncryptionAlgorithm::default();
             log::warn!(
-                "Unknown encryption algorithm: {}, falling back to default AES-GCM",
-                algorithm
+                "Unknown encryption algorithm: {}, falling back to default {}",
+                algorithm,
+                default
             );
-            EncryptionAlgorithm::AesGcm
+            default
         }
     };
     match algorithm {
+        EncryptionAlgorithm::Xor => Arc::new(xor_cipher::XorCipher::new(&key_128)),
+
+        #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
         EncryptionAlgorithm::AesGcm => {
             #[cfg(feature = "wireguard")]
             {
@@ -86,14 +91,9 @@ pub fn create_encryptor(
             {
                 Arc::new(aes_gcm::AesGcmCipher::new_128(key_128))
             }
-            #[cfg(all(not(feature = "wireguard"), not(feature = "aes-gcm")))]
-            {
-                compile_error!(
-                    "wireguard or aes-gcm feature must be enabled for default encryption"
-                );
-            }
         }
 
+        #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
         EncryptionAlgorithm::Aes256Gcm => {
             #[cfg(feature = "wireguard")]
             {
@@ -104,8 +104,6 @@ pub fn create_encryptor(
                 Arc::new(aes_gcm::AesGcmCipher::new_256(key_256))
             }
         }
-
-        EncryptionAlgorithm::Xor => Arc::new(xor_cipher::XorCipher::new(&key_128)),
 
         #[cfg(feature = "wireguard")]
         EncryptionAlgorithm::ChaCha20 => Arc::new(ring_chacha20::RingChaCha20Cipher::new(key_256)),
@@ -121,7 +119,7 @@ pub fn create_encryptor(
         }
 
         #[cfg(feature = "openssl-crypto")]
-        EncryptionAlgorithm::OpensslChacha20 => {
+        EncryptionAlgorithm::OpensslChaCha20 => {
             Arc::new(openssl_cipher::OpenSslCipher::new_chacha20(key_256))
         }
     }

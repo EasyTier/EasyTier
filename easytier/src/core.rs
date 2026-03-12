@@ -10,7 +10,7 @@ use std::{
 use crate::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
+            load_config_from_file, ConfigFileControl, ConfigLoader,
             ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
             PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
         },
@@ -36,6 +36,7 @@ use tokio::io::AsyncReadExt;
 
 #[cfg(feature = "jemalloc-prof")]
 use jemalloc_ctl::{epoch, stats, Access as _, AsName as _};
+use crate::common::config::EncryptionAlgorithm;
 
 #[cfg(target_os = "windows")]
 windows_service::define_windows_service!(ffi_service_main, win_service_main);
@@ -278,9 +279,8 @@ struct NetworkOptions {
         long,
         env = "ET_ENCRYPTION_ALGORITHM",
         help = t!("core_clap.encryption_algorithm").to_string(),
-        value_parser = get_avaliable_encrypt_methods()
     )]
-    encryption_algorithm: Option<String>,
+    encryption_algorithm: Option<EncryptionAlgorithm>,
 
     #[arg(
         long,
@@ -1026,7 +1026,7 @@ impl NetworkOptions {
             f.enable_encryption = !v;
         }
         if let Some(algorithm) = &self.encryption_algorithm {
-            f.encryption_algorithm = algorithm.clone();
+            f.encryption_algorithm = algorithm.to_string();
         }
         if let Some(v) = self.disable_ipv6 {
             f.enable_ipv6 = !v;
