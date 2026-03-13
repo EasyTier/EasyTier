@@ -173,3 +173,143 @@ pub fn router() -> Router<super::AppStateInner> {
         post(handle_proxy_rpc),
     )
 }
+
+/// Internal proxy-rpc handler: no AuthSession, finds session by scanning all sessions for machine_id.
+pub async fn handle_proxy_rpc_internal(
+    State(client_mgr): AppState,
+    Path(machine_id): Path<uuid::Uuid>,
+    Json(req): Json<ProxyRpcRequest>,
+) -> Result<Json<serde_json::Value>, HttpHandleError> {
+    let session = client_mgr
+        .get_session_by_machine_id_global(&machine_id)
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            other_error("Session not found").into(),
+        ))?;
+
+    let ProxyRpcRequest {
+        service_name,
+        method_name,
+        payload,
+    } = req;
+
+    let resp = match service_name.as_str() {
+        "api.manage.WebClientService" => match_service!(
+            easytier::proto::api::manage::WebClientServiceClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.PeerManageRpcService" => match_service!(
+            easytier::proto::api::instance::PeerManageRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.ConnectorManageRpcService" => match_service!(
+            easytier::proto::api::instance::ConnectorManageRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.MappedListenerManageRpcService" => match_service!(
+            easytier::proto::api::instance::MappedListenerManageRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.VpnPortalRpcService" => match_service!(
+            easytier::proto::api::instance::VpnPortalRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.TcpProxyRpcService" => match_service!(
+            easytier::proto::api::instance::TcpProxyRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.AclManageRpcService" => match_service!(
+            easytier::proto::api::instance::AclManageRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.PortForwardManageRpcService" => match_service!(
+            easytier::proto::api::instance::PortForwardManageRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.StatsRpcService" => match_service!(
+            easytier::proto::api::instance::StatsRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.instance.CredentialManageRpcService" => match_service!(
+            easytier::proto::api::instance::CredentialManageRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.logger.LoggerRpcService" => match_service!(
+            easytier::proto::api::logger::LoggerRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        "api.config.ConfigRpcService" => match_service!(
+            easytier::proto::api::config::ConfigRpcClientFactory<
+                easytier::proto::rpc_types::controller::BaseController,
+            >,
+            method_name,
+            payload,
+            session
+        ),
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                other_error(format!("Unknown service: {}", service_name)).into(),
+            ))
+        }
+    };
+
+    match resp {
+        Ok(v) => Ok(Json(v)),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            other_error(format!("RPC Error: {:?}", e)).into(),
+        )),
+    }
+}
+
+pub fn router_internal() -> Router<super::AppStateInner> {
+    Router::new().route(
+        "/api/internal/machines/:machine-id/proxy-rpc",
+        post(handle_proxy_rpc_internal),
+    )
+}

@@ -240,6 +240,7 @@ where
                     inst_id: Some(instance_id.into()),
                     network_name: config.network_name.unwrap_or_default(),
                     config_permission: 0,
+                    instance_name: String::new(),
                 },
             );
         }

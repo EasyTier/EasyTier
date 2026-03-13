@@ -106,6 +106,26 @@ impl Storage {
         })
     }
 
+    /// Find client_url by machine_id across all users.
+    pub fn get_client_url_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> Option<url::Url> {
+        for entry in self.0.user_clients_map.iter() {
+            if let Some(info) = entry.value().get(machine_id) {
+                return Some(info.storage_token.client_url.clone());
+            }
+        }
+        None
+    }
+
+    /// Find user_id by machine_id across all users.
+    pub fn get_user_id_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> Option<UserIdInDb> {
+        for entry in self.0.user_clients_map.iter() {
+            if let Some(info) = entry.value().get(machine_id) {
+                return Some(info.storage_token.user_id);
+            }
+        }
+        None
+    }
+
     pub fn list_user_clients(&self, user_id: UserIdInDb) -> Vec<url::Url> {
         self.0
             .user_clients_map

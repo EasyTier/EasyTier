@@ -276,13 +276,17 @@ impl WebClientService for InstanceManageRpcService {
             let Some(control) = self.manager.get_instance_config_control(&inst_id) else {
                 continue;
             };
-            let Some(name) = self.manager.get_network_instance_name(&inst_id) else {
+            let Some(network_name) = self.manager.get_network_name(&inst_id) else {
+                continue;
+            };
+            let Some(instance_name) = self.manager.get_instance_name(&inst_id) else {
                 continue;
             };
             let meta = NetworkMeta {
                 inst_id: Some(inst_id.into()),
-                network_name: name,
+                network_name,
                 config_permission: control.permission.into(),
+                instance_name,
             };
             metas.push(meta);
         }
