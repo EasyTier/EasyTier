@@ -234,13 +234,14 @@ where
             let config = self
                 .handle_get_network_config(identify.clone(), instance_id)
                 .await?;
+            let network_name = config.network_name.unwrap_or_default();
             metas.insert(
                 instance_id,
                 NetworkMeta {
                     inst_id: Some(instance_id.into()),
-                    network_name: config.network_name.unwrap_or_default(),
+                    network_name: network_name.clone(),
                     config_permission: 0,
-                    instance_name: String::new(),
+                    instance_name: network_name,
                 },
             );
         }

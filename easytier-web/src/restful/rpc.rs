@@ -174,7 +174,7 @@ pub fn router() -> Router<super::AppStateInner> {
     )
 }
 
-/// Internal proxy-rpc handler: no AuthSession, finds session by scanning all sessions for machine_id.
+/// Internal proxy-rpc handler: no AuthSession, resolves the active session by machine_id.
 pub async fn handle_proxy_rpc_internal(
     State(client_mgr): AppState,
     Path(machine_id): Path<uuid::Uuid>,

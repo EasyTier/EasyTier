@@ -33,7 +33,9 @@ impl WebhookConfig {
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.webhook_url.is_some()
+        self.webhook_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
     }
 
     pub fn has_internal_auth(&self) -> bool {
@@ -83,19 +85,32 @@ pub struct NodeDisconnectedRequest {
 // --- Webhook client ---
 
 impl WebhookConfig {
+    fn webhook_base_url(&self) -> anyhow::Result<&str> {
+        self.webhook_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("webhook_url is not configured"))
+    }
+
+    fn webhook_endpoint(&self, path: &str) -> anyhow::Result<String> {
+        Ok(format!(
+            "{}/{}",
+            self.webhook_base_url()?.trim_end_matches('/'),
+            path.trim_start_matches('/'),
+        ))
+    }
+
     /// Validate a token through the configured webhook endpoint.
     pub async fn validate_token(
         &self,
         req: &ValidateTokenRequest,
     ) -> anyhow::Result<ValidateTokenResponse> {
-        let url = format!(
-            "{}/validate-token",
-            self.webhook_url.as_ref().unwrap().trim_end_matches('/')
-        );
+        let url = self.webhook_endpoint("validate-token")?;
         let resp = self
             .client
             .post(&url)
-            .header("X-Internal-Auth", self.internal_auth_secret())
+            .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
             .await?;
@@ -112,14 +127,14 @@ impl WebhookConfig {
         if !self.is_enabled() {
             return;
         }
-        let url = format!(
-            "{}/webhook/node-connected",
-            self.webhook_url.as_ref().unwrap().trim_end_matches('/')
-        );
+        let Ok(url) = self.webhook_endpoint("webhook/node-connected") else {
+            tracing::warn!("skip node-connected webhook because webhook_url is not configured");
+            return;
+        };
         let _ = self
             .client
             .post(&url)
-            .header("X-Internal-Auth", self.internal_auth_secret())
+            .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
             .await;
@@ -130,25 +145,23 @@ impl WebhookConfig {
         if !self.is_enabled() {
             return;
         }
-        let url = format!(
-            "{}/webhook/node-disconnected",
-            self.webhook_url.as_ref().unwrap().trim_end_matches('/')
-        );
+        let Ok(url) = self.webhook_endpoint("webhook/node-disconnected") else {
+            tracing::warn!("skip node-disconnected webhook because webhook_url is not configured");
+            return;
+        };
         let _ = self
             .client
             .post(&url)
-            .header("X-Internal-Auth", self.internal_auth_secret())
+            .header("X-Internal-Auth", self.webhook_auth_secret())
             .json(req)
             .send()
             .await;
     }
 
-    fn internal_auth_secret(&self) -> &str {
-        // Prefer internal_auth_token for token-authenticated management requests,
-        // falling back to webhook_secret for backward compatibility.
-        self.internal_auth_token
+    fn webhook_auth_secret(&self) -> &str {
+        self.webhook_secret
             .as_deref()
-            .or(self.webhook_secret.as_deref())
+            .or(self.internal_auth_token.as_deref())
             .unwrap_or("")
     }
 }

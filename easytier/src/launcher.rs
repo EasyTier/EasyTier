@@ -991,7 +991,10 @@ impl NetworkConfig {
 
 #[cfg(test)]
 mod tests {
-    use crate::{common::config::ConfigLoader, proto::common::SecureModeConfig};
+    use crate::{
+        common::config::{process_secure_mode_cfg, ConfigLoader},
+        proto::common::SecureModeConfig,
+    };
     use base64::prelude::{Engine as _, BASE64_STANDARD};
     use rand::Rng;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -1238,6 +1241,10 @@ mod tests {
                 }
 
                 config.set_flags(flags);
+            }
+
+            if let Some(secure_mode) = config.get_secure_mode() {
+                config.set_secure_mode(Some(process_secure_mode_cfg(secure_mode)?));
             }
 
             let network_config = super::NetworkConfig::new_from_config(&config)?;

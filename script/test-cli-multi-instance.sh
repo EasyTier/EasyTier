@@ -9,6 +9,7 @@ CORE_BIN=${CORE_BIN:-"$REPO_ROOT/target/debug/easytier-core"}
 CLI_BIN=${CLI_BIN:-"$REPO_ROOT/target/debug/easytier-cli"}
 TMPDIR_PATH=""
 CORE_PID=""
+PYTHON_BIN=${PYTHON_BIN:-python3}
 
 print_section() {
   printf '\n==> %s\n' "$1"
@@ -34,14 +35,14 @@ ensure_binaries() {
 }
 
 make_tmpdir() {
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import tempfile
 print(tempfile.mkdtemp(prefix="easytier-cli-e2e-"))
 PY
 }
 
 cleanup_tmpdir() {
-  TMPDIR_TO_DELETE="$1" python - <<'PY'
+  TMPDIR_TO_DELETE="$1" "$PYTHON_BIN" - <<'PY'
 import os
 import shutil
 
@@ -50,7 +51,7 @@ PY
 }
 
 alloc_port() {
-  python - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import socket
 
 sock = socket.socket()
@@ -103,7 +104,7 @@ assert_text_output() {
 
 assert_multi_instance_json() {
   local json_payload="$1"
-  JSON_PAYLOAD="$json_payload" python - <<'PY'
+  JSON_PAYLOAD="$json_payload" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 
@@ -122,7 +123,7 @@ PY
 
 assert_single_instance_json() {
   local json_payload="$1"
-  JSON_PAYLOAD="$json_payload" python - <<'PY'
+  JSON_PAYLOAD="$json_payload" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 
@@ -134,7 +135,7 @@ PY
 
 assert_whitelist_fanout() {
   local json_payload="$1"
-  JSON_PAYLOAD="$json_payload" python - <<'PY'
+  JSON_PAYLOAD="$json_payload" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 
@@ -148,7 +149,7 @@ PY
 
 assert_single_instance_write() {
   local json_payload="$1"
-  JSON_PAYLOAD="$json_payload" python - <<'PY'
+  JSON_PAYLOAD="$json_payload" "$PYTHON_BIN" - <<'PY'
 import json
 import os
 
@@ -159,6 +160,11 @@ PY
 }
 
 main() {
+  command -v "$PYTHON_BIN" >/dev/null 2>&1 || {
+    echo "python interpreter not found: $PYTHON_BIN" >&2
+    exit 1
+  }
+
   ensure_binaries
 
   TMPDIR_PATH=$(make_tmpdir)
