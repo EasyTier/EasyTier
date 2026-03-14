@@ -123,6 +123,28 @@ async fn create_credential_config(
     config
 }
 
+/// Helper: Create credential node config with a random, unknown key
+fn create_unknown_credential_config(
+    network_name: String,
+    inst_name: &str,
+    ns: Option<&str>,
+    ipv4: &str,
+    ipv6: &str,
+) -> TomlConfigLoader {
+    let random_private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(inst_name.to_owned());
+    config.set_netns(ns.map(|s| s.to_owned()));
+    config.set_ipv4(Some(ipv4.parse().unwrap()));
+    config.set_ipv6(Some(ipv6.parse().unwrap()));
+    config.set_listeners(vec![]);
+    config.set_network_identity(NetworkIdentity::new_credential(network_name));
+    config.set_secure_mode(Some(generate_secure_mode_config_with_key(&random_private)));
+
+    config
+}
+
 /// Helper: Create admin node config
 fn create_admin_config(
     inst_name: &str,
@@ -807,6 +829,113 @@ async fn credential_unknown_rejected() {
     );
 
     drop_insts(vec![admin_inst, cred_inst]).await;
+}
+
+/// Regression test: an unknown credential must still be rejected when it first connects via a
+/// shared node. If this fails, the shared path is incorrectly admitting the node into the target
+/// network's route domain.
+#[tokio::test]
+#[serial_test::serial]
+async fn credential_unknown_via_shared_rejected() {
+    prepare_credential_network();
+
+    let admin_a_config =
+        create_admin_config("admin_a", Some("ns_adm"), "10.144.144.1", "fd00::1/64");
+    let mut admin_a_inst = Instance::new(admin_a_config);
+    admin_a_inst.run().await.unwrap();
+
+    let shared_b_config =
+        create_shared_config("shared_b", Some("ns_c1"), "10.144.144.2", "fd00::2/64");
+    let mut shared_b_inst = Instance::new(shared_b_config);
+    shared_b_inst.run().await.unwrap();
+
+    let admin_c_config =
+        create_admin_config("admin_c", Some("ns_c3"), "10.144.144.4", "fd00::4/64");
+    let mut admin_c_inst = Instance::new(admin_c_config);
+    admin_c_inst.run().await.unwrap();
+
+    admin_a_inst
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+    admin_c_inst
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    let admin_c_peer_id = admin_c_inst.peer_id();
+    wait_for_condition(
+        || async {
+            let a_routes = admin_a_inst.get_peer_manager().list_routes().await;
+            let c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            a_routes.iter().any(|r| r.peer_id == admin_c_peer_id)
+                || c_routes.iter().any(|r| r.peer_id == admin_a_inst.peer_id())
+        },
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let unknown_config = create_unknown_credential_config(
+        admin_a_inst
+            .get_global_ctx()
+            .get_network_identity()
+            .network_name
+            .clone(),
+        "unknown_d",
+        Some("ns_c2"),
+        "10.144.144.5",
+        "fd00::5/64",
+    );
+    let mut unknown_inst = Instance::new(unknown_config);
+    unknown_inst.run().await.unwrap();
+
+    unknown_inst
+        .get_conn_manager()
+        .add_connector(TcpTunnelConnector::new(
+            "tcp://10.1.1.2:11010".parse().unwrap(),
+        ));
+
+    let unknown_peer_id = unknown_inst.peer_id();
+
+    println!("unknown_peer_id: {:?}", unknown_peer_id);
+
+    for _ in 0..5 {
+        let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
+        let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+
+        assert!(
+            !admin_a_routes.iter().any(|r| r.peer_id == unknown_peer_id),
+            "unknown credential unexpectedly appeared in admin_a routes via shared path: {:?}",
+            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+        );
+        assert!(
+            !admin_c_routes.iter().any(|r| r.peer_id == unknown_peer_id),
+            "unknown credential unexpectedly appeared in admin_c routes via shared path: {:?}",
+            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+        );
+        assert!(
+            !ping_test("ns_adm", "10.144.144.5", None).await,
+            "admin_a unexpectedly reached unknown credential via shared path"
+        );
+        assert!(
+            !ping_test("ns_c3", "10.144.144.5", None).await,
+            "admin_c unexpectedly reached unknown credential via shared path"
+        );
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    println!("drop all");
+
+    drop_insts(vec![
+        admin_a_inst,
+        shared_b_inst,
+        admin_c_inst,
+        unknown_inst,
+    ])
+    .await;
 }
 
 #[rstest::rstest]

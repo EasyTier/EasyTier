@@ -1441,9 +1441,9 @@ impl PeerConn {
         let info = self.info.as_ref().unwrap();
         let mut ret = NetworkIdentity {
             network_name: info.network_name.clone(),
-            ..Default::default()
+            network_secret: None,
+            network_secret_digest: Some([0u8; 32]),
         };
-        ret.network_secret_digest = Some([0u8; 32]);
         ret.network_secret_digest
             .as_mut()
             .unwrap()
@@ -1619,7 +1619,15 @@ pub mod tests {
         assert_eq!(c_peer.get_peer_id(), s_peer_id);
         assert_eq!(s_peer.get_peer_id(), c_peer_id);
         assert_eq!(c_peer.get_network_identity(), s_peer.get_network_identity());
-        assert_eq!(c_peer.get_network_identity(), NetworkIdentity::default());
+        assert_eq!(
+            c_peer.get_network_identity().network_name,
+            NetworkIdentity::default().network_name
+        );
+        assert_eq!(c_peer.get_network_identity().network_secret, None);
+        assert_eq!(
+            c_peer.get_network_identity().network_secret_digest,
+            NetworkIdentity::default().network_secret_digest
+        );
     }
 
     #[tokio::test]
