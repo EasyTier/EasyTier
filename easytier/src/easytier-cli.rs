@@ -615,7 +615,7 @@ impl<'a> CommandHandler<'a> {
             })
             .collect::<Vec<_>>();
 
-        targets.sort_by(|a, b| a.label().cmp(&b.label()));
+        targets.sort_by_key(|a| a.label());
         Ok(Some(targets))
     }
 
