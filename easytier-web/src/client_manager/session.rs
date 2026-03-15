@@ -1,4 +1,4 @@
-use std::{fmt::Debug, str::FromStr as _, sync::Arc};
+use std::{collections::HashSet, fmt::Debug, str::FromStr as _, sync::Arc};
 
 use anyhow::Context;
 use easytier::{
@@ -421,7 +421,7 @@ impl Session {
                 .running_network_instances
                 .iter()
                 .map(|x| x.to_string())
-                .collect::<Vec<_>>();
+                .collect::<HashSet<_>>();
             let Some(storage) = storage.upgrade() else {
                 tracing::error!("Failed to get storage");
                 return;
@@ -443,18 +443,6 @@ impl Session {
                 }
             };
 
-            let all_local_configs = match storage
-                .db
-                .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
-                .await
-            {
-                Ok(configs) => configs,
-                Err(e) => {
-                    tracing::error!("Failed to list all network configs, error: {:?}", e);
-                    return;
-                }
-            };
-
             let local_configs = match storage
                 .db
                 .list_network_configs((user_id, machine_id.into()), ListNetworkProps::EnabledOnly)
@@ -470,24 +458,48 @@ impl Session {
             let mut has_failed = false;
 
             if !cleaned_web_managed_instances {
-                let managed_inst_ids = all_local_configs
+                let all_local_configs = match storage
+                    .db
+                    .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
+                    .await
+                {
+                    Ok(configs) => configs,
+                    Err(e) => {
+                        tracing::error!("Failed to list all network configs, error: {:?}", e);
+                        return;
+                    }
+                };
+
+                let all_inst_ids = all_local_configs
                     .iter()
-                    .filter_map(|cfg| uuid::Uuid::parse_str(&cfg.network_instance_id).ok())
+                    .map(|cfg| cfg.network_instance_id.clone())
+                    .collect::<HashSet<_>>();
+
+                let should_be_alive_inst_ids = local_configs
+                    .iter()
+                    .map(|cfg| cfg.network_instance_id.clone())
+                    .collect::<HashSet<_>>();
+
+                let should_delete_ids = running_inst_ids
+                    .iter()
+                    .chain(all_inst_ids.iter())
+                    .filter(|inst_id| !should_be_alive_inst_ids.contains(*inst_id))
+                    .filter_map(|inst_id| uuid::Uuid::parse_str(inst_id).ok())
                     .map(Into::into)
                     .collect::<Vec<_>>();
 
-                if !managed_inst_ids.is_empty() {
+                if !should_delete_ids.is_empty() {
                     let ret = rpc_client
                         .delete_network_instance(
                             BaseController::default(),
                             easytier::proto::api::manage::DeleteNetworkInstanceRequest {
-                                inst_ids: managed_inst_ids,
+                                inst_ids: should_delete_ids,
                             },
                         )
                         .await;
                     tracing::info!(
                         ?user_id,
-                        "Clean web-managed network instances on start: {:?}, user_token: {:?}",
+                        "Clean non-web-managed network instances on start: {:?}, user_token: {:?}",
                         ret,
                         req.user_token
                     );

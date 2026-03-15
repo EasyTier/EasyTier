@@ -193,7 +193,7 @@ fn create_shared_config(
     config
 }
 
-async fn create_generated_credential_config(
+fn create_generated_credential_config(
     admin_inst: &Instance,
     inst_name: &str,
     ns: Option<&str>,
@@ -1007,8 +1007,7 @@ async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revo
             Some("ns_c2"),
             "10.144.144.5",
             "fd00::5/64",
-        )
-        .await;
+        );
         (config, Some(cred_id))
     } else {
         (
