@@ -417,7 +417,7 @@ impl Session {
                 continue;
             };
 
-            let running_inst_ids = req
+            let mut running_inst_ids = req
                 .running_network_instances
                 .iter()
                 .map(|x| x.to_string())
@@ -443,18 +443,6 @@ impl Session {
                 }
             };
 
-            let all_local_configs = match storage
-                .db
-                .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
-                .await
-            {
-                Ok(configs) => configs,
-                Err(e) => {
-                    tracing::error!("Failed to list all network configs, error: {:?}", e);
-                    return;
-                }
-            };
-
             let local_configs = match storage
                 .db
                 .list_network_configs((user_id, machine_id.into()), ListNetworkProps::EnabledOnly)
@@ -470,6 +458,18 @@ impl Session {
             let mut has_failed = false;
 
             if !cleaned_web_managed_instances {
+                let all_local_configs = match storage
+                    .db
+                    .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
+                    .await
+                {
+                    Ok(configs) => configs,
+                    Err(e) => {
+                        tracing::error!("Failed to list all network configs, error: {:?}", e);
+                        return;
+                    }
+                };
+
                 let managed_inst_ids = all_local_configs
                     .iter()
                     .filter_map(|cfg| uuid::Uuid::parse_str(&cfg.network_instance_id).ok())
@@ -487,14 +487,16 @@ impl Session {
                         .await;
                     tracing::info!(
                         ?user_id,
-                        "Clean web-managed network instances on start: {:?}, user_token: {:?}",
+                        "Clean web-managed network instances on start: {:?}",
                         ret,
-                        req.user_token
                     );
                     has_failed |= ret.is_err();
                 }
 
                 if !has_failed {
+                    // Instances were deleted; clear running_inst_ids so enabled configs
+                    // are started deterministically in the loop below.
+                    running_inst_ids.clear();
                     cleaned_web_managed_instances = true;
                 }
             }
@@ -517,9 +519,8 @@ impl Session {
                     .await;
                 tracing::info!(
                     ?user_id,
-                    "Run network instance: {:?}, user_token: {:?}",
+                    "Run network instance: {:?}",
                     ret,
-                    req.user_token
                 );
 
                 has_failed |= ret.is_err();
