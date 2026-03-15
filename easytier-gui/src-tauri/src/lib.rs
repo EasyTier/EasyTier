@@ -80,6 +80,37 @@ fn easytier_version() -> Result<String, String> {
 }
 
 #[tauri::command]
+fn is_elevated() -> bool {
+    #[cfg(not(target_os = "android"))]
+    {
+        elevate::Command::is_elevated()
+    }
+    #[cfg(target_os = "android")]
+    {
+        true
+    }
+}
+
+#[tauri::command]
+fn restart_elevated() -> Result<(), String> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let exe_path = get_exe_path();
+        let stdcmd = std::process::Command::new(&exe_path);
+        elevate::Command::new(stdcmd)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::process::exit(0);
+    }
+    #[cfg(target_os = "android")]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
 fn set_dock_visibility(app: tauri::AppHandle, visible: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
@@ -554,19 +585,6 @@ fn get_exe_path() -> String {
     std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-#[cfg(not(target_os = "android"))]
-fn check_sudo() -> bool {
-    let is_elevated = elevate::Command::is_elevated();
-    if !is_elevated {
-        let exe_path = get_exe_path();
-        let stdcmd = std::process::Command::new(&exe_path);
-        elevate::Command::new(stdcmd)
-            .output()
-            .expect("Failed to run elevated command");
-    }
-    is_elevated
 }
 
 mod manager {
@@ -1083,13 +1101,19 @@ mod service {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run_gui() -> std::process::ExitCode {
-    #[cfg(not(target_os = "android"))]
-    if !check_sudo() {
-        use std::process;
-        process::exit(0);
-    }
-
     utils::setup_panic_handler();
+
+    #[cfg(target_os = "macos")]
+    if is_elevated() {
+        if let Ok(null) = std::fs::File::open("/dev/null") {
+            use std::os::fd::AsRawFd;
+            let fd = null.as_raw_fd();
+            unsafe {
+                libc::dup2(fd, libc::STDOUT_FILENO);
+                libc::dup2(fd, libc::STDERR_FILENO);
+            }
+        }
+    }
 
     let mut builder = tauri::Builder::default();
 
@@ -1180,6 +1204,8 @@ pub fn run_gui() -> std::process::ExitCode {
             init_web_client,
             is_web_client_connected,
             get_log_dir_path,
+            is_elevated,
+            restart_elevated,
         ])
         .on_window_event(|_win, event| match event {
             #[cfg(not(target_os = "android"))]
