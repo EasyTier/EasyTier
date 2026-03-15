@@ -12,6 +12,8 @@ use std::{
 };
 
 use anyhow::Context;
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine as _;
 use cidr::Ipv4Inet;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use dashmap::DashMap;
@@ -56,8 +58,8 @@ use easytier::{
                 PeerManageRpcClientFactory, PortForwardManageRpc,
                 PortForwardManageRpcClientFactory, RevokeCredentialRequest, ShowNodeInfoRequest,
                 StatsRpc, StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType,
-                TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalInfo, VpnPortalRpc,
-                VpnPortalRpcClientFactory,
+                TcpProxyRpc, TcpProxyRpcClientFactory, TrustedKeySourcePb, VpnPortalInfo,
+                VpnPortalRpc, VpnPortalRpcClientFactory,
             },
             logger::{
                 GetLoggerConfigRequest, LogLevel, LoggerRpc, LoggerRpcClientFactory,
@@ -193,7 +195,14 @@ enum PeerSubCommand {
     Add,
     Remove,
     List,
-    ListForeign,
+    ListForeign {
+        #[arg(
+            long,
+            default_value = "false",
+            help = "include trusted keys for each foreign network"
+        )]
+        trusted_keys: bool,
+    },
     ListGlobalForeign,
 }
 
@@ -901,7 +910,10 @@ impl<'a> CommandHandler<'a> {
             .result)
     }
 
-    async fn fetch_foreign_networks(&self) -> Result<ForeignNetworkMap, Error> {
+    async fn fetch_foreign_networks(
+        &self,
+        include_trusted_keys: bool,
+    ) -> Result<ForeignNetworkMap, Error> {
         Ok(self
             .get_peer_manager_client()
             .await?
@@ -909,6 +921,7 @@ impl<'a> CommandHandler<'a> {
                 BaseController::default(),
                 ListForeignNetworkRequest {
                     instance: Some(self.instance_selector.clone()),
+                    include_trusted_keys,
                 },
             )
             .await?
@@ -1316,9 +1329,11 @@ impl<'a> CommandHandler<'a> {
         })
     }
 
-    async fn handle_foreign_network_list(&self) -> Result<(), Error> {
+    async fn handle_foreign_network_list(&self, include_trusted_keys: bool) -> Result<(), Error> {
         let results = self
-            .collect_instance_results(|handler| Box::pin(handler.fetch_foreign_networks()))
+            .collect_instance_results(|handler| {
+                Box::pin(handler.fetch_foreign_networks(include_trusted_keys))
+            })
             .await?;
         if self.verbose || *self.output_format == OutputFormat::Json {
             return self.print_json_results(results);
@@ -1350,6 +1365,24 @@ impl<'a> CommandHandler<'a> {
                             .collect::<Vec<_>>()
                             .join("; ")
                     );
+                }
+                if include_trusted_keys {
+                    println!("  trusted_keys:");
+                    for trusted_key in &v.trusted_keys {
+                        let source = TrustedKeySourcePb::try_from(trusted_key.source)
+                            .map(|source| source.as_str_name())
+                            .unwrap_or("TRUSTED_KEY_SOURCE_PB_UNSPECIFIED");
+                        let expiry = trusted_key
+                            .expiry_unix
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "    source: {}, expiry_unix: {}, pubkey: {}",
+                            source,
+                            expiry,
+                            BASE64_STANDARD.encode(&trusted_key.pubkey),
+                        );
+                    }
                 }
             }
             Ok(())
@@ -2548,8 +2581,8 @@ async fn main() -> Result<(), Error> {
             Some(PeerSubCommand::List) => {
                 handler.handle_peer_list().await?;
             }
-            Some(PeerSubCommand::ListForeign) => {
-                handler.handle_foreign_network_list().await?;
+            Some(PeerSubCommand::ListForeign { trusted_keys }) => {
+                handler.handle_foreign_network_list(*trusted_keys).await?;
             }
             Some(PeerSubCommand::ListGlobalForeign) => {
                 handler.handle_global_foreign_network_list().await?;

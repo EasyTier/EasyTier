@@ -114,12 +114,28 @@ message DumpRouteRequest { InstanceIdentifier instance = 1; }
 
 message DumpRouteResponse { string result = 1; }
 
-message ListForeignNetworkRequest { InstanceIdentifier instance = 1; }
+message ListForeignNetworkRequest {
+  InstanceIdentifier instance = 1;
+  bool include_trusted_keys = 2;
+}
+
+enum TrustedKeySourcePb {
+  TRUSTED_KEY_SOURCE_PB_UNSPECIFIED = 0;
+  TRUSTED_KEY_SOURCE_PB_OSPF_NODE = 1;
+  TRUSTED_KEY_SOURCE_PB_OSPF_CREDENTIAL = 2;
+}
+
+message TrustedKeyInfoPb {
+  bytes pubkey = 1;
+  TrustedKeySourcePb source = 2;
+  optional int64 expiry_unix = 3;
+}
 
 message ForeignNetworkEntryPb {
   repeated PeerInfo peers = 1;
   bytes network_secret_digest = 2;
   uint32 my_peer_id_for_this_network = 3;
+  repeated TrustedKeyInfoPb trusted_keys = 4;
 }
 
 message ListForeignNetworkResponse {
