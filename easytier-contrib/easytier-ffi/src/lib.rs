@@ -215,7 +215,7 @@ pub unsafe extern "C" fn collect_network_infos(
         if index >= max_length {
             break;
         }
-        let Some(key) = INSTANCE_MANAGER.get_network_instance_name(instance_id) else {
+        let Some(key) = INSTANCE_MANAGER.get_instance_name(instance_id) else {
             continue;
         };
         // convert value to json string
@@ -228,7 +228,7 @@ pub unsafe extern "C" fn collect_network_infos(
         };
 
         infos[index] = KeyValuePair {
-            key: std::ffi::CString::new(key.clone()).unwrap().into_raw(),
+            key: std::ffi::CString::new(key).unwrap().into_raw(),
             value: std::ffi::CString::new(value).unwrap().into_raw(),
         };
         index += 1;

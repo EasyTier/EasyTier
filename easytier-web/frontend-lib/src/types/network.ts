@@ -6,6 +6,14 @@ export enum NetworkingMethod {
   Standalone = 2,
 }
 
+export interface SecureModeConfig {
+  enabled: boolean
+  // Keep protocol compatibility with backend/import-export flows even though the GUI
+  // does not render secure-mode or credential inputs.
+  local_private_key?: string
+  local_public_key?: string
+}
+
 export interface NetworkConfig {
   instance_id: string
 
@@ -14,7 +22,9 @@ export interface NetworkConfig {
   network_length: number
   hostname?: string
   network_name: string
-  network_secret: string
+  network_secret?: string
+  credential_file?: string
+  secure_mode?: SecureModeConfig
 
   networking_method: NetworkingMethod
 
@@ -83,6 +93,7 @@ export function DEFAULT_NETWORK_CONFIG(): NetworkConfig {
     network_length: 24,
     network_name: 'easytier',
     network_secret: '',
+    credential_file: '',
 
     networking_method: NetworkingMethod.PublicServer,
 

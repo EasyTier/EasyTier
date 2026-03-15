@@ -617,6 +617,16 @@ pub struct ForeignNetworkManager {
 }
 
 impl ForeignNetworkManager {
+    async fn is_shared_pubkey_trusted(
+        entry: &ForeignNetworkEntry,
+        remote_static_pubkey: &[u8],
+    ) -> bool {
+        remote_static_pubkey.len() == 32
+            && entry
+                .global_ctx
+                .is_pubkey_trusted(remote_static_pubkey, &entry.network.network_name)
+    }
+
     pub fn new(
         my_peer_id: PeerId,
         global_ctx: ArcGlobalCtx,
@@ -655,12 +665,14 @@ impl ForeignNetworkManager {
     }
 
     pub async fn add_peer_conn(&self, peer_conn: PeerConn) -> Result<(), Error> {
-        tracing::info!(peer_conn = ?peer_conn.get_conn_info(), network = ?peer_conn.get_network_identity(), "add new peer conn in foreign network manager");
+        let conn_info = peer_conn.get_conn_info();
+        let peer_network = peer_conn.get_network_identity();
+        tracing::info!(peer_conn = ?conn_info, network = ?peer_network, "add new peer conn in foreign network manager");
 
         let relay_peer_rpc = self.global_ctx.get_flags().relay_all_peer_rpc;
         let ret = self
             .global_ctx
-            .check_network_in_whitelist(&peer_conn.get_network_identity().network_name)
+            .check_network_in_whitelist(&peer_network.network_name)
             .map_err(Into::into);
         if ret.is_err() && !relay_peer_rpc {
             return ret;
@@ -669,7 +681,7 @@ impl ForeignNetworkManager {
         let (entry, new_added) = self
             .data
             .get_or_insert_entry(
-                &peer_conn.get_network_identity(),
+                &peer_network,
                 peer_conn.get_my_peer_id(),
                 peer_conn.get_peer_id(),
                 ret.is_ok(),
@@ -679,10 +691,14 @@ impl ForeignNetworkManager {
             )
             .await;
 
+        let same_identity = entry.network == peer_network;
+        let shared_peer = peer_conn.get_peer_identity_type() == PeerIdentityType::SharedNode;
+        let shared_peer_trusted = shared_peer
+            && Self::is_shared_pubkey_trusted(&entry, &conn_info.noise_remote_static_pubkey).await;
+
         let _g = entry.lock.lock().await;
 
-        if (entry.network != peer_conn.get_network_identity()
-            && peer_conn.get_peer_identity_type() != PeerIdentityType::SharedNode)
+        if (!(same_identity || shared_peer_trusted))
             || entry.my_peer_id != peer_conn.get_my_peer_id()
         {
             if new_added {
@@ -697,9 +713,11 @@ impl ForeignNetworkManager {
                 )
             } else {
                 anyhow::anyhow!(
-                    "network secret not match. exp: {:?} real: {:?}",
+                    "foreign peer identity not trusted. exp: {:?} real: {:?}, remote_pubkey_len: {}, shared_trusted: {}",
                     entry.network,
-                    peer_conn.get_network_identity()
+                    peer_network,
+                    conn_info.noise_remote_static_pubkey.len(),
+                    shared_peer_trusted,
                 )
             };
             tracing::error!(?err, "foreign network entry not match, disconnect peer");

@@ -18,6 +18,7 @@ use easytier::{
 use tokio::sync::{broadcast, RwLock};
 
 use super::storage::{Storage, StorageToken, WeakRefStorage};
+use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -31,9 +32,11 @@ pub struct Location {
 pub struct SessionData {
     storage: WeakRefStorage,
     feature_flags: Arc<FeatureFlags>,
+    webhook_config: SharedWebhookConfig,
     client_url: url::Url,
 
     storage_token: Option<StorageToken>,
+    binding_version: Option<u64>,
     notifier: broadcast::Sender<HeartbeatRequest>,
     req: Option<HeartbeatRequest>,
     location: Option<Location>,
@@ -45,14 +48,17 @@ impl SessionData {
         client_url: url::Url,
         location: Option<Location>,
         feature_flags: Arc<FeatureFlags>,
+        webhook_config: SharedWebhookConfig,
     ) -> Self {
         let (tx, _rx1) = broadcast::channel(2);
 
         SessionData {
             storage,
             feature_flags,
+            webhook_config,
             client_url,
             storage_token: None,
+            binding_version: None,
             notifier: tx,
             req: None,
             location,
@@ -77,6 +83,23 @@ impl Drop for SessionData {
         if let Ok(storage) = Storage::try_from(self.storage.clone()) {
             if let Some(token) = self.storage_token.as_ref() {
                 storage.remove_client(token);
+
+                // Notify the webhook receiver when a node disconnects.
+                if self.webhook_config.is_enabled() {
+                    let webhook = self.webhook_config.clone();
+                    let machine_id = token.machine_id.to_string();
+                    let web_instance_id = webhook.web_instance_id.clone();
+                    let binding_version = self.binding_version;
+                    tokio::spawn(async move {
+                        webhook
+                            .notify_node_disconnected(&crate::webhook::NodeDisconnectedRequest {
+                                machine_id,
+                                web_instance_id,
+                                binding_version,
+                            })
+                            .await;
+                    });
+                }
             }
         }
     }
@@ -90,6 +113,58 @@ struct SessionRpcService {
 }
 
 impl SessionRpcService {
+    async fn persist_webhook_network_config(
+        storage: &Storage,
+        user_id: i32,
+        machine_id: uuid::Uuid,
+        network_config: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let mut network_config = network_config;
+        let network_name = network_config
+            .get("network_name")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("webhook response missing network_name"))?
+            .to_string();
+        let existing_configs = storage
+            .db()
+            .list_network_configs((user_id, machine_id), ListNetworkProps::All)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to list existing network configs: {:?}", e))?;
+        let inst_id = existing_configs
+            .iter()
+            .find_map(|cfg| {
+                let value = serde_json::from_str::<serde_json::Value>(&cfg.network_config).ok()?;
+                let cfg_network_name = value.get("network_name")?.as_str()?;
+                if cfg_network_name == network_name {
+                    uuid::Uuid::parse_str(&cfg.network_instance_id).ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(uuid::Uuid::new_v4);
+
+        let config_obj = network_config
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("webhook network_config must be a JSON object"))?;
+        config_obj.insert(
+            "instance_id".to_string(),
+            serde_json::Value::String(inst_id.to_string()),
+        );
+        config_obj
+            .entry("instance_name".to_string())
+            .or_insert_with(|| serde_json::Value::String(network_name.clone()));
+
+        let config = serde_json::from_value::<NetworkConfig>(network_config)?;
+        storage
+            .db()
+            .insert_or_update_user_network_config((user_id, machine_id), inst_id, config)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to persist webhook network config: {:?}", e))?;
+
+        Ok(())
+    }
+
     async fn handle_heartbeat(
         &self,
         req: HeartbeatRequest,
@@ -106,27 +181,91 @@ impl SessionRpcService {
             req.machine_id
         ))?;
 
-        let user_id = match storage
-            .db()
-            .get_user_id_by_token(req.user_token.clone())
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to get user id by token from db: {:?}",
+        let (user_id, webhook_network_config, webhook_validated, binding_version) = if data
+            .webhook_config
+            .is_enabled()
+        {
+            let webhook_req = crate::webhook::ValidateTokenRequest {
+                token: req.user_token.clone(),
+                machine_id: machine_id.to_string(),
+                hostname: req.hostname.clone(),
+                version: req.easytier_version.clone(),
+                web_instance_id: data.webhook_config.web_instance_id.clone(),
+                web_instance_api_base_url: data.webhook_config.web_instance_api_base_url.clone(),
+            };
+            let resp = data
+                .webhook_config
+                .validate_token(&webhook_req)
+                .await
+                .map_err(|e| anyhow::anyhow!("Webhook token validation failed: {:?}", e))?;
+
+            if resp.valid {
+                let user_id = match storage
+                    .db()
+                    .get_user_id_by_token(req.user_token.clone())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("DB error: {:?}", e))?
+                {
+                    Some(id) => id,
+                    None => storage
+                        .auto_create_user(&req.user_token)
+                        .await
+                        .with_context(|| {
+                            format!("Failed to auto-create webhook user: {:?}", req.user_token)
+                        })?,
+                };
+                (
+                    user_id,
+                    resp.network_config,
+                    true,
+                    Some(resp.binding_version),
+                )
+            } else {
+                return Err(anyhow::anyhow!(
+                    "Webhook rejected token for machine {:?}: {:?}",
+                    machine_id,
                     req.user_token
                 )
-            })? {
-            Some(id) => id,
-            None if data.feature_flags.allow_auto_create_user => storage
-                .auto_create_user(&req.user_token)
-                .await
-                .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
-            None => {
-                return Err(
-                    anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
-                );
+                .into());
             }
+        } else {
+            let user_id = match storage
+                .db()
+                .get_user_id_by_token(req.user_token.clone())
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to get user id by token from db: {:?}",
+                        req.user_token
+                    )
+                })? {
+                Some(id) => id,
+                None if data.feature_flags.allow_auto_create_user => storage
+                    .auto_create_user(&req.user_token)
+                    .await
+                    .with_context(|| format!("Failed to auto-create user: {:?}", req.user_token))?,
+                None => {
+                    return Err(
+                        anyhow::anyhow!("User not found by token: {:?}", req.user_token).into(),
+                    );
+                }
+            };
+            (user_id, None, false, None)
         };
+
+        if webhook_validated {
+            if let Some(network_config) = webhook_network_config {
+                Self::persist_webhook_network_config(&storage, user_id, machine_id, network_config)
+                    .await
+                    .map_err(rpc_types::error::Error::from)?;
+            }
+        } else if webhook_network_config.is_some() {
+            return Err(anyhow::anyhow!(
+                "unexpected webhook network_config for non-webhook token {:?}",
+                req.user_token
+            )
+            .into());
+        }
 
         if data.req.replace(req.clone()).is_none() {
             assert!(data.storage_token.is_none());
@@ -136,6 +275,23 @@ impl SessionRpcService {
                 machine_id,
                 user_id,
             });
+            data.binding_version = binding_version;
+
+            // Notify the webhook receiver on the first successful heartbeat.
+            if data.webhook_config.is_enabled() {
+                let webhook = data.webhook_config.clone();
+                let connect_req = crate::webhook::NodeConnectedRequest {
+                    machine_id: machine_id.to_string(),
+                    token: req.user_token.clone(),
+                    hostname: req.hostname.clone(),
+                    version: req.easytier_version.clone(),
+                    web_instance_id: webhook.web_instance_id.clone(),
+                    binding_version,
+                };
+                tokio::spawn(async move {
+                    webhook.notify_node_connected(&connect_req).await;
+                });
+            }
         }
 
         let Ok(report_time) = chrono::DateTime::<chrono::Local>::from_str(&req.report_time) else {
@@ -203,8 +359,10 @@ impl Session {
         client_url: url::Url,
         location: Option<Location>,
         feature_flags: Arc<FeatureFlags>,
+        webhook_config: SharedWebhookConfig,
     ) -> Self {
-        let session_data = SessionData::new(storage, client_url, location, feature_flags);
+        let session_data =
+            SessionData::new(storage, client_url, location, feature_flags, webhook_config);
         let data = Arc::new(RwLock::new(session_data));
 
         let rpc_mgr =
@@ -333,6 +491,10 @@ impl Session {
 
     pub fn is_running(&self) -> bool {
         self.rpc_mgr.is_running()
+    }
+
+    pub async fn stop(&self) {
+        self.rpc_mgr.stop().await;
     }
 
     pub fn data(&self) -> SharedSessionData {
