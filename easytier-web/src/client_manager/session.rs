@@ -399,6 +399,7 @@ impl Session {
         storage: WeakRefStorage,
         rpc_client: SessionRpcClient,
     ) {
+        let mut cleaned_web_managed_instances = false;
         loop {
             heartbeat_waiter = heartbeat_waiter.resubscribe();
             let req = heartbeat_waiter.recv().await;
@@ -442,6 +443,18 @@ impl Session {
                 }
             };
 
+            let all_local_configs = match storage
+                .db
+                .list_network_configs((user_id, machine_id.into()), ListNetworkProps::All)
+                .await
+            {
+                Ok(configs) => configs,
+                Err(e) => {
+                    tracing::error!("Failed to list all network configs, error: {:?}", e);
+                    return;
+                }
+            };
+
             let local_configs = match storage
                 .db
                 .list_network_configs((user_id, machine_id.into()), ListNetworkProps::EnabledOnly)
@@ -455,6 +468,36 @@ impl Session {
             };
 
             let mut has_failed = false;
+
+            if !cleaned_web_managed_instances {
+                let managed_inst_ids = all_local_configs
+                    .iter()
+                    .filter_map(|cfg| uuid::Uuid::parse_str(&cfg.network_instance_id).ok())
+                    .map(Into::into)
+                    .collect::<Vec<_>>();
+
+                if !managed_inst_ids.is_empty() {
+                    let ret = rpc_client
+                        .delete_network_instance(
+                            BaseController::default(),
+                            easytier::proto::api::manage::DeleteNetworkInstanceRequest {
+                                inst_ids: managed_inst_ids,
+                            },
+                        )
+                        .await;
+                    tracing::info!(
+                        ?user_id,
+                        "Clean web-managed network instances on start: {:?}, user_token: {:?}",
+                        ret,
+                        req.user_token
+                    );
+                    has_failed |= ret.is_err();
+                }
+
+                if !has_failed {
+                    cleaned_web_managed_instances = true;
+                }
+            }
 
             for c in local_configs {
                 if running_inst_ids.contains(&c.network_instance_id) {

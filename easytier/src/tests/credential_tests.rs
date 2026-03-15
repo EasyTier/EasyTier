@@ -193,6 +193,128 @@ fn create_shared_config(
     config
 }
 
+async fn create_generated_credential_config(
+    admin_inst: &Instance,
+    inst_name: &str,
+    ns: Option<&str>,
+    ipv4: &str,
+    ipv6: &str,
+) -> (TomlConfigLoader, String) {
+    use base64::Engine as _;
+
+    let (cred_id, cred_secret) = admin_inst
+        .get_global_ctx()
+        .get_credential_manager()
+        .generate_credential(vec![], false, vec![], Duration::from_secs(3600));
+    let privkey_bytes: [u8; 32] = base64::prelude::BASE64_STANDARD
+        .decode(&cred_secret)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let private = x25519_dalek::StaticSecret::from(privkey_bytes);
+
+    let config = TomlConfigLoader::default();
+    config.set_inst_name(inst_name.to_owned());
+    config.set_netns(ns.map(|s| s.to_owned()));
+    config.set_ipv4(Some(ipv4.parse().unwrap()));
+    config.set_ipv6(Some(ipv6.parse().unwrap()));
+    config.set_listeners(vec![]);
+    config.set_network_identity(NetworkIdentity::new_credential(
+        admin_inst
+            .get_global_ctx()
+            .get_network_identity()
+            .network_name
+            .clone(),
+    ));
+    config.set_secure_mode(Some(generate_secure_mode_config_with_key(&private)));
+
+    (config, cred_id)
+}
+
+async fn wait_ping_reachability(src_ns: &str, dst_ip: &str, reachable: bool, timeout: Duration) {
+    wait_for_condition(
+        || async {
+            let ping_result = ping_test(src_ns, dst_ip, None).await;
+            if reachable {
+                ping_result
+            } else {
+                !ping_result
+            }
+        },
+        timeout,
+    )
+    .await;
+}
+
+async fn wait_route_presence_on_admins(
+    admin_a_inst: &Instance,
+    admin_c_inst: &Instance,
+    peer_id: u32,
+    should_exist: bool,
+    timeout: Duration,
+) {
+    wait_for_condition(
+        || async {
+            let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
+            let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+            let admin_a_has = admin_a_routes.iter().any(|r| r.peer_id == peer_id);
+            let admin_c_has = admin_c_routes.iter().any(|r| r.peer_id == peer_id);
+            if should_exist {
+                admin_a_has || admin_c_has
+            } else {
+                !admin_a_has && !admin_c_has
+            }
+        },
+        timeout,
+    )
+    .await;
+}
+
+async fn assert_shared_visibility_stable(
+    admin_a_inst: &Instance,
+    admin_c_inst: &Instance,
+    peer_id: u32,
+    peer_ip: &str,
+    should_exist: bool,
+    label: &str,
+) {
+    for _ in 0..5 {
+        let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
+        let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+        let admin_a_has = admin_a_routes.iter().any(|r| r.peer_id == peer_id);
+        let admin_c_has = admin_c_routes.iter().any(|r| r.peer_id == peer_id);
+        if should_exist {
+            assert!(
+                admin_a_has || admin_c_has,
+                "{} should exist via shared path but routes are admin_a={:?} admin_c={:?}",
+                label,
+                admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
+                admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+            );
+        } else {
+            assert!(
+                !admin_a_has && !admin_c_has,
+                "{} should be absent via shared path but routes are admin_a={:?} admin_c={:?}",
+                label,
+                admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>(),
+                admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+            );
+        }
+
+        let ping_from_admin_a = ping_test("ns_adm", peer_ip, None).await;
+        let ping_from_admin_c = ping_test("ns_c3", peer_ip, None).await;
+        if should_exist {
+            assert!(ping_from_admin_a, "admin_a should reach {}", label);
+            assert!(ping_from_admin_c, "admin_c should reach {}", label);
+        } else {
+            assert!(!ping_from_admin_a, "admin_a should not reach {}", label);
+            assert!(!ping_from_admin_c, "admin_c should not reach {}", label);
+        }
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 /// Test 1: Basic credential node connectivity
 /// Topology: Admin ← Credential
 /// Verifies that a credential node can connect to an admin node and appears in routes
@@ -834,9 +956,10 @@ async fn credential_unknown_rejected() {
 /// Regression test: an unknown credential must still be rejected when it first connects via a
 /// shared node. If this fails, the shared path is incorrectly admitting the node into the target
 /// network's route domain.
+#[rstest::rstest]
 #[tokio::test]
 #[serial_test::serial]
-async fn credential_unknown_via_shared_rejected() {
+async fn credential_unknown_via_shared_rejected(#[values(true, false)] test_revoke: bool) {
     prepare_credential_network();
 
     let admin_a_config =
@@ -877,18 +1000,33 @@ async fn credential_unknown_via_shared_rejected() {
     )
     .await;
 
-    let unknown_config = create_unknown_credential_config(
-        admin_a_inst
-            .get_global_ctx()
-            .get_network_identity()
-            .network_name
-            .clone(),
-        "unknown_d",
-        Some("ns_c2"),
-        "10.144.144.5",
-        "fd00::5/64",
-    );
-    let mut unknown_inst = Instance::new(unknown_config);
+    let (credential_config, credential_id) = if test_revoke {
+        let (config, cred_id) = create_generated_credential_config(
+            &admin_a_inst,
+            "cred_d",
+            Some("ns_c2"),
+            "10.144.144.5",
+            "fd00::5/64",
+        )
+        .await;
+        (config, Some(cred_id))
+    } else {
+        (
+            create_unknown_credential_config(
+                admin_a_inst
+                    .get_global_ctx()
+                    .get_network_identity()
+                    .network_name
+                    .clone(),
+                "unknown_d",
+                Some("ns_c2"),
+                "10.144.144.5",
+                "fd00::5/64",
+            ),
+            None,
+        )
+    };
+    let mut unknown_inst = Instance::new(credential_config);
     unknown_inst.run().await.unwrap();
 
     unknown_inst
@@ -901,30 +1039,65 @@ async fn credential_unknown_via_shared_rejected() {
 
     println!("unknown_peer_id: {:?}", unknown_peer_id);
 
-    for _ in 0..5 {
-        let admin_a_routes = admin_a_inst.get_peer_manager().list_routes().await;
-        let admin_c_routes = admin_c_inst.get_peer_manager().list_routes().await;
+    if test_revoke {
+        wait_route_presence_on_admins(
+            &admin_a_inst,
+            &admin_c_inst,
+            unknown_peer_id,
+            true,
+            Duration::from_secs(30),
+        )
+        .await;
+        wait_ping_reachability("ns_adm", "10.144.144.5", true, Duration::from_secs(20)).await;
+        wait_ping_reachability("ns_c3", "10.144.144.5", true, Duration::from_secs(20)).await;
 
         assert!(
-            !admin_a_routes.iter().any(|r| r.peer_id == unknown_peer_id),
-            "unknown credential unexpectedly appeared in admin_a routes via shared path: {:?}",
-            admin_a_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
+            admin_a_inst
+                .get_global_ctx()
+                .get_credential_manager()
+                .revoke_credential(credential_id.as_ref().unwrap()),
+            "credential should be revoked successfully"
         );
-        assert!(
-            !admin_c_routes.iter().any(|r| r.peer_id == unknown_peer_id),
-            "unknown credential unexpectedly appeared in admin_c routes via shared path: {:?}",
-            admin_c_routes.iter().map(|r| r.peer_id).collect::<Vec<_>>()
-        );
-        assert!(
-            !ping_test("ns_adm", "10.144.144.5", None).await,
-            "admin_a unexpectedly reached unknown credential via shared path"
-        );
-        assert!(
-            !ping_test("ns_c3", "10.144.144.5", None).await,
-            "admin_c unexpectedly reached unknown credential via shared path"
-        );
+        admin_a_inst
+            .get_global_ctx()
+            .issue_event(GlobalCtxEvent::CredentialChanged);
 
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        wait_route_presence_on_admins(
+            &admin_a_inst,
+            &admin_c_inst,
+            unknown_peer_id,
+            false,
+            Duration::from_secs(30),
+        )
+        .await;
+        wait_ping_reachability("ns_adm", "10.144.144.5", false, Duration::from_secs(5)).await;
+        wait_ping_reachability("ns_c3", "10.144.144.5", false, Duration::from_secs(5)).await;
+
+        unknown_inst
+            .get_conn_manager()
+            .add_connector(TcpTunnelConnector::new(
+                "tcp://10.1.1.2:11010".parse().unwrap(),
+            ));
+
+        assert_shared_visibility_stable(
+            &admin_a_inst,
+            &admin_c_inst,
+            unknown_peer_id,
+            "10.144.144.5",
+            false,
+            "revoked credential",
+        )
+        .await;
+    } else {
+        assert_shared_visibility_stable(
+            &admin_a_inst,
+            &admin_c_inst,
+            unknown_peer_id,
+            "10.144.144.5",
+            false,
+            "unknown credential",
+        )
+        .await;
     }
 
     println!("drop all");
