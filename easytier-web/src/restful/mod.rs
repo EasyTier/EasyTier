@@ -31,7 +31,7 @@ use users::{AuthSession, Backend};
 
 use crate::client_manager::storage::StorageToken;
 use crate::client_manager::ClientManager;
-use crate::db::Db;
+use crate::db::{Db, UserIdInDb};
 use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
 
@@ -252,7 +252,7 @@ impl RestfulServer {
                     get(Self::handle_list_all_sessions_internal),
                 )
                 .route(
-                    "/api/internal/sessions/:machine-id",
+                    "/api/internal/users/:user-id/sessions/:machine-id",
                     delete(Self::handle_disconnect_session_internal),
                 )
                 .merge(NetworkApi::build_route_internal())
@@ -315,11 +315,11 @@ impl RestfulServer {
     }
 
     async fn handle_disconnect_session_internal(
-        Path(machine_id): Path<uuid::Uuid>,
+        Path((user_id, machine_id)): Path<(UserIdInDb, uuid::Uuid)>,
         State(client_mgr): AppState,
     ) -> Result<StatusCode, HttpHandleError> {
         if client_mgr
-            .disconnect_session_by_machine_id_global(&machine_id)
+            .disconnect_session_by_machine_id(user_id, &machine_id)
             .await
         {
             Ok(StatusCode::NO_CONTENT)

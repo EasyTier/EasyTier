@@ -69,6 +69,7 @@ pub struct ValidateTokenResponse {
 pub struct NodeConnectedRequest {
     pub machine_id: String,
     pub token: String,
+    pub user_id: Option<i32>,
     pub hostname: String,
     pub version: String,
     pub web_instance_id: Option<String>,
@@ -78,6 +79,8 @@ pub struct NodeConnectedRequest {
 #[derive(Debug, Serialize)]
 pub struct NodeDisconnectedRequest {
     pub machine_id: String,
+    pub token: String,
+    pub user_id: Option<i32>,
     pub web_instance_id: Option<String>,
     pub binding_version: Option<u64>,
 }

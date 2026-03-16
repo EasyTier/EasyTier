@@ -22,7 +22,6 @@ struct ClientInfo {
 #[derive(Debug)]
 pub struct StorageInner {
     user_clients_map: DashMap<UserIdInDb, DashMap<uuid::Uuid, ClientInfo>>,
-    global_machine_map: DashMap<uuid::Uuid, ClientInfo>,
     pub db: Db,
 }
 
@@ -42,7 +41,6 @@ impl Storage {
     pub fn new(db: Db) -> Self {
         Storage(Arc::new(StorageInner {
             user_clients_map: DashMap::new(),
-            global_machine_map: DashMap::new(),
             db,
         }))
     }
@@ -75,13 +73,10 @@ impl Storage {
             storage_token: stoken.clone(),
             report_time,
         };
-
         Self::update_client_info_map(&inner, &client_info);
-        Self::update_client_info_map(&self.0.global_machine_map, &client_info);
     }
 
     pub fn remove_client(&self, stoken: &StorageToken) {
-        Self::remove_client_info_map(&self.0.global_machine_map, stoken);
         self.0
             .user_clients_map
             .remove_if(&stoken.user_id, |_, set| {
@@ -104,22 +99,6 @@ impl Storage {
                 .get(machine_id)
                 .map(|info| info.storage_token.client_url.clone())
         })
-    }
-
-    /// Find client_url by machine_id across all users.
-    pub fn get_client_url_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> Option<url::Url> {
-        self.0
-            .global_machine_map
-            .get(machine_id)
-            .map(|info| info.storage_token.client_url.clone())
-    }
-
-    /// Find user_id by machine_id across all users.
-    pub fn get_user_id_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> Option<UserIdInDb> {
-        self.0
-            .global_machine_map
-            .get(machine_id)
-            .map(|info| info.storage_token.user_id)
     }
 
     pub fn list_user_clients(&self, user_id: UserIdInDb) -> Vec<url::Url> {
@@ -164,38 +143,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn global_machine_index_uses_latest_report_and_ignores_stale_removal() {
+    async fn machine_id_is_scoped_within_each_user() {
         let storage = Storage::new(Db::memory_db().await);
         let machine_id = uuid::Uuid::new_v4();
 
-        let old_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
-        let new_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1002");
+        let user1_token = make_storage_token(1, machine_id, "tcp://127.0.0.1:1001");
+        let user2_token = make_storage_token(2, machine_id, "tcp://127.0.0.1:1002");
 
-        storage.update_client(old_token.clone(), 10);
-        storage.update_client(new_token.clone(), 20);
-
-        assert_eq!(
-            storage.get_client_url_by_machine_id_global(&machine_id),
-            Some(new_token.client_url.clone())
-        );
-        assert_eq!(
-            storage.get_user_id_by_machine_id_global(&machine_id),
-            Some(1)
-        );
-
-        storage.remove_client(&old_token);
+        storage.update_client(user1_token.clone(), 10);
+        storage.update_client(user2_token.clone(), 20);
 
         assert_eq!(
-            storage.get_client_url_by_machine_id_global(&machine_id),
-            Some(new_token.client_url.clone())
+            storage.get_client_url_by_machine_id(1, &machine_id),
+            Some(user1_token.client_url.clone())
         );
-
-        storage.remove_client(&new_token);
-
         assert_eq!(
-            storage.get_client_url_by_machine_id_global(&machine_id),
-            None
+            storage.get_client_url_by_machine_id(2, &machine_id),
+            Some(user2_token.client_url.clone())
         );
-        assert_eq!(storage.get_user_id_by_machine_id_global(&machine_id), None);
+
+        storage.remove_client(&user1_token);
+
+        assert_eq!(storage.get_client_url_by_machine_id(1, &machine_id), None);
+        assert_eq!(
+            storage.get_client_url_by_machine_id(2, &machine_id),
+            Some(user2_token.client_url.clone())
+        );
+
+        storage.remove_client(&user2_token);
+
+        assert_eq!(storage.get_client_url_by_machine_id(2, &machine_id), None);
     }
 }
