@@ -10,9 +10,10 @@ use std::{
 use crate::{
     common::{
         config::{
-            get_avaliable_encrypt_methods, load_config_from_file, ConfigFileControl, ConfigLoader,
-            ConsoleLoggerConfig, FileLoggerConfig, LoggingConfigLoader, NetworkIdentity,
-            PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
+            get_avaliable_encrypt_methods, load_config_from_file, process_secure_mode_cfg,
+            ConfigFileControl, ConfigLoader, ConsoleLoggerConfig, FileLoggerConfig,
+            LoggingConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader,
+            VpnPortalConfig,
         },
         constants::EASYTIER_VERSION,
         log,
@@ -27,10 +28,8 @@ use crate::{
     web_client, ShellType,
 };
 use anyhow::Context;
-use base64::{prelude::BASE64_STANDARD, Engine as _};
 use cidr::IpCidr;
 use clap::{CommandFactory, Parser};
-use rand::rngs::OsRng;
 use rust_i18n::t;
 use tokio::io::AsyncReadExt;
 
@@ -636,6 +635,20 @@ struct NetworkOptions {
         help = t!("core_clap.local_public_key").to_string()
     )]
     local_public_key: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_CREDENTIAL",
+        help = t!("core_clap.credential").to_string()
+    )]
+    credential: Option<String>,
+
+    #[arg(
+        long,
+        env = "ET_CREDENTIAL_FILE",
+        help = t!("core_clap.credential_file").to_string()
+    )]
+    credential_file: Option<PathBuf>,
 }
 
 #[derive(Parser, Debug)]
@@ -759,42 +772,6 @@ impl NetworkOptions {
         false
     }
 
-    fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
-        if !user_cfg.enabled {
-            return Ok(user_cfg);
-        }
-
-        let private_key = if user_cfg.local_private_key.is_none() {
-            // if no private key, generate random one
-            let private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
-            user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
-            private
-        } else {
-            // check if private key is valid
-            user_cfg.private_key()?
-        };
-
-        let public = x25519_dalek::PublicKey::from(&private_key);
-
-        match user_cfg.local_public_key {
-            None => {
-                user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
-            }
-            Some(ref user_pub) => {
-                let public = user_cfg.public_key()?;
-                if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
-                    return Err(anyhow::anyhow!(
-                        "local public key {} does not match generated public key {}",
-                        user_pub,
-                        BASE64_STANDARD.encode(public.as_bytes())
-                    ));
-                }
-            }
-        }
-
-        Ok(user_cfg)
-    }
-
     fn merge_into(&self, cfg: &TomlConfigLoader) -> anyhow::Result<()> {
         if self.hostname.is_some() {
             cfg.set_hostname(self.hostname.clone());
@@ -802,11 +779,17 @@ impl NetworkOptions {
 
         let old_ns = cfg.get_network_identity();
         let network_name = self.network_name.clone().unwrap_or(old_ns.network_name);
-        let network_secret = self
-            .network_secret
-            .clone()
-            .unwrap_or(old_ns.network_secret.unwrap_or_default());
-        cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
+
+        if self.credential.is_some() {
+            // Credential mode: no network_secret, authenticate via credential keypair
+            cfg.set_network_identity(NetworkIdentity::new_credential(network_name));
+        } else {
+            let network_secret = self
+                .network_secret
+                .clone()
+                .unwrap_or(old_ns.network_secret.unwrap_or_default());
+            cfg.set_network_identity(NetworkIdentity::new(network_name, network_secret));
+        }
 
         if let Some(dhcp) = self.dhcp {
             cfg.set_dhcp(dhcp);
@@ -977,14 +960,26 @@ impl NetworkOptions {
             cfg.set_port_forwards(old);
         }
 
-        if let Some(secure_mode) = self.secure_mode {
+        if let Some(ref credential_file) = self.credential_file {
+            cfg.set_credential_file(Some(credential_file.clone()));
+        }
+
+        if let Some(ref credential_secret) = self.credential {
+            // --credential implies --secure-mode and sets the credential private key
+            let c = SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(credential_secret.clone()),
+                local_public_key: None,
+            };
+            cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
+        } else if let Some(secure_mode) = self.secure_mode {
             if secure_mode {
                 let c = SecureModeConfig {
                     enabled: secure_mode,
                     local_private_key: self.local_private_key.clone(),
                     local_public_key: self.local_public_key.clone(),
                 };
-                cfg.set_secure_mode(Some(Self::process_secure_mode_cfg(c)?));
+                cfg.set_secure_mode(Some(process_secure_mode_cfg(c)?));
             }
         }
 
@@ -1251,6 +1246,7 @@ async fn run_main(cli: Cli) -> anyhow::Result<()> {
             config_server_url_s,
             cli.machine_id.clone(),
             cli.network_options.hostname.clone(),
+            cli.network_options.secure_mode.unwrap_or(false),
             manager.clone(),
             None,
         )

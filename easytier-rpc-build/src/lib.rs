@@ -41,6 +41,8 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
         let mut match_output_type_methods = String::new();
         let mut match_output_proto_type_methods = String::new();
         let mut match_handle_methods = String::new();
+        // generate trait default method Xxx::json_call_method match branch
+        let mut match_trait_json_methods = String::new();
 
         let mut match_method_try_from = String::new();
 
@@ -180,6 +182,22 @@ impl prost_build::ServiceGenerator for ServiceGenerator {
                 namespace = NAMESPACE,
             )
             .unwrap();
+
+            write!(
+                match_trait_json_methods,
+                r#"            "{name}" | "{proto_name}" => {{
+                let req: {input_type} = ::serde_json::from_value(json).map_err(|e| {namespace}::error::Error::MalformatRpcPacket(format!("json error: {{}}", e)))?;
+                let resp = self.{typed_method}(ctrl, req).await?;
+                Ok(::serde_json::to_value(resp).map_err(|e| {namespace}::error::Error::MalformatRpcPacket(format!("json error: {{}}", e)))?)
+            }}
+"#,
+                name = method.name,
+                proto_name = method.proto_name,
+                input_type = method.input_type,
+                typed_method = method.name,
+                namespace = NAMESPACE,
+            )
+            .unwrap();
         }
 
         ServiceGenerator::write_comments(&mut buf, 0, &service.comments).unwrap();
@@ -192,6 +210,18 @@ pub trait {name} {{
     type Controller: {namespace}::controller::Controller;
 
     {trait_methods}
+
+    async fn json_call_method(
+        &self,
+        ctrl: Self::Controller,
+        method_name: &str,
+        json: ::serde_json::Value,
+    ) -> {namespace}::error::Result<::serde_json::Value> {{
+        match method_name {{
+{match_trait_json_methods}
+            _ => Err({namespace}::error::Error::InvalidMethodIndex(0, method_name.to_string())),
+        }}
+    }}
 }}
 
 #[async_trait::async_trait]
@@ -262,7 +292,7 @@ impl<C: {namespace}::controller::Controller> Clone for {client_name}Factory<C> {
 
 impl<C> {namespace}::__rt::RpcClientFactory for {client_name}Factory<C> where C: {namespace}::controller::Controller {{
     type Descriptor = {descriptor_name};
-    type ClientImpl = Box<dyn {name}<Controller = C> + Send + 'static>;
+    type ClientImpl = Box<dyn {name}<Controller = C> + Send + Sync + 'static>;
     type Controller = C;
 
     fn new(handler: impl {namespace}::handler::Handler<Descriptor = Self::Descriptor, Controller = Self::Controller>) -> Self::ClientImpl {{
@@ -394,6 +424,7 @@ impl {namespace}::descriptor::MethodDescriptor for {method_descriptor_name} {{
             match_output_type_methods = match_output_type_methods,
             match_output_proto_type_methods = match_output_proto_type_methods,
             match_handle_methods = match_handle_methods,
+            match_trait_json_methods = match_trait_json_methods,
             namespace = NAMESPACE,
         ).unwrap();
     }

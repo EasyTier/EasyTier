@@ -1,14 +1,21 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::{
     hash::Hasher,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
+use arc_swap::ArcSwap;
+use dashmap::DashMap;
+
 use crate::common::config::ProxyNetworkConfig;
+use crate::common::shrink_dashmap;
 use crate::common::stats_manager::StatsManager;
 use crate::common::token_bucket::TokenBucketManager;
 use crate::peers::acl_filter::AclFilter;
+use crate::peers::credential_manager::CredentialManager;
 use crate::proto::acl::GroupIdentity;
 use crate::proto::api::config::InstanceConfigPatch;
 use crate::proto::api::instance::PeerConnInfo;
@@ -59,10 +66,89 @@ pub enum GlobalCtxEvent {
     ConfigPatched(InstanceConfigPatch),
 
     ProxyCidrsUpdated(Vec<cidr::Ipv4Cidr>, Vec<cidr::Ipv4Cidr>), // (added, removed)
+
+    CredentialChanged,
 }
 
 pub type EventBus = tokio::sync::broadcast::Sender<GlobalCtxEvent>;
 pub type EventBusSubscriber = tokio::sync::broadcast::Receiver<GlobalCtxEvent>;
+
+/// Source of a trusted public key from OSPF route propagation
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustedKeySource {
+    /// Peer node's noise static pubkey
+    OspfNode,
+    /// Admin-declared trusted credential pubkey
+    OspfCredential,
+}
+
+/// Metadata for a trusted public key
+#[derive(Debug, Clone)]
+pub struct TrustedKeyMetadata {
+    pub source: TrustedKeySource,
+    /// Expiry time in Unix seconds. None means never expires.
+    pub expiry_unix: Option<i64>,
+}
+
+impl TrustedKeyMetadata {
+    pub fn is_expired(&self) -> bool {
+        if let Some(expiry) = self.expiry_unix {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64;
+            return now >= expiry;
+        }
+        false
+    }
+}
+
+// key is (pubkey, network-name)
+pub type TrustedKeyMap = HashMap<Vec<u8>, TrustedKeyMetadata>;
+
+struct TrustedKeyMapManager {
+    network_trusted_keys: DashMap<String, ArcSwap<TrustedKeyMap>>,
+}
+
+impl TrustedKeyMapManager {
+    pub fn new() -> Self {
+        Self {
+            network_trusted_keys: DashMap::new(),
+        }
+    }
+
+    pub fn update_trusted_keys(&self, network_name: &str, trusted_keys: TrustedKeyMap) {
+        match self.network_trusted_keys.entry(network_name.to_string()) {
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(ArcSwap::new(Arc::new(trusted_keys)));
+            }
+            dashmap::Entry::Occupied(entry) => {
+                entry.get().store(Arc::new(trusted_keys));
+            }
+        }
+    }
+
+    pub fn remove_trusted_keys(&self, network_name: &str) {
+        self.network_trusted_keys.remove(network_name);
+        shrink_dashmap(&self.network_trusted_keys, None);
+    }
+
+    pub fn verify_trusted_key(&self, pubkey: &[u8], network_name: &str) -> bool {
+        let Some(trusted_keys) = self
+            .network_trusted_keys
+            .get(network_name)
+            .map(|v| v.load_full())
+        else {
+            return false;
+        };
+
+        let Some(metadata) = trusted_keys.get(&pubkey.to_vec()) else {
+            return false;
+        };
+
+        !metadata.is_expired()
+    }
+}
 
 pub struct GlobalCtx {
     pub inst_name: String,
@@ -97,6 +183,12 @@ pub struct GlobalCtx {
     stats_manager: Arc<StatsManager>,
 
     acl_filter: Arc<AclFilter>,
+
+    credential_manager: Arc<CredentialManager>,
+
+    /// OSPF propagated trusted keys (peer pubkeys and admin credentials)
+    /// Stored in ArcSwap for lock-free reads and atomic batch updates
+    trusted_keys: Arc<TrustedKeyMapManager>,
 }
 
 impl std::fmt::Debug for GlobalCtx {
@@ -152,6 +244,9 @@ impl GlobalCtx {
             ..Default::default()
         };
 
+        let credential_storage_path = config_fs.get_credential_file();
+        let credential_manager = Arc::new(CredentialManager::new(credential_storage_path));
+
         GlobalCtx {
             inst_name: config_fs.get_inst_name(),
             id,
@@ -187,6 +282,10 @@ impl GlobalCtx {
             stats_manager: Arc::new(StatsManager::new()),
 
             acl_filter: Arc::new(AclFilter::new()),
+
+            credential_manager,
+
+            trusted_keys: Arc::new(TrustedKeyMapManager::new()),
         }
     }
 
@@ -402,6 +501,37 @@ impl GlobalCtx {
 
     pub fn get_acl_filter(&self) -> &Arc<AclFilter> {
         &self.acl_filter
+    }
+
+    pub fn get_credential_manager(&self) -> &Arc<CredentialManager> {
+        &self.credential_manager
+    }
+
+    /// Check if a public key is trusted using two-level lookup:
+    /// 1. OSPF propagated trusted_keys (lock-free)
+    /// 2. Local credential_manager
+    pub fn is_pubkey_trusted(&self, pubkey: &[u8], network_name: &str) -> bool {
+        // First level: check OSPF propagated keys (lock-free)
+        if self.trusted_keys.verify_trusted_key(pubkey, network_name) {
+            return true;
+        }
+
+        // Second level: check local credential_manager if in the same network
+        if network_name == self.get_network_name() {
+            return self.credential_manager.is_pubkey_trusted(pubkey);
+        }
+
+        false
+    }
+
+    /// Atomically replace all OSPF trusted keys with a new set
+    /// Called by OSPF route layer after each route update
+    pub fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
+        self.trusted_keys.update_trusted_keys(network_name, keys);
+    }
+
+    pub fn remove_trusted_keys(&self, network_name: &str) {
+        self.trusted_keys.remove_trusted_keys(network_name);
     }
 
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {

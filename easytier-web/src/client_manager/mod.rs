@@ -13,11 +13,13 @@ use easytier::{
     },
     rpc_service::remote_client::{self, RemoteClientManager},
     tunnel::TunnelListener,
+    web_client::security,
 };
 use maxminddb::geoip2;
 use session::{Location, Session};
 use storage::{Storage, StorageToken};
 
+use crate::webhook::SharedWebhookConfig;
 use crate::FeatureFlags;
 use tokio::task::JoinSet;
 
@@ -58,12 +60,18 @@ pub struct ClientManager {
     storage: Storage,
 
     feature_flags: Arc<FeatureFlags>,
+    webhook_config: SharedWebhookConfig,
 
     geoip_db: Arc<Option<maxminddb::Reader<Vec<u8>>>>,
 }
 
 impl ClientManager {
-    pub fn new(db: Db, geoip_db: Option<String>, feature_flags: Arc<FeatureFlags>) -> Self {
+    pub fn new(
+        db: Db,
+        geoip_db: Option<String>,
+        feature_flags: Arc<FeatureFlags>,
+        webhook_config: SharedWebhookConfig,
+    ) -> Self {
         let client_sessions = Arc::new(DashMap::new());
         let sessions: Arc<DashMap<url::Url, Arc<Session>>> = client_sessions.clone();
         let mut tasks = JoinSet::new();
@@ -81,6 +89,7 @@ impl ClientManager {
             client_sessions,
             storage: Storage::new(db),
             feature_flags,
+            webhook_config,
 
             geoip_db: Arc::new(load_geoip_db(geoip_db)),
         }
@@ -97,14 +106,23 @@ impl ClientManager {
         let listeners_cnt = self.listeners_cnt.clone();
         let geoip_db = self.geoip_db.clone();
         let feature_flags = self.feature_flags.clone();
+        let webhook_config = self.webhook_config.clone();
         self.tasks.spawn(async move {
             while let Ok(tunnel) = listener.accept().await {
+                let (tunnel, secure) = match security::accept_or_upgrade_server_tunnel(tunnel).await {
+                    Ok(v) => v,
+                    Err(error) => {
+                        tracing::warn!(%error, "failed to accept secure tunnel, dropping connection");
+                        continue;
+                    }
+                };
                 let info = tunnel.info().unwrap();
                 let client_url: url::Url = info.remote_addr.unwrap().into();
                 let location = Self::lookup_location(&client_url, geoip_db.clone());
                 tracing::info!(
-                    "New session from {:?}, location: {:?}",
+                    "New session from {:?}, secure: {}, location: {:?}",
                     client_url,
+                    secure,
                     location
                 );
                 let mut session = Session::new(
@@ -112,6 +130,7 @@ impl ClientManager {
                     client_url.clone(),
                     location,
                     feature_flags.clone(),
+                    webhook_config.clone(),
                 );
                 session.serve(tunnel).await;
                 sessions.insert(client_url, Arc::new(session));
@@ -154,6 +173,36 @@ impl ClientManager {
         self.client_sessions
             .get(&c_url)
             .map(|item| item.value().clone())
+    }
+
+    /// Find a session by machine_id regardless of user_id.
+    pub fn get_session_by_machine_id_global(
+        &self,
+        machine_id: &uuid::Uuid,
+    ) -> Option<Arc<Session>> {
+        self.storage
+            .get_client_url_by_machine_id_global(machine_id)
+            .and_then(|url| {
+                self.client_sessions
+                    .get(&url)
+                    .map(|item| item.value().clone())
+            })
+    }
+
+    /// Get user_id associated with a machine_id.
+    pub fn get_user_id_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> Option<UserIdInDb> {
+        self.storage.get_user_id_by_machine_id_global(machine_id)
+    }
+
+    pub async fn disconnect_session_by_machine_id_global(&self, machine_id: &uuid::Uuid) -> bool {
+        let Some(client_url) = self.storage.get_client_url_by_machine_id_global(machine_id) else {
+            return false;
+        };
+        let Some((_, session)) = self.client_sessions.remove(&client_url) else {
+            return false;
+        };
+        session.stop().await;
+        true
     }
 
     pub async fn list_machine_by_user_id(&self, user_id: UserIdInDb) -> Vec<url::Url> {
@@ -312,6 +361,9 @@ mod tests {
             Db::memory_db().await,
             None,
             Arc::new(FeatureFlags::default()),
+            Arc::new(crate::webhook::WebhookConfig::new(
+                None, None, None, None, None,
+            )),
         );
         mgr.add_listener(Box::new(listener)).await.unwrap();
 
@@ -326,26 +378,36 @@ mod tests {
             connector,
             "test",
             "test",
+            false,
             Arc::new(NetworkInstanceManager::new()),
             None,
         );
 
         wait_for_condition(
-            || async { mgr.client_sessions.len() == 1 },
-            Duration::from_secs(6),
+            || async { !mgr.client_sessions.is_empty() },
+            Duration::from_secs(12),
         )
         .await;
 
-        let mut a = mgr
-            .client_sessions
-            .iter()
-            .next()
-            .unwrap()
-            .data()
-            .read()
-            .await
-            .heartbeat_waiter();
-        let req = a.recv().await.unwrap();
+        let req = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let session = mgr
+                    .client_sessions
+                    .iter()
+                    .next()
+                    .map(|item| item.value().clone());
+                let Some(session) = session else {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    continue;
+                };
+                let mut waiter = session.data().read().await.heartbeat_waiter();
+                if let Ok(req) = waiter.recv().await {
+                    break req;
+                }
+            }
+        })
+        .await
+        .unwrap();
         println!("{:?}", req);
         println!("{:?}", mgr);
     }

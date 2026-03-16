@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::Context;
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt as _;
 
@@ -216,6 +217,11 @@ pub trait ConfigLoader: Send + Sync {
     fn get_secure_mode(&self) -> Option<SecureModeConfig>;
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>);
 
+    fn get_credential_file(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn set_credential_file(&self, _path: Option<std::path::PathBuf>) {}
+
     fn dump(&self) -> String;
 }
 
@@ -294,6 +300,16 @@ impl NetworkIdentity {
             network_name,
             network_secret: Some(network_secret),
             network_secret_digest: Some(network_secret_digest),
+        }
+    }
+
+    /// Create a NetworkIdentity for a credential node (no network_secret).
+    /// The node identifies by network_name only and authenticates via credential keypair.
+    pub fn new_credential(network_name: String) -> Self {
+        NetworkIdentity {
+            network_name,
+            network_secret: None,
+            network_secret_digest: None,
         }
     }
 }
@@ -393,6 +409,42 @@ impl From<PortForwardConfig> for PortForwardConfigPb {
     }
 }
 
+pub fn process_secure_mode_cfg(mut user_cfg: SecureModeConfig) -> anyhow::Result<SecureModeConfig> {
+    if !user_cfg.enabled {
+        return Ok(user_cfg);
+    }
+
+    let private_key = if user_cfg.local_private_key.is_none() {
+        // if no private key, generate random one
+        let private = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        user_cfg.local_private_key = Some(BASE64_STANDARD.encode(private.clone().as_bytes()));
+        private
+    } else {
+        // check if private key is valid
+        user_cfg.private_key()?
+    };
+
+    let public = x25519_dalek::PublicKey::from(&private_key);
+
+    match user_cfg.local_public_key {
+        None => {
+            user_cfg.local_public_key = Some(BASE64_STANDARD.encode(public.as_bytes()));
+        }
+        Some(ref user_pub) => {
+            let public = user_cfg.public_key()?;
+            if *user_pub != BASE64_STANDARD.encode(public.as_bytes()) {
+                return Err(anyhow::anyhow!(
+                    "local public key {} does not match generated public key {}",
+                    user_pub,
+                    BASE64_STANDARD.encode(public.as_bytes())
+                ));
+            }
+        }
+    }
+
+    Ok(user_cfg)
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 struct Config {
     netns: Option<String>,
@@ -431,6 +483,8 @@ struct Config {
     udp_whitelist: Option<Vec<String>>,
     stun_servers: Option<Vec<String>>,
     stun_servers_v6: Option<Vec<String>>,
+
+    credential_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -822,6 +876,14 @@ impl ConfigLoader for TomlConfigLoader {
 
     fn set_secure_mode(&self, secure_mode: Option<SecureModeConfig>) {
         self.config.lock().unwrap().secure_mode = secure_mode;
+    }
+
+    fn get_credential_file(&self) -> Option<PathBuf> {
+        self.config.lock().unwrap().credential_file.clone()
+    }
+
+    fn set_credential_file(&self, path: Option<PathBuf>) {
+        self.config.lock().unwrap().credential_file = path;
     }
 
     fn dump(&self) -> String {

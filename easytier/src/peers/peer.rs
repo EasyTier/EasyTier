@@ -17,6 +17,7 @@ use crate::{
         global_ctx::{ArcGlobalCtx, GlobalCtxEvent},
         PeerId,
     },
+    proto::peer_rpc::PeerIdentityType,
     tunnel::packet_def::ZCPacket,
 };
 use crate::{
@@ -40,6 +41,7 @@ pub struct Peer {
     shutdown_notifier: Arc<tokio::sync::Notify>,
 
     default_conn_id: Arc<AtomicCell<PeerConnId>>,
+    peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
     default_conn_id_clear_task: ScopedTask<()>,
 }
 
@@ -52,6 +54,8 @@ impl Peer {
         let conns: ConnMap = Arc::new(DashMap::new());
         let (close_event_sender, mut close_event_receiver) = mpsc::channel(10);
         let shutdown_notifier = Arc::new(tokio::sync::Notify::new());
+        let peer_identity_type = Arc::new(AtomicCell::new(None));
+        let peer_identity_type_copy = peer_identity_type.clone();
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -76,6 +80,9 @@ impl Peer {
                                     conn.get_conn_info(),
                                 ));
                                 shrink_dashmap(&conns_copy, Some(4));
+                                if conns_copy.is_empty() {
+                                    peer_identity_type_copy.store(None);
+                                }
                             }
                         }
 
@@ -118,11 +125,25 @@ impl Peer {
 
             shutdown_notifier,
             default_conn_id,
+            peer_identity_type,
             default_conn_id_clear_task,
         }
     }
 
-    pub async fn add_peer_conn(&self, mut conn: PeerConn) {
+    pub async fn add_peer_conn(&self, mut conn: PeerConn) -> Result<(), Error> {
+        let conn_identity_type = conn.get_peer_identity_type();
+        let peer_identity_type = self.peer_identity_type.load();
+        if let Some(peer_identity_type) = peer_identity_type {
+            if peer_identity_type != conn_identity_type {
+                return Err(Error::SecretKeyError(format!(
+                    "peer identity type mismatch. peer: {:?}, conn: {:?}",
+                    peer_identity_type, conn_identity_type
+                )));
+            }
+        } else {
+            self.peer_identity_type.store(Some(conn_identity_type));
+        }
+
         let close_notifier = conn.get_close_notifier();
         let conn_info = conn.get_conn_info();
 
@@ -143,6 +164,7 @@ impl Peer {
 
         self.global_ctx
             .issue_event(GlobalCtxEvent::PeerConnAdded(conn_info));
+        Ok(())
     }
 
     async fn select_conn(&self) -> Option<ArcPeerConn> {
@@ -223,6 +245,9 @@ impl Peer {
     }
     pub fn all_conns_low_priority(&self) -> bool {
         self.conns.iter().all(|c| c.is_low_priority())
+
+    pub fn get_peer_identity_type(&self) -> Option<PeerIdentityType> {
+        self.peer_identity_type.load()
     }
 }
 
@@ -241,16 +266,37 @@ impl Drop for Peer {
 
 #[cfg(test)]
 mod tests {
+    use base64::prelude::{Engine as _, BASE64_STANDARD};
+    use rand::rngs::OsRng;
     use std::sync::Arc;
     use tokio::time::timeout;
 
     use crate::{
-        common::{global_ctx::tests::get_mock_global_ctx, new_peer_id},
+        common::{
+            config::{NetworkIdentity, PeerConfig},
+            global_ctx::{tests::get_mock_global_ctx, GlobalCtx},
+            new_peer_id,
+        },
         peers::{create_packet_recv_chan, peer_conn::PeerConn, peer_session::PeerSessionStore},
+        proto::common::SecureModeConfig,
         tunnel::ring::create_ring_tunnel_pair,
     };
 
     use super::Peer;
+
+    fn set_secure_mode_cfg(global_ctx: &GlobalCtx, enabled: bool) {
+        if !enabled {
+            global_ctx.config.set_secure_mode(None);
+        } else {
+            let private = x25519_dalek::StaticSecret::random_from_rng(OsRng);
+            let public = x25519_dalek::PublicKey::from(&private);
+            global_ctx.config.set_secure_mode(Some(SecureModeConfig {
+                enabled: true,
+                local_private_key: Some(BASE64_STANDARD.encode(private.as_bytes())),
+                local_public_key: Some(BASE64_STANDARD.encode(public.as_bytes())),
+            }));
+        }
+    }
 
     #[tokio::test]
     async fn close_peer() {
@@ -287,8 +333,8 @@ mod tests {
 
         let local_conn_id = local_peer_conn.get_conn_id();
 
-        local_peer.add_peer_conn(local_peer_conn).await;
-        remote_peer.add_peer_conn(remote_peer_conn).await;
+        local_peer.add_peer_conn(local_peer_conn).await.unwrap();
+        remote_peer.add_peer_conn(remote_peer_conn).await.unwrap();
 
         assert_eq!(local_peer.list_peer_conns().await.len(), 1);
         assert_eq!(remote_peer.list_peer_conns().await.len(), 1);
@@ -307,5 +353,111 @@ mod tests {
 
         println!("wait for close handler");
         close_handler.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn reject_peer_conn_with_mismatched_identity_type() {
+        let (packet_send, _packet_recv) = create_packet_recv_chan();
+        let global_ctx = get_mock_global_ctx();
+        let local_peer_id = new_peer_id();
+        let remote_peer_id = new_peer_id();
+        let peer = Peer::new(remote_peer_id, packet_send, global_ctx);
+
+        let ps = Arc::new(PeerSessionStore::new());
+
+        let (shared_client_tunnel, shared_server_tunnel) = create_ring_tunnel_pair();
+        let shared_client_ctx = get_mock_global_ctx();
+        let shared_server_ctx = get_mock_global_ctx();
+        shared_client_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec2".to_string()));
+        shared_server_ctx
+            .config
+            .set_network_identity(NetworkIdentity {
+                network_name: "net2".to_string(),
+                network_secret: None,
+                network_secret_digest: None,
+            });
+        set_secure_mode_cfg(&shared_client_ctx, true);
+        set_secure_mode_cfg(&shared_server_ctx, true);
+        let remote_url: url::Url = shared_client_tunnel
+            .info()
+            .unwrap()
+            .remote_addr
+            .unwrap()
+            .url
+            .parse()
+            .unwrap();
+        shared_client_ctx.config.set_peers(vec![PeerConfig {
+            uri: remote_url,
+            peer_public_key: Some(
+                shared_server_ctx
+                    .config
+                    .get_secure_mode()
+                    .unwrap()
+                    .local_public_key
+                    .unwrap(),
+            ),
+        }]);
+        let mut shared_client_conn = PeerConn::new(
+            local_peer_id,
+            shared_client_ctx,
+            Box::new(shared_client_tunnel),
+            ps.clone(),
+        );
+        let mut shared_server_conn = PeerConn::new(
+            remote_peer_id,
+            shared_server_ctx,
+            Box::new(shared_server_tunnel),
+            ps.clone(),
+        );
+        let (c1, s1) = tokio::join!(
+            shared_client_conn.do_handshake_as_client(),
+            shared_server_conn.do_handshake_as_server()
+        );
+        c1.unwrap();
+        s1.unwrap();
+        assert_eq!(
+            shared_client_conn.get_peer_identity_type(),
+            crate::proto::peer_rpc::PeerIdentityType::SharedNode
+        );
+
+        let (admin_client_tunnel, admin_server_tunnel) = create_ring_tunnel_pair();
+        let admin_client_ctx = get_mock_global_ctx();
+        let admin_server_ctx = get_mock_global_ctx();
+        admin_client_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec2".to_string()));
+        admin_server_ctx
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec2".to_string()));
+        set_secure_mode_cfg(&admin_client_ctx, true);
+        set_secure_mode_cfg(&admin_server_ctx, true);
+        let mut admin_client_conn = PeerConn::new(
+            local_peer_id,
+            admin_client_ctx,
+            Box::new(admin_client_tunnel),
+            Arc::new(PeerSessionStore::new()),
+        );
+        let mut admin_server_conn = PeerConn::new(
+            remote_peer_id,
+            admin_server_ctx,
+            Box::new(admin_server_tunnel),
+            Arc::new(PeerSessionStore::new()),
+        );
+        let (c2, s2) = tokio::join!(
+            admin_client_conn.do_handshake_as_client(),
+            admin_server_conn.do_handshake_as_server()
+        );
+        c2.unwrap();
+        s2.unwrap();
+        assert_eq!(
+            admin_client_conn.get_peer_identity_type(),
+            crate::proto::peer_rpc::PeerIdentityType::Admin
+        );
+
+        peer.add_peer_conn(shared_client_conn).await.unwrap();
+        let ret = peer.add_peer_conn(admin_client_conn).await;
+        assert!(ret.is_err());
     }
 }

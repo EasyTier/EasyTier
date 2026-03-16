@@ -1,8 +1,12 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
+    future::Future,
     net::{IpAddr, SocketAddr},
     path::PathBuf,
+    pin::Pin,
     str::FromStr,
+    sync::Arc,
     time::Duration,
     vec,
 };
@@ -29,6 +33,7 @@ use easytier::{
     },
     peers,
     proto::{
+        acl::AclStats,
         api::{
             config::{
                 AclPatch, ConfigPatchAction, ConfigRpc, ConfigRpcClientFactory,
@@ -36,22 +41,31 @@ use easytier::{
             },
             instance::{
                 instance_identifier::{InstanceSelector, Selector},
-                list_peer_route_pair, AclManageRpc, AclManageRpcClientFactory, ConnectorManageRpc,
-                ConnectorManageRpcClientFactory, DumpRouteRequest, GetAclStatsRequest,
-                GetPrometheusStatsRequest, GetStatsRequest, GetVpnPortalInfoRequest,
-                GetWhitelistRequest, InstanceIdentifier, ListConnectorRequest,
-                ListForeignNetworkRequest, ListGlobalForeignNetworkRequest,
-                ListMappedListenerRequest, ListPeerRequest, ListPeerResponse,
-                ListPortForwardRequest, ListRouteRequest, ListRouteResponse,
-                MappedListenerManageRpc, MappedListenerManageRpcClientFactory, NodeInfo,
-                PeerManageRpc, PeerManageRpcClientFactory, PortForwardManageRpc,
-                PortForwardManageRpcClientFactory, ShowNodeInfoRequest, StatsRpc,
-                StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType, TcpProxyRpc,
-                TcpProxyRpcClientFactory, VpnPortalRpc, VpnPortalRpcClientFactory,
+                list_global_foreign_network_response, list_peer_route_pair, AclManageRpc,
+                AclManageRpcClientFactory, Connector, ConnectorManageRpc,
+                ConnectorManageRpcClientFactory, CredentialManageRpc,
+                CredentialManageRpcClientFactory, DumpRouteRequest, ForeignNetworkEntryPb,
+                GenerateCredentialRequest, GetAclStatsRequest, GetPrometheusStatsRequest,
+                GetStatsRequest, GetVpnPortalInfoRequest, GetWhitelistRequest,
+                GetWhitelistResponse, InstanceIdentifier, ListConnectorRequest,
+                ListCredentialsRequest, ListCredentialsResponse, ListForeignNetworkRequest,
+                ListGlobalForeignNetworkRequest, ListMappedListenerRequest, ListPeerRequest,
+                ListPeerResponse, ListPortForwardRequest, ListPortForwardResponse,
+                ListRouteRequest, ListRouteResponse, MappedListener, MappedListenerManageRpc,
+                MappedListenerManageRpcClientFactory, MetricSnapshot, NodeInfo, PeerManageRpc,
+                PeerManageRpcClientFactory, PortForwardManageRpc,
+                PortForwardManageRpcClientFactory, RevokeCredentialRequest, ShowNodeInfoRequest,
+                StatsRpc, StatsRpcClientFactory, TcpProxyEntryState, TcpProxyEntryTransportType,
+                TcpProxyRpc, TcpProxyRpcClientFactory, VpnPortalInfo, VpnPortalRpc,
+                VpnPortalRpcClientFactory,
             },
             logger::{
                 GetLoggerConfigRequest, LogLevel, LoggerRpc, LoggerRpcClientFactory,
                 SetLoggerConfigRequest,
+            },
+            manage::{
+                ListNetworkInstanceMetaRequest, ListNetworkInstanceRequest, WebClientService,
+                WebClientServiceClientFactory,
             },
         },
         common::{NatType, PortForwardConfigPb, SocketType},
@@ -134,6 +148,8 @@ enum SubCommand {
     Stats(StatsArgs),
     #[command(about = "manage logger configuration")]
     Logger(LoggerArgs),
+    #[command(about = "manage temporary credentials")]
+    Credential(CredentialArgs),
     #[command(about = t!("core_clap.generate_completions").to_string())]
     GenAutocomplete { shell: ShellType },
 }
@@ -341,6 +357,47 @@ enum LoggerSubCommand {
 }
 
 #[derive(Args, Debug)]
+struct CredentialArgs {
+    #[command(subcommand)]
+    sub_command: CredentialSubCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum CredentialSubCommand {
+    /// Generate a new temporary credential
+    Generate {
+        #[arg(long, help = "TTL in seconds (required)")]
+        ttl: i64,
+        #[arg(
+            long,
+            help = "custom credential ID, return existing credential if already generated"
+        )]
+        credential_id: Option<String>,
+        #[arg(long, value_delimiter = ',', help = "ACL groups (comma-separated)")]
+        groups: Option<Vec<String>>,
+        #[arg(
+            long,
+            default_value = "false",
+            help = "allow relay through this credential node"
+        )]
+        allow_relay: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "allowed proxy CIDRs (comma-separated)"
+        )]
+        allowed_proxy_cidrs: Option<Vec<String>>,
+    },
+    /// Revoke a credential by its ID
+    Revoke {
+        #[arg(help = "credential ID (UUID)")]
+        credential_id: String,
+    },
+    /// List all active credentials
+    List,
+}
+
+#[derive(Args, Debug)]
 struct ServiceArgs {
     #[arg(short, long, default_value = env!("CARGO_PKG_NAME"), help = "service name")]
     name: String,
@@ -393,17 +450,251 @@ struct InstallArgs {
 
 type Error = anyhow::Error;
 
+#[derive(Clone, Debug)]
+struct InstanceTarget {
+    identifier: InstanceIdentifier,
+    instance_id: String,
+    instance_name: String,
+}
+
+struct InstanceResult<T> {
+    target: Option<InstanceTarget>,
+    value: T,
+}
+
+impl InstanceTarget {
+    fn label(&self) -> String {
+        match (self.instance_name.is_empty(), self.instance_id.is_empty()) {
+            (false, false) => format!("{} ({})", self.instance_name, self.instance_id),
+            (false, true) => self.instance_name.clone(),
+            (true, false) => self.instance_id.clone(),
+            (true, true) => "selected instance".to_string(),
+        }
+    }
+}
+
+impl<T> InstanceResult<T> {
+    fn new(target: Option<InstanceTarget>, value: T) -> Self {
+        Self { target, value }
+    }
+
+    fn map<U>(self, f: impl FnOnce(T) -> U) -> InstanceResult<U> {
+        InstanceResult {
+            target: self.target,
+            value: f(self.value),
+        }
+    }
+}
+
 struct CommandHandler<'a> {
-    client: tokio::sync::Mutex<RpcClient>,
+    client: Arc<tokio::sync::Mutex<RpcClient>>,
     verbose: bool,
     output_format: &'a OutputFormat,
     no_trunc: bool,
+    instance_select: &'a InstanceSelectArgs,
     instance_selector: InstanceIdentifier,
+    resolved_target: Option<InstanceTarget>,
 }
 
 type RpcClient = StandAloneClient<TcpTunnelConnector>;
+type LocalBoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Error>> + 'a>>;
+type ForeignNetworkMap = BTreeMap<String, ForeignNetworkEntryPb>;
+type GlobalForeignNetworkMap = BTreeMap<u32, list_global_foreign_network_response::ForeignNetworks>;
 
-impl CommandHandler<'_> {
+#[derive(serde::Serialize)]
+struct PeerListData {
+    node_info: NodeInfo,
+    peer_routes: Vec<PeerRoutePair>,
+}
+
+#[derive(serde::Serialize)]
+struct RouteListData {
+    node_info: NodeInfo,
+    peer_routes: Vec<PeerRoutePair>,
+}
+
+#[derive(serde::Serialize)]
+struct PeerCenterRowData {
+    node_id: String,
+    hostname: String,
+    ipv4: String,
+    direct_peers: Vec<PeerCenterDirectPeerData>,
+}
+
+#[derive(serde::Serialize)]
+struct PeerCenterDirectPeerData {
+    node_id: String,
+    hostname: String,
+    ipv4: String,
+    latency_ms: i32,
+}
+
+impl<'a> CommandHandler<'a> {
+    fn has_explicit_instance_selector(&self) -> bool {
+        self.instance_select.id.is_some() || self.instance_select.name.is_some()
+    }
+
+    fn scoped_to_instance(&self, target: &InstanceTarget) -> Self {
+        Self {
+            client: self.client.clone(),
+            verbose: self.verbose,
+            output_format: self.output_format,
+            no_trunc: self.no_trunc,
+            instance_select: self.instance_select,
+            instance_selector: target.identifier.clone(),
+            resolved_target: Some(target.clone()),
+        }
+    }
+
+    fn print_target_header(&self, target: &InstanceTarget) {
+        println!("== {} ==", target.label());
+    }
+
+    async fn get_manage_client(
+        &self,
+    ) -> Result<Box<dyn WebClientService<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<WebClientServiceClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get manage client")?)
+    }
+
+    async fn fanout_targets(&self) -> Result<Option<Vec<InstanceTarget>>, Error> {
+        if self.resolved_target.is_some() || self.has_explicit_instance_selector() {
+            return Ok(None);
+        }
+
+        let client = self.get_manage_client().await?;
+        let inst_ids = client
+            .list_network_instance(BaseController::default(), ListNetworkInstanceRequest {})
+            .await?
+            .inst_ids
+            .into_iter()
+            .map(uuid::Uuid::from)
+            .collect::<Vec<_>>();
+
+        if inst_ids.is_empty() {
+            return Err(anyhow::anyhow!("no running instances found"));
+        }
+
+        let metas = client
+            .list_network_instance_meta(
+                BaseController::default(),
+                ListNetworkInstanceMetaRequest {
+                    inst_ids: inst_ids.iter().cloned().map(Into::into).collect(),
+                },
+            )
+            .await?
+            .metas;
+
+        let mut name_map = HashMap::new();
+        for meta in metas {
+            if let Some(inst_id) = meta.inst_id {
+                name_map.insert(
+                    uuid::Uuid::from(inst_id),
+                    if meta.instance_name.is_empty() {
+                        meta.network_name
+                    } else {
+                        meta.instance_name
+                    },
+                );
+            }
+        }
+
+        let mut targets = inst_ids
+            .into_iter()
+            .map(|inst_id| InstanceTarget {
+                identifier: InstanceIdentifier {
+                    selector: Some(Selector::Id(inst_id.into())),
+                },
+                instance_id: inst_id.to_string(),
+                instance_name: name_map.remove(&inst_id).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+
+        targets.sort_by_key(|a| a.label());
+        Ok(Some(targets))
+    }
+
+    async fn collect_instance_results<T, F>(
+        &self,
+        fetch: F,
+    ) -> Result<Vec<InstanceResult<T>>, Error>
+    where
+        F: for<'b> Fn(&'b CommandHandler<'a>) -> LocalBoxFuture<'b, T>,
+    {
+        if let Some(targets) = self.fanout_targets().await? {
+            let mut results = Vec::with_capacity(targets.len());
+            for target in targets {
+                let scoped = self.scoped_to_instance(&target);
+                let value = fetch(&scoped)
+                    .await
+                    .with_context(|| format!("instance {}", target.label()))?;
+                results.push(InstanceResult::new(Some(target), value));
+            }
+            Ok(results)
+        } else {
+            Ok(vec![InstanceResult::new(None, fetch(self).await?)])
+        }
+    }
+
+    async fn apply_to_instances<F>(&self, apply: F) -> Result<(), Error>
+    where
+        F: for<'b> Fn(&'b CommandHandler<'a>) -> LocalBoxFuture<'b, ()>,
+    {
+        self.collect_instance_results(apply).await?;
+        Ok(())
+    }
+
+    fn print_results<T>(
+        &self,
+        results: &[InstanceResult<T>],
+        mut render: impl FnMut(&T) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let multi = results.len() > 1;
+        for (idx, result) in results.iter().enumerate() {
+            if multi {
+                if idx > 0 {
+                    println!();
+                }
+                if let Some(target) = result.target.as_ref() {
+                    self.print_target_header(target);
+                }
+            }
+            render(&result.value)?;
+        }
+        Ok(())
+    }
+
+    fn print_json_results<T: serde::Serialize>(
+        &self,
+        results: Vec<InstanceResult<T>>,
+    ) -> Result<(), Error> {
+        if results.len() == 1 {
+            println!("{}", serde_json::to_string_pretty(&results[0].value)?);
+            return Ok(());
+        }
+
+        let wrapped = results
+            .into_iter()
+            .map(|result| {
+                let target = result
+                    .target
+                    .ok_or_else(|| anyhow::anyhow!("missing instance target for multi-result"))?;
+                Ok(serde_json::json!({
+                    "instance_id": target.instance_id,
+                    "instance_name": target.instance_name,
+                    "result": result.value,
+                }))
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
+        println!("{}", serde_json::to_string_pretty(&wrapped)?);
+        Ok(())
+    }
+
     async fn get_peer_manager_client(
         &self,
     ) -> Result<Box<dyn PeerManageRpc<Controller = BaseController>>, Error> {
@@ -537,6 +828,18 @@ impl CommandHandler<'_> {
             .with_context(|| "failed to get config client")?)
     }
 
+    async fn get_credential_client(
+        &self,
+    ) -> Result<Box<dyn CredentialManageRpc<Controller = BaseController>>, Error> {
+        Ok(self
+            .client
+            .lock()
+            .await
+            .scoped_client::<CredentialManageRpcClientFactory<BaseController>>("".to_string())
+            .await
+            .with_context(|| "failed to get credential client")?)
+    }
+
     async fn list_peers(&self) -> Result<ListPeerResponse, Error> {
         let client = self.get_peer_manager_client().await?;
         let request = ListPeerRequest {
@@ -561,6 +864,279 @@ impl CommandHandler<'_> {
         let peers = self.list_peers().await?.peer_infos;
         let routes = self.list_routes().await?.routes;
         Ok(list_peer_route_pair(peers, routes))
+    }
+
+    async fn fetch_node_info(&self) -> Result<NodeInfo, Error> {
+        self.get_peer_manager_client()
+            .await?
+            .show_node_info(
+                BaseController::default(),
+                ShowNodeInfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .node_info
+            .ok_or(anyhow::anyhow!("node info not found"))
+    }
+
+    async fn fetch_peer_list_data(&self) -> Result<PeerListData, Error> {
+        Ok(PeerListData {
+            node_info: self.fetch_node_info().await?,
+            peer_routes: self.list_peer_route_pair().await?,
+        })
+    }
+
+    async fn fetch_route_dump(&self) -> Result<String, Error> {
+        Ok(self
+            .get_peer_manager_client()
+            .await?
+            .dump_route(
+                BaseController::default(),
+                DumpRouteRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .result)
+    }
+
+    async fn fetch_foreign_networks(&self) -> Result<ForeignNetworkMap, Error> {
+        Ok(self
+            .get_peer_manager_client()
+            .await?
+            .list_foreign_network(
+                BaseController::default(),
+                ListForeignNetworkRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .foreign_networks)
+    }
+
+    async fn fetch_global_foreign_networks(&self) -> Result<GlobalForeignNetworkMap, Error> {
+        Ok(self
+            .get_peer_manager_client()
+            .await?
+            .list_global_foreign_network(
+                BaseController::default(),
+                ListGlobalForeignNetworkRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .foreign_networks)
+    }
+
+    async fn fetch_route_list_data(&self) -> Result<RouteListData, Error> {
+        Ok(RouteListData {
+            node_info: self.fetch_node_info().await?,
+            peer_routes: self.list_peer_route_pair().await?,
+        })
+    }
+
+    async fn fetch_connector_list(&self) -> Result<Vec<Connector>, Error> {
+        Ok(self
+            .get_connector_manager_client()
+            .await?
+            .list_connector(
+                BaseController::default(),
+                ListConnectorRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .connectors)
+    }
+
+    async fn fetch_acl_stats(&self) -> Result<Option<AclStats>, Error> {
+        Ok(self
+            .get_acl_manager_client()
+            .await?
+            .get_acl_stats(
+                BaseController::default(),
+                GetAclStatsRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .acl_stats)
+    }
+
+    async fn fetch_mapped_listener_list(&self) -> Result<Vec<MappedListener>, Error> {
+        Ok(self
+            .get_mapped_listener_manager_client()
+            .await?
+            .list_mapped_listener(
+                BaseController::default(),
+                ListMappedListenerRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .mappedlisteners)
+    }
+
+    async fn fetch_port_forward_list(&self) -> Result<ListPortForwardResponse, Error> {
+        Ok(self
+            .get_port_forward_manager_client()
+            .await?
+            .list_port_forward(
+                BaseController::default(),
+                ListPortForwardRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?)
+    }
+
+    async fn fetch_whitelist(&self) -> Result<GetWhitelistResponse, Error> {
+        Ok(self
+            .get_acl_manager_client()
+            .await?
+            .get_whitelist(
+                BaseController::default(),
+                GetWhitelistRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?)
+    }
+
+    async fn fetch_credential_list(&self) -> Result<ListCredentialsResponse, Error> {
+        Ok(self
+            .get_credential_client()
+            .await?
+            .list_credentials(
+                BaseController::default(),
+                ListCredentialsRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?)
+    }
+
+    async fn fetch_peer_center_rows(&self) -> Result<Vec<PeerCenterRowData>, Error> {
+        struct PeerCenterNodeInfo {
+            hostname: String,
+            ipv4: String,
+        }
+
+        let resp = self
+            .get_peer_center_client()
+            .await?
+            .get_global_peer_map(
+                BaseController::default(),
+                GetGlobalPeerMapRequest::default(),
+            )
+            .await?;
+        let route_infos = self.list_peer_route_pair().await?;
+        let node_id_to_node_info = DashMap::new();
+        let node_info = self.fetch_node_info().await?;
+        node_id_to_node_info.insert(
+            node_info.peer_id,
+            PeerCenterNodeInfo {
+                hostname: node_info.hostname.clone(),
+                ipv4: node_info.ipv4_addr,
+            },
+        );
+        for route_info in route_infos {
+            let Some(peer_id) = route_info.route.as_ref().map(|x| x.peer_id) else {
+                continue;
+            };
+            node_id_to_node_info.insert(
+                peer_id,
+                PeerCenterNodeInfo {
+                    hostname: route_info
+                        .route
+                        .as_ref()
+                        .map(|x| x.hostname.clone())
+                        .unwrap_or_default(),
+                    ipv4: route_info
+                        .route
+                        .as_ref()
+                        .and_then(|x| x.ipv4_addr)
+                        .map(|x| x.to_string())
+                        .unwrap_or_default(),
+                },
+            );
+        }
+
+        Ok(resp
+            .global_peer_map
+            .iter()
+            .map(|(node_id, directs)| PeerCenterRowData {
+                node_id: node_id.to_string(),
+                hostname: node_id_to_node_info
+                    .get(node_id)
+                    .map(|x| x.hostname.clone())
+                    .unwrap_or_default(),
+                ipv4: node_id_to_node_info
+                    .get(node_id)
+                    .map(|x| x.ipv4.clone())
+                    .unwrap_or_default(),
+                direct_peers: directs
+                    .direct_peers
+                    .iter()
+                    .map(|(k, v)| PeerCenterDirectPeerData {
+                        node_id: k.to_string(),
+                        hostname: node_id_to_node_info
+                            .get(k)
+                            .map(|x| x.hostname.clone())
+                            .unwrap_or_default(),
+                        ipv4: node_id_to_node_info
+                            .get(k)
+                            .map(|x| x.ipv4.clone())
+                            .unwrap_or_default(),
+                        latency_ms: v.latency_ms,
+                    })
+                    .collect(),
+            })
+            .collect())
+    }
+
+    async fn fetch_vpn_portal_info(&self) -> Result<VpnPortalInfo, Error> {
+        Ok(self
+            .get_vpn_portal_client()
+            .await?
+            .get_vpn_portal_info(
+                BaseController::default(),
+                GetVpnPortalInfoRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .vpn_portal_info
+            .unwrap_or_default())
+    }
+
+    async fn fetch_stats(&self) -> Result<Vec<MetricSnapshot>, Error> {
+        Ok(self
+            .get_stats_client()
+            .await?
+            .get_stats(
+                BaseController::default(),
+                GetStatsRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .metrics)
+    }
+
+    async fn fetch_prometheus_stats(&self) -> Result<String, Error> {
+        Ok(self
+            .get_stats_client()
+            .await?
+            .get_prometheus_stats(
+                BaseController::default(),
+                GetPrometheusStatsRequest {
+                    instance: Some(self.instance_selector.clone()),
+                },
+            )
+            .await?
+            .prometheus_text)
     }
 
     #[allow(dead_code)]
@@ -657,161 +1233,149 @@ impl CommandHandler<'_> {
             }
         }
 
-        let mut items: Vec<PeerTableItem> = vec![];
-        let peer_routes = self.list_peer_route_pair().await?;
+        let build_items = |data: &PeerListData| {
+            let mut items = Vec::with_capacity(data.peer_routes.len() + 1);
+            items.push(PeerTableItem::from(data.node_info.clone()));
+            items.extend(data.peer_routes.iter().cloned().map(Into::into));
+            items.sort_by(|a, b| {
+                use std::net::{IpAddr, Ipv4Addr};
+
+                let a_is_local = a.cost == "Local";
+                let b_is_local = b.cost == "Local";
+                if a_is_local != b_is_local {
+                    return if a_is_local {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                }
+
+                let a_is_public = a.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
+                let b_is_public = b.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
+                if a_is_public != b_is_public {
+                    return if a_is_public {
+                        std::cmp::Ordering::Less
+                    } else {
+                        std::cmp::Ordering::Greater
+                    };
+                }
+
+                let a_ip = IpAddr::from_str(&a.ipv4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                let b_ip = IpAddr::from_str(&b.ipv4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+                match a_ip.cmp(&b_ip) {
+                    std::cmp::Ordering::Equal => a.hostname.cmp(&b.hostname),
+                    other => other,
+                }
+            });
+            items
+        };
+
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_peer_list_data()))
+            .await?;
+
         if self.verbose {
-            println!("{}", serde_json::to_string_pretty(&peer_routes)?);
-            return Ok(());
+            return self.print_json_results(
+                results
+                    .into_iter()
+                    .map(|result| result.map(|data| data.peer_routes))
+                    .collect(),
+            );
+        }
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(
+                results
+                    .into_iter()
+                    .map(|result| result.map(|data| build_items(&data)))
+                    .collect(),
+            );
         }
 
-        let client = self.get_peer_manager_client().await?;
-        let node_info = client
-            .show_node_info(
-                BaseController::default(),
-                ShowNodeInfoRequest {
-                    instance: Some(self.instance_selector.clone()),
-                },
+        self.print_results(&results, |data| {
+            let items = build_items(data);
+            print_output(
+                &items,
+                self.output_format,
+                &["tunnel", "version"],
+                &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
+                self.no_trunc,
             )
-            .await?
-            .node_info
-            .ok_or(anyhow::anyhow!("node info not found"))?;
-        items.push(node_info.into());
-
-        for p in peer_routes {
-            items.push(p.into());
-        }
-
-        // Sort items: local IP first, then public servers, then other servers by IP
-        items.sort_by(|a, b| {
-            use std::net::{IpAddr, Ipv4Addr};
-            use std::str::FromStr;
-
-            // Priority 1: Local IP (cost is "Local")
-            let a_is_local = a.cost == "Local";
-            let b_is_local = b.cost == "Local";
-            if a_is_local != b_is_local {
-                return if a_is_local {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                };
-            }
-
-            // Priority 2: Public servers
-            let a_is_public = a.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
-            let b_is_public = b.hostname.starts_with(peers::PUBLIC_SERVER_HOSTNAME_PREFIX);
-            if a_is_public != b_is_public {
-                return if a_is_public {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                };
-            }
-
-            // Priority 3: Sort by IP address
-            let a_ip = IpAddr::from_str(&a.ipv4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-            let b_ip = IpAddr::from_str(&b.ipv4).unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
-            match a_ip.cmp(&b_ip) {
-                std::cmp::Ordering::Equal => a.hostname.cmp(&b.hostname),
-                other => other,
-            }
-        });
-
-        print_output(
-            &items,
-            self.output_format,
-            &["tunnel", "version"],
-            &["version", "tunnel", "nat", "tx", "rx", "loss", "lat(ms)"],
-            self.no_trunc,
-        )?;
-
-        Ok(())
+        })
     }
 
     async fn handle_route_dump(&self) -> Result<(), Error> {
-        let client = self.get_peer_manager_client().await?;
-        let request = DumpRouteRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .dump_route(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_route_dump()))
             .await?;
-        println!("response: {}", response.result);
-        Ok(())
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+        self.print_results(&results, |result| {
+            println!("response: {}", result);
+            Ok(())
+        })
     }
 
     async fn handle_foreign_network_list(&self) -> Result<(), Error> {
-        let client = self.get_peer_manager_client().await?;
-        let request = ListForeignNetworkRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .list_foreign_network(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_foreign_networks()))
             .await?;
-        let network_map = response;
         if self.verbose || *self.output_format == OutputFormat::Json {
-            let json = serde_json::to_string_pretty(&network_map.foreign_networks)?;
-            println!("{}", json);
-            return Ok(());
+            return self.print_json_results(results);
         }
 
-        for (idx, (k, v)) in network_map.foreign_networks.iter().enumerate() {
-            println!("{} Network Name: {}", idx + 1, k);
-            for peer in v.peers.iter() {
-                println!(
-                    "  peer_id: {}, peer_conn_count: {}, conns: [ {} ]",
-                    peer.peer_id,
-                    peer.conns.len(),
-                    peer.conns
-                        .iter()
-                        .map(|conn| format!(
-                            "remote_addr: {}, rx_bytes: {}, tx_bytes: {}, latency_us: {}",
-                            conn.tunnel
-                                .as_ref()
-                                .map(|t| t.remote_addr.clone().unwrap_or_default())
-                                .unwrap_or_default(),
-                            conn.stats.as_ref().map(|s| s.rx_bytes).unwrap_or_default(),
-                            conn.stats.as_ref().map(|s| s.tx_bytes).unwrap_or_default(),
-                            conn.stats
-                                .as_ref()
-                                .map(|s| s.latency_us)
-                                .unwrap_or_default(),
-                        ))
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                );
+        self.print_results(&results, |networks| {
+            for (idx, (k, v)) in networks.iter().enumerate() {
+                println!("{} Network Name: {}", idx + 1, k);
+                for peer in v.peers.iter() {
+                    println!(
+                        "  peer_id: {}, peer_conn_count: {}, conns: [ {} ]",
+                        peer.peer_id,
+                        peer.conns.len(),
+                        peer.conns
+                            .iter()
+                            .map(|conn| format!(
+                                "remote_addr: {}, rx_bytes: {}, tx_bytes: {}, latency_us: {}",
+                                conn.tunnel
+                                    .as_ref()
+                                    .map(|t| t.remote_addr.clone().unwrap_or_default())
+                                    .unwrap_or_default(),
+                                conn.stats.as_ref().map(|s| s.rx_bytes).unwrap_or_default(),
+                                conn.stats.as_ref().map(|s| s.tx_bytes).unwrap_or_default(),
+                                conn.stats
+                                    .as_ref()
+                                    .map(|s| s.latency_us)
+                                    .unwrap_or_default(),
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                }
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 
     async fn handle_global_foreign_network_list(&self) -> Result<(), Error> {
-        let client = self.get_peer_manager_client().await?;
-        let request = ListGlobalForeignNetworkRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .list_global_foreign_network(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_global_foreign_networks()))
             .await?;
         if self.verbose || *self.output_format == OutputFormat::Json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&response.foreign_networks)?
-            );
-            return Ok(());
+            return self.print_json_results(results);
         }
 
-        for (k, v) in response.foreign_networks.iter() {
-            println!("Peer ID: {}", k);
-            for n in v.foreign_networks.iter() {
-                println!(
-                    "  Network Name: {}, Last Updated: {}, Version: {}, PeerIds: {:?}",
-                    n.network_name, n.last_updated, n.version, n.peer_ids
-                );
+        self.print_results(&results, |networks| {
+            for (k, v) in networks.iter() {
+                println!("Peer ID: {}", k);
+                for n in v.foreign_networks.iter() {
+                    println!(
+                        "  Network Name: {}, Last Updated: {}, Version: {}, PeerIds: {:?}",
+                        n.network_name, n.last_updated, n.version, n.peer_ids
+                    );
+                }
             }
-        }
-
-        Ok(())
+            Ok(())
+        })
     }
 
     async fn handle_route_list(&self) -> Result<(), Error> {
@@ -835,198 +1399,168 @@ impl CommandHandler<'_> {
             version: String,
         }
 
-        let mut items: Vec<RouteTableItem> = vec![];
-        let client = self.get_peer_manager_client().await?;
-        let node_info = client
-            .show_node_info(
-                BaseController::default(),
-                ShowNodeInfoRequest {
-                    instance: Some(self.instance_selector.clone()),
-                },
-            )
-            .await?
-            .node_info
-            .ok_or(anyhow::anyhow!("node info not found"))?;
-        let peer_routes = self.list_peer_route_pair().await?;
+        let build_items = |data: &RouteListData| {
+            let mut items = vec![RouteTableItem {
+                ipv4: data.node_info.ipv4_addr.clone(),
+                hostname: data.node_info.hostname.clone(),
+                proxy_cidrs: data.node_info.proxy_cidrs.join(", "),
+                next_hop_ipv4: "-".to_string(),
+                next_hop_hostname: "Local".to_string(),
+                next_hop_lat: 0.0,
+                path_len: 0,
+                path_latency: 0,
+                next_hop_ipv4_lat_first: "-".to_string(),
+                next_hop_hostname_lat_first: "Local".to_string(),
+                path_len_lat_first: 0,
+                path_latency_lat_first: 0,
+                version: data.node_info.version.clone(),
+            }];
+
+            for p in data.peer_routes.iter() {
+                let Some(next_hop_pair) = data.peer_routes.iter().find(|pair| {
+                    pair.route.clone().unwrap_or_default().peer_id
+                        == p.route.clone().unwrap_or_default().next_hop_peer_id
+                }) else {
+                    continue;
+                };
+
+                let next_hop_pair_latency_first = data.peer_routes.iter().find(|pair| {
+                    pair.route.clone().unwrap_or_default().peer_id
+                        == p.route
+                            .clone()
+                            .unwrap_or_default()
+                            .next_hop_peer_id_latency_first
+                            .unwrap_or_default()
+                });
+
+                let route = p.route.clone().unwrap_or_default();
+                items.push(RouteTableItem {
+                    ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
+                    hostname: route.hostname.clone(),
+                    proxy_cidrs: route.proxy_cidrs.clone().join(","),
+                    next_hop_ipv4: if route.cost == 1 {
+                        "DIRECT".to_string()
+                    } else {
+                        next_hop_pair
+                            .route
+                            .clone()
+                            .unwrap_or_default()
+                            .ipv4_addr
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_default()
+                    },
+                    next_hop_hostname: if route.cost == 1 {
+                        "DIRECT".to_string()
+                    } else {
+                        next_hop_pair.route.clone().unwrap_or_default().hostname
+                    },
+                    next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
+                    path_len: route.cost,
+                    path_latency: route.path_latency,
+                    next_hop_ipv4_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
+                        "DIRECT".to_string()
+                    } else {
+                        next_hop_pair_latency_first
+                            .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
+                            .unwrap_or_default()
+                            .map(|ip| ip.to_string())
+                            .unwrap_or_default()
+                    },
+                    next_hop_hostname_lat_first: if route.cost_latency_first.unwrap_or_default()
+                        == 1
+                    {
+                        "DIRECT".to_string()
+                    } else {
+                        next_hop_pair_latency_first
+                            .map(|pair| pair.route.clone().unwrap_or_default().hostname)
+                            .unwrap_or_default()
+                    },
+                    path_latency_lat_first: route.path_latency_latency_first.unwrap_or_default(),
+                    path_len_lat_first: route.cost_latency_first.unwrap_or_default(),
+                    version: if route.version.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        route.version
+                    },
+                });
+            }
+
+            items
+        };
+
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_route_list_data()))
+            .await?;
 
         if self.verbose {
-            #[derive(serde::Serialize)]
-            struct VerboseItem {
-                node_info: NodeInfo,
-                peer_routes: Vec<PeerRoutePair>,
-            }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&VerboseItem {
-                    node_info,
-                    peer_routes
-                })?
+            return self.print_json_results(results);
+        }
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(
+                results
+                    .into_iter()
+                    .map(|result| result.map(|data| build_items(&data)))
+                    .collect(),
             );
-            return Ok(());
         }
 
-        items.push(RouteTableItem {
-            ipv4: node_info.ipv4_addr.clone(),
-            hostname: node_info.hostname.clone(),
-            proxy_cidrs: node_info.proxy_cidrs.join(", "),
-
-            next_hop_ipv4: "-".to_string(),
-            next_hop_hostname: "Local".to_string(),
-            next_hop_lat: 0.0,
-            path_len: 0,
-            path_latency: 0,
-
-            next_hop_ipv4_lat_first: "-".to_string(),
-            next_hop_hostname_lat_first: "Local".to_string(),
-            path_len_lat_first: 0,
-            path_latency_lat_first: 0,
-
-            version: node_info.version.clone(),
-        });
-        for p in peer_routes.iter() {
-            let Some(next_hop_pair) = peer_routes.iter().find(|pair| {
-                pair.route.clone().unwrap_or_default().peer_id
-                    == p.route.clone().unwrap_or_default().next_hop_peer_id
-            }) else {
-                continue;
-            };
-
-            let next_hop_pair_latency_first = peer_routes.iter().find(|pair| {
-                pair.route.clone().unwrap_or_default().peer_id
-                    == p.route
-                        .clone()
-                        .unwrap_or_default()
-                        .next_hop_peer_id_latency_first
-                        .unwrap_or_default()
-            });
-
-            let route = p.route.clone().unwrap_or_default();
-            items.push(RouteTableItem {
-                ipv4: route.ipv4_addr.map(|ip| ip.to_string()).unwrap_or_default(),
-                hostname: route.hostname.clone(),
-                proxy_cidrs: route.proxy_cidrs.clone().join(",").to_string(),
-                next_hop_ipv4: if route.cost == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair
-                        .route
-                        .clone()
-                        .unwrap_or_default()
-                        .ipv4_addr
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default()
-                },
-                next_hop_hostname: if route.cost == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair
-                        .route
-                        .clone()
-                        .unwrap_or_default()
-                        .hostname
-                        .clone()
-                },
-                next_hop_lat: next_hop_pair.get_latency_ms().unwrap_or(0.0),
-                path_len: route.cost,
-                path_latency: route.path_latency,
-
-                next_hop_ipv4_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair_latency_first
-                        .map(|pair| pair.route.clone().unwrap_or_default().ipv4_addr)
-                        .unwrap_or_default()
-                        .map(|ip| ip.to_string())
-                        .unwrap_or_default()
-                },
-                next_hop_hostname_lat_first: if route.cost_latency_first.unwrap_or_default() == 1 {
-                    "DIRECT".to_string()
-                } else {
-                    next_hop_pair_latency_first
-                        .map(|pair| pair.route.clone().unwrap_or_default().hostname)
-                        .unwrap_or_default()
-                        .clone()
-                },
-                path_latency_lat_first: route.path_latency_latency_first.unwrap_or_default(),
-                path_len_lat_first: route.cost_latency_first.unwrap_or_default(),
-
-                version: if route.version.is_empty() {
-                    "unknown".to_string()
-                } else {
-                    route.version.to_string()
-                },
-            });
-        }
-
-        print_output(
-            &items,
-            self.output_format,
-            &["proxy_cidrs", "version"],
-            &["proxy_cidrs", "version"],
-            self.no_trunc,
-        )?;
-
-        Ok(())
+        self.print_results(&results, |data| {
+            let items = build_items(data);
+            print_output(
+                &items,
+                self.output_format,
+                &["proxy_cidrs", "version"],
+                &["proxy_cidrs", "version"],
+                self.no_trunc,
+            )
+        })
     }
 
     async fn handle_connector_list(&self) -> Result<(), Error> {
-        let client = self.get_connector_manager_client().await?;
-        let request = ListConnectorRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .list_connector(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_connector_list()))
             .await?;
         if self.verbose || *self.output_format == OutputFormat::Json {
-            println!("{}", serde_json::to_string_pretty(&response.connectors)?);
-            return Ok(());
+            return self.print_json_results(results);
         }
-        println!("response: {:#?}", response);
-        Ok(())
+        self.print_results(&results, |connectors| {
+            println!("response: {:#?}", connectors);
+            Ok(())
+        })
     }
 
     async fn handle_acl_stats(&self) -> Result<(), Error> {
-        let client = self.get_acl_manager_client().await?;
-        let request = GetAclStatsRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .get_acl_stats(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_acl_stats()))
             .await?;
-
-        if let Some(acl_stats) = response.acl_stats {
-            if self.output_format == &OutputFormat::Json {
-                println!("{}", serde_json::to_string_pretty(&acl_stats)?);
-            } else {
-                println!("{}", acl_stats);
-            }
-        } else {
-            println!("No ACL statistics available");
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
         }
 
-        Ok(())
+        self.print_results(&results, |acl_stats| {
+            if let Some(acl_stats) = acl_stats {
+                println!("{}", acl_stats);
+            } else {
+                println!("No ACL statistics available");
+            }
+            Ok(())
+        })
     }
 
     async fn handle_mapped_listener_list(&self) -> Result<(), Error> {
-        let client = self.get_mapped_listener_manager_client().await?;
-        let request = ListMappedListenerRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .list_mapped_listener(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_mapped_listener_list()))
             .await?;
         if self.verbose || *self.output_format == OutputFormat::Json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&response.mappedlisteners)?
-            );
-            return Ok(());
+            return self.print_json_results(results);
         }
-        println!("response: {:#?}", response);
-        Ok(())
+        self.print_results(&results, |listeners| {
+            println!("response: {:#?}", listeners);
+            Ok(())
+        })
     }
 
-    async fn handle_mapped_listener_modify(
+    async fn apply_mapped_listener_modify(
         &self,
         url: &str,
         action: ConfigPatchAction,
@@ -1049,6 +1583,19 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
+    async fn handle_mapped_listener_modify(
+        &self,
+        url: &str,
+        action: ConfigPatchAction,
+    ) -> Result<(), Error> {
+        let url = url.to_string();
+        self.apply_to_instances(|handler| {
+            let url = url.clone();
+            Box::pin(async move { handler.apply_mapped_listener_modify(&url, action).await })
+        })
+        .await
+    }
+
     fn mapped_listener_validate_url(url: &str) -> Result<url::Url, Error> {
         let url = url::Url::parse(url)?;
         if url.scheme() != "tcp" && url.scheme() != "udp" {
@@ -1061,7 +1608,7 @@ impl CommandHandler<'_> {
         Ok(url)
     }
 
-    async fn handle_port_forward_modify(
+    async fn apply_port_forward_modify(
         &self,
         action: ConfigPatchAction,
         protocol: &str,
@@ -1106,18 +1653,35 @@ impl CommandHandler<'_> {
         Ok(())
     }
 
-    async fn handle_port_forward_list(&self) -> Result<(), Error> {
-        let client = self.get_port_forward_manager_client().await?;
-        let request = ListPortForwardRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .list_port_forward(BaseController::default(), request)
-            .await?;
+    async fn handle_port_forward_modify(
+        &self,
+        action: ConfigPatchAction,
+        protocol: &str,
+        bind_addr: &str,
+        dst_addr: Option<&str>,
+    ) -> Result<(), Error> {
+        let protocol = protocol.to_string();
+        let bind_addr = bind_addr.to_string();
+        let dst_addr = dst_addr.map(str::to_string);
+        self.apply_to_instances(|handler| {
+            let protocol = protocol.clone();
+            let bind_addr = bind_addr.clone();
+            let dst_addr = dst_addr.clone();
+            Box::pin(async move {
+                handler
+                    .apply_port_forward_modify(action, &protocol, &bind_addr, dst_addr.as_deref())
+                    .await
+            })
+        })
+        .await
+    }
 
+    async fn handle_port_forward_list(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_port_forward_list()))
+            .await?;
         if self.verbose || *self.output_format == OutputFormat::Json {
-            println!("{}", serde_json::to_string_pretty(&response)?);
-            return Ok(());
+            return self.print_json_results(results);
         }
 
         #[derive(tabled::Tabled, serde::Serialize)]
@@ -1127,30 +1691,32 @@ impl CommandHandler<'_> {
             dst_addr: String,
         }
 
-        let items: Vec<PortForwardTableItem> = response
-            .cfgs
-            .into_iter()
-            .map(|rule| PortForwardTableItem {
-                protocol: format!(
-                    "{:?}",
-                    SocketType::try_from(rule.socket_type).unwrap_or(SocketType::Tcp)
-                ),
-                bind_addr: rule
-                    .bind_addr
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_default(),
-                dst_addr: rule
-                    .dst_addr
-                    .map(|addr| addr.to_string())
-                    .unwrap_or_default(),
-            })
-            .collect();
+        self.print_results(&results, |response| {
+            let items: Vec<PortForwardTableItem> = response
+                .cfgs
+                .iter()
+                .cloned()
+                .map(|rule| PortForwardTableItem {
+                    protocol: format!(
+                        "{:?}",
+                        SocketType::try_from(rule.socket_type).unwrap_or(SocketType::Tcp)
+                    ),
+                    bind_addr: rule
+                        .bind_addr
+                        .map(|addr| addr.to_string())
+                        .unwrap_or_default(),
+                    dst_addr: rule
+                        .dst_addr
+                        .map(|addr| addr.to_string())
+                        .unwrap_or_default(),
+                })
+                .collect();
 
-        print_output(&items, self.output_format, &[], &[], self.no_trunc)?;
-        Ok(())
+            print_output(&items, self.output_format, &[], &[], self.no_trunc)
+        })
     }
 
-    async fn handle_whitelist_set_tcp(&self, ports: &str) -> Result<(), Error> {
+    async fn apply_whitelist_set(&self, ports: &str, is_tcp: bool) -> Result<(), Error> {
         let mut whitelist = Self::parse_port_list(ports)?
             .into_iter()
             .map(|p| StringPatch {
@@ -1171,7 +1737,8 @@ impl CommandHandler<'_> {
             instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
-                    tcp_whitelist: whitelist,
+                    tcp_whitelist: if is_tcp { whitelist.clone() } else { vec![] },
+                    udp_whitelist: if is_tcp { vec![] } else { whitelist },
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1181,32 +1748,54 @@ impl CommandHandler<'_> {
         client
             .patch_config(BaseController::default(), request)
             .await?;
+        Ok(())
+    }
+
+    async fn handle_whitelist_set_tcp(&self, ports: &str) -> Result<(), Error> {
+        let ports = ports.to_string();
+        self.apply_to_instances(|handler| {
+            let ports = ports.clone();
+            Box::pin(async move { handler.apply_whitelist_set(&ports, true).await })
+        })
+        .await?;
         println!("TCP whitelist updated: {}", ports);
         Ok(())
     }
 
     async fn handle_whitelist_set_udp(&self, ports: &str) -> Result<(), Error> {
-        let mut whitelist = Self::parse_port_list(ports)?
-            .into_iter()
-            .map(|p| StringPatch {
-                action: ConfigPatchAction::Add.into(),
-                value: p,
-            })
-            .collect::<Vec<_>>();
-        whitelist.insert(
-            0,
-            StringPatch {
-                action: ConfigPatchAction::Clear.into(),
-                value: "".to_string(),
-            },
-        );
+        let ports = ports.to_string();
+        self.apply_to_instances(|handler| {
+            let ports = ports.clone();
+            Box::pin(async move { handler.apply_whitelist_set(&ports, false).await })
+        })
+        .await?;
+        println!("UDP whitelist updated: {}", ports);
+        Ok(())
+    }
+
+    async fn apply_whitelist_clear(&self, is_tcp: bool) -> Result<(), Error> {
         let client = self.get_config_client().await?;
 
         let request = PatchConfigRequest {
             instance: Some(self.instance_selector.clone()),
             patch: Some(InstanceConfigPatch {
                 acl: Some(AclPatch {
-                    udp_whitelist: whitelist,
+                    tcp_whitelist: if is_tcp {
+                        vec![StringPatch {
+                            action: ConfigPatchAction::Clear.into(),
+                            value: "".to_string(),
+                        }]
+                    } else {
+                        vec![]
+                    },
+                    udp_whitelist: if is_tcp {
+                        vec![]
+                    } else {
+                        vec![StringPatch {
+                            action: ConfigPatchAction::Clear.into(),
+                            value: "".to_string(),
+                        }]
+                    },
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1216,91 +1805,51 @@ impl CommandHandler<'_> {
         client
             .patch_config(BaseController::default(), request)
             .await?;
-        println!("UDP whitelist updated: {}", ports);
         Ok(())
     }
 
     async fn handle_whitelist_clear_tcp(&self) -> Result<(), Error> {
-        let client = self.get_config_client().await?;
-
-        let request = PatchConfigRequest {
-            instance: Some(self.instance_selector.clone()),
-            patch: Some(InstanceConfigPatch {
-                acl: Some(AclPatch {
-                    tcp_whitelist: vec![StringPatch {
-                        action: ConfigPatchAction::Clear.into(),
-                        value: "".to_string(),
-                    }],
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-        };
-
-        client
-            .patch_config(BaseController::default(), request)
+        self.apply_to_instances(|handler| Box::pin(handler.apply_whitelist_clear(true)))
             .await?;
         println!("TCP whitelist cleared");
         Ok(())
     }
 
     async fn handle_whitelist_clear_udp(&self) -> Result<(), Error> {
-        let client = self.get_config_client().await?;
-
-        let request = PatchConfigRequest {
-            instance: Some(self.instance_selector.clone()),
-            patch: Some(InstanceConfigPatch {
-                acl: Some(AclPatch {
-                    udp_whitelist: vec![StringPatch {
-                        action: ConfigPatchAction::Clear.into(),
-                        value: "".to_string(),
-                    }],
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-        };
-
-        client
-            .patch_config(BaseController::default(), request)
+        self.apply_to_instances(|handler| Box::pin(handler.apply_whitelist_clear(false)))
             .await?;
         println!("UDP whitelist cleared");
         Ok(())
     }
 
     async fn handle_whitelist_show(&self) -> Result<(), Error> {
-        let client = self.get_acl_manager_client().await?;
-        let request = GetWhitelistRequest {
-            instance: Some(self.instance_selector.clone()),
-        };
-        let response = client
-            .get_whitelist(BaseController::default(), request)
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_whitelist()))
             .await?;
-
         if self.verbose || *self.output_format == OutputFormat::Json {
-            println!("{}", serde_json::to_string_pretty(&response)?);
-            return Ok(());
+            return self.print_json_results(results);
         }
 
-        println!(
-            "TCP Whitelist: {}",
-            if response.tcp_ports.is_empty() {
-                "None".to_string()
-            } else {
-                response.tcp_ports.join(", ")
-            }
-        );
+        self.print_results(&results, |response| {
+            println!(
+                "TCP Whitelist: {}",
+                if response.tcp_ports.is_empty() {
+                    "None".to_string()
+                } else {
+                    response.tcp_ports.join(", ")
+                }
+            );
 
-        println!(
-            "UDP Whitelist: {}",
-            if response.udp_ports.is_empty() {
-                "None".to_string()
-            } else {
-                response.udp_ports.join(", ")
-            }
-        );
-
-        Ok(())
+            println!(
+                "UDP Whitelist: {}",
+                if response.udp_ports.is_empty() {
+                    "None".to_string()
+                } else {
+                    response.udp_ports.join(", ")
+                }
+            );
+            Ok(())
+        })
     }
 
     async fn handle_logger_get(&self) -> Result<(), Error> {
@@ -1361,6 +1910,358 @@ impl CommandHandler<'_> {
         }
 
         Ok(())
+    }
+
+    async fn handle_credential_generate(
+        &self,
+        ttl: i64,
+        credential_id: Option<String>,
+        groups: Vec<String>,
+        allow_relay: bool,
+        allowed_proxy_cidrs: Vec<String>,
+    ) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| {
+                let credential_id = credential_id.clone();
+                let groups = groups.clone();
+                let allowed_proxy_cidrs = allowed_proxy_cidrs.clone();
+                Box::pin(async move {
+                    handler
+                        .get_credential_client()
+                        .await?
+                        .generate_credential(
+                            BaseController::default(),
+                            GenerateCredentialRequest {
+                                credential_id,
+                                groups,
+                                allow_relay,
+                                allowed_proxy_cidrs,
+                                ttl_seconds: ttl,
+                                instance: Some(handler.instance_selector.clone()),
+                            },
+                        )
+                        .await
+                        .map_err(Into::into)
+                })
+            })
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |response| {
+            println!("Credential generated successfully:");
+            println!("  credential_id:     {}", response.credential_id);
+            println!("  credential_secret: {}", response.credential_secret);
+            println!();
+            println!("To use this credential on a new node:");
+            println!(
+                "  easytier-core --network-name <name> --secure-mode --credential {} -p <node-url>",
+                response.credential_secret
+            );
+            Ok(())
+        })
+    }
+
+    async fn handle_credential_revoke(&self, credential_id: &str) -> Result<(), Error> {
+        let credential_id = credential_id.to_string();
+        let results = self
+            .collect_instance_results(|handler| {
+                let credential_id = credential_id.clone();
+                Box::pin(async move {
+                    handler
+                        .get_credential_client()
+                        .await?
+                        .revoke_credential(
+                            BaseController::default(),
+                            RevokeCredentialRequest {
+                                credential_id,
+                                instance: Some(handler.instance_selector.clone()),
+                            },
+                        )
+                        .await
+                        .map_err(Into::into)
+                })
+            })
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |response| {
+            if response.success {
+                println!("Credential revoked successfully");
+            } else {
+                println!("Credential not found");
+            }
+            Ok(())
+        })
+    }
+
+    async fn handle_credential_list(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_credential_list()))
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |response| {
+            if response.credentials.is_empty() {
+                println!("No active credentials");
+            } else {
+                use tabled::{builder::Builder, settings::Style};
+                let mut builder = Builder::default();
+                builder.push_record(["ID", "Groups", "Relay", "Expiry", "Allowed CIDRs"]);
+                for cred in &response.credentials {
+                    let expiry = {
+                        let secs = cred.expiry_unix;
+                        let remaining = secs
+                            - std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_secs() as i64;
+                        if remaining > 0 {
+                            format!("{}s remaining", remaining)
+                        } else {
+                            "expired".to_string()
+                        }
+                    };
+                    builder.push_record([
+                        &cred.credential_id[..],
+                        &cred.groups.join(","),
+                        if cred.allow_relay { "yes" } else { "no" },
+                        &expiry,
+                        &cred.allowed_proxy_cidrs.join(","),
+                    ]);
+                }
+                let table = builder.build().with(Style::rounded()).to_string();
+                println!("{}", table);
+            }
+            Ok(())
+        })
+    }
+
+    async fn handle_peer_center(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_peer_center_rows()))
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct PeerCenterTableItem {
+            node_id: String,
+            hostname: String,
+            ipv4: String,
+            #[tabled(rename = "direct_peers")]
+            direct_peers_str: String,
+        }
+
+        self.print_results(&results, |rows| {
+            let table_rows = rows
+                .iter()
+                .map(|row| PeerCenterTableItem {
+                    node_id: row.node_id.clone(),
+                    hostname: row.hostname.clone(),
+                    ipv4: row.ipv4.clone(),
+                    direct_peers_str: row
+                        .direct_peers
+                        .iter()
+                        .map(|x| {
+                            format!(
+                                "{}({}[{}]): {}ms",
+                                x.node_id, x.hostname, x.ipv4, x.latency_ms,
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                })
+                .collect::<Vec<_>>();
+            print_output(
+                &table_rows,
+                self.output_format,
+                &["direct_peers"],
+                &["direct_peers"],
+                self.no_trunc,
+            )
+        })
+    }
+
+    async fn handle_vpn_portal(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_vpn_portal_info()))
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        self.print_results(&results, |resp| {
+            println!("portal_name: {}", resp.vpn_type);
+            println!(
+                r#"
+############### client_config_start ###############
+{}
+############### client_config_end ###############
+"#,
+                resp.client_config
+            );
+            println!("connected_clients:\n{:#?}", resp.connected_clients);
+            Ok(())
+        })
+    }
+
+    async fn handle_node(&self, sub_command: Option<&NodeSubCommand>) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_node_info()))
+            .await?;
+
+        if self.verbose || *self.output_format == OutputFormat::Json {
+            return match sub_command {
+                Some(NodeSubCommand::Config) => self.print_json_results(
+                    results
+                        .into_iter()
+                        .map(|result| result.map(|node| node.config))
+                        .collect(),
+                ),
+                _ => self.print_json_results(results),
+            };
+        }
+
+        self.print_results(&results, |node_info| match sub_command {
+            Some(NodeSubCommand::Config) => {
+                println!("{}", node_info.config);
+                Ok(())
+            }
+            Some(NodeSubCommand::Info) | None => {
+                let stun_info = node_info.stun_info.clone().unwrap_or_default();
+                let ip_list = node_info.ip_list.clone().unwrap_or_default();
+
+                let mut builder = tabled::builder::Builder::default();
+                builder.push_record(vec!["Virtual IP", node_info.ipv4_addr.as_str()]);
+                builder.push_record(vec!["Hostname", node_info.hostname.as_str()]);
+                builder.push_record(vec![
+                    "Proxy CIDRs",
+                    node_info.proxy_cidrs.join(", ").as_str(),
+                ]);
+                builder.push_record(vec!["Peer ID", node_info.peer_id.to_string().as_str()]);
+                stun_info.public_ip.iter().for_each(|ip| {
+                    let Ok(ip) = ip.parse::<IpAddr>() else {
+                        return;
+                    };
+                    if ip.is_ipv4() {
+                        builder.push_record(vec!["Public IPv4", ip.to_string().as_str()]);
+                    } else {
+                        builder.push_record(vec!["Public IPv6", ip.to_string().as_str()]);
+                    }
+                });
+                builder.push_record(vec![
+                    "UDP Stun Type",
+                    format!("{:?}", stun_info.udp_nat_type()).as_str(),
+                ]);
+                ip_list.interface_ipv4s.iter().for_each(|ip| {
+                    builder.push_record(vec!["Interface IPv4", ip.to_string().as_str()]);
+                });
+                ip_list.interface_ipv6s.iter().for_each(|ip| {
+                    builder.push_record(vec!["Interface IPv6", ip.to_string().as_str()]);
+                });
+                for (idx, l) in node_info.listeners.iter().enumerate() {
+                    if l.starts_with("ring") {
+                        continue;
+                    }
+                    builder.push_record(vec![format!("Listener {}", idx).as_str(), l]);
+                }
+
+                println!("{}", builder.build().with(Style::markdown()));
+                Ok(())
+            }
+        })
+    }
+
+    async fn handle_stats_show(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_stats()))
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(results);
+        }
+
+        #[derive(tabled::Tabled, serde::Serialize)]
+        struct StatsTableRow {
+            #[tabled(rename = "Metric Name")]
+            name: String,
+            #[tabled(rename = "Value")]
+            value: String,
+            #[tabled(rename = "Labels")]
+            labels: String,
+        }
+
+        self.print_results(&results, |metrics| {
+            let table_rows: Vec<StatsTableRow> = metrics
+                .iter()
+                .map(|metric| {
+                    let labels_str = if metric.labels.is_empty() {
+                        "-".to_string()
+                    } else {
+                        metric
+                            .labels
+                            .iter()
+                            .map(|(k, v)| format!("{}={}", k, v))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+
+                    let formatted_value = if metric.name.contains("bytes") {
+                        format_size(metric.value, humansize::BINARY)
+                    } else if metric.name.contains("duration") {
+                        format!("{} ms", metric.value)
+                    } else {
+                        metric.value.to_string()
+                    };
+
+                    StatsTableRow {
+                        name: metric.name.clone(),
+                        value: formatted_value,
+                        labels: labels_str,
+                    }
+                })
+                .collect();
+
+            print_output(
+                &table_rows,
+                self.output_format,
+                &["labels"],
+                &["labels"],
+                self.no_trunc,
+            )
+        })
+    }
+
+    async fn handle_stats_prometheus(&self) -> Result<(), Error> {
+        let results = self
+            .collect_instance_results(|handler| Box::pin(handler.fetch_prometheus_stats()))
+            .await?;
+
+        if *self.output_format == OutputFormat::Json {
+            return self.print_json_results(
+                results
+                    .into_iter()
+                    .map(|result| result.map(|text| serde_json::json!({ "prometheus_text": text })))
+                    .collect(),
+            );
+        }
+
+        self.print_results(&results, |text| {
+            println!("{}", text);
+            Ok(())
+        })
     }
 
     fn parse_port_list(ports_str: &str) -> Result<Vec<String>, Error> {
@@ -1627,11 +2528,13 @@ async fn main() -> Result<(), Error> {
             .unwrap(),
     ));
     let handler = CommandHandler {
-        client: tokio::sync::Mutex::new(client),
+        client: Arc::new(tokio::sync::Mutex::new(client)),
         verbose: cli.verbose,
         output_format: &cli.output_format,
         no_trunc: cli.no_trunc,
+        instance_select: &cli.instance_select,
         instance_selector: (&cli.instance_select).into(),
+        resolved_target: None,
     };
 
     match cli.sub_command {
@@ -1717,218 +2620,13 @@ async fn main() -> Result<(), Error> {
             .unwrap();
         }
         SubCommand::PeerCenter => {
-            let peer_center_client = handler.get_peer_center_client().await?;
-            let resp = peer_center_client
-                .get_global_peer_map(
-                    BaseController::default(),
-                    GetGlobalPeerMapRequest::default(),
-                )
-                .await?;
-            let route_infos = handler.list_peer_route_pair().await?;
-            struct PeerCenterNodeInfo {
-                hostname: String,
-                ipv4: String,
-            }
-            let node_id_to_node_info = DashMap::new();
-            let node_info = handler
-                .get_peer_manager_client()
-                .await?
-                .show_node_info(
-                    BaseController::default(),
-                    ShowNodeInfoRequest {
-                        instance: Some((&cli.instance_select).into()),
-                    },
-                )
-                .await?
-                .node_info
-                .ok_or(anyhow::anyhow!("node info not found"))?;
-            node_id_to_node_info.insert(
-                node_info.peer_id,
-                PeerCenterNodeInfo {
-                    hostname: node_info.hostname.clone(),
-                    ipv4: node_info.ipv4_addr,
-                },
-            );
-            for route_info in route_infos {
-                let Some(peer_id) = route_info.route.as_ref().map(|x| x.peer_id) else {
-                    continue;
-                };
-                node_id_to_node_info.insert(
-                    peer_id,
-                    PeerCenterNodeInfo {
-                        hostname: route_info
-                            .route
-                            .as_ref()
-                            .map(|x| x.hostname.clone())
-                            .unwrap_or_default(),
-                        ipv4: route_info
-                            .route
-                            .as_ref()
-                            .and_then(|x| x.ipv4_addr)
-                            .map(|x| x.to_string())
-                            .unwrap_or_default(),
-                    },
-                );
-            }
-
-            #[derive(tabled::Tabled, serde::Serialize)]
-            struct PeerCenterTableItem {
-                node_id: String,
-                hostname: String,
-                ipv4: String,
-                #[tabled(rename = "direct_peers")]
-                #[serde(skip_serializing)]
-                direct_peers_str: String,
-                #[tabled(skip)]
-                direct_peers: Vec<DirectPeerItem>,
-            }
-
-            #[derive(serde::Serialize)]
-            struct DirectPeerItem {
-                node_id: String,
-                hostname: String,
-                ipv4: String,
-                latency_ms: i32,
-            }
-
-            let mut table_rows = vec![];
-            for (k, v) in resp.global_peer_map.iter() {
-                let node_id = k;
-                let direct_peers: Vec<_> = v
-                    .direct_peers
-                    .iter()
-                    .map(|(k, v)| DirectPeerItem {
-                        node_id: k.to_string(),
-                        hostname: node_id_to_node_info
-                            .get(k)
-                            .map(|x| x.hostname.clone())
-                            .unwrap_or_default(),
-                        ipv4: node_id_to_node_info
-                            .get(k)
-                            .map(|x| x.ipv4.clone())
-                            .unwrap_or_default(),
-                        latency_ms: v.latency_ms,
-                    })
-                    .collect();
-                let direct_peers_strs = direct_peers
-                    .iter()
-                    .map(|x| {
-                        format!(
-                            "{}({}[{}]): {}ms",
-                            x.node_id, x.hostname, x.ipv4, x.latency_ms,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-
-                table_rows.push(PeerCenterTableItem {
-                    node_id: node_id.to_string(),
-                    hostname: node_id_to_node_info
-                        .get(node_id)
-                        .map(|x| x.hostname.clone())
-                        .unwrap_or_default(),
-                    ipv4: node_id_to_node_info
-                        .get(node_id)
-                        .map(|x| x.ipv4.clone())
-                        .unwrap_or_default(),
-                    direct_peers_str: direct_peers_strs.join("\n"),
-                    direct_peers,
-                });
-            }
-
-            print_output(
-                &table_rows,
-                &cli.output_format,
-                &["direct_peers"],
-                &["direct_peers"],
-                cli.no_trunc,
-            )?;
+            handler.handle_peer_center().await?;
         }
         SubCommand::VpnPortal => {
-            let vpn_portal_client = handler.get_vpn_portal_client().await?;
-            let resp = vpn_portal_client
-                .get_vpn_portal_info(
-                    BaseController::default(),
-                    GetVpnPortalInfoRequest {
-                        instance: Some((&cli.instance_select).into()),
-                    },
-                )
-                .await?
-                .vpn_portal_info
-                .unwrap_or_default();
-            println!("portal_name: {}", resp.vpn_type);
-            println!(
-                r#"
-############### client_config_start ###############
-{}
-############### client_config_end ###############
-"#,
-                resp.client_config
-            );
-            println!("connected_clients:\n{:#?}", resp.connected_clients);
+            handler.handle_vpn_portal().await?;
         }
         SubCommand::Node(sub_cmd) => {
-            let client = handler.get_peer_manager_client().await?;
-            let node_info = client
-                .show_node_info(
-                    BaseController::default(),
-                    ShowNodeInfoRequest {
-                        instance: Some((&cli.instance_select).into()),
-                    },
-                )
-                .await?
-                .node_info
-                .ok_or(anyhow::anyhow!("node info not found"))?;
-            match sub_cmd.sub_command {
-                Some(NodeSubCommand::Info) | None => {
-                    if cli.verbose || cli.output_format == OutputFormat::Json {
-                        println!("{}", serde_json::to_string_pretty(&node_info)?);
-                        return Ok(());
-                    }
-
-                    let stun_info = node_info.stun_info.clone().unwrap_or_default();
-                    let ip_list = node_info.ip_list.clone().unwrap_or_default();
-
-                    let mut builder = tabled::builder::Builder::default();
-                    builder.push_record(vec!["Virtual IP", node_info.ipv4_addr.as_str()]);
-                    builder.push_record(vec!["Hostname", node_info.hostname.as_str()]);
-                    builder.push_record(vec![
-                        "Proxy CIDRs",
-                        node_info.proxy_cidrs.join(", ").as_str(),
-                    ]);
-                    builder.push_record(vec!["Peer ID", node_info.peer_id.to_string().as_str()]);
-                    stun_info.public_ip.iter().for_each(|ip| {
-                        let Ok(ip) = ip.parse::<IpAddr>() else {
-                            return;
-                        };
-                        if ip.is_ipv4() {
-                            builder.push_record(vec!["Public IPv4", ip.to_string().as_str()]);
-                        } else {
-                            builder.push_record(vec!["Public IPv6", ip.to_string().as_str()]);
-                        }
-                    });
-                    builder.push_record(vec![
-                        "UDP Stun Type",
-                        format!("{:?}", stun_info.udp_nat_type()).as_str(),
-                    ]);
-                    ip_list.interface_ipv4s.iter().for_each(|ip| {
-                        builder.push_record(vec!["Interface IPv4", ip.to_string().as_str()]);
-                    });
-                    ip_list.interface_ipv6s.iter().for_each(|ip| {
-                        builder.push_record(vec!["Interface IPv6", ip.to_string().as_str()]);
-                    });
-                    for (idx, l) in node_info.listeners.iter().enumerate() {
-                        if l.starts_with("ring") {
-                            continue;
-                        }
-                        builder.push_record(vec![format!("Listener {}", idx).as_str(), l]);
-                    }
-
-                    println!("{}", builder.build().with(Style::markdown()));
-                }
-                Some(NodeSubCommand::Config) => {
-                    println!("{}", node_info.config);
-                }
-            }
+            handler.handle_node(sub_cmd.sub_command.as_ref()).await?;
         }
         SubCommand::Service(service_args) => {
             let service = Service::new(service_args.name)?;
@@ -2114,75 +2812,10 @@ async fn main() -> Result<(), Error> {
         },
         SubCommand::Stats(stats_args) => match &stats_args.sub_command {
             Some(StatsSubCommand::Show) | None => {
-                let client = handler.get_stats_client().await?;
-                let request = GetStatsRequest {
-                    instance: Some((&cli.instance_select).into()),
-                };
-                let response = client.get_stats(BaseController::default(), request).await?;
-
-                if cli.output_format == OutputFormat::Json {
-                    println!("{}", serde_json::to_string_pretty(&response.metrics)?);
-                } else {
-                    #[derive(tabled::Tabled, serde::Serialize)]
-                    struct StatsTableRow {
-                        #[tabled(rename = "Metric Name")]
-                        name: String,
-                        #[tabled(rename = "Value")]
-                        value: String,
-                        #[tabled(rename = "Labels")]
-                        labels: String,
-                    }
-
-                    let table_rows: Vec<StatsTableRow> = response
-                        .metrics
-                        .iter()
-                        .map(|metric| {
-                            let labels_str = if metric.labels.is_empty() {
-                                "-".to_string()
-                            } else {
-                                metric
-                                    .labels
-                                    .iter()
-                                    .map(|(k, v)| format!("{}={}", k, v))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            };
-
-                            let formatted_value = if metric.name.contains("bytes") {
-                                format_size(metric.value, humansize::BINARY)
-                            } else if metric.name.contains("duration") {
-                                format!("{} ms", metric.value)
-                            } else {
-                                metric.value.to_string()
-                            };
-
-                            StatsTableRow {
-                                name: metric.name.clone(),
-                                value: formatted_value,
-                                labels: labels_str,
-                            }
-                        })
-                        .collect();
-
-                    print_output(
-                        &table_rows,
-                        &cli.output_format,
-                        &["labels"],
-                        &["labels"],
-                        cli.no_trunc,
-                    )?
-                }
+                handler.handle_stats_show().await?;
             }
             Some(StatsSubCommand::Prometheus) => {
-                let client = handler.get_stats_client().await?;
-                let request = GetPrometheusStatsRequest {
-                    instance: Some((&cli.instance_select).into()),
-                };
-                let response = client
-                    .get_prometheus_stats(BaseController::default(), request)
-                    .await?;
-
-                println!("{}", response.prometheus_text);
+                handler.handle_stats_prometheus().await?;
             }
         },
         SubCommand::Logger(logger_args) => match &logger_args.sub_command {
@@ -2191,6 +2824,31 @@ async fn main() -> Result<(), Error> {
             }
             Some(LoggerSubCommand::Set { level }) => {
                 handler.handle_logger_set(level).await?;
+            }
+        },
+        SubCommand::Credential(credential_args) => match &credential_args.sub_command {
+            CredentialSubCommand::Generate {
+                ttl,
+                credential_id,
+                groups,
+                allow_relay,
+                allowed_proxy_cidrs,
+            } => {
+                handler
+                    .handle_credential_generate(
+                        *ttl,
+                        credential_id.clone(),
+                        groups.clone().unwrap_or_default(),
+                        *allow_relay,
+                        allowed_proxy_cidrs.clone().unwrap_or_default(),
+                    )
+                    .await?;
+            }
+            CredentialSubCommand::Revoke { credential_id } => {
+                handler.handle_credential_revoke(credential_id).await?;
+            }
+            CredentialSubCommand::List => {
+                handler.handle_credential_list().await?;
             }
         },
         SubCommand::GenAutocomplete { shell } => {

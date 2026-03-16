@@ -102,6 +102,9 @@ pub fn set_default_machine_id(mid: Option<String>) {
 
 pub fn get_machine_id() -> uuid::Uuid {
     if let Some(default_mid) = use_global_var!(MACHINE_UID) {
+        if let Ok(mid) = uuid::Uuid::parse_str(default_mid.trim()) {
+            return mid;
+        }
         let mut b = [0u8; 16];
         crate::tunnel::generate_digest_from_str("", &default_mid, &mut b);
         return uuid::Uuid::from_bytes(b);
@@ -206,5 +209,13 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         assert_eq!(weak_js.weak_count(), 0);
         assert_eq!(weak_js.strong_count(), 0);
+    }
+
+    #[test]
+    fn test_get_machine_id_uses_uuid_seed_verbatim() {
+        let raw = "33333333-3333-3333-3333-333333333333".to_string();
+        set_default_machine_id(Some(raw.clone()));
+        assert_eq!(get_machine_id(), uuid::Uuid::parse_str(&raw).unwrap());
+        set_default_machine_id(None);
     }
 }

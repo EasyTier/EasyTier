@@ -18,6 +18,13 @@ message HeartbeatRequest {
 
 message HeartbeatResponse {}
 
+message GetFeatureRequest {}
+
+message GetFeatureResponse {
+  bool support_encryption = 1;
+}
+
 service WebServerService {
   rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc GetFeature(GetFeatureRequest) returns (GetFeatureResponse);
 }

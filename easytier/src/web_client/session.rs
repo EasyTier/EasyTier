@@ -9,10 +9,12 @@ use tokio::{
 use crate::{
     common::{constants::EASYTIER_VERSION, get_machine_id},
     proto::{
-        api::manage::WebClientServiceServer,
         rpc_impl::bidirect::BidirectRpcManager,
         rpc_types::controller::BaseController,
-        web::{HeartbeatRequest, HeartbeatResponse, WebServerServiceClientFactory},
+        web::{
+            GetFeatureRequest, GetFeatureResponse, HeartbeatRequest, HeartbeatResponse,
+            WebServerServiceClientFactory,
+        },
     },
     tunnel::Tunnel,
 };
@@ -30,6 +32,7 @@ pub struct Session {
     controller: Arc<Controller>,
 
     heartbeat_ctx: HeartbeatCtx,
+    heartbeat_started: std::sync::atomic::AtomicBool,
 
     tasks: Mutex<JoinSet<()>>,
 }
@@ -39,20 +42,20 @@ impl Session {
         let rpc_mgr = BidirectRpcManager::new();
         rpc_mgr.run_with_tunnel(tunnel);
 
-        rpc_mgr.rpc_server().registry().register(
-            WebClientServiceServer::new(controller.get_rpc_service()),
-            "",
-        );
+        controller.register_api_rpc_service(rpc_mgr.rpc_server().registry());
 
-        let mut tasks: JoinSet<()> = JoinSet::new();
-        let heartbeat_ctx =
-            Self::heartbeat_routine(&rpc_mgr, Arc::downgrade(&controller), &mut tasks);
+        let (tx, _rx1) = broadcast::channel(2);
+        let heartbeat_ctx = HeartbeatCtx {
+            notifier: Arc::new(tx),
+            resp: Arc::new(Mutex::new(None)),
+        };
 
         Session {
             rpc_mgr,
             controller,
             heartbeat_ctx,
-            tasks: Mutex::new(tasks),
+            heartbeat_started: std::sync::atomic::AtomicBool::new(false),
+            tasks: Mutex::new(JoinSet::new()),
         }
     }
 
@@ -60,14 +63,8 @@ impl Session {
         rpc_mgr: &BidirectRpcManager,
         controller: Weak<Controller>,
         tasks: &mut JoinSet<()>,
-    ) -> HeartbeatCtx {
-        let (tx, _rx1) = broadcast::channel(2);
-
-        let ctx = HeartbeatCtx {
-            notifier: Arc::new(tx),
-            resp: Arc::new(Mutex::new(None)),
-        };
-
+        ctx: HeartbeatCtx,
+    ) {
         let mid = get_machine_id();
         let inst_id = uuid::Uuid::new_v4();
         let token = controller.upgrade().unwrap().token();
@@ -118,8 +115,22 @@ impl Session {
                 }
             }
         });
+    }
 
-        ctx
+    pub async fn start_heartbeat(&self) {
+        if self
+            .heartbeat_started
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let mut tasks = self.tasks.lock().await;
+        Self::heartbeat_routine(
+            &self.rpc_mgr,
+            Arc::downgrade(&self.controller),
+            &mut tasks,
+            self.heartbeat_ctx.clone(),
+        );
     }
 
     async fn wait_routines(&self) {
@@ -133,6 +144,18 @@ impl Session {
             _ = self.rpc_mgr.wait() => {}
             _ = self.wait_routines() => {}
         }
+    }
+
+    pub async fn get_feature(
+        &self,
+    ) -> Result<GetFeatureResponse, crate::proto::rpc_types::error::Error> {
+        let client = self
+            .rpc_mgr
+            .rpc_client()
+            .scoped_client::<WebServerServiceClientFactory<BaseController>>(1, 1, "".to_string());
+        client
+            .get_feature(BaseController::default(), GetFeatureRequest {})
+            .await
     }
 
     pub async fn wait_next_heartbeat(&self) -> Option<HeartbeatResponse> {

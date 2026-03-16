@@ -98,7 +98,6 @@ impl PunchConeHoleClient {
         }
     }
 
-    #[tracing::instrument(skip(self))]
     pub(crate) async fn do_hole_punching(
         &self,
         dst_peer_id: PeerId,
@@ -241,7 +240,7 @@ impl PunchConeHoleClient {
             }
         }
 
-        return Ok(None);
+        Ok(None)
     }
 }
 

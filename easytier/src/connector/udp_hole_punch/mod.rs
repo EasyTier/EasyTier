@@ -245,7 +245,7 @@ impl UdpHoePunchConnectorData {
                 tracing::info!(?tunnel, "hole punching get tunnel success");
 
                 if let Err(e) = self.peer_mgr.add_client_tunnel(tunnel, false).await {
-                    tracing::warn!(?e, "add client tunnel failed");
+                    tracing::warn!("add client tunnel failed, err: {}", e);
                     op(true);
                     false
                 } else {
@@ -258,7 +258,7 @@ impl UdpHoePunchConnectorData {
                 false
             }
             Err(e) => {
-                tracing::info!(?e, "hole punching failed");
+                tracing::info!("hole punching failed, err: {}", e);
                 op(true);
                 false
             }

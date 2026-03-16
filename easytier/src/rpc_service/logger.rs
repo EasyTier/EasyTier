@@ -50,13 +50,6 @@ impl LoggerRpc for LoggerRpcService {
     ) -> Result<SetLoggerConfigResponse, rpc_types::error::Error> {
         let level_str = Self::log_level_to_string(request.level());
 
-        // 更新当前日志级别
-        if let Some(current_level) = CURRENT_LOG_LEVEL.get() {
-            if let Ok(mut level) = current_level.lock() {
-                *level = level_str.clone();
-            }
-        }
-
         // 发送新的日志级别到 logger 重载器
         if let Some(sender) = LOGGER_LEVEL_SENDER.get() {
             if let Ok(sender) = sender.lock() {
@@ -76,6 +69,13 @@ impl LoggerRpc for LoggerRpcService {
             return Err(rpc_types::error::Error::ExecutionError(anyhow::anyhow!(
                 "Logger reloader is not initialized"
             )));
+        }
+
+        // 更新当前日志级别
+        if let Some(current_level) = CURRENT_LOG_LEVEL.get() {
+            if let Ok(mut level) = current_level.lock() {
+                *level = Self::log_level_to_string(request.level());
+            }
         }
 
         Ok(SetLoggerConfigResponse {})

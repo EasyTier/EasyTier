@@ -1,3 +1,5 @@
+use std::io::IsTerminal as _;
+
 use crate::common::config::LoggingConfigLoader;
 use crate::common::get_logger_timer_rfc3339;
 use crate::common::tracing_rolling_appender::{FileAppenderWrapper, RollingFileAppenderBase};
@@ -144,18 +146,37 @@ pub fn init(
 
             std::thread::spawn(move || {
                 while let Ok(lf) = recver.recv() {
-                    let e = file_filter_reloader.modify(|f| {
-                        if let Ok(nf) = EnvFilter::builder()
-                            .with_default_directive(lf.parse::<LevelFilter>().unwrap().into())
-                            .from_env()
-                            .with_context(|| "failed to create file filter")
-                        {
-                            info!("Reload log filter succeed, new filter level: {:?}", lf);
-                            *f = nf;
+                    let parsed_level = match lf.parse::<LevelFilter>() {
+                        Ok(level) => level,
+                        Err(e) => {
+                            error!("Failed to parse new log level {:?}: {}", lf, e);
+                            continue;
                         }
-                    });
-                    if e.is_err() {
-                        error!("Failed to reload log filter: {:?}", e);
+                    };
+
+                    let mut new_filter = match EnvFilter::builder()
+                        .with_default_directive(parsed_level.into())
+                        .from_env()
+                        .with_context(|| "failed to create file filter")
+                    {
+                        Ok(filter) => Some(filter),
+                        Err(e) => {
+                            error!("Failed to build new log filter for {:?}: {:?}", lf, e);
+                            continue;
+                        }
+                    };
+
+                    match file_filter_reloader.modify(|f| {
+                        *f = new_filter
+                            .take()
+                            .expect("log filter reloader only applies one filter per reload");
+                    }) {
+                        Ok(()) => {
+                            info!("Reload log filter succeed, new filter level: {:?}", lf);
+                        }
+                        Err(e) => {
+                            error!("Failed to reload log filter: {:?}", e);
+                        }
                     }
                 }
                 info!("Stop log filter reloader");
@@ -175,7 +196,8 @@ pub fn init(
 
     let layer = || {
         layer()
-            .pretty()
+            .compact()
+            .with_ansi(std::io::stderr().is_terminal())
             .with_timer(get_logger_timer_rfc3339())
             .with_writer(std::io::stderr)
     };

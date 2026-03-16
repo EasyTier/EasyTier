@@ -192,7 +192,13 @@ impl NetworkInstanceManager {
         self.instance_map.iter().map(|item| *item.key()).collect()
     }
 
-    pub fn get_network_instance_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
+    pub fn get_instance_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
+        self.instance_map
+            .get(instance_id)
+            .map(|instance| instance.value().get_inst_name())
+    }
+
+    pub fn get_network_name(&self, instance_id: &uuid::Uuid) -> Option<String> {
         self.instance_map
             .get(instance_id)
             .map(|instance| instance.value().get_network_name())
@@ -422,6 +428,10 @@ fn handle_event(
                             "[{}] proxy CIDRs updated",
                             instance_id
                         );
+                    }
+
+                    GlobalCtxEvent::CredentialChanged => {
+                        event!(info, "[{}] credential changed", instance_id);
                     }
                 }
             } else {

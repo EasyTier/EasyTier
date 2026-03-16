@@ -26,6 +26,7 @@ mod client_manager;
 mod db;
 mod migrator;
 mod restful;
+mod webhook;
 
 #[cfg(feature = "embed")]
 mod web;
@@ -132,6 +133,34 @@ struct Cli {
 
     #[command(flatten)]
     oidc: restful::oidc::OidcOptions,
+
+    #[command(flatten)]
+    webhook: WebhookOptions,
+}
+
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct WebhookOptions {
+    /// Base URL of the webhook endpoint for token validation and event delivery.
+    /// When set, incoming tokens are validated via this webhook before local fallback.
+    #[arg(long)]
+    pub webhook_url: Option<String>,
+
+    /// Shared secret used to authenticate outbound webhook calls.
+    #[arg(long)]
+    pub webhook_secret: Option<String>,
+
+    /// Token for X-Internal-Auth header. When set, API requests with this header
+    /// bypass session authentication.
+    #[arg(long)]
+    pub internal_auth_token: Option<String>,
+
+    /// Stable identifier for this easytier-web instance when routing webhook callbacks.
+    #[arg(long)]
+    pub web_instance_id: Option<String>,
+
+    /// Reachable base URL for this easytier-web instance's internal REST API.
+    #[arg(long)]
+    pub web_instance_api_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -237,8 +266,19 @@ async fn main() {
     // let db = db::Db::new(":memory:").await.unwrap();
     let db = db::Db::new(cli.db).await.unwrap();
     let feature_flags = Arc::new(cli.feature_flags);
-    let mut mgr =
-        client_manager::ClientManager::new(db.clone(), cli.geoip_db, feature_flags.clone());
+    let webhook_config = Arc::new(webhook::WebhookConfig::new(
+        cli.webhook.webhook_url,
+        cli.webhook.webhook_secret,
+        cli.webhook.internal_auth_token,
+        cli.webhook.web_instance_id,
+        cli.webhook.web_instance_api_base_url,
+    ));
+    let mut mgr = client_manager::ClientManager::new(
+        db.clone(),
+        cli.geoip_db,
+        feature_flags.clone(),
+        webhook_config.clone(),
+    );
     let (v6_listener, v4_listener) =
         get_dual_stack_listener(&cli.config_server_protocol, cli.config_server_port)
             .await
@@ -292,6 +332,7 @@ async fn main() {
         web_router_restful,
         feature_flags,
         oidc_config,
+        webhook_config,
     )
     .await
     .unwrap()

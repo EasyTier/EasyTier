@@ -44,6 +44,7 @@ message PeerConnInfo {
   bytes noise_local_static_pubkey = 11;
   bytes noise_remote_static_pubkey = 12;
   peer_rpc.SecureAuthLevel secure_auth_level = 13;
+  peer_rpc.PeerIdentityType peer_identity_type = 14;
 }
 
 message PeerInfo {
@@ -290,4 +291,51 @@ service StatsRpc {
   rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
   rpc GetPrometheusStats(GetPrometheusStatsRequest)
       returns (GetPrometheusStatsResponse);
+}
+
+// Credential management messages
+
+message GenerateCredentialRequest {
+  repeated string groups = 1;   // optional: ACL groups for this credential
+  bool allow_relay = 2;         // optional: allow relay through credential node
+  repeated string allowed_proxy_cidrs = 3; // optional: restrict proxy_cidrs
+  int64 ttl_seconds = 4;        // must be > 0: credential TTL in seconds (0 / omitted is invalid)
+  optional string credential_id = 5; // optional: user-specified credential id, reused if already exists
+  InstanceIdentifier instance = 6;   // target network instance
+}
+
+message GenerateCredentialResponse {
+  string credential_id = 1;       // UUID
+  string credential_secret = 2;   // private key base64
+}
+
+message RevokeCredentialRequest {
+  string credential_id = 1;
+  InstanceIdentifier instance = 2;   // target network instance
+}
+
+message RevokeCredentialResponse {
+  bool success = 1;
+}
+
+message ListCredentialsRequest {
+  InstanceIdentifier instance = 1;   // target network instance
+}
+
+message CredentialInfo {
+  string credential_id = 1;       // UUID
+  repeated string groups = 2;
+  bool allow_relay = 3;
+  int64 expiry_unix = 4;
+  repeated string allowed_proxy_cidrs = 5;
+}
+
+message ListCredentialsResponse {
+  repeated CredentialInfo credentials = 1;
+}
+
+service CredentialManageRpc {
+  rpc GenerateCredential(GenerateCredentialRequest) returns (GenerateCredentialResponse);
+  rpc RevokeCredential(RevokeCredentialRequest) returns (RevokeCredentialResponse);
+  rpc ListCredentials(ListCredentialsRequest) returns (ListCredentialsResponse);
 }

@@ -10,9 +10,9 @@ use crate::{
         api::{
             config::ConfigRpcServer,
             instance::{
-                AclManageRpcServer, ConnectorManageRpcServer, MappedListenerManageRpcServer,
-                PeerManageRpcServer, PortForwardManageRpcServer, StatsRpcServer, TcpProxyRpcServer,
-                VpnPortalRpcServer,
+                AclManageRpcServer, ConnectorManageRpcServer, CredentialManageRpcServer,
+                MappedListenerManageRpcServer, PeerManageRpcServer, PortForwardManageRpcServer,
+                StatsRpcServer, TcpProxyRpcServer, VpnPortalRpcServer,
             },
             logger::LoggerRpcServer,
             manage::WebClientServiceServer,
@@ -23,14 +23,15 @@ use crate::{
     },
     rpc_service::{
         acl_manage::AclManageRpcService, config::ConfigRpcService,
-        connector_manage::ConnectorManageRpcService, instance_manage::InstanceManageRpcService,
-        logger::LoggerRpcService, mapped_listener_manage::MappedListenerManageRpcService,
+        connector_manage::ConnectorManageRpcService, credential_manage::CredentialManageRpcService,
+        instance_manage::InstanceManageRpcService, logger::LoggerRpcService,
+        mapped_listener_manage::MappedListenerManageRpcService,
         peer_center::PeerCenterManageRpcService, peer_manage::PeerManageRpcService,
         port_forward_manage::PortForwardManageRpcService, proxy::TcpProxyRpcService,
         stats::StatsRpcService, vpn_portal::VpnPortalRpcService,
     },
     tunnel::{tcp::TcpTunnelListener, TunnelListener},
-    web_client::DefaultHooks,
+    web_client::{DefaultHooks, WebClientHooks},
 };
 
 pub struct ApiRpcServer<T: TunnelListener + 'static> {
@@ -63,7 +64,7 @@ impl ApiRpcServer<TcpTunnelListener> {
 impl<T: TunnelListener + 'static> ApiRpcServer<T> {
     pub fn from_tunnel(tunnel: T, instance_manager: Arc<NetworkInstanceManager>) -> Self {
         let rpc_server = StandAloneServer::new(tunnel);
-        register_api_rpc_service(&instance_manager, rpc_server.registry());
+        register_api_rpc_service(&instance_manager, rpc_server.registry(), None);
         Self { rpc_server }
     }
 }
@@ -86,9 +87,10 @@ impl<T: TunnelListener + 'static> Drop for ApiRpcServer<T> {
     }
 }
 
-fn register_api_rpc_service(
+pub fn register_api_rpc_service(
     instance_manager: &Arc<NetworkInstanceManager>,
     registry: &ServiceRegistry,
+    hooks: Option<Arc<dyn WebClientHooks>>,
 ) {
     registry.register(
         PeerManageRpcServer::new(PeerManageRpcService::new(instance_manager.clone())),
@@ -147,13 +149,18 @@ fn register_api_rpc_service(
     registry.register(
         WebClientServiceServer::new(InstanceManageRpcService::new(
             instance_manager.clone(),
-            Arc::new(DefaultHooks),
+            hooks.unwrap_or(Arc::new(DefaultHooks)),
         )),
         "",
     );
 
     registry.register(
         PeerCenterRpcServer::new(PeerCenterManageRpcService::new(instance_manager.clone())),
+        "",
+    );
+
+    registry.register(
+        CredentialManageRpcServer::new(CredentialManageRpcService::new(instance_manager.clone())),
         "",
     );
 }
