@@ -2,18 +2,9 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use rand::RngCore;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::tunnel::packet_def::ZCPacket;
+use crate::tunnel::packet_def::{AesGcmTail, ZCPacket, AES_GCM_ENCRYPTION_RESERVED};
 
 use crate::peers::encrypt::{Encryptor, Error};
-
-// OpenSSL 加密尾部结构
-#[repr(C, packed)]
-#[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
-pub struct OpenSslTail {
-    pub nonce: [u8; 16], // 使用 16 字节的 nonce/IV
-}
-
-pub const OPENSSL_ENCRYPTION_RESERVED: usize = std::mem::size_of::<OpenSslTail>();
 
 #[derive(Clone)]
 pub struct OpenSslCipher {
@@ -85,7 +76,7 @@ impl Encryptor for OpenSslCipher {
         }
 
         let payload_len = zc_packet.payload().len();
-        if payload_len < OPENSSL_ENCRYPTION_RESERVED {
+        if payload_len < AES_GCM_ENCRYPTION_RESERVED {
             return Err(Error::PacketTooShort(zc_packet.payload().len()));
         }
 
@@ -93,31 +84,21 @@ impl Encryptor for OpenSslCipher {
         let is_aead = self.is_aead_cipher();
         let nonce_size = self.get_nonce_size();
 
-        // 提取 nonce/IV
-        let openssl_tail = OpenSslTail::ref_from_suffix(zc_packet.payload())
+        // 提取 nonce/IV 和 tag
+        let tail = AesGcmTail::ref_from_suffix(zc_packet.payload())
             .unwrap()
             .clone();
 
-        let text_len = if is_aead {
-            payload_len - OPENSSL_ENCRYPTION_RESERVED - 16 // AEAD 需要减去 tag 长度
-        } else {
-            payload_len - OPENSSL_ENCRYPTION_RESERVED
-        };
+        let text_len = payload_len - AES_GCM_ENCRYPTION_RESERVED;
 
-        let mut decrypter = Crypter::new(
-            cipher,
-            Mode::Decrypt,
-            key,
-            Some(&openssl_tail.nonce[..nonce_size]),
-        )
-        .map_err(|_| Error::DecryptionFailed)?;
+        let mut decrypter =
+            Crypter::new(cipher, Mode::Decrypt, key, Some(&tail.nonce[..nonce_size]))
+                .map_err(|_| Error::DecryptionFailed)?;
 
         if is_aead {
             // 对于 AEAD 模式，需要设置 tag
-            let tag_start = text_len;
-            let tag = &zc_packet.payload()[tag_start..tag_start + 16];
             decrypter
-                .set_tag(tag)
+                .set_tag(&tail.tag)
                 .map_err(|_| Error::DecryptionFailed)?;
         }
 
@@ -160,7 +141,7 @@ impl Encryptor for OpenSslCipher {
         let is_aead = self.is_aead_cipher();
         let nonce_size = self.get_nonce_size();
 
-        let mut tail = OpenSslTail::default();
+        let mut tail = AesGcmTail::default();
         if let Some(nonce) = nonce {
             if nonce.len() != nonce_size {
                 return Err(Error::EncryptionFailed);
@@ -188,16 +169,16 @@ impl Encryptor for OpenSslCipher {
         // 更新数据包内容
         zc_packet.mut_payload()[..count].copy_from_slice(&output[..count]);
 
-        // 对于 AEAD 模式，添加 tag
+        // 对于 AEAD 模式，提取 tag 到 tail 中
         if is_aead {
             let mut tag = vec![0u8; 16]; // GCM 标签通常是 16 字节
             encrypter
                 .get_tag(&mut tag)
                 .map_err(|_| Error::EncryptionFailed)?;
-            zc_packet.mut_inner().extend_from_slice(&tag);
+            tail.tag.copy_from_slice(&tag);
         }
 
-        // 添加 nonce/IV
+        // 添加 nonce/IV & tag 的结构
         zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
 
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
@@ -211,11 +192,9 @@ impl Encryptor for OpenSslCipher {
 mod tests {
     use crate::{
         peers::encrypt::{openssl_cipher::OpenSslCipher, Encryptor},
-        tunnel::packet_def::ZCPacket,
+        tunnel::packet_def::{AesGcmTail, ZCPacket, AES_GCM_ENCRYPTION_RESERVED},
     };
     use zerocopy::FromBytes;
-
-    use super::OPENSSL_ENCRYPTION_RESERVED;
 
     #[test]
     fn test_openssl_aes128_gcm() {
@@ -227,7 +206,7 @@ mod tests {
 
         // 加密
         cipher.encrypt(&mut packet).unwrap();
-        assert!(packet.payload().len() > text.len() + OPENSSL_ENCRYPTION_RESERVED);
+        assert!(packet.payload().len() > text.len() + AES_GCM_ENCRYPTION_RESERVED - 1);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         // 解密
@@ -256,9 +235,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(packet1.payload(), packet2.payload());
-        assert!(packet1.payload().len() > text.len() + OPENSSL_ENCRYPTION_RESERVED);
+        assert!(packet1.payload().len() > text.len() + AES_GCM_ENCRYPTION_RESERVED - 1);
 
-        let tail = super::OpenSslTail::ref_from_suffix(packet1.payload())
+        let tail = AesGcmTail::ref_from_suffix(packet1.payload())
             .unwrap()
             .clone();
         assert_eq!(&tail.nonce[..nonce.len()], nonce);
