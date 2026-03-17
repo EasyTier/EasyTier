@@ -122,6 +122,7 @@ impl Default for EncryptionAlgorithm {
             } else if #[cfg(any(feature = "aes-gcm", feature = "wireguard"))] {
                 EncryptionAlgorithm::AesGcm
             } else {
+                crate::common::log::warn!("no AEAD encryption algorithm is available, using INSECURE XOR");
                 EncryptionAlgorithm::Xor
             }
         }
