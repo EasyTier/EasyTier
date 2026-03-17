@@ -1,9 +1,9 @@
-use std::sync::Arc;
-
 use crate::{
     common::{config::EncryptionAlgorithm, log},
     tunnel::packet_def::ZCPacket,
 };
+use cfg_if::cfg_if;
+use std::sync::Arc;
 
 #[cfg(feature = "wireguard")]
 pub mod ring_aes_gcm;
@@ -83,25 +83,23 @@ pub fn create_encryptor(
 
         #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
         EncryptionAlgorithm::AesGcm => {
-            #[cfg(feature = "wireguard")]
-            {
-                Arc::new(ring_aes_gcm::AesGcmCipher::new_128(key_128))
-            }
-            #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
-            {
-                Arc::new(aes_gcm::AesGcmCipher::new_128(key_128))
+            cfg_if! {
+                if #[cfg(feature = "wireguard")] {
+                    Arc::new(ring_aes_gcm::AesGcmCipher::new_128(key_128))
+                } else {
+                    Arc::new(aes_gcm::AesGcmCipher::new_128(key_128))
+                }
             }
         }
 
         #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
         EncryptionAlgorithm::Aes256Gcm => {
-            #[cfg(feature = "wireguard")]
-            {
-                Arc::new(ring_aes_gcm::AesGcmCipher::new_256(key_256))
-            }
-            #[cfg(all(feature = "aes-gcm", not(feature = "wireguard")))]
-            {
-                Arc::new(aes_gcm::AesGcmCipher::new_256(key_256))
+            cfg_if! {
+                if #[cfg(feature = "wireguard")] {
+                    Arc::new(ring_aes_gcm::AesGcmCipher::new_256(key_256))
+                } else {
+                    Arc::new(aes_gcm::AesGcmCipher::new_256(key_256))
+                }
             }
         }
 
