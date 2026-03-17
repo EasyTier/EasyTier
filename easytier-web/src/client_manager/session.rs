@@ -194,6 +194,9 @@ impl SessionRpcService {
                 machine_id: machine_id.to_string(),
                 hostname: req.hostname.clone(),
                 version: req.easytier_version.clone(),
+                os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
                 web_instance_id: data.webhook_config.web_instance_id.clone(),
                 web_instance_api_base_url: data.webhook_config.web_instance_api_base_url.clone(),
             };
@@ -290,6 +293,9 @@ impl SessionRpcService {
                     user_id: Some(user_id),
                     hostname: req.hostname.clone(),
                     version: req.easytier_version.clone(),
+                    os_type: req.device_os.as_ref().map(|info| info.os_type.clone()),
+                    os_version: req.device_os.as_ref().map(|info| info.version.clone()),
+                    os_distribution: req.device_os.as_ref().map(|info| info.distribution.clone()),
                     web_instance_id: webhook.web_instance_id.clone(),
                     binding_version,
                 };

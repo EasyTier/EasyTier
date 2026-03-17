@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     common::{
-        config::TomlConfigLoader, global_ctx::GlobalCtx, log, scoped_task::ScopedTask,
+        config::TomlConfigLoader, global_ctx::GlobalCtx, log, os_info::collect_device_os_info,
+        scoped_task::ScopedTask,
         set_default_machine_id, stun::MockStunInfoCollector,
     },
     connector::create_connector_by_url,
@@ -62,6 +63,7 @@ impl WebClient {
         let controller = Arc::new(controller::Controller::new(
             token.to_string(),
             hostname.to_string(),
+            collect_device_os_info(),
             manager,
             hooks,
         ));

@@ -1,13 +1,15 @@
 use std::sync::Arc;
 
 use crate::{
-    instance_manager::NetworkInstanceManager, proto::rpc_impl::service_registry::ServiceRegistry,
+    instance_manager::NetworkInstanceManager,
+    proto::{rpc_impl::service_registry::ServiceRegistry, web::DeviceOsInfo},
     rpc_service::api::register_api_rpc_service, web_client::WebClientHooks,
 };
 
 pub struct Controller {
     token: String,
     hostname: String,
+    device_os: DeviceOsInfo,
     manager: Arc<NetworkInstanceManager>,
     hooks: Arc<dyn WebClientHooks>,
 }
@@ -16,12 +18,14 @@ impl Controller {
     pub fn new(
         token: String,
         hostname: String,
+        device_os: DeviceOsInfo,
         manager: Arc<NetworkInstanceManager>,
         hooks: Arc<dyn WebClientHooks>,
     ) -> Self {
         Controller {
             token,
             hostname,
+            device_os,
             manager,
             hooks,
         }
@@ -37,6 +41,10 @@ impl Controller {
 
     pub fn hostname(&self) -> String {
         self.hostname.clone()
+    }
+
+    pub fn device_os(&self) -> DeviceOsInfo {
+        self.device_os.clone()
     }
 
     pub fn register_api_rpc_service(&self, registry: &ServiceRegistry) {
