@@ -280,11 +280,11 @@ impl ForeignNetworkPacketHeader {
 // reserve the space for aes tag and nonce
 #[repr(C, packed)]
 #[derive(AsBytes, FromBytes, FromZeroes, Clone, Debug, Default)]
-pub struct AesGcmTail {
+pub struct AeadTail {
     pub tag: [u8; 16],
     pub nonce: [u8; 12],
 }
-pub const AES_GCM_ENCRYPTION_RESERVED: usize = std::mem::size_of::<AesGcmTail>();
+pub const AEAD_TAIL_SIZE: usize = std::mem::size_of::<AeadTail>();
 
 #[derive(AsBytes, FromZeroes, Clone, Debug, Copy, PartialEq, Hash, Eq)]
 #[repr(u8)]
@@ -315,7 +315,7 @@ impl CompressorTail {
     }
 }
 
-pub const TAIL_RESERVED_SIZE: usize = max(AES_GCM_ENCRYPTION_RESERVED, COMPRESSOR_TAIL_SIZE);
+pub const TAIL_RESERVED_SIZE: usize = max(AEAD_TAIL_SIZE, COMPRESSOR_TAIL_SIZE);
 
 #[derive(Default, Debug)]
 pub struct ZCPacketOffsets {

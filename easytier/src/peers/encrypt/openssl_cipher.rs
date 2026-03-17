@@ -2,7 +2,7 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use rand::RngCore;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::tunnel::packet_def::{AesGcmTail, ZCPacket, AES_GCM_ENCRYPTION_RESERVED};
+use crate::tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE};
 
 use crate::peers::encrypt::{Encryptor, Error};
 
@@ -76,7 +76,7 @@ impl Encryptor for OpenSslCipher {
         }
 
         let payload_len = zc_packet.payload().len();
-        if payload_len < AES_GCM_ENCRYPTION_RESERVED {
+        if payload_len < AEAD_TAIL_SIZE {
             return Err(Error::PacketTooShort(zc_packet.payload().len()));
         }
 
@@ -85,11 +85,11 @@ impl Encryptor for OpenSslCipher {
         let nonce_size = self.get_nonce_size();
 
         // 提取 nonce/IV 和 tag
-        let tail = AesGcmTail::ref_from_suffix(zc_packet.payload())
+        let tail = AeadTail::ref_from_suffix(zc_packet.payload())
             .unwrap()
             .clone();
 
-        let text_len = payload_len - AES_GCM_ENCRYPTION_RESERVED;
+        let text_len = payload_len - AEAD_TAIL_SIZE;
 
         let mut decrypter =
             Crypter::new(cipher, Mode::Decrypt, key, Some(&tail.nonce[..nonce_size]))
@@ -141,7 +141,7 @@ impl Encryptor for OpenSslCipher {
         let is_aead = self.is_aead_cipher();
         let nonce_size = self.get_nonce_size();
 
-        let mut tail = AesGcmTail::default();
+        let mut tail = AeadTail::default();
         if let Some(nonce) = nonce {
             if nonce.len() != nonce_size {
                 return Err(Error::EncryptionFailed);
@@ -192,7 +192,7 @@ impl Encryptor for OpenSslCipher {
 mod tests {
     use crate::{
         peers::encrypt::{openssl_cipher::OpenSslCipher, Encryptor},
-        tunnel::packet_def::{AesGcmTail, ZCPacket, AES_GCM_ENCRYPTION_RESERVED},
+        tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE},
     };
     use zerocopy::FromBytes;
 
@@ -206,7 +206,7 @@ mod tests {
 
         // 加密
         cipher.encrypt(&mut packet).unwrap();
-        assert!(packet.payload().len() > text.len() + AES_GCM_ENCRYPTION_RESERVED - 1);
+        assert!(packet.payload().len() > text.len() + AEAD_TAIL_SIZE - 1);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         // 解密
@@ -235,9 +235,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(packet1.payload(), packet2.payload());
-        assert!(packet1.payload().len() > text.len() + AES_GCM_ENCRYPTION_RESERVED - 1);
+        assert!(packet1.payload().len() > text.len() + AEAD_TAIL_SIZE - 1);
 
-        let tail = AesGcmTail::ref_from_suffix(packet1.payload())
+        let tail = AeadTail::ref_from_suffix(packet1.payload())
             .unwrap()
             .clone();
         assert_eq!(&tail.nonce[..nonce.len()], nonce);
