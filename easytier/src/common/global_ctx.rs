@@ -148,6 +148,24 @@ impl TrustedKeyMapManager {
 
         !metadata.is_expired()
     }
+
+    pub fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        let Some(trusted_keys) = self
+            .network_trusted_keys
+            .get(network_name)
+            .map(|v| v.load_full())
+        else {
+            return Vec::new();
+        };
+
+        let mut items = trusted_keys
+            .iter()
+            .filter(|(_, metadata)| !metadata.is_expired())
+            .map(|(pubkey, metadata)| (pubkey.clone(), metadata.clone()))
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.0.cmp(&right.0));
+        items
+    }
 }
 
 pub struct GlobalCtx {
@@ -532,6 +550,10 @@ impl GlobalCtx {
 
     pub fn remove_trusted_keys(&self, network_name: &str) {
         self.trusted_keys.remove_trusted_keys(network_name);
+    }
+
+    pub fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
+        self.trusted_keys.list_trusted_keys(network_name)
     }
 
     pub fn get_acl_groups(&self, peer_id: PeerId) -> Vec<PeerGroupInfo> {

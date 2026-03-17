@@ -124,11 +124,11 @@ impl PeerManageRpc for PeerManagerRpcService {
     async fn list_foreign_network(
         &self,
         _: BaseController,
-        _request: ListForeignNetworkRequest, // Accept request of type HelloRequest
+        request: ListForeignNetworkRequest,
     ) -> Result<ListForeignNetworkResponse, rpc_types::error::Error> {
         let reply = weak_upgrade(&self.peer_manager)?
             .get_foreign_network_manager()
-            .list_foreign_networks()
+            .list_foreign_networks_with_options(request.include_trusted_keys)
             .await;
         Ok(reply)
     }
