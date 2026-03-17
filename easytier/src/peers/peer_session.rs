@@ -17,7 +17,7 @@ use sha2::Sha256;
 use crate::{
     common::PeerId,
     peers::encrypt::{create_encryptor, Encryptor},
-    tunnel::packet_def::{AeadTail, ZCPacket},
+    tunnel::packet_def::{StandardAeadTail, ZCPacket},
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -674,10 +674,10 @@ impl PeerSession {
     }
 
     fn parse_tail(payload: &[u8]) -> Option<[u8; 12]> {
-        if payload.len() < std::mem::size_of::<AeadTail>() {
+        if payload.len() < std::mem::size_of::<StandardAeadTail>() {
             return None;
         }
-        let tail_off = payload.len() - std::mem::size_of::<AeadTail>();
+        let tail_off = payload.len() - std::mem::size_of::<StandardAeadTail>();
         let tail = &payload[tail_off..];
         let mut nonce = [0u8; 12];
         nonce.copy_from_slice(&tail[16..]);

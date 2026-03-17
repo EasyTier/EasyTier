@@ -2,9 +2,9 @@ use aes_gcm::aead::consts::{U12, U16};
 use aes_gcm::aead::generic_array::GenericArray;
 use aes_gcm::{AeadCore, AeadInPlace, Aes128Gcm, Aes256Gcm, Key, KeyInit, Nonce, Tag};
 use rand::rngs::OsRng;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE};
+use crate::tunnel::packet_def::{StandardAeadTail, ZCPacket};
 
 use super::{Encryptor, Error};
 
@@ -42,13 +42,13 @@ impl Encryptor for AesGcmCipher {
         }
 
         let payload_len = zc_packet.payload().len();
-        if payload_len < AEAD_TAIL_SIZE {
+        if payload_len < StandardAeadTail::SIZE {
             return Err(Error::PacketTooShort(zc_packet.payload().len()));
         }
 
-        let text_len = payload_len - AEAD_TAIL_SIZE;
+        let text_len = payload_len - StandardAeadTail::SIZE;
 
-        let aes_tail = AeadTail::ref_from_suffix(zc_packet.payload())
+        let aes_tail = StandardAeadTail::ref_from_suffix(zc_packet.payload())
             .unwrap()
             .clone();
         let nonce: &GenericArray<u8, U12> = Nonce::from_slice(&aes_tail.nonce);
@@ -77,7 +77,9 @@ impl Encryptor for AesGcmCipher {
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
         pm_header.set_encrypted(false);
         let old_len = zc_packet.buf_len();
-        zc_packet.mut_inner().truncate(old_len - AEAD_TAIL_SIZE);
+        zc_packet
+            .mut_inner()
+            .truncate(old_len - StandardAeadTail::SIZE);
         Ok(())
     }
 
@@ -96,7 +98,7 @@ impl Encryptor for AesGcmCipher {
             return Ok(());
         }
 
-        let mut tail = AeadTail::default();
+        let mut tail = StandardAeadTail::new_zeroed();
         if let Some(nonce) = nonce {
             if nonce.len() != tail.nonce.len() {
                 return Err(Error::EncryptionFailed);
@@ -140,7 +142,7 @@ impl Encryptor for AesGcmCipher {
 mod tests {
     use crate::{
         peers::encrypt::{aes_gcm::AesGcmCipher, Encryptor},
-        tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE},
+        tunnel::packet_def::{StandardAeadTail, ZCPacket},
     };
     use zerocopy::FromBytes;
 
@@ -152,7 +154,7 @@ mod tests {
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
         cipher.encrypt(&mut packet).unwrap();
-        assert_eq!(packet.payload().len(), text.len() + AEAD_TAIL_SIZE);
+        assert_eq!(packet.payload().len(), text.len() + StandardAeadTail::SIZE);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         cipher.decrypt(&mut packet).unwrap();
@@ -181,7 +183,7 @@ mod tests {
 
         assert_eq!(packet1.payload(), packet2.payload());
 
-        let tail = AeadTail::ref_from_suffix(packet1.payload()).unwrap();
+        let tail = StandardAeadTail::ref_from_suffix(packet1.payload()).unwrap();
         assert_eq!(tail.nonce, nonce);
 
         cipher.decrypt(&mut packet1).unwrap();

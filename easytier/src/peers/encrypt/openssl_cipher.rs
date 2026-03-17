@@ -2,29 +2,22 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use rand::RngCore;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE};
+use crate::tunnel::packet_def::{AeadTail, ZCPacket};
 
 use crate::peers::encrypt::{Encryptor, Error};
+
+type OpenSslAeadTail = AeadTail<16, 16>;
 
 #[derive(Clone)]
 pub struct OpenSslCipher {
     pub(crate) cipher: OpenSslEnum,
 }
 
+#[derive(Clone, Copy)]
 pub enum OpenSslEnum {
     Aes128Gcm([u8; 16]),
     Aes256Gcm([u8; 32]),
-    Chacha20([u8; 32]),
-}
-
-impl Clone for OpenSslEnum {
-    fn clone(&self) -> Self {
-        match &self {
-            OpenSslEnum::Aes128Gcm(key) => OpenSslEnum::Aes128Gcm(*key),
-            OpenSslEnum::Aes256Gcm(key) => OpenSslEnum::Aes256Gcm(*key),
-            OpenSslEnum::Chacha20(key) => OpenSslEnum::Chacha20(*key),
-        }
-    }
+    ChaCha20([u8; 32]),
 }
 
 impl OpenSslCipher {
@@ -42,7 +35,7 @@ impl OpenSslCipher {
 
     pub fn new_chacha20(key: [u8; 32]) -> Self {
         Self {
-            cipher: OpenSslEnum::Chacha20(key),
+            cipher: OpenSslEnum::ChaCha20(key),
         }
     }
 
@@ -50,20 +43,7 @@ impl OpenSslCipher {
         match &self.cipher {
             OpenSslEnum::Aes128Gcm(key) => (Cipher::aes_128_gcm(), key.as_slice()),
             OpenSslEnum::Aes256Gcm(key) => (Cipher::aes_256_gcm(), key.as_slice()),
-            OpenSslEnum::Chacha20(key) => (Cipher::chacha20_poly1305(), key.as_slice()),
-        }
-    }
-
-    fn is_aead_cipher(&self) -> bool {
-        matches!(
-            self.cipher,
-            OpenSslEnum::Aes128Gcm(_) | OpenSslEnum::Aes256Gcm(_) | OpenSslEnum::Chacha20(_)
-        )
-    }
-
-    fn get_nonce_size(&self) -> usize {
-        match &self.cipher {
-            OpenSslEnum::Aes128Gcm(_) | OpenSslEnum::Aes256Gcm(_) | OpenSslEnum::Chacha20(_) => 12, // GCM and ChaCha20-Poly1305 use 12-byte nonce
+            OpenSslEnum::ChaCha20(key) => (Cipher::chacha20_poly1305(), key.as_slice()),
         }
     }
 }
@@ -76,31 +56,27 @@ impl Encryptor for OpenSslCipher {
         }
 
         let payload_len = zc_packet.payload().len();
-        if payload_len < AEAD_TAIL_SIZE {
+        if payload_len < OpenSslAeadTail::SIZE {
             return Err(Error::PacketTooShort(zc_packet.payload().len()));
         }
 
         let (cipher, key) = self.get_cipher_and_key();
-        let is_aead = self.is_aead_cipher();
-        let nonce_size = self.get_nonce_size();
+        let nonce_size = OpenSslAeadTail::NONCE_SIZE;
 
         // 提取 nonce/IV 和 tag
-        let tail = AeadTail::ref_from_suffix(zc_packet.payload())
+        let tail = OpenSslAeadTail::ref_from_suffix(zc_packet.payload())
             .unwrap()
             .clone();
 
-        let text_len = payload_len - AEAD_TAIL_SIZE;
+        let text_len = payload_len - OpenSslAeadTail::SIZE;
 
         let mut decrypter =
             Crypter::new(cipher, Mode::Decrypt, key, Some(&tail.nonce[..nonce_size]))
                 .map_err(|_| Error::DecryptionFailed)?;
 
-        if is_aead {
-            // 对于 AEAD 模式，需要设置 tag
-            decrypter
-                .set_tag(&tail.tag)
-                .map_err(|_| Error::DecryptionFailed)?;
-        }
+        decrypter
+            .set_tag(&tail.tag)
+            .map_err(|_| Error::DecryptionFailed)?;
 
         let mut output = vec![0u8; text_len + cipher.block_size()];
         let mut count = decrypter
@@ -138,10 +114,9 @@ impl Encryptor for OpenSslCipher {
         }
 
         let (cipher, key) = self.get_cipher_and_key();
-        let is_aead = self.is_aead_cipher();
-        let nonce_size = self.get_nonce_size();
+        let nonce_size = OpenSslAeadTail::NONCE_SIZE;
 
-        let mut tail = AeadTail::default();
+        let mut tail = OpenSslAeadTail::new_zeroed();
         if let Some(nonce) = nonce {
             if nonce.len() != nonce_size {
                 return Err(Error::EncryptionFailed);
@@ -169,14 +144,11 @@ impl Encryptor for OpenSslCipher {
         // 更新数据包内容
         zc_packet.mut_payload()[..count].copy_from_slice(&output[..count]);
 
-        // 对于 AEAD 模式，提取 tag 到 tail 中
-        if is_aead {
-            let mut tag = vec![0u8; 16]; // GCM 标签通常是 16 字节
-            encrypter
-                .get_tag(&mut tag)
-                .map_err(|_| Error::EncryptionFailed)?;
-            tail.tag.copy_from_slice(&tag);
-        }
+        let mut tag = vec![0u8; OpenSslAeadTail::TAG_SIZE]; // GCM 标签通常是 16 字节
+        encrypter
+            .get_tag(&mut tag)
+            .map_err(|_| Error::EncryptionFailed)?;
+        tail.tag.copy_from_slice(&tag);
 
         // 添加 nonce/IV & tag 的结构
         zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
@@ -190,11 +162,7 @@ impl Encryptor for OpenSslCipher {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        peers::encrypt::{openssl_cipher::OpenSslCipher, Encryptor},
-        tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE},
-    };
-    use zerocopy::FromBytes;
+    use super::*;
 
     #[test]
     fn test_openssl_aes128_gcm() {
@@ -206,7 +174,7 @@ mod tests {
 
         // 加密
         cipher.encrypt(&mut packet).unwrap();
-        assert!(packet.payload().len() > text.len() + AEAD_TAIL_SIZE - 1);
+        assert!(packet.payload().len() > text.len() + OpenSslAeadTail::SIZE - 1);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         // 解密
@@ -235,9 +203,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(packet1.payload(), packet2.payload());
-        assert!(packet1.payload().len() > text.len() + AEAD_TAIL_SIZE - 1);
+        assert!(packet1.payload().len() > text.len() + OpenSslAeadTail::SIZE - 1);
 
-        let tail = AeadTail::ref_from_suffix(packet1.payload())
+        let tail = OpenSslAeadTail::ref_from_suffix(packet1.payload())
             .unwrap()
             .clone();
         assert_eq!(&tail.nonce[..nonce.len()], nonce);

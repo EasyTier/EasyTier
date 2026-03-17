@@ -3,7 +3,7 @@ use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use super::{Encryptor, Error};
-use crate::tunnel::packet_def::{AeadTail, ZCPacket, AEAD_TAIL_SIZE};
+use crate::tunnel::packet_def::{StandardAeadTail, ZCPacket};
 
 #[derive(Clone)]
 pub struct RingChaCha20Cipher {
@@ -27,13 +27,13 @@ impl Encryptor for RingChaCha20Cipher {
         }
 
         let payload_len = zc_packet.payload().len();
-        if payload_len < AEAD_TAIL_SIZE {
+        if payload_len < StandardAeadTail::SIZE {
             return Err(Error::PacketTooShort(zc_packet.payload().len()));
         }
 
-        let text_and_tag_len = payload_len - AEAD_TAIL_SIZE + 16;
+        let text_and_tag_len = payload_len - StandardAeadTail::NONCE_SIZE;
 
-        let chacha20_tail = AeadTail::ref_from_suffix(zc_packet.payload()).unwrap();
+        let chacha20_tail = StandardAeadTail::ref_from_suffix(zc_packet.payload()).unwrap();
         let nonce = Nonce::assume_unique_for_key(chacha20_tail.nonce);
 
         let rs = self.cipher.open_in_place(
@@ -49,7 +49,9 @@ impl Encryptor for RingChaCha20Cipher {
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
         pm_header.set_encrypted(false);
         let old_len = zc_packet.buf_len();
-        zc_packet.mut_inner().truncate(old_len - AEAD_TAIL_SIZE);
+        zc_packet
+            .mut_inner()
+            .truncate(old_len - StandardAeadTail::SIZE);
 
         Ok(())
     }
@@ -69,7 +71,7 @@ impl Encryptor for RingChaCha20Cipher {
             return Ok(());
         }
 
-        let mut tail = AeadTail::default();
+        let mut tail = StandardAeadTail::new_zeroed();
         if let Some(nonce) = nonce {
             if nonce.len() != tail.nonce.len() {
                 return Err(Error::EncryptionFailed);
@@ -99,13 +101,12 @@ impl Encryptor for RingChaCha20Cipher {
 
 #[cfg(test)]
 mod tests {
+    use crate::tunnel::packet_def::StandardAeadTail;
     use crate::{
         peers::encrypt::{ring_chacha20::RingChaCha20Cipher, Encryptor},
         tunnel::packet_def::ZCPacket,
     };
     use zerocopy::FromBytes;
-
-    use super::AEAD_TAIL_SIZE;
 
     #[test]
     fn test_ring_chacha20_cipher() {
@@ -116,7 +117,7 @@ mod tests {
         packet.fill_peer_manager_hdr(0, 0, 0);
 
         cipher.encrypt(&mut packet).unwrap();
-        assert_eq!(packet.payload().len(), text.len() + AEAD_TAIL_SIZE);
+        assert_eq!(packet.payload().len(), text.len() + StandardAeadTail::SIZE);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
         cipher.decrypt(&mut packet).unwrap();
@@ -145,7 +146,7 @@ mod tests {
 
         assert_eq!(packet1.payload(), packet2.payload());
 
-        let tail = super::AeadTail::ref_from_suffix(packet1.payload()).unwrap();
+        let tail = StandardAeadTail::ref_from_suffix(packet1.payload()).unwrap();
         assert_eq!(tail.nonce, nonce);
 
         cipher.decrypt(&mut packet1).unwrap();

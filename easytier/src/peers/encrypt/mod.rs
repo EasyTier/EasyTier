@@ -32,6 +32,7 @@ pub enum Error {
 }
 
 pub trait Encryptor: Send + Sync + 'static {
+    fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
     fn encrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
     fn encrypt_with_nonce(
         &self,
@@ -40,16 +41,11 @@ pub trait Encryptor: Send + Sync + 'static {
     ) -> Result<(), Error> {
         self.encrypt(zc_packet)
     }
-    fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error>;
 }
 
 pub struct NullCipher;
 
 impl Encryptor for NullCipher {
-    fn encrypt(&self, _zc_packet: &mut ZCPacket) -> Result<(), Error> {
-        Ok(())
-    }
-
     fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if pm_header.is_encrypted() {
@@ -57,6 +53,10 @@ impl Encryptor for NullCipher {
         } else {
             Ok(())
         }
+    }
+
+    fn encrypt(&self, _zc_packet: &mut ZCPacket) -> Result<(), Error> {
+        Ok(())
     }
 }
 
