@@ -3,7 +3,8 @@ use std::sync::Arc;
 use crate::{
     instance_manager::NetworkInstanceManager,
     proto::{rpc_impl::service_registry::ServiceRegistry, web::DeviceOsInfo},
-    rpc_service::api::register_api_rpc_service, web_client::WebClientHooks,
+    rpc_service::api::register_api_rpc_service,
+    web_client::WebClientHooks,
 };
 
 pub struct Controller {

@@ -40,7 +40,10 @@ fn detect_os_version_and_distribution(os_type: &str) -> (String, String) {
             "Windows".to_string(),
         ),
         "freebsd" => (
-            first_non_empty([command_output("freebsd-version", &[]), unix_kernel_release()]),
+            first_non_empty([
+                command_output("freebsd-version", &[]),
+                unix_kernel_release(),
+            ]),
             "FreeBSD".to_string(),
         ),
         other => (
