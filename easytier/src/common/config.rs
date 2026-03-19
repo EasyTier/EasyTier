@@ -76,25 +76,15 @@ pub enum EncryptionAlgorithm {
     #[strum(serialize = "xor")]
     Xor,
 
-    #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
+    #[cfg(any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto"))]
     #[strum(serialize = "aes-gcm")]
     AesGcm,
-    #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
+    #[cfg(any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto"))]
     #[strum(serialize = "aes-256-gcm")]
     Aes256Gcm,
-    #[cfg(feature = "wireguard")]
+    #[cfg(any(feature = "wireguard", feature = "openssl-crypto"))]
     #[strum(serialize = "chacha20")]
     ChaCha20,
-
-    #[cfg(feature = "openssl-crypto")]
-    #[strum(serialize = "openssl-aes-gcm")]
-    OpenSslAesGcm,
-    #[cfg(feature = "openssl-crypto")]
-    #[strum(serialize = "openssl-aes-256-gcm")]
-    OpenSslAes256Gcm,
-    #[cfg(feature = "openssl-crypto")]
-    #[strum(serialize = "openssl-chacha20")]
-    OpenSslChaCha20,
 }
 
 impl ValueEnum for EncryptionAlgorithm {
@@ -117,9 +107,7 @@ impl ValueEnum for EncryptionAlgorithm {
 impl Default for EncryptionAlgorithm {
     fn default() -> Self {
         cfg_if! {
-            if #[cfg(feature = "openssl-crypto")] {
-                EncryptionAlgorithm::OpenSslAesGcm
-            } else if #[cfg(any(feature = "aes-gcm", feature = "wireguard"))] {
+            if #[cfg(any(feature = "aes-gcm", feature = "wireguard", feature = "openssl-crypto"))] {
                 EncryptionAlgorithm::AesGcm
             } else {
                 crate::common::log::warn!("no AEAD encryption algorithm is available, using INSECURE XOR");
