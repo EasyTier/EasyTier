@@ -87,7 +87,7 @@ impl Encryptor for RingCipher {
             return Err(Error::PacketTooShort(zc_packet.payload().len()));
         }
 
-        let text_and_tag_len = payload_len - StandardAeadTail::NONCE_SIZE;
+        let text_and_tag_len = payload_len - StandardAeadTail::SIZE + StandardAeadTail::TAG_SIZE;
 
         let aes_tail = StandardAeadTail::ref_from_suffix(zc_packet.payload()).unwrap();
         let nonce = aead::Nonce::assume_unique_for_key(aes_tail.nonce);
