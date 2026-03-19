@@ -134,6 +134,15 @@ impl TrustedKeyMapManager {
     }
 
     pub fn verify_trusted_key(&self, pubkey: &[u8], network_name: &str) -> bool {
+        self.verify_trusted_key_with_source(pubkey, network_name, None)
+    }
+
+    pub fn verify_trusted_key_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: Option<TrustedKeySource>,
+    ) -> bool {
         let Some(trusted_keys) = self
             .network_trusted_keys
             .get(network_name)
@@ -146,7 +155,11 @@ impl TrustedKeyMapManager {
             return false;
         };
 
-        !metadata.is_expired()
+        if let Some(source) = source {
+            metadata.source == source && !metadata.is_expired()
+        } else {
+            !metadata.is_expired()
+        }
     }
 
     pub fn list_trusted_keys(&self, network_name: &str) -> Vec<(Vec<u8>, TrustedKeyMetadata)> {
@@ -542,6 +555,16 @@ impl GlobalCtx {
         false
     }
 
+    pub fn is_pubkey_trusted_with_source(
+        &self,
+        pubkey: &[u8],
+        network_name: &str,
+        source: TrustedKeySource,
+    ) -> bool {
+        self.trusted_keys
+            .verify_trusted_key_with_source(pubkey, network_name, Some(source))
+    }
+
     /// Atomically replace all OSPF trusted keys with a new set
     /// Called by OSPF route layer after each route update
     pub fn update_trusted_keys(&self, keys: TrustedKeyMap, network_name: &str) {
@@ -674,6 +697,37 @@ pub mod tests {
             subscriber.recv().await.unwrap(),
             GlobalCtxEvent::PeerConnRemoved(PeerConnInfo::default())
         );
+    }
+
+    #[tokio::test]
+    async fn trusted_key_source_lookup_is_precise() {
+        let config = TomlConfigLoader::default();
+        let global_ctx = GlobalCtx::new(config);
+        let network_name = "net1";
+        let pubkey = vec![1; 32];
+
+        global_ctx.update_trusted_keys(
+            HashMap::from([(
+                pubkey.clone(),
+                TrustedKeyMetadata {
+                    source: TrustedKeySource::OspfCredential,
+                    expiry_unix: None,
+                },
+            )]),
+            network_name,
+        );
+
+        assert!(global_ctx.is_pubkey_trusted(&pubkey, network_name));
+        assert!(!global_ctx.is_pubkey_trusted_with_source(
+            &pubkey,
+            network_name,
+            TrustedKeySource::OspfNode,
+        ));
+        assert!(global_ctx.is_pubkey_trusted_with_source(
+            &pubkey,
+            network_name,
+            TrustedKeySource::OspfCredential,
+        ));
     }
 
     pub fn get_mock_global_ctx_with_network(

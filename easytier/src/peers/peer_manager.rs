@@ -819,17 +819,15 @@ impl PeerManager {
                             tracing::error!(?e, "decrypt failed");
                             continue;
                         }
-                    } else if !peers.has_peer(from_peer_id)
-                        && !foreign_client.has_next_hop(from_peer_id)
-                    {
+                    } else if hdr.is_encrypted() {
                         match relay_peer_map.decrypt_if_needed(&mut ret).await {
                             Ok(true) => {}
                             Ok(false) => {
-                                tracing::error!("relay session not found");
+                                tracing::error!("secure session not found");
                                 continue;
                             }
                             Err(e) => {
-                                tracing::error!(?e, "relay decrypt failed");
+                                tracing::error!(?e, "secure decrypt failed");
                                 continue;
                             }
                         }
