@@ -6,10 +6,7 @@ use cfg_if::cfg_if;
 use std::sync::Arc;
 
 #[cfg(feature = "wireguard")]
-pub mod ring_aes_gcm;
-
-#[cfg(feature = "wireguard")]
-pub mod ring_chacha20;
+pub mod ring;
 
 #[cfg(feature = "aes-gcm")]
 pub mod aes_gcm;
@@ -85,7 +82,7 @@ pub fn create_encryptor(
         EncryptionAlgorithm::AesGcm => {
             cfg_if! {
                 if #[cfg(feature = "wireguard")] {
-                    Arc::new(ring_aes_gcm::AesGcmCipher::new_128(key_128))
+                    Arc::new(ring::RingCipher::new_128(key_128))
                 } else {
                     Arc::new(aes_gcm::AesGcmCipher::new_128(key_128))
                 }
@@ -96,7 +93,7 @@ pub fn create_encryptor(
         EncryptionAlgorithm::Aes256Gcm => {
             cfg_if! {
                 if #[cfg(feature = "wireguard")] {
-                    Arc::new(ring_aes_gcm::AesGcmCipher::new_256(key_256))
+                    Arc::new(ring::RingCipher::new_256(key_256))
                 } else {
                     Arc::new(aes_gcm::AesGcmCipher::new_256(key_256))
                 }
@@ -104,7 +101,7 @@ pub fn create_encryptor(
         }
 
         #[cfg(feature = "wireguard")]
-        EncryptionAlgorithm::ChaCha20 => Arc::new(ring_chacha20::RingChaCha20Cipher::new(key_256)),
+        EncryptionAlgorithm::ChaCha20 => Arc::new(ring::RingCipher::new_chacha20(key_256)),
 
         #[cfg(feature = "openssl-crypto")]
         EncryptionAlgorithm::OpenSslAesGcm => {

@@ -8,49 +8,74 @@ use crate::tunnel::packet_def::{StandardAeadTail, ZCPacket};
 use super::{Encryptor, Error};
 
 #[derive(Clone)]
-pub struct AesGcmCipher {
-    pub(crate) cipher: AesGcmEnum,
+pub struct RingCipher {
+    pub(crate) cipher: RingEnum,
 }
 
-pub enum AesGcmEnum {
-    AesGCM128(LessSafeKey, [u8; 16]),
-    AesGCM256(LessSafeKey, [u8; 32]),
+pub enum RingEnum {
+    Aes128Gcm(LessSafeKey, [u8; 16]),
+    Aes256Gcm(LessSafeKey, [u8; 32]),
+    ChaCha20(LessSafeKey, [u8; 32]),
 }
 
-impl Clone for AesGcmEnum {
+impl RingEnum {
+    fn get_cipher(&self) -> &LessSafeKey {
+        match &self {
+            RingEnum::Aes128Gcm(cipher, _) => cipher,
+            RingEnum::Aes256Gcm(cipher, _) => cipher,
+            RingEnum::ChaCha20(cipher, _) => cipher,
+        }
+    }
+}
+
+impl Clone for RingEnum {
     fn clone(&self) -> Self {
         match &self {
-            AesGcmEnum::AesGCM128(_, key) => {
+            RingEnum::Aes128Gcm(_, key) => {
                 let c =
                     LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, key.as_slice()).unwrap());
-                AesGcmEnum::AesGCM128(c, *key)
+                RingEnum::Aes128Gcm(c, *key)
             }
-            AesGcmEnum::AesGCM256(_, key) => {
+            RingEnum::Aes256Gcm(_, key) => {
                 let c =
                     LessSafeKey::new(UnboundKey::new(&aead::AES_256_GCM, key.as_slice()).unwrap());
-                AesGcmEnum::AesGCM256(c, *key)
+                RingEnum::Aes256Gcm(c, *key)
+            }
+            RingEnum::ChaCha20(_, key) => {
+                let c = LessSafeKey::new(
+                    UnboundKey::new(&aead::CHACHA20_POLY1305, key.as_slice()).unwrap(),
+                );
+                RingEnum::ChaCha20(c, *key)
             }
         }
     }
 }
 
-impl AesGcmCipher {
-    pub fn new_128(key: [u8; 16]) -> Self {
+impl RingCipher {
+    pub fn new_aes128_gcm(key: [u8; 16]) -> Self {
         let cipher = LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, &key).unwrap());
         Self {
-            cipher: AesGcmEnum::AesGCM128(cipher, key),
+            cipher: RingEnum::Aes128Gcm(cipher, key),
         }
     }
 
-    pub fn new_256(key: [u8; 32]) -> Self {
+    pub fn new_aes256_gcm(key: [u8; 32]) -> Self {
         let cipher = LessSafeKey::new(UnboundKey::new(&aead::AES_256_GCM, &key).unwrap());
         Self {
-            cipher: AesGcmEnum::AesGCM256(cipher, key),
+            cipher: RingEnum::Aes256Gcm(cipher, key),
+        }
+    }
+
+    pub fn new_chacha20(key: [u8; 32]) -> Self {
+        let unbound_key = UnboundKey::new(&aead::CHACHA20_POLY1305, &key).unwrap();
+        let cipher = LessSafeKey::new(unbound_key);
+        Self {
+            cipher: RingEnum::ChaCha20(cipher, key),
         }
     }
 }
 
-impl Encryptor for AesGcmCipher {
+impl Encryptor for RingCipher {
     fn decrypt(&self, zc_packet: &mut ZCPacket) -> Result<(), Error> {
         let pm_header = zc_packet.peer_manager_header().unwrap();
         if !pm_header.is_encrypted() {
@@ -67,21 +92,14 @@ impl Encryptor for AesGcmCipher {
         let aes_tail = StandardAeadTail::ref_from_suffix(zc_packet.payload()).unwrap();
         let nonce = aead::Nonce::assume_unique_for_key(aes_tail.nonce);
 
-        let rs = match &self.cipher {
-            AesGcmEnum::AesGCM128(cipher, _) => cipher.open_in_place(
+        self.cipher
+            .get_cipher()
+            .open_in_place(
                 nonce,
                 aead::Aad::empty(),
                 &mut zc_packet.mut_payload()[..text_and_tag_len],
-            ),
-            AesGcmEnum::AesGCM256(cipher, _) => cipher.open_in_place(
-                nonce,
-                aead::Aad::empty(),
-                &mut zc_packet.mut_payload()[..text_and_tag_len],
-            ),
-        };
-        if rs.is_err() {
-            return Err(Error::DecryptionFailed);
-        }
+            )
+            .map_err(|_| Error::DecryptionFailed)?;
 
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
         pm_header.set_encrypted(false);
@@ -115,19 +133,11 @@ impl Encryptor for AesGcmCipher {
         }
         let nonce = aead::Nonce::assume_unique_for_key(tail.nonce);
 
-        let tag = match &self.cipher {
-            AesGcmEnum::AesGCM128(cipher, _) => cipher.seal_in_place_separate_tag(
-                nonce,
-                aead::Aad::empty(),
-                zc_packet.mut_payload(),
-            ),
-            AesGcmEnum::AesGCM256(cipher, _) => cipher.seal_in_place_separate_tag(
-                nonce,
-                aead::Aad::empty(),
-                zc_packet.mut_payload(),
-            ),
-        }
-        .map_err(|_| Error::EncryptionFailed)?;
+        let tag = self
+            .cipher
+            .get_cipher()
+            .seal_in_place_separate_tag(nonce, aead::Aad::empty(), zc_packet.mut_payload())
+            .map_err(|_| Error::EncryptionFailed)?;
 
         let tag = tag.as_ref();
         if tag.len() != StandardAeadTail::TAG_SIZE {
@@ -145,7 +155,7 @@ impl Encryptor for AesGcmCipher {
 #[cfg(test)]
 mod tests {
     use crate::{
-        peers::encrypt::{ring_aes_gcm::AesGcmCipher, Encryptor},
+        peers::encrypt::{ring::RingCipher, Encryptor},
         tunnel::packet_def::{StandardAeadTail, ZCPacket},
     };
     use zerocopy::FromBytes;
@@ -153,7 +163,7 @@ mod tests {
     #[test]
     fn test_aes_gcm_cipher() {
         let key = [0u8; 16];
-        let cipher = AesGcmCipher::new_128(key);
+        let cipher = RingCipher::new_aes128_gcm(key);
         let text = b"1234567";
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
@@ -169,7 +179,7 @@ mod tests {
     #[test]
     fn test_aes_gcm_cipher_with_nonce() {
         let key = [7u8; 16];
-        let cipher = AesGcmCipher::new_128(key);
+        let cipher = RingCipher::new_aes128_gcm(key);
         let text = b"Hello";
         let nonce = [3u8; 12];
 
@@ -192,5 +202,51 @@ mod tests {
 
         cipher.decrypt(&mut packet1).unwrap();
         assert_eq!(packet1.payload(), text);
+    }
+
+    #[test]
+    fn test_ring_chacha20_cipher() {
+        let key = [0u8; 32];
+        let cipher = RingCipher::new_chacha20(key);
+        let text = b"Hello, World! This is a test message for Ring ChaCha20-Poly1305.";
+        let mut packet = ZCPacket::new_with_payload(text);
+        packet.fill_peer_manager_hdr(0, 0, 0);
+
+        cipher.encrypt(&mut packet).unwrap();
+        assert_eq!(packet.payload().len(), text.len() + StandardAeadTail::SIZE);
+        assert!(packet.peer_manager_header().unwrap().is_encrypted());
+
+        cipher.decrypt(&mut packet).unwrap();
+        assert_eq!(packet.payload(), text);
+        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+    }
+
+    #[test]
+    fn test_ring_chacha20_cipher_with_nonce() {
+        let key = [9u8; 32];
+        let cipher = RingCipher::new_chacha20(key);
+        let text = b"Hello";
+        let nonce = [5u8; 12];
+
+        let mut packet1 = ZCPacket::new_with_payload(text);
+        packet1.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet1, Some(&nonce))
+            .unwrap();
+
+        let mut packet2 = ZCPacket::new_with_payload(text);
+        packet2.fill_peer_manager_hdr(0, 0, 0);
+        cipher
+            .encrypt_with_nonce(&mut packet2, Some(&nonce))
+            .unwrap();
+
+        assert_eq!(packet1.payload(), packet2.payload());
+
+        let tail = StandardAeadTail::ref_from_suffix(packet1.payload()).unwrap();
+        assert_eq!(tail.nonce, nonce);
+
+        cipher.decrypt(&mut packet1).unwrap();
+        assert_eq!(packet1.payload(), text);
+        assert!(!packet1.peer_manager_header().unwrap().is_encrypted());
     }
 }
