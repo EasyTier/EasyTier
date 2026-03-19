@@ -997,6 +997,11 @@ impl PeerManager {
                 }
             }
 
+            async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+                let peer_map = self.peers.upgrade()?;
+                peer_map.get_peer_public_key(peer_id)
+            }
+
             async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
                 let peer_map = self.peers.upgrade()?;
                 peer_map.get_peer_identity_type(peer_id)

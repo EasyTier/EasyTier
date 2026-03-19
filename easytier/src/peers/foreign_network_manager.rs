@@ -37,7 +37,7 @@ use crate::{
             TrustedKeySourcePb,
         },
         common::LimiterConfig,
-        peer_rpc::DirectConnectorRpcServer,
+        peer_rpc::{DirectConnectorRpcServer, PeerIdentityType},
     },
     tunnel::packet_def::{PacketType, ZCPacket},
     use_global_var,
@@ -302,6 +302,22 @@ impl ForeignNetworkEntry {
 
             fn my_peer_id(&self) -> PeerId {
                 self.my_peer_id
+            }
+
+            async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
+                let peer_map = self.peer_map.upgrade()?;
+                peer_map.get_peer_identity_type(peer_id)
+            }
+
+            async fn get_peer_public_key(&self, peer_id: PeerId) -> Option<Vec<u8>> {
+                let peer_map = self.peer_map.upgrade()?;
+                peer_map.get_peer_public_key(peer_id)
+            }
+
+            async fn close_peer(&self, peer_id: PeerId) {
+                if let Some(peer_map) = self.peer_map.upgrade() {
+                    let _ = peer_map.close_peer(peer_id).await;
+                }
             }
         }
 

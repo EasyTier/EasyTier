@@ -455,6 +455,10 @@ impl PeerConn {
         self.is_hole_punched
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.close_event_notifier.is_closed()
+    }
+
     async fn wait_handshake(&self, need_retry: &mut bool) -> Result<HandshakeRequest, Error> {
         *need_retry = false;
 
@@ -687,9 +691,9 @@ impl PeerConn {
     /// | Admin | Admin | same network_secret, proof verified | NetworkSecretConfirmed | NetworkSecretConfirmed | Admin | Admin |
     /// | Credential | Admin | client pubkey is trusted by admin | EncryptedUnauthenticated | PeerVerified | Admin | Credential |
     /// | Credential | Admin | client pubkey is unknown | handshake may fail | handshake reject | unknown | unknown |
-    /// | Admin | SharedNode | pinned key match | PeerVerified | EncryptedUnauthenticated | SharedNode | SharedNode |
-    /// | Admin | SharedNode | local has no pinned key requirement | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | SharedNode |
-    /// | Credential | SharedNode | no pin and not trusted | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | SharedNode |
+    /// | Admin | SharedNode | pinned key match | PeerVerified | EncryptedUnauthenticated | SharedNode | Admin |
+    /// | Admin | SharedNode | local has no pinned key requirement | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | Admin |
+    /// | Credential | SharedNode | no pin and not trusted | EncryptedUnauthenticated | EncryptedUnauthenticated | SharedNode | Credential |
     /// | Credential | Credential | should reject | handshake reject | handshake reject | unknown | unknown |
     ///
     /// Logic (in priority order):
@@ -764,20 +768,27 @@ impl PeerConn {
         secure_auth_level: SecureAuthLevel,
         remote_role_hint_is_same_network: bool,
         remote_sent_secret_proof: bool,
+        is_client: bool,
     ) -> PeerIdentityType {
         if !remote_role_hint_is_same_network
             || remote_network_name != self.global_ctx.get_network_name()
         {
-            return PeerIdentityType::SharedNode;
-        }
+            if is_client {
+                PeerIdentityType::SharedNode
+            } else if remote_sent_secret_proof {
+                PeerIdentityType::Admin
+            } else {
+                PeerIdentityType::Credential
+            }
+        } else {
+            if matches!(secure_auth_level, SecureAuthLevel::NetworkSecretConfirmed)
+                || remote_sent_secret_proof
+            {
+                return PeerIdentityType::Admin;
+            }
 
-        if matches!(secure_auth_level, SecureAuthLevel::NetworkSecretConfirmed)
-            || remote_sent_secret_proof
-        {
-            return PeerIdentityType::Admin;
+            PeerIdentityType::Credential
         }
-
-        PeerIdentityType::Credential
     }
 
     async fn do_noise_handshake_as_client(&self) -> Result<NoiseHandshakeResult, Error> {
@@ -920,6 +931,7 @@ impl PeerConn {
             secure_auth_level,
             msg2_pb.role_hint == 1,
             remote_sent_secret_proof,
+            true,
         );
 
         let handshake_hash = hs.get_handshake_hash().to_vec();
@@ -1174,6 +1186,7 @@ impl PeerConn {
             secure_auth_level,
             role_hint == 1,
             msg3_pb.secret_proof_32.is_some(),
+            false,
         );
 
         let handshake_hash = hs.get_handshake_hash().to_vec();
@@ -1948,7 +1961,7 @@ pub mod tests {
         );
         assert_eq!(
             s_peer.get_conn_info().peer_identity_type,
-            PeerIdentityType::SharedNode as i32,
+            PeerIdentityType::Admin as i32,
         );
     }
 
@@ -1999,7 +2012,7 @@ pub mod tests {
         );
         assert_eq!(
             s_peer.get_conn_info().peer_identity_type,
-            PeerIdentityType::SharedNode as i32,
+            PeerIdentityType::Admin as i32,
         );
     }
 

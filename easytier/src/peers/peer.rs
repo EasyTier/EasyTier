@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crossbeam::atomic::AtomicCell;
 use dashmap::{DashMap, DashSet};
+use parking_lot::RwLock;
 
 use tokio::{select, sync::mpsc};
 
@@ -42,6 +43,7 @@ pub struct Peer {
 
     default_conn_id: Arc<AtomicCell<PeerConnId>>,
     peer_identity_type: Arc<AtomicCell<Option<PeerIdentityType>>>,
+    peer_public_key: Arc<RwLock<Option<Vec<u8>>>>,
     default_conn_id_clear_task: ScopedTask<()>,
 }
 
@@ -56,6 +58,8 @@ impl Peer {
         let shutdown_notifier = Arc::new(tokio::sync::Notify::new());
         let peer_identity_type = Arc::new(AtomicCell::new(None));
         let peer_identity_type_copy = peer_identity_type.clone();
+        let peer_public_key = Arc::new(RwLock::new(None));
+        let peer_public_key_copy = peer_public_key.clone();
 
         let conns_copy = conns.clone();
         let shutdown_notifier_copy = shutdown_notifier.clone();
@@ -82,6 +86,7 @@ impl Peer {
                                 shrink_dashmap(&conns_copy, Some(4));
                                 if conns_copy.is_empty() {
                                     peer_identity_type_copy.store(None);
+                                    *peer_public_key_copy.write() = None;
                                 }
                             }
                         }
@@ -126,6 +131,7 @@ impl Peer {
             shutdown_notifier,
             default_conn_id,
             peer_identity_type,
+            peer_public_key,
             default_conn_id_clear_task,
         }
     }
@@ -146,6 +152,22 @@ impl Peer {
 
         let close_notifier = conn.get_close_notifier();
         let conn_info = conn.get_conn_info();
+        let conn_pubkey = conn_info.noise_remote_static_pubkey.clone();
+        {
+            let mut peer_pubkey = self.peer_public_key.write();
+            if let Some(existing_pubkey) = peer_pubkey.as_ref() {
+                if existing_pubkey != &conn_pubkey {
+                    return Err(Error::SecretKeyError(format!(
+                        "peer public key mismatch. peer_id: {}, existing_len: {}, new_len: {}",
+                        self.peer_node_id,
+                        existing_pubkey.len(),
+                        conn_pubkey.len()
+                    )));
+                }
+            } else {
+                *peer_pubkey = Some(conn_pubkey);
+            }
+        }
 
         conn.start_recv_loop(self.packet_recv_chan.clone()).await;
         conn.start_pingpong();
@@ -226,10 +248,14 @@ impl Peer {
         ret
     }
 
+    pub fn has_live_conns(&self) -> bool {
+        self.conns.iter().any(|entry| !entry.value().is_closed())
+    }
+
     pub fn has_directly_connected_conn(&self) -> bool {
         self.conns
             .iter()
-            .any(|entry| !(entry.value()).is_hole_punched())
+            .any(|entry| !entry.value().is_closed() && !entry.value().is_hole_punched())
     }
 
     pub fn get_directly_connections(&self) -> DashSet<uuid::Uuid> {
@@ -246,6 +272,10 @@ impl Peer {
 
     pub fn get_peer_identity_type(&self) -> Option<PeerIdentityType> {
         self.peer_identity_type.load()
+    }
+
+    pub fn get_peer_public_key(&self) -> Option<Vec<u8>> {
+        self.peer_public_key.read().clone()
     }
 }
 
@@ -456,6 +486,84 @@ mod tests {
 
         peer.add_peer_conn(shared_client_conn).await.unwrap();
         let ret = peer.add_peer_conn(admin_client_conn).await;
+        assert!(ret.is_err());
+    }
+
+    #[tokio::test]
+    async fn reject_peer_conn_with_mismatched_public_key() {
+        let (packet_send, _packet_recv) = create_packet_recv_chan();
+        let local_peer_id = new_peer_id();
+        let remote_peer_id = new_peer_id();
+        let peer = Peer::new(remote_peer_id, packet_send, get_mock_global_ctx());
+        let ps = Arc::new(PeerSessionStore::new());
+
+        let (client_tunnel_1, server_tunnel_1) = create_ring_tunnel_pair();
+        let client_ctx_1 = get_mock_global_ctx();
+        let server_ctx_1 = get_mock_global_ctx();
+        client_ctx_1
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        server_ctx_1
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        set_secure_mode_cfg(&client_ctx_1, true);
+        set_secure_mode_cfg(&server_ctx_1, true);
+        let mut client_conn_1 = PeerConn::new(
+            local_peer_id,
+            client_ctx_1,
+            Box::new(client_tunnel_1),
+            ps.clone(),
+        );
+        let mut server_conn_1 = PeerConn::new(
+            remote_peer_id,
+            server_ctx_1,
+            Box::new(server_tunnel_1),
+            ps.clone(),
+        );
+        let (c1, s1) = tokio::join!(
+            client_conn_1.do_handshake_as_client(),
+            server_conn_1.do_handshake_as_server()
+        );
+        c1.unwrap();
+        s1.unwrap();
+
+        let (client_tunnel_2, server_tunnel_2) = create_ring_tunnel_pair();
+        let client_ctx_2 = get_mock_global_ctx();
+        let server_ctx_2 = get_mock_global_ctx();
+        client_ctx_2
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        server_ctx_2
+            .config
+            .set_network_identity(NetworkIdentity::new("net1".to_string(), "sec1".to_string()));
+        set_secure_mode_cfg(&client_ctx_2, true);
+        set_secure_mode_cfg(&server_ctx_2, true);
+        let mut client_conn_2 = PeerConn::new(
+            local_peer_id,
+            client_ctx_2,
+            Box::new(client_tunnel_2),
+            Arc::new(PeerSessionStore::new()),
+        );
+        let mut server_conn_2 = PeerConn::new(
+            remote_peer_id,
+            server_ctx_2,
+            Box::new(server_tunnel_2),
+            Arc::new(PeerSessionStore::new()),
+        );
+        let (c2, s2) = tokio::join!(
+            client_conn_2.do_handshake_as_client(),
+            server_conn_2.do_handshake_as_server()
+        );
+        c2.unwrap();
+        s2.unwrap();
+
+        let pubkey_1 = client_conn_1.get_conn_info().noise_remote_static_pubkey;
+        let pubkey_2 = client_conn_2.get_conn_info().noise_remote_static_pubkey;
+        assert_ne!(pubkey_1, pubkey_2);
+
+        peer.add_peer_conn(client_conn_1).await.unwrap();
+        assert_eq!(peer.get_peer_public_key(), Some(pubkey_1));
+        let ret = peer.add_peer_conn(client_conn_2).await;
         assert!(ret.is_err());
     }
 }
