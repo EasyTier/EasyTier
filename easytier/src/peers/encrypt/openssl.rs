@@ -5,9 +5,6 @@ use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
 use crate::peers::encrypt::{Encryptor, Error};
 
-// 历史遗留问题：使用 AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 时末尾必须有 4 字节垃圾数据
-const OPENSSL_LEGACY_PADDING_SIZE: usize = 4;
-
 #[derive(Clone)]
 pub struct OpenSslCipher {
     pub(crate) cipher: OpenSslEnum,
@@ -57,12 +54,9 @@ impl Encryptor for OpenSslCipher {
 
         let payload = zc_packet.payload();
         let len = payload.len();
-        if len < StandardAeadTail::SIZE + OPENSSL_LEGACY_PADDING_SIZE {
+        if len < StandardAeadTail::SIZE {
             return Err(Error::PacketTooShort(len));
         }
-
-        let payload_len = len - OPENSSL_LEGACY_PADDING_SIZE;
-        let payload = &payload[..payload_len];
 
         let (cipher, key) = self.get_cipher_and_key();
 
@@ -76,7 +70,7 @@ impl Encryptor for OpenSslCipher {
             .set_tag(&tail.tag)
             .map_err(|_| Error::DecryptionFailed)?;
 
-        let text_len = payload_len - StandardAeadTail::SIZE;
+        let text_len = len - StandardAeadTail::SIZE;
         let mut output = vec![0u8; text_len + cipher.block_size()];
         let mut count = decrypter
             .update(&payload[..text_len], &mut output)
@@ -147,9 +141,6 @@ impl Encryptor for OpenSslCipher {
 
         // 添加 nonce/IV & tag 的结构
         zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
-        zc_packet
-            .mut_inner()
-            .extend_from_slice(&[0u8; OPENSSL_LEGACY_PADDING_SIZE]);
 
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
         pm_header.set_encrypted(true);
@@ -176,12 +167,10 @@ mod tests {
         let payload = packet.payload();
         let len = payload.len();
 
-        assert!(len > text.len() + StandardAeadTail::SIZE + OPENSSL_LEGACY_PADDING_SIZE - 1);
+        assert!(len > text.len() + StandardAeadTail::SIZE - 1);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
-        let tail = StandardAeadTail::ref_from_suffix(&payload[..len - OPENSSL_LEGACY_PADDING_SIZE])
-            .unwrap()
-            .clone();
+        let tail = StandardAeadTail::ref_from_suffix(&payload).unwrap().clone();
         assert_eq!(tail.nonce, nonce);
 
         cipher.decrypt(&mut packet).unwrap();
