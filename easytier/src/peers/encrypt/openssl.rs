@@ -170,7 +170,7 @@ mod tests {
         assert!(len > text.len() + StandardAeadTail::SIZE - 1);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
-        let tail = StandardAeadTail::ref_from_suffix(&payload).unwrap().clone();
+        let tail = StandardAeadTail::ref_from_suffix(payload).unwrap().clone();
         assert_eq!(tail.nonce, nonce);
 
         cipher.decrypt(&mut packet).unwrap();
