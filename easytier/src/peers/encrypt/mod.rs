@@ -15,7 +15,7 @@ pub mod ring_chacha20;
 pub mod aes_gcm;
 
 #[cfg(feature = "openssl-crypto")]
-pub mod openssl_cipher;
+pub mod openssl;
 
 pub mod xor_cipher;
 
@@ -108,17 +108,17 @@ pub fn create_encryptor(
 
         #[cfg(feature = "openssl-crypto")]
         EncryptionAlgorithm::OpenSslAesGcm => {
-            Arc::new(openssl_cipher::OpenSslCipher::new_aes128_gcm(key_128))
+            Arc::new(openssl::OpenSslCipher::new_aes128_gcm(key_128))
         }
 
         #[cfg(feature = "openssl-crypto")]
         EncryptionAlgorithm::OpenSslAes256Gcm => {
-            Arc::new(openssl_cipher::OpenSslCipher::new_aes256_gcm(key_256))
+            Arc::new(openssl::OpenSslCipher::new_aes256_gcm(key_256))
         }
 
         #[cfg(feature = "openssl-crypto")]
         EncryptionAlgorithm::OpenSslChaCha20 => {
-            Arc::new(openssl_cipher::OpenSslCipher::new_chacha20(key_256))
+            Arc::new(openssl::OpenSslCipher::new_chacha20(key_256))
         }
     }
 }

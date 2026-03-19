@@ -1,12 +1,12 @@
+use crate::tunnel::packet_def::{StandardAeadTail, ZCPacket};
 use openssl::symm::{Cipher, Crypter, Mode};
 use rand::RngCore;
 use zerocopy::{AsBytes, FromBytes, FromZeroes};
 
-use crate::tunnel::packet_def::{AeadTail, ZCPacket};
-
 use crate::peers::encrypt::{Encryptor, Error};
 
-type OpenSslAeadTail = AeadTail<16, 16>;
+// 历史遗留问题：使用 AES-128-GCM, AES-256-GCM, ChaCha20-Poly1305 时末尾必须有 4 字节垃圾数据
+const OPENSSL_LEGACY_PADDING_SIZE: usize = 4;
 
 #[derive(Clone)]
 pub struct OpenSslCipher {
@@ -55,32 +55,31 @@ impl Encryptor for OpenSslCipher {
             return Ok(());
         }
 
-        let payload_len = zc_packet.payload().len();
-        if payload_len < OpenSslAeadTail::SIZE {
-            return Err(Error::PacketTooShort(zc_packet.payload().len()));
+        let payload = zc_packet.payload();
+        let len = payload.len();
+        if len < StandardAeadTail::SIZE + OPENSSL_LEGACY_PADDING_SIZE {
+            return Err(Error::PacketTooShort(len));
         }
 
+        let payload_len = len - OPENSSL_LEGACY_PADDING_SIZE;
+        let payload = &payload[..payload_len];
+
         let (cipher, key) = self.get_cipher_and_key();
-        let nonce_size = OpenSslAeadTail::NONCE_SIZE;
 
         // 提取 nonce/IV 和 tag
-        let tail = OpenSslAeadTail::ref_from_suffix(zc_packet.payload())
-            .unwrap()
-            .clone();
+        let tail = StandardAeadTail::ref_from_suffix(payload).unwrap();
 
-        let text_len = payload_len - OpenSslAeadTail::SIZE;
-
-        let mut decrypter =
-            Crypter::new(cipher, Mode::Decrypt, key, Some(&tail.nonce[..nonce_size]))
-                .map_err(|_| Error::DecryptionFailed)?;
+        let mut decrypter = Crypter::new(cipher, Mode::Decrypt, key, Some(&tail.nonce))
+            .map_err(|_| Error::DecryptionFailed)?;
 
         decrypter
             .set_tag(&tail.tag)
             .map_err(|_| Error::DecryptionFailed)?;
 
+        let text_len = payload_len - StandardAeadTail::SIZE;
         let mut output = vec![0u8; text_len + cipher.block_size()];
         let mut count = decrypter
-            .update(&zc_packet.payload()[..text_len], &mut output)
+            .update(&payload[..text_len], &mut output)
             .map_err(|_| Error::DecryptionFailed)?;
 
         count += decrypter
@@ -91,9 +90,9 @@ impl Encryptor for OpenSslCipher {
         zc_packet.mut_payload()[..count].copy_from_slice(&output[..count]);
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
         pm_header.set_encrypted(false);
-        let old_len = zc_packet.buf_len();
-        let new_len = old_len - (payload_len - count);
-        zc_packet.mut_inner().truncate(new_len);
+
+        let len = zc_packet.buf_len() - (len - count);
+        zc_packet.mut_inner().truncate(len);
 
         Ok(())
     }
@@ -114,21 +113,19 @@ impl Encryptor for OpenSslCipher {
         }
 
         let (cipher, key) = self.get_cipher_and_key();
-        let nonce_size = OpenSslAeadTail::NONCE_SIZE;
 
-        let mut tail = OpenSslAeadTail::new_zeroed();
+        let mut tail = StandardAeadTail::new_zeroed();
         if let Some(nonce) = nonce {
-            if nonce.len() != nonce_size {
+            if nonce.len() != StandardAeadTail::NONCE_SIZE {
                 return Err(Error::EncryptionFailed);
             }
-            tail.nonce[..nonce_size].copy_from_slice(nonce);
+            tail.nonce.copy_from_slice(nonce);
         } else {
-            rand::thread_rng().fill_bytes(&mut tail.nonce[..nonce_size]);
+            rand::thread_rng().fill_bytes(&mut tail.nonce);
         }
 
-        let mut encrypter =
-            Crypter::new(cipher, Mode::Encrypt, key, Some(&tail.nonce[..nonce_size]))
-                .map_err(|_| Error::EncryptionFailed)?;
+        let mut encrypter = Crypter::new(cipher, Mode::Encrypt, key, Some(&tail.nonce))
+            .map_err(|_| Error::EncryptionFailed)?;
 
         let payload_len = zc_packet.payload().len();
         let mut output = vec![0u8; payload_len + cipher.block_size()];
@@ -144,14 +141,15 @@ impl Encryptor for OpenSslCipher {
         // 更新数据包内容
         zc_packet.mut_payload()[..count].copy_from_slice(&output[..count]);
 
-        let mut tag = vec![0u8; OpenSslAeadTail::TAG_SIZE]; // GCM 标签通常是 16 字节
         encrypter
-            .get_tag(&mut tag)
+            .get_tag(&mut tail.tag)
             .map_err(|_| Error::EncryptionFailed)?;
-        tail.tag.copy_from_slice(&tag);
 
         // 添加 nonce/IV & tag 的结构
         zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
+        zc_packet
+            .mut_inner()
+            .extend_from_slice(&[0u8; OPENSSL_LEGACY_PADDING_SIZE]);
 
         let pm_header = zc_packet.mut_peer_manager_header().unwrap();
         pm_header.set_encrypted(true);
@@ -164,72 +162,51 @@ impl Encryptor for OpenSslCipher {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_openssl_aes128_gcm() {
-        let key = [0u8; 16];
-        let cipher = OpenSslCipher::new_aes128_gcm(key);
-        let text = b"Hello, World! This is a test message for OpenSSL AES-128-GCM.";
+    fn run_cipher_test_with_nonce(cipher: OpenSslCipher) {
+        let text = b"Hello, World! This is a standardized test message.";
+        let nonce: [u8; 12] = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112];
+
         let mut packet = ZCPacket::new_with_payload(text);
         packet.fill_peer_manager_hdr(0, 0, 0);
 
-        // 加密
-        cipher.encrypt(&mut packet).unwrap();
-        assert!(packet.payload().len() > text.len() + OpenSslAeadTail::SIZE - 1);
+        cipher
+            .encrypt_with_nonce(&mut packet, Some(&nonce))
+            .unwrap();
+
+        let payload = packet.payload();
+        let len = payload.len();
+
+        assert!(len > text.len() + StandardAeadTail::SIZE + OPENSSL_LEGACY_PADDING_SIZE - 1);
         assert!(packet.peer_manager_header().unwrap().is_encrypted());
 
-        // 解密
+        let tail = StandardAeadTail::ref_from_suffix(&payload[..len - OPENSSL_LEGACY_PADDING_SIZE])
+            .unwrap()
+            .clone();
+        assert_eq!(tail.nonce, nonce);
+
         cipher.decrypt(&mut packet).unwrap();
         assert_eq!(packet.payload(), text);
         assert!(!packet.peer_manager_header().unwrap().is_encrypted());
     }
 
     #[test]
-    fn test_openssl_aes128_gcm_with_nonce() {
-        let key = [7u8; 16];
+    fn test_openssl_aes128_gcm() {
+        let key = [1u8; 16];
         let cipher = OpenSslCipher::new_aes128_gcm(key);
-        let text = b"Hello";
-        let nonce = [3u8; 12];
+        run_cipher_test_with_nonce(cipher);
+    }
 
-        let mut packet1 = ZCPacket::new_with_payload(text);
-        packet1.fill_peer_manager_hdr(0, 0, 0);
-        cipher
-            .encrypt_with_nonce(&mut packet1, Some(&nonce))
-            .unwrap();
-
-        let mut packet2 = ZCPacket::new_with_payload(text);
-        packet2.fill_peer_manager_hdr(0, 0, 0);
-        cipher
-            .encrypt_with_nonce(&mut packet2, Some(&nonce))
-            .unwrap();
-
-        assert_eq!(packet1.payload(), packet2.payload());
-        assert!(packet1.payload().len() > text.len() + OpenSslAeadTail::SIZE - 1);
-
-        let tail = OpenSslAeadTail::ref_from_suffix(packet1.payload())
-            .unwrap()
-            .clone();
-        assert_eq!(&tail.nonce[..nonce.len()], nonce);
-
-        cipher.decrypt(&mut packet1).unwrap();
-        assert_eq!(packet1.payload(), text);
+    #[test]
+    fn test_openssl_aes256_gcm() {
+        let key = [2u8; 32];
+        let cipher = OpenSslCipher::new_aes256_gcm(key);
+        run_cipher_test_with_nonce(cipher);
     }
 
     #[test]
     fn test_openssl_chacha20() {
-        let key = [0u8; 32];
+        let key = [3u8; 32];
         let cipher = OpenSslCipher::new_chacha20(key);
-        let text = b"Hello, World! This is a test message for OpenSSL ChaCha20.";
-        let mut packet = ZCPacket::new_with_payload(text);
-        packet.fill_peer_manager_hdr(0, 0, 0);
-
-        // 加密
-        cipher.encrypt(&mut packet).unwrap();
-        assert!(packet.payload().len() > text.len());
-        assert!(packet.peer_manager_header().unwrap().is_encrypted());
-
-        // 解密
-        cipher.decrypt(&mut packet).unwrap();
-        assert_eq!(packet.payload(), text);
-        assert!(!packet.peer_manager_header().unwrap().is_encrypted());
+        run_cipher_test_with_nonce(cipher);
     }
 }
