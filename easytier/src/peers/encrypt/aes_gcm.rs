@@ -51,9 +51,10 @@ impl Encryptor for AesGcmCipher {
         let aes_tail = StandardAeadTail::ref_from_suffix(zc_packet.payload())
             .unwrap()
             .clone();
-        let nonce: &GenericArray<u8, U12> = Nonce::from_slice(&aes_tail.nonce);
 
-        let tag: GenericArray<u8, U16> = Tag::clone_from_slice(aes_tail.tag.as_slice());
+        let nonce: Nonce<StandardAeadTail::NONCE_SIZE> = aes_tail.nonce.into();
+        let tag: Tag<StandardAeadTail::TAG_SIZE> = aes_tail.tag.into();
+
         let rs = match &self.cipher {
             AesGcmEnum::AES128GCM(aes_gcm) => aes_gcm.decrypt_in_place_detached(
                 nonce,
@@ -126,7 +127,7 @@ impl Encryptor for AesGcmCipher {
 
         match rs {
             Ok(tag) => {
-                tail.tag.copy_from_slice(tag.as_slice());
+                tail.tag = tag.into();
 
                 let pm_header = zc_packet.mut_peer_manager_header().unwrap();
                 pm_header.set_encrypted(true);
