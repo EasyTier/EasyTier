@@ -14,7 +14,7 @@ pub mod aes_gcm;
 #[cfg(feature = "openssl-crypto")]
 pub mod openssl;
 
-pub mod xor_cipher;
+pub mod xor;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -76,7 +76,7 @@ pub fn create_encryptor(
         }
     };
     match algorithm {
-        EncryptionAlgorithm::Xor => Arc::new(xor_cipher::XorCipher::new(&key_128)),
+        EncryptionAlgorithm::Xor => Arc::new(xor::XorCipher::new(&key_128)),
 
         #[cfg(any(feature = "aes-gcm", feature = "wireguard"))]
         EncryptionAlgorithm::AesGcm => {
