@@ -72,15 +72,12 @@ impl Encryptor for RingChaCha20Cipher {
         }
 
         let mut tail = StandardAeadTail::new_zeroed();
-        if let Some(nonce) = nonce {
-            if nonce.len() != tail.nonce.len() {
-                return Err(Error::EncryptionFailed);
-            }
-            tail.nonce.copy_from_slice(nonce);
-        } else {
-            rand::thread_rng().fill_bytes(&mut tail.nonce);
+
+        match nonce {
+            Some(n) => tail.nonce = n.try_into().map_err(|_| Error::EncryptionFailed)?,
+            None => rand::thread_rng().fill_bytes(&mut tail.nonce),
         }
-        let nonce = Nonce::assume_unique_for_key(tail.nonce);
+        let nonce = aead::Nonce::assume_unique_for_key(tail.nonce);
 
         let rs =
             self.cipher
