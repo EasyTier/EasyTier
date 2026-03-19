@@ -8,17 +8,17 @@ use std::{
 
 use atomic_shim::AtomicU64;
 
-use anyhow::anyhow;
-use dashmap::DashMap;
-use hmac::{Hmac, Mac as _};
-use rand::RngCore as _;
-use sha2::Sha256;
-
 use crate::{
     common::PeerId,
     peers::encrypt::{create_encryptor, Encryptor},
     tunnel::packet_def::{StandardAeadTail, ZCPacket},
 };
+use anyhow::anyhow;
+use dashmap::DashMap;
+use hmac::{Hmac, Mac as _};
+use rand::RngCore as _;
+use sha2::Sha256;
+use zerocopy::FromBytes;
 
 type HmacSha256 = Hmac<Sha256>;
 pub struct UpsertResponderSessionReturn {
@@ -674,14 +674,8 @@ impl PeerSession {
     }
 
     fn parse_tail(payload: &[u8]) -> Option<[u8; 12]> {
-        if payload.len() < std::mem::size_of::<StandardAeadTail>() {
-            return None;
-        }
-        let tail_off = payload.len() - std::mem::size_of::<StandardAeadTail>();
-        let tail = &payload[tail_off..];
-        let mut nonce = [0u8; 12];
-        nonce.copy_from_slice(&tail[16..]);
-        Some(nonce)
+        let tail = StandardAeadTail::ref_from_suffix(payload)?;
+        Some(tail.nonce)
     }
 
     fn evict_old_rx_slots(rx: &mut [[EpochRxSlot; 2]; 2], now_ms: u64) {
