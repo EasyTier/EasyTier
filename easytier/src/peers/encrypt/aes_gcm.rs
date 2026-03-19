@@ -99,43 +99,36 @@ impl Encryptor for AesGcmCipher {
             return Ok(());
         }
 
-        let mut tail = StandardAeadTail::new_zeroed();
-        if let Some(nonce) = nonce {
-            if nonce.len() != tail.nonce.len() {
-                return Err(Error::EncryptionFailed);
-            }
-            tail.nonce.copy_from_slice(nonce);
-        }
-        let rs = match &self.cipher {
+        let nonce = nonce
+            .map(|n| n.try_into().map_err(|_| Error::EncryptionFailed))
+            .transpose()?;
+
+        let (tag, nonce) = match &self.cipher {
             AesGcmEnum::AES128GCM(aes_gcm) => {
-                if nonce.is_none() {
-                    let nonce = Aes128Gcm::generate_nonce(&mut OsRng);
-                    tail.nonce.copy_from_slice(nonce.as_slice());
-                }
-                let nonce = Nonce::from_slice(&tail.nonce);
-                aes_gcm.encrypt_in_place_detached(nonce, &[], zc_packet.mut_payload())
+                let nonce = nonce.unwrap_or_else(|| Aes128Gcm::generate_nonce(&mut OsRng));
+                (
+                    aes_gcm.encrypt_in_place_detached(nonce, &[], zc_packet.mut_payload()),
+                    nonce,
+                )
             }
             AesGcmEnum::AES256GCM(aes_gcm) => {
-                if nonce.is_none() {
-                    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
-                    tail.nonce.copy_from_slice(nonce.as_slice());
-                }
-                let nonce = Nonce::from_slice(&tail.nonce);
-                aes_gcm.encrypt_in_place_detached(nonce, &[], zc_packet.mut_payload())
+                let nonce = nonce.unwrap_or_else(|| Aes256Gcm::generate_nonce(&mut OsRng));
+                (
+                    aes_gcm.encrypt_in_place_detached(nonce, &[], zc_packet.mut_payload()),
+                    nonce,
+                )
             }
         };
 
-        match rs {
-            Ok(tag) => {
-                tail.tag = tag.into();
+        let tail = StandardAeadTail {
+            tag: tag.map_err(|_| Error::EncryptionFailed)?.into(),
+            nonce: nonce.into(),
+        };
 
-                let pm_header = zc_packet.mut_peer_manager_header().unwrap();
-                pm_header.set_encrypted(true);
-                zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
-                Ok(())
-            }
-            Err(_) => Err(Error::EncryptionFailed),
-        }
+        let pm_header = zc_packet.mut_peer_manager_header().unwrap();
+        pm_header.set_encrypted(true);
+        zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
+        Ok(())
     }
 }
 
