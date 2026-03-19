@@ -108,17 +108,14 @@ impl Encryptor for AesGcmCipher {
         }
 
         let mut tail = StandardAeadTail::new_zeroed();
-        if let Some(nonce) = nonce {
-            if nonce.len() != tail.nonce.len() {
-                return Err(Error::EncryptionFailed);
-            }
-            tail.nonce.copy_from_slice(nonce);
-        } else {
-            rand::thread_rng().fill_bytes(&mut tail.nonce);
+
+        match nonce {
+            Some(n) => tail.nonce = n.try_into().map_err(|_| Error::EncryptionFailed)?,
+            None => rand::thread_rng().fill_bytes(&mut tail.nonce),
         }
         let nonce = aead::Nonce::assume_unique_for_key(tail.nonce);
 
-        let rs = match &self.cipher {
+        let tag = match &self.cipher {
             AesGcmEnum::AesGCM128(cipher, _) => cipher.seal_in_place_separate_tag(
                 nonce,
                 aead::Aad::empty(),
@@ -129,22 +126,19 @@ impl Encryptor for AesGcmCipher {
                 aead::Aad::empty(),
                 zc_packet.mut_payload(),
             ),
-        };
-        match rs {
-            Ok(tag) => {
-                let tag = tag.as_ref();
-                if tag.len() != StandardAeadTail::TAG_SIZE {
-                    return Err(Error::InvalidTag(tag.to_vec()));
-                }
-                tail.tag.copy_from_slice(tag);
-
-                let pm_header = zc_packet.mut_peer_manager_header().unwrap();
-                pm_header.set_encrypted(true);
-                zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
-                Ok(())
-            }
-            Err(_) => Err(Error::EncryptionFailed),
         }
+        .map_err(|_| Error::EncryptionFailed)?;
+
+        let tag = tag.as_ref();
+        if tag.len() != StandardAeadTail::TAG_SIZE {
+            return Err(Error::InvalidTag(tag.to_vec()));
+        }
+        tail.tag.copy_from_slice(tag);
+
+        let pm_header = zc_packet.mut_peer_manager_header().unwrap();
+        pm_header.set_encrypted(true);
+        zc_packet.mut_inner().extend_from_slice(tail.as_bytes());
+        Ok(())
     }
 }
 
