@@ -70,7 +70,7 @@ use super::{
     PeerPacketFilter,
 };
 
-use std::sync::atomic::AtomicU64;
+use atomic_shim::AtomicU64;
 
 static SERVICE_ID: u32 = 7;
 static UPDATE_PEER_INFO_PERIOD: Duration = Duration::from_secs(3600);
@@ -411,13 +411,6 @@ impl Debug for SyncedRouteInfo {
             .field("version", &self.version.get())
             .finish()
     }
-}
-
-fn network_secret_digest_is_empty(network_identity: &NetworkIdentity) -> bool {
-    network_identity
-        .network_secret_digest
-        .as_ref()
-        .is_none_or(|digest| digest.iter().all(|b| *b == 0))
 }
 
 impl SyncedRouteInfo {
@@ -2025,12 +2018,23 @@ impl PeerRouteServiceImpl {
 
     async fn update_my_conn_info(&self) -> bool {
         let current_generation = self.interface_peers_generation.load(Ordering::Acquire);
-        if self
+        let generation_applied = self
             .applied_interface_peers_generation
             .load(Ordering::Acquire)
-            == current_generation
-        {
-            return false;
+            == current_generation;
+        if generation_applied {
+            let need_periodic_requery = self
+                .interface
+                .lock()
+                .await
+                .as_ref()
+                .map(|x| x.need_periodic_requery_peers())
+                .unwrap_or(false);
+            if !need_periodic_requery {
+                return false;
+            }
+
+            self.mark_interface_peers_dirty();
         }
 
         let (generation, connected_peers) = self.list_peers_from_interface_snapshot().await;
@@ -3283,6 +3287,7 @@ impl PeerRoute {
         session_mgr: RouteSessionManager,
     ) {
         let mut global_event_receiver = service_impl.global_ctx.subscribe();
+        service_impl.mark_interface_peers_dirty();
         loop {
             if service_impl.update_my_infos().await {
                 session_mgr.sync_now("update_my_infos");

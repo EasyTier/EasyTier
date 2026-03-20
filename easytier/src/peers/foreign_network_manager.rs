@@ -304,6 +304,10 @@ impl ForeignNetworkEntry {
                 self.my_peer_id
             }
 
+            fn need_periodic_requery_peers(&self) -> bool {
+                true
+            }
+
             async fn get_peer_identity_type(&self, peer_id: PeerId) -> Option<PeerIdentityType> {
                 let peer_map = self.peer_map.upgrade()?;
                 peer_map.get_peer_identity_type(peer_id)
