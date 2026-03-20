@@ -592,6 +592,8 @@ impl PeerSession {
         initial_epoch: u32,
         preserve_rx_grace: bool,
     ) {
+        let old_root_key = self.root_key();
+        let can_preserve_rx_grace = preserve_rx_grace && old_root_key == root_key;
         {
             let mut g = self.root_key.write().unwrap();
             *g = root_key;
@@ -609,7 +611,7 @@ impl PeerSession {
         {
             let mut rx = self.rx_slots.lock().unwrap();
             let mut sync_rx_grace = self.sync_rx_grace.lock().unwrap();
-            if preserve_rx_grace {
+            if can_preserve_rx_grace {
                 let expires_at_ms = now_ms().saturating_add(Self::SYNC_RX_GRACE_AFTER_MS);
                 sync_rx_grace.refresh(*rx, expires_at_ms);
                 self.sync_rx_grace_expires_at_ms
@@ -1133,6 +1135,32 @@ mod tests {
         assert!(
             !s.check_replay(0, 1, 0, now + PeerSession::SYNC_RX_GRACE_AFTER_MS + 3),
             "old epochs should stop being accepted once the sync grace window expires"
+        );
+    }
+
+    #[test]
+    fn sync_root_key_does_not_preserve_previous_epochs_when_root_key_changes() {
+        let peer_id: PeerId = 10;
+        let root_key = PeerSession::new_root_key();
+        let s = PeerSession::new(
+            peer_id,
+            root_key,
+            1,
+            0,
+            "aes-256-gcm".to_string(),
+            "aes-256-gcm".to_string(),
+            None,
+        );
+
+        let now = now_ms();
+        assert!(s.check_replay(0, 0, 0, now));
+        assert!(s.check_replay(1, 0, 0, now + 1));
+
+        s.sync_root_key(PeerSession::new_root_key(), 2, 2, true);
+        assert!(s.check_replay(2, 0, 0, now + 2));
+        assert!(
+            !s.check_replay(1, 1, 0, now + 3),
+            "old epochs should not be preserved when sync replaces the root key"
         );
     }
 }
