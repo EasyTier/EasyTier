@@ -643,6 +643,10 @@ impl ForeignNetworkManager {
             .is_none_or(|d| d.iter().all(|b| *b == 0))
     }
 
+    fn should_reject_credential_trust_path(identity_type: PeerIdentityType) -> bool {
+        matches!(identity_type, PeerIdentityType::Admin)
+    }
+
     async fn is_credential_pubkey_trusted(
         entry: &ForeignNetworkEntry,
         remote_static_pubkey: &[u8],
@@ -750,13 +754,17 @@ impl ForeignNetworkManager {
             .await;
 
         let same_identity = entry.network == peer_network;
+        let peer_identity_type = peer_conn.get_peer_identity_type();
         let credential_peer_trusted = peer_digest_empty
             && Self::is_credential_pubkey_trusted(&entry, &conn_info.noise_remote_static_pubkey)
                 .await;
+        let credential_identity_mismatch = credential_peer_trusted
+            && Self::should_reject_credential_trust_path(peer_identity_type);
 
         let _g = entry.lock.lock().await;
 
         if (!(same_identity || credential_peer_trusted))
+            || credential_identity_mismatch
             || entry.my_peer_id != peer_conn.get_my_peer_id()
         {
             if new_added {
@@ -768,6 +776,11 @@ impl ForeignNetworkManager {
                     "my peer id not match. exp: {:?} real: {:?}, need retry connect",
                     entry.my_peer_id,
                     peer_conn.get_my_peer_id()
+                )
+            } else if credential_identity_mismatch {
+                anyhow::anyhow!(
+                    "credential-trusted foreign peer has invalid identity type: {:?}",
+                    peer_identity_type
                 )
             } else {
                 anyhow::anyhow!(
@@ -1121,6 +1134,19 @@ pub mod tests {
             &foreign_network.network_name,
         );
         assert!(ForeignNetworkManager::is_credential_pubkey_trusted(&entry, &pubkey).await);
+    }
+
+    #[test]
+    fn credential_trust_path_rejects_admin_identity() {
+        assert!(ForeignNetworkManager::should_reject_credential_trust_path(
+            PeerIdentityType::Admin
+        ));
+        assert!(!ForeignNetworkManager::should_reject_credential_trust_path(
+            PeerIdentityType::Credential
+        ));
+        assert!(!ForeignNetworkManager::should_reject_credential_trust_path(
+            PeerIdentityType::SharedNode
+        ));
     }
 
     #[tokio::test]
